@@ -667,6 +667,59 @@ fn audio_filters_run_on_a_microphone_and_follow_edits_without_a_new_node() {
 }
 
 #[test]
+fn a_ducker_lowers_one_source_by_the_signal_of_another() {
+    use rbs_scene::model::SettingValue;
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let music = col.sources().find(|s| s.name == "System audio").unwrap().id;
+    let mut settings = Settings::new();
+    settings.insert(
+        "key_source".to_owned(),
+        SettingValue::Int(i64::from(mic.get())),
+    );
+    // Any key louder than -80 dB ducks.
+    settings.insert("threshold".to_owned(), SettingValue::Float(-80.0));
+    settings.insert("amount".to_owned(), SettingValue::Float(12.0));
+    settings.insert("attack".to_owned(), SettingValue::Float(1.0));
+    let (duck, _) = col
+        .add_filter(
+            music,
+            NodeTypeId::new_static(rbs_audio_filters::ducker::DUCKER),
+            settings,
+        )
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    assert!(studio.filter_problems().is_empty());
+    assert!(studio.problems().is_empty(), "{:?}", studio.problems());
+    let meter = std::sync::Arc::clone(studio.audio_filter_meter(duck).unwrap());
+    // The microphone's tone reaches the ducker's key and lowers the music.
+    assert!(run_until(&mut studio, &clock, |_| {
+        meter.input_peak_db() > -80.0 && meter.gain_reduction_db() > 11.0
+    }));
+    // Without a key setting the ducker hears silence and lets the music return.
+    let mut none = Settings::new();
+    none.insert("amount".to_owned(), SettingValue::Float(12.0));
+    col.set_filter_settings(music, duck, none).unwrap();
+    let updated = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(updated.failed.is_empty(), "{updated:?}");
+    assert!(run_until(&mut studio, &clock, |_| {
+        meter.gain_reduction_db() < 0.5
+    }));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
 fn studio_mode_without_a_preview_description_runs_nothing_of_it() {
     let Some(gpu) = gpu() else { return };
     let r = rig();
