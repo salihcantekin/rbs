@@ -21,6 +21,14 @@ unwrap_used = "warn"
 expect_used = "warn"
 undocumented_unsafe_blocks = "deny"
 
+# Smaller debug builds: line tables keep backtraces readable, and third-party crates
+# carry no debug info. Each worktree's target/ was 6-22 GB before this.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
