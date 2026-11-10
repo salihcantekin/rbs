@@ -2242,111 +2242,78 @@ component StyleFields inherits Section {
 component ArrangeFields inherits Section {
     in property <SourceData> data;
     property <bool> known: data.pic-w > 0;
-    title: @tr("Flip & rotate");
+    title: @tr("Flip, rotate & fit");
     id: "properties.arrange";
+    // Icon-only buttons keep the section to two short rows however many commands
+    // join it; each is named for screen readers.
     HorizontalLayout {
         spacing: Tokens.size-field-gap;
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("Horizontal");
-            lead: IconName.flip-h;
+        alignment: start;
+        IconButton {
+            icon: IconName.flip-h;
+            name: @tr("Flip {} horizontally", data.name);
             checked: data.flip-h;
             enabled: !data.locked;
-            accessible-name: @tr("Flip {} horizontally", data.name);
             clicked => { Studio.transform-source(data.id, 0); }
         }
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("Vertical");
-            lead: IconName.flip-v;
+        IconButton {
+            icon: IconName.flip-v;
+            name: @tr("Flip {} vertically", data.name);
             checked: data.flip-v;
             enabled: !data.locked;
-            accessible-name: @tr("Flip {} vertically", data.name);
             clicked => { Studio.transform-source(data.id, 1); }
         }
-    }
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("90°");
-            lead: IconName.rotate-cw;
+        IconButton {
+            icon: IconName.rotate-ccw;
+            name: @tr("Rotate {} 90 degrees counter-clockwise", data.name);
             enabled: !data.locked;
-            accessible-name: @tr("Rotate {} 90 degrees clockwise", data.name);
-            clicked => { Studio.transform-source(data.id, 2); }
-        }
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("90°");
-            lead: IconName.rotate-ccw;
-            enabled: !data.locked;
-            accessible-name: @tr("Rotate {} 90 degrees counter-clockwise", data.name);
             clicked => { Studio.transform-source(data.id, 3); }
         }
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("180°");
+        IconButton {
+            icon: IconName.rotate-cw;
+            name: @tr("Rotate {} 90 degrees clockwise", data.name);
             enabled: !data.locked;
-            accessible-name: @tr("Rotate {} 180 degrees", data.name);
-            clicked => { Studio.transform-source(data.id, 4); }
+            clicked => { Studio.transform-source(data.id, 2); }
         }
-    }
-    Text {
-        text: @tr("Fit to canvas");
-        color: Theme.text-secondary;
-        font-size: Tokens.type-body-size;
-        accessible-role: none;
-    }
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("Fit");
-            lead: IconName.fit;
-            enabled: known && !data.locked;
-            accessible-name: @tr("Fit {} inside the canvas", data.name);
-            clicked => { Studio.transform-source(data.id, 5); }
-        }
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("Fill");
-            lead: IconName.fill-canvas;
-            enabled: known && !data.locked;
-            accessible-name: @tr("Fill the canvas with {}", data.name);
-            clicked => { Studio.transform-source(data.id, 6); }
-        }
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("Stretch");
-            lead: IconName.stretch;
-            enabled: known && !data.locked;
-            accessible-name: @tr("Stretch {} to the canvas", data.name);
-            clicked => { Studio.transform-source(data.id, 7); }
-        }
-    }
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("Center");
-            lead: IconName.center;
+        IconButton {
+            icon: IconName.center;
+            name: @tr("Center {} on the canvas", data.name);
             enabled: !data.locked;
-            accessible-name: @tr("Center {} on the canvas", data.name);
             clicked => { Studio.transform-source(data.id, 8); }
         }
-        Button {
-            horizontal-stretch: 1;
-            text: @tr("Reset");
-            lead: IconName.reset;
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        alignment: start;
+        IconButton {
+            icon: IconName.fit;
+            name: @tr("Fit {} inside the canvas", data.name);
             enabled: known && !data.locked;
-            accessible-name: @tr("Reset the transform of {}", data.name);
+            clicked => { Studio.transform-source(data.id, 5); }
+        }
+        IconButton {
+            icon: IconName.fill-canvas;
+            name: @tr("Fill the canvas with {}", data.name);
+            enabled: known && !data.locked;
+            clicked => { Studio.transform-source(data.id, 6); }
+        }
+        IconButton {
+            icon: IconName.stretch;
+            name: @tr("Stretch {} to the canvas", data.name);
+            enabled: known && !data.locked;
+            clicked => { Studio.transform-source(data.id, 7); }
+        }
+        IconButton {
+            icon: IconName.reset;
+            name: @tr("Reset the transform of {}", data.name);
+            enabled: known && !data.locked;
             clicked => { Studio.transform-source(data.id, 9); }
         }
     }
     Hint {
         text: data.locked
             ? @tr("Unlock the source to change its transform.")
-            : @tr("Flips mirror the picture as you see it on the canvas. Reset shows the picture at its own size, upright.");
+            : @tr("Flip, rotate 90°, center; fit, fill, stretch, reset.");
     }
 }
 

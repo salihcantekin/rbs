@@ -541,19 +541,19 @@ impl CommandState for Shown<'_> {
             "collection.select" => self.studio.library_choices(true),
             "scene.select" => self.studio.scene_choices(),
             "item.rotate" => vec![
-                ("90° clockwise".into(), "90".into(), false),
-                ("90° counter-clockwise".into(), "-90".into(), false),
-                ("180°".into(), "180".into(), false),
+                ("Rotate 90° clockwise".into(), "90".into(), false),
+                ("Rotate 90° counter-clockwise".into(), "-90".into(), false),
+                ("Rotate 180°".into(), "180".into(), false),
             ],
             "item.fit" => vec![
-                ("Fit".into(), "fit".into(), false),
-                ("Fill".into(), "fill".into(), false),
-                ("Stretch".into(), "stretch".into(), false),
+                ("Fit to canvas".into(), "fit".into(), false),
+                ("Fill canvas".into(), "fill".into(), false),
+                ("Stretch to canvas".into(), "stretch".into(), false),
             ],
             "item.align" => vec![
-                ("Both".into(), "both".into(), false),
-                ("Horizontally".into(), "horizontal".into(), false),
-                ("Vertically".into(), "vertical".into(), false),
+                ("Center on canvas".into(), "both".into(), false),
+                ("Center horizontally".into(), "horizontal".into(), false),
+                ("Center vertically".into(), "vertical".into(), false),
             ],
             "source.add" => self
                 .studio

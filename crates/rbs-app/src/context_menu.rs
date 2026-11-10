@@ -222,11 +222,14 @@ mod tests {
             .unwrap();
         assert!(visible.checkable && visible.checked);
         assert_eq!(visible.icon, "", "a checkmark takes the icon's place");
-        assert_eq!(source[0].id, "item.flip?axis=horizontal&item=3");
+        // One submenu holds every transform command.
+        assert_eq!(source[0].kind, Kind::Choices);
+        assert_eq!(source[0].title, "Transform");
         assert!(
-            source
+            source[0]
+                .choices
                 .iter()
-                .any(|i| i.kind == Kind::Choices && i.choices.len() == 1)
+                .any(|c| c.1 == "item.flip?axis=horizontal&item=3")
         );
         assert!(
             source
