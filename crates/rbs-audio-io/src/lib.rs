@@ -17,6 +17,8 @@
 pub mod caps;
 #[cfg(feature = "conformance")]
 pub mod conformance;
+#[cfg(feature = "conformance")]
+pub mod conformance_output;
 pub mod edge;
 mod endpoint;
 mod error;

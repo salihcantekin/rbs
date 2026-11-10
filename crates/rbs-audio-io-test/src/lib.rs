@@ -16,15 +16,16 @@
 //! `conformance::TestHooks`, so tests can remove endpoints and count the streams it
 //! holds.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use rbs_audio_io::edge::EdgeClock;
+use rbs_audio_io::output::{self as out_ring, OutputConsumer, OutputProducer};
 use rbs_audio_io::ring::{self, Push, RingConsumer, RingProducer};
 use rbs_audio_io::{
-    AudioBackend, AudioEndpoint, AudioInputStream, AudioIoError, AudioRead, EndpointId,
-    EndpointKind, InputRequest, InputStats, caps,
+    AudioBackend, AudioEndpoint, AudioInputStream, AudioIoError, AudioOutput, AudioRead,
+    EndpointId, EndpointKind, InputRequest, InputStats, OutputRequest, OutputStats, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{AudioFormat, ChannelLayout};
@@ -53,6 +54,11 @@ pub const MONO_INPUT: &str = "test.input.mono";
 pub const STEREO_INPUT: &str = "test.input.stereo";
 /// The loopback of the default output: 44.1 kHz native, also 48 kHz.
 pub const LOOPBACK: &str = "test.loopback";
+/// The default playback device (monitoring); the loopback above captures it, so both
+/// carry the same device key.
+pub const OUTPUT: &str = "test.output";
+/// The device key shared by [`OUTPUT`] and [`LOOPBACK`].
+pub const OUTPUT_DEVICE_KEY: &str = "test.device.default";
 
 /// The device clock in ns, as a function of master time: offset by
 /// [`SOURCE_OFFSET`] and running fast by [`SOURCE_DRIFT_PPM`].
@@ -113,6 +119,15 @@ fn endpoints() -> Vec<AudioEndpoint> {
             loopback,
         )
         .with_sample_rates(&[SampleRate::HZ_44100, SampleRate::HZ_48000])
+        .with_device_key(OUTPUT_DEVICE_KEY)
+        .with_default(true),
+        AudioEndpoint::new(
+            EndpointId::new(OUTPUT),
+            EndpointKind::Output,
+            "Test output (playback)",
+            AudioFormat::STEREO_48K,
+        )
+        .with_device_key(OUTPUT_DEVICE_KEY)
         .with_default(true),
     ]
 }
@@ -122,6 +137,7 @@ fn endpoints() -> Vec<AudioEndpoint> {
 pub struct TestAudioBackend {
     endpoints: Vec<(AudioEndpoint, Arc<AtomicBool>)>,
     live: Arc<AtomicUsize>,
+    outputs: Arc<Mutex<Vec<Weak<TestOutputInner>>>>,
 }
 
 impl Default for TestAudioBackend {
@@ -139,6 +155,26 @@ impl TestAudioBackend {
                 .map(|e| (e, Arc::new(AtomicBool::new(true))))
                 .collect(),
             live: Arc::new(AtomicUsize::new(0)),
+            outputs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Plays the part of the device's render callback: every started output takes up
+    /// to `frames` frames from its ring (silence is counted for the rest). Outputs
+    /// that are stopped or dropped are skipped.
+    pub fn pump_outputs(&self, frames: usize) {
+        let Ok(mut outputs) = self.outputs.lock() else {
+            return;
+        };
+        outputs.retain(|w| w.strong_count() > 0);
+        for inner in outputs.iter().filter_map(Weak::upgrade) {
+            if !inner.running.load(Ordering::Acquire) {
+                continue;
+            }
+            if let Ok(mut consumer) = inner.consumer.lock() {
+                let mut out = vec![0.0f32; frames * consumer.channels()];
+                consumer.pull(&mut out);
+            }
         }
     }
 
@@ -194,6 +230,9 @@ impl AdapterFactory for TestAudioBackend {
             // The reference adapter plays nothing of its own, so leaving the process's
             // own sound out is always true (ADR-0096).
             .with(caps::LOOPBACK_EXCLUDE_SELF, CapabilityValue::Flag(true))
+            .with(caps::OUTPUT, CapabilityValue::Flag(true))
+            .with(caps::OUTPUT_ENUMERATE, CapabilityValue::Flag(true))
+            .with(caps::OUTPUT_LATENCY_NS, CapabilityValue::Int(20_000_000))
             .with(HARDWARE, CapabilityValue::Flag(false)))
     }
 }
@@ -232,6 +271,104 @@ impl AudioBackend for TestAudioBackend {
             totals: InputStats::default(),
             edge: EdgeClock::new(Duration::from_millis(100)),
         }))
+    }
+
+    fn open_output(&self, request: &OutputRequest) -> Result<Box<dyn AudioOutput>, AudioIoError> {
+        let Some((endpoint, present)) = self.endpoints.iter().find(|(e, present)| {
+            e.kind == EndpointKind::Output
+                && e.id == request.endpoint
+                && present.load(Ordering::Acquire)
+        }) else {
+            return Err(AudioIoError::EndpointNotFound);
+        };
+        let channels = endpoint.format.channels.channels();
+        let (producer, consumer) = out_ring::channel(channels, request.clamped_ring_frames());
+        let inner = Arc::new(TestOutputInner {
+            consumer: Mutex::new(consumer),
+            running: AtomicBool::new(false),
+        });
+        if let Ok(mut outputs) = self.outputs.lock() {
+            outputs.push(Arc::downgrade(&inner));
+        }
+        Ok(Box::new(TestOutput {
+            format: endpoint.format,
+            producer: Some(producer),
+            inner,
+            present: Arc::clone(present),
+            live: Arc::clone(&self.live),
+            counted: false,
+        }))
+    }
+}
+
+/// The device side of a test output.
+struct TestOutputInner {
+    consumer: Mutex<OutputConsumer>,
+    running: AtomicBool,
+}
+
+struct TestOutput {
+    format: AudioFormat,
+    producer: Option<OutputProducer>,
+    inner: Arc<TestOutputInner>,
+    present: Arc<AtomicBool>,
+    live: Arc<AtomicUsize>,
+    counted: bool,
+}
+
+impl AudioOutput for TestOutput {
+    fn format(&self) -> AudioFormat {
+        self.format
+    }
+
+    fn producer(&mut self) -> Option<OutputProducer> {
+        self.producer.take()
+    }
+
+    fn start(&mut self) -> Result<(), AudioIoError> {
+        if !self.present.load(Ordering::Acquire) {
+            return Err(AudioIoError::EndpointLost);
+        }
+        if !self.counted {
+            self.live.fetch_add(1, Ordering::AcqRel);
+            self.counted = true;
+        }
+        self.inner.running.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.inner.running.store(false, Ordering::Release);
+        if self.counted {
+            self.live.fetch_sub(1, Ordering::AcqRel);
+            self.counted = false;
+        }
+    }
+
+    fn latency_ns(&self) -> u64 {
+        20_000_000
+    }
+
+    fn stats(&self) -> OutputStats {
+        self.inner
+            .consumer
+            .lock()
+            .map(|c| c.stats())
+            .unwrap_or_default()
+    }
+
+    fn status(&self) -> Result<(), AudioIoError> {
+        if self.present.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(AudioIoError::EndpointLost)
+        }
+    }
+}
+
+impl Drop for TestOutput {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
