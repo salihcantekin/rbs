@@ -103,7 +103,7 @@ fn backend(e: &windows::core::Error) -> CaptureError {
 
 /// Keeps the process's implicit multithreaded apartment alive, so WinRT calls work on
 /// any thread without changing the apartment of the caller's thread.
-fn ensure_winrt() {
+pub(crate) fn ensure_winrt() {
     static DONE: std::sync::Once = std::sync::Once::new();
     DONE.call_once(|| {
         // SAFETY: plain FFI call. The cookie is never released: the MTA stays alive
@@ -133,7 +133,7 @@ fn os_build() -> u32 {
 
 /// A capture target resolved to its OS handle.
 #[derive(Clone, Copy)]
-enum Resolved {
+pub(crate) enum Resolved {
     Display(HMONITOR),
     Window(HWND),
 }
@@ -305,7 +305,7 @@ fn window_id(hwnd: HWND) -> TargetId {
 }
 
 /// Resolves a target id to its OS handle and current size, if it still exists.
-fn resolve(id: &TargetId) -> Option<(Resolved, (u32, u32))> {
+pub(crate) fn resolve(id: &TargetId) -> Option<(Resolved, (u32, u32))> {
     let id = id.as_str();
     if let Some(device) = id.strip_prefix(DISPLAY_PREFIX) {
         return monitors()
@@ -457,6 +457,14 @@ impl CaptureFactory for WgcCaptureFactory {
                 .collect()),
             _ => Err(CaptureError::Unsupported("cameras are not captured by WGC")),
         }
+    }
+
+    fn thumbnail(
+        &self,
+        target: &TargetId,
+        max: Size,
+    ) -> Result<rbs_capture::Thumbnail, CaptureError> {
+        crate::thumb::thumbnail(target, max)
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
@@ -950,7 +958,7 @@ fn min_interval(rate: FrameRate) -> TimeSpan {
     }
 }
 
-fn create_item(resolved: Resolved) -> windows::core::Result<GraphicsCaptureItem> {
+pub(crate) fn create_item(resolved: Resolved) -> windows::core::Result<GraphicsCaptureItem> {
     let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     // SAFETY: the handles were checked by `resolve` just before; WGC validates them too.
     unsafe {
