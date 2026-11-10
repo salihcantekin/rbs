@@ -551,3 +551,132 @@ fn a_writer_whose_reader_is_gone_keeps_its_buffer_instead_of_freeing_it() {
     assert_eq!(counts.count_current, 0);
     assert_eq!(stats.sent(), 1);
 }
+
+/// Two audio outputs; records which of them a scheduled node reads, each tick.
+struct Split2 {
+    desc: NodeDescriptor,
+    linked: Arc<Mutex<Vec<(bool, bool, bool)>>>,
+    /// Instances prepared, to prove a link edit keeps the node.
+    prepared: Arc<AtomicU64>,
+}
+
+impl Node<()> for Split2 {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.desc
+    }
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, ()>) -> Result<(), NodeError> {
+        self.prepared.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+    fn release(&mut self, _: &mut PrepareCtx<'_, ()>) {}
+    fn process(&mut self, ctx: &mut ProcessCtx<'_, ()>) -> Result<(), NodeError> {
+        let out = ctx.outputs();
+        let seen = (out.is_linked(0), out.is_linked(1), out.is_linked(7));
+        self.linked.lock().unwrap().push(seen);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_node_sees_which_outputs_are_read_and_a_link_edit_keeps_it() {
+    let split = Split2 {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new("org.rbs.test.split"),
+            NodeKind::Source,
+            vec![],
+            vec![
+                Pin::one("main", LinkKind::Audio),
+                Pin::one("monitor", LinkKind::Audio),
+            ],
+        ),
+        linked: Arc::default(),
+        prepared: Arc::default(),
+    };
+    let (linked, prepared) = (Arc::clone(&split.linked), Arc::clone(&split.prepared));
+    let (a, b) = (Sink::new(NodeKind::Output), Sink::new(NodeKind::Output));
+    let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
+    let mut g = GraphDescription::new();
+    let s = active(&mut g, &split.desc);
+    let ia = active(&mut g, &a.desc);
+    let ib = active(&mut g, &b.desc);
+    g.connect(s, "main", ia, "in").unwrap();
+    ctl.adopt(s, Box::new(split)).unwrap();
+    ctl.adopt(ia, Box::new(a)).unwrap();
+    ctl.adopt(ib, Box::new(b)).unwrap();
+    let c = cadence();
+    let mut tick = 0;
+    let mut run = |exec: &mut Executor<()>| {
+        exec.run_tick(Tick::of(&c, tick));
+        tick += 1;
+    };
+    ctl.apply(&g).unwrap();
+    exec.swap_pending();
+    ctl.collect().unwrap().unwrap();
+    run(&mut exec);
+    g.connect(s, "monitor", ib, "in").unwrap();
+    ctl.apply(&g).unwrap();
+    exec.swap_pending();
+    ctl.collect().unwrap().unwrap();
+    run(&mut exec);
+    assert_eq!(
+        *linked.lock().unwrap(),
+        vec![(true, false, false), (true, true, false)]
+    );
+    assert_eq!(prepared.load(Ordering::Relaxed), 1);
+}
+
+/// An output whose `prepare` fails, so the plan holds it without an instance.
+struct Broken(NodeDescriptor);
+
+impl Node<()> for Broken {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, ()>) -> Result<(), NodeError> {
+        Err(NodeError::Permanent("device gone"))
+    }
+    fn release(&mut self, _: &mut PrepareCtx<'_, ()>) {}
+    fn process(&mut self, _: &mut ProcessCtx<'_, ()>) -> Result<(), NodeError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_consumer_without_an_instance_does_not_read_its_input() {
+    let split = Split2 {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new("org.rbs.test.split"),
+            NodeKind::Source,
+            vec![],
+            vec![
+                Pin::one("main", LinkKind::Audio),
+                Pin::one("monitor", LinkKind::Audio),
+            ],
+        ),
+        linked: Arc::default(),
+        prepared: Arc::default(),
+    };
+    let linked = Arc::clone(&split.linked);
+    let a = Sink::new(NodeKind::Output);
+    let broken = Broken(NodeDescriptor::new(
+        NodeTypeId::new("org.rbs.test.broken"),
+        NodeKind::Output,
+        vec![Pin::one("in", LinkKind::Audio)],
+        vec![],
+    ));
+    let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
+    let mut g = GraphDescription::new();
+    let s = active(&mut g, &split.desc);
+    let ia = active(&mut g, &a.desc);
+    let ib = active(&mut g, &broken.0);
+    g.connect(s, "main", ia, "in").unwrap();
+    g.connect(s, "monitor", ib, "in").unwrap();
+    ctl.adopt(s, Box::new(split)).unwrap();
+    ctl.adopt(ia, Box::new(a)).unwrap();
+    ctl.adopt(ib, Box::new(broken)).unwrap();
+    let _ = ctl.apply(&g);
+    exec.swap_pending();
+    ctl.collect().unwrap().unwrap();
+    exec.run_tick(Tick::of(&cadence(), 0));
+    assert_eq!(*linked.lock().unwrap(), vec![(true, false, false)]);
+}

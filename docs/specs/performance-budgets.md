@@ -46,7 +46,7 @@ Measured on reference machines that will be listed here. Each target is compared
 | Audio path, 8 sources, 4 buses | Audio thread load per 10 ms block | < 10 % of block time |
 | Audio input node (read, steer, resample, map channels), one source | Time per 10 ms block, reference VM (`cargo bench -p rbs-audio --bench nodes`) | at most 50 µs (measured 27 µs at 48 kHz mono, 35 µs at 44.1 kHz stereo) |
 | Audio output node (FIFO, steer, resample, map channels, volume, ring push), one output | Time per 10 ms block, reference VM (`cargo bench -p rbs-audio --bench nodes`) | at most 50 µs (measured 32 µs to 48 kHz and 30 µs to 44.1 kHz stereo on the cloud development container) |
-| Mixer, 16 stereo inputs with meters | Time per 10 ms block, same bench | at most 30 µs (measured 13 µs) |
+| Mixer, 16 stereo inputs with meters | Time per 10 ms block, same bench | at most 30 µs (measured 13 µs; with 4 monitored and the monitor read 14.6 µs against 11.5 µs unmonitored on the cloud development container) |
 | Glass-to-encoder latency, display capture | Latency | < 2 frame intervals |
 | Glass-to-delivery latency, display capture (OS capture to `latest_frame`) | Latency | <= 1 frame interval |
 | Cold start to first preview frame | Time | < 1.5 s |

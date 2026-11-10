@@ -664,6 +664,7 @@ impl<X: Runtime> Controller<X> {
                 schedule
                     .slots
                     .push(Slot::for_kind(pin.kind, self.audio_frames));
+                schedule.linked.push(false);
             }
             let outputs = Span {
                 start,
@@ -671,6 +672,11 @@ impl<X: Runtime> Controller<X> {
             };
             first_output.insert(id, start);
 
+            // Only a consumer that runs (an instance prepared now or carried over)
+            // reads its producers' pins; one held without an instance does not.
+            let runs = prepared.contains_key(&id)
+                || (!hollow.contains(&id)
+                    && self.placed.get(&id).is_some_and(|old| old.epoch.is_some()));
             let pins_start = schedule.pins.len() as u32;
             for pin in 0..descriptor.inputs.len() {
                 let links_start = schedule.links.len() as u32;
@@ -678,6 +684,12 @@ impl<X: Runtime> Controller<X> {
                     // Producers precede consumers in `plan.order`, so the producer's
                     // slots are already laid out and have lower indices.
                     if let Some(&producer) = first_output.get(&link.from.node) {
+                        if let Some(read) = schedule
+                            .linked
+                            .get_mut((producer + link.from.pin as u32) as usize)
+                        {
+                            *read |= runs;
+                        }
                         schedule.links.push(producer + link.from.pin as u32);
                         schedule.link_sources.push(link.from.node);
                     }
