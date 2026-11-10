@@ -80,7 +80,23 @@ pub fn number_text(v: f32, step: f32, unit: &str) -> String {
     format!("{v:.prec$}{}", suffix(unit), prec = d as usize)
 }
 
-fn field_data(ty: AnyFilter, values: &Values) -> Vec<FilterFieldData> {
+/// The sound sources a ducker's key can be, in row order: `(source id, name)`.
+pub fn sound_sources(rows: &[SourceRow]) -> Vec<(u32, String)> {
+    rows.iter()
+        .filter(|r| {
+            r.kind
+                .is_some_and(rbs_app::studio_host::SourceKind::is_audio)
+        })
+        .map(|r| (r.id.get(), r.name.clone()))
+        .collect()
+}
+
+fn field_data(
+    ty: AnyFilter,
+    values: &Values,
+    own: SourceId,
+    sounds: &[(u32, String)],
+) -> Vec<FilterFieldData> {
     ty.fields()
         .iter()
         .zip(values.as_slice())
@@ -122,6 +138,32 @@ fn field_data(ty: AnyFilter, values: &Values) -> Vec<FilterFieldData> {
                 swatch: slint::Color::from_argb_u8(c[3], c[0], c[1], c[2]),
                 ..FilterFieldData::default()
             },
+            // A source picker (ADR-0095); the editor lists the collection's sound sources.
+            (FieldKind::Source, Value::Source(id)) => {
+                // "None", then every other sound source; a key that is not among them
+                // (not in this scene) shows no choice.
+                let others: Vec<&(u32, String)> =
+                    sounds.iter().filter(|s| s.0 != own.get()).collect();
+                let choice = match id {
+                    None => 0,
+                    Some(id) => others
+                        .iter()
+                        .position(|s| s.0 == id)
+                        .map_or(-1, |i| i as i32 + 1),
+                };
+                let options: Vec<slint::SharedString> =
+                    std::iter::once(slint::SharedString::from("None"))
+                        .chain(others.iter().map(|s| s.1.as_str().into()))
+                        .collect();
+                FilterFieldData {
+                    label: f.label.into(),
+                    help: f.help.into(),
+                    kind: 3,
+                    options: ModelRc::new(VecModel::from(options)),
+                    choice,
+                    ..FilterFieldData::default()
+                }
+            }
             _ => FilterFieldData {
                 label: f.label.into(),
                 help: f.help.into(),
@@ -134,7 +176,11 @@ fn field_data(ty: AnyFilter, values: &Values) -> Vec<FilterFieldData> {
 
 impl FilterUi {
     /// The Filters tab's rows of `row` and its selected filter (-1 none).
-    pub fn data(&mut self, row: &SourceRow) -> (ModelRc<FilterData>, i32) {
+    pub fn data(
+        &mut self,
+        row: &SourceRow,
+        sounds: &[(u32, String)],
+    ) -> (ModelRc<FilterData>, i32) {
         let source = row.id.get() as i32;
         let ids: Vec<i32> = row.filters.iter().map(|f| f.id.get() as i32).collect();
         // A filter that was not there before was just added: select it.
@@ -155,7 +201,7 @@ impl FilterUi {
             .enumerate()
             .map(|(i, f)| {
                 let fields = match (f.any(), &f.values) {
-                    (Some(ty), Some(values)) => field_data(ty, values),
+                    (Some(ty), Some(values)) => field_data(ty, values, row.id, sounds),
                     _ => Vec::new(),
                 };
                 let id = f.id.get() as i32;
@@ -169,12 +215,23 @@ impl FilterUi {
                 }
                 // A filter with a live meter is a noise gate: its first two numbers are
                 // the open and the close threshold.
-                let (open_pos, close_pos) = match (&f.meter, &f.values) {
-                    (Some(_), Some(v)) => (bar_position(v.number(0)), bar_position(v.number(1))),
-                    _ => (0.0, 0.0),
+                let (open_pos, close_pos, bar_label) = match (&f.meter, &f.values) {
+                    (Some(_), Some(v)) if f.type_id == rbs_audio_filters::ducker::DUCKER => (
+                        bar_position(v.number(1)),
+                        // The ducker's hysteresis: 3 dB under its threshold.
+                        bar_position(v.number(1) - 3.0),
+                        "Key level",
+                    ),
+                    (Some(_), Some(v)) => (
+                        bar_position(v.number(0)),
+                        bar_position(v.number(1)),
+                        "Level",
+                    ),
+                    _ => (0.0, 0.0, ""),
                 };
                 FilterData {
                     gate: f.meter.is_some(),
+                    bar_label: bar_label.into(),
                     open_pos,
                     close_pos,
                     id,
@@ -352,6 +409,46 @@ impl StudioUi {
     pub fn cancel_filter(&mut self, filter: i32) {
         self.filter_ui.drag = None;
         self.send(Command::RestoreFilter(FilterId::from_raw(filter as u32)));
+    }
+
+    /// A key source picked in a source field's list: option 0 is none, then the other
+    /// sound sources in row order (the order `field_data` listed them in).
+    pub fn set_filter_source(&mut self, filter: i32, field: i32, option: i32) {
+        let Some((ty, values)) = self.filter_values(filter) else {
+            return;
+        };
+        let Some(owner) = self
+            .rows
+            .iter()
+            .find(|r| r.filters.iter().any(|f| f.id.get() as i32 == filter))
+            .map(|r| r.id)
+        else {
+            return;
+        };
+        let Some(f) = ty.fields().get(field as usize) else {
+            return;
+        };
+        let id = if option <= 0 {
+            None
+        } else {
+            let others: Vec<u32> = sound_sources(&self.rows)
+                .into_iter()
+                .map(|s| s.0)
+                .filter(|id| *id != owner.get())
+                .collect();
+            match others.get(option as usize - 1) {
+                Some(id) => Some(*id),
+                None => return,
+            }
+        };
+        let Ok(values) = values.with(&ty, [(f.key, Value::Source(id))]) else {
+            return;
+        };
+        self.deleted.clear();
+        self.send(Command::SetFilterValues {
+            filter: FilterId::from_raw(filter as u32),
+            values,
+        });
     }
 
     /// A colour picked or typed (`#rrggbb` or `#rrggbbaa`; anything else changes

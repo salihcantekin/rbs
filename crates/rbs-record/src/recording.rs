@@ -633,7 +633,8 @@ fn problem_source(collection: &SceneCollection, p: &BindProblem) -> Option<Sourc
         | BindProblem::AudioOnVideoSource(s) => Some(*s),
         BindProblem::UnknownFilterType(f, _)
         | BindProblem::NoVideoPins(f)
-        | BindProblem::NoAudioPins(f) => filter_owner(*f),
+        | BindProblem::NoAudioPins(f)
+        | BindProblem::KeyUnavailable(f) => filter_owner(*f),
         _ => None,
     }
 }

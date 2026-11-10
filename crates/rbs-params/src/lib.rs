@@ -105,6 +105,17 @@ impl Field {
         }
     }
 
+    /// Another source of the collection, or none (an audio source for a ducker's key,
+    /// ADR-0095). The default is none.
+    pub const fn source(key: &'static str, label: &'static str) -> Self {
+        Self {
+            key,
+            label,
+            kind: FieldKind::Source,
+            help: "",
+        }
+    }
+
     /// This field with `help` text.
     pub const fn with_help(mut self, help: &'static str) -> Self {
         self.help = help;
@@ -161,6 +172,8 @@ pub enum FieldKind {
         /// The key of the option used when not set.
         default: &'static str,
     },
+    /// A reference to another source by id; the default is none.
+    Source,
 }
 
 impl FieldKind {
@@ -178,6 +191,7 @@ impl FieldKind {
                     .and_then(|i| u8::try_from(i).ok())
                     .unwrap_or(0),
             ),
+            FieldKind::Source => Value::Source(None),
         }
     }
 }
@@ -194,6 +208,8 @@ pub enum Value {
     Toggle(bool),
     /// An index into the field's options.
     Choice(u8),
+    /// A source id, or none.
+    Source(Option<u32>),
 }
 
 /// Why values were refused.
@@ -286,7 +302,8 @@ impl Values {
                     }
                 }
                 (FieldKind::Color { .. }, Value::Color(_))
-                | (FieldKind::Toggle { .. }, Value::Toggle(_)) => {}
+                | (FieldKind::Toggle { .. }, Value::Toggle(_))
+                | (FieldKind::Source, Value::Source(_)) => {}
                 (FieldKind::Choice { options, .. }, Value::Choice(i)) => {
                     if usize::from(i) >= options.len() {
                         return Err(ParamError::UnknownChoice(field.key));
@@ -337,6 +354,14 @@ impl Values {
         match self.get(index) {
             Some(Value::Choice(i)) => i,
             _ => 0,
+        }
+    }
+
+    /// Source `index` (a source id), or `None` when none is set or it is not a source.
+    pub fn source(&self, index: usize) -> Option<u32> {
+        match self.get(index) {
+            Some(Value::Source(id)) => id,
+            _ => None,
         }
     }
 
@@ -505,6 +530,22 @@ mod tests {
             v.with(&FIELDS, [("mode", Value::Choice(2))]),
             Err(ParamError::UnknownChoice("mode"))
         );
+    }
+
+    #[test]
+    fn a_source_field_defaults_to_none_and_takes_an_id() {
+        const SRC: &[Field] = &[Field::source("key_source", "Key source")];
+        let v = Values::defaults(&SRC);
+        assert_eq!(v.source(0), None);
+        let w = v
+            .with(&SRC, [("key_source", Value::Source(Some(0)))])
+            .unwrap_or(v);
+        assert_eq!(w.source(0), Some(0));
+        assert_eq!(
+            w.with(&SRC, [("key_source", Value::Toggle(true))]),
+            Err(ParamError::WrongKind("key_source"))
+        );
+        assert_eq!(check_fields(SRC, MAX_FIELDS), Ok(()));
     }
 
     #[test]

@@ -3347,6 +3347,7 @@ impl StudioUi {
         };
         let (global_pictures, scene_pictures) = (pictures(true), pictures(false));
         self.filter_ui.retain(&rows);
+        let sounds = filters::sound_sources(&rows);
         let data: Vec<SourceData> = rows
             .iter()
             .enumerate()
@@ -3375,7 +3376,7 @@ impl StudioUi {
                     .border
                     .unwrap_or(Border::new(DEFAULT_BORDER_WIDTH, [255, 255, 255, 255]));
                 let [cr, cg, cb, ca] = border.color;
-                let (filters, selected_filter) = self.filter_ui.data(r);
+                let (filters, selected_filter) = self.filter_ui.data(r, &sounds);
                 let pictures = if r.global {
                     &global_pictures
                 } else {

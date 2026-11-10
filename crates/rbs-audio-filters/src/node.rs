@@ -13,10 +13,14 @@ use crate::{AudioDsp, AudioFilterType, DspSetup, FilterMeter};
 
 /// The descriptor of a node of audio filter type `ty`.
 pub fn descriptor(ty: &dyn AudioFilterType) -> NodeDescriptor {
+    let mut inputs = vec![Pin::one("in", LinkKind::Audio)];
+    if ty.key_input() {
+        inputs.push(Pin::one("key", LinkKind::Audio));
+    }
     NodeDescriptor::new(
         ty.type_id(),
         NodeKind::AudioFilter,
-        vec![Pin::one("in", LinkKind::Audio)],
+        inputs,
         vec![Pin::one("out", LinkKind::Audio)],
     )
 }
@@ -50,6 +54,7 @@ pub struct AudioFilterNode {
     desc: NodeDescriptor,
     format: AudioFormat,
     frames: usize,
+    keyed: bool,
     dsp: Box<dyn AudioDsp>,
     params: ParamReceiver<Values>,
     stats: Arc<AudioFilterStats>,
@@ -93,10 +98,12 @@ impl AudioFilterNode {
         let meter = dsp.meter();
         let (tx, rx) = channel(values);
         let stats = Arc::new(AudioFilterStats::default());
+        let keyed = desc_has_key(&desc);
         let node = Self {
             desc,
             format: setup.format,
             frames: setup.block_frames as usize,
+            keyed,
             dsp,
             params: rx,
             stats: Arc::clone(&stats),
@@ -133,13 +140,44 @@ impl<X: Runtime> Node<X> for AudioFilterNode {
             return Ok(());
         }
         let n = self.format.channels.channels();
+        let key_block = if self.keyed {
+            ctx.inputs()
+                .audio(1, 0)
+                .filter(|k| k.format() == self.format && k.frames() == self.frames)
+        } else {
+            None
+        };
         let mut out = ctx.outputs().audio(0)?;
         out.write(&block)?;
         let mut chans: [&mut [f32]; MAX_CHANNELS] = Default::default();
         for (slot, ch) in chans.iter_mut().zip(out.channels_mut(n)) {
             *slot = ch;
         }
-        self.dsp.process(&mut chans[..n], self.frames);
+        if self.keyed {
+            // The key block counts only in the graph's format and size; otherwise it is
+            // silence. No allocation: the channel slices live on the stack.
+            let mut keys: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+            let mut kn = 0;
+            if let Some(k) = &key_block {
+                for (i, slot) in keys.iter_mut().enumerate().take(n) {
+                    match k.channel(i) {
+                        Some(c) => {
+                            *slot = c;
+                            kn = i + 1;
+                        }
+                        None => break,
+                    }
+                }
+            }
+            let key = (kn == n && kn > 0).then(|| &keys[..kn]);
+            self.dsp.process_keyed(&mut chans[..n], key, self.frames);
+        } else {
+            self.dsp.process(&mut chans[..n], self.frames);
+        }
         Ok(())
     }
+}
+
+fn desc_has_key(desc: &NodeDescriptor) -> bool {
+    desc.inputs.iter().any(|p| p.name == "key")
 }
