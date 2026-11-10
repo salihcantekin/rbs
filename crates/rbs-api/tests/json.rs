@@ -322,6 +322,16 @@ fn every_request() -> Vec<Request> {
             target: "window:7".to_owned(),
         })),
         c(Command::SourceReload(ReloadSource { source: 3 })),
+        c(Command::SourceGetSettings(GetSourceSettings { source: 3 })),
+        c(Command::SourceSetSettings(SetSourceSettings {
+            source: 3,
+            settings: [
+                ("fps".to_owned(), serde_json::json!(60)),
+                ("cursor".to_owned(), serde_json::Value::Null),
+            ]
+            .into_iter()
+            .collect(),
+        })),
         c(Command::SettingsRecentTargets(TargetsParams {
             kind: SourceKind::Window,
         })),

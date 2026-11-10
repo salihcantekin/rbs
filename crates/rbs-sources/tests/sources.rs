@@ -794,3 +794,35 @@ fn window_targets_carry_the_owning_application() {
     let window = list.iter().find(|t| t.target == "test-window-0").unwrap();
     assert_eq!(window.app.as_deref(), Some("Test application"));
 }
+
+#[test]
+fn settings_are_validated_for_the_type_without_touching_a_device() {
+    use rbs_sources::validate_settings;
+    let camera = ty(types::CAMERA_SOURCE);
+    let ok = settings(&[
+        (keys::WIDTH, SettingValue::Int(1280)),
+        (keys::HEIGHT, SettingValue::Int(720)),
+        (keys::FPS, SettingValue::Int(30)),
+    ]);
+    assert!(validate_settings(&camera, &ok).is_ok());
+    let cases = [
+        settings(&[(keys::WIDTH, SettingValue::Int(1280))]),
+        settings(&[(keys::FPS, SettingValue::Int(0))]),
+        settings(&[(keys::FPS, SettingValue::Int(1000))]),
+        settings(&[(keys::FPS, text("fast"))]),
+        settings(&[(keys::CURSOR, SettingValue::Bool(true))]),
+        settings(&[("bogus", SettingValue::Int(1))]),
+    ];
+    for bad in cases {
+        assert!(validate_settings(&camera, &bad).is_err(), "{bad:?}");
+    }
+    let screen = ty(types::DISPLAY_SOURCE);
+    assert!(
+        validate_settings(
+            &screen,
+            &settings(&[(keys::CURSOR, SettingValue::Bool(false))])
+        )
+        .is_ok()
+    );
+    assert!(validate_settings(&ty("org.rbs.nope"), &Settings::new()).is_err());
+}

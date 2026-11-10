@@ -226,6 +226,43 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(list["result"]["seq"]["source.changed"], 1);
     assert_eq!(list["result"]["data"][0]["id"], id);
 
+    // Source settings (protocol 1.17, ADR-0077): read, patch, refuse what the type does
+    // not take, and a null removes a key.
+    let got = c.call("source.get_settings", json!({"source": id}));
+    assert_eq!(got["result"]["settings"]["target"], t["target"], "{got}");
+    let set = c.call(
+        "source.set_settings",
+        json!({"source": id, "settings": {"fps": 60, "cursor": false}}),
+    );
+    assert!(set["result"].is_object(), "{set}");
+    let got = c.call("source.get_settings", json!({"source": id}));
+    assert_eq!(got["result"]["settings"]["fps"], 60);
+    assert_eq!(got["result"]["settings"]["cursor"], false);
+    for patch in [
+        json!({"fps": "fast"}),
+        json!({"width": 1280}),
+        json!({"bogus": 1}),
+        json!({"fps": 1000}),
+    ] {
+        let bad = c.call(
+            "source.set_settings",
+            json!({"source": id, "settings": patch}),
+        );
+        assert_eq!(
+            bad["error"]["data"]["kind"], "invalid_params",
+            "{patch}: {bad}"
+        );
+    }
+    let removed = c.call(
+        "source.set_settings",
+        json!({"source": id, "settings": {"cursor": null}}),
+    );
+    assert!(removed["result"].is_object(), "{removed}");
+    let got = c.call("source.get_settings", json!({"source": id}));
+    assert!(got["result"]["settings"].get("cursor").is_none(), "{got}");
+    let missing = c.call("source.get_settings", json!({"source": 999}));
+    assert_eq!(missing["error"]["data"]["kind"], "not_found", "{missing}");
+
     // Shape and border (protocol 1.3, ADR-0053): the item and layout are listed, a
     // style is set on the item, published, and undone like any edit.
     let row = &list["result"]["data"][0];

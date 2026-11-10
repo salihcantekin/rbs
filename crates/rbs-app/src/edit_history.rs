@@ -45,6 +45,8 @@ pub enum EditKind {
     Lock,
     /// A source was pointed at another target (the name is the source's, ADR-0077).
     Retarget,
+    /// A source's settings were changed (the name is the source's, ADR-0077).
+    SourceSettings,
     /// A source was renamed (the name is the old one).
     RenameSource,
     /// A scene was added (the name is the scene's).
