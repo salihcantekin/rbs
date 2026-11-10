@@ -6,13 +6,14 @@
 
 mod support;
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rbs_core::media::ContainerId;
 use rbs_core::time::TestClock;
 use rbs_record::{
     OutputSettings, REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordError,
-    ReplaySettings, Studio, StudioSettings,
+    ReplaySettings, Studio, StudioSettings, write_clip,
 };
 use support::*;
 
@@ -91,6 +92,26 @@ fn arming_fills_the_buffer_and_a_clip_starts_at_a_keyframe() {
             .iter()
             .all(|e| e.packet.dts().as_nanos() < 60_000_000_000)
     );
+
+    // The clip becomes a file: muxed as it is, timestamps from 0, a trailer, closed.
+    let streams = studio.replay_streams().unwrap().to_vec();
+    let file = write_clip(
+        &r.adapters,
+        &clip,
+        &streams,
+        "mem://clip",
+        ContainerId::Matroska,
+    )
+    .unwrap();
+    assert_eq!(file.packets as usize, clip.entries.len());
+    assert_eq!(file.mux_drops, 0);
+    assert_eq!(
+        r.log.count(0),
+        clip.entries.iter().filter(|e| e.stream.0 == 0).count()
+    );
+    assert_eq!(pts_of(&r.log, 0).first().map(|t| t.as_nanos()), Some(0));
+    assert_eq!(r.log.trailers.load(Ordering::Relaxed), 1);
+    assert_eq!(r.log.finished.load(Ordering::Relaxed), 1);
 
     assert!(studio.disarm_replay());
     assert!(!studio.disarm_replay(), "second disarm: nothing to do");

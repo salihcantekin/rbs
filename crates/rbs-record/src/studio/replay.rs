@@ -72,6 +72,7 @@ pub(super) struct ReplayRun {
     settings: ReplaySettings,
     video: Chosen,
     audio: Option<Chosen>,
+    streams: Vec<StreamDescriptor>,
 }
 
 impl Studio {
@@ -216,6 +217,7 @@ impl Studio {
             settings: settings.clone(),
             video: video_chosen,
             audio: audio_chosen,
+            streams,
         });
 
         // One apply schedules them (and opens sources only now scheduled).
@@ -281,6 +283,12 @@ impl Studio {
     /// The adapters the armed buffer's encoders use: video, then audio.
     pub fn replay_adapters(&self) -> Option<(&Chosen, Option<&Chosen>)> {
         self.replay.as_ref().map(|r| (&r.video, r.audio.as_ref()))
+    }
+
+    /// The buffer's streams (video, then audio), the descriptors
+    /// [`write_clip`](crate::write_clip) needs; `None` while disarmed.
+    pub fn replay_streams(&self) -> Option<&[StreamDescriptor]> {
+        self.replay.as_ref().map(|r| r.streams.as_slice())
     }
 
     /// What the buffer holds now (usable past, bytes, packets, whether memory is the

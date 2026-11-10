@@ -17,10 +17,12 @@
 //! Every stream is timestamped on the engine's master clock, so the muxer keeps them
 //! in sync (ADR-0004).
 
+mod clip;
 mod recording;
 mod select;
 mod studio;
 
+pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, write_clip};
 pub use recording::{
     AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AudioSettings, FinishReport, OUTPUT, OUTPUT_2,
     OutputPartitions, Partitions, Port, Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING,
