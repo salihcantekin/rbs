@@ -190,6 +190,9 @@ struct App {
     hidden: bool,
     /// What closing the main window does (`app.toml`, ADR-0056).
     bg: background::AppSettings,
+    /// Where the preview picture's context menu opened (the picture's coordinates)
+    /// and the system cursor then (screen pixels), until the next press on a picture.
+    menu_press: Option<([f32; 2], (i32, i32))>,
     /// The studio's preview, kept to connect again when the hidden window shows.
     preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
     /// The preview scene's picture in studio mode (ADR-0061), kept the same way.
@@ -2932,8 +2935,21 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                            shift: bool,
                            no_snap: bool,
                            crop: bool| {
+        // On Windows the click that closes the picture's context menu arrives as a
+        // press at the place the menu opened, though the cursor has moved: that press
+        // only closes the menu.
+        if let Some((at, then)) = app.menu_press.take()
+            && (at[0] - x).abs() < 0.5
+            && (at[1] - y).abs() < 0.5
+            && cursor_pos().is_some_and(|now| (now.0 - then.0).abs() + (now.1 - then.1).abs() > 2)
+        {
+            return;
+        }
         app.studio
             .preview_press([x, y], [w, h], shift, no_snap, crop);
+    });
+    on!(on_preview_menu_opened, |app, x: f32, y: f32| {
+        app.menu_press = cursor_pos().map(|c| ([x, y], c));
     });
     on!(on_preview_drag, |app, x: f32, y: f32| {
         // The click that closes a system menu on Windows can reach the picture without
@@ -3534,6 +3550,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             exiting: false,
             hidden: false,
             bg,
+            menu_press: None,
             preview_endpoint: None,
             scene_preview_endpoint: None,
             vertical_preview_endpoint: None,
@@ -3766,6 +3783,19 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())
+}
+
+/// The system cursor in screen pixels (Windows; elsewhere `None`: the toolkit's press
+/// positions are always current there).
+fn cursor_pos() -> Option<(i32, i32)> {
+    #[cfg(windows)]
+    {
+        rbs_app::win::cursor_pos()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// Whether the primary mouse button is up now (Windows; elsewhere the toolkit's release
