@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 7
+//! format = 9
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -22,6 +22,8 @@
 //! program = 0                  # scene id; optional, like preview
 //! # globals = 2                # the canvas's global scene (format 5, ADR-0065)
 //! # master = { volume = 0.5, muted = true }   # the canvas's master (format 7, ADR-0081)
+//! # follow = 1                  # shows the program scene of canvas 1 (format 9, ADR-0093)
+//! # fallback = { scene = 3 }    # or "keep_last" (the default); only with `follow`
 //!
 //! [[sources]]
 //! id = 0
@@ -56,9 +58,9 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, Canvas, CanvasId, Crop, Filter, FilterId, ItemContent, ItemId, ItemStyle, Layout,
-    MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape,
-    Source, SourceAudio, SourceId,
+    Border, Canvas, CanvasId, Crop, Fallback, Filter, FilterId, ItemContent, ItemId, ItemStyle,
+    Layout, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow,
+    Shape, Source, SourceAudio, SourceId,
 };
 use rbs_scene::{IdCounters, SceneCollection};
 use serde::{Deserialize, Serialize};
@@ -112,6 +114,26 @@ struct CanvasDoc {
     /// (format 7, ADR-0081).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     master: Option<MasterDoc>,
+    /// The canvas whose program scene this one shows (format 9, ADR-0093).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    follow: Option<u32>,
+    /// What a follower shows when it may not show the followed scene (format 9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fallback: Option<FallbackDoc>,
+}
+
+/// A follower's fallback: `"keep_last"` or `{ scene = id }`.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum FallbackDoc {
+    Keep(KeepLast),
+    Scene { scene: u32 },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum KeepLast {
+    KeepLast,
 }
 
 /// A canvas's master: each key is optional and defaults to full volume, not muted.
@@ -431,7 +453,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 8;
+    const FORMAT: u32 = 9;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -441,7 +463,8 @@ impl Document for SceneCollection {
     /// `globals` (ADR-0065); a format 4 body is a format 5 body without it. Format 6 adds the optional source
     /// `mixer_hidden` (ADR-0080); a format 5 body is a format 6 body without it. Format 7 adds the optional canvas
     /// `master` (ADR-0081); a format 6 body is a format 7 body without it. Format 8 adds the optional source
-    /// `hints` (ADR-0077); a format 7 body is a format 8 body without them.
+    /// `hints` (ADR-0077); a format 7 body is a format 8 body without them. Format 9 adds the optional canvas
+    /// `follow` and `fallback` (ADR-0093); a format 8 body is a format 9 body without them.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {
@@ -469,6 +492,13 @@ impl Document for SceneCollection {
                         volume: f64::from(c.master.volume),
                         muted: c.master.muted,
                     }),
+                    follow: c.follow.map(CanvasId::get),
+                    fallback: match (c.follow, c.fallback) {
+                        (Some(_), Fallback::Scene(id)) => {
+                            Some(FallbackDoc::Scene { scene: id.get() })
+                        }
+                        _ => None,
+                    },
                 }
             })
             .collect();
@@ -583,6 +613,11 @@ impl Document for SceneCollection {
                 if let Some(m) = c.master {
                     canvas.master = MasterAudio::new(m.volume as f32, m.muted);
                 }
+                canvas.follow = c.follow.map(CanvasId::from_raw);
+                canvas.fallback = match c.fallback {
+                    Some(FallbackDoc::Scene { scene }) => Fallback::Scene(SceneId::from_raw(scene)),
+                    _ => Fallback::KeepLast,
+                };
                 Ok(canvas)
             })
             .collect::<Result<Vec<_>, String>>()?;

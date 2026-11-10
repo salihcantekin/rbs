@@ -964,3 +964,68 @@ fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
         Some(RecordError::TooManyCanvases)
     ));
 }
+
+/// Names of the sources scheduled while an output takes the vertical canvas, which has a
+/// scene of its own (with a source only that scene shows); `follow` makes the vertical
+/// canvas show the main program scene instead (ADR-0093 decision 3).
+fn scheduled_for_vertical(follow: bool) -> Option<Vec<String>> {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_scene::model::Fallback;
+
+    let gpu = gpu()?;
+    let r = rig();
+    let (mut col, main) = scene();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    let (own, _) = col
+        .add_scene("Vertical only", rbs_scene::model::SceneScope::Canvas(tall))
+        .unwrap();
+    let (extra, _) = col
+        .add_source(
+            "Vertical camera",
+            NodeTypeId::new_static(types::CAMERA_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    col.add_item(
+        own,
+        ItemContent::Source(extra),
+        Layout::new([0.0, 0.0], [1.0, 1.0]),
+        None,
+    )
+    .unwrap();
+    col.set_program(tall, Some(own)).unwrap();
+    if follow {
+        col.set_canvas_follow(tall, Some(main), Fallback::KeepLast)
+            .unwrap();
+    }
+    let (engine, _) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    settings.extra_canvases = vec![ExtraCanvas::new(tall)];
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let mut out = OutputSettings::new("mem://vertical", ContainerId::Matroska);
+    out.audio = None;
+    out.canvas = Some(tall);
+    studio.start_output(&r.adapters, &out).unwrap();
+    let names = studio.sources().into_iter().map(|s| s.name).collect();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+    Some(names)
+}
+
+#[test]
+fn a_following_canvas_shows_the_main_program_scene() {
+    let Some(own) = scheduled_for_vertical(false) else {
+        return;
+    };
+    assert!(own.iter().any(|n| n == "Vertical camera"), "{own:?}");
+    let following = scheduled_for_vertical(true).unwrap();
+    assert!(
+        !following.iter().any(|n| n == "Vertical camera"),
+        "{following:?}"
+    );
+    assert!(following.iter().any(|n| n == "Display"), "{following:?}");
+}

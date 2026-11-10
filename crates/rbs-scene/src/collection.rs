@@ -8,9 +8,9 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
 use crate::model::{
-    Canvas, CanvasId, Filter, FilterId, ItemContent, ItemId, Layout, MAX_SYNC_OFFSET_MS,
-    MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Source,
-    SourceAudio, SourceId,
+    AudioFrom, Canvas, CanvasId, Fallback, Filter, FilterId, ItemContent, ItemId, Layout,
+    MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
+    Source, SourceAudio, SourceId,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -53,6 +53,9 @@ pub enum SceneError {
     IndexOutOfRange(usize),
     /// The canvas still owns scenes; remove them or make them shared first.
     CanvasHasScenes(CanvasId),
+    /// A canvas's follow setting is not allowed (ADR-0093): it follows itself, an
+    /// unknown canvas or another follower, or its fallback scene is not one it may show.
+    InvalidFollow(CanvasId),
     /// An undo record could not be applied because the collection changed in a way
     /// that conflicts with it (undo records must be applied in reverse order).
     UndoConflict,
@@ -120,6 +123,7 @@ impl fmt::Display for SceneError {
             SceneError::ScopeViolation(id) => write!(f, "{id} is not allowed here by its scope"),
             SceneError::IndexOutOfRange(i) => write!(f, "index {i} out of range"),
             SceneError::CanvasHasScenes(id) => write!(f, "{id} still owns scenes"),
+            SceneError::InvalidFollow(id) => write!(f, "{id} cannot follow like that"),
             SceneError::GlobalScene(id) => write!(
                 f,
                 "{id} is a global scene: it belongs to its canvas, is never shown or nested, and holds only sources"
@@ -485,6 +489,9 @@ impl SceneCollection {
             preview: None,
             globals: None,
             master: MasterAudio::default(),
+            follow: None,
+            fallback: Fallback::default(),
+            audio_from: AudioFrom::default(),
         };
         let undo = self.apply_with(
             Op::InsertCanvas {
@@ -521,6 +528,56 @@ impl SceneCollection {
         canvas.size = size;
         canvas.frame_rate = frame_rate;
         self.replace_canvas(canvas)
+    }
+
+    /// Makes `canvas` show the program scene of `follow` (ADR-0093), or its own with
+    /// `None`. `InvalidFollow` when `follow` is the canvas itself, unknown, itself a
+    /// follower, or followed by another canvas, or when a fallback scene cannot be shown
+    /// on `canvas`.
+    pub fn set_canvas_follow(
+        &mut self,
+        canvas: CanvasId,
+        follow: Option<CanvasId>,
+        fallback: Fallback,
+    ) -> Result<Undo, SceneError> {
+        let mut c = self.get_canvas(canvas)?.clone();
+        c.follow = follow;
+        c.fallback = fallback;
+        self.replace_canvas(c)
+    }
+
+    /// The program scene each following canvas shows now (ADR-0093 decision 3): the
+    /// followed canvas's program scene when the follower may show it, else its fallback
+    /// (`Scene`, or `KeepLast`: the scene in `last`, then its own program scene). A
+    /// follower with nothing to show is left out. `last` holds what each follower showed
+    /// the previous time.
+    pub fn followed_programs(
+        &self,
+        last: &BTreeMap<CanvasId, SceneId>,
+    ) -> BTreeMap<CanvasId, SceneId> {
+        let mut shown = BTreeMap::new();
+        for c in self.canvases.values() {
+            let Some(target) = c.follow.and_then(|f| self.canvases.get(&f)) else {
+                continue;
+            };
+            let direct = target.program.filter(|s| {
+                self.scenes
+                    .get(s)
+                    .is_some_and(|s| allowed_on(s.scope, c.id))
+            });
+            let scene = direct.or(match c.fallback {
+                Fallback::Scene(s) => Some(s),
+                Fallback::KeepLast => last
+                    .get(&c.id)
+                    .copied()
+                    .filter(|s| self.scenes.contains_key(s))
+                    .or(c.program),
+            });
+            if let Some(scene) = scene {
+                shown.insert(c.id, scene);
+            }
+        }
+        shown
     }
 
     /// Sets a canvas's master volume, a linear factor in `0.0..=1.0` (ADR-0081;
@@ -1380,6 +1437,21 @@ impl SceneCollection {
             }
             if !c.master.is_valid() {
                 return Err(SceneError::InvalidVolume);
+            }
+            if let Some(f) = c.follow {
+                let target = self
+                    .canvases
+                    .get(&f)
+                    .ok_or(SceneError::InvalidFollow(c.id))?;
+                if f == c.id || target.follow.is_some() {
+                    return Err(SceneError::InvalidFollow(c.id));
+                }
+            }
+            if let Fallback::Scene(scene) = c.fallback {
+                let shown = self.get_scene(scene)?;
+                if c.follow.is_none() || !allowed_on(shown.scope, c.id) {
+                    return Err(SceneError::InvalidFollow(c.id));
+                }
             }
             if c.size.width == 0 || c.size.height == 0 {
                 return Err(SceneError::EmptyCanvas);

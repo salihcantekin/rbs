@@ -39,7 +39,7 @@ use rbs_nodes::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
-use rbs_scene::model::{CanvasId, FilterId, MasterAudio, SourceAudio, SourceId};
+use rbs_scene::model::{CanvasId, FilterId, MasterAudio, SceneId, SourceAudio, SourceId};
 use rbs_sources::{
     InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, node_layers,
 };
@@ -683,6 +683,8 @@ pub struct Studio {
     scene_preview: Option<ScenePreview>,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
+    /// The scene each following canvas showed last (the `KeepLast` fallback).
+    last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
     problems: Vec<BindProblem>,
     /// Studio nodes without which it cannot run (compositor, mixer, preview, sink).
@@ -779,6 +781,9 @@ impl Studio {
         recording: Option<Prepared>,
     ) -> Result<Self, RecordError> {
         let canvas_id = settings.canvas;
+        let mut last_follow = BTreeMap::new();
+        let followed = with_followers(collection, &mut last_follow);
+        let collection = &followed;
         let canvas = collection
             .canvas(canvas_id)
             .ok_or(RecordError::UnknownCanvas(canvas_id))?;
@@ -963,6 +968,7 @@ impl Studio {
             preview,
             scene_preview: None,
             extras,
+            last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
             essential,
@@ -1030,6 +1036,8 @@ impl Studio {
         collection: &SceneCollection,
         sources: &SourceTypes,
     ) -> Result<Updated, RecordError> {
+        let followed = with_followers(collection, &mut self.last_follow);
+        let collection = &followed;
         let canvas = collection
             .canvas(self.settings.canvas)
             .ok_or(RecordError::UnknownCanvas(self.settings.canvas))?;
@@ -2828,6 +2836,27 @@ struct ScenePreview {
     bound: BoundCompositor,
     /// The preview node and its counters.
     picture: (NodeId, Arc<PreviewNodeStats>),
+}
+
+/// `collection` with every following canvas's program scene set to what it shows now
+/// (ADR-0093 decision 3); `last` remembers it for the `KeepLast` fallback. The binder
+/// sees only program scenes, so it needs to know nothing of following.
+fn with_followers(
+    collection: &SceneCollection,
+    last: &mut BTreeMap<CanvasId, SceneId>,
+) -> SceneCollection {
+    let shown = collection.followed_programs(last);
+    if shown.is_empty() {
+        return collection.clone();
+    }
+    let mut resolved = collection.clone();
+    for (canvas, scene) in shown {
+        // An override the collection refuses leaves the canvas on its own program.
+        if resolved.set_program(canvas, Some(scene)).is_ok() {
+            last.insert(canvas, scene);
+        }
+    }
+    resolved
 }
 
 /// A further canvas that runs (ADR-0093).

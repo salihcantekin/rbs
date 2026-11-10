@@ -10,7 +10,8 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    Border, Crop, ItemContent, ItemStyle, Layout, SceneScope, SettingValue, Settings, Shadow, Shape,
+    Border, Crop, Fallback, ItemContent, ItemStyle, Layout, SceneScope, SettingValue, Settings,
+    Shadow, Shape,
 };
 use rbs_user_data::document;
 use rbs_user_data::{DataError, UserData};
@@ -121,6 +122,8 @@ fn show() -> SceneCollection {
     col.set_program(wide, Some(game)).unwrap();
     col.set_preview(wide, Some(talk)).unwrap();
     col.set_program(tall, Some(talk)).unwrap();
+    col.set_canvas_follow(tall, Some(wide), Fallback::Scene(talk))
+        .unwrap();
     // A global source on the wide canvas (format 5, ADR-0065).
     let (desk, _) = col
         .add_source("Desk mic", ty("audio-input"), Settings::new())
@@ -162,7 +165,9 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 8",
+        "format = 9",
+        "follow = 0",
+        "fallback = { scene = ",
         "target_app = \"Terminal\"",
         "[canvases.master]",
         "mixer_hidden = true",
