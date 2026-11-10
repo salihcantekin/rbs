@@ -11,14 +11,16 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use super::{App, Ctx, Theme, Tokens, entry, look};
 use crate::appearance::{AppearanceUi, GROUPS, KEEP_LOOK_TIMEOUT, RowValue};
-use crate::ui::{Appearance, ThemeOption, ThemeTokenRow};
+use crate::ui::{Appearance, Overlays, PickerRow, ThemeOption, ThemeTokenRow};
 
 /// The page's state, kept while the app runs (it is small and idle when unused).
 #[derive(Default)]
 pub struct Page {
     ui: AppearanceUi,
     fonts: look::SystemFonts,
-    /// The installed families, read the first time the font menu opens (P13).
+    /// The families the font picker lists now (a row's index is its place here).
+    font_listing: Vec<String>,
+    /// The installed families, read the first time the font picker opens (P13).
     families: Option<Vec<String>>,
     /// The lists the page shows, changed row by row: a list set anew rebuilds its rows
     /// and closes a menu open in one (the font menu while "Keep this look?" counts).
@@ -182,27 +184,12 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
     on!(on_set_fonts, |_app, page, file, text: SharedString| {
         edited(page.ui.set_fonts(&file, &text, Instant::now()))
     });
-    // The font menu: the installed families whose names contain the filter. It only
-    // fills the menu's list, so the editor's rows (and the open menu) stay as they are.
+    // The font picker: the installed families whose names contain the filter fill the
+    // picker's rows (`Overlays.picker-*`); only the picker changes, so the editor's
+    // rows stay as they are.
     {
         let ctx = ctx.clone();
-        g.on_find_fonts(move |filter: SharedString| {
-            let c = ctx.clone();
-            ctx.update(move |app: &mut App| {
-                let Some(w) = &app.settings else { return };
-                let mut page = c.page.borrow_mut();
-                let page: &mut Page = &mut page;
-                let all = page
-                    .families
-                    .get_or_insert_with(|| look::FontCatalog::families(&mut page.fonts));
-                let names: Vec<SharedString> = look::matching_families(all, &filter)
-                    .into_iter()
-                    .map(SharedString::from)
-                    .collect();
-                w.global::<Appearance>()
-                    .set_font_names(ModelRc::new(VecModel::from(names)));
-            });
-        });
+        g.on_find_fonts(move |filter: SharedString| fill_font_picker(&ctx, &filter));
     }
     // The font field's suggestions for the family being typed. Like the font menu it
     // reads the installed families the first time it is needed, and only fills the
@@ -721,4 +708,75 @@ fn row(r: crate::appearance::TokenRow) -> ThemeTokenRow {
         }
     }
     out
+}
+
+/// Fills the font picker's rows from the installed families (read once, P13). A row's
+/// index is its place in `font_listing`, which a pick resolves against.
+fn fill_font_picker(ctx: &Ctx, filter: &str) {
+    let c = ctx.clone();
+    let filter = filter.to_owned();
+    ctx.update(move |app: &mut App| {
+        let Some(w) = &app.settings else { return };
+        let mut page = c.page.borrow_mut();
+        let page: &mut Page = &mut page;
+        let all = page
+            .families
+            .get_or_insert_with(|| look::FontCatalog::families(&mut page.fonts));
+        page.font_listing = look::matching_families(all, &filter)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let rows: Vec<PickerRow> = page
+            .font_listing
+            .iter()
+            .enumerate()
+            .map(|(i, name)| PickerRow {
+                name: name.as_str().into(),
+                note: "".into(),
+                index: i as i32,
+            })
+            .collect();
+        let o = w.global::<Overlays>();
+        let status = if rows.is_empty() {
+            "No font on this computer has that in its name."
+        } else {
+            ""
+        };
+        o.set_picker_status(status.into());
+        o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
+    });
+}
+
+/// The Settings window's picker callbacks: a filter refills the list, a pick goes back
+/// to the button that opened it.
+pub fn install_picker(o: &Overlays<'_>, ctx: &Ctx) {
+    {
+        let ctx = ctx.clone();
+        o.on_picker_filtered(move |text| fill_font_picker(&ctx, &text));
+    }
+    {
+        let ctx = ctx.clone();
+        o.on_picker_chosen(move |index| {
+            let c = ctx.clone();
+            ctx.update(move |app: &mut App| {
+                let Some(w) = &app.settings else { return };
+                let name = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| c.page.borrow().font_listing.get(i).cloned());
+                let Some(name) = name else { return };
+                let a = w.global::<Appearance>();
+                a.set_font_picked(name.into());
+                a.set_font_picked_serial(a.get_font_picked_serial() + 1);
+                w.global::<Overlays>().set_picker_open(false);
+            });
+        });
+    }
+    let ctx = ctx.clone();
+    o.on_picker_cancelled(move || {
+        ctx.update(|app: &mut App| {
+            if let Some(w) = &app.settings {
+                w.global::<Overlays>().set_picker_open(false);
+            }
+        });
+    });
 }
