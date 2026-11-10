@@ -152,6 +152,8 @@ impl Studio {
     pub fn preview_stats(&self) -> Option<&Arc<PreviewNodeStats>>;
     pub fn scene_preview(&self) -> Option<PreviewEndpoint>; // ADR-0061: the preview scene's picture
     pub fn studio_mode(&self) -> bool; // the canvas has a preview scene
+    pub fn activate_canvas(&mut self, c: &SceneCollection, s: &SourceTypes, extra: ExtraCanvas) -> Result<Updated, RecordError>; // ADR-0093: Standby to Active, live
+    pub fn deactivate_canvas(&mut self, c: &SceneCollection, s: &SourceTypes, canvas: CanvasId) -> Result<Updated, RecordError>; // CanvasBusy while an output takes it
     pub fn canvas_preview(&self, canvas: CanvasId) -> Option<PreviewEndpoint>; // ADR-0093: a further canvas's picture
     pub fn canvas_preview_stats(&self, canvas: CanvasId) -> Option<&Arc<PreviewNodeStats>>;
     pub fn meter(&self, source: SourceId) -> Option<&Arc<LevelMeter>>;
@@ -235,6 +237,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 - **What runs.** Each `StudioSettings::extra_canvases` entry adds one compositor on `RENDER` at the canvas's own size and one picture (`canvas_preview`). Source nodes and their filter chains are built once by the binder and feed every compositor, so a device is opened once whatever the number of canvases. No entry: nothing of the others is scheduled (Installed, P13).
 - **Checks at start.** `Studio::start` fails with `TooManyCanvases` (more than `MAX_CANVASES`, a canvas listed twice or equal to the main one), `UnknownCanvas`, `NoProgram`, or `CanvasRate` (the frame rate differs from the main canvas, ADR-0093 decision 2). `update` rejects a size or rate change of any running canvas.
+- **Live.** `activate_canvas` adds a further canvas to a running studio (the checks of `start`, then an `update` that adopts its compositor and optional picture) and `deactivate_canvas` removes it again (`CanvasBusy` while an output takes it; its nodes leave the engine after the apply). Sources it shows open as in any update; open ones are shared.
 - **Outputs.** `OutputSettings::canvas` (`None`: main) picks the canvas an output records or streams; an unknown one fails with `UnknownCanvas`. An encoder is shared only between outputs of the same canvas (and equal settings). `MAX_OUTPUTS` is still 2 in total; the per-canvas limit of ADR-0093 decision 6 follows with the partition change.
 - **Not yet.** Audio per canvas, Auto layout and the control API are the next steps of ADR-0093 decision 11; a follower canvas (ADR-0093 decision 3) shows the followed canvas's program scene: `Studio::start` and `update` set each follower's program scene to `SceneCollection::followed_programs` on a copy of the collection before binding, so the binder knows nothing of following. `Fallback::Black` and the transition rule (the follower cuts when the main canvas's timed transition ends) are not in yet. The render tick is a hot path: measurements and the maintainer's sign-off (P15) are pending before this merges.
 

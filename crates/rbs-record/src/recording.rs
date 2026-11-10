@@ -379,6 +379,8 @@ pub enum RecordError {
     /// More canvases than [`MAX_CANVASES`](crate::MAX_CANVASES), or one listed twice
     /// or equal to the main canvas.
     TooManyCanvases,
+    /// An output still takes the canvas that was to stop running.
+    CanvasBusy(CanvasId),
     /// The URL has no scheme.
     InvalidUrl(String),
     /// The binder refused the collection.
@@ -434,6 +436,7 @@ impl fmt::Display for RecordError {
                 )
             }
             RecordError::TooManyCanvases => write!(f, "too many canvases in the studio"),
+            RecordError::CanvasBusy(id) => write!(f, "an output still takes canvas {id:?}"),
             RecordError::InvalidUrl(url) => write!(f, "not a URL: {url}"),
             RecordError::Bind(e) => write!(f, "binding the scene failed: {e}"),
             RecordError::Problems(p) => write!(f, "the scene cannot be bound: {p:?}"),

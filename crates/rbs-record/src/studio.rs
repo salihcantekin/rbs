@@ -1056,6 +1056,87 @@ impl Studio {
         collection: &SceneCollection,
         sources: &SourceTypes,
     ) -> Result<Updated, RecordError> {
+        self.update_with(collection, sources, None)
+    }
+
+    /// Starts running a further canvas while the studio runs (ADR-0093 decision 1,
+    /// Standby to Active): the same checks as [`Studio::start`], then an
+    /// [`Studio::update`] that adds its compositor and, with a preview description, its
+    /// picture. Sources the canvas shows open as in any update; sources already open are
+    /// shared. Fails with `TooManyCanvases`, `UnknownCanvas`, `NoProgram` or
+    /// `CanvasRate` before anything changes.
+    pub fn activate_canvas(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        extra: ExtraCanvas,
+    ) -> Result<Updated, RecordError> {
+        if self.extras.len() + 2 > MAX_CANVASES
+            || extra.canvas == self.settings.canvas
+            || self.extras.iter().any(|e| e.canvas == extra.canvas)
+        {
+            return Err(RecordError::TooManyCanvases);
+        }
+        self.update_with(collection, sources, Some(extra))
+    }
+
+    /// Stops running a further canvas (Active to Standby): its compositor and picture
+    /// leave the engine after the apply, and nothing of it is scheduled any more. The
+    /// canvas stays in the collection. Fails with `CanvasBusy` while an output takes
+    /// it (stop that first) and `UnknownCanvas` when it does not run.
+    pub fn deactivate_canvas(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        canvas: CanvasId,
+    ) -> Result<Updated, RecordError> {
+        let Some(at) = self.extras.iter().position(|e| e.canvas == canvas) else {
+            return Err(RecordError::UnknownCanvas(canvas));
+        };
+        if self
+            .chains
+            .video
+            .iter()
+            .flatten()
+            .any(|c| c.canvas == canvas)
+        {
+            return Err(RecordError::CanvasBusy(canvas));
+        }
+        let run = self.extras.remove(at);
+        self.settings.extra_canvases.retain(|e| e.canvas != canvas);
+        let mut leaving = vec![Added {
+            node: run.view.compositor,
+            partition: RENDER,
+            gpu: true,
+        }];
+        self.essential.remove(&run.view.compositor);
+        if let Some((picture, _)) = run.view.picture {
+            if self.graph.node(picture).is_some() {
+                let _ = self.graph.set_state(picture, Lifecycle::Standby);
+                let _ = self.graph.remove_node(picture);
+            }
+            self.essential.remove(&picture);
+            leaving.push(Added {
+                node: picture,
+                partition: RENDER,
+                gpu: true,
+            });
+        }
+        let updated = self.update_with(collection, sources, None);
+        for a in leaving {
+            if !take(&mut self.engine, a) {
+                self.pending_takes.push((a, None));
+            }
+        }
+        updated
+    }
+
+    fn update_with(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        add: Option<ExtraCanvas>,
+    ) -> Result<Updated, RecordError> {
         let followed = with_followers(collection, &mut self.last_follow);
         let collection = &followed;
         let canvas = collection
@@ -1080,10 +1161,52 @@ impl Studio {
         if canvas.program.is_none() {
             return Err(RecordError::NoProgram(self.settings.canvas));
         }
+        let fps = self.fps;
+        let new = match add {
+            Some(extra) => {
+                let other = collection
+                    .canvas(extra.canvas)
+                    .ok_or(RecordError::UnknownCanvas(extra.canvas))?;
+                if other.program.is_none() {
+                    return Err(RecordError::NoProgram(extra.canvas));
+                }
+                if other.frame_rate != fps {
+                    return Err(RecordError::CanvasRate(extra.canvas));
+                }
+                Some((extra, (other.size.width, other.size.height)))
+            }
+            None => None,
+        };
         let report = self
             .binder
             .sync(collection, &mut self.graph)
             .map_err(RecordError::Bind)?;
+        if let Some((extra, size)) = new {
+            let bound = report
+                .compositors
+                .get(&(extra.canvas, Role::Program))
+                .cloned()
+                .ok_or(RecordError::NotBound("program compositor"))?;
+            let view = attach_compositor(
+                &mut self.engine,
+                &mut self.graph,
+                bound,
+                size,
+                extra.preview,
+            )?;
+            self.essential
+                .insert(view.compositor, "compositor of a further canvas");
+            if let Some((picture, _)) = &view.picture {
+                self.essential
+                    .insert(*picture, "preview of a further canvas");
+            }
+            self.settings.extra_canvases.push(extra);
+            self.extras.push(ExtraRun {
+                canvas: extra.canvas,
+                size,
+                view,
+            });
+        }
         self.collection = collection.clone();
         self.mix = mix_of(collection);
         self.master = master_of(collection, self.settings.canvas);

@@ -306,3 +306,74 @@ fn an_output_of_a_further_canvas_has_its_own_export_and_encoder() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn a_further_canvas_starts_and_stops_while_the_studio_runs() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_record::ExtraCanvas;
+
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    col.set_program(tall, Some(program)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu().unwrap(),
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(main),
+    )
+    .unwrap();
+    let mut vertical = recording();
+    vertical.canvas = Some(tall);
+    // Not running yet: refused before anything is chosen.
+    assert!(matches!(
+        studio.start_output(&r.adapters, &vertical),
+        Err(RecordError::UnknownCanvas(c)) if c == tall
+    ));
+
+    studio
+        .activate_canvas(&col, &r.adapters.sources, ExtraCanvas::new(tall))
+        .unwrap();
+    assert!(matches!(
+        studio.activate_canvas(&col, &r.adapters.sources, ExtraCanvas::new(tall)),
+        Err(RecordError::TooManyCanvases)
+    ));
+    let id = studio.start_output(&r.adapters, &vertical).unwrap();
+    assert!(matches!(
+        studio.deactivate_canvas(&col, &r.adapters.sources, tall),
+        Err(RecordError::CanvasBusy(c)) if c == tall
+    ));
+    let reached = run_until(&mut studio, &clock, |_| r.log.count(0) >= 8);
+    assert!(reached, "{:?}", studio.output_progress(id));
+    let report = studio.stop_output(id).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+
+    studio
+        .deactivate_canvas(&col, &r.adapters.sources, tall)
+        .unwrap();
+    assert!(matches!(
+        studio.start_output(&r.adapters, &vertical),
+        Err(RecordError::UnknownCanvas(c)) if c == tall
+    ));
+    // It can run again.
+    studio
+        .activate_canvas(&col, &r.adapters.sources, ExtraCanvas::new(tall))
+        .unwrap();
+    let id = studio.start_output(&r.adapters, &vertical).unwrap();
+    let before = r.log.count(0);
+    let reached = run_until(&mut studio, &clock, |_| r.log.count(0) >= before + 8);
+    assert!(reached, "{:?}", studio.output_progress(id));
+    let report = studio.stop_output(id).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
