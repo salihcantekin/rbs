@@ -433,6 +433,151 @@ export component Button inherits Rectangle {
     FocusRing { show: focus.ring; }
 }
 
+// Split button: a command and, behind a divider at its right edge, a ▾ part that opens
+// a menu of related commands (ADR-0093 decision 6: Go live and Record with the vertical
+// canvas's outputs). One shape, so the ▾ reads as part of the button. Kinds as Button:
+// "primary" or "secondary". `menu-text` is a short mark shown before the ▾ (such as
+// "9:16" while a related output runs). Each part is its own Tab stop and accessible
+// button; Return or Space on the ▾ part opens the menu as a click does.
+export component SplitButton inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "secondary";
+    in property <bool> enabled: true;
+    in property <bool> checked: false;
+    in property <IconName> lead;
+    in property <color> lead-ink: ink;
+    // The ▾ part's accessible name and tooltip, such as "Vertical stream".
+    in property <string> menu-name;
+    in property <string> menu-text;
+    // What the mark means, for screen readers (such as "The vertical canvas is on air").
+    in property <string> menu-description;
+    callback clicked();
+    // The ▾ part was activated, at this window x (its left edge).
+    callback open-menu(length);
+    out property <color> ink: !enabled ? Theme.text-disabled : part-ink;
+    // The ▾ part stays usable while the command is disabled: its own ink and fill.
+    property <color> part-ink: kind == "primary" ? Theme.text-inverse : Theme.text-primary;
+    property <color> rest: kind == "primary" ? Theme.accent
+        : checked && enabled ? Theme.accent-subtle
+        : Theme.surface-raised;
+    property <color> hover: kind == "primary" ? Theme.accent-hover : Theme.surface-overlay;
+    property <int> tip-owner;
+    height: Tokens.size-control-md;
+    min-width: shape.min-width;
+    preferred-width: shape.preferred-width;
+    // The shape clips its parts to the rounded corners; the focus rings are drawn
+    // around it, on what the button sits on (a ring on the primary fill would not show).
+    shape := Rectangle {
+    border-radius: Tokens.radius-sm;
+    clip: true;
+    background: root.rest;
+    border-width: root.kind == "primary" ? 0px : Tokens.size-border;
+    border-color: Theme.border-subtle;
+    HorizontalLayout {
+        main := Rectangle {
+            min-width: main-row.preferred-width + 2 * Tokens.space-3;
+            // Disabled: the command part has no fill (as a disabled Button); checked
+            // wins over hover (as in Button).
+            background: !root.enabled ? Theme.surface-base
+                : root.checked && root.kind != "primary" ? transparent
+                : main-touch.has-hover ? root.hover : transparent;
+            accessible-role: button;
+            accessible-label: root.text;
+            accessible-checked: root.checked;
+            accessible-enabled: root.enabled;
+            accessible-action-default => { if root.enabled { root.clicked(); } }
+            main-row := HorizontalLayout {
+                alignment: center;
+                spacing: Tokens.space-1 + Tokens.space-1 / 2;
+                if root.lead != IconName.none: VerticalLayout {
+                    alignment: center;
+                    Icon { name: root.lead; ink: root.enabled ? root.lead-ink : root.ink; }
+                }
+                Text {
+                    text: root.text;
+                    color: root.ink;
+                    font-size: Tokens.type-label-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                }
+            }
+            main-focus := RingFocus {
+                enabled: root.enabled;
+                key-pressed(e) => {
+                    if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+                    reject
+                }
+            }
+            main-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => { main-focus.focus-pointer(); root.clicked(); }
+            }
+        }
+        Rectangle {
+            width: Tokens.size-border;
+            background: kind == "primary" ? Theme.accent-hover : Theme.border-subtle;
+        }
+        part := Rectangle {
+            min-width: part-row.preferred-width + 2 * Tokens.space-1;
+            background: part-touch.has-hover ? root.hover : transparent;
+            accessible-role: button;
+            accessible-label: root.menu-name;
+            accessible-description: root.menu-description;
+            accessible-expandable: true;
+            accessible-action-default => { root.open-menu(self.absolute-position.x); }
+            property <bool> pointed: part-touch.has-hover || part-focus.has-focus;
+            changed pointed => {
+                if root.menu-name == "" { return; }
+                if self.pointed {
+                    root.tip-owner = Overlays.tip-enter(root.menu-name, self.absolute-position.x, self.absolute-position.y, self.width, self.height, part-focus.has-focus);
+                } else {
+                    Overlays.tip-leave(root.tip-owner);
+                }
+            }
+            part-row := HorizontalLayout {
+                alignment: center;
+                spacing: Tokens.space-1;
+                if root.menu-text != "": Text {
+                    text: root.menu-text;
+                    color: root.part-ink;
+                    font-size: Tokens.type-caption-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Icon { name: IconName.chevron-down; ink: root.part-ink; }
+                }
+            }
+            part-focus := RingFocus {
+                key-pressed(e) => {
+                    if e.text == Key.Return || e.text == " " { root.open-menu(part.absolute-position.x); return accept; }
+                    if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
+                    reject
+                }
+            }
+            part-touch := TouchArea {
+                clicked => { part-focus.focus-pointer(); root.open-menu(part.absolute-position.x); }
+            }
+        }
+    }
+    }
+    FocusRing {
+        x: main.x - Tokens.size-focus-ring;
+        y: -Tokens.size-focus-ring;
+        width: main.width + 2 * Tokens.size-focus-ring;
+        height: root.height + 2 * Tokens.size-focus-ring;
+        show: main-focus.ring;
+    }
+    FocusRing {
+        x: part.x - Tokens.size-focus-ring;
+        y: -Tokens.size-focus-ring;
+        width: part.width + 2 * Tokens.size-focus-ring;
+        height: root.height + 2 * Tokens.size-focus-ring;
+        show: part-focus.ring;
+    }
+}
+
 // LevelText: a level in words ("-6.0 dB") that becomes a one-line field when it is
 // clicked, or when it has focus and Return is pressed (the typed level of a fader).
 // `entered` gets the text and says whether it was understood: Return keeps the field

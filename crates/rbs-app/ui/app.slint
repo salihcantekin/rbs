@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
+import { Sections, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -89,6 +89,8 @@ export global Shell {
     // window's): the preview layer hides only while one overlaps the picture.
     in-out property <Cover> bottom-toast;
     in-out property <Cover> top-toast;
+    // The End stream question's card while it shows.
+    in-out property <Cover> confirm-cover;
     // The main window was closed while a stream runs: the frame asks first (U4).
     in property <bool> quit-confirm;
     // The first Close to the background says once where RBS went (ADR-0056): 0 none,
@@ -1030,9 +1032,9 @@ component Flyout inherits Rectangle {
     }
 }
 
-// End stream picked in the menu bar asks first (U4), in the frame of the window
-// whose menu it was picked from; Keep streaming has the focus. `vertical`: the
-// vertical canvas's stream (ADR-0093 decision 6).
+// End stream picked in the menu bar asks first (U4). In a floating window it sits in
+// the window's own bar; Keep streaming has the focus. `vertical`: the vertical
+// canvas's stream (ADR-0093 decision 6).
 component EndStreamConfirm inherits HorizontalLayout {
     in property <bool> vertical;
     horizontal-stretch: 0;
@@ -1057,27 +1059,48 @@ component EndStreamConfirm inherits HorizontalLayout {
     }
 }
 
-// "9:16" beside Go live or Record while the vertical canvas's stream or recording
-// runs (ADR-0093 decision 6): a small mark with a live-colour outline, not a button
-// (U12).
-component VerticalMark inherits VerticalLayout {
-    horizontal-stretch: 0;
-    alignment: center;
-    accessible-role: text;
-    accessible-label: @tr("The vertical canvas is on air");
-    Rectangle {
-        border-radius: Tokens.radius-sm;
-        border-width: Tokens.size-border;
-        border-color: Theme.state-live;
+// The same question in the main window: a card under Go live and Record, over the
+// window instead of in the toolbar row, so the row keeps its room. It reports its
+// rectangle as `Shell.confirm-cover` for the preview layer (ADR-0054).
+component EndStreamCard inherits Rectangle {
+    in property <bool> vertical;
+    // A direct child of the window, so its own coordinates are the window's.
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    init => { Shell.confirm-cover = rect; keep.focus(); }
+    changed rect => { Shell.confirm-cover = rect; }
+    // The main question was answered and the vertical one is next: the focus goes back
+    // to Keep streaming, never stays on an end button.
+    changed vertical => { keep.focus(); }
+    function answer(end: bool) {
+        if vertical { Shell.end-vertical-answer(end); } else { Shell.end-stream-answer(end); }
+    }
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    accessible-role: groupbox;
+    accessible-label: vertical ? @tr("End the vertical stream?") : @tr("End the stream?");
+    lay := VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-2;
+        Text {
+            text: vertical ? @tr("End the vertical stream? Viewers see it end.") : @tr("End the stream? Viewers see it end.");
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+        }
         HorizontalLayout {
-            padding-left: Tokens.space-1;
-            padding-right: Tokens.space-1;
-            Text {
-                text: "9:16"; // literal: the aspect ratio, the same in every language
-                color: Theme.text-primary;
-                font-size: Tokens.type-caption-size;
-                font-weight: Tokens.type-label-weight;
-                vertical-alignment: center;
+            alignment: end;
+            spacing: Tokens.space-2;
+            Button {
+                text: vertical ? @tr("Yes, end the vertical stream") : @tr("Yes, end the stream");
+                kind: "live";
+                clicked => { root.answer(true); }
+            }
+            keep := Button {
+                text: @tr("Keep streaming");
+                clicked => { root.answer(false); }
             }
         }
     }
@@ -1149,8 +1172,6 @@ component ToolbarCell inherits HorizontalLayout {
     property <bool> go-live: item.id == "stream.toggle" && !item.live;
     property <bool> record: item.id == "record.toggle" && !item.live;
     horizontal-stretch: item.kind == 3 ? 1 : 0;
-    // Only Go live and Record have more than one child (their 9:16 mark and ▾).
-    spacing: Tokens.space-1;
     if (item.kind == 0 || item.kind == 4) && item.icon-only: Button {
         width: Tokens.size-control-lg;
         accessible-name: item.title;
@@ -1162,7 +1183,7 @@ component ToolbarCell inherits HorizontalLayout {
         checked: item.checked && !item.live;
         clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
     }
-    if (item.kind == 0 || item.kind == 4) && !item.icon-only: Button {
+    if (item.kind == 0 || item.kind == 4) && !item.icon-only && !vertical-menu: Button {
         text: item.title;
         lead: Icons.named(item.icon);
         // Record's dot, and the stop square of a running output, in the live colour.
@@ -1172,11 +1193,19 @@ component ToolbarCell inherits HorizontalLayout {
         kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
         clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
     }
-    if vertical-on: VerticalMark { }
-    if vertical-menu: IconButton {
-        icon: IconName.chevron-down;
-        name: item.id == "stream.toggle" ? @tr("Vertical stream") : @tr("Vertical recording");
-        clicked => { root.open-vertical(self.absolute-position.x); }
+    if (item.kind == 0 || item.kind == 4) && !item.icon-only && vertical-menu: SplitButton {
+        text: item.title;
+        lead: Icons.named(item.icon);
+        lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
+        enabled: item.enabled;
+        checked: item.checked && !item.live;
+        kind: go-live ? "primary" : "secondary";
+        menu-name: item.id == "stream.toggle" ? @tr("Vertical stream") : @tr("Vertical recording");
+        // The vertical output runs: its aspect ratio, the same in every language.
+        menu-text: vertical-on ? "9:16" : "";
+        menu-description: vertical-on ? @tr("The vertical canvas is on air") : "";
+        clicked => { Menus.run(item.id); }
+        open-menu(x) => { root.open-vertical(x); }
     }
     if item.kind == 1: WorkspacePicker {
         clicked => { root.open-workspaces(self.absolute-position.x); }
@@ -1301,9 +1330,6 @@ component FrameBar inherits Rectangle {
                     clicked => { Shell.quit-keep(); }
                 }
             }
-            // End stream from the menu bar asks first, in the frame (U4).
-            if Shell.end-stream-confirm && !Shell.quit-confirm: EndStreamConfirm { }
-            if Shell.end-vertical-confirm && !Shell.end-stream-confirm && !Shell.quit-confirm: EndStreamConfirm { vertical: true; }
             // Network access (ADR-0046 decision 7): shown in every workspace while other
             // computers can connect, in words.
             if Studio.rc-network-on: Text {
@@ -1747,6 +1773,11 @@ export component MainWindow inherits Window {
                 Shell.app-menu-asked += 1;
                 return accept;
             }
+            // Escape answers the End stream card as Keep streaming (U4, U7).
+            if e.text == Key.Escape && !Shell.quit-confirm && (Shell.end-stream-confirm || Shell.end-vertical-confirm) {
+                if Shell.end-stream-confirm { Shell.end-stream-answer(false); } else { Shell.end-vertical-answer(false); }
+                return accept;
+            }
             if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
             reject
         }
@@ -1832,6 +1863,15 @@ export component MainWindow inherits Window {
         action: @tr("Undo");
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
+    }
+    // End stream asks first (U4), in a card under Go live and Record.
+    if (Shell.end-stream-confirm || Shell.end-vertical-confirm) && !Shell.quit-confirm: EndStreamCard {
+        x: parent.width - self.width - Tokens.space-2;
+        // Under the error bar while one shows, so neither covers the other.
+        y: Shell.error-kind != 0 || Shell.background-notice != 0
+            ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
+            : frame.height + Tokens.space-1;
+        vertical: !Shell.end-stream-confirm;
     }
     // The first Close with Keep RBS running says once where RBS goes, in the error
     // bar's place over the window (ADR-0056); OK (or Dismiss) hides the windows.
