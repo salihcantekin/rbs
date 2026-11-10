@@ -279,16 +279,24 @@ fn every_request() -> Vec<Request> {
         c(Command::OutputProfiles),
         c(Command::RecordStart(RecordStart {
             profile: "default".into(),
+            canvas: None,
+        })),
+        c(Command::RecordStart(RecordStart {
+            profile: "default".into(),
+            canvas: Some(OutputCanvas::Vertical),
         })),
         c(Command::RecordStartToFile(RecordStartToFile {
             profile: "default".into(),
             path: "/videos/a.mkv".into(),
+            canvas: None,
         })),
-        c(Command::RecordStop),
-        c(Command::RecordStatus),
-        c(Command::StreamStart),
-        c(Command::StreamStop),
-        c(Command::StreamStatus),
+        c(Command::RecordStop(OnCanvas::default())),
+        c(Command::RecordStatus(OnCanvas::default())),
+        c(Command::StreamStart(OnCanvas::default())),
+        c(Command::StreamStop(OnCanvas {
+            canvas: Some(OutputCanvas::Vertical),
+        })),
+        c(Command::StreamStatus(OnCanvas::default())),
         c(Command::ReplayStatus),
         c(Command::ReplayArm),
         c(Command::ReplayDisarm),
@@ -383,6 +391,7 @@ fn every_request_round_trips_and_every_method_is_covered() {
     }
     let mut names: Vec<_> = all.iter().map(Request::method).collect();
     names.sort_unstable();
+    names.dedup();
     let mut methods: Vec<_> = METHODS.iter().map(|m| m.name).collect();
     methods.sort_unstable();
     assert_eq!(names, methods);
@@ -644,6 +653,14 @@ fn every_result_and_event_type_round_trips() {
             ..vcam_status()
         }),
         EventPayload::ReplayChanged(replay_status()),
+        EventPayload::RecordCanvasState(CanvasRecordState {
+            canvas: OutputCanvas::Vertical,
+            state: RecordState::Idle { last: None },
+        }),
+        EventPayload::StreamCanvasState(CanvasStreamState {
+            canvas: OutputCanvas::Vertical,
+            state: StreamState::Idle { last: None },
+        }),
     ] {
         round_trip(&Event {
             object: None,
@@ -738,6 +755,73 @@ fn events_are_json_rpc_notifications() {
             "method": "event",
             "params": {"topic": "record.state", "seq": 42, "data": {"state": "idle", "last": null}},
         })
+    );
+}
+
+#[test]
+fn canvas_states_are_the_main_object_with_canvas_added() {
+    let event = Event {
+        object: Some(OutputCanvas::Vertical.object()),
+        seq: 3,
+        payload: EventPayload::RecordCanvasState(CanvasRecordState {
+            canvas: OutputCanvas::Vertical,
+            state: RecordState::Recording {
+                profile: Some("default".into()),
+                video_encoder: "NVENC".into(),
+                audio_encoder: None,
+            },
+        }),
+    };
+    assert_eq!(event.key().to_string(), "record.canvas_state:1");
+    let v: Value = serde_json::from_str(&JsonCodec.encode_event(&event)).unwrap();
+    assert_eq!(
+        v["params"],
+        json!({"topic": "record.canvas_state", "object": 1, "seq": 3, "data": {
+            "canvas": "vertical", "state": "recording", "profile": "default",
+            "video_encoder": "NVENC", "audio_encoder": null}})
+    );
+}
+
+#[test]
+fn output_methods_take_an_optional_canvas() {
+    let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
+        Ok(Request::Command(c)) => Ok(c),
+        Ok(other) => panic!("not a command: {other:?}"),
+        Err(e) => Err(e.error.kind),
+    };
+    let on = |canvas| OnCanvas { canvas };
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.stop"}"#),
+        Ok(Command::StreamStop(on(None)))
+    );
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.stop","params":{"canvas":null}}"#),
+        Ok(Command::StreamStop(on(None)))
+    );
+    assert_eq!(on(None).canvas(), OutputCanvas::Main);
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"record.status","params":{"canvas":"vertical"}}"#
+        ),
+        Ok(Command::RecordStatus(on(Some(OutputCanvas::Vertical))))
+    );
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"record.start","params":{"profile":"default","canvas":"vertical"}}"#
+        ),
+        Ok(Command::RecordStart(RecordStart {
+            profile: "default".into(),
+            canvas: Some(OutputCanvas::Vertical),
+        }))
+    );
+    // Unknown fields are still ignored, an unknown canvas is not.
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.start","params":{"later":1}}"#),
+        Ok(Command::StreamStart(on(None)))
+    );
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.start","params":{"canvas":"square"}}"#),
+        Err(ErrorKind::InvalidParams)
     );
 }
 

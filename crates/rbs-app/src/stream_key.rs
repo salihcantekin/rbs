@@ -32,6 +32,13 @@ pub fn account(profile: &str) -> String {
     }
 }
 
+/// The account of the vertical canvas's stream key beside the main key's `account`
+/// (ADR-0093 decision 6): `stream-key/<id>/vertical`, or `stream key/vertical` for the
+/// `default` profile.
+pub fn vertical_account(account: &str) -> String {
+    format!("{account}/vertical")
+}
+
 /// Keeps stream keys, one per account ([`account`]).
 pub trait KeyStore: Send + Sync + fmt::Debug {
     /// Where keys are kept, for the Stream section's hint ("the macOS Keychain").

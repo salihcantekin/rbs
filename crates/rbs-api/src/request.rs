@@ -10,9 +10,10 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
-    Canvas, CaptureTarget, FilterTypeList, Library, OutputProfile, RecordState, RecordingProfile,
-    ReplayStatus, SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind,
-    StreamSettingsPatch, StreamState, StudioInfo, VcamStatus,
+    Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, FilterTypeList, Library,
+    OutputCanvas, OutputProfile, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap,
+    Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
+    VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -556,6 +557,25 @@ pub struct SetItemLocked {
 pub struct RecordStart {
     /// A recording profile's id (`output.profiles`). The file goes into its folder.
     pub profile: String,
+    /// The canvas to record; the main one when absent or `null` (protocol 1.29).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputCanvas>,
+}
+
+/// `record.stop`, `record.status`, `stream.start`, `stream.stop` and `stream.status`:
+/// the canvas they act on (protocol 1.29). Unknown fields are ignored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnCanvas {
+    /// The canvas; the main one when absent or `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputCanvas>,
+}
+
+impl OnCanvas {
+    /// The canvas asked for, the main one by default.
+    pub fn canvas(self) -> OutputCanvas {
+        self.canvas.unwrap_or_default()
+    }
 }
 
 /// `replay.save` (protocol 1.27).
@@ -574,6 +594,9 @@ pub struct RecordStartToFile {
     pub profile: String,
     /// The file, absolute; refused with `file_exists` if it exists.
     pub path: String,
+    /// The canvas to record; the main one when absent or `null` (protocol 1.29).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputCanvas>,
 }
 
 /// `profile.switch` and `collection.switch` (protocol 1.4).
@@ -743,15 +766,15 @@ pub enum Command {
     /// `record.start_to_file`.
     RecordStartToFile(RecordStartToFile),
     /// `record.stop`.
-    RecordStop,
+    RecordStop(OnCanvas),
     /// `record.status`.
-    RecordStatus,
+    RecordStatus(OnCanvas),
     /// `stream.start`.
-    StreamStart,
+    StreamStart(OnCanvas),
     /// `stream.stop`.
-    StreamStop,
+    StreamStop(OnCanvas),
     /// `stream.status`.
-    StreamStatus,
+    StreamStatus(OnCanvas),
     /// `replay.status` (protocol 1.27).
     ReplayStatus,
     /// `replay.arm` (protocol 1.27).
@@ -847,11 +870,11 @@ impl Command {
             Command::OutputProfiles => "output.profiles",
             Command::RecordStart(_) => "record.start",
             Command::RecordStartToFile(_) => "record.start_to_file",
-            Command::RecordStop => "record.stop",
-            Command::RecordStatus => "record.status",
-            Command::StreamStart => "stream.start",
-            Command::StreamStop => "stream.stop",
-            Command::StreamStatus => "stream.status",
+            Command::RecordStop(_) => "record.stop",
+            Command::RecordStatus(_) => "record.status",
+            Command::StreamStart(_) => "stream.start",
+            Command::StreamStop(_) => "stream.stop",
+            Command::StreamStatus(_) => "stream.status",
             Command::ReplayStatus => "replay.status",
             Command::ReplayArm => "replay.arm",
             Command::ReplayDisarm => "replay.disarm",
@@ -1192,15 +1215,15 @@ enum WireRequest {
     #[serde(rename = "record.start_to_file")]
     RecordStartToFile(RecordStartToFile),
     #[serde(rename = "record.stop")]
-    RecordStop(Empty),
+    RecordStop(OnCanvas),
     #[serde(rename = "record.status")]
-    RecordStatus(Empty),
+    RecordStatus(OnCanvas),
     #[serde(rename = "stream.start")]
-    StreamStart(Empty),
+    StreamStart(OnCanvas),
     #[serde(rename = "stream.stop")]
-    StreamStop(Empty),
+    StreamStop(OnCanvas),
     #[serde(rename = "stream.status")]
-    StreamStatus(Empty),
+    StreamStatus(OnCanvas),
     #[serde(rename = "replay.status")]
     ReplayStatus(Empty),
     #[serde(rename = "replay.arm")]
@@ -1305,11 +1328,11 @@ impl From<WireRequest> for Request {
             WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
             WireRequest::RecordStart(p) => Request::Command(C::RecordStart(p)),
             WireRequest::RecordStartToFile(p) => Request::Command(C::RecordStartToFile(p)),
-            WireRequest::RecordStop(_) => Request::Command(C::RecordStop),
-            WireRequest::RecordStatus(_) => Request::Command(C::RecordStatus),
-            WireRequest::StreamStart(_) => Request::Command(C::StreamStart),
-            WireRequest::StreamStop(_) => Request::Command(C::StreamStop),
-            WireRequest::StreamStatus(_) => Request::Command(C::StreamStatus),
+            WireRequest::RecordStop(p) => Request::Command(C::RecordStop(p)),
+            WireRequest::RecordStatus(p) => Request::Command(C::RecordStatus(p)),
+            WireRequest::StreamStart(p) => Request::Command(C::StreamStart(p)),
+            WireRequest::StreamStop(p) => Request::Command(C::StreamStop(p)),
+            WireRequest::StreamStatus(p) => Request::Command(C::StreamStatus(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
             WireRequest::ReplayArm(_) => Request::Command(C::ReplayArm),
             WireRequest::ReplayDisarm(_) => Request::Command(C::ReplayDisarm),
@@ -1394,11 +1417,11 @@ impl From<Request> for WireRequest {
                 C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
                 C::RecordStart(p) => WireRequest::RecordStart(p),
                 C::RecordStartToFile(p) => WireRequest::RecordStartToFile(p),
-                C::RecordStop => WireRequest::RecordStop(Empty {}),
-                C::RecordStatus => WireRequest::RecordStatus(Empty {}),
-                C::StreamStart => WireRequest::StreamStart(Empty {}),
-                C::StreamStop => WireRequest::StreamStop(Empty {}),
-                C::StreamStatus => WireRequest::StreamStatus(Empty {}),
+                C::RecordStop(p) => WireRequest::RecordStop(p),
+                C::RecordStatus(p) => WireRequest::RecordStatus(p),
+                C::StreamStart(p) => WireRequest::StreamStart(p),
+                C::StreamStop(p) => WireRequest::StreamStop(p),
+                C::StreamStatus(p) => WireRequest::StreamStatus(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
                 C::ReplayArm => WireRequest::ReplayArm(Empty {}),
                 C::ReplayDisarm => WireRequest::ReplayDisarm(Empty {}),
@@ -1635,10 +1658,14 @@ pub enum Response {
     Profiles(ProfileList),
     /// `record.start`, `record.start_to_file`.
     RecordStarted(RecordStarted),
+    /// `record.status` for a canvas other than the main one (protocol 1.29).
+    RecordCanvasStatus(Snapshot<CanvasRecordState>),
     /// `record.status`.
     RecordStatus(Snapshot<RecordState>),
     /// `stream.start`.
     StreamStarted(StreamStarted),
+    /// `stream.status` for a canvas other than the main one (protocol 1.29).
+    StreamCanvasStatus(Snapshot<CanvasStreamState>),
     /// `stream.status`.
     StreamStatus(Snapshot<StreamState>),
     /// `vcam.status` (protocol 1.12).

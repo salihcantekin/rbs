@@ -31,6 +31,12 @@ pub const DEFAULT_NAME: &str = "Default";
 pub const RECORDING: &str = "recording";
 /// The profile section of the stream settings ([`stream_profile::StreamProfile`]).
 pub const STREAM: &str = "stream";
+/// The vertical canvas's recording settings in an output profile (ADR-0093 decision
+/// 6): the fields of [`RECORDING`]; absent until saved, and then the main ones are used.
+pub const RECORDING_VERTICAL: &str = "recording-vertical";
+/// The vertical canvas's stream settings in an output profile: the fields of
+/// [`STREAM`]; absent until saved, and then the vertical stream has no server.
+pub const STREAM_VERTICAL: &str = "stream-vertical";
 
 /// Reports a failed save, on the writer thread. Must not block.
 pub type OnError = Arc<dyn Fn(String) + Send + Sync>;
@@ -587,13 +593,17 @@ impl UserSession {
 /// (ADR-0051 decision 5): the recording folder, and "a stream key is saved" (the key
 /// itself is never in a profile).
 pub fn scrub_profile(p: &mut OutputProfile) {
-    if let Ok(Some(mut rec)) = p.get::<toml::Table>(RECORDING) {
-        rec.remove("folder");
-        let _ = p.set(RECORDING, &rec);
+    for name in [RECORDING, RECORDING_VERTICAL] {
+        if let Ok(Some(mut rec)) = p.get::<toml::Table>(name) {
+            rec.remove("folder");
+            let _ = p.set(name, &rec);
+        }
     }
-    if let Ok(Some(mut st)) = p.get::<toml::Table>(STREAM) {
-        st.insert("key_saved".into(), toml::Value::Boolean(false));
-        let _ = p.set(STREAM, &st);
+    for name in [STREAM, STREAM_VERTICAL] {
+        if let Ok(Some(mut st)) = p.get::<toml::Table>(name) {
+            st.insert("key_saved".into(), toml::Value::Boolean(false));
+            let _ = p.set(name, &st);
+        }
     }
 }
 
@@ -1108,10 +1118,16 @@ mod tests {
         st.server = "rtmp://127.0.0.1/live".into();
         st.key_saved = true;
         s.set_section(STREAM, &st).unwrap();
+        // The vertical canvas's sections are scrubbed the same way.
+        let mut vrec = rec.clone();
+        vrec.folder = d.0.join("my-shorts");
+        s.set_section(RECORDING_VERTICAL, &vrec).unwrap();
+        s.set_section(STREAM_VERTICAL, &st).unwrap();
         let file = d.0.join("shared.toml");
         s.export_profile(&file).unwrap();
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(!text.contains("my-videos"), "{text}");
+        assert!(!text.contains("my-shorts"), "{text}");
 
         assert_eq!(s.import_profile(&file).unwrap(), "Default 2");
         let (id, _) = s
@@ -1126,6 +1142,10 @@ mod tests {
         let got: StreamProfile = s.section(STREAM).unwrap().unwrap();
         assert_eq!(got.server, st.server);
         assert!(!got.key_saved);
+        let got: StreamProfile = s.section(STREAM_VERTICAL).unwrap().unwrap();
+        assert!(!got.key_saved);
+        let got: RecordProfile = s.section(RECORDING_VERTICAL).unwrap().unwrap();
+        assert_eq!(got.folder, RecordProfile::new().folder);
 
         // A scene collection goes out and comes back whole.
         let col_file = d.0.join("show.toml");
