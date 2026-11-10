@@ -104,7 +104,10 @@ pub const MAX_OUTPUTS: usize = 2;      // outputs running at once
     pub partitions: Partitions, pub preview: Option<PreviewDesc>,
     pub audio_offsets: BTreeMap<SourceId, i64>, // sync offset ns per audio source; empty
     pub scene_preview: bool, // ADR-0061: in studio mode, the preview scene's own picture; off
+    pub extra_canvases: Vec<ExtraCanvas>, // ADR-0093: further canvases beside `canvas`; empty
 }
+pub const MAX_CANVASES: usize = 2;         // the main canvas included
+#[non_exhaustive] pub struct ExtraCanvas { pub canvas: CanvasId, pub preview: Option<PreviewDesc> } // new(canvas).with_preview(desc)
 impl StudioSettings { pub fn new(canvas: CanvasId) -> Self; } // audio on, no preview
 #[non_exhaustive] pub struct OutputSettings { // a recording or a live stream
     pub url: String, pub input: TransportInput,
@@ -149,6 +152,10 @@ impl Studio {
     pub fn preview_stats(&self) -> Option<&Arc<PreviewNodeStats>>;
     pub fn scene_preview(&self) -> Option<PreviewEndpoint>; // ADR-0061: the preview scene's picture
     pub fn studio_mode(&self) -> bool; // the canvas has a preview scene
+    pub fn activate_canvas(&mut self, c: &SceneCollection, s: &SourceTypes, extra: ExtraCanvas) -> Result<Updated, RecordError>; // ADR-0093: Standby to Active, live
+    pub fn deactivate_canvas(&mut self, c: &SceneCollection, s: &SourceTypes, canvas: CanvasId) -> Result<Updated, RecordError>; // CanvasBusy while an output takes it
+    pub fn canvas_preview(&self, canvas: CanvasId) -> Option<PreviewEndpoint>; // ADR-0093: a further canvas's picture
+    pub fn canvas_preview_stats(&self, canvas: CanvasId) -> Option<&Arc<PreviewNodeStats>>;
     pub fn meter(&self, source: SourceId) -> Option<&Arc<LevelMeter>>;
     pub fn set_audio_offset(&mut self, source: SourceId, offset_ns: i64) -> bool; // true: a running input got it
     pub fn master_meter(&self) -> Option<&Arc<LevelMeter>>;
@@ -225,6 +232,14 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 6. `service()` maps engine events as `Recording::service` does; a permanent failure of a studio node sets `failure()`; of an output node, that output's `output_failure(id)` only; of an encoder chain's node (export, video encoder, audio encoder), `output_failure` of every output using it. `output_failure` also returns the output's first permanent failure (`OutputNodeStats::failure`). The composition root stops an output when its `output_failure` is set.
 7. `shutdown()` stops every output in one draining apply (as `stop_output` does for one, so a shared encoder is drained and flushed for all of them), then shuts the engine down; the reports are in start order. Every call runs on the control thread.
 8. Sync offsets: `settings.audio_offsets` holds a sync offset in ns per audio source (positive delays it, negative advances it; audio graph spec, "Offset", clamps it). An audio source's offset is sent on its input's offset channel before the node is adopted, so its first block already has it; this also holds for a source opened later or rebound after a settings change. `set_audio_offset(source, ns)` updates the setting (0 removes it) and sends it to a running input of that source (a change below 5 ms slews, a larger one resyncs once), returning whether one got it. `RecordSettings::audio_offsets` is passed to the studio by `studio()`. The desktop app fills `settings.audio_offsets` from the collection's `sync_offset_ms` (ADR-0062 decision 10) and calls `set_audio_offset` when one changes, so the collection is its one source of truth.
+
+### Further canvases (ADR-0093, first step)
+
+- **What runs.** Each `StudioSettings::extra_canvases` entry adds one compositor on `RENDER` at the canvas's own size and one picture (`canvas_preview`). Source nodes and their filter chains are built once by the binder and feed every compositor, so a device is opened once whatever the number of canvases. No entry: nothing of the others is scheduled (Installed, P13).
+- **Checks at start.** `Studio::start` fails with `TooManyCanvases` (more than `MAX_CANVASES`, a canvas listed twice or equal to the main one), `UnknownCanvas`, `NoProgram`, or `CanvasRate` (the frame rate differs from the main canvas, ADR-0093 decision 2). `update` rejects a size or rate change of any running canvas.
+- **Live.** `activate_canvas` adds a further canvas to a running studio (the checks of `start`, then an `update` that adopts its compositor and optional picture) and `deactivate_canvas` removes it again (`CanvasBusy` while an output takes it; its nodes leave the engine after the apply). Sources it shows open as in any update; open ones are shared.
+- **Outputs.** `OutputSettings::canvas` (`None`: main) picks the canvas an output records or streams; an unknown one fails with `UnknownCanvas`. An encoder is shared only between outputs of the same canvas (and equal settings). `MAX_OUTPUTS` is still 2 in total; the per-canvas limit of ADR-0093 decision 6 follows with the partition change.
+- **Not yet.** Audio per canvas, Auto layout and the control API are the next steps of ADR-0093 decision 11; a follower canvas (ADR-0093 decision 3) shows the followed canvas's program scene: `Studio::start` and `update` set each follower's program scene to `SceneCollection::followed_programs` on a copy of the collection before binding, so the binder knows nothing of following. `Fallback::Black`, the transition rule (the follower cuts when the main canvas's timed transition ends), the "main canvas wins" frame skip of ADR-0093 decision 10 and the per-canvas `MAX_OUTPUTS` are not in yet; the set of running canvases is a `StudioSettings` field only (not yet saved with the workspace). The render tick is a hot path: measurements and the maintainer's sign-off (P15) are pending before this merges.
 
 ### Several outputs (ADR-0047)
 

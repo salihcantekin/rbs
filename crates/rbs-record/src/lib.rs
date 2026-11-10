@@ -31,7 +31,7 @@ pub use recording::{
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
-    END_TAIL_LIMIT, FILTER_UNAVAILABLE, FilterSettingsAdjusted, Link, MAX_LAYERS, MAX_OUTPUTS,
-    OutputId, OutputSettings, ReplaySettings, Studio, StudioSettings, Updated,
-    VirtualCameraSettings, VirtualCameraState,
+    END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE, FilterSettingsAdjusted, Link, MAX_CANVASES,
+    MAX_LAYERS, MAX_OUTPUTS, OutputId, OutputSettings, ReplaySettings, Studio, StudioSettings,
+    Updated, VirtualCameraSettings, VirtualCameraState,
 };

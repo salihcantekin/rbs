@@ -15,9 +15,11 @@ use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::Cadence;
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, OUTPUT, OutputSettings, RENDER, RecordError, Studio,
-    StudioSettings, VIDEO_ENCODER,
+    AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, ExtraCanvas, OUTPUT, OutputSettings, RENDER, RecordError,
+    Studio, StudioSettings, VIDEO_ENCODER,
 };
+#[cfg(any(windows, target_vendor = "apple"))]
+use rbs_scene::model::CanvasId;
 use rbs_scene::model::{ItemContent, Layout, Settings};
 use rbs_sources::types;
 use support::*;
@@ -837,6 +839,256 @@ fn in_studio_mode_a_ui_gets_the_preview_scene_on_its_own_picture() {
     col.set_preview(canvas, None).unwrap();
     studio.update(&col, &r.adapters.sources).unwrap();
     assert!(studio.scene_preview().is_none());
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+/// Starts a studio on the shared test scene plus, optionally, a vertical canvas showing
+/// the same program scene; returns the studio and the buffers the sources hold.
+fn two_canvas_studio(
+    vertical: bool,
+) -> Option<(Studio, rbs_core::time::TestClock, usize, CanvasId)> {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_gpu::share::PreviewDesc;
+
+    let gpu = gpu()?;
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    col.set_program(tall, Some(program)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let desc = PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 4,
+    };
+    settings.preview = Some(desc);
+    if vertical {
+        settings.extra_canvases = vec![ExtraCanvas::new(tall).with_preview(desc)];
+    }
+    let studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let buffers = r.capture.live_buffers();
+    Some((studio, clock, buffers, tall))
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn a_vertical_canvas_shares_the_sources() {
+    let Some((mut alone, _, one_canvas, absent)) = two_canvas_studio(false) else {
+        return;
+    };
+    assert!(alone.canvas_preview_stats(absent).is_none());
+    let (_, errors) = alone.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+    let Some((mut studio, _, two_canvases, tall)) = two_canvas_studio(true) else {
+        return;
+    };
+    // Every source is opened once, whatever the number of canvases (ADR-0093), and the
+    // further canvas's picture keeps the render worker alive.
+    assert_eq!(one_canvas, two_canvases);
+    assert!(studio.canvas_preview_stats(tall).is_some());
+    assert!(studio.engine().has_worker(RENDER));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn a_ui_subscribed_to_a_vertical_canvas_gets_its_frames() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Instant;
+
+    use rbs_gpu::share::PreviewSubscriber;
+
+    let Some((mut studio, clock, _, tall)) = two_canvas_studio(true) else {
+        return;
+    };
+    let endpoint = studio
+        .canvas_preview(tall)
+        .expect("the picture is prepared");
+    let frames = Arc::new(AtomicU64::new(0));
+    let ui = {
+        let frames = Arc::clone(&frames);
+        std::thread::spawn(move || {
+            let mut sub = PreviewSubscriber::connect(&endpoint, LIMIT).unwrap();
+            let wall = Instant::now();
+            while frames.load(Ordering::Relaxed) < 3 && wall.elapsed() < LIMIT {
+                if let Some(frame) = sub.recv(Duration::from_millis(250)).unwrap() {
+                    assert!(frame.sequence() > 0);
+                    frames.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        })
+    };
+    let reached = run_until(&mut studio, &clock, |_| frames.load(Ordering::Relaxed) >= 3);
+    ui.join().unwrap();
+    assert!(reached, "{:?}", studio.canvas_preview_stats(tall));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (slow, _) = col
+        .add_canvas("Slow", Size::new(18, 32), FrameRate::FPS_60)
+        .unwrap();
+    col.set_program(slow, Some(program)).unwrap();
+    let start = |extra: Vec<ExtraCanvas>| {
+        let (engine, _) = engine_at_start();
+        let mut settings = StudioSettings::new(main);
+        settings.audio = false;
+        settings.extra_canvases = extra;
+        Studio::start(engine, gpu.clone(), &col, &r.adapters.sources, &settings).err()
+    };
+    assert!(matches!(
+        start(vec![ExtraCanvas::new(slow)]),
+        Some(RecordError::CanvasRate(c)) if c == slow
+    ));
+    assert!(matches!(
+        start(vec![ExtraCanvas::new(main)]),
+        Some(RecordError::DuplicateCanvas(c)) if c == main
+    ));
+}
+
+/// Names of the sources scheduled while an output takes the vertical canvas, which has a
+/// scene of its own (with a source only that scene shows); `follow` makes the vertical
+/// canvas show the main program scene instead (ADR-0093 decision 3).
+fn scheduled_for_vertical(follow: bool) -> Option<Vec<String>> {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_scene::model::Fallback;
+
+    let gpu = gpu()?;
+    let r = rig();
+    let (mut col, main) = scene();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    let (own, _) = col
+        .add_scene("Vertical only", rbs_scene::model::SceneScope::Canvas(tall))
+        .unwrap();
+    let (extra, _) = col
+        .add_source(
+            "Vertical camera",
+            NodeTypeId::new_static(types::CAMERA_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    col.add_item(
+        own,
+        ItemContent::Source(extra),
+        Layout::new([0.0, 0.0], [1.0, 1.0]),
+        None,
+    )
+    .unwrap();
+    col.set_program(tall, Some(own)).unwrap();
+    if follow {
+        col.set_canvas_follow(tall, Some(main), Fallback::KeepLast)
+            .unwrap();
+    }
+    let (engine, _) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    settings.extra_canvases = vec![ExtraCanvas::new(tall)];
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let mut out = OutputSettings::new("mem://vertical", ContainerId::Matroska);
+    out.audio = None;
+    out.canvas = Some(tall);
+    studio.start_output(&r.adapters, &out).unwrap();
+    let names = studio.sources().into_iter().map(|s| s.name).collect();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+    Some(names)
+}
+
+#[test]
+fn a_following_canvas_shows_the_main_program_scene() {
+    let Some(own) = scheduled_for_vertical(false) else {
+        return;
+    };
+    assert!(own.iter().any(|n| n == "Vertical camera"), "{own:?}");
+    let following = scheduled_for_vertical(true).unwrap();
+    assert!(
+        !following.iter().any(|n| n == "Vertical camera"),
+        "{following:?}"
+    );
+    assert!(following.iter().any(|n| n == "Display"), "{following:?}");
+}
+
+#[test]
+fn a_canvas_that_does_not_run_costs_nothing_and_its_sources_close_when_it_stops() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    let (own, _) = col
+        .add_scene("Vertical only", rbs_scene::model::SceneScope::Canvas(tall))
+        .unwrap();
+    let (extra, _) = col
+        .add_source(
+            "Vertical camera",
+            NodeTypeId::new_static(types::CAMERA_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    col.add_item(
+        own,
+        ItemContent::Source(extra),
+        Layout::new([0.0, 0.0], [1.0, 1.0]),
+        None,
+    )
+    .unwrap();
+    col.set_program(tall, Some(own)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let mut rec = OutputSettings::new("mem://main", ContainerId::Matroska);
+    rec.audio = None;
+    studio.start_output(&r.adapters, &rec).unwrap();
+    let names = |s: &Studio| -> Vec<String> { s.sources().into_iter().map(|x| x.name).collect() };
+    assert!(!names(&studio).iter().any(|n| n == "Vertical camera"));
+    let buffers = r.capture.live_buffers();
+
+    // Running the canvas opens its own source ...
+    studio
+        .activate_canvas(&col, &r.adapters.sources, ExtraCanvas::new(tall))
+        .unwrap();
+    let mut out = OutputSettings::new("mem://vertical", ContainerId::Matroska);
+    out.audio = None;
+    out.canvas = Some(tall);
+    let id = studio.start_output(&r.adapters, &out).unwrap();
+    assert!(names(&studio).iter().any(|n| n == "Vertical camera"));
+    let reached = run_until(&mut studio, &clock, |_| r.capture.live_buffers() > buffers);
+    assert!(reached);
+    // ... and stopping it releases that source again.
+    studio.stop_output(id).unwrap();
+    studio
+        .deactivate_canvas(&col, &r.adapters.sources, tall)
+        .unwrap();
+    assert!(!names(&studio).iter().any(|n| n == "Vertical camera"));
+    let reached = run_until(&mut studio, &clock, |_| r.capture.live_buffers() <= buffers);
+    assert!(reached, "the vertical camera is still open");
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }

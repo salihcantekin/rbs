@@ -45,6 +45,10 @@ pub mod keys {
     pub const TARGET: &str = "target";
     /// Bool, display and window: draw the cursor. Default true.
     pub const CURSOR: &str = "cursor";
+    /// Bool, system audio (output loopback): leave RBS's own sound out of the capture
+    /// (ADR-0096). Default false; honoured only where the adapter reports
+    /// `audio.loopback.exclude_self`. The "Capture audio too" companion of a display sets it.
+    pub const EXCLUDE_OWN_PROCESS: &str = "exclude_own_process";
     /// Int, display, window and camera: requested width in pixels (with `height`).
     pub const WIDTH: &str = "width";
     /// Int, display, window and camera: requested height in pixels (with `width`).

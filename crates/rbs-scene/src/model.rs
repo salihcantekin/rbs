@@ -100,6 +100,36 @@ pub struct Canvas {
     /// The canvas's master volume and mute, the last stage of its mix (ADR-0081). Shared
     /// by preview and program; a live control that edits of the canvas itself ignore.
     pub master: MasterAudio,
+    /// The canvas whose program scene this canvas shows (ADR-0093 decision 3). `None`:
+    /// its own program scene. The followed canvas follows nothing itself.
+    pub follow: Option<CanvasId>,
+    /// What a follower shows while the followed program scene may not be shown on it
+    /// (a scene scoped to another canvas, U15). Meaningful only with `follow`.
+    pub fallback: Fallback,
+    /// Where the canvas's sound comes from (ADR-0093 decision 5).
+    pub audio_from: AudioFrom,
+}
+
+/// What a following canvas shows when the followed canvas's program scene is scoped to
+/// that canvas alone (ADR-0093 decision 3).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fallback {
+    /// Keep showing the last scene it showed (the default).
+    #[default]
+    KeepLast,
+    /// A chosen scene, which must be showable on the following canvas.
+    Scene(SceneId),
+}
+
+/// The source of a canvas's sound (ADR-0093 decision 5). Only the main canvas's mix
+/// exists in the first version.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioFrom {
+    /// The studio's main canvas mix.
+    #[default]
+    Main,
 }
 
 /// Volume and mute of a canvas's whole mix (ADR-0081). Like a source's volume it stops
@@ -154,6 +184,9 @@ impl Canvas {
             preview: None,
             globals: None,
             master: MasterAudio::default(),
+            follow: None,
+            fallback: Fallback::default(),
+            audio_from: AudioFrom::default(),
         }
     }
 }

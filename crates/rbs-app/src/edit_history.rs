@@ -146,6 +146,21 @@ impl<R: Clone> History<R> {
         });
     }
 
+    /// Adds `records` to the newest step (a companion added with its picture is one
+    /// step, ADR-0096). Clears the redo side. Without a step, records one named `name`.
+    pub fn extend_last(&mut self, kind: EditKind, name: &str, records: Vec<R>) {
+        if records.is_empty() {
+            return;
+        }
+        match self.undo.back_mut() {
+            Some(top) => {
+                self.redo.clear();
+                top.records.extend(records);
+            }
+            None => self.record(kind, name, 0, records),
+        }
+    }
+
     /// Undoes the newest step with `apply` (which applies one record and returns the
     /// one that reverses it) and keeps it for redo. Returns what was undone.
     pub fn undo<E>(
