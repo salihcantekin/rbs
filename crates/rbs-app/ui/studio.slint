@@ -458,10 +458,6 @@ export global Studio {
     in property <string> collection-name;
     // A scene collection switch is running (the studio restarts).
     in property <bool> switching;
-    callback switch-profile(string /* id */);
-    callback profile-action(int /* action */, string);
-    callback switch-collection(string /* id */);
-    callback collection-action(int /* action */, string);
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not

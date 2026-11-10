@@ -2940,6 +2940,42 @@ impl StudioUi {
         told
     }
 
+    /// Why an Output profile or Scene collection command cannot run now (the menus
+    /// disable it with this reason): live, restarting, or the only entry. `op` is
+    /// `new`, `duplicate`, `rename`, `delete`, `import` or `export`.
+    pub fn entry_blocked(&self, collection: bool, op: &str) -> Result<(), String> {
+        let restarting = self.switching.is_some() || self.canvas_restarting;
+        match (collection, op) {
+            (_, "import" | "export") => Ok(()),
+            (true, "rename") if restarting => Err("The studio is still restarting.".into()),
+            (_, "rename") => Ok(()),
+            (_, "delete") => {
+                let count = if collection {
+                    self.user.collections().len()
+                } else {
+                    self.user.profiles().len()
+                };
+                if count < 2 {
+                    let what = if collection {
+                        "scene collection"
+                    } else {
+                        "output profile"
+                    };
+                    return Err(format!(
+                        "The only {what} cannot be deleted. Make another first."
+                    ));
+                }
+                if collection {
+                    self.can_switch_collection()
+                } else {
+                    self.idle_for("deleting the output profile in use")
+                }
+            }
+            (true, _) => self.can_switch_collection(),
+            (false, _) => self.idle_for("switching output profiles"),
+        }
+    }
+
     /// Scene collection menu: makes a collection named `name`, new (one canvas the
     /// size of the one in use, one scene) or a copy of the one in use (`copy`), and
     /// runs it.
@@ -4622,6 +4658,60 @@ mod tests {
                 .enabled(&cmd("ui.panel.collapse?id=rbs.mixer"))
                 .is_ok()
         );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn the_profile_and_collection_commands_run_and_say_why_they_cannot() {
+        use crate::menu_bar::{EntryKind, EntryOp, Run, Shown, run};
+        use rbs_ui::command::{CommandId, CommandState, Context};
+        let (ui, d) = ui("entry-commands");
+        let ws = rbs_ui::builtin::edit();
+        let s = Shown {
+            workspace: &ws,
+            workspaces: &[],
+            studio: &ui,
+            panels: Vec::new(),
+            maximized: None,
+            camera: Default::default(),
+            can_undo: false,
+            can_redo: false,
+        };
+        let cmd = |t: &str| CommandId::parse(t).unwrap();
+        assert_eq!(
+            run("ui.profile.new?name=Live", &s),
+            Some(Run::Entry(
+                EntryKind::Profile,
+                EntryOp::New,
+                Some("Live".to_owned())
+            ))
+        );
+        // Without a name the window asks.
+        assert_eq!(
+            run("ui.collection.rename", &s),
+            Some(Run::Entry(EntryKind::Collection, EntryOp::Rename, None))
+        );
+        assert_eq!(
+            run("ui.collection.export", &s),
+            Some(Run::Entry(EntryKind::Collection, EntryOp::Export, None))
+        );
+        // A fresh library holds one entry of each: the only one cannot be deleted, and
+        // the reason says so; the other commands are not blocked by that.
+        for id in ["ui.profile.delete", "ui.collection.delete"] {
+            let why = s.enabled(&cmd(id)).unwrap_err();
+            assert!(why.starts_with("The only"), "{id}: {why}");
+            assert_eq!(run(id, &s), None, "{id}");
+        }
+        assert!(s.enabled(&cmd("ui.profile.rename")).is_ok());
+        // The two status-bar menus offer the picker's submenu and the commands.
+        for c in [Context::Profiles, Context::Collections] {
+            let items = crate::context_menu::items(c, &[], &s);
+            assert!(items.iter().any(|i| i.title.starts_with("New ")), "{c:?}");
+            assert!(
+                items.iter().any(|i| i.title.starts_with("Delete ")),
+                "{c:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(d);
     }
 

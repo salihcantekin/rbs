@@ -167,7 +167,11 @@ struct App {
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
     /// Ask for the name of a new workspace (Save as new) in the main window.
-    ask_workspace_name: bool,
+    /// What the name prompt is to ask for at the next sync (`Run::SaveWorkspaceAs(None)`
+    /// and the Output profile and Scene collection commands without a name).
+    ask_name: Option<Ask>,
+    /// What the open name prompt answers.
+    name_for: Option<Ask>,
     save_due: bool,
     /// The closed sections the windows were told about, and the number that tells them
     /// the answers changed (ADR-0078).
@@ -472,7 +476,7 @@ impl App {
             // Asking for a name needs someone at the window: not from a control surface
             // or a global shortcut (`ui.command.run` answers `invalid_params`).
             Run::SaveWorkspaceAs(None) if !confirm => {}
-            Run::SaveWorkspaceAs(None) => self.ask_workspace_name = true,
+            Run::SaveWorkspaceAs(None) => self.ask_name = Some(Ask::Workspace),
             Run::LayoutHistory(back) => {
                 if back {
                     self.undo();
@@ -485,6 +489,7 @@ impl App {
                 self.command(LayoutCommand::AutoHide { panel, content }, Origin::Command);
             }
             Run::MovePanel(panel, to) => self.move_panel(panel, &to),
+            Run::Entry(kind, op, name) => self.run_entry(kind, op, name, confirm),
             Run::AddSource(kind) => self.ask_add_source(kind),
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
@@ -526,6 +531,117 @@ impl App {
             Run::OpenSettings(section) => self.open_settings = Some(section),
             Run::OpenAppMenu => self.open_app_menu = true,
         }
+    }
+
+    /// An Output profile or Scene collection command. Asking for a name, or for the
+    /// confirmation of a delete (U4), and the file dialogs need someone at the window:
+    /// a control surface or a global shortcut (`confirm` false) without a name does
+    /// nothing (`ui.command.run` answers `invalid_params`), and a delete runs unasked.
+    fn run_entry(
+        &mut self,
+        kind: menu_bar::EntryKind,
+        op: menu_bar::EntryOp,
+        name: Option<String>,
+        window: bool,
+    ) {
+        use menu_bar::EntryOp;
+        match (op, name) {
+            (EntryOp::New | EntryOp::Duplicate | EntryOp::Rename, None) => {
+                if window {
+                    self.ask_name = Some(Ask::Entry(kind, op));
+                }
+            }
+            (EntryOp::Import | EntryOp::Export, _) if !window => {}
+            (EntryOp::Delete, _) if window => self.ask_name = Some(Ask::Entry(kind, op)),
+            (_, name) => {
+                let done = self.entry_command(kind, op, name.as_deref().unwrap_or(""));
+                self.library_done(done);
+            }
+        }
+    }
+
+    /// Runs `op` on the Output profile or Scene collection in use; `name` is the new
+    /// entry's name (trimmed) for New, Duplicate and Rename.
+    fn entry_command(
+        &mut self,
+        kind: menu_bar::EntryKind,
+        op: menu_bar::EntryOp,
+        name: &str,
+    ) -> Result<(), String> {
+        use menu_bar::{EntryKind, EntryOp};
+        let name = name.trim();
+        if matches!(op, EntryOp::New | EntryOp::Duplicate | EntryOp::Rename) && name.is_empty() {
+            return Err("Give it a name.".to_owned());
+        }
+        let copy = op == EntryOp::Duplicate;
+        match (kind, op) {
+            (EntryKind::Profile, EntryOp::New | EntryOp::Duplicate) => {
+                self.studio.new_profile(name, copy)
+            }
+            (EntryKind::Profile, EntryOp::Rename) => self.studio.rename_profile(name),
+            (EntryKind::Profile, EntryOp::Delete) => {
+                let id = self.studio.user.profile_id.as_str().to_owned();
+                self.studio.delete_profile(&id)
+            }
+            (EntryKind::Collection, EntryOp::New | EntryOp::Duplicate) => {
+                self.studio.new_collection(name, copy, close_preview)
+            }
+            (EntryKind::Collection, EntryOp::Rename) => self.studio.rename_collection(name),
+            (EntryKind::Collection, EntryOp::Delete) => {
+                let id = self.studio.user.collection_id.as_str().to_owned();
+                self.studio.delete_collection(&id, close_preview)
+            }
+            (EntryKind::Profile, EntryOp::Import | EntryOp::Export) => {
+                let name = self.studio.user.profile_name.clone();
+                transfer(Library::Profiles, op == EntryOp::Import, name);
+                Ok(())
+            }
+            (EntryKind::Collection, EntryOp::Import | EntryOp::Export) => {
+                let name = self.studio.user.collection_name.clone();
+                transfer(Library::Collections, op == EntryOp::Import, name);
+                Ok(())
+            }
+        }
+    }
+
+    /// Opens the name prompt for `ask`: its title, button and prefilled name.
+    fn open_name_prompt(&mut self, ask: Ask) {
+        use menu_bar::{EntryKind, EntryOp};
+        let (title, confirm, value, field) = match ask {
+            Ask::Workspace => (
+                "Save as new workspace".to_owned(),
+                "Save",
+                String::new(),
+                true,
+            ),
+            Ask::Entry(kind, op) => {
+                let (what, current) = match kind {
+                    EntryKind::Profile => ("output profile", self.studio.user.profile_name.clone()),
+                    EntryKind::Collection => {
+                        ("scene collection", self.studio.user.collection_name.clone())
+                    }
+                };
+                match op {
+                    EntryOp::New => (format!("New {what}"), "Create", String::new(), true),
+                    EntryOp::Duplicate => (
+                        format!("Duplicate {what}"),
+                        "Duplicate",
+                        format!("{current} copy"),
+                        true,
+                    ),
+                    EntryOp::Rename => (format!("Rename {what}"), "Rename", current, true),
+                    _ => (format!("Delete {current}?"), "Delete", String::new(), false),
+                }
+            }
+        };
+        let o = self.main.global::<Overlays>();
+        o.set_name_error("".into());
+        o.set_name_value(value.into());
+        o.set_name_title(title.into());
+        o.set_name_confirm(confirm.into());
+        o.set_name_ask(field);
+        o.set_name_open(true);
+        self.name_for = Some(ask);
     }
 
     /// Saves the shown workspace as a new one called `name` and switches to it.
@@ -1586,12 +1702,9 @@ impl Ctx {
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
         }
-        if std::mem::take(&mut app.ask_workspace_name) {
+        if let Some(ask) = app.ask_name.take() {
             self.show_all(&mut app);
-            let o = app.main.global::<Overlays>();
-            o.set_name_error("".into());
-            o.set_name_value("".into());
-            o.set_name_open(true);
+            app.open_name_prompt(ask);
         }
         if let Some(section) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).
@@ -2109,7 +2222,10 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
         g.on_name_accepted(move |name| {
             let name = name.to_string();
             ctx.update(move |app: &mut App| {
-                let done = app.save_workspace_as(&name);
+                let done = match app.name_for {
+                    Some(Ask::Entry(kind, op)) => app.entry_command(kind, op, &name),
+                    _ => app.save_workspace_as(&name),
+                };
                 let o = app.main.global::<Overlays>();
                 match done {
                     Ok(()) => o.set_name_open(false),
@@ -2121,7 +2237,10 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
     let ctx = ctx.clone();
     g.on_name_cancelled(move || {
         entry::guard(|| {
-            ctx.update(|app: &mut App| app.main.global::<Overlays>().set_name_open(false));
+            ctx.update(|app: &mut App| {
+                app.name_for = None;
+                app.main.global::<Overlays>().set_name_open(false);
+            });
         });
     });
 }
@@ -2161,6 +2280,16 @@ fn context_row(i: context_menu::Item) -> ContextItem {
         checked: i.checked,
         choices: ModelRc::new(VecModel::from(choices)),
     }
+}
+
+/// What the window-level name prompt answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ask {
+    /// The name of a new workspace (`ui.workspace.save_as`).
+    Workspace,
+    /// The name for an Output profile or Scene collection command, or its delete
+    /// confirmation.
+    Entry(menu_bar::EntryKind, menu_bar::EntryOp),
 }
 
 /// Which library a menu imports into or exports from.
@@ -2782,54 +2911,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.set_remote_port(&text);
     });
     // Output profile and Scene collection menus (ADR-0051).
-    on!(on_switch_profile, |app, id: slint::SharedString| {
-        let done = app.studio.switch_profile(&id);
-        app.library_done(done);
-    });
-    on!(
-        on_profile_action,
-        |app, action: i32, text: slint::SharedString| {
-            let done = match action {
-                0 => app.studio.new_profile(&text, false),
-                1 => app.studio.new_profile(&text, true),
-                2 => app.studio.rename_profile(&text),
-                4 | 5 => {
-                    let name = app.studio.user.profile_name.clone();
-                    transfer(Library::Profiles, action == 4, name);
-                    Ok(())
-                }
-                _ => {
-                    let id = app.studio.user.profile_id.as_str().to_owned();
-                    app.studio.delete_profile(&id)
-                }
-            };
-            app.library_done(done);
-        }
-    );
-    on!(on_switch_collection, |app, id: slint::SharedString| {
-        let done = app.studio.switch_collection(&id, close_preview);
-        app.library_done(done);
-    });
-    on!(
-        on_collection_action,
-        |app, action: i32, text: slint::SharedString| {
-            let done = match action {
-                0 => app.studio.new_collection(&text, false, close_preview),
-                1 => app.studio.new_collection(&text, true, close_preview),
-                2 => app.studio.rename_collection(&text),
-                4 | 5 => {
-                    let name = app.studio.user.collection_name.clone();
-                    transfer(Library::Collections, action == 4, name);
-                    Ok(())
-                }
-                _ => {
-                    let id = app.studio.user.collection_id.as_str().to_owned();
-                    app.studio.delete_collection(&id, close_preview)
-                }
-            };
-            app.library_done(done);
-        }
-    );
     on!(on_create_token, |app,
                           name: slint::SharedString,
                           access: i32| {
@@ -3109,7 +3190,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             reload_themes: false,
             open_settings: None,
             open_app_menu: false,
-            ask_workspace_name: false,
+            ask_name: None,
+            name_for: None,
             save_due: false,
             sections_shown: Vec::new(),
             sections_rev: 0,
