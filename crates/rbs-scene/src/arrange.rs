@@ -6,7 +6,7 @@
 //! (a vertical flip is a negative width with the rotation turned half a circle) and the
 //! rotation is in `0..360`.
 
-use crate::model::Layout;
+use crate::model::{Crop, Layout};
 
 /// How [`Layout::fitted`] places a picture on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,4 +333,110 @@ mod tests {
         assert_eq!(r.opacity, 0.5);
         assert_eq!(r.crop, l.crop);
     }
+}
+
+/// How [`auto_layout`] arranges a scene on a canvas of another shape (ADR-0093
+/// decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoLayout {
+    /// Each item scaled to fit within the canvas, letterboxed, centred.
+    Fit,
+    /// Each item scaled to cover the canvas, cut at the sides or the top and bottom
+    /// around its focus point.
+    Fill,
+    /// The visible items in equal bands from top to bottom in layer order (the lowest
+    /// layer on top), each covering its band around its focus point.
+    Stack,
+}
+
+/// One item for [`auto_layout`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoItem {
+    /// The layout it has now; opacity, rotation-free style and the like are kept.
+    pub layout: Layout,
+    /// The size of its uncropped picture in pixels.
+    pub picture: (u32, u32),
+    /// Where the picture is cut around, `0.0` (left or top) to `1.0`; `0.5` is the
+    /// centre.
+    pub focus: f32,
+}
+
+/// Layouts of `items` (the visible ones, in layer order) for a `canvas` of
+/// `(width, height)`. The result has one entry per item; `None` where the picture or
+/// the canvas is empty (keep the layout). Rotation and flips of the old layout are
+/// dropped, as the new box is made for the picture as it is.
+pub fn auto_layout(
+    mode: AutoLayout,
+    canvas: (u32, u32),
+    items: &[AutoItem],
+) -> Vec<Option<Layout>> {
+    let (cw, ch) = (canvas.0 as f32, canvas.1 as f32);
+    let n = items.len().max(1) as f32;
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            if canvas.0 == 0 || canvas.1 == 0 || item.picture.0 == 0 || item.picture.1 == 0 {
+                return None;
+            }
+            let (pw, ph) = (item.picture.0 as f32, item.picture.1 as f32);
+            let mut layout = item.layout;
+            layout.rotation = 0.0;
+            layout.size = [layout.size[0].abs(), layout.size[1].abs()];
+            let out = match mode {
+                AutoLayout::Fit => {
+                    let scale = (cw / pw).min(ch / ph);
+                    let (w, h) = (pw * scale, ph * scale);
+                    layout.crop = Crop::new(0, 0, 0, 0);
+                    layout.size = [w, h];
+                    layout.position = [(cw - w) / 2.0, (ch - h) / 2.0];
+                    layout
+                }
+                AutoLayout::Fill => cover(layout, (pw, ph), (0.0, 0.0, cw, ch), item.focus),
+                AutoLayout::Stack => {
+                    let band = ch / n;
+                    cover(
+                        layout,
+                        (pw, ph),
+                        (0.0, i as f32 * band, cw, band),
+                        item.focus,
+                    )
+                }
+            };
+            out.is_valid().then_some(out)
+        })
+        .collect()
+}
+
+/// `layout` made to cover the rectangle `(x, y, w, h)` with a picture of `picture`
+/// pixels: the box is the rectangle and the picture is cut (crop in source pixels) to
+/// its aspect around `focus`.
+fn cover(
+    mut layout: Layout,
+    picture: (f32, f32),
+    rect: (f32, f32, f32, f32),
+    focus: f32,
+) -> Layout {
+    let (pw, ph) = picture;
+    let (x, y, w, h) = rect;
+    let focus = if focus.is_finite() {
+        focus.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    // The part of the picture that has the rectangle's aspect, as large as possible.
+    let (vis_w, vis_h) = if pw * h >= ph * w {
+        (ph * w / h, ph)
+    } else {
+        (pw, pw * h / w)
+    };
+    let cut_x = ((pw - vis_w) * focus).round().max(0.0);
+    let cut_y = ((ph - vis_h) * focus).round().max(0.0);
+    let (left, top) = (cut_x as u32, cut_y as u32);
+    let right = (pw - vis_w - cut_x).round().max(0.0) as u32;
+    let bottom = (ph - vis_h - cut_y).round().max(0.0) as u32;
+    layout.crop = Crop::new(left, top, right, bottom);
+    layout.size = [w, h];
+    layout.position = [x, y];
+    layout
 }

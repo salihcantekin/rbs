@@ -22,7 +22,7 @@ pub mod flatten;
 pub mod look;
 pub mod model;
 
-pub use arrange::{CenterAxis, FitMode, FlipState};
+pub use arrange::{AutoItem, AutoLayout, CenterAxis, FitMode, FlipState, auto_layout};
 pub use collection::{
     IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
     SceneError, Undo,
