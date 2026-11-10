@@ -351,6 +351,7 @@ impl RecordSettings {
             transport_options: self.transport_options.clone(),
             video: self.video.clone(),
             audio: self.audio.clone(),
+            canvas: None,
         }
     }
 }
@@ -372,6 +373,15 @@ pub enum RecordError {
     UnknownCanvas(CanvasId),
     /// The canvas has no program scene.
     NoProgram(CanvasId),
+    /// A further canvas of the studio does not run at the main canvas's frame rate
+    /// (ADR-0093 decision 2).
+    CanvasRate(CanvasId),
+    /// More canvases than [`MAX_CANVASES`](crate::MAX_CANVASES).
+    TooManyCanvases,
+    /// A further canvas listed twice, equal to the main canvas, or already running.
+    DuplicateCanvas(CanvasId),
+    /// An output still takes the canvas that was to stop running.
+    CanvasBusy(CanvasId),
     /// The URL has no scheme.
     InvalidUrl(String),
     /// The binder refused the collection.
@@ -420,6 +430,15 @@ impl fmt::Display for RecordError {
         match self {
             RecordError::UnknownCanvas(id) => write!(f, "no canvas {id:?}"),
             RecordError::NoProgram(id) => write!(f, "canvas {id:?} has no program scene"),
+            RecordError::CanvasRate(id) => {
+                write!(
+                    f,
+                    "canvas {id:?} does not run at the main canvas's frame rate"
+                )
+            }
+            RecordError::TooManyCanvases => write!(f, "too many canvases in the studio"),
+            RecordError::DuplicateCanvas(id) => write!(f, "canvas {id:?} is already in the studio"),
+            RecordError::CanvasBusy(id) => write!(f, "an output still takes canvas {id:?}"),
             RecordError::InvalidUrl(url) => write!(f, "not a URL: {url}"),
             RecordError::Bind(e) => write!(f, "binding the scene failed: {e}"),
             RecordError::Problems(p) => write!(f, "the scene cannot be bound: {p:?}"),
@@ -729,6 +748,7 @@ impl Recording {
         let prepared = Prepared::choose(
             adapters,
             &settings.output(),
+            settings.canvas,
             (canvas.size.width, canvas.size.height),
             canvas.frame_rate,
             settings.audio_graph,
