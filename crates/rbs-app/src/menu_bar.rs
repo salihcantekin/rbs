@@ -576,6 +576,15 @@ impl CommandState for Shown<'_> {
     }
 
     fn title(&self, id: &CommandId) -> Option<String> {
+        match id.param("axis") {
+            Some("horizontal") if id.base() == "item.flip" => {
+                return Some("Flip horizontally".to_owned());
+            }
+            Some("vertical") if id.base() == "item.flip" => {
+                return Some("Flip vertically".to_owned());
+            }
+            _ => {}
+        }
         match (id.base(), id.param("scene")) {
             // One scene, from its row's menu: what a click on the row does.
             ("scene.select", Some(_)) if self.studio.studio_mode => {
