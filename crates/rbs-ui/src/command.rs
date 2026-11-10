@@ -208,6 +208,13 @@ const fn target(name: &'static str) -> Param {
 /// collection is in use (as `scene.select`'s, ADR-0060).
 const COLLECTION: Param = target("collection");
 
+/// The mirror axis of `item.flip`.
+const FLIP_AXIS: Param = Param {
+    name: "axis",
+    ty: ParamType::OneOf(&["horizontal", "vertical"]),
+    required: true,
+};
+
 const fn action(method: &'static str) -> Kind {
     Kind::Action { method }
 }
@@ -566,6 +573,70 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("item"), COLLECTION],
         checkable: true,
+    },
+    Entry {
+        id: "item.flip",
+        title: "Flip",
+        tooltip: "Mirror the source's picture on the canvas, as you see it",
+        icon: Some("flip-h"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.flip"),
+        params: &[target("item"), COLLECTION, FLIP_AXIS],
+        checkable: true,
+    },
+    Entry {
+        id: "item.rotate",
+        title: "Rotate",
+        tooltip: "Turn the source's picture by a quarter or half circle",
+        icon: Some("rotate-cw"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "item.rotate",
+            param: "degrees",
+        },
+        params: &[target("item"), COLLECTION, choice("degrees")],
+        checkable: false,
+    },
+    Entry {
+        id: "item.fit",
+        title: "Fit to canvas",
+        tooltip: "Fit, fill or stretch the source's picture to the canvas",
+        icon: Some("fit"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "item.fit",
+            param: "mode",
+        },
+        params: &[target("item"), COLLECTION, choice("mode")],
+        checkable: false,
+    },
+    Entry {
+        id: "item.align",
+        title: "Center",
+        tooltip: "Center the source's picture on the canvas",
+        icon: Some("center"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "item.align",
+            param: "axis",
+        },
+        params: &[target("item"), COLLECTION, choice("axis")],
+        checkable: false,
+    },
+    Entry {
+        id: "item.reset_transform",
+        title: "Reset transform",
+        tooltip: "Undo flips and rotation and show the picture at its own size",
+        icon: Some("reset"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.reset_transform"),
+        params: &[target("item"), COLLECTION],
+        checkable: false,
     },
     Entry {
         id: "source.muted.toggle",
@@ -1087,6 +1158,13 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "source.muted.toggle",
             "source.mixer_hidden.toggle",
             "|",
+            "item.flip?axis=horizontal",
+            "item.flip?axis=vertical",
+            "item.rotate",
+            "item.fit",
+            "item.align",
+            "item.reset_transform",
+            "|",
             "source.rename",
             "item.remove",
             "source.delete",
@@ -1117,6 +1195,9 @@ pub const NOT_IN_MENU: &[&str] = &["scene.position", "ui.layout.rail_size"];
 pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
     if let ("ui.layout.studio_rail", Some("below")) = (e.id, id.param("at")) {
         return Some("rail-below");
+    }
+    if let ("item.flip", Some("vertical")) = (e.id, id.param("axis")) {
+        return Some("flip-v");
     }
     match (e.id, id.param("area")) {
         ("ui.area.toggle", Some("left")) => Some("panel-left"),
@@ -1441,6 +1522,15 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
     (
         Context::Source,
         &[
+            "{Transform:fit",
+            "item.flip?axis=horizontal",
+            "item.flip?axis=vertical",
+            "item.rotate",
+            "item.fit",
+            "item.align",
+            "item.reset_transform",
+            "}",
+            "|",
             "item.visible.toggle",
             "item.locked.toggle",
             "source.muted.toggle",
@@ -1498,7 +1588,29 @@ pub fn context_menu(
         return Vec::new();
     };
     let mut items: Vec<MenuItem> = Vec::new();
+    // A group (`{Title:icon` ... `}`) is one submenu of every command and choice
+    // inside it, so a family of commands takes one row of the menu.
+    #[allow(clippy::type_complexity)] // A local scratch value, named once.
+    let mut group: Option<(String, Option<&'static str>, Vec<(String, CommandId, bool)>)> = None;
     for text in *ids {
+        if let Some(head) = text.strip_prefix('{') {
+            let (title, icon) = match head.split_once(':') {
+                Some((t, i)) => (t, Some(i)),
+                None => (head, None),
+            };
+            group = Some((title.to_owned(), icon, Vec::new()));
+            continue;
+        }
+        if *text == "}" {
+            if let Some((title, icon, choices)) = group.take() {
+                items.push(MenuItem::Choices {
+                    title,
+                    icon,
+                    choices,
+                });
+            }
+            continue;
+        }
         if *text == "|" {
             if items.last().is_some_and(|i| *i != MenuItem::Separator) {
                 items.push(MenuItem::Separator);
@@ -1531,7 +1643,22 @@ pub fn context_menu(
         if !state.applies(&id) {
             continue;
         }
-        items.push(item(id, e, state));
+        let made = item(id, e, state);
+        if let Some((_, _, choices)) = group.as_mut() {
+            match made {
+                MenuItem::Command {
+                    title,
+                    disabled: None,
+                    checked,
+                    id,
+                    ..
+                } => choices.push((title, id, checked.unwrap_or(false))),
+                MenuItem::Choices { choices: c, .. } => choices.extend(c),
+                _ => {}
+            }
+            continue;
+        }
+        items.push(made);
         if items.len() >= MAX_CONTEXT_ITEMS {
             break;
         }
@@ -1779,9 +1906,22 @@ mod tests {
                 .iter()
                 .find(|(l, _)| *l == c)
                 .expect("every context has a layout");
-            assert!(ids.len() <= MAX_CONTEXT_ITEMS, "{c:?}");
+            let mut shown = 0;
+            let mut grouped = false;
             for i in *ids {
-                if *i != "|" {
+                match *i {
+                    "}" => grouped = false,
+                    _ if i.starts_with('{') => {
+                        grouped = true;
+                        shown += 1;
+                    }
+                    _ if !grouped => shown += 1,
+                    _ => {}
+                }
+            }
+            assert!(shown <= MAX_CONTEXT_ITEMS, "{c:?}");
+            for i in *ids {
+                if *i != "|" && *i != "}" && !i.starts_with('{') {
                     let id = CommandId::parse(i).unwrap();
                     assert!(entry(id.base()).is_some(), "{i}");
                     assert_eq!(id.to_string(), *i, "layout ids are written canonically");
@@ -1825,7 +1965,7 @@ mod tests {
             .iter()
             .flat_map(|(_, ids)| ids.iter())
             .chain(CONTEXT_LAYOUT.iter().flat_map(|(_, ids)| ids.iter()));
-        for text in layouts.filter(|t| **t != "|" && !t.starts_with('#')) {
+        for text in layouts.filter(|t| **t != "|" && **t != "}" && !t.starts_with(['#', '{'])) {
             let id = CommandId::parse(text).unwrap();
             let e = entry(id.base()).unwrap();
             let name = icon(&id, e).unwrap_or_else(|| panic!("{text} has no icon"));
@@ -1899,6 +2039,8 @@ mod tests {
         assert_eq!(
             ids(&source),
             [
+                "[Transform]",
+                "|",
                 "item.visible.toggle?item=40",
                 "item.locked.toggle?item=40",
                 "|",
@@ -1910,14 +2052,14 @@ mod tests {
             ]
         );
         assert!(matches!(
-            &source[0],
+            &source[2],
             MenuItem::Command {
                 checked: Some(true),
                 ..
             }
         ));
         assert!(matches!(
-            &source[4],
+            &source[6],
             MenuItem::Command { title, .. } if title == "Properties"
         ));
         // A picker without its choice is a submenu; with it, one item with the

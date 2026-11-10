@@ -4,9 +4,10 @@
 
 use std::collections::BTreeMap;
 
-use rbs_app::studio_host::filters::FilterRow;
+use rbs_app::studio_host::filters::{AnyFilter, FilterRow};
 use rbs_app::studio_host::{Command, SourceRow};
-use rbs_filters::{FieldKind, FilterType, Value, Values, color_text, parse_color};
+use rbs_filters::Values;
+use rbs_params::{Curve, FieldKind, Schema, Value, color_text, parse_color};
 use rbs_scene::model::{FilterId, SourceId};
 use slint::{ModelRc, VecModel};
 
@@ -22,6 +23,20 @@ pub struct FilterUi {
     known: BTreeMap<i32, Vec<i32>>,
     /// The values a slider drag shows on the picture, until it is released.
     drag: Option<(FilterId, Values)>,
+}
+
+/// Whether a number's slider is log-scaled: only for a log curve over a positive range.
+fn log_scaled(min: f32, curve: Curve) -> bool {
+    matches!(curve, Curve::Log) && min > 0.0
+}
+
+/// A number's slider position (0 to 1): linear, or log between `min` and `max`.
+fn position_of(n: f32, min: f32, max: f32, log: bool) -> f32 {
+    if log {
+        ((n / min).ln() / (max / min).ln()).clamp(0.0, 1.0)
+    } else {
+        ((n - min) / (max - min).max(f32::EPSILON)).clamp(0.0, 1.0)
+    }
 }
 
 /// Decimals a value on `step` needs.
@@ -55,7 +70,7 @@ pub fn number_text(v: f32, step: f32, unit: &str) -> String {
     format!("{v:.prec$}{}", suffix(unit), prec = d as usize)
 }
 
-fn field_data(ty: &dyn FilterType, values: &Values) -> Vec<FilterFieldData> {
+fn field_data(ty: AnyFilter, values: &Values) -> Vec<FilterFieldData> {
     ty.fields()
         .iter()
         .zip(values.as_slice())
@@ -66,16 +81,20 @@ fn field_data(ty: &dyn FilterType, values: &Values) -> Vec<FilterFieldData> {
                     max,
                     step,
                     unit,
+                    curve,
                     ..
                 },
                 Value::Number(n),
             ) => {
+                let log = log_scaled(min, curve);
                 let span = (max - min).max(f32::EPSILON);
                 FilterFieldData {
                     label: f.label.into(),
+                    help: f.help.into(),
+                    log,
                     kind: 0,
-                    position: (n - min) / span,
-                    step: step / span,
+                    position: position_of(n, min, max, log),
+                    step: if log { 0.02 } else { step / span },
                     value_text: number_text(n, step, unit).into(),
                     min,
                     max,
@@ -87,6 +106,7 @@ fn field_data(ty: &dyn FilterType, values: &Values) -> Vec<FilterFieldData> {
             }
             (FieldKind::Color { .. }, Value::Color(c)) => FilterFieldData {
                 label: f.label.into(),
+                help: f.help.into(),
                 kind: 1,
                 colour: color_text(c).into(),
                 swatch: slint::Color::from_argb_u8(c[3], c[0], c[1], c[2]),
@@ -94,6 +114,7 @@ fn field_data(ty: &dyn FilterType, values: &Values) -> Vec<FilterFieldData> {
             },
             _ => FilterFieldData {
                 label: f.label.into(),
+                help: f.help.into(),
                 kind: 2,
                 ..FilterFieldData::default()
             },
@@ -123,7 +144,7 @@ impl FilterUi {
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                let fields = match (f.ty(), &f.values) {
+                let fields = match (f.any(), &f.values) {
                     (Some(ty), Some(values)) => field_data(ty, values),
                     _ => Vec::new(),
                 };
@@ -131,7 +152,7 @@ impl FilterUi {
                     id: f.id.get() as i32,
                     name: f.name.as_str().into(),
                     enabled: f.enabled,
-                    known: f.ty().is_some(),
+                    known: f.any().is_some(),
                     can_up: i > 0,
                     can_down: i < last,
                     fields: ModelRc::new(VecModel::from(fields)),
@@ -159,9 +180,9 @@ impl StudioUi {
 
     /// The type and the values the filter's controls start from: a drag's, else the
     /// values on air.
-    fn filter_values(&self, filter: i32) -> Option<(&'static dyn FilterType, Values)> {
+    fn filter_values(&self, filter: i32) -> Option<(AnyFilter, Values)> {
         let row = self.filter_row(filter)?;
-        let ty = row.ty()?;
+        let ty = row.any()?;
         let values = match &self.filter_ui.drag {
             Some((id, v)) if id.get() as i32 == filter => *v,
             _ => row.values?,
@@ -170,12 +191,24 @@ impl StudioUi {
     }
 
     /// The number of field `field` at slider position `position`, on its step.
-    fn number_at(ty: &dyn FilterType, field: usize, position: f32) -> Option<(&'static str, f32)> {
+    fn number_at(ty: AnyFilter, field: usize, position: f32) -> Option<(&'static str, f32)> {
         let f = ty.fields().get(field)?;
-        let FieldKind::Number { min, max, step, .. } = f.kind else {
+        let FieldKind::Number {
+            min,
+            max,
+            step,
+            curve,
+            ..
+        } = f.kind
+        else {
             return None;
         };
-        let raw = min + position.clamp(0.0, 1.0) * (max - min);
+        let p = position.clamp(0.0, 1.0);
+        let raw = if log_scaled(min, curve) {
+            min * (max / min).powf(p)
+        } else {
+            min + p * (max - min)
+        };
         let v = if step > 0.0 {
             (min + ((raw - min) / step).round() * step).clamp(min, max)
         } else {
@@ -192,13 +225,29 @@ impl StudioUi {
     }
 
     pub fn add_filter(&mut self, source: i32, type_index: i32) {
-        let Some(ty) = rbs_filters::catalogue().get(type_index as usize) else {
+        // A source with a picture takes video filters, one with only sound audio filters
+        // (ADR-0082); the menu the user picked from follows the same rule.
+        let sound_only = self
+            .rows
+            .iter()
+            .find(|r| r.id.get() as i32 == source)
+            .is_some_and(|r| r.picture.is_none() && r.kind.is_some_and(|k| k.is_audio()));
+        let type_id = if sound_only {
+            rbs_audio_filters::catalogue()
+                .get(type_index as usize)
+                .map(|t| t.type_id())
+        } else {
+            rbs_filters::catalogue()
+                .get(type_index as usize)
+                .map(|t| t.type_id())
+        };
+        let Some(type_id) = type_id else {
             return;
         };
         self.deleted.clear();
         self.send(Command::AddFilter {
             source: SourceId::from_raw(source as u32),
-            type_id: ty.type_id().as_str().to_owned(),
+            type_id: type_id.as_str().to_owned(),
         });
     }
 
@@ -241,7 +290,7 @@ impl StudioUi {
         let Some((key, v)) = Self::number_at(ty, field as usize, position) else {
             return;
         };
-        let Ok(values) = values.with(ty, [(key, Value::Number(v))]) else {
+        let Ok(values) = values.with(&ty, [(key, Value::Number(v))]) else {
             return;
         };
         let id = FilterId::from_raw(filter as u32);
@@ -278,7 +327,7 @@ impl StudioUi {
         let Some(f) = ty.fields().get(field as usize) else {
             return;
         };
-        if let Ok(values) = values.with(ty, [(f.key, Value::Color(colour))]) {
+        if let Ok(values) = values.with(&ty, [(f.key, Value::Color(colour))]) {
             self.deleted.clear();
             self.send(Command::SetFilterValues {
                 filter: FilterId::from_raw(filter as u32),
@@ -288,19 +337,27 @@ impl StudioUi {
     }
 
     pub fn reset_filter(&mut self, filter: i32) {
-        let Some(ty) = self.filter_row(filter).and_then(FilterRow::ty) else {
+        let Some(ty) = self.filter_row(filter).and_then(FilterRow::any) else {
             return;
         };
         self.deleted.clear();
         self.send(Command::SetFilterValues {
             filter: FilterId::from_raw(filter as u32),
-            values: Values::defaults(ty),
+            values: Values::defaults(&ty),
         });
     }
 
-    /// The filter type names for Add filter.
+    /// The video filter type names for Add filter.
     pub fn filter_type_names() -> Vec<String> {
         rbs_filters::catalogue()
+            .iter()
+            .map(|t| t.name().to_owned())
+            .collect()
+    }
+
+    /// The audio filter type names for Add filter on a source with only sound.
+    pub fn audio_filter_type_names() -> Vec<String> {
+        rbs_audio_filters::catalogue()
             .iter()
             .map(|t| t.name().to_owned())
             .collect()
@@ -317,5 +374,16 @@ mod tests {
         assert_eq!(number_text(-45.0, 1.0, "°"), "-45°");
         assert_eq!(number_text(0.3, 0.01, ""), "0.30");
         assert_eq!(number_text(-0.001, 0.01, ""), "0.00");
+    }
+
+    #[test]
+    fn log_sliders_are_even_in_ratio() {
+        // 0.1 to 100 ms: the middle of the slider is the geometric mean, 3.16 ms.
+        let mid = position_of(10f32.powf(0.5), 0.1, 100.0, true);
+        assert!((mid - 0.5).abs() < 1e-5, "{mid}");
+        assert_eq!(position_of(0.1, 0.1, 100.0, true), 0.0);
+        assert_eq!(position_of(100.0, 0.1, 100.0, true), 1.0);
+        assert!((position_of(5.0, 0.0, 10.0, false) - 0.5).abs() < 1e-6);
+        assert!(!log_scaled(0.0, Curve::Log), "a range from 0 cannot be log");
     }
 }

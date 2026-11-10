@@ -19,8 +19,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_api::request::{
-    Empty, GlobalSourceList, ItemAdded, ItemRemoved, ProfileList, RecordStarted, SceneAdded,
-    SceneSourceList, SourceAdded, SourceSettingsInfo, StreamStarted, TargetList,
+    AlignAxis, Axis, Empty, FitKind, GlobalSourceList, ItemAdded, ItemRemoved, ProfileList,
+    RecordStarted, SceneAdded, SceneSourceList, SourceAdded, SourceSettingsInfo, StreamStarted,
+    TargetList,
 };
 use rbs_api::types as api;
 use rbs_api::{
@@ -49,7 +50,7 @@ use rbs_scene::model::{
     Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene,
     SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
-use rbs_scene::{SceneError, Undo};
+use rbs_scene::{CenterAxis, FitMode, SceneError, Undo};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
@@ -296,6 +297,25 @@ impl CropRegion {
             CropRegion::RightHalf => Crop::new(w / 2, 0, 0, 0),
         }
     }
+}
+
+/// What a transform command does to an item's layout (ADR-0084).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransformOp {
+    /// Mirror left to right as seen on the canvas.
+    FlipHorizontal,
+    /// Mirror top to bottom as seen on the canvas.
+    FlipVertical,
+    /// Turn clockwise by this many degrees (negative turns the other way).
+    Turn(f32),
+    /// Not turned.
+    ResetRotation,
+    /// Place on the canvas (needs the picture size).
+    Fit(FitMode),
+    /// Move to the canvas centre on these axes.
+    Center(CenterAxis),
+    /// Not turned, not flipped, native size (needs the picture size).
+    Reset,
 }
 
 /// Why a crop was refused.
@@ -593,6 +613,14 @@ pub enum Command {
         crop: [u32; 4],
         /// Keep the scale (else the cropped picture fills the box).
         keep_scale: bool,
+    },
+    /// Flip, turn, fit or centre a video source's picture on the layout the canvas
+    /// shows (ADR-0084). One undo step; a refusal is an [`Update::Error`].
+    TransformSource {
+        /// The source.
+        id: SourceId,
+        /// What to do.
+        op: TransformOp,
     },
     /// Show a part of a video source's picture filling as much of the canvas as fits
     /// (ADR-0058, Properties' Show buttons). One undo step.
@@ -2239,6 +2267,17 @@ impl Host {
                     }
                 };
                 notify(Update::CropPlaced { seq, ok });
+            }
+            Command::TransformSource { id, op } => {
+                let edit = match self.item_of(id).map(|(_, item)| item.id) {
+                    Ok(item) => self.transform_item(item, op),
+                    Err(t) => Err(Refusal::NotFound(t)),
+                };
+                match edit {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
             }
             Command::SetSourceRegion { id, region } => match self.set_source_region(id, region) {
                 Ok(true) => self.apply(notify),
@@ -4719,6 +4758,82 @@ impl Host {
         self.write_crop(item, source, own, old, layout, gesture)
     }
 
+    /// A transform command from the control API: the edit, the rebuild when something
+    /// changed and the answer.
+    fn api_transform(
+        &mut self,
+        item: u32,
+        op: TransformOp,
+        notify: &dyn Fn(Update),
+    ) -> Result<Response, ApiError> {
+        let changed = self
+            .transform_item(ItemId::from_raw(item), op)
+            .map_err(|e| refused(&e))?;
+        if changed {
+            self.apply(notify);
+        }
+        Ok(Response::Done(Empty {}))
+    }
+
+    /// Flips, turns, fits or centres an item (ADR-0084) on the layout the canvas shows,
+    /// as one undo step; `Ok(false)` when nothing changes. A locked item and an
+    /// operation that needs a picture size the source has not reported are refused.
+    fn transform_item(&mut self, item: ItemId, op: TransformOp) -> Result<bool, Refusal> {
+        let locked = self.collection.item(item).is_some_and(|(_, i)| i.locked);
+        let (source, old, own) = self.crop_target(item).map_err(|e| match e {
+            CropRefusal::NotFound(t) => Refusal::NotFound(t),
+            CropRefusal::Invalid(t) => Refusal::Invalid(t),
+            CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
+        })?;
+        if locked {
+            return Err(Refusal::Conflict(
+                "The item is locked. Unlock it to change its transform.".into(),
+            ));
+        }
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .map(|c| (c.size.width, c.size.height))
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".into()))?;
+        let picture = || {
+            let (w, h) = self.sizes.get(&source).copied().ok_or_else(|| {
+                Refusal::Invalid("This source has no picture yet, so its size is not known.".into())
+            })?;
+            if old.crop.fits(w, h) {
+                Ok((
+                    w - old.crop.left - old.crop.right,
+                    h - old.crop.top - old.crop.bottom,
+                ))
+            } else {
+                Err(Refusal::Invalid(NO_AREA.into()))
+            }
+        };
+        let layout = match op {
+            TransformOp::FlipHorizontal => old.flipped_horizontally(),
+            TransformOp::FlipVertical => old.flipped_vertically(),
+            TransformOp::Turn(degrees) => old.turned(degrees),
+            TransformOp::ResetRotation => old.unturned(),
+            TransformOp::Center(axis) => old.centred(canvas, axis),
+            TransformOp::Fit(mode) => old
+                .fitted(canvas, picture()?, mode)
+                .ok_or_else(|| Refusal::Invalid("The picture or the canvas is empty.".into()))?,
+            TransformOp::Reset => old
+                .transform_reset(picture()?)
+                .ok_or_else(|| Refusal::Invalid("The picture is empty.".into()))?,
+        };
+        if layout == old {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_item_layout(item, own, layout)
+            .map_err(|e| Refusal::of(&e))?;
+        let name = self.name_of(source);
+        self.history
+            .record(EditKind::Transform, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     /// Shows `region` of a source's picture (Properties' Region menu).
     fn set_source_region(&mut self, id: SourceId, region: CropRegion) -> Result<bool, CropRefusal> {
         let item = self.item_of(id).map_err(CropRefusal::NotFound)?.1.id;
@@ -5509,6 +5624,40 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::ItemFlip(p) => {
+                let op = match p.axis {
+                    Axis::Horizontal => TransformOp::FlipHorizontal,
+                    Axis::Vertical => TransformOp::FlipVertical,
+                };
+                host.api_transform(p.item, op, notify)
+            }
+            C::ItemRotate(p) => {
+                if p.degrees % 90 != 0 || p.degrees == 0 || p.degrees.abs() > 360 {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "degrees must be a non-zero multiple of 90 from -360 to 360",
+                    ));
+                }
+                host.api_transform(p.item, TransformOp::Turn(p.degrees as f32), notify)
+            }
+            C::ItemFit(p) => {
+                let mode = match p.mode {
+                    FitKind::Fit => FitMode::Fit,
+                    FitKind::Fill => FitMode::Fill,
+                    FitKind::Stretch => FitMode::Stretch,
+                };
+                host.api_transform(p.item, TransformOp::Fit(mode), notify)
+            }
+            C::ItemAlign(p) => {
+                let axis = match p.axis {
+                    None => CenterAxis::Both,
+                    Some(AlignAxis::Both) => CenterAxis::Both,
+                    Some(AlignAxis::Horizontal) => CenterAxis::Horizontal,
+                    Some(AlignAxis::Vertical) => CenterAxis::Vertical,
+                };
+                host.api_transform(p.item, TransformOp::Center(axis), notify)
+            }
+            C::ItemResetTransform(p) => host.api_transform(p.item, TransformOp::Reset, notify),
             C::ItemSetCrop(p) => {
                 let [l, t, r, b] = p.crop;
                 let item = ItemId::from_raw(p.item);
