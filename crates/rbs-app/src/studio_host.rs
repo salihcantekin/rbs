@@ -1665,6 +1665,12 @@ pub enum Fault {
     AfterOutputStart,
     /// In a recording stop, after the output stopped and before the host forgets it.
     InRecordingStop,
+    /// In a stream start, after the output started and before the host tracks it.
+    AfterStreamStart,
+    /// In a stream end, after the output stopped and before the host forgets it.
+    InStreamEnd,
+    /// While a canvas change is restarting the studio, before that restart is over.
+    DuringCanvasRestart,
 }
 
 /// Panics once if the host was told to fail at `$fault`.
@@ -1696,6 +1702,8 @@ fn preview_desc(size: Size, surfaces: usize) -> PreviewDesc {
 pub struct StudioHost {
     tx: Option<Arc<Sender<Msg>>>,
     thread: Option<JoinHandle<()>>,
+    /// Meters the control API samples for `audio.levels`.
+    levels: Arc<crate::levels::LevelFeed>,
 }
 
 impl StudioHost {
@@ -1712,16 +1720,33 @@ impl StudioHost {
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let tx = Arc::new(tx);
+        let levels = crate::levels::LevelFeed::new();
         let thread = std::thread::Builder::new()
             .name("rbs-studio".into())
             .spawn({
                 let inbox = Arc::downgrade(&tx);
-                move || run(config, adapters, gpu, engine, rx, inbox, &notify)
+                let levels = Arc::clone(&levels);
+                move || {
+                    run(
+                        config,
+                        adapters,
+                        gpu,
+                        engine,
+                        ControlIo { rx, inbox, levels },
+                        &notify,
+                    )
+                }
             })?;
         Ok(Self {
             tx: Some(tx),
             thread: Some(thread),
+            levels,
         })
+    }
+
+    /// The meters `audio.levels` samples while remote control is on.
+    pub fn level_feed(&self) -> Arc<crate::levels::LevelFeed> {
+        Arc::clone(&self.levels)
     }
 
     /// Queues a command. Never blocks; a stopped studio ignores it.
@@ -1927,6 +1952,8 @@ struct Host {
     vertical_sent: Option<Option<VerticalState>>,
     /// The master meter last sent to the UI.
     master_sent: Option<Arc<rbs_audio::LevelMeter>>,
+    /// Meters published for `audio.levels`.
+    levels: Arc<crate::levels::LevelFeed>,
     /// The last picture size seen per video source (ADR-0058).
     sizes: BTreeMap<SourceId, (u32, u32)>,
     /// The user's undo history of scene edits, shared with control API clients.
@@ -2007,18 +2034,25 @@ struct Host {
     replay: replay::ReplayHost,
 }
 
+/// What the control thread is handed besides the studio configuration.
+struct ControlIo {
+    rx: Receiver<Msg>,
+    inbox: Weak<Sender<Msg>>,
+    levels: Arc<crate::levels::LevelFeed>,
+}
+
 fn run(
     config: HostConfig,
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
-    rx: Receiver<Msg>,
-    inbox: Weak<Sender<Msg>>,
+    io: ControlIo,
     notify: &dyn Fn(Update),
 ) {
+    let ControlIo { rx, inbox, levels } = io;
     // A control thread, not a real-time one: its panics get crash reports (ADR-0055).
     rbs_crash::report_panics_on_this_thread();
-    let started = rbs_crash::contain(|| start(config, adapters, gpu, engine))
+    let started = rbs_crash::contain(|| start(config, adapters, gpu, engine, levels))
         .unwrap_or_else(|_| Err(rbs_crash::CAUGHT_TEXT.to_owned()));
     let mut host = match started {
         Ok((mut host, update)) => {
@@ -2257,6 +2291,7 @@ fn start(
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
+    levels: Arc<crate::levels::LevelFeed>,
 ) -> Result<(Host, Update), String> {
     let keys = Arc::clone(&config.keys);
     #[cfg(feature = "fault-injection")]
@@ -2417,12 +2452,27 @@ fn start(
             switch_pending: None,
             switch_seq: 0,
             inbox: Weak::new(),
+            levels,
         },
         update,
     ))
 }
 
 impl Host {
+    /// Runs a control API command for a window action that already has a method.
+    /// The window and a remote client then share one implementation.
+    fn run_ui_api(&mut self, command: rbs_api::Command, notify: &dyn Fn(Update)) {
+        let result = rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command));
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => notify(Update::Error(e.message)),
+            Err(_) => {
+                self.caught = true;
+                notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+            }
+        }
+    }
+
     fn command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
             Command::ListTargets(kind) => {
@@ -2535,18 +2585,27 @@ impl Host {
                     .and_then(|item| self.set_item_locked(item, locked));
                 self.answer(done, notify);
             }
-            Command::SetSourceVolume { id, volume } => {
-                let done = self.set_source_audio(id, Some(volume), None);
-                self.answer_live(done, notify);
-            }
-            Command::SetSourceMuted { id, muted } => {
-                let done = self.set_source_audio(id, None, Some(muted));
-                self.answer_live(done, notify);
-            }
-            Command::SetSourceMixerHidden { id, hidden } => {
-                let done = self.set_source_mixer_hidden(id, hidden);
-                self.answer_live(done, notify);
-            }
+            Command::SetSourceVolume { id, volume } => self.run_ui_api(
+                rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
+                    source: id.get(),
+                    volume,
+                }),
+                notify,
+            ),
+            Command::SetSourceMuted { id, muted } => self.run_ui_api(
+                rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
+                    source: id.get(),
+                    muted,
+                }),
+                notify,
+            ),
+            Command::SetSourceMixerHidden { id, hidden } => self.run_ui_api(
+                rbs_api::Command::SourceSetMixerHidden(rbs_api::request::SetSourceMixerHidden {
+                    source: id.get(),
+                    hidden,
+                }),
+                notify,
+            ),
             Command::AddVerticalCanvas(spec) => {
                 let done = self.add_vertical(spec);
                 self.answer_live(done, notify);
@@ -2555,14 +2614,16 @@ impl Host {
                 let done = self.remove_vertical();
                 self.answer_live(done, notify);
             }
-            Command::SetMasterVolume { volume } => {
-                let done = self.set_master(Some(volume), None);
-                self.answer_live(done, notify);
-            }
-            Command::SetMasterMuted { muted } => {
-                let done = self.set_master(None, Some(muted));
-                self.answer_live(done, notify);
-            }
+            Command::SetMasterVolume { volume } => self.run_ui_api(
+                rbs_api::Command::CanvasSetMasterVolume(rbs_api::request::SetMasterVolume {
+                    volume,
+                }),
+                notify,
+            ),
+            Command::SetMasterMuted { muted } => self.run_ui_api(
+                rbs_api::Command::CanvasSetMasterMuted(rbs_api::request::SetMasterMuted { muted }),
+                notify,
+            ),
             Command::SetSourceMonitor { id, monitor } => {
                 let done = self.set_source_monitor(id, monitor);
                 self.answer_live(done, notify);
@@ -3356,6 +3417,8 @@ impl Host {
         self.restarting = true;
         let _ = self.studio.shutdown();
         let restarted = self.restart();
+        // Still restarting: a panic here leaves the studio dead (ADR-0055 decision 3).
+        inject!(self, Fault::DuringCanvasRestart);
         self.restarting = false;
         match restarted {
             Ok(()) => {
@@ -3403,9 +3466,18 @@ impl Host {
             notify(answer);
         }
         if std::mem::take(&mut self.restarting) {
-            self.dead.get_or_insert_with(|| {
-                "An internal error stopped the studio while it restarted.".into()
-            });
+            let why = self
+                .dead
+                .get_or_insert_with(|| {
+                    "An internal error stopped the studio while it restarted.".into()
+                })
+                .clone();
+            // The round that panicked does not reach its own dead check, and the next
+            // round may not run until something wakes the thread. Say it failed now.
+            if failed.is_none() {
+                *failed = Some(why.clone());
+                notify(Update::Failed(why));
+            }
         }
         let running = self.studio.outputs();
         let tracked = |o: &CanvasOutputs| {
@@ -3871,6 +3943,9 @@ impl Host {
             a
         });
         let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
+        // Before the host tracks it: recovery stops an output a panicked start left
+        // running (ADR-0055 decision 3).
+        inject!(self, Fault::AfterStreamStart);
         self.outs[slot(c)].streaming = Some((r.url.clone(), Link::default(), id));
         let protocol = match parse_server(&r.url).map(|s| s.protocol) {
             Ok(Protocol::Srt) => api::StreamProtocol::Srt,
@@ -4142,6 +4217,8 @@ impl Host {
         // Tracked until the end, as in `stop_recording`.
         let (_, _, id) = self.outs[slot(c)].streaming.clone()?;
         let report = self.studio.stop_output(id);
+        // Still tracked: recovery ends a stream whose stop panicked half-way.
+        inject!(self, Fault::InStreamEnd);
         let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
             let p = &r.progress;
             (
@@ -6269,6 +6346,22 @@ impl Host {
                 redo: shown.1,
             });
         }
+        self.publish_levels();
+    }
+
+    /// The running audio sources' meters, for `audio.levels`. A source that is both
+    /// global and in the program scene is listed once.
+    fn publish_levels(&self) {
+        let mut next = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for row in self.globals_shown.iter().chain(self.heard.iter()) {
+            if let Some(meter) = &row.meter
+                && seen.insert(row.id)
+            {
+                next.push((row.id.get(), Arc::clone(meter)));
+            }
+        }
+        self.levels.replace_if_changed(next);
     }
 
     /// The edited scene's sources, top first (the program scene; in studio mode the

@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask check-layers` (principle P1, docs/architecture/principles.md).
+xtask = "run --quiet --package xtask --"

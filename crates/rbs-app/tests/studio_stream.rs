@@ -23,7 +23,7 @@ use rbs_app::record_profile::RecordProfile;
 use rbs_app::stream_key::{ACCOUNT, KeyStore, MemoryKeyStore};
 use rbs_app::stream_profile::StreamProfile;
 use rbs_app::studio_host::{
-    Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
+    Command, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
     StreamUpdate, StudioHost, Update,
 };
 use rbs_audio_io_test::TestAudioBackend;
@@ -230,11 +230,22 @@ fn host(
     server: Arc<Server>,
     clock: &TestClock,
 ) -> (StudioHost, Receiver<Update>) {
+    host_fault(gpu, keys, server, clock, None)
+}
+
+fn host_fault(
+    gpu: Arc<GpuContext>,
+    keys: Arc<dyn KeyStore>,
+    server: Arc<Server>,
+    clock: &TestClock,
+    fault: Option<Fault>,
+) -> (StudioHost, Receiver<Update>) {
     let clock = clock.clone();
     let (tx, rx) = mpsc::channel();
     let mut config = HostConfig::desktop();
     config.preview = None;
     config.keys = keys;
+    config.fault = fault;
     let host = StudioHost::spawn(
         config,
         move || {
@@ -554,6 +565,87 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
         _ => None,
     });
     drop(host);
+}
+
+#[test]
+fn a_stream_start_that_panics_after_the_output_started_stops_that_output() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let (host, rx) = host_fault(
+        gpu,
+        keys,
+        Arc::clone(&server),
+        &TestClock::new(),
+        Some(Fault::AfterStreamStart),
+    );
+    host.send(Command::StartStream(request()));
+    match stream(&rx) {
+        StreamUpdate::NotStarted(why) => assert_eq!(why, rbs_crash::CAUGHT_TEXT),
+        other => panic!("{other:?}"),
+    }
+    let stopped = next(&rx, |u| match u {
+        Update::Recovered { stopped } => Some(stopped),
+        _ => None,
+    });
+    assert_eq!(stopped, 1);
+    // The one panic is spent: the next start is tracked and ends.
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    host.send(Command::EndStream);
+    next(&rx, |u| match u {
+        Update::Stream(StreamUpdate::Ended { .. }) => Some(()),
+        Update::Stream(StreamUpdate::Link(_)) => None,
+        Update::Stream(other) => panic!("{other:?}"),
+        _ => None,
+    });
+}
+
+#[test]
+fn a_stream_end_that_panics_half_way_still_ends_the_stream() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let (host, rx) = host_fault(
+        gpu,
+        keys,
+        server,
+        &TestClock::new(),
+        Some(Fault::InStreamEnd),
+    );
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    host.send(Command::EndStream);
+    let ended = next(&rx, |u| match u {
+        Update::Stream(s @ StreamUpdate::Ended { .. }) => Some(s),
+        Update::Recovered { .. } | Update::Stream(StreamUpdate::Link(_)) => None,
+        Update::Error(_) => None,
+        Update::Stream(other) => panic!("{other:?}"),
+        _ => None,
+    });
+    match ended {
+        StreamUpdate::Ended { failure, .. } => {
+            let why = failure.expect("a reason");
+            assert!(why.contains("internal error"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    host.send(Command::EndStream);
+    next(&rx, |u| match u {
+        Update::Stream(StreamUpdate::Ended { failure, .. }) => {
+            assert_eq!(failure, None);
+            Some(())
+        }
+        Update::Stream(StreamUpdate::Link(_)) => None,
+        Update::Stream(other) => panic!("{other:?}"),
+        _ => None,
+    });
 }
 
 /// The next recording update.

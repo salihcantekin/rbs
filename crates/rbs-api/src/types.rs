@@ -867,9 +867,9 @@ pub struct StreamSummary {
 pub struct SourceLevels {
     /// The source.
     pub source: u32,
-    /// Peak per channel in dBFS.
+    /// Peak per channel in dBFS. Silence is −120, the floor JSON can carry.
     pub peak_db: Vec<f32>,
-    /// RMS per channel in dBFS.
+    /// RMS per channel in dBFS. Equal to `peak_db` until an RMS meter exists.
     pub rms_db: Vec<f32>,
 }
 

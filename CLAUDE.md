@@ -66,4 +66,7 @@ A task is done when all four pass, the acceptance criteria are met, and specs ar
 - Write tests first for contracts: conformance tests for ports, property tests for pure logic.
 - Use the controllable `TestClock` from `rbs-core` in tests; never sleep for timing. While iterating, run `cargo test -p <crate>` for the crates you change; run the whole workspace before you push.
 - When a requirement is unclear or a spec seems wrong, stop and ask the human instead of guessing.
+- Read [docs/status.md](docs/status.md) before trusting the roadmap or a "planned" line in an index. If a spec's implementation status and an index disagree, the spec section written beside the code wins, and the index is fixed in the same change.
+- Do not implement a Proposed ADR. An ADR stays Proposed until an independent review is recorded and the owner approves (ADR-0014).
+- The default encode path still reads frames back to the CPU (`YuvDownload`, ADR-0038). Do not add another per-frame CPU copy, and do not change that path outside ADR-0038's exit criteria. UI mutations go through `studio_host::Command` until they are also `rbs_api::Command`.
 - Prefer well-maintained crates already listed in specs. Adding a new dependency to a core or port crate needs a justification in the PR.

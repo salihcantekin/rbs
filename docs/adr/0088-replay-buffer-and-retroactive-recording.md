@@ -1,6 +1,6 @@
 # ADR-0088: Replay buffer: keep the last minutes in memory, save a clip, or turn the buffer into a recording
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-09
 - Deciders: Salih (owner)
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0019](0019-encode-mux-transport-ports.md), [ADR-0020](0020-node-contract-and-schedule-swap.md), [ADR-0026](0026-partitions-and-queues.md), [ADR-0041](0041-studio-recording-on-a-running-engine.md), [ADR-0045](0045-recording-tail-on-stop.md), [ADR-0047](0047-several-outputs-per-canvas.md), [ADR-0050](0050-command-registry-menus-and-toolbar.md), [ADR-0060](0060-shortcuts-in-app-and-global.md), [ADR-0087](0087-output-cost-estimate-and-hardware-limits.md)
@@ -49,5 +49,6 @@ Facts that shape the design:
 ## Review
 
 - 2026-11-09, independent AI session (round 1, reviewing only the ADRs, specs and code): changes requested. Concerns covered contract details, claims about existing code, hot-path and zero-cost rules, and number allocation across these ADRs; each was resolved in the text above (the numbers of protocol minors and scene formats are now assigned at merge time, not claimed by ADRs).
-- Round 2 (verification by a different fresh reviewer) and the owner's approval are still needed before the status can become Accepted (ADR-0014).
-- 2026-11-10, implementation of the ring node (PR 2): decision 6 changed from the parameter channel to an atomic request plus bounded channels, so no lock of any kind runs in `process` (see the text above). Needs the round 2 reviewer to confirm.
+- Round 2 (verification by a different fresh reviewer) was still open when the owner accepted the ADR.
+- 2026-11-10, implementation of the ring node (PR 2): decision 6 changed from the parameter channel to an atomic request plus bounded channels, so no lock of any kind runs in `process` (see the text above).
+- 2026-11-10: Owner (Salih) accepts this ADR. The host and control API already on main may be ahead of the remaining decision text.

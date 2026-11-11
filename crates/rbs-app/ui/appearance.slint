@@ -47,6 +47,8 @@ export global Appearance {
     // Usable themes only, for the pickers, and their list positions.
     in property <[string]> usable-names;
     in property <bool> follow-system: true;
+    // Compact spacing: the next smaller space and control-size token.
+    in property <bool> compact: false;
     // Positions in `usable-names`.
     in property <int> dark-index;
     in property <int> light-index;
@@ -118,6 +120,7 @@ export global Appearance {
     // 0 dark, 1 light, 2 the one theme.
     callback pick(int, int);
     callback set-follow-system(bool);
+    callback set-compact(bool);
     callback select(int);
     callback use-selected();
     callback edit();
@@ -801,6 +804,17 @@ export component AppearanceSettings inherits Rectangle {
                     label: @tr("Follow the system's light or dark setting");
                     checked: Appearance.follow-system;
                     toggled(on) => { Appearance.set-follow-system(on); }
+                }
+            }
+            SettingRow {
+                divider: false;
+                label: @tr("Compact spacing");
+                help: @tr("Uses the next smaller spacing and control size. Regular uses the theme as it is.");
+                fill: false;
+                Toggle {
+                    label: @tr("Compact spacing");
+                    checked: Appearance.compact;
+                    toggled(on) => { Appearance.set-compact(on); }
                 }
             }
             if Appearance.follow-system: SettingRow {

@@ -12,12 +12,15 @@
 use std::fmt;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use rbs_api::request::{ClientInfo, Response};
 use rbs_api::{
     ApiError, ApiOptions, ApiServer, AuditEvent, Command, ControlEndpoint, ControlTransport,
     ServerConfig, TokenHandle, TokenStore,
 };
+
+use crate::levels::{LevelFeed, LevelSampler};
 use rbs_api_ipc::{Endpoint, IpcConfig, IpcTransport};
 use rbs_api_ws::{TlsIdentity, WsConfig, WsTransport};
 
@@ -59,6 +62,8 @@ pub struct RemoteOptions {
     /// The local IPC endpoint to serve as well (`Endpoint::for_current_user`), or
     /// `None` for none. Not serving it is not fatal: `RemoteServer::ipc_problem`.
     pub ipc: Option<Endpoint>,
+    /// Source meters for `audio.levels`. `None`: that topic sends nothing.
+    pub levels: Option<Arc<LevelFeed>>,
 }
 
 /// Network access (ADR-0046): other computers connect over TLS.
@@ -112,6 +117,9 @@ impl RemoteServer {
         config.allow_remote_admin = allow_remote_admin;
         let mut api_options = ApiOptions::new(options.control_waker);
         api_options.audit = options.audit;
+        if let Some(levels) = options.levels {
+            api_options.sampler = Some(Box::new(LevelSampler(levels)));
+        }
         let (api, endpoint) = ApiServer::start(config, tokens, api_options)
             .map_err(|e| StartError::Other(e.to_string()))?;
         // Started here, not by `ApiServer::start`, so the bound addresses can be read.

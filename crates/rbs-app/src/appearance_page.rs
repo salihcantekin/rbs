@@ -87,6 +87,9 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
     on!(on_set_follow_system, |app, page, _file, on: bool| {
         choose(app, page, |ui, _now| ui.set_follow_system(on))
     });
+    on!(on_set_compact, |app, page, _file, on: bool| {
+        choose(app, page, |ui, now| ui.set_compact(on, now))
+    });
     on!(on_select, |_app, page, _file, index: i32| {
         page.ui.selected = usize::try_from(index).ok();
         Change::Page
@@ -608,6 +611,7 @@ fn show(ctx: &Ctx, app: &App) {
         g.set_usable_names(m)
     });
     g.set_follow_system(ui.choice.mode == AppearanceMode::System);
+    g.set_compact(ui.choice.density == rbs_ui::tokens::Density::Compact);
     g.set_dark_index(pos(&ui.choice.dark, Base::Dark));
     g.set_light_index(pos(&ui.choice.light, Base::Light));
     g.set_theme_index(pos(&ui.choice.theme, Base::Dark));

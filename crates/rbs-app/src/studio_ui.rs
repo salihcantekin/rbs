@@ -853,6 +853,7 @@ impl StudioUi {
             control_waker: Box::new(host.api_waker()),
             audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
             ipc,
+            levels: Some(host.level_feed()),
         };
         // The settings may change on the way (a renewed certificate): `host` is taken
         // again below.

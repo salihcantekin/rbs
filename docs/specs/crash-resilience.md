@@ -53,7 +53,7 @@ pub const CAUGHT_TEXT: &str;
   4. a tracked recording or stream that the studio no longer runs is ended again, with an error;
   5. after 3 rounds in a row that panicked: the failure is recorded, the recording and stream are ended, every remaining output is stopped, and `Update::Failed` is sent;
   6. snapshots are published.
-- With the `fault-injection` feature (tests only), `HostConfig::fault` makes the host panic once at a chosen step (`Fault::AfterOutputStart`, `Fault::InRecordingStop`), and `recover` sends `Update::Recovered { stopped }`.
+- With the `fault-injection` feature (tests only), `HostConfig::fault` makes the host panic once at a chosen step (`Fault::AfterOutputStart`, `Fault::InRecordingStop`, `Fault::AfterStreamStart`, `Fault::InStreamEnd`, `Fault::DuringCanvasRestart`), and `recover` sends `Update::Recovered { stopped }`. A panic while the canvas restart is still in progress fails the studio in that same recovery, with `Update::Failed`.
 - Starting the studio runs under `contain`; a panic there is reported as `Update::Failed(CAUGHT_TEXT)`.
 
 ### Crash reports (`rbs-crash`)

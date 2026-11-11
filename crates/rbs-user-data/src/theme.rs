@@ -81,6 +81,8 @@ pub struct Appearance {
     pub light: ThemeId,
     /// Used in `Fixed` mode.
     pub theme: ThemeId,
+    /// Compact uses the next smaller spacing and control size (format 2).
+    pub density: rbs_ui::tokens::Density,
 }
 
 impl Default for Appearance {
@@ -90,6 +92,7 @@ impl Default for Appearance {
             dark: ThemeId::BuiltIn(Base::Dark),
             light: ThemeId::BuiltIn(Base::Light),
             theme: ThemeId::BuiltIn(Base::Dark),
+            density: rbs_ui::tokens::Density::Regular,
         }
     }
 }
@@ -102,6 +105,7 @@ impl Appearance {
             dark,
             light,
             theme,
+            density: rbs_ui::tokens::Density::Regular,
         }
     }
 
@@ -126,6 +130,12 @@ struct AppearanceFile {
     light: String,
     #[serde(default = "dark")]
     theme: String,
+    #[serde(default = "regular")]
+    density: String,
+}
+
+fn regular() -> String {
+    "regular".into()
 }
 
 fn system() -> String {
@@ -140,7 +150,18 @@ fn light() -> String {
 
 impl Document for Appearance {
     const KIND: &'static str = "appearance";
-    const FORMAT: u32 = 1;
+    const FORMAT: u32 = 2;
+
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        match from {
+            1 => {
+                body.entry("density")
+                    .or_insert(toml::Value::String("regular".into()));
+                Ok(())
+            }
+            other => Err(format!("format {other} cannot be read")),
+        }
+    }
 
     fn from_body(body: toml::Table) -> Result<Self, String> {
         let f: AppearanceFile = document::from_body(body)?;
@@ -152,11 +173,17 @@ impl Document for Appearance {
         let id = |s: &str, what: &str| {
             ThemeId::parse(s).ok_or_else(|| format!("{what} {s:?} is not a theme id"))
         };
+        let density = match f.density.as_str() {
+            "regular" => rbs_ui::tokens::Density::Regular,
+            "compact" => rbs_ui::tokens::Density::Compact,
+            d => return Err(format!("density {d:?} is not regular or compact")),
+        };
         Ok(Appearance {
             mode,
             dark: id(&f.dark, "dark")?,
             light: id(&f.light, "light")?,
             theme: id(&f.theme, "theme")?,
+            density,
         })
     }
 
@@ -170,6 +197,11 @@ impl Document for Appearance {
             dark: self.dark.to_string(),
             light: self.light.to_string(),
             theme: self.theme.to_string(),
+            density: match self.density {
+                rbs_ui::tokens::Density::Regular => "regular",
+                rbs_ui::tokens::Density::Compact => "compact",
+            }
+            .into(),
         })
     }
 }
@@ -197,4 +229,27 @@ pub fn read_base(path: &Path) -> Option<Base> {
         }
     }
     None
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::document::{self, Document};
+
+    #[test]
+    fn a_format_1_appearance_file_is_regular_spacing() {
+        let text = "\
+format = 1
+kind = \"appearance\"
+mode = \"fixed\"
+dark = \"builtin:dark\"
+light = \"builtin:light\"
+theme = \"builtin:light\"
+";
+        let read = document::parse::<Appearance>(text).unwrap();
+        assert_eq!(read.format, 1);
+        assert_eq!(read.document.density, rbs_ui::tokens::Density::Regular);
+        assert_eq!(Appearance::FORMAT, 2);
+    }
 }

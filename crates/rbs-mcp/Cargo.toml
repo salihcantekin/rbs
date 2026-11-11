@@ -1,0 +1,15 @@
+[package]
+name = "rbs-mcp"
+description = "MCP server for AI agents: a control API client (ADR-0052). Speaks stdio and reaches RBS only through local IPC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

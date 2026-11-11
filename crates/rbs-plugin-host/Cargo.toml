@@ -1,0 +1,15 @@
+[package]
+name = "rbs-plugin-host"
+description = "Reads installed plugin manifests and loads nothing until a plugin is activated (ADR-0006, ADR-0013)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-plugin-sdk = { path = "../rbs-plugin-sdk" }
+
+[lints]
+workspace = true
