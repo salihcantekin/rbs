@@ -291,7 +291,7 @@ fn one_click_on_a_tab_selects_it_while_the_focus_is_elsewhere() {
 #[test]
 fn losing_the_window_activation_closes_the_tooltip() {
     let p = setup();
-    rbs_app::tooltip_guard::install(&p);
+    rbs_app::window_events::install(&p);
     let o = p.global::<Overlays>();
     let activate = |on: bool| {
         p.window()

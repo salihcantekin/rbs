@@ -1,9 +1,11 @@
 //! Windows-only parts of the app: keeping RBS running without a window (ADR-0056: the
 //! tray icon and the named event a second launch signals) and the toolbar row as the
-//! title bar (ADR-0071, [`caption`]). Marked low-level module (P11): calls into Win32,
+//! title bar (ADR-0071, [`caption`]), and windows that stay drawn while a native
+//! context menu is built ([`redraw`]). Marked low-level module (P11): calls into Win32,
 //! each `unsafe` block with its invariant.
 
 pub mod caption;
+pub mod redraw;
 mod show_event;
 mod tray;
 

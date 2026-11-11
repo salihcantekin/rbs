@@ -30,7 +30,7 @@ rbs-app-ui = { path = "../rbs-app-ui" }
 # Exact pin (ADR-0022, decision 5). Skia renderer (decision 1). `unstable-wgpu-30`
 # lets the preview display engine surfaces imported on rbs-gpu's device (decision 2,
 # ADR-0028); it must track rbs-gpu's wgpu major. `unstable-winit-030` lets
-# src/tooltip_guard.rs see the pointer leave, press and scroll before Slint does, so
+# src/window_events.rs see the pointer leave, press and scroll before Slint does, so
 # tooltips close when Slint would not tell their control (ADR-0094).
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30", "unstable-winit-030", "raw-window-handle-06"] }
 # Slint's own list of open in-window popups, so the preview layer hides only while one

@@ -1324,7 +1324,7 @@ impl Ctx {
                 ));
                 return;
             };
-            rbs_app::tooltip_guard::install(&w);
+            rbs_app::window_events::install(&w);
             look::apply(
                 &w.global::<Theme>(),
                 &w.global::<Tokens>(),
@@ -2145,7 +2145,7 @@ impl Ctx {
 
     fn new_float(&self) -> Option<FloatSlot> {
         let fw = FloatWindow::new().ok()?;
-        rbs_app::tooltip_guard::install(&fw);
+        rbs_app::window_events::install(&fw);
         install(&fw.global::<Shell>(), self);
         replay_page::install(&fw.global::<ReplayBuffer>(), self);
         install_menus(&fw.global::<Menus>(), self);
@@ -2830,7 +2830,7 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
         ));
         return;
     };
-    rbs_app::tooltip_guard::install(&w);
+    rbs_app::window_events::install(&w);
     look::apply(
         &w.global::<Theme>(),
         &w.global::<Tokens>(),
@@ -3507,7 +3507,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         error = error.or(Some(UiError::Other(why)));
     }
     let main = MainWindow::new()?;
-    rbs_app::tooltip_guard::install(&main);
+    rbs_app::window_events::install(&main);
     look::apply(
         &main.global::<Theme>(),
         &main.global::<Tokens>(),

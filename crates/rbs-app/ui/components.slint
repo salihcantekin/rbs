@@ -2085,7 +2085,7 @@ export global Overlays {
     // at once for keyboard focus, stays while the pointer is over the control or the
     // tooltip, and Escape dismisses it until the pointer or focus leaves. Only the
     // active window shows one. The app reports what Slint does not tell a control
-    // (`rbs_app::tooltip_guard`): losing the activation, a press, a scroll, the pointer
+    // (`rbs_app::window_events`): losing the activation, a press, a scroll, the pointer
     // leaving the window or moving off the control (`pointer-at`) close it.
     in-out property <int> tip-owner: -1;
     in-out property <bool> window-active: true;

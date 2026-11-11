@@ -1,4 +1,8 @@
-//! Closes tooltips when Slint would not tell their control (ADR-0094).
+//! What each RBS window needs from its own window events: tooltips that close when
+//! Slint would not tell their control (ADR-0094), and on Windows a window that stays
+//! drawn while Slint builds a native context menu (`win::redraw`).
+//!
+//! ## Tooltips
 //!
 //! A tooltip is a layer of its window (`OverlayHost`), opened and closed by the pointer
 //! entering and leaving its control. Some ways out never reach the control, and the
@@ -38,9 +42,10 @@ thread_local! {
     static WATCHES: RefCell<Vec<Watch>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Makes `component`'s tooltips close when Slint would not tell their control. Call
-/// once per window, on the UI thread, right after the window is made. Watches of
-/// windows dropped since are cleared here.
+/// Makes `component`'s tooltips close when Slint would not tell their control, and on
+/// Windows keeps its window drawn while a native menu is built. Call once per window,
+/// on the UI thread, right after the window is made. Watches of windows dropped since
+/// are cleared here.
 pub fn install<C>(component: &C)
 where
     C: ComponentHandle + 'static,
@@ -48,9 +53,19 @@ where
 {
     follow_activation(component);
     let weak = component.as_weak();
+    #[cfg(windows)]
+    let mut subclassed = false;
     component
         .window()
         .on_winit_window_event(move |window, event| {
+            // The Win32 window exists once it sends events; its handle is read on the
+            // next turn, outside Slint's event handling. Again on each activation, in
+            // case the window was made again (subclassing twice only replaces it).
+            #[cfg(windows)]
+            if !subclassed || matches!(event, WindowEvent::Focused(true)) {
+                subclassed = true;
+                keep_visible_soon(weak.clone());
+            }
             let close = match event {
                 WindowEvent::CursorMoved { position, .. } => {
                     let scale = f64::from(window.scale_factor());
@@ -100,5 +115,24 @@ where
             alive: Box::new(move || weak.upgrade().is_some()),
             _tracker: tracker,
         });
+    });
+}
+
+/// Subclasses `component`'s Win32 window (see `win::redraw`) on the next event loop
+/// turn.
+#[cfg(windows)]
+fn keep_visible_soon<C: ComponentHandle + 'static>(weak: slint::Weak<C>) {
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Some(c) = weak.upgrade() else {
+            return;
+        };
+        let handle = c.window().window_handle();
+        let Ok(handle) = handle.window_handle() else {
+            return;
+        };
+        if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+            crate::win::redraw::keep_visible(win32.hwnd);
+        }
     });
 }

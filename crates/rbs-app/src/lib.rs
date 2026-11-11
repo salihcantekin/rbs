@@ -45,8 +45,8 @@ pub mod replay_settings;
 pub mod stream_key;
 pub mod stream_profile;
 pub mod studio_host;
-pub mod tooltip_guard;
 pub mod user_session;
 pub mod vcam_settings;
 #[cfg(windows)]
 pub mod win;
+pub mod window_events;
