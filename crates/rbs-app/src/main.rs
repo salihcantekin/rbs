@@ -2332,7 +2332,11 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         });
     }
     g.on_panel_data(|id| entry::guard_or(slint::DataTransfer::default, || text_data(id)));
-    g.on_is_panel(|data| data.plain_text().ok().and_then(|t| panel(&t)).is_some());
+    g.on_is_panel(|data| {
+        entry::guard_or(|| false, || {
+            data.plain_text().ok().and_then(|t| panel(&t)).is_some()
+        })
+    });
     on!(on_drag_over, |app,
                        window: i32,
                        data: slint::DataTransfer,
@@ -2840,10 +2844,11 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 22] = [
+const SETTINGS_SECTIONS: [&str; 23] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.appearance.themes",
+    "settings.general.capture",
     "settings.general.closing",
     "settings.general.studio",
     "settings.recording.files",
@@ -3245,7 +3250,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             text_data(id.to_string().into())
         })
     });
-    g.on_is_panel(|data| data.plain_text().ok().and_then(|t| panel(&t)).is_some());
+    g.on_is_panel(|data| {
+        entry::guard_or(|| false, || {
+            data.plain_text().ok().and_then(|t| panel(&t)).is_some()
+        })
+    });
     on!(on_move_source_to, |app, id: i32, to: i32| {
         app.studio.move_source_to(id, to);
     });

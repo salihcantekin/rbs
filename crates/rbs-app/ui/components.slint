@@ -879,8 +879,6 @@ export component Select inherits Rectangle {
     // Shown in `text.secondary` while no option is chosen (`index` out of range).
     in property <string> placeholder;
     property <bool> chosen: root.index >= 0 && root.index < root.options.length;
-    property <int> highlight: 0;
-    property <length> scroll-y: 0px;
     callback selected(int);
     height: Tokens.size-control-md;
     min-width: Tokens.size-menu-sm / 2;
@@ -889,42 +887,14 @@ export component Select inherits Rectangle {
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
     border-color: !root.enabled ? Theme.border-subtle
-        : menu.is-open || touch.has-hover ? Theme.border-strong : Theme.border-subtle;
+        : touch.has-hover ? Theme.border-strong : Theme.border-subtle;
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
     accessible-role: combobox;
     accessible-label: @tr("{}: {}", root.label, root.chosen ? root.options[root.index] : root.placeholder);
     accessible-enabled: root.enabled;
-    accessible-expandable: true;
-    accessible-expanded: menu.is-open;
-    accessible-action-default => { if root.enabled { root.open-list(); } }
+    accessible-action-default => { if root.enabled { menu.show({ x: 0px, y: root.height }); } }
     forward-focus: focus;
-    function open-list() {
-        if !root.enabled || root.options.length == 0 { return; }
-        root.highlight = root.chosen ? root.index : 0;
-        root.place-scroll();
-        menu.show();
-    }
-    function move-highlight(step: int) {
-        if root.options.length == 0 { return; }
-        root.highlight = Math.mod(root.highlight + step + root.options.length, root.options.length);
-        root.place-scroll();
-    }
-    // Keeps the highlighted row inside the menu. The list's offset lives here because a
-    // PopupWindow's children cannot be reached from outside it.
-    function place-scroll() {
-        let y = root.highlight * Tokens.size-control-md;
-        let view = min(root.options.length * Tokens.size-control-md, Tokens.size-select-list-h - 2 * Tokens.space-1);
-        if y + root.scroll-y < 0px {
-            root.scroll-y = -y;
-        } else if y + Tokens.size-control-md + root.scroll-y > view {
-            root.scroll-y = view - y - Tokens.size-control-md;
-        }
-    }
-    function pick(i: int) {
-        menu.close();
-        root.selected(i);
-    }
     HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-2;
@@ -950,82 +920,24 @@ export component Select inherits Rectangle {
         focus-on-click: false;
         enabled: root.enabled;
         key-pressed(e) => {
-            if menu.is-open {
-                if e.text == Key.DownArrow { root.move-highlight(1); return accept; }
-                if e.text == Key.UpArrow { root.move-highlight(-1); return accept; }
-                if e.text == Key.Return || e.text == " " { root.pick(root.highlight); return accept; }
-                if e.text == Key.Escape { menu.close(); return accept; }
-                return reject;
-            }
-            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { root.open-list(); return accept; }
+            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { menu.show({ x: 0px, y: root.height }); return accept; }
             reject
         }
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus-pointer(); root.open-list(); }
+        clicked => { focus.focus-pointer(); menu.show({ x: 0px, y: root.height }); }
     }
     FocusRing { show: focus.ring; }
-    menu := PopupWindow {
-        x: 0px;
-        y: root.height + Tokens.space-1;
-        width: max(root.width, Tokens.size-menu-sm);
-        // The hit target is this window. Without a height, rows draw past it and a click
-        // counts as outside, so the menu closes and the row never receives the press.
-        height: min(root.options.length * Tokens.size-control-md + 2 * Tokens.space-1, Tokens.size-select-list-h);
-        close-policy: close-on-click-outside;
-        MenuSurface {
-            width: parent.width;
-            height: parent.height;
-            option-list := Flickable {
-                x: Tokens.space-1;
-                y: Tokens.space-1;
-                width: parent.width - 2 * Tokens.space-1;
-                height: parent.height - 2 * Tokens.space-1;
-                content-height: root.options.length * Tokens.size-control-md;
-                content-y: root.scroll-y;
-                for o[i] in root.options: Rectangle {
-                    y: i * Tokens.size-control-md;
-                    width: parent.width;
-                    height: Tokens.size-control-md;
-                    border-radius: Tokens.radius-sm;
-                    background: i == root.highlight || row-touch.has-hover ? Theme.surface-overlay : transparent;
-                    accessible-role: button;
-                    accessible-label: o;
-                    accessible-checked: i == root.index;
-                    accessible-action-default => { root.pick(i); }
-                    HorizontalLayout {
-                        padding-left: Tokens.space-2;
-                        padding-right: Tokens.space-2;
-                        spacing: Tokens.space-2;
-                        VerticalLayout {
-                            width: Tokens.size-icon-box;
-                            alignment: center;
-                            Icon {
-                                name: i == root.index ? IconName.check : IconName.none;
-                                ink: Theme.text-primary;
-                            }
-                        }
-                        Text {
-                            horizontal-stretch: 1;
-                            text: o;
-                            color: Theme.text-primary;
-                            font-size: Tokens.type-body-size;
-                            font-weight: i == root.index ? Tokens.type-title-weight : Tokens.type-body-weight;
-                            vertical-alignment: center;
-                            overflow: elide;
-                            accessible-role: none;
-                        }
-                    }
-                    row-touch := TouchArea {
-                        clicked => { root.pick(i); }
-                        pointer-event(e) => {
-                            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                                root.pick(i);
-                            }
-                        }
-                    }
-                }
+    // The list of options is a native menu (ADR-0094 B1), opened under the field.
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            for o[i] in root.options: MenuItem {
+                title: o;
+                checkable: true;
+                checked: i == root.index;
+                activated => { root.selected(i); }
             }
         }
     }
@@ -1036,6 +948,7 @@ export component Select inherits Rectangle {
 // as well as the fill (never by colour alone, U7). States: unchecked, checked, hover
 // (accent border), pressed (overlay or hover fill), focused (focus ring) and disabled
 // (subtle border, disabled ink, no input). A long label wraps and the row grows.
+
 export component Checkbox inherits Rectangle {
     in property <string> text;
     in property <bool> checked;
