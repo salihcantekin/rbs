@@ -355,7 +355,7 @@ component FontField inherits VerticalLayout {
             for name[i] in Appearance.font-suggestions: Rectangle {
                 height: Tokens.size-control-md;
                 border-radius: Tokens.radius-sm;
-                background: i == root.pick || touch.has-hover ? Theme.accent-subtle : transparent;
+                background: i == root.pick || touch.has-hover ? Theme.surface-overlay : transparent;
                 accessible-role: button;
                 accessible-label: name;
                 accessible-action-default => { root.choose(name); }
@@ -365,6 +365,7 @@ component FontField inherits VerticalLayout {
                     text: name;
                     color: Theme.text-primary;
                     font-size: Tokens.type-body-size;
+                    font-weight: i == root.pick ? Tokens.type-title-weight : Tokens.type-body-weight;
                     vertical-alignment: center;
                     overflow: elide;
                 }
@@ -622,9 +623,8 @@ component ThemeEditor inherits VerticalLayout {
 }
 
 // One theme in the library list: its swatch, its name, "Built in" for the built-in
-// ones, and its first problem when it cannot be used. The selected one has the
-// accent-tinted row with the accent bar (as in the section list) and is marked
-// selected for screen readers (U7). At its right edge, its actions as icon buttons:
+// ones, and its first problem when it cannot be used. The selected one has a quiet
+// plate and the title weight, and is marked selected for screen readers (U7). At its right edge, its actions as icon buttons:
 // Use, Edit (Duplicate to edit for a built-in theme), Duplicate, and for user themes
 // Export and Delete; each acts on this row's theme.
 component ThemeListRow inherits Rectangle {
@@ -644,8 +644,9 @@ component ThemeListRow inherits Rectangle {
     min-height: row.min-height;
     preferred-height: row.preferred-height;
     border-radius: Tokens.radius-md;
-    background: root.selected ? Theme.accent-subtle
-        : touch.has-hover && root.enabled ? Theme.surface-overlay : transparent;
+    background: root.selected || (touch.has-hover && root.enabled) ? Theme.surface-overlay : transparent;
+    border-width: root.selected ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
     accessible-role: list-item;
     accessible-label: root.theme.user ? root.theme.name : @tr("{} (built in)", root.theme.name);
     accessible-item-selectable: true;
@@ -653,14 +654,6 @@ component ThemeListRow inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.activated(); } }
     forward-focus: focus;
-    if root.selected: Rectangle {
-        x: 0;
-        width: Tokens.size-focus-ring;
-        height: parent.height - Tokens.space-2 * 2;
-        y: Tokens.space-2;
-        border-radius: self.width / 2;
-        background: Theme.accent;
-    }
     row := HorizontalLayout {
         padding: Tokens.space-2;
         padding-left: Tokens.space-3;
@@ -699,7 +692,7 @@ component ThemeListRow inherits Rectangle {
             Rectangle {
                 border-radius: self.height / 2;
                 border-width: Tokens.size-border;
-                border-color: Theme.border-strong;
+                border-color: Theme.border-subtle;
                 height: chip.preferred-height + Tokens.space-1;
                 width: chip.preferred-width + Tokens.space-2 * 2;
                 chip := Text {

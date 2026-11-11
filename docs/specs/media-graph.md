@@ -42,7 +42,7 @@ The state stored in the graph description is what the scene **wants**; the engin
 
 - A source becomes Active when it is visible in a scene that is on air, in preview, or feeding any output (including audio-only use). A source that is only in a scene that is not on air and not in preview is Standby.
 - Transitions: Installed -> Standby (create, configure, no resources unless keep-warm), Standby -> Active (`prepare`, then included in the next graph swap), Active -> Standby (removed at the next swap; resources released on a background thread unless keep-warm), Standby -> Installed (destroyed).
-- Hidden layers inside an Active scene are not pulled by the compositor; their sources are Standby unless another active scene or output uses them. Showing such a layer moves its source to Active, so it appears after warm-up; sources that must appear instantly use keep-warm.
+- Hidden layers inside an Active scene are not pulled by the compositor. Their sources stay Active, so showing the layer again does not wait for the device. A source the user deactivated (`source.set_active`, the `standby` hint) is Standby even while its item is visible. A companion is heard only while its picture is drawn.
 
 ## Scheduling
 

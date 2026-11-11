@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 10
+//! format = 11
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -121,6 +121,9 @@ struct CanvasDoc {
     /// What a follower shows when it may not show the followed scene (format 9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fallback: Option<FallbackDoc>,
+    /// Scene list order (format 11). Absent: id order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    order: Vec<u32>,
 }
 
 /// A follower's fallback: `"keep_last"` or `{ scene = id }`.
@@ -493,7 +496,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 10;
+    const FORMAT: u32 = 11;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -506,10 +509,11 @@ impl Document for SceneCollection {
     /// `hints` (ADR-0077); a format 7 body is a format 8 body without them. Format 9 adds the optional canvas
     /// `follow` and `fallback` (ADR-0093); a format 8 body is a format 9 body without them.
     /// Format 10 adds the optional source `monitor` (ADR-0097); a format 9 body is a
-    /// format 10 body without it.
+    /// format 10 body without it. Format 11 adds the optional canvas `order` (the
+    /// scene list); a format 10 body is a format 11 body without it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=9 => {
+            1..=10 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -531,8 +535,18 @@ impl Document for SceneCollection {
                     .flatten()
                     .filter_map(toml::Value::as_table)
                     .any(|s| s.contains_key("monitor"));
-                if monitored {
+                if from < 10 && monitored {
                     return Err(format!("format {from} has no source `monitor` (format 10)"));
+                }
+                let ordered = body
+                    .get("canvases")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|c| c.contains_key("order"));
+                if from < 11 && ordered {
+                    return Err(format!("format {from} has no canvas `order` (format 11)"));
                 }
                 Ok(())
             }
@@ -566,6 +580,7 @@ impl Document for SceneCollection {
                         }
                         _ => None,
                     },
+                    order: c.order.iter().map(|id| id.get()).collect(),
                 }
             })
             .collect();
@@ -686,6 +701,7 @@ impl Document for SceneCollection {
                     Some(FallbackDoc::Scene { scene }) => Fallback::Scene(SceneId::from_raw(scene)),
                     _ => Fallback::KeepLast,
                 };
+                canvas.order = c.order.into_iter().map(SceneId::from_raw).collect();
                 Ok(canvas)
             })
             .collect::<Result<Vec<_>, String>>()?;

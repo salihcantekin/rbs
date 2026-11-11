@@ -140,6 +140,12 @@ export global Shell {
     in property <[EdgeTabData]> bottom-tabs;
     // Every edge tab's panel id, joined: changes when one is added, pinned or closed.
     in property <string> edge-ids;
+    // Ask the main window to slide an auto-hidden panel out (reveal-edge 0 left,
+    // 1 right, 2 bottom) or to slide the current one back (reveal-edge -1).
+    // The serial changes on each ask, so the same panel can be shown again.
+    in property <int> reveal-edge: -1;
+    in property <EdgeTabData> reveal-tab;
+    in property <int> reveal-serial;
     // The slid-out auto-hide panel's rectangle while one is out (the preview layer
     // leaves it out, ADR-0054).
     in-out property <bool> flyout-open;
@@ -151,6 +157,9 @@ export global Shell {
     // under the pointer reports moves and the drop in its own coordinates, and Rust
     // answers with the guide: the part of window <drop-window> the drop would fill.
     pure callback panel-data(string /* panel */) -> data-transfer;
+    // True when a drag payload is a panel id, so a source drag is not docked and a
+    // panel drag is not taken for a source.
+    pure callback is-panel(data-transfer) -> bool;
     callback drag-over(int /* window */, data-transfer, length, length);
     callback drag-drop(int /* window */, data-transfer, length, length);
     callback drag-leave();
@@ -314,6 +323,8 @@ component PanelContent inherits Rectangle {
 component Tab inherits Rectangle {
     in property <TabData> tab;
     in property <bool> selected;
+    // A stack with one panel is a window title, not a tab.
+    in property <bool> sole;
     callback activate();
     callback open-menu();
     callback close();
@@ -321,6 +332,8 @@ component Tab inherits Rectangle {
     callback maximize();
     height: Tokens.size-control-lg;
     width: title.preferred-width + 2 * Tokens.space-2;
+    border-radius: Tokens.radius-sm;
+    background: !selected && touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: AccessibleRole.tab;
     accessible-label: tab.title;
     accessible-item-selected: selected;
@@ -356,15 +369,15 @@ component Tab inherits Rectangle {
         text: tab.title;
         color: selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         font-size: Tokens.type-label-size;
-        font-weight: selected ? Tokens.type-title-weight : Tokens.type-label-weight;
+        font-weight: selected && !sole ? Tokens.type-title-weight : Tokens.type-label-weight;
         vertical-alignment: center;
     }
     Rectangle {
-        x: Tokens.space-1;
-        width: parent.width - 2 * Tokens.space-1;
-        y: parent.height - Tokens.size-focus-ring;
-        height: Tokens.size-focus-ring;
-        background: selected ? Theme.accent : transparent;
+        x: title.x;
+        width: title.preferred-width;
+        y: parent.height - Tokens.size-tab-indicator;
+        height: selected && !sole ? Tokens.size-tab-indicator : 0px;
+        background: Theme.accent;
     }
     Rectangle {
         border-width: focus.has-focus ? Tokens.size-focus-ring : 0px;
@@ -391,7 +404,7 @@ component StackView inherits Rectangle {
     background: Theme.surface-raised;
     border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
-    border-radius: Tokens.radius-md;
+    border-radius: Tokens.radius-sm;
     clip: true;
     if !strip: Rectangle {
         x: Tokens.size-border;
@@ -410,6 +423,7 @@ component StackView inherits Rectangle {
                     alignment: start;
                     for t[i] in data.tabs: Tab {
                         tab: t;
+                        sole: data.tabs.length < 2;
                         selected: i == data.active && !data.collapsed;
                         activate => {
                             if data.collapsed { Shell.collapse(t.id, false); }
@@ -474,8 +488,10 @@ component StackView inherits Rectangle {
                     clicked => { Shell.auto-hide(active-id); }
                 }
                 if data.can-collapse && Shell.maximized == "": IconButton {
-                    icon: data.collapsed ? IconName.chevron-right : IconName.chevron-down;
-                    name: data.collapsed ? @tr("Expand {}", active-title) : @tr("Collapse {}", active-title);
+                    // A tall stack is a column: it collapses toward the side. A wide one
+                    // collapses upward.
+                    icon: (data.h > data.w) ? (data.collapsed ? IconName.chevron-right : IconName.chevron-left) : (data.collapsed ? IconName.chevron-up : IconName.chevron-down);
+                    name: data.collapsed ? @tr("Expand {}", active-title) : (data.h > data.w ? @tr("Collapse {} to the side", active-title) : @tr("Collapse {}", active-title));
                     accessible-expandable: true;
                     accessible-expanded: !data.collapsed;
                     clicked => { Shell.collapse(active-id, !data.collapsed); }
@@ -490,13 +506,6 @@ component StackView inherits Rectangle {
                 }
             }
         }
-    }
-    if !strip && !data.collapsed: Rectangle {
-        x: Tokens.size-border;
-        y: bar;
-        width: parent.width - 2 * Tokens.size-border;
-        height: Tokens.size-border;
-        background: Theme.border-subtle;
     }
     // A collapsed stack in a horizontal split: its expand button and the tabs' icons,
     // named for screen readers (no rotated text).
@@ -540,7 +549,8 @@ component StackView inherits Rectangle {
 }
 
 // Splitter between two cards: the gap itself, shown in the accent colour while hovered,
-// dragged or focused. Drag with the pointer, or focus it and use the arrow keys.
+// dragged or keyboard-focused. A pointer drag does not leave it focused. Tab to it
+// and use the arrow keys to nudge.
 component Splitter inherits Rectangle {
     in property <HandleData> data;
     background: focus.has-focus || touch.has-hover || touch.pressed ? Theme.accent : transparent;
@@ -568,8 +578,10 @@ component Splitter inherits Rectangle {
     // under the pointer takes the press for itself (focus-on-click).
     touch := TouchArea {
         mouse-cursor: data.horizontal ? ew-resize : ns-resize;
+        // A pointer drag does not focus the handle: the accent colour stays only
+        // while the pointer is on it or it is dragged. Tab still focuses it, so the
+        // arrow keys can nudge it.
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down { focus.focus-pointer(); }
             if e.kind == PointerEventKind.up { Shell.drag-end(); }
         }
         moved => {
@@ -834,10 +846,12 @@ component DockArea inherits Rectangle {
     // the dock area reaches it.
     drop := DropArea {
         can-drop(e) => {
+            if !Shell.is-panel(e.data) { return DragAction.none; }
             Shell.drag-over(root.window, e.data, e.position.x, e.position.y);
             return DragAction.move;
         }
         dropped(e) => {
+            if !Shell.is-panel(e.data) { return DragAction.none; }
             Shell.drag-drop(root.window, e.data, e.position.x, e.position.y);
             return DragAction.move;
         }
@@ -904,10 +918,10 @@ component EdgeTab inherits Rectangle {
     property <length> along: label.preferred-width + Tokens.size-icon-box + 2 * Tokens.space-2 + Tokens.space-1;
     width: vertical ? Tokens.size-control-md : along;
     height: vertical ? along : Tokens.size-control-md;
-    border-radius: Tokens.radius-md;
+    border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
     border-color: Theme.border-subtle;
-    background: open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
+    background: open || touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
     accessible-role: AccessibleRole.tab;
     accessible-label: data.title;
     accessible-expandable: true;
@@ -976,9 +990,10 @@ component EdgeStrip inherits Rectangle {
     }
 }
 
-// A slid-out auto-hide panel: a card over the dock area along its edge, with Pin and
-// Hide. Escape slides it back. A direct child of the window, so it reports its own
-// rectangle for the preview layer (ADR-0054).
+// A slid-out auto-hide panel: a card over the dock area along its edge. Its title
+// drags like a tab, the menu is the panel menu, Pin docks it and Close closes it.
+// Escape, or a click on the dock, slides it back without closing it. A direct child
+// of the window, so it reports its own rectangle for the preview layer (ADR-0054).
 component Flyout inherits Rectangle {
     in property <EdgeTabData> data;
     callback hide();
@@ -987,12 +1002,17 @@ component Flyout inherits Rectangle {
     init => { Shell.flyout = rect; Shell.flyout-open = true; focus.focus(); }
     changed rect => { Shell.flyout = rect; }
     background: Theme.surface-raised;
-    border-color: Theme.border-strong;
+    border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
     border-radius: Tokens.radius-md;
     clip: true;
     accessible-role: groupbox;
     accessible-label: data.title;
+    // The same panel menu as a docked tab: move, float, close.
+    menu := CommandMenu {
+        context: "panel";
+        target: "id=" + data.id;
+    }
     focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Escape { root.hide(); return accept; }
@@ -1005,13 +1025,32 @@ component Flyout inherits Rectangle {
                     padding-left: Tokens.space-3;
                     padding-right: Tokens.space-1;
                     spacing: Tokens.space-1;
-                    Text {
-                        text: data.title;
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-label-size;
-                        font-weight: Tokens.type-title-weight;
-                        vertical-alignment: center;
+                    // The title is the drag handle, the same as a docked tab.
+                    DragArea {
                         horizontal-stretch: 1;
+                        allow-move: !Shell.locked;
+                        data: Shell.panel-data(data.id);
+                        Text {
+                            text: data.title;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-label-size;
+                            font-weight: Tokens.type-title-weight;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: IconName.more;
+                            name: @tr("Actions for {}", data.title);
+                            clicked => {
+                                menu.open({
+                                    x: self.absolute-position.x - menu.absolute-position.x,
+                                    y: self.absolute-position.y - menu.absolute-position.y + self.height,
+                                });
+                            }
+                        }
                     }
                     VerticalLayout {
                         alignment: center;
@@ -1025,8 +1064,8 @@ component Flyout inherits Rectangle {
                         alignment: center;
                         IconButton {
                             icon: IconName.close;
-                            name: @tr("Hide {}", data.title);
-                            clicked => { root.hide(); }
+                            name: @tr("Close {}", data.title);
+                            clicked => { Shell.close-panel(data.id); root.hide(); }
                         }
                     }
                 }
@@ -1573,7 +1612,7 @@ component Toast inherits Rectangle {
     height: Tokens.size-control-lg + 2 * Tokens.space-2;
     width: row.preferred-width;
     background: Theme.surface-overlay;
-    border-color: Theme.border-strong;
+    border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
     border-radius: Tokens.radius-md;
     accessible-role: AccessibleRole.text;
@@ -1842,6 +1881,26 @@ export component MainWindow inherits Window {
     // Pinning, closing or adding an auto-hidden panel slides the flyout back.
     property <string> edge-ids: Shell.edge-ids;
     changed edge-ids => { hide-flyout(); }
+    // Opening an auto-hidden panel (its menu, or Properties from a source) slides
+    // it out. Any other command slides it back.
+    property <int> reveal-serial: Shell.reveal-serial;
+    changed reveal-serial => {
+        if Shell.reveal-edge >= 0 {
+            root.flyout-tab = Shell.reveal-tab;
+            root.flyout-edge = Shell.reveal-edge;
+        } else {
+            root.hide-flyout();
+        }
+    }
+    // A click on the dock, outside the slid-out panel, slides it back. The flyout
+    // is a later sibling, so it stays above this and keeps its own clicks.
+    if root.flyout-edge >= 0: TouchArea {
+        x: Shell.gap + (Shell.left-tabs.length > 0 ? Tokens.size-control-md + Shell.gap : 0px);
+        y: frame.height + Shell.gap;
+        width: dock.width;
+        height: dock.height;
+        clicked => { root.hide-flyout(); }
+    }
     if flyout-edge >= 0: Flyout {
         property <length> size: min(flyout-tab.size, flyout-edge == 2 ? dock.height : dock.width);
         // The dock area's place in the window, from the layout around it.

@@ -57,6 +57,15 @@ pub struct AppSettings {
     /// stays 1.
     #[serde(default)]
     pub swap_after_transition: bool,
+    /// Leave the RBS windows out of a screen capture (Windows
+    /// `WDA_EXCLUDEFROMCAPTURE`). On when the key is absent: a screen recording does
+    /// not include RBS. Other systems ignore it.
+    #[serde(default = "yes")]
+    pub exclude_own_window: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -66,6 +75,7 @@ impl Default for AppSettings {
             on_close: OnClose::platform_default(),
             background_notice_shown: false,
             swap_after_transition: false,
+            exclude_own_window: true,
         }
     }
 }

@@ -261,6 +261,18 @@ fn every_request() -> Vec<Request> {
         c(Command::CanvasSetPreview(SetPreview { scene: Some(2) })),
         c(Command::CanvasTransition),
         c(Command::ItemRemove(ItemRef { item: 7 })),
+        c(Command::ItemMove(MoveItem {
+            item: 7,
+            direction: LayerDirection::Up,
+        })),
+        c(Command::SceneMove(MoveScene {
+            scene: 2,
+            direction: LayerDirection::Down,
+        })),
+        c(Command::SourceSetActive(SetSourceActive {
+            source: 3,
+            active: false,
+        })),
         c(Command::GlobalList),
         c(Command::GlobalAdd(AddGlobal { source: 3 })),
         c(Command::GlobalRemove(RemoveGlobal {

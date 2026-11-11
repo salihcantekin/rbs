@@ -3,6 +3,7 @@
 //! visible, the Program panel's preview layer, recording and streaming with their
 //! output settings.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -172,8 +173,11 @@ pub struct StudioUi {
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
     library_samples: Rc<VecModel<SampleData>>,
-    /// The selected source's id (-1 none), shown in every window's Properties.
+    /// The selected source's id (-1 none). The Sources rows follow this.
     pub selected: i32,
+    /// The source Properties last showed. It stays when the selection is cleared,
+    /// so the panel is empty only when the scene has no sources.
+    inspected: Cell<i32>,
     /// The Filters tab's selection and the drag in progress (ADR-0062).
     filter_ui: filters::FilterUi,
     /// An Add source is on its way: the next new source is selected.
@@ -425,6 +429,7 @@ impl StudioUi {
             library_samples: Rc::new(VecModel::default()),
             filter_ui: filters::FilterUi::default(),
             selected: -1,
+            inspected: Cell::new(-1),
             adding: false,
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
@@ -553,6 +558,18 @@ impl StudioUi {
         g.set_collections(ModelRc::from(self.collection_rows.clone()));
     }
 
+    /// The source Properties shows: the selection, else the last source it showed
+    /// that still exists, else the first source in the list. `-1` only when the
+    /// scene has no sources.
+    fn remember_properties(&self) -> i32 {
+        let ids: Vec<i32> = (0..self.sources.row_count())
+            .filter_map(|i| self.sources.row_data(i).map(|s| s.id))
+            .collect();
+        let shown = properties_source(self.selected, self.inspected.get(), &ids);
+        self.inspected.set(shown);
+        shown
+    }
+
     /// Pushes the scalar state into a window's `Studio` global.
     pub fn push(&self, g: &Studio<'_>, states: PictureStates, picture_panel: &str) {
         let preview_state = states.program;
@@ -560,6 +577,13 @@ impl StudioUi {
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
+        let looks = (0..self.sources.row_count()).any(|i| {
+            self.sources
+                .row_data(i)
+                .is_some_and(|s| s.id == self.selected && s.picture)
+        });
+        g.set_looks_ready(looks);
+        g.set_properties_source(self.remember_properties());
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
         g.set_switching(self.switching.is_some());
@@ -607,6 +631,11 @@ impl StudioUi {
             )
             .into(),
         );
+        g.set_out_kind(p.format.label().into());
+        g.set_out_encoder_name(self.encoder_name(&p.encoding()).into());
+        g.set_out_video_line(p.encoding().video_summary().into());
+        g.set_out_audio_line(format!("{} kbit/s", p.audio_kbps).into());
+        g.set_out_where(p.folder.display().to_string().into());
         if g.get_out_folder_serial() != self.folder_serial as i32 {
             g.set_out_folder(self.record_form().folder.display().to_string().into());
             g.set_out_folder_serial(self.folder_serial as i32);
@@ -1793,6 +1822,33 @@ impl StudioUi {
         });
     }
 
+    pub fn move_scene(&mut self, id: i32, up: bool) {
+        self.deleted.clear();
+        self.send(Command::MoveScene {
+            id: SceneId::from_raw(id as u32),
+            up,
+        });
+    }
+
+    /// Puts scene `id` where scene `to` is in the scene list (a row dragged onto
+    /// another).
+    pub fn move_scene_to(&mut self, id: i32, to: i32) {
+        self.deleted.clear();
+        self.send(Command::MoveSceneTo {
+            id: SceneId::from_raw(id as u32),
+            to: SceneId::from_raw(to as u32),
+        });
+    }
+
+    /// Keeps a source's device open, or releases it. Hiding does not call this.
+    pub fn set_source_active(&mut self, id: i32, active: bool) {
+        self.deleted.clear();
+        self.send(Command::SetSourceActive {
+            id: SourceId::from_raw(id as u32),
+            active,
+        });
+    }
+
     pub fn move_source(&mut self, id: i32, up: bool) {
         self.deleted.clear();
         self.send(Command::MoveSource {
@@ -2727,6 +2783,22 @@ impl StudioUi {
             ),
         };
         g.set_st_summary(summary.into());
+        match &parsed {
+            None => {
+                g.set_st_kind("No server yet".into());
+                g.set_st_where(String::new().into());
+                g.set_st_encoder_name(String::new().into());
+                g.set_st_video_line(String::new().into());
+                g.set_st_audio_line(String::new().into());
+            }
+            Some(server) => {
+                g.set_st_kind(server.protocol.label().into());
+                g.set_st_where(st.server.clone().into());
+                g.set_st_encoder_name(self.encoder_name(&st.encoding).into());
+                g.set_st_video_line(st.encoding.video_summary().into());
+                g.set_st_audio_line(format!("{} kbit/s", st.encoding.audio_kbps).into());
+            }
+        }
     }
 
     fn stream_update(&mut self, u: StreamUpdate, out: &mut Applied) {
@@ -3058,6 +3130,31 @@ impl StudioUi {
     /// A source of the scene being edited, by its source id, by its item's id (both
     /// as id parameter text), or (both `None`) the selected source.
     pub fn source_facts(&self, source: Option<&str>, item: Option<&str>) -> Option<SourceFacts> {
+        let layers: Vec<(u32, bool, bool)> = self
+            .rows
+            .iter()
+            .map(|r| (r.id.get(), r.global, r.layout.is_some()))
+            .collect();
+        let room = |id: u32| -> (bool, bool) {
+            let Some(index) = layers.iter().position(|r| r.0 == id) else {
+                return (false, false);
+            };
+            if !layers[index].2 {
+                return (false, false);
+            }
+            let global = layers[index].1;
+            let pics: Vec<usize> = layers
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.1 == global && r.2)
+                .map(|(i, _)| i)
+                .collect();
+            let pos = pics.iter().position(|i| *i == index);
+            (
+                pos.is_some_and(|p| p > 0),
+                pos.is_some_and(|p| p + 1 < pics.len()),
+            )
+        };
         let row = match (source, item) {
             (Some(text), _) => {
                 let raw: u32 = text.parse().ok()?;
@@ -3071,6 +3168,7 @@ impl StudioUi {
                             id: raw as i32,
                             item: 0,
                             visible: true,
+                            active: true,
                             locked: false,
                             muted: h.muted,
                             mixer_hidden: h.hidden,
@@ -3079,6 +3177,8 @@ impl StudioUi {
                             reloadable: true,
                             sized: false,
                             flip: rbs_scene::FlipState::default(),
+                            can_up: false,
+                            can_down: false,
                         });
                     }
                 }
@@ -3092,10 +3192,12 @@ impl StudioUi {
                 .iter()
                 .find(|r| r.id.get() as i32 == self.selected)?,
         };
+        let (can_up, can_down) = room(row.id.get());
         Some(SourceFacts {
             id: row.id.get() as i32,
             item: row.item.get(),
             visible: row.visible,
+            active: row.active,
             locked: row.locked,
             muted: row.audio.muted,
             mixer_hidden: row.audio.mixer_hidden,
@@ -3104,7 +3206,16 @@ impl StudioUi {
             reloadable: row.kind.is_some(),
             sized: row.picture.is_some(),
             flip: row.layout.map(|l| l.flip_state()).unwrap_or_default(),
+            can_up,
+            can_down,
         })
+    }
+
+    /// Whether the scene can move up and down in the list.
+    pub fn scene_ends(&self, id: i32) -> Option<(bool, bool)> {
+        let n = self.scenes.row_count();
+        let i = (0..n).find(|&i| self.scenes.row_data(i).is_some_and(|s| s.id == id))?;
+        Some((i > 0, i + 1 < n))
     }
 
     /// The id of the scene at 1-based position `n` in panel order.
@@ -4216,6 +4327,8 @@ pub struct SourceFacts {
     /// Its item in the scene (the control API's `item`).
     pub item: u32,
     pub visible: bool,
+    /// The device stays open. False when the user deactivated the source.
+    pub active: bool,
     pub locked: bool,
     pub muted: bool,
     /// Kept out of the Mixer (ADR-0080).
@@ -4231,6 +4344,10 @@ pub struct SourceFacts {
     pub sized: bool,
     /// Its picture is mirrored left to right or top to bottom as seen on the canvas.
     pub flip: rbs_scene::FlipState,
+    /// Another source with a picture is above it, so it can move up.
+    pub can_up: bool,
+    /// Another source with a picture is below it, so it can move down.
+    pub can_down: bool,
 }
 
 /// One heard source as the Mixer's menus ask about it (ADR-0080).
@@ -4729,6 +4846,18 @@ fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<Source
         .collect()
 }
 
+/// Which source Properties shows. The selection wins; otherwise the last source
+/// the panel showed, if it is still in `ids`; otherwise the first source.
+fn properties_source(selected: i32, remembered: i32, ids: &[i32]) -> i32 {
+    if selected >= 0 && ids.contains(&selected) {
+        return selected;
+    }
+    if remembered >= 0 && ids.contains(&remembered) {
+        return remembered;
+    }
+    ids.first().copied().unwrap_or(-1)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
@@ -4747,6 +4876,17 @@ mod tests {
             mic: None,
             sound: true,
         }
+    }
+
+    #[test]
+    fn properties_keeps_the_last_source_when_nothing_is_selected() {
+        let ids = [4, 7, 9];
+        assert_eq!(properties_source(7, 4, &ids), 7);
+        assert_eq!(properties_source(-1, 7, &ids), 7);
+        // The remembered source was removed: the first remaining source fills the panel.
+        assert_eq!(properties_source(-1, 3, &ids), 4);
+        assert_eq!(properties_source(-1, -1, &ids), 4);
+        assert_eq!(properties_source(-1, 7, &[]), -1);
     }
 
     #[test]

@@ -126,13 +126,12 @@ fn unreadable(file: &TokenFile, body: &ThemeBody) -> bool {
         .any(|bg| text.contrast(*bg) < READABLE_FLOOR)
 }
 
-/// What "Keep this look?" goes back to.
+/// What "Keep this look?" goes back to: the edited theme's draft before a font
+/// change or a colour edit that made text unreadable. A theme pick is kept and is
+/// not a question.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Previous {
-    /// The appearance choice before a change.
-    Choice(Appearance),
-    /// The edited theme's draft before a change (of the font family, or of a colour
-    /// that made text unreadable).
+    /// The edited theme's draft before the change.
     Draft(ThemeBody),
 }
 
@@ -321,8 +320,9 @@ impl AppearanceUi {
     }
 
     /// Picks the theme at `index` for a slot: 0 dark, 1 light, 2 the fixed theme.
-    /// Returns the new choice to save; asks "Keep this look?".
-    pub fn pick(&mut self, slot: usize, index: usize, now: Instant) -> Option<Appearance> {
+    /// Returns the new choice to save. The choice stays. "Keep this look?" is only
+    /// for a font change or a colour edit that makes text unreadable.
+    pub fn pick(&mut self, slot: usize, index: usize) -> Option<Appearance> {
         let id = self.entries.get(index)?.id.clone();
         if self.entries[index].resolved.is_err() {
             return None;
@@ -333,38 +333,24 @@ impl AppearanceUi {
             1 => next.light = id,
             _ => next.theme = id,
         }
-        self.change_choice(next, now)
+        self.commit(next)
     }
 
-    /// Follow the system or not.
-    pub fn set_follow_system(&mut self, follow: bool, now: Instant) -> Option<Appearance> {
+    /// Follow the system or not. The choice stays, as a theme pick does.
+    pub fn set_follow_system(&mut self, follow: bool) -> Option<Appearance> {
         let mut next = self.choice.clone();
         next.mode = if follow {
             AppearanceMode::System
         } else {
             AppearanceMode::Fixed
         };
-        self.change_choice(next, now)
+        self.commit(next)
     }
 
-    fn change_choice(&mut self, next: Appearance, now: Instant) -> Option<Appearance> {
+    fn commit(&mut self, next: Appearance) -> Option<Appearance> {
         if next == self.choice {
             return None;
         }
-        // Keep the first look of a series of changes as the one to go back to.
-        let previous = match self.keep.take() {
-            Some(
-                k @ KeepLook {
-                    previous: Previous::Choice(_),
-                    ..
-                },
-            ) => k.previous,
-            _ => Previous::Choice(self.choice.clone()),
-        };
-        self.keep = Some(KeepLook {
-            previous,
-            since: now,
-        });
         self.choice = next.clone();
         Some(next)
     }
@@ -374,22 +360,14 @@ impl AppearanceUi {
         self.keep = None;
     }
 
-    /// Undo, or the timeout: the previous look comes back. Returns the choice to save
-    /// when the choice changed back.
+    /// Undo, or the timeout: the previous draft comes back.
     pub fn undo(&mut self, file: &TokenFile) -> Option<Appearance> {
-        match self.keep.take()?.previous {
-            Previous::Choice(a) => {
-                self.choice = a.clone();
-                Some(a)
-            }
-            Previous::Draft(body) => {
-                if let Some(ed) = &mut self.editor {
-                    ed.draft = body;
-                    ed.problems = problems(file, &ed.draft);
-                }
-                None
-            }
+        let Previous::Draft(body) = self.keep.take()?.previous;
+        if let Some(ed) = &mut self.editor {
+            ed.draft = body;
+            ed.problems = problems(file, &ed.draft);
         }
+        None
     }
 
     /// Opens the editor on the selected user theme.
@@ -932,7 +910,14 @@ mod tests {
         assert!(ui.edit(&file));
         assert!(ui.set_fonts(&file, "Inter", Instant::now()));
         assert!(ui.keep.is_none());
-        assert!(!ui.in_use(&ThemeId::User(id)));
+        assert!(!ui.in_use(&ThemeId::User(id.clone())));
+        // The same change of a theme a slot uses asks, and the question times out.
+        ui.choice.dark = ThemeId::User(id);
+        let t0 = Instant::now();
+        assert!(ui.set_fonts(&file, "Inter, Georgia", t0));
+        let k = ui.keep.as_ref().unwrap();
+        assert!(!k.expired(t0 + Duration::from_secs(14)));
+        assert!(k.expired(t0 + KEEP_LOOK_TIMEOUT));
     }
 
     #[test]
@@ -945,27 +930,23 @@ mod tests {
     }
 
     #[test]
-    fn picking_asks_to_keep_and_undo_or_timeout_goes_back() {
-        let (_d, _data, file, mut ui, id) = setup("keep");
-        let t0 = Instant::now();
+    fn picking_a_theme_stays_without_asking_to_keep() {
+        let (_d, _data, _file, mut ui, id) = setup("keep");
         let before = ui.choice.clone();
-        let next = ui.pick(0, 3, t0).unwrap();
-        assert_eq!(next.dark, ThemeId::User(id));
-        let k = ui.keep.as_ref().unwrap();
-        assert!(!k.expired(t0 + Duration::from_secs(14)));
-        assert!(k.expired(t0 + KEEP_LOOK_TIMEOUT));
-        // A second change keeps the first look as the one to go back to.
-        ui.pick(1, 2, t0).unwrap();
-        assert_eq!(ui.undo(&file), Some(before.clone()));
-        assert_eq!(ui.choice, before);
+        let next = ui.pick(0, 3).unwrap();
+        assert_eq!(next.dark, ThemeId::User(id.clone()));
         assert!(ui.keep.is_none());
-        // Keep closes the question.
-        ui.set_follow_system(false, t0).unwrap();
-        ui.keep();
+        assert_eq!(ui.choice.dark, ThemeId::User(id));
+        // A second pick stays as well. "Keep this look?" is not asked.
+        ui.pick(1, 2).unwrap();
+        assert!(ui.keep.is_none());
+        assert_eq!(ui.choice.light, ThemeId::BuiltIn(Base::HighContrast));
+        assert_ne!(ui.choice, before);
+        ui.set_follow_system(false).unwrap();
         assert!(ui.keep.is_none());
         assert_eq!(ui.choice.mode, AppearanceMode::Fixed);
         // Picking the same theme again changes nothing.
-        assert!(ui.pick(2, 0, t0).is_none());
+        assert!(ui.pick(2, 0).is_none());
     }
 
     #[test]

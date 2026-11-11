@@ -5,8 +5,9 @@
 //! area. An area takes space only while it is shown and holds panels. Sizes are the
 //! areas' own, clamped to their limits (spec, Size limits), and when the window is too
 //! small the centre keeps its minimum first and the side areas shrink in proportion.
-//! Collapsing stacks and drawing areas as edge tabs when even their minimums do not
-//! fit come with stack states.
+//! An area whose stacks are all collapsed is drawn at their title-row size and keeps
+//! its saved size for when one expands (ADR-0049 decision 2). Drawing areas as edge
+//! tabs when even their minimums do not fit comes with stack states.
 
 use crate::layout::{
     Axis, COLLAPSED_STACK, EDGE_SHARE, Edge, HANDLE_THICKNESS, Handle, Rect, StackRect,
@@ -48,6 +49,21 @@ fn limited(side: Side, size: f32, content: Rect) -> f32 {
     size.min(along * max_share(side)).max(min_size(side))
 }
 
+/// The length an area takes along its edge. A fully collapsed area is its title
+/// rows, below the usual minimum, so a lone collapsed Mixer does not keep the
+/// saved height. Any expanded stack uses the saved size.
+fn area_span(m: &MainLayout, side: Side, content: Rect) -> f32 {
+    let along = match side {
+        Side::Bottom => Axis::Vertical,
+        Side::Left | Side::Right => Axis::Horizontal,
+    };
+    m.area(side)
+        .layout
+        .as_ref()
+        .and_then(|n| n.collapsed_span(along))
+        .unwrap_or_else(|| limited(side, m.area(side).size as f32, content))
+}
+
 /// Rectangles of the main window's content.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MainRects {
@@ -77,7 +93,7 @@ pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
     // Bottom first: it spans the full width.
     let mut upper_h = content.h;
     if shown(m, Side::Bottom) {
-        let wanted = limited(Side::Bottom, m.bottom.size as f32, content);
+        let wanted = area_span(m, Side::Bottom, content);
         let h = wanted.min(content.h - CENTRE_MIN.1 - t).max(0.0);
         upper_h = (content.h - h - t).max(0.0);
         out.dividers.push((
@@ -103,10 +119,7 @@ pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
         .into_iter()
         .filter(|s| shown(m, *s))
         .collect();
-    let mut widths: Vec<f32> = sides
-        .iter()
-        .map(|s| limited(*s, m.area(*s).size as f32, content))
-        .collect();
+    let mut widths: Vec<f32> = sides.iter().map(|s| area_span(m, *s, content)).collect();
     let avail = (content.w - CENTRE_MIN.0 - t * sides.len() as f32).max(0.0);
     let total: f32 = widths.iter().sum();
     if total > avail && total > 0.0 {
@@ -475,6 +488,62 @@ mod tests {
         assert_eq!(r.centre.w, 1280.0 - 2.0 * (260.0 + t));
         assert_eq!(r.centre.h, 720.0 - 200.0 - t);
         assert_eq!(r.dividers.len(), 3);
+    }
+
+    fn collapsed_stack(id: &str) -> Node {
+        let mut n = tabs(&[id]);
+        if let Node::Tabs(t) = &mut n {
+            t.collapsed = true;
+        }
+        n
+    }
+
+    #[test]
+    fn a_fully_collapsed_area_shrinks_to_its_title_rows() {
+        let mut m = layout(true, false, true);
+        if let Some(Node::Tabs(t)) = m.bottom.layout.as_mut() {
+            t.collapsed = true;
+        }
+        if let Some(Node::Tabs(t)) = m.left.layout.as_mut() {
+            t.collapsed = true;
+        }
+        let r = main_rects(&m, WINDOW);
+        assert_eq!(r.area(Side::Bottom).map(|a| a.h), Some(COLLAPSED_STACK));
+        assert_eq!(r.area(Side::Left).map(|a| a.w), Some(COLLAPSED_STACK));
+        // The saved size is what expand restores.
+        assert_eq!(m.bottom.size, 200);
+        assert_eq!(m.left.size, 260);
+        if let Some(Node::Tabs(t)) = m.bottom.layout.as_mut() {
+            t.collapsed = false;
+        }
+        assert_eq!(
+            main_rects(&m, WINDOW).area(Side::Bottom).map(|a| a.h),
+            Some(200.0)
+        );
+
+        m.bottom.layout = Some(Node::split(
+            Axis::Vertical,
+            vec![
+                (0.5, collapsed_stack("rbs.mixer")),
+                (0.5, collapsed_stack("rbs.stats")),
+            ],
+        ));
+        assert_eq!(
+            main_rects(&m, WINDOW).area(Side::Bottom).map(|a| a.h),
+            Some(COLLAPSED_STACK * 2.0 + HANDLE_THICKNESS)
+        );
+        // One expanded stack keeps the area at its saved size.
+        m.bottom.layout = Some(Node::split(
+            Axis::Vertical,
+            vec![
+                (0.5, collapsed_stack("rbs.mixer")),
+                (0.5, tabs(&["rbs.stats"])),
+            ],
+        ));
+        assert_eq!(
+            main_rects(&m, WINDOW).area(Side::Bottom).map(|a| a.h),
+            Some(200.0)
+        );
     }
 
     #[test]

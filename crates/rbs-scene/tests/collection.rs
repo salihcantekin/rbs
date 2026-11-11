@@ -407,7 +407,11 @@ fn wanted_sources_are_those_visible_on_program_or_preview() {
     assert!(s.col.wanted_sources().is_empty());
     s.col.set_program(s.wide, Some(live)).unwrap();
     s.col.set_preview(s.wide, Some(next)).unwrap();
-    assert_eq!(s.col.wanted_sources(), BTreeSet::from([s.cam, s.screen]));
+    // The hidden logo stays wanted: hiding does not close the source.
+    assert_eq!(
+        s.col.wanted_sources(),
+        BTreeSet::from([s.cam, s.screen, src3])
+    );
 }
 
 #[test]
@@ -1257,9 +1261,13 @@ fn a_global_scene_is_drawn_above_every_scene_and_wanted_with_it() {
     s.col.set_program(s.tall, Some(next)).unwrap();
     assert!(s.col.flatten(s.tall, next).unwrap().is_empty());
     assert!(s.col.visible_sources(s.tall, next).unwrap().is_empty());
-    // A hidden global item is neither drawn nor wanted.
+    // A hidden global item is not drawn, and its source stays wanted so showing
+    // it again does not wait for the device.
     s.col.set_item_visible(cam_item, false).unwrap();
-    assert_eq!(s.col.wanted_sources(), BTreeSet::from([s.screen, mic]));
+    assert_eq!(
+        s.col.wanted_sources(),
+        BTreeSet::from([s.screen, s.cam, mic])
+    );
     assert_eq!(s.col.flatten(s.wide, live).unwrap().len(), 2);
 }
 
@@ -1366,6 +1374,7 @@ fn a_canvas_takes_its_global_scene_with_it_and_its_name_is_free() {
     assert_eq!(
         s.col
             .showable_scenes(s.tall)
+            .into_iter()
             .map(|x| x.id)
             .collect::<Vec<_>>(),
         vec![mine]

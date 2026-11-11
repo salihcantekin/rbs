@@ -189,11 +189,13 @@ impl SceneCollection {
         }
     }
 
-    /// Sources visible in `scene` on `canvas`, including nested scenes and the
-    /// canvas's global scene (ADR-0065): every source item that is visible and not
-    /// inside a hidden nested scene, whatever its opacity (a fade from 0, or a source
-    /// used for its audio, still needs it running). This is what the scene needs
-    /// Active.
+    /// Sources drawn in `scene` on `canvas`, including nested scenes and the
+    /// canvas's global scene (ADR-0065): every visible source item that is not
+    /// inside a hidden nested scene and that the user has not deactivated, whatever
+    /// its opacity (a fade from 0, or a source used for its audio, still needs it
+    /// linked). A hidden source is not drawn; [`Self::wanted_sources`] keeps it
+    /// running so showing it is immediate. A companion is heard only while its
+    /// picture is drawn.
     pub fn visible_sources(
         &self,
         canvas: CanvasId,
@@ -207,6 +209,7 @@ impl SceneCollection {
             return Err(SceneError::ScopeViolation(scene));
         }
         let mut found = BTreeSet::new();
+        let mut shown = BTreeSet::new();
         let mut seen = BTreeSet::new();
         // Global sources (ADR-0065) are part of every scene the canvas shows.
         let mut stack: Vec<SceneId> = c.globals.into_iter().chain([scene]).collect();
@@ -217,19 +220,26 @@ impl SceneCollection {
             let Some(s) = self.scene(id) else {
                 continue;
             };
-            for item in s.items.iter().filter(|i| i.visible) {
+            for item in &s.items {
                 match item.content {
                     ItemContent::Source(source) => {
-                        found.insert(source);
+                        // A deactivated source is not drawn and is not wanted.
+                        // A hidden one is not drawn either; `wanted_sources` keeps it
+                        // running so showing it again does not wait for the device.
+                        let standby = self.source(source).is_some_and(|src| src.standby());
+                        if item.visible && !standby {
+                            found.insert(source);
+                            shown.insert(source);
+                        }
                     }
-                    ItemContent::Scene(nested) => stack.push(nested),
+                    ItemContent::Scene(nested) if item.visible => stack.push(nested),
+                    ItemContent::Scene(_) => {}
                 }
             }
         }
         // A "Capture audio too" companion is audible only while its picture is
-        // (ADR-0096): sound is never on air without its picture. Pictures are not
-        // companions, so one pass is enough.
-        let shown = found.clone();
+        // drawn (ADR-0096): sound is never on air without its picture. A hidden
+        // picture stays open, but its companion is not heard until the picture shows.
         found.retain(|id| {
             self.source(*id)
                 .and_then(|s| s.companion_of())
@@ -238,8 +248,9 @@ impl SceneCollection {
         Ok(found)
     }
 
-    /// Sources the scenes need running for video: those visible in the program or
-    /// preview scene of any canvas (media graph spec, Lifecycle). Projectors, outputs
+    /// Sources the scenes need running: those placed in the program or preview scene
+    /// of any canvas and not deactivated (media graph spec, Lifecycle). A hidden item
+    /// still counts, so showing it does not wait for the device. Projectors, outputs
     /// and audio-only use add to this in the graph binder; a source wanted by none of
     /// them is Standby.
     pub fn wanted_sources(&self) -> BTreeSet<SourceId> {
@@ -249,8 +260,47 @@ impl SceneCollection {
                 if let Ok(sources) = self.visible_sources(c.id, scene) {
                     wanted.extend(sources);
                 }
+                wanted.extend(self.hidden_kept_warm(c.id, scene));
             }
         }
         wanted
+    }
+
+    /// Hidden sources in `scene` that stay open: not drawn, not inside a hidden
+    /// nested scene, and not deactivated. Showing one does not wait for the device.
+    fn hidden_kept_warm(&self, canvas: CanvasId, scene: SceneId) -> BTreeSet<SourceId> {
+        let mut warm = BTreeSet::new();
+        let Some(c) = self.canvas(canvas) else {
+            return warm;
+        };
+        let Some(s) = self.scene(scene) else {
+            return warm;
+        };
+        if !allowed_on(s.scope, c.id) {
+            return warm;
+        }
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<SceneId> = c.globals.into_iter().chain([scene]).collect();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(s) = self.scene(id) else {
+                continue;
+            };
+            for item in &s.items {
+                match item.content {
+                    ItemContent::Source(source) if !item.visible => {
+                        let standby = self.source(source).is_some_and(|src| src.standby());
+                        if !standby {
+                            warm.insert(source);
+                        }
+                    }
+                    ItemContent::Scene(nested) if item.visible => stack.push(nested),
+                    _ => {}
+                }
+            }
+        }
+        warm
     }
 }

@@ -221,6 +221,13 @@ const FLIP_AXIS: Param = Param {
     required: true,
 };
 
+/// Which way `item.move` steps in the layer order.
+const MOVE_DIRECTION: Param = Param {
+    name: "direction",
+    ty: ParamType::OneOf(&["up", "down"]),
+    required: true,
+};
+
 const fn action(method: &'static str) -> Kind {
     Kind::Action { method }
 }
@@ -845,6 +852,17 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "scene.move",
+        title: "Move",
+        tooltip: "Move the scene up or down in the scene list",
+        icon: Some("chevron-up"),
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.move"),
+        params: &[target("scene"), COLLECTION, MOVE_DIRECTION],
+        checkable: false,
+    },
+    Entry {
         id: "scene.remove",
         title: "Remove scene",
         tooltip: "Remove the scene; its sources stay in the scene collection",
@@ -868,6 +886,20 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("kind")],
         checkable: false,
+    },
+    Entry {
+        id: "source.active.toggle",
+        title: "Active",
+        tooltip: "Deactivate releases the device. Hide only takes the picture off the scene, and showing it again is immediate",
+        icon: Some("bolt"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Toggle {
+            on: "source.set_active",
+            off: "source.set_active",
+        },
+        params: &[target("source"), COLLECTION],
+        checkable: true,
     },
     Entry {
         id: "item.visible.toggle",
@@ -1058,6 +1090,17 @@ pub const ENTRIES: &[Entry] = &[
         menu: Menu::Source,
         kind: action("source.reload"),
         params: &[target("source"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
+        id: "item.move",
+        title: "Move",
+        tooltip: "Move the source over or under the next source with a picture",
+        icon: Some("chevron-up"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.move"),
+        params: &[target("item"), COLLECTION, MOVE_DIRECTION],
         checkable: false,
     },
     Entry {
@@ -1549,6 +1592,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "|",
             "scene.add",
             "scene.rename",
+            "scene.move?direction=up",
+            "scene.move?direction=down",
             "scene.remove",
             "#Studio mode",
             "canvas.studio_mode.toggle",
@@ -1560,6 +1605,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         &[
             "source.add",
             "#Selected source",
+            "source.active.toggle",
             "item.visible.toggle",
             "item.locked.toggle",
             "source.muted.toggle",
@@ -1574,6 +1620,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "|",
             "source.rename",
             "source.reload",
+            "item.move?direction=up",
+            "item.move?direction=down",
             "item.remove",
             "source.delete",
             "#Mixer",
@@ -1646,6 +1694,9 @@ pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
     if let ("item.flip", Some("vertical")) = (e.id, id.param("axis")) {
         return Some("flip-v");
     }
+    if let ("item.move" | "scene.move", Some("down")) = (e.id, id.param("direction")) {
+        return Some("chevron-down");
+    }
     match (e.id, id.param("area")) {
         ("ui.area.toggle", Some("left")) => Some("panel-left"),
         ("ui.area.toggle", Some("right")) => Some("panel-right"),
@@ -1667,6 +1718,12 @@ pub fn icon_only(id: &CommandId) -> bool {
 /// The title an id shows: the entry's, with the area named for area toggles, the
 /// panel for maximize and the position for `scene.position`.
 pub fn title(id: &CommandId, e: &Entry) -> String {
+    if let ("item.move" | "scene.move", Some(direction)) = (e.id, id.param("direction")) {
+        return match direction {
+            "down" => "Move down".to_owned(),
+            _ => "Move up".to_owned(),
+        };
+    }
     if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
         return format!("Scene at position {n}");
     }
@@ -1996,6 +2053,9 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "scene.select",
             "scene.rename",
             "|",
+            "scene.move?direction=up",
+            "scene.move?direction=down",
+            "|",
             "scene.add",
             "|",
             "scene.remove",
@@ -2019,6 +2079,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "item.reset_transform",
             "}",
             "|",
+            "source.active.toggle",
             "item.visible.toggle",
             "item.locked.toggle",
             "source.muted.toggle",
@@ -2027,6 +2088,8 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "source.reload",
             "ui.panel.select?id=rbs.properties",
             "|",
+            "item.move?direction=up",
+            "item.move?direction=down",
             "item.remove",
             "source.delete",
         ],
@@ -2644,14 +2707,17 @@ mod tests {
             [
                 "scene.rename?scene=7",
                 "|",
+                "scene.move?direction=up&scene=7",
+                "scene.move?direction=down&scene=7",
+                "|",
                 "scene.add",
                 "|",
                 "scene.remove?scene=7"
             ]
         );
         assert!(matches!(
-            &scene[4],
-            MenuItem::Command { disabled: Some(r), .. } if r == "The last scene cannot be removed."
+            scene.iter().find(|i| matches!(i, MenuItem::Command { id, .. } if id.to_string().starts_with("scene.remove"))),
+            Some(MenuItem::Command { disabled: Some(r), .. }) if r == "The last scene cannot be removed."
         ));
         let source = context_menu(
             Context::Source,
@@ -2663,6 +2729,7 @@ mod tests {
             [
                 "[Transform]",
                 "|",
+                "source.active.toggle?source=12",
                 "item.visible.toggle?item=40",
                 "item.locked.toggle?item=40",
                 "|",
@@ -2670,19 +2737,21 @@ mod tests {
                 "source.reload?source=12",
                 "ui.panel.select?id=rbs.properties",
                 "|",
+                "item.move?direction=up&item=40",
+                "item.move?direction=down&item=40",
                 "item.remove?item=40",
                 "source.delete?source=12"
             ]
         );
         assert!(matches!(
-            &source[2],
+            &source[3],
             MenuItem::Command {
                 checked: Some(true),
                 ..
             }
         ));
         assert!(matches!(
-            &source[7],
+            &source[8],
             MenuItem::Command { title, .. } if title == "Properties"
         ));
         // A picker without its choice is a submenu; with it, one item with the

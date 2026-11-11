@@ -498,6 +498,7 @@ impl SceneCollection {
             follow: None,
             fallback: Fallback::default(),
             audio_from: AudioFrom::default(),
+            order: Vec::new(),
         };
         let undo = self.apply_with(
             Op::InsertCanvas {
@@ -656,14 +657,103 @@ impl SceneCollection {
         self.replace_canvas(c)
     }
 
-    /// The scenes `canvas` may show as program or preview, in id order: those
-    /// `scenes_for` gives, without global scenes (ADR-0065). Scene lists, switching
+    /// The scenes `canvas` may show as program or preview, in the canvas's scene list
+    /// order: those `scenes_for` gives, without global scenes (ADR-0065). An empty
+    /// `order` (a document from before format 11) is id order. Scene lists, switching
     /// and program fallbacks use this; code that must reach every item of the canvas
     /// (a rescale) uses `scenes_for`.
-    pub fn showable_scenes(&self, canvas: CanvasId) -> impl Iterator<Item = &Scene> {
+    pub fn showable_scenes(&self, canvas: CanvasId) -> Vec<&Scene> {
         let globals = self.globals_of(canvas);
-        self.scenes_for(canvas)
-            .filter(move |s| Some(s.id) != globals)
+        let mut list: Vec<&Scene> = self
+            .scenes_for(canvas)
+            .filter(|s| Some(s.id) != globals)
+            .collect();
+        let order = self
+            .canvases
+            .get(&canvas)
+            .map(|c| c.order.as_slice())
+            .unwrap_or(&[]);
+        if !order.is_empty() {
+            // Unknown ids (a scene added after the order was saved) stay at the end,
+            // in id order. `sort_by_key` is stable.
+            list.sort_by_key(|s| {
+                order
+                    .iter()
+                    .position(|id| *id == s.id)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        list
+    }
+
+    /// The showable scenes' ids, in list order.
+    fn scene_order(&self, canvas: CanvasId) -> Result<Vec<SceneId>, SceneError> {
+        let _ = self.get_canvas(canvas)?;
+        Ok(self.showable_scenes(canvas).iter().map(|s| s.id).collect())
+    }
+
+    /// Writes the scene list order. Undo restores the previous canvas, including an
+    /// empty order.
+    fn set_scene_order(
+        &mut self,
+        canvas: CanvasId,
+        order: Vec<SceneId>,
+    ) -> Result<Undo, SceneError> {
+        let mut c = self.get_canvas(canvas)?.clone();
+        c.order = order;
+        self.replace_canvas(c)
+    }
+
+    /// Moves `scene` one place up (`up`) or down in the canvas's scene list.
+    /// `Ok(None)` when it is already at that end, or it is not in the list.
+    pub fn move_scene(
+        &mut self,
+        canvas: CanvasId,
+        scene: SceneId,
+        up: bool,
+    ) -> Result<Option<Undo>, SceneError> {
+        let mut ids = self.scene_order(canvas)?;
+        let Some(i) = ids.iter().position(|id| *id == scene) else {
+            return Ok(None);
+        };
+        let j = if up {
+            i.checked_sub(1)
+        } else if i + 1 < ids.len() {
+            Some(i + 1)
+        } else {
+            None
+        };
+        let Some(j) = j else {
+            return Ok(None);
+        };
+        ids.swap(i, j);
+        self.set_scene_order(canvas, ids).map(Some)
+    }
+
+    /// Moves `scene` to the place `to` has in the canvas's scene list (a row dragged
+    /// onto another). `Ok(None)` when either scene is missing or they are the same.
+    pub fn move_scene_to(
+        &mut self,
+        canvas: CanvasId,
+        scene: SceneId,
+        to: SceneId,
+    ) -> Result<Option<Undo>, SceneError> {
+        if scene == to {
+            return Ok(None);
+        }
+        let mut ids = self.scene_order(canvas)?;
+        let Some(from) = ids.iter().position(|id| *id == scene) else {
+            return Ok(None);
+        };
+        let Some(index) = ids.iter().position(|id| *id == to) else {
+            return Ok(None);
+        };
+        let id = ids.remove(from);
+        // After the removal, inserting at the target's old index puts `scene` where
+        // `to` was when `scene` was above it, and in front of `to` when it was below.
+        let index = index.min(ids.len());
+        ids.insert(index, id);
+        self.set_scene_order(canvas, ids).map(Some)
     }
 
     /// The global scene of `canvas`, if it has one (ADR-0065).

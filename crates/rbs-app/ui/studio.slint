@@ -166,9 +166,12 @@ export global Studio {
     callback pick-global-kind(int /* kind index */);
     callback add-global(int /* option */);
     callback remove-global(int /* id */);
-    // The source selected in the Sources panel (its id; -1 none). Properties shows it;
-    // every window shows the same selection.
+    // The source selected in the Sources panel (its id; -1 none). Every window shows
+    // the same selection. The Sources rows follow this, including when it is none.
     in property <int> selected-source: -1;
+    // The source Properties shows: the selection, else the last selected source that
+    // still exists, else the first source in the list. -1 only when there is none.
+    in property <int> properties-source: -1;
     callback select-source(int /* id */);
     // One layer up (over the source above it in the list) or down.
     callback move-source(int /* id */, bool /* up */);
@@ -177,6 +180,17 @@ export global Studio {
     // The source whose row is being dragged, or -1.
     in-out property <int> dragging-source: -1;
     pure callback source-data(int /* id */) -> data-transfer;
+    // One place up or down in the scene list.
+    callback move-scene(int /* id */, bool /* up */);
+    // A Scenes row dragged onto another row: it takes that row's place.
+    callback move-scene-to(int /* id */, int /* to */);
+    // The scene whose row is being dragged, or -1.
+    in-out property <int> dragging-scene: -1;
+    pure callback scene-data(int /* id */) -> data-transfer;
+    // The selected source has a picture, so a Library look can be applied.
+    in property <bool> looks-ready: false;
+    // True when a drag payload is a panel id, so a panel drop is not taken for a source.
+    pure callback is-panel(data-transfer) -> bool;
     // Show or hide a source in the program scene.
     callback set-source-visible(int /* id */, bool /* visible */);
     // Lock a source so the picture panel does not move it (ADR-0059).
@@ -365,6 +379,17 @@ export global Studio {
     in property <string> st-note;
     // One line: protocol, server, encoder and bitrates of the next stream.
     in property <string> st-summary;
+    // The Outputs panel's labelled rows (recording, then stream).
+    in property <string> out-kind;
+    in property <string> out-encoder-name;
+    in property <string> out-video-line;
+    in property <string> out-audio-line;
+    in property <string> out-where;
+    in property <string> st-kind;
+    in property <string> st-where;
+    in property <string> st-encoder-name;
+    in property <string> st-video-line;
+    in property <string> st-audio-line;
     callback set-server(string);
     // The server field changed but is not confirmed yet: confirmed when Settings
     // closes or Go live is pressed.
@@ -387,6 +412,9 @@ export global Studio {
     callback set-canvas-size(int);
     callback set-canvas-rate(int);
 
+    // General (Settings, General): leave the RBS windows out of a screen recording.
+    in property <bool> exclude-own-window: true;
+    callback set-exclude-own-window(bool);
     // General (Settings, General, ADR-0056): what closing the main window does.
     // 0 Quit RBS, 1 Keep RBS running.
     in property <int> on-close;
@@ -599,29 +627,28 @@ export component VerticalPanel inherits Rectangle {
 }
 
 // One row of the Sources list (spec Frame, mockup E): the kind's icon, the name (the
-// state below it only when something is wrong), and on the right Show/Hide, then on the
-// selected row Move up, Move down and Delete source.
+// state below it only when something is wrong), and on the right Show/Hide and, for a
+// picture, Lock. Move up, Move down and Remove are in the row's menu; Delete asks first.
 component SourceRowView inherits Rectangle {
     in property <SourceData> data;
-    // Move up, Move down or Delete source was activated: the list is made again, so
-    // the row's buttons and their focus are about to go.
+    // Move up, Move down or Remove was confirmed: the list is made again, so
+    // the row's focus is about to go.
     callback leaving();
     property <bool> selected: Studio.selected-source == data.id;
     property <color> ink: data.visible ? Theme.text-primary : Theme.text-disabled;
-    // Layer and delete buttons show while the pointer is over the row, so names keep
-    // their room; on a focused row Alt+Up, Alt+Down and Delete do the same.
-    property <bool> tools: touch.has-hover && !editing;
-    // Another row is dragged over this one: it would take this row's place.
-    property <bool> drop-here: drop.has-drag && Studio.dragging-source != data.id;
+    // Delete or Backspace asks first; a second Delete, Return or Remove confirms.
+    property <bool> confirm;
+    // Another source row is dragged over this one: it would take this row's place.
+    property <bool> drop-here: drop.has-drag && Studio.dragging-source >= 0 && Studio.dragging-source != data.id;
     height: data.ok ? Tokens.size-control-md : Tokens.size-control-md + Tokens.type-caption-line;
-    border-radius: Tokens.radius-md;
-    background: selected ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    border-radius: Tokens.radius-sm;
     border-width: selected ? Tokens.size-border : 0px;
     border-color: Theme.accent;
+    background: selected || touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
     accessible-description: (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
-        + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, Delete removes it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, Delete removes it from this scene, the Menu key or Shift+F10 opens its menu"));
+        + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu"));
     accessible-item-selectable: true;
     accessible-item-selected: selected;
     accessible-action-default => { Studio.select-source(data.id); }
@@ -642,6 +669,10 @@ component SourceRowView inherits Rectangle {
     focus := RingFocus {
         focus-on-click: false;
         key-pressed(e) => {
+            if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
+            if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
+                root.leaving(); Studio.remove-from-scene(data.id); return accept;
+            }
             if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
                 menu.open({ x: Tokens.space-2, y: root.height });
@@ -655,7 +686,8 @@ component SourceRowView inherits Rectangle {
                 root.leaving(); Studio.move-source(data.id, false); return accept;
             }
             if e.text == Key.Delete || e.text == Key.Backspace {
-                root.leaving(); Studio.remove-from-scene(data.id); return accept;
+                root.confirm = true;
+                return accept;
             }
             reject
         }
@@ -663,10 +695,14 @@ component SourceRowView inherits Rectangle {
     // Rows of sources with a picture can be dragged onto each other to change the
     // layer order; a press without a drag selects the row.
     drop := DropArea {
+        // Off while a panel is dragged, so the drop reaches the dock under the row.
+        enabled: Studio.dragging-source >= 0;
         can-drop(e) => {
-            return data.picture && Studio.dragging-source >= 0 && Studio.dragging-source != data.id ? DragAction.move : DragAction.none;
+            if Studio.is-panel(e.data) || Studio.dragging-source < 0 { return DragAction.none; }
+            return data.picture && Studio.dragging-source != data.id ? DragAction.move : DragAction.none;
         }
         dropped(e) => {
+            if Studio.is-panel(e.data) || Studio.dragging-source < 0 { return DragAction.none; }
             Studio.move-source-to(Studio.dragging-source, data.id);
             Studio.dragging-source = -1;
             return DragAction.move;
@@ -679,7 +715,7 @@ component SourceRowView inherits Rectangle {
             if self.dragging { Studio.dragging-source = data.id; } else { Studio.dragging-source = -1; }
         }
         touch := TouchArea {
-            clicked => { focus.focus-pointer(); Studio.select-source(data.id); }
+            clicked => { if !root.confirm { focus.focus-pointer(); Studio.select-source(data.id); } }
             double-clicked => { root.editing = true; }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
@@ -725,18 +761,18 @@ component SourceRowView inherits Rectangle {
                             text: data.name;
                             color: data.ok ? root.ink : Theme.text-disabled;
                             font-size: Tokens.type-body-size;
+                            font-weight: root.selected ? Tokens.type-title-weight : Tokens.type-body-weight;
                             overflow: elide;
                             horizontal-stretch: 1;
                         }
                         // In every scene, or also in other scenes (ADR-0065): one
                         // source, one device; the words are in the accessible
-                        // description (U7). Hidden while the row tools show, so the
-                        // name keeps its room.
-                        if !tools && (data.global || data.in-globals): VerticalLayout {
+                        // description (U7).
+                        if data.global || data.in-globals: VerticalLayout {
                             alignment: center;
                             Icon { name: IconName.globe; ink: Theme.text-secondary; }
                         }
-                        if !tools && !data.global && !data.in-globals && data.also-in != "": VerticalLayout {
+                        if !data.global && !data.in-globals && data.also-in != "": VerticalLayout {
                             alignment: center;
                             Icon { name: IconName.link; ink: Theme.text-secondary; }
                         }
@@ -747,33 +783,6 @@ component SourceRowView inherits Rectangle {
                         color: Theme.text-secondary;
                         font-size: Tokens.type-caption-size;
                         overflow: elide;
-                    }
-                }
-                // Order matters for pictures only: sound has no layer to stack.
-                if data.picture && tools: VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: IconName.chevron-up;
-                        name: @tr("Move {} up", data.name);
-                        enabled: data.can-up;
-                        clicked => { root.leaving(); Studio.move-source(data.id, true); }
-                    }
-                }
-                if data.picture && tools: VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: IconName.chevron-down;
-                        name: @tr("Move {} down", data.name);
-                        enabled: data.can-down;
-                        clicked => { root.leaving(); Studio.move-source(data.id, false); }
-                    }
-                }
-                if tools: VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: IconName.close;
-                        name: data.global ? @tr("Remove {} from global sources", data.name) : @tr("Remove {} from this scene", data.name);
-                        clicked => { root.leaving(); Studio.remove-from-scene(data.id); }
                     }
                 }
                 // Shown or hidden in the scene: the icon and the accessible state both say it.
@@ -799,6 +808,40 @@ component SourceRowView inherits Rectangle {
             }
         }
     }
+    if root.confirm: Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.surface-overlay;
+        border-radius: Tokens.radius-sm;
+        border-width: Tokens.size-border;
+        border-color: Theme.accent;
+        TouchArea { width: parent.width; height: parent.height; }
+        HorizontalLayout {
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.space-1;
+            Text {
+                text: data.global ? @tr("Remove {} from global sources?", data.name) : @tr("Remove {} from this scene?", data.name);
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Button {
+                text: @tr("Remove");
+                kind: "danger";
+                dense: true;
+                clicked => { root.leaving(); Studio.remove-from-scene(data.id); }
+            }
+            Button {
+                text: @tr("Cancel");
+                kind: "ghost";
+                dense: true;
+                clicked => { root.confirm = false; }
+            }
+        }
+    }
     // Where a dragged row would go: a line along this row's top.
     if drop-here: Rectangle {
         y: 0;
@@ -809,8 +852,7 @@ component SourceRowView inherits Rectangle {
 }
 
 // One scene in the Scenes panel: its number, its name and, on air, a Live badge
-// (mockup E). A click puts it on air; Rename and Remove show on hover, and F2 and
-// Delete do the same on a focused row.
+// (mockup E). A click puts it on air. Rename shows on hover. Delete asks first.
 component SceneRowView inherits Rectangle {
     in property <SceneData> data;
     in property <bool> can-remove;
@@ -818,18 +860,20 @@ component SceneRowView inherits Rectangle {
     in property <int> live-state;
     callback leaving();
     property <bool> tools: touch.has-hover || editing;
+    property <bool> confirm;
     in-out property <bool> editing;
     height: Tokens.size-control-md;
-    border-radius: Tokens.radius-md;
+    border-radius: Tokens.radius-sm;
+    border-width: marked ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
     // The scene being worked on is marked like a selected row: the one shown, or in
     // studio mode the preview scene (ADR-0061). The live colour and badge only while
     // the scene on air actually goes out (streaming or recording, U12).
     property <bool> studio: Studio.studio-mode;
     property <bool> marked: studio ? data.preview : data.live;
-    background: marked ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
-    // The selection marking only: the badge says the scene is on air (calm, U12).
-    border-width: marked ? Tokens.size-border : 0px;
-    border-color: Theme.accent;
+    // Another scene row is dragged over this one: it would take this row's place.
+    property <bool> drop-here: drop.has-drag && Studio.dragging-scene >= 0 && Studio.dragging-scene != data.id;
+    background: marked || touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: @tr("{}{}{}", data.name,
         studio && data.preview ? @tr(", in preview") : "",
@@ -838,8 +882,8 @@ component SceneRowView inherits Rectangle {
         : root.live-state == 2 ? @tr(", on air and recording")
         : @tr(", on air"));
     accessible-description: Studio.studio-mode
-        ? @tr("Return puts it in preview, F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu")
-        : @tr("Return puts it on air, F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu");
+        ? @tr("Return puts it in preview, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu")
+        : @tr("Return puts it on air, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu");
     accessible-item-selectable: true;
     accessible-item-selected: data.live;
     accessible-action-default => { Studio.switch-scene(data.id); }
@@ -856,6 +900,10 @@ component SceneRowView inherits Rectangle {
     focus := RingFocus {
         focus-on-click: false;
         key-pressed(e) => {
+            if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
+            if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
+                root.leaving(); Studio.remove-scene(data.id); return accept;
+            }
             if e.text == Key.Return || e.text == " " { Studio.switch-scene(data.id); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
                 menu.open({ x: Tokens.space-2, y: root.height });
@@ -863,15 +911,40 @@ component SceneRowView inherits Rectangle {
             }
             if e.text == Key.F2 { root.editing = true; return accept; }
             if (e.text == Key.Delete || e.text == Key.Backspace) && root.can-remove {
-                root.leaving(); Studio.remove-scene(data.id); return accept;
+                root.confirm = true;
+                return accept;
             }
             reject
         }
     }
     // The row's buttons sit inside its TouchArea, so pointing at them keeps the row
     // hovered; their space is always reserved, so the Live badge never moves (ADR-0059).
+    // Dragging the row reorders the scene list. A panel drag is not a scene.
+    drop := DropArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: Studio.dragging-scene >= 0;
+        can-drop(e) => {
+            if Studio.is-panel(e.data) || Studio.dragging-scene < 0 || Studio.dragging-scene == data.id {
+                return DragAction.none;
+            }
+            return DragAction.move;
+        }
+        dropped(e) => {
+            if Studio.is-panel(e.data) || Studio.dragging-scene < 0 { return DragAction.none; }
+            Studio.move-scene-to(Studio.dragging-scene, data.id);
+            Studio.dragging-scene = -1;
+            return DragAction.move;
+        }
+    }
+    drag := DragArea {
+        allow-move: !root.editing && !root.confirm;
+        data: Studio.scene-data(data.id);
+        changed dragging => {
+            if self.dragging { Studio.dragging-scene = data.id; } else { Studio.dragging-scene = -1; }
+        }
     touch := TouchArea {
-        clicked => { focus.focus-pointer(); Studio.switch-scene(data.id); }
+        clicked => { if !root.confirm { focus.focus-pointer(); Studio.switch-scene(data.id); } }
         double-clicked => { root.editing = true; }
         // A right-click opens the row's menu without putting the scene on air.
         pointer-event(e) => {
@@ -897,6 +970,7 @@ component SceneRowView inherits Rectangle {
             text: data.name;
             color: Theme.text-primary;
             font-size: Tokens.type-body-size;
+            font-weight: root.marked ? Tokens.type-title-weight : Tokens.type-body-weight;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -953,8 +1027,13 @@ component SceneRowView inherits Rectangle {
             IconButton {
                 visible: root.tools;
                 icon: IconName.more;
-                name: @tr("Rename {}", data.name);
-                clicked => { root.editing = true; }
+                name: @tr("Actions for {}", data.name);
+                clicked => {
+                    menu.open({
+                        x: self.absolute-position.x - menu.absolute-position.x,
+                        y: self.absolute-position.y - menu.absolute-position.y + self.height,
+                    });
+                }
             }
         }
         if !root.editing: VerticalLayout {
@@ -963,10 +1042,52 @@ component SceneRowView inherits Rectangle {
                 visible: root.tools && root.can-remove;
                 icon: IconName.close;
                 name: @tr("Remove scene {}", data.name);
-                clicked => { root.leaving(); Studio.remove-scene(data.id); }
+                clicked => { focus.focus-pointer(); root.confirm = true; }
             }
         }
     }
+    }
+    }
+    if root.confirm: Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.surface-overlay;
+        border-radius: Tokens.radius-sm;
+        border-width: Tokens.size-border;
+        border-color: Theme.accent;
+        TouchArea { width: parent.width; height: parent.height; }
+        HorizontalLayout {
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.space-1;
+            Text {
+                text: @tr("Remove {}?", data.name);
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Button {
+                text: @tr("Remove");
+                kind: "danger";
+                dense: true;
+                clicked => { root.leaving(); Studio.remove-scene(data.id); }
+            }
+            Button {
+                text: @tr("Cancel");
+                kind: "ghost";
+                dense: true;
+                clicked => { root.confirm = false; }
+            }
+        }
+    }
+    // Where a dragged scene would go: a line along this row's top.
+    if drop-here: Rectangle {
+        y: 0;
+        height: Tokens.size-focus-ring;
+        width: parent.width;
+        background: Theme.accent;
     }
     FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
@@ -1162,7 +1283,7 @@ component MeterView inherits Rectangle {
     function toggle-muted() {
         if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
-    height: Tokens.size-control-md + Tokens.size-control-sm;
+    height: Tokens.size-control-md;
     accessible-role: progress-indicator;
     accessible-label: root.title;
     accessible-value: data.value;
@@ -1199,8 +1320,10 @@ component MeterView inherits Rectangle {
             alignment: center;
             spacing: 0px;
             bar := Rectangle {
-            height: Tokens.space-3;
+            height: Tokens.space-1;
             background: Theme.surface-sunken;
+            border-width: Tokens.size-border;
+            border-color: Theme.border-subtle;
             border-radius: Tokens.radius-sm;
             clip: true;
             Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
@@ -1223,7 +1346,7 @@ component MeterView inherits Rectangle {
             }
         }
         LevelText {
-            width: Tokens.size-control-md * 1.5;
+            width: Tokens.size-control-lg * 2;
             text: data.volume-text;
             label: @tr("Volume of {}", root.title);
             muted: data.muted;
@@ -1249,6 +1372,7 @@ component MeterView inherits Rectangle {
                 icon: data.muted ? IconName.speaker-off : IconName.speaker;
                 name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
                 checked: data.muted;
+                framed: true;
                 clicked => { root.toggle-muted(); }
             }
         }
@@ -1257,7 +1381,12 @@ component MeterView inherits Rectangle {
             IconButton {
                 icon: IconName.more;
                 name: @tr("More options for {}", root.title);
-                clicked => { menu.open({ x: self.x, y: root.height }); }
+                clicked => {
+                    menu.open({
+                        x: self.absolute-position.x - menu.absolute-position.x,
+                        y: self.absolute-position.y - menu.absolute-position.y + self.height,
+                    });
+                }
             }
         }
         // The master has no menu; the space keeps the scale and the bars aligned.
@@ -1358,7 +1487,9 @@ component MeterStrip inherits Rectangle {
             spacing: Tokens.space-1;
             bar := Rectangle {
                 width: Tokens.space-3;
-                background: Theme.surface-base;
+                background: Theme.surface-sunken;
+                border-width: Tokens.size-border;
+                border-color: Theme.border-subtle;
                 border-radius: Tokens.radius-sm;
                 clip: true;
                 Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
@@ -1397,7 +1528,7 @@ component MeterStrip inherits Rectangle {
                 TouchArea { clicked => { root.reset(); } }
             }
             LevelText {
-                width: Tokens.size-control-md * 2;
+                width: Tokens.size-control-lg * 2;
                 text: data.volume-text;
                 label: @tr("Volume of {}", root.title);
                 muted: data.muted;
@@ -1413,12 +1544,18 @@ component MeterStrip inherits Rectangle {
                 icon: data.muted ? IconName.speaker-off : IconName.speaker;
                 name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
                 checked: data.muted;
+                framed: true;
                 clicked => { root.toggle-muted(); }
             }
             if !root.master: more := IconButton {
                 icon: IconName.more;
                 name: @tr("More options for {}", root.title);
-                clicked => { menu.open({ x: self.x, y: root.height }); }
+                clicked => {
+                    menu.open({
+                        x: self.absolute-position.x - menu.absolute-position.x,
+                        y: self.absolute-position.y - menu.absolute-position.y + self.height,
+                    });
+                }
             }
         }
     }
@@ -1738,7 +1875,7 @@ export component LiveControlsPanel inherits Rectangle {
         }
         if confirming: Rectangle {
             border-width: Tokens.size-border;
-            border-color: Theme.border-strong;
+            border-color: Theme.border-subtle;
             border-radius: Tokens.radius-sm;
             accessible-role: groupbox;
             accessible-label: @tr("End the stream?");
@@ -2462,7 +2599,9 @@ component FilterRowView inherits Rectangle {
     in property <bool> selected;
     height: max(Tokens.size-control-md, row.preferred-height);
     border-radius: Tokens.radius-sm;
-    background: selected ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    border-width: selected ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
+    background: selected || touch.has-hover ? Theme.surface-overlay : transparent;
     touch := TouchArea {
         clicked => { Studio.select-filter(source.id, data.id); }
     }
@@ -2476,6 +2615,7 @@ component FilterRowView inherits Rectangle {
             Checkbox {
                 text: data.name;
                 checked: data.enabled;
+                emphasis: selected;
                 accessible-label: @tr("Turn {} on or off", data.name);
                 toggled(on) => {
                     Studio.select-filter(source.id, data.id);
@@ -2667,6 +2807,8 @@ component GateBar inherits VerticalLayout {
     Rectangle {
         height: Tokens.space-3;
         background: Theme.surface-sunken;
+        border-width: Tokens.size-border;
+        border-color: Theme.border-subtle;
         border-radius: Tokens.radius-sm;
         clip: true;
         accessible-role: progress-indicator;
@@ -3110,7 +3252,7 @@ component SourceProperties inherits VerticalLayout {
 export component PropertiesPanel inherits Rectangle {
     in property <int> live-state;
     background: Theme.surface-raised;
-    property <bool> any: Studio.selected-source >= 0;
+    property <bool> any: Studio.properties-source >= 0;
     if !any: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -3126,7 +3268,7 @@ export component PropertiesPanel inherits Rectangle {
             alignment: start;
             for s in Studio.sources: VerticalLayout {
                 spacing: Tokens.size-section-gap;
-                if s.id == Studio.selected-source: SourceProperties {
+                if s.id == Studio.properties-source: SourceProperties {
                     data: s;
                     live-state: root.live-state;
                 }
@@ -3442,6 +3584,24 @@ export component GeneralSettings inherits Rectangle {
                     index: Studio.platform == 2 ? 0 : Studio.on-close;
                     enabled: Studio.platform != 2;
                     selected(i) => { Studio.set-on-close(i); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Screen capture");
+            id: "settings.general.capture";
+            SettingRow {
+                divider: false;
+                label: @tr("Leave RBS out of screen recordings");
+                help: Studio.platform == 1 ? @tr("Windows skips the RBS windows when a screen or a window is captured, including a recording RBS makes of the display. Turn this off to record the RBS window itself.")
+                    : @tr("Not available on this system yet. A screen recording can include the RBS windows.");
+                enabled: Studio.platform == 1;
+                fill: false;
+                Toggle {
+                    label: @tr("Leave RBS out of screen recordings");
+                    checked: Studio.platform == 1 && Studio.exclude-own-window;
+                    enabled: Studio.platform == 1;
+                    toggled(on) => { Studio.set-exclude-own-window(on); }
                 }
             }
         }
@@ -3948,8 +4108,69 @@ export component RemoteControlSettings inherits Rectangle {
     changed made => { if made != "" { name.text = ""; } }
 }
 
-// Outputs: what each output will do, in one line each, and the way to its settings.
-// Settings live in the Settings window (U17), not in this panel.
+// One labelled fact in an output card: the name in secondary, the value in the body size.
+component OutputFact inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: Tokens.space-2;
+    Text {
+        text: label;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        vertical-alignment: center;
+        min-width: Tokens.size-control-lg * 3;
+    }
+    Text {
+        text: value;
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+        font-weight: Tokens.type-label-weight;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+        wrap: word-wrap;
+    }
+}
+
+// One output: a title, its facts, and the button that opens its settings.
+component OutputCard inherits Rectangle {
+    in property <string> title;
+    in property <string> kind;
+    in property <string> encoder;
+    in property <string> video;
+    in property <string> audio;
+    in property <string> where;
+    in property <string> where-label;
+    in property <string> action;
+    callback open();
+    background: Theme.surface-sunken;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    border-radius: Tokens.radius-md;
+    accessible-role: list-item;
+    accessible-label: @tr("{}, {}, {}", title, kind, where);
+    VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.size-field-gap;
+        Text {
+            text: title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-title-weight;
+        }
+        OutputFact { label: @tr("Format"); value: kind; }
+        OutputFact { label: @tr("Encoder"); value: encoder; }
+        OutputFact { label: @tr("Video"); value: video; }
+        OutputFact { label: @tr("Audio"); value: audio; }
+        OutputFact { label: where-label; value: where; }
+        HorizontalLayout {
+            alignment: start;
+            Button { text: action; clicked => { root.open(); } }
+        }
+    }
+}
+
+// Outputs: what the recording and the stream will do, each as a card, and the way
+// to its settings. Settings live in the Settings window (U17), not in this panel.
 export component OutputsPanel inherits Rectangle {
     background: Theme.surface-raised;
     Flickable {
@@ -3957,67 +4178,38 @@ export component OutputsPanel inherits Rectangle {
         height: parent.height;
         content-height: list.preferred-height;
         list := VerticalLayout {
-            padding: Tokens.space-3;
-            spacing: Tokens.space-1;
+            padding: Tokens.size-panel-pad;
+            spacing: Tokens.size-section-gap;
             alignment: start;
-            Rectangle {
-                accessible-role: list-item;
-                accessible-label: @tr("Recording, {}", summary.text);
-                VerticalLayout {
-                    spacing: Tokens.space-1;
-                    Text {
-                        text: Studio.rec-state == 2 ? @tr("Recording · recording now") : @tr("Recording");
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-label-size;
-                        font-weight: Tokens.type-label-weight;
-                    }
-                    summary := Text {
-                        text: Studio.out-summary;
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        wrap: word-wrap;
-                    }
-                }
+            OutputCard {
+                title: Studio.rec-state == 2 ? @tr("Recording now") : @tr("Recording");
+                kind: Studio.out-kind;
+                encoder: Studio.out-encoder-name;
+                video: Studio.out-video-line;
+                audio: Studio.out-audio-line;
+                where: Studio.out-where;
+                where-label: @tr("Folder");
+                action: @tr("Recording settings");
+                open => { Studio.open-settings(); }
             }
-            Rectangle {
-                accessible-role: list-item;
-                accessible-label: @tr("Stream, {}", stream-summary.text);
-                VerticalLayout {
-                    padding-top: Tokens.space-2;
-                    spacing: Tokens.space-1;
-                    Text {
-                        text: Studio.st-connected ? @tr("Stream · live now")
-                            : Studio.st-state != 0 ? @tr("Stream · connecting") : @tr("Stream");
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-label-size;
-                        font-weight: Tokens.type-label-weight;
-                    }
-                    stream-summary := Text {
-                        text: Studio.st-summary;
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        wrap: word-wrap;
-                    }
-                }
-            }
-            HorizontalLayout {
-                padding-top: Tokens.space-1;
-                spacing: Tokens.space-2;
-                alignment: start;
-                Button {
-                    text: @tr("Recording settings");
-                    clicked => { Studio.open-settings(); }
-                }
-                Button {
-                    text: @tr("Stream settings");
-                    clicked => { Studio.open-stream-settings(); }
-                }
+            OutputCard {
+                title: Studio.st-connected ? @tr("Stream live")
+                    : Studio.st-state != 0 ? @tr("Stream connecting") : @tr("Stream");
+                kind: Studio.st-kind;
+                encoder: Studio.st-encoder-name;
+                video: Studio.st-video-line;
+                audio: Studio.st-audio-line;
+                where: Studio.st-where;
+                where-label: @tr("Server");
+                action: @tr("Stream settings");
+                open => { Studio.open-stream-settings(); }
             }
         }
     }
 }
 
-// One row of the Library: a name, a note and a button, or a thumbnail instead of the note.
+// One row of the Library: a name and a quiet action, or a thumbnail with the action under
+// the caption. The row raises a plate under the pointer; the button stays the action.
 component LibraryRow inherits Rectangle {
     in property <string> title;
     in property <string> action;
@@ -4026,43 +4218,62 @@ component LibraryRow inherits Rectangle {
     in property <bool> has-thumb: false;
     in property <bool> frame: false;
     callback act();
+    border-radius: Tokens.radius-sm;
+    background: root.enabled && touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: title;
+    min-height: root.has-thumb ? Tokens.size-library-thumb-h + 2 * Tokens.space-1 : Tokens.size-control-md;
+    touch := TouchArea { }
     HorizontalLayout {
-        padding-top: Tokens.space-1;
-        padding-bottom: Tokens.space-1;
-        spacing: Tokens.space-2;
-        if root.has-thumb: Rectangle {
-            width: Tokens.size-library-thumb-w;
-            height: Tokens.size-library-thumb-h;
-            border-radius: Tokens.radius-sm;
-            background: Theme.surface-sunken;
-            clip: true;
-            Image {
-                source: root.thumb;
-                width: 100%;
-                height: 100%;
-                accessible-role: none;
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-1;
+            padding-top: Tokens.space-1;
+            padding-bottom: Tokens.space-1;
+            spacing: Tokens.space-2;
+            if root.has-thumb: Rectangle {
+                width: Tokens.size-library-thumb-w;
+                height: Tokens.size-library-thumb-h;
+                border-radius: Tokens.radius-sm;
+                border-width: Tokens.size-border;
+                border-color: Theme.border-subtle;
+                background: Theme.surface-sunken;
+                clip: true;
+                Image {
+                    source: root.thumb;
+                    width: 100%;
+                    height: 100%;
+                    accessible-role: none;
+                }
             }
-        }
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            spacing: Tokens.space-1;
-            Text {
-                text: root.title;
-                color: Theme.text-primary;
-                font-size: Tokens.type-body-size;
-                overflow: elide;
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                spacing: Tokens.space-1;
+                Text {
+                    text: root.title;
+                    color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                    font-size: Tokens.type-body-size;
+                    overflow: elide;
+                }
+                if root.has-thumb: Text {
+                    text: root.frame ? @tr("Frame, on top") : @tr("Background, below");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    overflow: elide;
+                }
+                if root.has-thumb: HorizontalLayout {
+                    alignment: start;
+                    Button {
+                        text: root.action;
+                        accessible-name: @tr("{}: {}", root.action, root.title);
+                        enabled: root.enabled;
+                        dense: true;
+                        clicked => { root.act(); }
+                    }
+                }
             }
-            if root.has-thumb: Text {
-                text: root.frame ? @tr("Frame, on top") : @tr("Background, below");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                overflow: elide;
-            }
-            if root.has-thumb: HorizontalLayout {
-                alignment: start;
+            if !root.has-thumb: VerticalLayout {
+                alignment: center;
                 Button {
                     text: root.action;
                     accessible-name: @tr("{}: {}", root.action, root.title);
@@ -4072,17 +4283,6 @@ component LibraryRow inherits Rectangle {
                 }
             }
         }
-        if !root.has-thumb: VerticalLayout {
-            alignment: center;
-            Button {
-                text: root.action;
-                accessible-name: @tr("{}: {}", root.action, root.title);
-                enabled: root.enabled;
-                dense: true;
-                clicked => { root.act(); }
-            }
-        }
-    }
 }
 
 // The Library (ADR-0075): built-in looks that change the selected source's colour, effects
@@ -4091,6 +4291,8 @@ component LibraryRow inherits Rectangle {
 export component LibraryPanel inherits Rectangle {
     background: Theme.surface-raised;
     property <bool> has-selection: Studio.selected-source >= 0;
+    // A look changes a picture. An audio-only selection cannot take one.
+    property <bool> can-apply: Studio.looks-ready;
     init => { Studio.library-shown(); }
     fl := Flickable {
         width: parent.width;
@@ -4098,68 +4300,104 @@ export component LibraryPanel inherits Rectangle {
         content-width: self.width;
         content-height: list.preferred-height;
         list := VerticalLayout {
-            padding: Tokens.space-3;
-            spacing: Tokens.space-1;
+            padding: Tokens.size-panel-pad;
+            spacing: Tokens.size-field-gap;
             alignment: start;
+            SectionTitle { title: @tr("Looks"); }
             Text {
-                text: @tr("Looks");
-                color: Theme.text-primary;
-                font-size: Tokens.type-label-size;
-                font-weight: Tokens.type-label-weight;
-            }
-            Text {
-                text: has-selection ? @tr("Applies to the selected source. A filter of the same kind is replaced, in every scene that uses the source. Undo puts it back.")
-                    : @tr("Select a source in the Sources panel to apply a look.");
-                color: Theme.text-secondary;
+                text: !has-selection ? @tr("Select a source in the Sources panel to apply a look.")
+                    : !can-apply ? @tr("This source has no picture. Looks change a picture, so they stay off until you select one that has.")
+                    : @tr("Applies to the selected source. A filter of the same kind is replaced, in every scene that uses the source. Undo puts it back.");
+                color: has-selection && !can-apply ? Theme.state-warning : Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
                 wrap: word-wrap;
             }
             for group[g] in [@tr("Colour"), @tr("Effects"), @tr("Shape")]: VerticalLayout {
-                padding-top: Tokens.space-2;
-                Text {
-                    text: group;
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-caption-size;
-                    font-weight: Tokens.type-label-weight;
-                }
+                padding-top: Tokens.size-section-gap;
+                spacing: Tokens.size-field-gap;
+                SectionTitle { title: group; }
                 for l in Studio.library-looks: VerticalLayout {
                     if l.group == g: LibraryRow {
                         title: l.name;
                         action: @tr("Apply");
-                        enabled: root.has-selection;
+                        enabled: root.can-apply;
                         act => { Studio.apply-look(l.id); }
                     }
                 }
             }
             VerticalLayout {
-                padding-top: Tokens.space-3;
+                padding-top: Tokens.size-section-gap;
+                spacing: Tokens.size-field-gap;
+                SectionTitle { title: @tr("Backgrounds and frames"); }
                 Text {
-                    text: @tr("Backgrounds and frames");
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-label-size;
-                    font-weight: Tokens.type-label-weight;
+                    text: @tr("Adds a picture to the scene you are editing.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+                for s in Studio.library-samples: LibraryRow {
+                    title: s.name;
+                    action: @tr("Add");
+                    has-thumb: true;
+                    thumb: s.thumb;
+                    frame: s.frame;
+                    act => { Studio.add-sample(s.id); }
                 }
             }
-            Text {
-                text: @tr("Adds a picture to the scene you are editing.");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                wrap: word-wrap;
-            }
-            for s in Studio.library-samples: LibraryRow {
-                title: s.name;
-                action: @tr("Add");
-                has-thumb: true;
-                thumb: s.thumb;
-                frame: s.frame;
-                act => { Studio.add-sample(s.id); }
-            }
+        }
+    }
+}
+
+// One measured number on its own row, or a group name. A full-width row keeps the
+// label and the number readable in a narrow panel (a grid column was collapsing
+// them to nothing).
+component StatLine inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> bad;
+    in property <bool> heading;
+    min-height: heading ? Tokens.size-control-sm : Tokens.size-control-md;
+    background: heading ? transparent : Theme.surface-sunken;
+    border-width: heading ? 0px : Tokens.size-border;
+    border-color: Theme.border-subtle;
+    border-radius: Tokens.radius-sm;
+    if heading: Text {
+        text: label;
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-title-weight;
+        vertical-alignment: center;
+        accessible-role: AccessibleRole.text;
+    }
+    if !heading: HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-2;
+        Text {
+            text: label;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        Text {
+            text: value;
+            color: bad ? Theme.state-error : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            font-weight: Tokens.type-title-weight;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            accessible-role: AccessibleRole.text;
+            accessible-label: @tr("{}: {}", label, value);
         }
     }
 }
 
 // Stats: the running recording's and stream's counters and the engine's late ticks,
 // updated once a second while an output runs (design system: `rbs.stats` 1 Hz).
+// Each number is one full-width row, so a narrow panel never clips the text.
 export component StatsPanel inherits Rectangle {
     background: Theme.surface-raised;
     if Studio.stats.length == 0: EmptyState {
@@ -4173,35 +4411,14 @@ export component StatsPanel inherits Rectangle {
         height: parent.height;
         content-height: list.preferred-height;
         list := VerticalLayout {
-            padding: Tokens.space-3;
-            spacing: Tokens.space-1;
+            padding: Tokens.size-panel-pad;
+            spacing: Tokens.size-field-gap;
             alignment: start;
-            for row in Studio.stats: VerticalLayout {
-                if row.heading: Text {
-                    text: row.label;
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-label-size;
-                    font-weight: Tokens.type-label-weight;
-                    accessible-role: AccessibleRole.text;
-                }
-                if !row.heading: HorizontalLayout {
-                    spacing: Tokens.space-2;
-                    accessible-role: AccessibleRole.list-item;
-                    accessible-label: @tr("{}: {}", row.label, row.value);
-                    Text {
-                        text: row.label;
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-body-size;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: row.value;
-                        color: row.bad ? Theme.state-error : Theme.text-primary;
-                        font-size: Tokens.type-body-size;
-                        horizontal-alignment: right;
-                    }
-                }
+            for row in Studio.stats: StatLine {
+                label: row.label;
+                value: row.value;
+                bad: row.bad;
+                heading: row.heading;
             }
         }
     }

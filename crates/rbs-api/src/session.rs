@@ -26,7 +26,7 @@ use crate::transport::{
 };
 
 /// The protocol version this server speaks.
-pub const PROTOCOL_VERSION: &str = "1.31";
+pub const PROTOCOL_VERSION: &str = "1.33";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

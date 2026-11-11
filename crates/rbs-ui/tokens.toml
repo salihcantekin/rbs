@@ -40,7 +40,7 @@ format = 2
 [themes.light]
 "color.surface.base" = "#f5f6f8"
 "color.surface.raised" = "#ffffff"
-"color.surface.overlay" = "#ffffff"
+"color.surface.overlay" = "#e8ebf0"
 "color.surface.sunken" = "#e9ebef"
 "color.text.primary" = "#15171a"
 "color.text.secondary" = "#4f555e"
