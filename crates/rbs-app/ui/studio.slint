@@ -1227,25 +1227,16 @@ component MonitorButton inherits Rectangle {
     }
 }
 
-// The Mixer's monitor row (ADR-0097): shown only while a source is monitored or
-// soloed. The headphones in the state's colour, the monitor volume (sent when a drag
-// ends), the device, the latency or the problem in words, and the solo chip that ends
-// solo.
-component MonitorRow inherits Rectangle {
+// The monitor in the Mixer's narrow layout (ADR-0097): one row under the scale, shown
+// only while a source is monitored or soloed. The headphones in the state's colour, the
+// monitor volume (sent when a drag ends), the device, the latency or the problem in
+// words; the solo chip that ends solo goes on its own line below.
+component MonitorRow inherits VerticalLayout {
     // The fader position while a drag runs; -1 otherwise.
     property <float> drag: -1;
-    height: Tokens.size-control-md + 2 * Tokens.space-1;
-    background: Theme.surface-raised;
-    Rectangle {
-        y: 0;
-        height: Tokens.size-border;
-        background: Theme.border-subtle;
-    }
+    spacing: Tokens.space-1;
     HorizontalLayout {
-        padding-left: Tokens.size-panel-pad;
-        padding-right: Tokens.size-panel-pad;
-        padding-top: Tokens.space-1;
-        padding-bottom: Tokens.space-1;
+        height: Tokens.size-control-md;
         spacing: Tokens.space-2;
         VerticalLayout {
             alignment: center;
@@ -1264,7 +1255,9 @@ component MonitorRow inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            width: Tokens.size-menu-sm * 0.5;
+            horizontal-stretch: 1;
+            min-width: Tokens.size-menu-sm * 0.25;
+            max-width: Tokens.size-menu-sm * 0.5;
             Slider {
                 label: @tr("Monitor volume");
                 value: root.drag >= 0 ? root.drag : Studio.monitor-volume;
@@ -1280,7 +1273,9 @@ component MonitorRow inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            width: Tokens.size-menu-sm * 0.8;
+            horizontal-stretch: 1;
+            min-width: Tokens.size-menu-sm * 0.4;
+            max-width: Tokens.size-menu-sm * 0.8;
             Select {
                 label: @tr("Monitor device");
                 options: Studio.monitor-devices;
@@ -1304,16 +1299,88 @@ component MonitorRow inherits Rectangle {
                 detail: @tr("Monitor only takes a source off the stream and the recording while the monitor plays. Alt-click (Option-click) a headphones button to solo a source.");
             }
         }
-        if Studio.monitor-solo != "": VerticalLayout {
+    }
+    if Studio.monitor-solo != "": HorizontalLayout {
+        alignment: start;
+        Button {
+            dense: true;
+            text: @tr("Solo: {}", Studio.monitor-solo);
+            icon: IconName.close;
+            accessible-name: @tr("End solo of {}", Studio.monitor-solo);
+            tooltip: @tr("End solo");
+            clicked => { Studio.end-monitor-solo(); }
+        }
+    }
+}
+
+// The monitor in the Mixer's wide layout (ADR-0097): the same controls as
+// MonitorRow, stacked in a column after the master.
+component MonitorBox inherits VerticalLayout {
+    // The fader position while a drag runs; -1 otherwise.
+    property <float> drag: -1;
+    spacing: Tokens.space-2;
+    alignment: start;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        VerticalLayout {
             alignment: center;
-            Button {
-                dense: true;
-                text: @tr("Solo: {}", Studio.monitor-solo);
-                icon: IconName.close;
-                accessible-name: @tr("End solo of {}", Studio.monitor-solo);
-                tooltip: @tr("End solo");
-                clicked => { Studio.end-monitor-solo(); }
+            Icon {
+                name: IconName.headphones;
+                ink: Studio.monitor-tone == 2 ? Theme.state-warning : Studio.monitor-tone == 1 ? Theme.accent : Theme.text-secondary;
             }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: Studio.monitor-tone == 1 ? Studio.monitor-latency : Studio.monitor-status;
+            color: Studio.monitor-tone == 2 ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        InfoHint {
+            label: @tr("Monitor");
+            text: @tr("Sources with their monitor on play here, after their fader and mute and before the master. The monitor goes through the mix, so it lags the sound by the latency shown: for playing live, use your audio interface's direct monitoring.");
+            detail: @tr("Monitor only takes a source off the stream and the recording while the monitor plays. Alt-click (Option-click) a headphones button to solo a source.");
+        }
+    }
+    Select {
+        label: @tr("Monitor device");
+        options: Studio.monitor-devices;
+        index: Studio.monitor-device;
+        selected(i) => { Studio.set-monitor-device(i); }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Slider {
+            horizontal-stretch: 1;
+            label: @tr("Monitor volume");
+            value: root.drag >= 0 ? root.drag : Studio.monitor-volume;
+            value-text: Studio.monitor-volume-text;
+            moved(v) => { root.drag = v; }
+            released => {
+                if root.drag >= 0 { Studio.set-monitor-volume(root.drag); }
+                root.drag = -1;
+            }
+            cancelled => { root.drag = -1; }
+            reset => { Studio.set-monitor-volume(1); }
+        }
+        Text {
+            text: Studio.monitor-volume-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    if Studio.monitor-solo != "": HorizontalLayout {
+        alignment: start;
+        Button {
+            dense: true;
+            text: @tr("Solo: {}", Studio.monitor-solo);
+            icon: IconName.close;
+            accessible-name: @tr("End solo of {}", Studio.monitor-solo);
+            tooltip: @tr("End solo");
+            clicked => { Studio.end-monitor-solo(); }
         }
     }
 }
@@ -1624,9 +1691,6 @@ export component MixerPanel inherits Rectangle {
     property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);
     property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
     property <length> name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
-    // The monitor row (ADR-0097) takes the panel's bottom while the monitor is wanted.
-    property <length> row-height: Studio.monitor-wanted ? Tokens.size-control-md + 2 * Tokens.space-1 : 0px;
-    property <length> avail: root.height - root.row-height;
     if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -1638,12 +1702,12 @@ export component MixerPanel inherits Rectangle {
     // Wide: strips in clusters, scrolling sideways when they do not fit.
     if root.any && root.wide: Flickable {
         width: parent.width;
-        height: parent.height - root.row-height;
+        height: parent.height;
         content-width: max(clusters.preferred-width, self.width);
-        content-height: root.avail;
+        content-height: root.height;
         TouchArea {
             width: max(clusters.preferred-width, root.width);
-            height: root.avail;
+            height: root.height;
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     // Relative to the panel, where the menu is, whatever the scroll.
@@ -1655,7 +1719,7 @@ export component MixerPanel inherits Rectangle {
             }
         }
         clusters := HorizontalLayout {
-            height: root.avail;
+            height: root.height;
             padding: Tokens.size-panel-pad;
             spacing: Tokens.size-section-gap;
             alignment: start;
@@ -1669,7 +1733,7 @@ export component MixerPanel inherits Rectangle {
                 }
                 if !root.scene-closed: HorizontalLayout {
                     // The height under the header, so the strips fill the panel.
-                    height: max(0px, root.avail - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     spacing: 0px;
                     for m[i] in Studio.meters: VerticalLayout {
                         padding-right: m.global ? 0px : Tokens.size-field-gap;
@@ -1687,7 +1751,7 @@ export component MixerPanel inherits Rectangle {
                 }
                 if !root.global-closed: HorizontalLayout {
                     // The height under the header, so the strips fill the panel.
-                    height: max(0px, root.avail - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     spacing: 0px;
                     for m[i] in Studio.meters: VerticalLayout {
                         padding-right: !m.global ? 0px : Tokens.size-field-gap;
@@ -1705,13 +1769,24 @@ export component MixerPanel inherits Rectangle {
                 SectionHeader { title: @tr("Master"); }
                 HorizontalLayout {
                     // The height under the header, so the strip fills the panel.
-                    height: max(0px, root.avail - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     MeterStrip {
                         master: true;
                         data: Studio.master-meter[0];
                         reset => { Studio.reset-master-clip(); }
                     }
                 }
+            }
+            // The monitor (ADR-0097), after the master while it is wanted.
+            if Studio.monitor-wanted: Rectangle {
+                width: Tokens.size-border;
+                background: Theme.border-subtle;
+            }
+            if Studio.monitor-wanted: VerticalLayout {
+                width: Tokens.size-menu-sm;
+                spacing: Tokens.size-field-gap;
+                SectionHeader { title: @tr("Monitor"); }
+                MonitorBox { }
             }
             if Studio.hidden-meters.length > 0: VerticalLayout {
                 width: Tokens.size-menu-sm;
@@ -1734,7 +1809,7 @@ export component MixerPanel inherits Rectangle {
     // Narrow: rows under full-width headers, then the labelled scale (dBFS).
     if root.any && !root.wide: Flickable {
         width: parent.width;
-        height: parent.height - root.row-height;
+        height: parent.height;
         content-height: strips.preferred-height;
         TouchArea {
             width: root.width;
@@ -1823,6 +1898,11 @@ export component MixerPanel inherits Rectangle {
                 Rectangle { width: Tokens.size-control-sm; }
                 Rectangle { width: Tokens.size-control-sm; }
             }
+            // The monitor (ADR-0097), under the scale while it is wanted.
+            if Studio.monitor-wanted: VerticalLayout {
+                padding-top: Tokens.size-section-gap;
+                MonitorRow { }
+            }
             if Studio.hidden-meters.length > 0: VerticalLayout {
                 padding-top: Tokens.size-section-gap;
                 SectionHeader {
@@ -1836,10 +1916,6 @@ export component MixerPanel inherits Rectangle {
                 }
             }
         }
-    }
-    if Studio.monitor-wanted: MonitorRow {
-        y: root.height - root.row-height;
-        width: root.width;
     }
     // The Mixer's own menu (ADR-0080): a right-click outside any strip or row.
     mixer-menu := CommandMenu { context: "mixer"; }

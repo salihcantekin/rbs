@@ -2117,8 +2117,17 @@ impl Ctx {
         app.areas.extend(area_of(0).map(|r| (0, r)));
         let mut slots = Vec::with_capacity(wanted.len());
         for ((w, panels), slot) in wanted.into_iter().zip(chosen) {
-            let Some(slot) = slot.or_else(|| self.new_float()) else {
-                continue;
+            let slot = match slot {
+                Some(s) => s,
+                None => {
+                    let Some(s) = self.new_float() else {
+                        continue;
+                    };
+                    // `install_studio` cannot borrow the app here (it is borrowed for
+                    // this sync), so the shared models are attached directly.
+                    app.studio.attach_models(&s.window.global::<Studio>());
+                    s
+                }
             };
             if let Some(r) = slot.index.and_then(area_of) {
                 app.areas.push((w, r));

@@ -2469,7 +2469,7 @@ mod tests {
             let id = CommandId::parse(&format!("ui.settings.open?section={s}")).unwrap();
             assert!(id.resolve().unwrap().is_some(), "{s}");
         }
-        let bad = CommandId::parse("ui.settings.open?section=audio").unwrap();
+        let bad = CommandId::parse("ui.settings.open?section=mixer").unwrap();
         assert!(bad.resolve().is_err());
     }
 
