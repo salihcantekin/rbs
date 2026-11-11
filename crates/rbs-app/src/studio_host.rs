@@ -410,9 +410,9 @@ impl CropRefusal {
 }
 
 /// Whether the app shows the preview scene's own picture in studio mode (ADR-0061):
-/// macOS, where each picture is its own Core Animation layer. Windows waits for one
-/// DirectComposition target shared by both pictures (a window has one topmost target).
-const SCENE_PICTURE: bool = cfg!(target_os = "macos");
+/// macOS, where each picture is its own Core Animation layer, and Windows, where both
+/// pictures share the window's one DirectComposition target.
+const SCENE_PICTURE: bool = cfg!(any(target_os = "macos", windows));
 
 const STUDIO_MODE_OFF: &str = "Studio mode is off: there is no preview scene.";
 const NO_AREA: &str = "The crop must leave at least one pixel of the picture in each direction.";
@@ -688,9 +688,13 @@ pub enum Command {
     /// Enter (`true`) or leave studio mode (ADR-0061): the preview scene starts as the
     /// program scene. A live action.
     SetStudioMode(bool),
-    /// Move the preview scene to air and the old program scene to preview (a cut that
-    /// swaps; ADR-0061). Refused outside studio mode. A live action.
+    /// Move the preview scene to air (a cut, ADR-0061); the preview keeps its scene, or
+    /// with [`Command::SetSwapAfterTransition`] gets the old program scene (ADR-0098).
+    /// Refused outside studio mode. A live action.
     Transition,
+    /// Whether a transition also puts the old program scene in preview (ADR-0098; the
+    /// app setting `swap_after_transition`, off by default).
+    SetSwapAfterTransition(bool),
     /// Show or hide a source in the program scene (one undo step).
     SetSourceVisible {
         /// The source.
@@ -1581,6 +1585,9 @@ pub struct HostConfig {
     /// The config folder where the recent targets are kept
     /// ([`crate::recent_targets`]); `None`: they are kept in memory only.
     pub recent_dir: Option<PathBuf>,
+    /// A transition also puts the old program scene in preview (ADR-0098); false by
+    /// default.
+    pub swap_after_transition: bool,
     /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
     /// is opened only while a source is monitored or soloed.
     pub monitor: MonitorSettings,
@@ -1612,6 +1619,7 @@ impl HostConfig {
             autosave: None,
             virtual_camera: None,
             recent_dir: None,
+            swap_after_transition: false,
             monitor: MonitorSettings::default(),
             #[cfg(feature = "fault-injection")]
             fault: None,
@@ -1853,6 +1861,8 @@ struct Host {
     /// The recent targets per source type and the folder they are saved in.
     recent: RecentTargets,
     recent_dir: Option<PathBuf>,
+    /// A transition also puts the old program scene in preview (ADR-0098).
+    swap_after_transition: bool,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
     /// The collection as last handed to `autosave`.
@@ -2362,6 +2372,7 @@ fn start(
                 .map(|d| crate::recent_targets::load(d).0)
                 .unwrap_or_default(),
             recent_dir: config.recent_dir,
+            swap_after_transition: config.swap_after_transition,
             thumbs: Arc::new(AtomicU64::new(0)),
             // A collection that had to be completed is saved at the first publish.
             saved: loaded,
@@ -2645,6 +2656,7 @@ impl Host {
                 let done = self.transition();
                 self.answer(done, notify);
             }
+            Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,
             Command::SetSourceVisible { id, visible } => {
                 match self.set_source_visible(id, visible) {
                     Ok(true) => self.apply(notify),
@@ -5627,7 +5639,8 @@ impl Host {
     }
 
     /// The transition (a cut, ADR-0061 decision 3): the preview scene goes on air and
-    /// the old program scene to preview. A live action. When both are the same scene,
+    /// stays in preview, so the program is held from now on (ADR-0063); with the swap
+    /// setting the old program scene goes to preview instead (ADR-0098). A live action. When both are the same scene,
     /// the edits made since the program was held go on air (ADR-0063); `Ok(false)` when
     /// there is nothing to put on air.
     fn transition(&mut self) -> Result<bool, Refusal> {
@@ -5643,7 +5656,9 @@ impl Host {
             .set_program(self.canvas, Some(preview))
             .map_err(|e| Refusal::of(&e))?;
         self.scene = preview;
-        let _ = self.collection.set_preview(self.canvas, Some(program));
+        if self.swap_after_transition {
+            let _ = self.collection.set_preview(self.canvas, Some(program));
+        }
         Ok(true)
     }
 
@@ -5664,7 +5679,9 @@ impl Host {
         if let Some(run) = run_copy(&self.collection, self.canvas, held) {
             return Some(run);
         }
-        self.held = held_copy(&self.collection, self.canvas);
+        // A fresh copy of the same scene, still on air; whatever is previewed, the hold
+        // goes on (ADR-0098).
+        self.held = copy_of(&self.collection, held.from);
         let run = run_copy(&self.collection, self.canvas, self.held.as_ref()?);
         if run.is_none() {
             self.held = None;
@@ -7846,6 +7863,11 @@ fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
     if c.preview != Some(program) {
         return None;
     }
+    copy_of(collection, program)
+}
+
+/// A copy of `program` as it is now, to hold on air (ADR-0063).
+fn copy_of(collection: &SceneCollection, program: SceneId) -> Option<Held> {
     let scene = collection.scene(program)?;
     let mut held = scene.clone();
     held.id = SceneId::from_raw(HELD_IDS);
@@ -7863,16 +7885,17 @@ fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
     })
 }
 
-/// What is held after a change (ADR-0063): nothing unless the program scene is also
-/// the preview scene; the copy kept while it is a copy of that scene, less the items
-/// whose source or nested scene is gone from the collection; a new copy otherwise
-/// (the hold starts, or an undo or redo put another scene on air).
+/// What is held after a change (ADR-0063, ADR-0098): nothing outside studio mode; the
+/// copy kept while its scene is on air, whatever the preview scene is, less the items
+/// whose source or nested scene is gone from the collection; a new copy when the
+/// program scene is also the preview scene and nothing of it is held (the hold starts:
+/// studio mode entered, a transition, or an undo or redo put another scene on air);
+/// nothing otherwise. Only a transition (which drops the copy) or another scene on air
+/// ends a hold, so previewing another scene never puts edits on air.
 fn next_held(held: Option<Held>, collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
     let c = collection.canvas(canvas)?;
     let program = c.program?;
-    if c.preview != Some(program) {
-        return None;
-    }
+    let preview = c.preview?;
     match held {
         Some(mut h) if h.from == program => {
             h.scene.items.retain(|i| match i.content {
@@ -7882,7 +7905,8 @@ fn next_held(held: Option<Held>, collection: &SceneCollection, canvas: CanvasId)
             });
             Some(h)
         }
-        _ => held_copy(collection, canvas),
+        _ if preview == program => held_copy(collection, canvas),
+        _ => None,
     }
 }
 
@@ -8058,6 +8082,38 @@ mod tests {
         // Leaving studio mode lets the copy go.
         col.set_preview(canvas, None).unwrap();
         assert!(next_held(Some(held), &col, canvas).is_none());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn previewing_another_scene_keeps_the_program_held() {
+        // As after a transition that keeps the preview scene (ADR-0098): the program
+        // scene is in preview and held, and its items are edited.
+        let (mut col, canvas, scene, _) = held_collection();
+        let held = held_copy(&col, canvas).unwrap();
+        let item = col.scene(scene).unwrap().items[0].id;
+        col.remove_item(item).unwrap();
+        // Another scene goes to preview: the edit still waits for a transition.
+        let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
+        col.set_preview(canvas, Some(other)).unwrap();
+        let held = next_held(Some(held), &col, canvas).unwrap();
+        assert_eq!(held.from, scene);
+        let run = run_copy(&col, canvas, &held).unwrap();
+        let program = run.canvas(canvas).unwrap().program.unwrap();
+        assert_eq!(run.scene(program).unwrap().items.len(), 1, "as it was");
+        assert_eq!(run.canvas(canvas).unwrap().preview, Some(other));
+        // A copy that must be taken again (it no longer fits) is of the held scene, also
+        // with another scene in preview.
+        let again = copy_of(&col, held.from).unwrap();
+        assert_eq!(again.from, scene);
+        assert!(run_copy(&col, canvas, &again).is_some());
+        // Without a hold, another scene in preview starts none.
+        assert!(next_held(None, &col, canvas).is_none());
+        // The other scene on air (a transition): the copy goes; it is in preview too,
+        // so the hold starts again with it.
+        col.set_program(canvas, Some(other)).unwrap();
+        let next = next_held(Some(held), &col, canvas).unwrap();
+        assert_eq!(next.from, other);
     }
 
     #[test]

@@ -259,3 +259,29 @@ fn the_colour_popover_is_a_layer_and_a_pick_reaches_only_the_swatch_that_opened_
     assert!(!o.get_color_open());
     assert!(p.get_colour_focused(), "the focus is back on the swatch");
 }
+
+fn click(p: &Probe, x: f32, y: f32) {
+    point(p, x, y);
+    for pressed in [true, false] {
+        let position = slint::LogicalPosition::new(x, y);
+        let button = slint::platform::PointerEventButton::Left;
+        p.window().dispatch_event(if pressed {
+            WindowEvent::PointerPressed { position, button }
+        } else {
+            WindowEvent::PointerReleased { position, button }
+        });
+    }
+}
+
+#[test]
+fn one_click_on_a_tab_selects_it_while_the_focus_is_elsewhere() {
+    let p = setup();
+    // The focus is on another control, as after a click in another panel.
+    p.invoke_focus_button();
+    settle();
+    // The Tabs bar spans x 10..310 at y 240; three tabs of 100 each.
+    click(&p, 160.0, 250.0);
+    assert_eq!(p.get_tab_index(), 1, "the first click chooses Filters");
+    click(&p, 260.0, 250.0);
+    assert_eq!(p.get_tab_index(), 2);
+}

@@ -106,3 +106,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0095](0095-audio-ducker-and-key-tap.md) | Audio ducker as a filter with a pre-fader key tap from another source | Accepted |
 | [0096](0096-capture-audio-companions-and-camera-microphone.md) | "Capture audio too" companions and the camera's own microphone | Accepted |
 | [0097](0097-audio-monitoring-and-buses.md) | Audio monitoring (output port, per-strip monitor modes) and buses with per-source send levels | Accepted |
+| [0098](0098-transition-keeps-the-preview-scene.md) | Transition keeps the preview scene; swapping is a setting, off by default | Accepted |

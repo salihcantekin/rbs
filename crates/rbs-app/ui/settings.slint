@@ -58,6 +58,7 @@ export component SettingsNavItem inherits Rectangle {
         }
     }
     focus := RingFocus {
+        focus-on-click: false;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
             reject

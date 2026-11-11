@@ -244,9 +244,9 @@ fn connect(host: &StudioHost) -> (ApiServer, Client) {
     };
     let hello = c.call(
         "session.hello",
-        json!({"protocols": ["1.30"], "client": {"name": "test", "version": "1"}}),
+        json!({"protocols": ["1.31"], "client": {"name": "test", "version": "1"}}),
     );
-    assert_eq!(hello["result"]["protocol"], "1.30", "{hello}");
+    assert_eq!(hello["result"]["protocol"], "1.31", "{hello}");
     (api, c)
 }
 
