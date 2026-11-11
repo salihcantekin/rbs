@@ -178,8 +178,9 @@ const SECTION: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 9] = [
+pub const SETTINGS_SECTIONS: [&str; 10] = [
     "general",
+    "audio",
     "appearance",
     "shortcuts",
     "video",
@@ -991,6 +992,34 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "source.monitor",
+        title: "Monitor",
+        tooltip: "Hear the source on the monitor: off, with the outputs, or on the monitor only",
+        icon: Some("headphones"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "source.set_monitor",
+            param: "monitor",
+        },
+        params: &[target("source"), choice("monitor"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
+        id: "source.monitor_solo.toggle",
+        title: "Solo in monitor",
+        tooltip: "While any source is soloed, the monitor plays only soloed sources; the outputs are unchanged",
+        icon: Some("headphones"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Toggle {
+            on: "monitor.set_solo",
+            off: "monitor.set_solo",
+        },
+        params: &[target("source"), COLLECTION],
+        checkable: true,
+    },
+    Entry {
         id: "ui.mixer.orientation",
         title: "Mixer layout",
         tooltip: "Arrange the Mixer in rows, in columns, or by the panel's shape",
@@ -1564,6 +1593,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "item.locked.toggle",
             "source.muted.toggle",
             "source.mixer_hidden.toggle",
+            "source.monitor",
+            "source.monitor_solo.toggle",
             "|",
             "item.flip?axis=horizontal",
             "item.flip?axis=vertical",
@@ -2050,6 +2081,8 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
         &[
             "source.muted.toggle",
             "source.mixer_hidden.toggle",
+            "source.monitor",
+            "source.monitor_solo.toggle",
             "|",
             "source.rename",
             "ui.panel.select?id=rbs.properties",
@@ -2436,7 +2469,7 @@ mod tests {
             let id = CommandId::parse(&format!("ui.settings.open?section={s}")).unwrap();
             assert!(id.resolve().unwrap().is_some(), "{s}");
         }
-        let bad = CommandId::parse("ui.settings.open?section=audio").unwrap();
+        let bad = CommandId::parse("ui.settings.open?section=mixer").unwrap();
         assert!(bad.resolve().is_err());
     }
 

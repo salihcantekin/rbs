@@ -534,6 +534,10 @@ impl App {
             Run::Transform(id, op) => self.studio.transform_source(id, op),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
+            Run::SourceMonitor(id, m) => self
+                .studio
+                .set_source_monitor(id, crate::studio_ui::monitor::mode_code(m)),
+            Run::SourceSolo(id, on) => self.studio.set_source_solo(id, on),
             Run::MixerOrientation(o) => {
                 self.session.set_mixer_orientation(o);
                 self.changed();
@@ -1041,6 +1045,7 @@ const SECTION_GENERAL: i32 = 4;
 const SECTION_APPEARANCE: i32 = 5;
 const SECTION_SHORTCUTS: i32 = 6;
 const SECTION_VIRTUAL_CAMERA: i32 = 8;
+const SECTION_AUDIO: i32 = 9;
 
 thread_local! {
     /// The shell's context, for updates the studio's control thread hands to the UI
@@ -1316,6 +1321,7 @@ impl Ctx {
                 if section == SECTION_VIRTUAL_CAMERA {
                     vcam_page::opened(app);
                 }
+                app.studio.monitor_page_shown(section == SECTION_AUDIO);
                 return;
             }
             let Ok(w) = SettingsWindow::new() else {
@@ -1368,6 +1374,7 @@ impl Ctx {
             replay_page::install(&w.global::<ReplayBuffer>(), &ctx);
             let c = ctx.clone();
             w.on_section_shown(move |s| {
+                c.update(move |app| app.studio.monitor_page_shown(s == SECTION_AUDIO));
                 if s == SECTION_VIRTUAL_CAMERA {
                     c.update(vcam_page::opened);
                 }
@@ -1394,6 +1401,7 @@ impl Ctx {
             if section == SECTION_VIRTUAL_CAMERA {
                 vcam_page::opened(app);
             }
+            app.studio.monitor_page_shown(section == SECTION_AUDIO);
         });
     }
 
@@ -2115,8 +2123,17 @@ impl Ctx {
         app.areas.extend(area_of(0).map(|r| (0, r)));
         let mut slots = Vec::with_capacity(wanted.len());
         for ((w, panels), slot) in wanted.into_iter().zip(chosen) {
-            let Some(slot) = slot.or_else(|| self.new_float()) else {
-                continue;
+            let slot = match slot {
+                Some(s) => s,
+                None => {
+                    let Some(s) = self.new_float() else {
+                        continue;
+                    };
+                    // `install_studio` cannot borrow the app here (it is borrowed for
+                    // this sync), so the shared models are attached directly.
+                    app.studio.attach_models(&s.window.global::<Studio>());
+                    s
+                }
             };
             if let Some(r) = slot.index.and_then(area_of) {
                 app.areas.push((w, r));
@@ -2727,8 +2744,9 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 21] = [
+const SETTINGS_SECTIONS: [&str; 22] = [
     "settings.appearance.theme-in-use",
+    "settings.audio.monitor",
     "settings.appearance.themes",
     "settings.general.closing",
     "settings.general.studio",
@@ -2985,6 +3003,24 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_source_mixer_hidden, |app, id: i32, hidden: bool| {
         app.studio.set_source_mixer_hidden(id, hidden);
+    });
+    on!(on_set_source_monitor, |app, id: i32, mode: i32| {
+        app.studio.set_source_monitor(id, mode);
+    });
+    on!(on_set_source_solo, |app, id: i32, on: bool| {
+        app.studio.set_source_solo(id, on);
+    });
+    on!(on_end_monitor_solo, |app| {
+        app.studio.end_monitor_solo();
+    });
+    on!(on_set_monitor_volume, |app, position: f32| {
+        app.studio.set_monitor_volume(position);
+    });
+    on!(on_set_monitor_device, |app, index: i32| {
+        app.studio.set_monitor_device(index);
+    });
+    on!(on_list_monitor_devices, |app| {
+        app.studio.list_monitor_devices();
     });
     g.on_level_position(|text| {
         entry::guard_or(

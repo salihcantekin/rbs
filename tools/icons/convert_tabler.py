@@ -13,7 +13,7 @@ MAP={
 "more":"dots","chevron-down":"chevron-down","chevron-up":"chevron-up","chevron-left":"chevron-left","chevron-right":"chevron-right",
 "check":"check","close":"x","plus":"plus","pin":"pin","panel-left":"layout-sidebar","panel-right":"layout-sidebar-right","panel-bottom":"layout-bottombar",
 "bolt":"bolt","grid":"layout-grid","copy":"copy","window":"app-window","search":"search","monitor":"device-desktop","camera":"video","mic":"microphone",
-"speaker":"volume","eye":"eye","eye-off":"eye-off","expand":"arrows-maximize","lock":"lock","unlock":"lock-open","speaker-off":"volume-off",
+"speaker":"volume","eye":"eye","eye-off":"eye-off","expand":"arrows-maximize","lock":"lock","unlock":"lock-open","speaker-off":"volume-off","headphones":"headphones","headphones-off":"headphones-off",
 "sliders":"adjustments-horizontal","palette":"palette","keyboard":"keyboard","broadcast":"broadcast","link":"link","globe":"world",
 "warning":"alert-triangle","info":"info-circle","gear":"settings","user":"user","folder":"folder","undo":"arrow-back-up","redo":"arrow-forward-up",
 "layout":"layout-2","panel-all":"layout-board-split","panel-none":"layout-off","reset":"restore","refresh":"refresh","image":"photo","pencil":"pencil",

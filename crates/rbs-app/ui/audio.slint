@@ -1,0 +1,81 @@
+// Settings › Audio (ADR-0097 F1, docs/specs/ui-design-system.md): the Monitor card,
+// with the monitor's device, its volume and its state. These settings belong to this
+// computer (`monitor.toml`), not to the scene collection. Rust pushes the state into
+// the `Studio` global and lists the devices when the page is shown.
+import { Theme, Tokens } from "tokens.slint";
+import { Select, Slider } from "components.slint";
+import { SettingsCard, SettingRow, SettingsStatus } from "settings.slint";
+import { Studio } from "studio.slint";
+
+export component AudioSettings inherits Rectangle {
+    // The fader position while a drag runs; -1 otherwise.
+    property <float> drag: -1;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            title: @tr("Monitor");
+            id: "settings.audio.monitor";
+            description: @tr("Hear sources in headphones without sending them to the outputs. These settings belong to this computer.");
+            SettingRow {
+                divider: false;
+                label: @tr("Device");
+                help: @tr("System default follows the computer's default output. A chosen device stays chosen while it is unplugged.");
+                enabled: Studio.monitor-available;
+                Select {
+                    label: @tr("Monitor device");
+                    options: Studio.monitor-devices;
+                    index: Studio.monitor-device;
+                    enabled: Studio.monitor-available;
+                    selected(i) => { Studio.set-monitor-device(i); }
+                }
+            }
+            SettingRow {
+                label: @tr("Volume");
+                help: @tr("The monitor's own level. It does not change the stream or the recording.");
+                enabled: Studio.monitor-available;
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Slider {
+                        horizontal-stretch: 1;
+                        label: @tr("Monitor volume");
+                        value: root.drag >= 0 ? root.drag : Studio.monitor-volume;
+                        value-text: Studio.monitor-volume-text;
+                        enabled: Studio.monitor-available;
+                        moved(v) => { root.drag = v; }
+                        released => {
+                            if root.drag >= 0 { Studio.set-monitor-volume(root.drag); }
+                            root.drag = -1;
+                        }
+                        cancelled => { root.drag = -1; }
+                        reset => { Studio.set-monitor-volume(1); }
+                    }
+                    Text {
+                        text: Studio.monitor-volume-text;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-body-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+            SettingsStatus {
+                text: Studio.monitor-status;
+                tone: Studio.monitor-tone;
+            }
+            SettingRow {
+                label: @tr("Latency");
+                help: @tr("The monitor goes through the mix, so it lags the sound by this much. For playing live, use your audio interface's direct monitoring.");
+                fill: false;
+                Text {
+                    text: Studio.monitor-latency != "" ? Studio.monitor-latency : @tr("Shown while the monitor plays");
+                    color: Studio.monitor-latency != "" ? Theme.text-primary : Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}

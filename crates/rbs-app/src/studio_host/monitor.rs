@@ -31,6 +31,10 @@ pub(super) struct MonitorHost {
     seen: (bool, bool, bool),
     /// The status `monitor.changed` carried last.
     api_published: Option<api::MonitorStatus>,
+    /// The status last sent to the UI ([`super::Update::Monitor`]), and whether the
+    /// API's view changed since.
+    ui_published: Option<api::MonitorStatus>,
+    ui_dirty: bool,
 }
 
 impl MonitorHost {
@@ -42,6 +46,8 @@ impl MonitorHost {
             available,
             seen: (false, false, false),
             api_published: None,
+            ui_published: None,
+            ui_dirty: false,
         }
     }
 }
@@ -211,8 +217,6 @@ impl Host {
         Ok(())
     }
 
-    /// Writes `settings` to the config folder; without one (tests, a headless host)
-    /// they are kept in memory only.
     /// Drops soloed sources that no longer exist (a delete, an undo, a collection
     /// switch), so `solo` never lists a gone source.
     pub(super) fn prune_monitor_solo(&mut self) {
@@ -229,6 +233,8 @@ impl Host {
         self.monitor_api_changed();
     }
 
+    /// Writes `settings` to the config folder; without one (tests, a headless host)
+    /// they are kept in memory only.
     fn save_monitor(&self, settings: &MonitorSettings) -> Result<(), Refusal> {
         let Some(dir) = &self.recent_dir else {
             return Ok(());
@@ -280,9 +286,25 @@ impl Host {
             return;
         }
         self.monitor.api_published = Some(now.clone());
+        self.monitor.ui_dirty = true;
         self.events
             .changed(super::StateKey::topic(super::Topic::MonitorChanged), || {
                 super::EventPayload::MonitorChanged(now)
             });
+    }
+
+    /// Tells the UI the monitor's state once at the start and after each change of the
+    /// API's view: a flag read per round otherwise (P13).
+    pub(super) fn report_monitor(&mut self, notify: &dyn Fn(super::Update)) {
+        if self.monitor.ui_published.is_some() && !self.monitor.ui_dirty {
+            return;
+        }
+        self.monitor.ui_dirty = false;
+        let now = self.api_monitor();
+        if self.monitor.ui_published.as_ref() == Some(&now) {
+            return;
+        }
+        self.monitor.ui_published = Some(now.clone());
+        notify(super::Update::Monitor(now));
     }
 }

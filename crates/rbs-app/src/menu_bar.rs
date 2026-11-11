@@ -8,6 +8,7 @@
 //! and checked states, a picker's choices) comes from [`Values`], indexed in the same
 //! order, through the `Menus` global.
 
+use rbs_scene::model::SourceMonitor;
 use rbs_scene::{CenterAxis, FitMode};
 use rbs_ui::command::{CommandId, CommandState, Kind, MenuItem, menus};
 use rbs_ui::layout::RailAt;
@@ -499,7 +500,7 @@ impl CommandState for Shown<'_> {
                     Err("The source has no sound in the Mixer.".to_owned())
                 }
             }
-            "source.mixer_hidden.toggle" => {
+            "source.mixer_hidden.toggle" | "source.monitor" | "source.monitor_solo.toggle" => {
                 self.running()?;
                 if self.source(id)?.audio {
                     Ok(())
@@ -715,6 +716,7 @@ impl CommandState for Shown<'_> {
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
+            "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.soloed),
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
             "vcam.toggle" => self.camera.sending,
             "replay.toggle" => self.replay.armed,
@@ -756,6 +758,19 @@ impl CommandState for Shown<'_> {
                     out.push(("Next tab stack".to_owned(), "next_stack".to_owned(), false));
                 }
                 out
+            }
+            "source.monitor" => {
+                let Ok(f) = self.source(id) else {
+                    return Vec::new();
+                };
+                [
+                    (SourceMonitor::Off, "Monitor off"),
+                    (SourceMonitor::Also, "Monitor and output"),
+                    (SourceMonitor::Only, "Monitor only"),
+                ]
+                .into_iter()
+                .map(|(m, title)| (title.to_owned(), m.as_str().to_owned(), m == f.monitor))
+                .collect()
             }
             "ui.mixer.orientation" => {
                 let now = self.workspace.mixer_orientation();
@@ -902,9 +917,10 @@ impl CommandState for Shown<'_> {
             | "item.fit"
             | "item.align"
             | "item.reset_transform" => self.source(id).is_ok_and(|f| f.picture),
-            "source.muted.toggle" | "source.mixer_hidden.toggle" => {
-                self.source(id).is_ok_and(|f| f.audio)
-            }
+            "source.muted.toggle"
+            | "source.mixer_hidden.toggle"
+            | "source.monitor"
+            | "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.audio),
             // A vertical canvas's outputs, while it exists (or one of them still runs).
             "stream.vertical.toggle" | "record.vertical.toggle" => {
                 self.studio.vertical.is_some()
@@ -945,6 +961,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "shortcuts" => 6,
         "global_sources" => 7,
         "virtual_camera" => 8,
+        "audio" => 9,
         _ => return None,
     })
 }
@@ -1290,6 +1307,10 @@ pub enum Run {
     SourceMuted(i32, bool),
     /// Hide (`true`) or show the source with this id in the Mixer (ADR-0080).
     SourceMixerHidden(i32, bool),
+    /// A source's monitor mode (`source.monitor`, ADR-0097).
+    SourceMonitor(i32, SourceMonitor),
+    /// Solo a source on the monitor or end its solo (`source.monitor_solo.toggle`).
+    SourceSolo(i32, bool),
     /// Hide every shown source, only the muted ones, or show every hidden one.
     MixerBulk(MixerBulk),
     /// The Mixer's layout (ADR-0083); view state, not layout history.
@@ -1336,6 +1357,10 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "ui.panel.select" => Run::Panel(value),
             "ui.panel.move" => Run::MovePanel(panel_of(&id)?, value),
             "filter.add" => Run::AddFilter(state.source(&id).ok()?.id, value),
+            "source.monitor" => Run::SourceMonitor(
+                state.source(&id).ok()?.id,
+                SourceMonitor::from_name(&value)?,
+            ),
             "ui.mixer.orientation" => Run::MixerOrientation(MixerOrientation::parse(&value)?),
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
@@ -1447,6 +1472,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "item.reset_transform" => Run::Transform(state.source(&id).ok()?.id, TransformOp::Reset),
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
         "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
+        "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
         "mixer.hide_all" => Run::MixerBulk(MixerBulk::HideAll),
         "mixer.hide_muted" => Run::MixerBulk(MixerBulk::HideMuted),
         "mixer.unhide_all" => Run::MixerBulk(MixerBulk::ShowAll),
@@ -1515,15 +1541,15 @@ mod tests {
             .map(|s| settings_section(s).expect("known section"))
             .collect();
         seen.sort_unstable();
-        assert_eq!(seen, (0..9).collect::<Vec<_>>());
-        assert_eq!(settings_section("audio"), None);
+        assert_eq!(seen, (0..10).collect::<Vec<_>>());
+        assert_eq!(settings_section("mixer"), None);
         let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
         assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None)));
         assert_eq!(
             run("ui.settings.open?section=shortcuts"),
             Some(Run::OpenSettings(Some(6)))
         );
-        assert_eq!(run("ui.settings.open?section=audio"), None);
+        assert_eq!(run("ui.settings.open?section=mixer"), None);
     }
 
     #[test]
