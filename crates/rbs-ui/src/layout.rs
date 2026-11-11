@@ -487,6 +487,32 @@ impl Node {
         })
     }
 
+    /// The length this tree takes along `axis` when every stack is collapsed.
+    /// `None` when any stack is expanded, or the tree holds the Pictures leaf.
+    /// A fully collapsed area is drawn at this length and keeps its saved size
+    /// for when a stack expands (ADR-0049 decision 2).
+    pub fn collapsed_span(&self, axis: Axis) -> Option<f32> {
+        match self {
+            Node::Tabs(t) if t.collapsed => Some(COLLAPSED_STACK),
+            Node::Tabs(_) | Node::Pictures(_) => None,
+            Node::Split(s) => {
+                let mut spans = Vec::with_capacity(s.children.len());
+                for child in &s.children {
+                    spans.push(child.collapsed_span(axis)?);
+                }
+                if spans.is_empty() {
+                    return None;
+                }
+                if s.axis == axis {
+                    let handles = HANDLE_THICKNESS * spans.len().saturating_sub(1) as f32;
+                    Some(spans.iter().sum::<f32>() + handles)
+                } else {
+                    Some(spans.into_iter().fold(0.0_f32, f32::max))
+                }
+            }
+        }
+    }
+
     /// A split with the given shares (normalised to sum to 1).
     pub fn split(axis: Axis, parts: Vec<(f32, Node)>) -> Node {
         let sum: f32 = parts.iter().map(|(r, _)| *r).sum();

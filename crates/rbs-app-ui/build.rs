@@ -97,7 +97,13 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(s, "    ];")?;
     writeln!(
         s,
-        "    out property <int> active: Palette.color-scheme == ColorScheme.light ? 1 : 0;"
+        "    // -1 follows Palette. 0 or 1 is the OS setting, used where a menu request\
+         \n    // would change what Palette reports (Windows)."
+    )?;
+    writeln!(s, "    in-out property <int> os-scheme: -1;")?;
+    writeln!(
+        s,
+        "    out property <int> active: os-scheme == 0 || os-scheme == 1 ? os-scheme : Palette.color-scheme == ColorScheme.light ? 1 : 0;"
     )?;
     writeln!(
         s,

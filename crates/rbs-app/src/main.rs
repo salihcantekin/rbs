@@ -157,6 +157,10 @@ struct App {
     /// The maximized panel: a view state, not saved and not in the layout history
     /// (ADR-0049 decision 2).
     maximized: Option<PanelId>,
+    /// An auto-hidden panel to slide out on the next sync (`ui.panel.open`).
+    reveal: Option<PanelId>,
+    /// The next sync slides the auto-hide flyout back. Cleared when `reveal` is set.
+    dismiss_flyout: bool,
     toast: Option<Toast>,
     toast_serial: u64,
     error: Option<UiError>,
@@ -190,6 +194,9 @@ struct App {
     hidden: bool,
     /// What closing the main window does (`app.toml`, ADR-0056).
     bg: background::AppSettings,
+    /// The capture-exclusion last applied, and how many windows existed then.
+    /// A different pair applies it again (a new window, or the setting changed).
+    capture_applied: (bool, usize),
     /// Where the preview picture's context menu opened (the picture's coordinates)
     /// and the system cursor then (screen pixels), until the next press on a picture.
     menu_press: Option<([f32; 2], (i32, i32))>,
@@ -467,12 +474,22 @@ impl App {
         let Some(run) = menu_bar::run(id, &self.shown()) else {
             return;
         };
+        self.dismiss_flyout = true;
         match run {
             Run::UndoEdit(back) => self.studio.undo_edit(back),
             Run::Workspace(name) => self.switch_workspace(&name),
             Run::Panel(id) => {
                 if let Some(id) = panel(&id) {
-                    self.command(LayoutCommand::OpenPanel(id), Origin::Command);
+                    self.command(LayoutCommand::OpenPanel(id.clone()), Origin::Command);
+                    if self
+                        .session
+                        .workspace()
+                        .main_layout()
+                        .is_some_and(|m| m.group_of(&id).is_some())
+                    {
+                        self.reveal = Some(id);
+                        self.dismiss_flyout = false;
+                    }
                 }
             }
             Run::Profile(id) => {
@@ -529,6 +546,9 @@ impl App {
             Run::ReloadSource(id) => self.studio.reload_source(id),
             Run::DeleteSource(id) => self.studio.delete_source(id),
             Run::RemoveFromScene(id) => self.studio.remove_from_scene(id),
+            Run::MoveSource(id, up) => self.studio.move_source(id, up),
+            Run::MoveScene(id, up) => self.studio.move_scene(id, up),
+            Run::SetSourceActive(id, active) => self.studio.set_source_active(id, active),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
             Run::Transform(id, op) => self.studio.transform_source(id, op),
@@ -767,7 +787,7 @@ impl App {
                     }
                 }
             }
-            "source" => {
+            "source" | "mixer-source" => {
                 let Some(f) =
                     param(&target, "source").and_then(|v| self.studio.source_facts(Some(&v), None))
                 else {
@@ -775,8 +795,12 @@ impl App {
                 };
                 self.studio.selected = f.id;
                 self.studio.refresh_marks();
-                target.push(("item".to_owned(), f.item.to_string()));
-                Context::Source
+                if context == "mixer-source" {
+                    Context::MixerSource
+                } else {
+                    target.push(("item".to_owned(), f.item.to_string()));
+                    Context::Source
+                }
             }
             other => match Context::parse(other) {
                 Some(c) => c,
@@ -1847,6 +1871,46 @@ impl Ctx {
         self.update(|_| {});
     }
 
+    /// Leaves the RBS windows out of a screen capture, or puts them back.
+    /// `false` when the main window has no handle yet, so the next sync tries again.
+    /// Windows only; other systems keep the windows in the capture.
+    fn apply_capture_exclusion(app: &App) -> bool {
+        #[cfg(windows)]
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let exclude = app.bg.exclude_own_window;
+            let mut windows = vec![app.main.window()];
+            if let Some(w) = &app.settings {
+                windows.push(w.window());
+            }
+            if let Some(w) = &app.source_settings {
+                windows.push(w.window());
+            }
+            for f in &app.floats {
+                windows.push(f.window.window());
+            }
+            let mut main_ok = false;
+            for (i, w) in windows.iter().enumerate() {
+                let window_handle = w.window_handle();
+                let Ok(handle) = window_handle.window_handle() else {
+                    continue;
+                };
+                if let RawWindowHandle::Win32(win) = handle.as_raw() {
+                    rbs_app::win::exclude_from_capture(win.hwnd, exclude);
+                    if i == 0 {
+                        main_ok = true;
+                    }
+                }
+            }
+            main_ok
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = app;
+            true
+        }
+    }
+
     /// The General section's setting (ADR-0056 decision 1).
     fn push_general(app: &App) {
         let platform = if cfg!(target_os = "macos") {
@@ -1858,10 +1922,12 @@ impl Ctx {
         };
         let on_close = i32::from(app.bg.on_close == OnClose::KeepRunning);
         let swap = app.bg.swap_after_transition;
+        let exclude = app.bg.exclude_own_window;
         let push = |g: Studio<'_>| {
             g.set_platform(platform);
             g.set_on_close(on_close);
             g.set_swap_after_transition(swap);
+            g.set_exclude_own_window(exclude);
             g.set_way_back(Self::way_back());
         };
         push(app.main.global::<Studio>());
@@ -1880,6 +1946,14 @@ impl Ctx {
         }
         if app.exiting {
             return;
+        }
+        let windows = 1
+            + usize::from(app.settings.is_some())
+            + usize::from(app.source_settings.is_some())
+            + app.floats.len();
+        let capture = (app.bg.exclude_own_window, windows);
+        if app.capture_applied != capture && Self::apply_capture_exclusion(&app) {
+            app.capture_applied = capture;
         }
         if std::mem::take(&mut app.reload_themes) {
             appearance_page::reload(self, &mut app);
@@ -1960,6 +2034,15 @@ impl Ctx {
             app.confirm_end_vertical = false;
         }
         let edges = view::edge_tabs(&app.session.workspace().windows[0]);
+        let reveal = app.reveal.take().and_then(|id| {
+            edges.iter().enumerate().find_map(|(edge, tabs)| {
+                tabs.iter()
+                    .find(|t| t.id.as_str() == id.as_str())
+                    .map(|t| (edge as i32, t.clone()))
+            })
+        });
+        let dismiss_flyout = app.dismiss_flyout;
+        app.dismiss_flyout = false;
         let edge_ids = edges
             .iter()
             .flatten()
@@ -2042,6 +2125,18 @@ impl Ctx {
             g.set_bottom_tabs(edge_models[2].clone());
         };
         push(app.main.global::<Shell>());
+        // After edge-ids is pushed: a change there slides the flyout back, and this
+        // then slides the panel that was just opened back out.
+        if let Some((edge, tab)) = reveal {
+            let shell = app.main.global::<Shell>();
+            shell.set_reveal_edge(edge);
+            shell.set_reveal_tab(tab);
+            shell.set_reveal_serial(shell.get_reveal_serial() + 1);
+        } else if dismiss_flyout {
+            let shell = app.main.global::<Shell>();
+            shell.set_reveal_edge(-1);
+            shell.set_reveal_serial(shell.get_reveal_serial() + 1);
+        }
         app.menus.push(&app.main.global::<Menus>());
         for f in &app.floats {
             push(f.window.global::<Shell>());
@@ -2237,6 +2332,7 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         });
     }
     g.on_panel_data(|id| entry::guard_or(slint::DataTransfer::default, || text_data(id)));
+    g.on_is_panel(|data| data.plain_text().ok().and_then(|t| panel(&t)).is_some());
     on!(on_drag_over, |app,
                        window: i32,
                        data: slint::DataTransfer,
@@ -3133,11 +3229,23 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_move_source, |app, id: i32, up: bool| {
         app.studio.move_source(id, up);
     });
+    on!(on_move_scene, |app, id: i32, up: bool| {
+        app.studio.move_scene(id, up);
+    });
+    on!(on_move_scene_to, |app, id: i32, to: i32| {
+        app.studio.move_scene_to(id, to);
+    });
+    g.on_scene_data(|id| {
+        entry::guard_or(slint::DataTransfer::default, || {
+            text_data(id.to_string().into())
+        })
+    });
     g.on_source_data(|id| {
         entry::guard_or(slint::DataTransfer::default, || {
             text_data(id.to_string().into())
         })
     });
+    g.on_is_panel(|data| data.plain_text().ok().and_then(|t| panel(&t)).is_some());
     on!(on_move_source_to, |app, id: i32, to: i32| {
         app.studio.move_source_to(id, to);
     });
@@ -3279,6 +3387,19 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         }
     });
     // Settings, General (ADR-0098): the next transition follows it.
+    on!(on_set_exclude_own_window, |app, on: bool| {
+        if app.bg.exclude_own_window != on {
+            app.bg.exclude_own_window = on;
+            if let Err(e) = background::save(&app.config, &app.bg) {
+                app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
+            }
+            let exclude = app.bg.exclude_own_window;
+            app.main.global::<Studio>().set_exclude_own_window(exclude);
+            if let Some(w) = &app.settings {
+                w.global::<Studio>().set_exclude_own_window(exclude);
+            }
+        }
+    });
     on!(on_set_swap_after_transition, |app, on: bool| {
         if app.bg.swap_after_transition != on {
             app.bg.swap_after_transition = on;
@@ -3443,6 +3564,23 @@ fn crash_notice(unclean: &[rbs_crash::Unclean]) -> Option<String> {
     Some(text)
 }
 
+/// The real Windows light or dark setting, on every open window. Menus then follow
+/// the theme that setting shows.
+#[cfg(windows)]
+fn apply_os_scheme(app: &mut App) {
+    look::set_os_scheme(&app.main.global::<Theme>());
+    if let Some(w) = &app.settings {
+        look::set_os_scheme(&w.global::<Theme>());
+    }
+    if let Some(w) = &app.source_settings {
+        look::set_os_scheme(&w.global::<Theme>());
+    }
+    for f in &app.floats {
+        look::set_os_scheme(&f.window.global::<Theme>());
+    }
+    look::menus_follow(&app.main.global::<Theme>());
+}
+
 /// Moves `appearance.toml` aside; returns what to tell the user, if anything failed.
 fn reset_appearance(config: &Path) -> Option<String> {
     let data = rbs_user_data::UserData::new(config);
@@ -3571,6 +3709,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             drag_group: None,
             drop_guide: None,
             maximized: None,
+            reveal: None,
+            dismiss_flyout: false,
             next_group: 0,
             toast: None,
             toast_serial: 0,
@@ -3590,6 +3730,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             exiting: false,
             hidden: false,
             bg,
+            capture_applied: (false, usize::MAX),
             menu_press: None,
             preview_endpoint: None,
             scene_preview_endpoint: None,
@@ -3633,6 +3774,17 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_studio(&main.global::<Studio>(), &ctx);
     install_sections(&main.global::<Sections>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
+    // Windows menus follow the theme, which changes what the toolkit reports as the
+    // system scheme. The slot stays on the real setting, including when it changes.
+    #[cfg(windows)]
+    rbs_app::win::watch_os_scheme(|| {
+        let _ = entry::invoke(|| {
+            let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+                return;
+            };
+            ctx.update(apply_os_scheme);
+        });
+    });
     // The studio: its own control thread (ADR-0041 decision 7), on the saved canvas.
     let studio_canvas = {
         let c = ctx.app.borrow().studio.canvas;

@@ -187,7 +187,8 @@ fn hidden_and_unused_sources_are_standby_and_ids_stay_stable() {
     s.col.set_item_visible(item, false).unwrap();
     let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
     assert_eq!(s.binder.source_node(s.cam), Some(cam));
-    assert_eq!(state(&s, cam), Lifecycle::Standby);
+    // Hiding keeps the device open, so showing the layer again does not wait.
+    assert_eq!(state(&s, cam), Lifecycle::Active);
     // Its compositor link is gone, its layer too.
     let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
     assert!(
@@ -201,6 +202,16 @@ fn hidden_and_unused_sources_are_standby_and_ids_stay_stable() {
     s.col.set_item_visible(item, true).unwrap();
     s.binder.sync(&s.col, &mut s.graph).unwrap();
     assert_eq!(state(&s, cam), Lifecycle::Active);
+
+    // Deactivating releases it even while the item is visible.
+    let source = s.col.source(s.cam).unwrap().clone();
+    let mut hints = source.hints.clone();
+    hints.insert(rbs_scene::STANDBY_HINT.to_owned(), "1".to_owned());
+    s.col
+        .set_source_settings_and_hints(s.cam, source.settings, hints)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(state(&s, cam), Lifecycle::Standby);
 }
 
 #[test]

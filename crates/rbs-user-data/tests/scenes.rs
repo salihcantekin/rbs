@@ -167,7 +167,7 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 10",
+        "format = 11",
         "monitor = \"only\"",
         "monitor = \"also\"",
         "follow = 0",
@@ -263,6 +263,12 @@ fn a_follow_in_a_format_before_9_is_refused() {
 fn a_monitor_in_a_format_before_10_is_refused() {
     let why = invalid(&format!("{SOURCE}monitor = \"also\"\n"));
     assert!(why.contains("monitor"), "{why}");
+}
+
+#[test]
+fn an_order_in_a_format_before_11_is_refused() {
+    let why = invalid(&format!("{CANVAS}order = [0]\n"));
+    assert!(why.contains("order"), "{why}");
 }
 
 #[test]

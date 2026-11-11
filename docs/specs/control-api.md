@@ -218,6 +218,11 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `filter.types {domain?}` | `read` | Built-in filter types and their fields (protocol 1.8, ADR-0062); `domain` is `"video"` (default), `"audio"` or `"all"` (protocol 1.16, ADR-0082) |
 | `filter.add {source, type, settings?}`, `filter.remove {filter}`, `filter.move {filter, index}`, `filter.set_enabled {filter, enabled}`, `filter.set_settings {filter, settings}` | `control` | Edit a source's filter chain; one undo step each (protocol 1.8) |
 | `item.remove {item}` | `control` | Remove from scene: one item; the source too when it was its last placement (protocol 1.10, ADR-0065) |
+| `scene.move {scene, direction}` (`up` or `down`; protocol 1.33) | one place in the canvas's scene list; already at that end answers done and changes nothing |
+| `source.set_active {source, active}` (protocol 1.33) | `active` false releases the device (the `standby` hint); true keeps it open. Hiding a source does not release it |
+| `item.move {item, direction}` | `control` | Move that item over (`up`) or under (`down`) the next source with a picture; sound-only items are skipped. One undo step. `direction` is `up` or `down`. Doing nothing (already at that end, or the item is not a source) answers `{}` (protocol 1.32) |
+| `scene.move {scene, direction}` | `control` | Move that scene one place up or down in the canvas's scene list. One undo step. Already at that end answers `{}` (protocol 1.33) |
+| `source.set_active {source, active}` | `control` | `active` false releases the device (the source `standby` hint); true keeps it open while a scene that places it is on air or in preview. Hiding a source does not release it. One undo step (protocol 1.33) |
 | `global.list` | `read` | Global sources of the studio's canvas, as `source.list` rows (protocol 1.10) |
 | `global.add {source}`, `global.remove {source, keep?}` | `control` | Make a source global (it leaves the canvas's scenes), or take it out of the global sources (removed, or with `keep` moved into the program scene); one undo step each (protocol 1.10) |
 | `replay.status` | `read` | The replay buffer: armed, the past it holds in whole seconds, its length and memory limit, whether a clip is being saved, and the last clip's file or error (protocol 1.27, ADR-0088) |

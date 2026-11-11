@@ -76,10 +76,16 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         let Some(&i) = page.usable.get(index.max(0) as usize) else {
             return;
         };
-        choose(app, page, |ui, now| ui.pick(slot as usize, i, now))
+        choose(app, page, |ui, _now| {
+            let next = ui.pick(slot as usize, i);
+            if next.is_some() {
+                ui.selected = Some(i);
+            }
+            next
+        })
     });
     on!(on_set_follow_system, |app, page, _file, on: bool| {
-        choose(app, page, |ui, now| ui.set_follow_system(on, now))
+        choose(app, page, |ui, _now| ui.set_follow_system(on))
     });
     on!(on_select, |_app, page, _file, index: i32| {
         page.ui.selected = usize::try_from(index).ok();
@@ -93,7 +99,7 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             AppearanceMode::Fixed => 2,
             _ => app.main.global::<Theme>().get_active() as usize,
         };
-        choose(app, page, |ui, now| ui.pick(slot, i, now))
+        choose(app, page, |ui, _now| ui.pick(slot, i))
     });
     on!(on_edit, |app, page, file| {
         let built_in = page

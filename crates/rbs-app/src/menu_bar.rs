@@ -443,9 +443,41 @@ impl CommandState for Shown<'_> {
                     Err("The last scene cannot be removed.".to_owned())
                 }
             }
+            "scene.move" => {
+                self.running()?;
+                let scene = self.scene(id)?;
+                let (up, down) = s
+                    .scene_ends(scene)
+                    .ok_or_else(|| "The scene is gone.".to_owned())?;
+                match id.param("direction") {
+                    Some("up") if up => Ok(()),
+                    Some("down") if down => Ok(()),
+                    Some("up") => Err("This scene is already the first.".to_owned()),
+                    Some("down") => Err("This scene is already the last.".to_owned()),
+                    _ => Err("Choose up or down.".to_owned()),
+                }
+            }
+            "source.active.toggle" => {
+                self.running()?;
+                self.source(id).map(|_| ())
+            }
             "item.visible.toggle" | "source.rename" | "source.delete" | "item.remove" => {
                 self.running()?;
                 self.source(id).map(|_| ())
+            }
+            "item.move" => {
+                self.running()?;
+                let f = self.source(id)?;
+                if !f.picture {
+                    return Err("This source has no layer.".to_owned());
+                }
+                match id.param("direction") {
+                    Some("up") if f.can_up => Ok(()),
+                    Some("down") if f.can_down => Ok(()),
+                    Some("up") => Err("This source is already the top layer.".to_owned()),
+                    Some("down") => Err("This source is already the bottom layer.".to_owned()),
+                    _ => Err("Say whether to move the source up or down.".to_owned()),
+                }
             }
             "filter.add" => {
                 self.running()?;
@@ -713,6 +745,7 @@ impl CommandState for Shown<'_> {
                 _ => false,
             }),
             "item.visible.toggle" => self.source(id).is_ok_and(|f| f.visible),
+            "source.active.toggle" => self.source(id).is_ok_and(|f| f.active),
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
@@ -916,7 +949,8 @@ impl CommandState for Shown<'_> {
             | "item.rotate"
             | "item.fit"
             | "item.align"
-            | "item.reset_transform" => self.source(id).is_ok_and(|f| f.picture),
+            | "item.reset_transform"
+            | "item.move" => self.source(id).is_ok_and(|f| f.picture),
             "source.muted.toggle"
             | "source.mixer_hidden.toggle"
             | "source.monitor"
@@ -1297,6 +1331,12 @@ pub enum Run {
     /// Delete the source with this id.
     DeleteSource(i32),
     RemoveFromScene(i32),
+    /// Move the source with this id over (`true`) or under the next source with a picture.
+    MoveSource(i32, bool),
+    /// Move a scene one place up (`true`) or down in the scene list.
+    MoveScene(i32, bool),
+    /// Keep a source's device open (`true`) or release it.
+    SetSourceActive(i32, bool),
     /// Show (`true`) or hide the source with this id in the scene.
     SourceVisible(i32, bool),
     /// Lock (`true`) or unlock the source with this id.
@@ -1459,6 +1499,23 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "source.reload" => Run::ReloadSource(state.source(&id).ok()?.id),
         "source.delete" => Run::DeleteSource(state.source(&id).ok()?.id),
         "item.remove" => Run::RemoveFromScene(state.source(&id).ok()?.id),
+        "item.move" => {
+            let up = match id.param("direction")? {
+                "up" => true,
+                "down" => false,
+                _ => return None,
+            };
+            Run::MoveSource(state.source(&id).ok()?.id, up)
+        }
+        "scene.move" => {
+            let up = match id.param("direction")? {
+                "up" => true,
+                "down" => false,
+                _ => return None,
+            };
+            Run::MoveScene(state.scene(&id).ok()?, up)
+        }
+        "source.active.toggle" => Run::SetSourceActive(state.source(&id).ok()?.id, !on),
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
         "item.locked.toggle" => Run::SourceLocked(state.source(&id).ok()?.id, !on),
         "item.flip" => Run::Transform(

@@ -842,6 +842,17 @@ impl Look<'_> {
     pub fn check(&self) -> Vec<ThemeProblem> {
         let mut p = Vec::new();
         let c = |n: &str| self.colors.get(n).copied();
+        // A hover or menu plate that matches the panel is invisible in every list
+        // that only changes its background (the light theme used to do this).
+        if let (Some(overlay), Some(raised)) =
+            (c("color.surface.overlay"), c("color.surface.raised"))
+            && overlay == raised
+        {
+            p.push(ThemeProblem::at(
+                "color.surface.overlay",
+                "color.surface.overlay must differ from color.surface.raised, so a row under the pointer is visible".into(),
+            ));
+        }
         for (fg, bg, min, min_hc) in CONTRAST_RULES.iter().chain(THEME_CONTRAST_RULES) {
             let need = if self.high_contrast { *min_hc } else { *min };
             if let (Some(f), Some(b)) = (c(fg), c(bg)) {

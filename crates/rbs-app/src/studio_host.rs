@@ -52,7 +52,7 @@ use rbs_scene::model::{
     SourceMonitor,
 };
 use rbs_scene::{AutoLayout, CenterAxis, FitMode, SceneError, Undo};
-use rbs_scene::{COMPANION_OF_HINT, SceneCollection};
+use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
@@ -287,8 +287,12 @@ pub struct SourceRow {
     /// Width and height in pixels of its picture, as last seen while it ran (video
     /// sources, ADR-0058); `None` before it ran.
     pub picture: Option<(u32, u32)>,
-    /// Shown in the program scene (a hidden source is not drawn or heard).
+    /// Shown in the program scene. A hidden source is not drawn; its device stays
+    /// open unless `active` is false.
     pub visible: bool,
+    /// The device stays open while a scene that places the source is on air or in
+    /// preview. False when the user deactivated it.
+    pub active: bool,
     /// Locked: the picture panel does not select, move, resize or crop it (ADR-0059).
     pub locked: bool,
     /// The source's volume, a linear factor from 0 to 1, its mute (ADR-0059) and its
@@ -319,6 +323,7 @@ impl PartialEq for SourceRow {
             && self.companion_of == other.companion_of
             && self.picture == other.picture
             && self.visible == other.visible
+            && self.active == other.active
             && self.locked == other.locked
             && self.audio == other.audio
             && self.filters == other.filters
@@ -478,6 +483,21 @@ pub enum Command {
         id: SourceId,
         /// Up, else down.
         up: bool,
+    },
+    /// Move a scene one place up or down in the canvas's scene list.
+    MoveScene {
+        /// The scene.
+        id: SceneId,
+        /// Toward the top of the list, else toward the bottom.
+        up: bool,
+    },
+    /// Move a scene to where scene `to` is in the scene list (a row dragged onto
+    /// another); one undo step.
+    MoveSceneTo {
+        /// The scene.
+        id: SceneId,
+        /// The scene whose place it takes.
+        to: SceneId,
     },
     /// Move a source to where source `to` is in the program scene's layer order (a
     /// row dragged onto another row of the Sources list); one undo step.
@@ -695,6 +715,14 @@ pub enum Command {
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
+    /// Keep a source's device open, or release it (one undo step). Hiding does not
+    /// do this.
+    SetSourceActive {
+        /// The source.
+        id: SourceId,
+        /// Open while a scene that places it is on air or in preview.
+        active: bool,
+    },
     /// Show or hide a source in the program scene (one undo step).
     SetSourceVisible {
         /// The source.
@@ -2480,6 +2508,21 @@ impl Host {
                 Err(e) => notify(Update::Error(e)),
             },
             Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::MoveScene { id, up } => match self.move_scene(id, up) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::MoveSceneTo { id, to } => match self.move_scene_to(id, to) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::SetSourceActive { id, active } => match self.set_source_active(id, active) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
@@ -4364,6 +4407,7 @@ impl Host {
                     && self
                         .collection
                         .showable_scenes(self.canvas)
+                        .into_iter()
                         .any(|s| s.id == *scene)
             })
             .collect();
@@ -4849,6 +4893,69 @@ impl Host {
         Ok(true)
     }
 
+    /// One place up or down in the canvas's scene list. `Ok(false)` at that end.
+    fn move_scene(&mut self, id: SceneId, up: bool) -> Result<bool, String> {
+        let undo = self
+            .collection
+            .move_scene(self.canvas, id, up)
+            .map_err(|e| edit_error(&e))?;
+        let Some(undo) = undo else {
+            return Ok(false);
+        };
+        let name = self
+            .collection
+            .scene(id)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Puts scene `id` where scene `to` is in the scene list.
+    fn move_scene_to(&mut self, id: SceneId, to: SceneId) -> Result<bool, String> {
+        let undo = self
+            .collection
+            .move_scene_to(self.canvas, id, to)
+            .map_err(|e| edit_error(&e))?;
+        let Some(undo) = undo else {
+            return Ok(false);
+        };
+        let name = self
+            .collection
+            .scene(id)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Releases the device (`active` false) or keeps it open. `Ok(false)` when it
+    /// already is. Hiding a source does not call this.
+    fn set_source_active(&mut self, id: SourceId, active: bool) -> Result<bool, String> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| format!("There is no source {}.", id.get()))?;
+        if source.standby() == !active {
+            return Ok(false);
+        }
+        let mut hints = source.hints.clone();
+        if active {
+            hints.remove(STANDBY_HINT);
+        } else {
+            hints.insert(STANDBY_HINT.to_owned(), "1".to_owned());
+        }
+        let settings = source.settings.clone();
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_source_settings_and_hints(id, settings, hints)
+            .map_err(|e| edit_error(&e))?;
+        self.history
+            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
         let (index, item) = self.item_of(id)?;
         let item = item.id;
@@ -5040,6 +5147,7 @@ impl Host {
         } else {
             draft
                 .showable_scenes(canvas)
+                .into_iter()
                 .next()
                 .map(|s| s.id)
                 .ok_or_else(|| {
@@ -5466,6 +5574,7 @@ impl Host {
     fn panel_scenes(&self) -> Vec<SceneId> {
         self.collection
             .showable_scenes(self.canvas)
+            .into_iter()
             .map(|s| s.id)
             .collect()
     }
@@ -5742,6 +5851,7 @@ impl Host {
             scenes: self
                 .collection
                 .showable_scenes(self.canvas)
+                .into_iter()
                 .map(|s| SceneRow {
                     id: s.id,
                     name: s.name.clone(),
@@ -6217,6 +6327,7 @@ impl Host {
                         .flatten(),
                     picture: self.sizes.get(&s.id).copied(),
                     visible: item.visible,
+                    active: !s.standby(),
                     locked: item.locked,
                     audio: s.audio,
                     filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
@@ -6855,6 +6966,53 @@ impl ApiTarget<'_> {
                 Ok(Response::ItemRemoved(ItemRemoved {
                     source_deleted: deleted,
                 }))
+            }
+            C::SceneMove(p) => {
+                match host.move_scene(
+                    SceneId::from_raw(p.scene),
+                    p.direction == rbs_api::request::LayerDirection::Up,
+                ) {
+                    Ok(true) => {
+                        host.apply(notify);
+                        Ok(Response::Done(Empty {}))
+                    }
+                    Ok(false) => Ok(Response::Done(Empty {})),
+                    Err(e) => Err(ApiError::new(ErrorKind::Conflict, e)),
+                }
+            }
+            C::SourceSetActive(p) => {
+                match host.set_source_active(SourceId::from_raw(p.source), p.active) {
+                    Ok(true) => {
+                        host.apply(notify);
+                        Ok(Response::Done(Empty {}))
+                    }
+                    Ok(false) => Ok(Response::Done(Empty {})),
+                    Err(e) => Err(ApiError::new(ErrorKind::NotFound, e)),
+                }
+            }
+            C::ItemMove(p) => {
+                let source = host
+                    .collection
+                    .item(ItemId::from_raw(p.item))
+                    .and_then(|(_, it)| match it.content {
+                        ItemContent::Source(id) => Some(id),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            ErrorKind::NotFound,
+                            "This source is not in the scene any more.",
+                        )
+                    })?;
+                match host.move_source(source, p.direction == rbs_api::request::LayerDirection::Up)
+                {
+                    Ok(true) => {
+                        host.apply(notify);
+                        Ok(Response::Done(Empty {}))
+                    }
+                    Ok(false) => Ok(Response::Done(Empty {})),
+                    Err(e) => Err(ApiError::new(ErrorKind::Conflict, e)),
+                }
             }
             C::GlobalList => Ok(Response::GlobalSources(GlobalSourceList {
                 sources: host.global_rows().iter().map(api_source).collect(),
@@ -7821,7 +7979,11 @@ fn shown_scene(
         }
     };
     let program = collection.canvas(canvas).and_then(|c| c.program);
-    let allowed = collection.showable_scenes(canvas).next().map(|s| s.id);
+    let allowed = collection
+        .showable_scenes(canvas)
+        .into_iter()
+        .next()
+        .map(|s| s.id);
     let scene = match program.or(allowed) {
         Some(s) => s,
         None => {

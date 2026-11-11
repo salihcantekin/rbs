@@ -537,6 +537,47 @@ pub struct ItemRef {
     pub item: u32,
 }
 
+/// Which way `item.move` moves a source among the sources that have a picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayerDirection {
+    /// Over the next source with a picture.
+    Up,
+    /// Under the next source with a picture.
+    Down,
+}
+
+/// `item.move` (protocol 1.32): one step in the layer order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveItem {
+    /// The item's id.
+    pub item: u32,
+    /// Over or under the next source with a picture. Sound-only sources are skipped.
+    pub direction: LayerDirection,
+}
+
+/// `scene.move` (protocol 1.33): one step in the canvas's scene list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveScene {
+    /// The scene's id.
+    pub scene: u32,
+    /// Toward the top of the list, or toward the bottom.
+    pub direction: LayerDirection,
+}
+
+/// `source.set_active` (protocol 1.33): keep the device open, or release it.
+/// Hiding a source does not release it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceActive {
+    /// The source's id.
+    pub source: u32,
+    /// Open while a scene that places it is on air or in preview.
+    pub active: bool,
+}
+
 /// `global.add` (protocol 1.10, ADR-0065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -783,6 +824,12 @@ pub enum Command {
     CanvasTransition,
     /// `item.remove` (protocol 1.10).
     ItemRemove(ItemRef),
+    /// `item.move` (protocol 1.32).
+    ItemMove(MoveItem),
+    /// `scene.move` (protocol 1.33).
+    SceneMove(MoveScene),
+    /// `source.set_active` (protocol 1.33).
+    SourceSetActive(SetSourceActive),
     /// `global.list` (protocol 1.10).
     GlobalList,
     /// `global.add` (protocol 1.10).
@@ -906,6 +953,9 @@ impl Command {
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition => "canvas.transition",
             Command::ItemRemove(_) => "item.remove",
+            Command::ItemMove(_) => "item.move",
+            Command::SceneMove(_) => "scene.move",
+            Command::SourceSetActive(_) => "source.set_active",
             Command::GlobalList => "global.list",
             Command::GlobalAdd(_) => "global.add",
             Command::GlobalRemove(_) => "global.remove",
@@ -1042,6 +1092,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("canvas.set_preview", Some(Scope::Control)),
     m("canvas.transition", Some(Scope::Control)),
     m("item.remove", Some(Scope::Control)),
+    m("item.move", Some(Scope::Control)),
+    m("scene.move", Some(Scope::Control)),
+    m("source.set_active", Some(Scope::Control)),
     m("global.list", Some(Scope::Read)),
     m("global.add", Some(Scope::Control)),
     m("global.remove", Some(Scope::Control)),
@@ -1256,6 +1309,12 @@ enum WireRequest {
     CanvasTransition(Empty),
     #[serde(rename = "item.remove")]
     ItemRemove(ItemRef),
+    #[serde(rename = "item.move")]
+    ItemMove(MoveItem),
+    #[serde(rename = "scene.move")]
+    SceneMove(MoveScene),
+    #[serde(rename = "source.set_active")]
+    SourceSetActive(SetSourceActive),
     #[serde(rename = "global.list")]
     GlobalList(Empty),
     #[serde(rename = "global.add")]
@@ -1388,6 +1447,9 @@ impl From<WireRequest> for Request {
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
             WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
             WireRequest::ItemRemove(p) => Request::Command(C::ItemRemove(p)),
+            WireRequest::ItemMove(p) => Request::Command(C::ItemMove(p)),
+            WireRequest::SceneMove(p) => Request::Command(C::SceneMove(p)),
+            WireRequest::SourceSetActive(p) => Request::Command(C::SourceSetActive(p)),
             WireRequest::GlobalList(_) => Request::Command(C::GlobalList),
             WireRequest::GlobalAdd(p) => Request::Command(C::GlobalAdd(p)),
             WireRequest::GlobalRemove(p) => Request::Command(C::GlobalRemove(p)),
@@ -1483,6 +1545,9 @@ impl From<Request> for WireRequest {
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
                 C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),
                 C::ItemRemove(p) => WireRequest::ItemRemove(p),
+                C::ItemMove(p) => WireRequest::ItemMove(p),
+                C::SceneMove(p) => WireRequest::SceneMove(p),
+                C::SourceSetActive(p) => WireRequest::SourceSetActive(p),
                 C::GlobalList => WireRequest::GlobalList(Empty {}),
                 C::GlobalAdd(p) => WireRequest::GlobalAdd(p),
                 C::GlobalRemove(p) => WireRequest::GlobalRemove(p),

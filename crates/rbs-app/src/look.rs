@@ -268,9 +268,32 @@ pub fn apply(theme: &Theme<'_>, tokens: &Tokens<'_>, look: Option<&Look>) {
     let result = slot(&look.themes[0], &look.fonts[0])
         .and_then(|dark| Ok([dark, slot(&look.themes[1], &look.fonts[1])?]))
         .and_then(|slots| apply_tokens(theme, tokens, &look.file, slots));
+    // The slot follows the real OS setting. A menu request below changes what
+    // Palette reports, so it must not be what picks the slot.
+    #[cfg(windows)]
+    theme.set_os_scheme(rbs_app::win::os_scheme_slot());
     if let Err(why) = result {
         crate::studio_ui::log(&format!("token file not applied: {why}"));
+        return;
     }
+    #[cfg(windows)]
+    menus_follow(theme);
+}
+
+/// Points one window at the real OS scheme (0 dark, 1 light).
+#[cfg(windows)]
+pub fn set_os_scheme(theme: &Theme<'_>) {
+    theme.set_os_scheme(rbs_app::win::os_scheme_slot());
+}
+
+/// Asks Windows for the menu that matches the theme this window shows.
+#[cfg(windows)]
+pub fn menus_follow(theme: &Theme<'_>) {
+    let base = theme.get_surface_base();
+    let y = 0.2126 * f32::from(base.red())
+        + 0.7152 * f32::from(base.green())
+        + 0.0722 * f32::from(base.blue());
+    rbs_app::win::native_menu(y < 140.0);
 }
 
 #[cfg(test)]

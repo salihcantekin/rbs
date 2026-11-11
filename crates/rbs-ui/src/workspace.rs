@@ -1199,10 +1199,38 @@ impl Workspace {
         });
     }
 
-    /// Open a closed panel (ADR-0073 decisions 2 and 4). Opening an open panel only
-    /// makes it the visible tab (of its stack, or of its edge group); opening the
-    /// Pictures leaf, or one of its two pictures, while the leaf exists changes
-    /// nothing.
+    /// Show the main-window area that holds window stack `stack`, when it was hidden.
+    fn show_area_of(&mut self, window: usize, stack: usize) {
+        if window != 0 {
+            return;
+        }
+        let Some((tree, _)) = self.windows[window].locate(stack) else {
+            return;
+        };
+        // Tree 0 is the centre, which is always shown.
+        if tree == 0 {
+            return;
+        }
+        let Some(m) = self.main_layout_mut() else {
+            return;
+        };
+        let mut index = 1usize;
+        for side in Side::ALL {
+            if m.area(side).layout.is_some() {
+                if index == tree {
+                    m.area_mut(side).visible = true;
+                    return;
+                }
+                index += 1;
+            }
+        }
+    }
+
+    /// Open a closed panel (ADR-0073 decisions 2 and 4). Opening an open panel makes
+    /// it the visible tab, expands its stack and shows its area when that area was
+    /// hidden. Opening an auto-hidden panel makes it the edge group's visible tab;
+    /// the shell then slides that group out. Opening the Pictures leaf, or one of
+    /// its two pictures, while the leaf exists changes nothing.
     ///
     /// A closed panel goes into the first tab stack of the area that is its default
     /// home (Scenes and Sources left, Properties right, Mixer bottom), made visible
@@ -1212,7 +1240,11 @@ impl Workspace {
     /// panel, opens the leaf.
     pub fn open(&mut self, id: PanelId) -> Result<(), WorkspaceError> {
         if let Some((w, s, t)) = self.find(&id) {
+            self.show_area_of(w, s);
             self.windows[w].activate(s, t);
+            // A collapsed stack expands. The centre's last expanded stack cannot
+            // collapse, so expanding never fails that rule.
+            let _ = self.set_collapsed(&id, false);
             return Ok(());
         }
         if self.pictures_answer(&id) {
@@ -2492,6 +2524,29 @@ layout = { tabs = ["rbs.status-bar"] }
             assert!(!w.is_open(&vertical));
             assert_eq!(w.windows, before.windows, "{}", w.name);
         }
+    }
+
+    #[test]
+    fn opening_a_panel_shows_its_area_expands_it_and_selects_its_edge_tab() {
+        let mut w = builtin::edit();
+        let properties = id("rbs.properties");
+        w.main_layout_mut().unwrap().right.visible = false;
+        w.set_collapsed(&properties, true).unwrap();
+        w.open(properties.clone()).unwrap();
+        assert!(w.main_layout().unwrap().right.visible);
+        let (_, stack, _) = w.find(&properties).unwrap();
+        assert!(!w.windows[0].stack(stack).unwrap().collapsed);
+
+        w.auto_hide(&properties, Rect::sized(1440.0, 800.0))
+            .unwrap();
+        w.open(properties.clone()).unwrap();
+        let m = w.main_layout().unwrap();
+        let g = m.group_of(&properties).unwrap();
+        let group = &m.auto_hide[g];
+        assert_eq!(
+            group.tabs.iter().position(|p| *p == properties),
+            Some(group.active)
+        );
     }
 
     #[test]

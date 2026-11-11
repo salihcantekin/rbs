@@ -108,6 +108,10 @@ pub struct Canvas {
     pub fallback: Fallback,
     /// Where the canvas's sound comes from (ADR-0093 decision 5).
     pub audio_from: AudioFrom,
+    /// Scene list order for this canvas (scene document format 11). Empty means id
+    /// order, which is what a document from before format 11 has. Ids that are not
+    /// showable on the canvas are ignored.
+    pub order: Vec<SceneId>,
 }
 
 /// What a following canvas shows when the followed canvas's program scene is scoped to
@@ -187,6 +191,7 @@ impl Canvas {
             follow: None,
             fallback: Fallback::default(),
             audio_from: AudioFrom::default(),
+            order: Vec::new(),
         }
     }
 }
@@ -245,6 +250,11 @@ pub struct Source {
 /// (ADR-0096): the value is the picture's source id in decimal.
 pub const COMPANION_OF_HINT: &str = "companion_of";
 
+/// The hint that the user deactivated this source (`source.set_active`). The value is
+/// `"1"`. Hiding a source does not set it: a hidden source in an active scene stays
+/// open, so showing it again is immediate. Deactivating releases the device.
+pub const STANDBY_HINT: &str = "standby";
+
 impl Source {
     /// The picture source this source is the "Capture audio too" companion of, if its
     /// hints say so (ADR-0096). A hint: nothing but visibility and deletion follow it.
@@ -254,6 +264,12 @@ impl Source {
             .parse::<u32>()
             .ok()
             .map(SourceId)
+    }
+
+    /// The user deactivated this source, so it is not opened even while a scene that
+    /// places it is on air or in preview.
+    pub fn standby(&self) -> bool {
+        self.hints.get(STANDBY_HINT).is_some_and(|v| v == "1")
     }
 }
 
