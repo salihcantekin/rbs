@@ -49,3 +49,4 @@ pub mod user_session;
 pub mod vcam_settings;
 #[cfg(windows)]
 pub mod win;
+pub mod window_events;

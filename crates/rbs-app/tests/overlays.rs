@@ -285,3 +285,90 @@ fn one_click_on_a_tab_selects_it_while_the_focus_is_elsewhere() {
     click(&p, 260.0, 250.0);
     assert_eq!(p.get_tab_index(), 2);
 }
+
+/// Another window taking the focus closes the tooltip and keeps it closed until the
+/// window is active again; coming back shows no tooltip for the focus alone.
+#[test]
+fn losing_the_window_activation_closes_the_tooltip() {
+    let p = setup();
+    rbs_app::window_events::install(&p);
+    let o = p.global::<Overlays>();
+    let activate = |on: bool| {
+        p.window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(on));
+        settle();
+    };
+    activate(true);
+
+    // Keyboard focus shows it; the window losing the activation closes it.
+    p.invoke_focus_button();
+    settle();
+    assert!(o.get_tip_shown());
+    activate(false);
+    assert!(!o.get_tip_shown() && !o.get_tip_waiting());
+    // Back with the window: the focus returns, the tooltip does not.
+    activate(true);
+    assert!(!o.get_tip_shown() && !o.get_tip_waiting());
+
+    // The pointer resting on the button while the window is inactive starts nothing.
+    p.invoke_focus_hint();
+    settle();
+    point(&p, 390.0, 290.0);
+    settle();
+    activate(false);
+    point(&p, 110.0, 20.0);
+    settle();
+    assert!(!o.get_tip_waiting());
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+    assert!(!o.get_tip_shown());
+
+    // A tooltip waiting for the delay is dropped when the window loses the activation.
+    activate(true);
+    point(&p, 390.0, 290.0);
+    point(&p, 110.0, 20.0);
+    settle();
+    assert!(o.get_tip_waiting());
+    activate(false);
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+    assert!(!o.get_tip_shown());
+}
+
+/// The pointer moving off the control (onto a control without a tooltip, or where a
+/// removed control was) closes the tooltip; on the control or the tooltip it stays.
+#[test]
+fn the_pointer_off_the_control_closes_the_tooltip() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    p.invoke_focus_hint();
+    settle();
+    point(&p, 390.0, 290.0);
+    point(&p, 110.0, 20.0);
+    settle();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+    assert!(o.get_tip_shown());
+    // Still on the control, then on the tooltip itself: it stays.
+    o.invoke_pointer_at(112.0, 22.0);
+    assert!(o.get_tip_shown());
+    let cover = o.get_tip_cover();
+    o.invoke_pointer_at(cover.x + cover.width / 2.0, cover.y + cover.height / 2.0);
+    assert!(o.get_tip_shown());
+    // Elsewhere in the window: closed, without the control hearing the pointer leave.
+    o.invoke_pointer_at(390.0, 290.0);
+    assert!(!o.get_tip_shown() && !o.get_tip_waiting());
+}
+
+/// A button clicked with the pointer keeps the focus, but not its tooltip once the
+/// pointer moves away.
+#[test]
+fn a_clicked_button_does_not_keep_its_tooltip() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    p.invoke_focus_hint();
+    settle();
+    click(&p, 110.0, 20.0);
+    settle();
+    point(&p, 390.0, 290.0);
+    settle();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+    assert!(!o.get_tip_shown() && !o.get_tip_waiting());
+}
