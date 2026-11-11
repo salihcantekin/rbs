@@ -299,6 +299,8 @@ component PanelContent inherits Rectangle {
 component Tab inherits Rectangle {
     in property <TabData> tab;
     in property <bool> selected;
+    // A stack with one panel is a window title, not a tab.
+    in property <bool> sole;
     callback activate();
     callback open-menu();
     callback close();
@@ -306,6 +308,8 @@ component Tab inherits Rectangle {
     callback maximize();
     height: Tokens.size-control-lg;
     width: title.preferred-width + 2 * Tokens.space-2;
+    border-radius: Tokens.radius-sm;
+    background: !selected && touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: AccessibleRole.tab;
     accessible-label: tab.title;
     accessible-item-selected: selected;
@@ -341,15 +345,15 @@ component Tab inherits Rectangle {
         text: tab.title;
         color: selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         font-size: Tokens.type-label-size;
-        font-weight: selected ? Tokens.type-title-weight : Tokens.type-label-weight;
+        font-weight: selected && !sole ? Tokens.type-title-weight : Tokens.type-label-weight;
         vertical-alignment: center;
     }
     Rectangle {
-        x: Tokens.space-1;
-        width: parent.width - 2 * Tokens.space-1;
-        y: parent.height - Tokens.size-focus-ring;
-        height: Tokens.size-focus-ring;
-        background: selected ? Theme.accent : transparent;
+        x: title.x;
+        width: title.preferred-width;
+        y: parent.height - Tokens.size-tab-indicator;
+        height: selected && !sole ? Tokens.size-tab-indicator : 0px;
+        background: Theme.accent;
     }
     Rectangle {
         border-width: focus.has-focus ? Tokens.size-focus-ring : 0px;
@@ -376,7 +380,7 @@ component StackView inherits Rectangle {
     background: Theme.surface-raised;
     border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
-    border-radius: Tokens.radius-md;
+    border-radius: Tokens.radius-sm;
     clip: true;
     if !strip: Rectangle {
         x: Tokens.size-border;
@@ -395,6 +399,7 @@ component StackView inherits Rectangle {
                     alignment: start;
                     for t[i] in data.tabs: Tab {
                         tab: t;
+                        sole: data.tabs.length < 2;
                         selected: i == data.active && !data.collapsed;
                         activate => {
                             if data.collapsed { Shell.collapse(t.id, false); }
@@ -475,13 +480,6 @@ component StackView inherits Rectangle {
                 }
             }
         }
-    }
-    if !strip && !data.collapsed: Rectangle {
-        x: Tokens.size-border;
-        y: bar;
-        width: parent.width - 2 * Tokens.size-border;
-        height: Tokens.size-border;
-        background: Theme.border-subtle;
     }
     // A collapsed stack in a horizontal split: its expand button and the tabs' icons,
     // named for screen readers (no rotated text).
@@ -889,10 +887,10 @@ component EdgeTab inherits Rectangle {
     property <length> along: label.preferred-width + Tokens.size-icon-box + 2 * Tokens.space-2 + Tokens.space-1;
     width: vertical ? Tokens.size-control-md : along;
     height: vertical ? along : Tokens.size-control-md;
-    border-radius: Tokens.radius-md;
+    border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
     border-color: Theme.border-subtle;
-    background: open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
+    background: open || touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
     accessible-role: AccessibleRole.tab;
     accessible-label: data.title;
     accessible-expandable: true;
@@ -972,7 +970,7 @@ component Flyout inherits Rectangle {
     init => { Shell.flyout = rect; Shell.flyout-open = true; focus.focus(); }
     changed rect => { Shell.flyout = rect; }
     background: Theme.surface-raised;
-    border-color: Theme.border-strong;
+    border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
     border-radius: Tokens.radius-md;
     clip: true;
@@ -1486,7 +1484,7 @@ component Toast inherits Rectangle {
     height: Tokens.size-control-lg + 2 * Tokens.space-2;
     width: row.preferred-width;
     background: Theme.surface-overlay;
-    border-color: Theme.border-strong;
+    border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
     border-radius: Tokens.radius-md;
     accessible-role: AccessibleRole.text;

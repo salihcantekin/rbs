@@ -6,10 +6,10 @@
 import { Theme, Tokens } from "tokens.slint";
 import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Button, StatusLine } from "components.slint";
 
-// One entry of the section list. The section in use has the accent-tinted row with an
-// accent bar at its left edge (mockup E's selected row) and is marked checked for
-// screen readers, so it is never shown by colour alone (U7). `compact`: the collapsed
-// section list shows the icon only; the name stays the accessible name.
+// One entry of the section list. The section in use has a quiet plate and the label
+// weight, and is marked checked for screen readers, so it is never shown by colour
+// alone (U7). `compact`: the collapsed section list shows the icon only; the name
+// stays the accessible name.
 export component SettingsNavItem inherits Rectangle {
     in property <string> text;
     in property <IconName> icon;
@@ -18,8 +18,7 @@ export component SettingsNavItem inherits Rectangle {
     callback activated();
     height: Tokens.size-control-lg;
     border-radius: Tokens.radius-md;
-    background: root.current ? Theme.accent-subtle
-        : touch.has-hover ? Theme.surface-overlay : transparent;
+    background: root.current || touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: text;
     accessible-checked: current;
@@ -27,14 +26,6 @@ export component SettingsNavItem inherits Rectangle {
     accessible-item-selected: current;
     accessible-action-default => { activated(); }
     forward-focus: focus;
-    if root.current: Rectangle {
-        x: 0;
-        width: Tokens.size-focus-ring;
-        height: parent.height - Tokens.space-2 * 2;
-        y: Tokens.space-2;
-        border-radius: self.width / 2;
-        background: Theme.accent;
-    }
     HorizontalLayout {
         padding-left: root.compact ? 0px : Tokens.space-3;
         padding-right: root.compact ? 0px : Tokens.space-2;
@@ -322,13 +313,13 @@ export component SettingsNotice inherits StatusLine {
 }
 
 // A bordered group that asks before an action or shows something once (a new access
-// token): stronger border on the overlay surface.
+// token): the same hairline as a card, on the overlay surface.
 export component SettingsCallout inherits Rectangle {
     in property <string> label;
     background: Theme.surface-overlay;
     border-radius: Tokens.radius-md;
     border-width: Tokens.size-border;
-    border-color: Theme.border-strong;
+    border-color: Theme.border-subtle;
     accessible-role: groupbox;
     accessible-label: label;
     min-height: inner.min-height;

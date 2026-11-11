@@ -365,14 +365,24 @@ export component Button inherits Rectangle {
     height: dense ? Tokens.size-control-sm : Tokens.size-control-md;
     min-width: max(root.height, content.preferred-width + (text == "" ? 0px : 2 * Tokens.space-3));
     border-radius: Tokens.radius-sm;
+    // Quiet kinds sit in the surface until the pointer or a press raises a plate.
+    // A filled kind keeps its colour; the hairline below is the only edge.
+    property <bool> filled: kind == "primary" || kind == "live";
     background: !enabled ? transparent
-        : kind == "primary" ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : kind == "primary" ? (touch.has-hover && !touch.pressed ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live
         : checked ? Theme.accent-subtle
+        : touch.pressed ? Theme.surface-sunken
         : touch.has-hover ? Theme.surface-overlay
-        : kind == "ghost" || kind == "danger" ? transparent : Theme.surface-raised;
-    border-width: kind == "secondary" || kind == "danger" ? Tokens.size-border : 0px;
-    border-color: kind == "danger" && enabled ? Theme.state-error : Theme.border-subtle;
+        : transparent;
+    // A one-pixel lip along the top of a filled button, inset past the corners.
+    if root.enabled && root.filled && !touch.has-hover && !touch.pressed: Rectangle {
+        y: 0px;
+        x: Tokens.radius-sm;
+        width: parent.width - 2 * Tokens.radius-sm;
+        height: Tokens.size-border;
+        background: root.kind == "live" ? Theme.text-on-live : Theme.accent-hover;
+    }
     accessible-role: button;
     accessible-label: accessible-name;
     accessible-checked: checked;
@@ -557,7 +567,7 @@ export component MenuItem inherits Rectangle {
         triggered => { root.focused-once = true; focus.focus(); }
     }
     height: Tokens.size-control-md;
-    background: focus.has-focus || touch.has-hover ? Theme.accent-subtle : transparent;
+    background: focus.has-focus || touch.has-hover ? Theme.surface-overlay : transparent;
     border-radius: Tokens.radius-sm;
     accessible-role: button;
     accessible-label: text;
@@ -581,6 +591,7 @@ export component MenuItem inherits Rectangle {
             text: root.text;
             color: root.enabled ? Theme.text-primary : Theme.text-disabled;
             font-size: Tokens.type-body-size;
+            font-weight: root.checked ? Tokens.type-title-weight : Tokens.type-body-weight;
             vertical-alignment: center;
             // A long device name is cut with an ellipsis; the accessible label keeps it.
             overflow: elide;
@@ -603,8 +614,8 @@ export component MenuItem inherits Rectangle {
 
 // Popover surface for menus.
 export component MenuSurface inherits Rectangle {
-    background: Theme.surface-overlay;
-    border-color: Theme.border-strong;
+    background: Theme.surface-raised;
+    border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
     border-radius: Tokens.radius-md;
 }
@@ -642,7 +653,8 @@ export component EmptyState inherits Rectangle {
     }
 }
 
-// Select: a button showing the chosen option; it opens a native menu of the options.
+// Select: a field showing the chosen option. Click, Return, Space or Down opens a menu
+// drawn with the theme under the field. Up and Down move, Return chooses, Escape closes.
 export component Select inherits Rectangle {
     // The field's name: the accessible name is "<label>: <option>".
     in property <string> label;
@@ -652,6 +664,8 @@ export component Select inherits Rectangle {
     // Shown in `text.secondary` while no option is chosen (`index` out of range).
     in property <string> placeholder;
     property <bool> chosen: root.index >= 0 && root.index < root.options.length;
+    property <int> highlight: 0;
+    property <length> scroll-y: 0px;
     callback selected(int);
     height: Tokens.size-control-md;
     min-width: Tokens.size-menu-sm / 2;
@@ -660,14 +674,42 @@ export component Select inherits Rectangle {
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
     border-color: !root.enabled ? Theme.border-subtle
-        : touch.has-hover ? Theme.border-strong : Theme.border-subtle;
+        : menu.is-open || touch.has-hover ? Theme.border-strong : Theme.border-subtle;
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
     accessible-role: combobox;
     accessible-label: @tr("{}: {}", root.label, root.chosen ? root.options[root.index] : root.placeholder);
     accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { menu.show({ x: 0px, y: root.height }); } }
+    accessible-expandable: true;
+    accessible-expanded: menu.is-open;
+    accessible-action-default => { if root.enabled { root.open-list(); } }
     forward-focus: focus;
+    function open-list() {
+        if !root.enabled || root.options.length == 0 { return; }
+        root.highlight = root.chosen ? root.index : 0;
+        root.place-scroll();
+        menu.show();
+    }
+    function move-highlight(step: int) {
+        if root.options.length == 0 { return; }
+        root.highlight = Math.mod(root.highlight + step + root.options.length, root.options.length);
+        root.place-scroll();
+    }
+    // Keeps the highlighted row inside the menu. The list's offset lives here because a
+    // PopupWindow's children cannot be reached from outside it.
+    function place-scroll() {
+        let y = root.highlight * Tokens.size-control-md;
+        let view = min(root.options.length * Tokens.size-control-md, Tokens.size-select-list-h - 2 * Tokens.space-1);
+        if y + root.scroll-y < 0px {
+            root.scroll-y = -y;
+        } else if y + Tokens.size-control-md + root.scroll-y > view {
+            root.scroll-y = view - y - Tokens.size-control-md;
+        }
+    }
+    function pick(i: int) {
+        menu.close();
+        root.selected(i);
+    }
     HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-2;
@@ -692,24 +734,82 @@ export component Select inherits Rectangle {
     focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { menu.show({ x: 0px, y: root.height }); return accept; }
+            if menu.is-open {
+                if e.text == Key.DownArrow { root.move-highlight(1); return accept; }
+                if e.text == Key.UpArrow { root.move-highlight(-1); return accept; }
+                if e.text == Key.Return || e.text == " " { root.pick(root.highlight); return accept; }
+                if e.text == Key.Escape { menu.close(); return accept; }
+                return reject;
+            }
+            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { root.open-list(); return accept; }
             reject
         }
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus-pointer(); menu.show({ x: 0px, y: root.height }); }
+        clicked => { focus.focus-pointer(); root.open-list(); }
     }
     FocusRing { show: focus.ring; }
-    // The list of options is a native menu (ADR-0094 B1), opened under the field.
-    menu := ContextMenuArea {
-        enabled: false;
-        Menu {
-            for o[i] in root.options: MenuItem {
-                title: o;
-                checkable: true;
-                checked: i == root.index;
-                activated => { root.selected(i); }
+    menu := PopupWindow {
+        x: 0px;
+        y: root.height + Tokens.space-1;
+        width: max(root.width, Tokens.size-menu-sm);
+        // The hit target is this window. Without a height, rows draw past it and a click
+        // counts as outside, so the menu closes and the row never receives the press.
+        height: min(root.options.length * Tokens.size-control-md + 2 * Tokens.space-1, Tokens.size-select-list-h);
+        close-policy: close-on-click-outside;
+        MenuSurface {
+            width: parent.width;
+            height: parent.height;
+            option-list := Flickable {
+                x: Tokens.space-1;
+                y: Tokens.space-1;
+                width: parent.width - 2 * Tokens.space-1;
+                height: parent.height - 2 * Tokens.space-1;
+                content-height: root.options.length * Tokens.size-control-md;
+                content-y: root.scroll-y;
+                for o[i] in root.options: Rectangle {
+                    y: i * Tokens.size-control-md;
+                    width: parent.width;
+                    height: Tokens.size-control-md;
+                    border-radius: Tokens.radius-sm;
+                    background: i == root.highlight || row-touch.has-hover ? Theme.surface-overlay : transparent;
+                    accessible-role: button;
+                    accessible-label: o;
+                    accessible-checked: i == root.index;
+                    accessible-action-default => { root.pick(i); }
+                    HorizontalLayout {
+                        padding-left: Tokens.space-2;
+                        padding-right: Tokens.space-2;
+                        spacing: Tokens.space-2;
+                        VerticalLayout {
+                            width: Tokens.size-icon-box;
+                            alignment: center;
+                            Icon {
+                                name: i == root.index ? IconName.check : IconName.none;
+                                ink: Theme.text-primary;
+                            }
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: o;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            font-weight: i == root.index ? Tokens.type-title-weight : Tokens.type-body-weight;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            accessible-role: none;
+                        }
+                    }
+                    row-touch := TouchArea {
+                        clicked => { root.pick(i); }
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                                root.pick(i);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -724,6 +824,8 @@ export component Checkbox inherits Rectangle {
     in property <string> text;
     in property <bool> checked;
     in property <bool> enabled: true;
+    // Bold label: the non-colour cue when this box sits in the chosen list row.
+    in property <bool> emphasis: false;
     callback toggled(bool);
     min-height: Tokens.size-control-md;
     accessible-role: checkbox;
@@ -744,7 +846,7 @@ export component Checkbox inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 border-width: Tokens.size-border;
                 border-color: !root.enabled ? Theme.border-subtle
-                    : touch.has-hover ? Theme.accent : Theme.border-strong;
+                    : touch.has-hover ? Theme.accent : Theme.border-subtle;
                 background: !root.enabled ? Theme.surface-sunken
                     : root.checked ? (touch.pressed ? Theme.accent-hover : Theme.accent)
                     : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
@@ -758,6 +860,7 @@ export component Checkbox inherits Rectangle {
             text: root.text;
             color: root.ink;
             font-size: Tokens.type-body-size;
+            font-weight: root.emphasis ? Tokens.type-title-weight : Tokens.type-body-weight;
             vertical-alignment: center;
             wrap: word-wrap;
         }
@@ -810,7 +913,7 @@ export component Toggle inherits Rectangle {
                 border-radius: self.height / 2;
                 border-width: root.checked && root.enabled ? 0px : Tokens.size-border;
                 border-color: !root.enabled ? Theme.border-subtle
-                    : touch.has-hover ? Theme.accent : Theme.border-strong;
+                    : touch.has-hover ? Theme.accent : Theme.border-subtle;
                 background: !root.enabled ? Theme.surface-sunken
                     : root.checked ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
                     : Theme.surface-sunken;
@@ -823,7 +926,7 @@ export component Toggle inherits Rectangle {
                     animate x { duration: Tokens.motion-fast; easing: ease-out; }
                     border-radius: self.height / 2;
                     background: !root.enabled ? Theme.text-disabled
-                        : root.checked ? Theme.text-inverse : Theme.text-secondary;
+                        : root.checked ? Theme.text-primary : Theme.text-secondary;
                 }
             }
         }
@@ -860,8 +963,6 @@ component Segment inherits Rectangle {
     border-radius: Tokens.radius-sm;
     background: root.checked ? (root.enabled ? Theme.surface-overlay : Theme.surface-raised)
         : touch.has-hover ? Theme.surface-raised : transparent;
-    border-width: root.checked ? Tokens.size-border : 0px;
-    border-color: root.enabled ? Theme.border-strong : Theme.border-subtle;
     accessible-role: button;
     accessible-label: root.accessible-name;
     accessible-checked: root.checked;
@@ -922,23 +1023,25 @@ export component SegmentedControl inherits Rectangle {
     }
 }
 
-// Tabs: switch between views of one thing, as a full-width bar with a rule under it; the
-// chosen tab is bold with an accent underline (ADR-0076). Not for picking a value: that
-// is a SegmentedControl. Left and Right choose the next tab.
+// Tabs: switch between views of one thing. One sunken pill inside the panel; the chosen
+// title is a raised plate. Not for picking a value: that is a SegmentedControl. Left and
+// Right choose the next tab.
 component TabItem inherits Rectangle {
     in property <string> text;
     in property <string> accessible-name;
     in property <bool> checked;
     in property <bool> focused;
     callback clicked();
-    height: Tokens.size-control-md;
-    background: !root.checked && touch.has-hover ? Theme.surface-overlay : transparent;
+    horizontal-stretch: 1;
+    min-width: label.preferred-width + 2 * Tokens.space-2;
     border-radius: Tokens.radius-sm;
+    background: root.checked ? Theme.surface-overlay
+        : touch.has-hover ? Theme.surface-raised : transparent;
     accessible-role: tab;
     accessible-label: root.accessible-name;
     accessible-checked: root.checked;
     accessible-action-default => { root.clicked(); }
-    Text {
+    label := Text {
         text: root.text;
         color: root.checked ? Theme.text-primary : Theme.text-secondary;
         font-size: Tokens.type-label-size;
@@ -946,11 +1049,6 @@ component TabItem inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
         accessible-role: none;
-    }
-    Rectangle {
-        y: parent.height - self.height;
-        height: root.checked ? Tokens.size-tab-indicator : 0px;
-        background: Theme.accent;
     }
     touch := TouchArea { clicked => { root.clicked(); } }
     FocusRing { show: root.focused && root.checked; }
@@ -963,19 +1061,19 @@ export component Tabs inherits Rectangle {
     in property <[string]> options;
     in property <int> index;
     callback selected(int);
-    height: Tokens.size-control-md + Tokens.size-border;
+    horizontal-stretch: 1;
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-md;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    background: Theme.surface-sunken;
     accessible-role: tab-list;
     accessible-label: label;
     forward-focus: focus;
-    Rectangle {
-        y: parent.height - self.height;
-        height: Tokens.size-border;
-        background: Theme.border-subtle;
-    }
     HorizontalLayout {
-        padding-bottom: Tokens.size-border;
+        padding: Tokens.size-focus-ring;
+        spacing: Tokens.size-focus-ring;
         for o[i] in root.options: TabItem {
-            horizontal-stretch: 1;
             text: o;
             accessible-name: @tr("{}: {}", root.label, o);
             checked: i == root.index;
@@ -1008,8 +1106,8 @@ export global Sections {
     callback set-group(string /* prefix */, bool /* closed */);
 }
 
-// SectionHeader: starts a collapsible group of fields: its title (small, upper case) and a rule to
-// the end of the row. The whole row is a button with a chevron (ADR-0076); a closed section draws nothing and takes no room.
+// SectionHeader: starts a collapsible group of fields. The title is small and upper case.
+// The whole row is a button with a chevron (ADR-0076); a closed section draws nothing and takes no room.
 export component SectionHeader inherits Rectangle {
     in property <string> title;
     in property <bool> collapsible: false;
@@ -1165,7 +1263,7 @@ export component ColorPicker inherits Rectangle {
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
-    border-color: touch.has-hover && root.enabled ? Theme.border-strong : Theme.border-subtle;
+    border-color: touch.has-hover && root.enabled ? Theme.accent : Theme.border-subtle;
     background: root.value;
     accessible-role: button;
     accessible-label: root.label;
@@ -1431,8 +1529,6 @@ export component Slider inherits Rectangle {
         height: Tokens.space-1;
         border-radius: self.height / 2;
         background: Theme.surface-sunken;
-        border-width: Tokens.size-border;
-        border-color: Theme.border-subtle;
         Rectangle {
             x: 0;
             width: parent.width * max(0, min(1, root.value));
@@ -1446,8 +1542,8 @@ export component Slider inherits Rectangle {
         height: knob;
         border-radius: knob / 2;
         background: root.enabled ? Theme.text-primary : Theme.text-disabled;
-        border-width: Tokens.size-border;
-        border-color: touch.has-hover ? Theme.accent : Theme.border-strong;
+        border-width: touch.has-hover ? Tokens.size-border : 0px;
+        border-color: Theme.accent;
     }
     focus := RingFocus {
         enabled: root.enabled;
@@ -1535,8 +1631,6 @@ export component VSlider inherits Rectangle {
         x: (root.width - self.width) / 2;
         border-radius: self.width / 2;
         background: Theme.surface-sunken;
-        border-width: Tokens.size-border;
-        border-color: Theme.border-subtle;
         Rectangle {
             y: parent.height * (1 - max(0, min(1, root.value)));
             height: parent.height * max(0, min(1, root.value));
@@ -1551,8 +1645,8 @@ export component VSlider inherits Rectangle {
         height: knob;
         border-radius: knob / 2;
         background: root.enabled ? Theme.text-primary : Theme.text-disabled;
-        border-width: Tokens.size-border;
-        border-color: touch.has-hover ? Theme.accent : Theme.border-strong;
+        border-width: touch.has-hover ? Tokens.size-border : 0px;
+        border-color: Theme.accent;
     }
     focus := RingFocus {
         enabled: root.enabled;
@@ -1750,7 +1844,7 @@ export component KeyboardShortcutHint inherits Rectangle {
     min-width: row.preferred-width;
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
-    border-color: Theme.border-strong;
+    border-color: Theme.border-subtle;
     background: Theme.surface-sunken;
     accessible-role: text;
     accessible-label: tag == "" ? keys : keys + ", " + tag;
@@ -1959,7 +2053,7 @@ export component InfoHint inherits Rectangle {
     width: Tokens.size-control-sm;
     height: Tokens.size-control-sm;
     border-radius: Tokens.radius-sm;
-    background: root.open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    background: root.open || touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: button;
     accessible-label: @tr("Help: {}", root.label);
     accessible-description: root.text;
@@ -2020,7 +2114,7 @@ export component OverlayHost inherits Rectangle {
         Rectangle {
             height: parent.height - Tokens.space-1;
             background: Theme.surface-overlay;
-            border-color: Theme.border-strong;
+            border-color: Theme.border-subtle;
             border-width: Tokens.size-border;
             border-radius: Tokens.radius-sm;
             tip-text := Text {
@@ -2071,7 +2165,7 @@ export component OverlayHost inherits Rectangle {
                     visible: Overlays.name-ask;
                     border-width: Tokens.size-border;
                     border-radius: Tokens.radius-sm;
-                    border-color: Overlays.name-error != "" ? Theme.state-error : name-input.has-focus ? Theme.border-focus : Theme.border-strong;
+                    border-color: Overlays.name-error != "" ? Theme.state-error : name-input.has-focus ? Theme.border-focus : Theme.border-subtle;
                     background: Theme.surface-sunken;
                     height: Overlays.name-ask ? Tokens.size-control-md : 0px;
                     name-input := TextInput {
@@ -2361,7 +2455,7 @@ export component OverlayHost inherits Rectangle {
                 Rectangle {
                     border-width: Tokens.size-border;
                     border-radius: Tokens.radius-sm;
-                    border-color: picker-input.has-focus ? Theme.border-focus : Theme.border-strong;
+                    border-color: picker-input.has-focus ? Theme.border-focus : Theme.border-subtle;
                     background: Theme.surface-sunken;
                     height: Tokens.size-control-md;
                     Icon {
@@ -2439,7 +2533,7 @@ export component OverlayHost inherits Rectangle {
                         y: i * Tokens.size-control-md;
                         height: Tokens.size-control-md;
                         width: parent.width;
-                        background: i == Overlays.picker-current || row-touch.has-hover ? Theme.accent-subtle : transparent;
+                        background: i == Overlays.picker-current || row-touch.has-hover ? Theme.surface-overlay : transparent;
                         accessible-role: button;
                         accessible-label: r.name;
                         accessible-action-default => { Overlays.picker-chosen(r.index); }
@@ -2452,6 +2546,7 @@ export component OverlayHost inherits Rectangle {
                                 overflow: elide;
                                 color: Theme.text-primary;
                                 font-size: Tokens.type-body-size;
+                                font-weight: i == Overlays.picker-current ? Tokens.type-title-weight : Tokens.type-body-weight;
                                 vertical-alignment: center;
                                 accessible-role: none;
                             }
@@ -2510,10 +2605,11 @@ export component StatusLine inherits Rectangle {
     property <color> tint: root.tone == 1 ? Theme.state-healthy
         : root.tone == 2 ? Theme.state-warning
         : root.tone == 3 ? Theme.state-error : Theme.accent;
-    background: root.tone == 3 ? transparent : Theme.accent-subtle;
+    background: root.tone == 3 ? transparent
+        : root.tone == 0 ? Theme.surface-overlay : Theme.accent-subtle;
     border-radius: Tokens.radius-md;
-    border-width: root.tone == 3 ? Tokens.size-border : 0px;
-    border-color: Theme.state-error;
+    border-width: root.tone == 0 || root.tone == 3 ? Tokens.size-border : 0px;
+    border-color: root.tone == 3 ? Theme.state-error : Theme.border-subtle;
     min-height: row.min-height;
     preferred-height: row.preferred-height;
     accessible-role: AccessibleRole.text;
