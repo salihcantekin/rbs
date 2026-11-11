@@ -76,6 +76,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Link with the toolchain's rust-lld instead of MSVC link.exe: dozens of test
+      # binaries are linked per run and link.exe is the slowest step on Windows. Set
+      # after the cache step so the cache key stays the same (only links change; the
+      # cached dependency builds stay valid).
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe" >> "$GITHUB_ENV"
       # Per-test timeouts, no retries and per-test timings (ADR-0032, .config/nextest.toml).
       - if: env.RBS_CODE == 'true'
         uses: taiki-e/install-action@v2
