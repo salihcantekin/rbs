@@ -8,6 +8,7 @@ mod common;
 
 use common::solid;
 use rbs_core::capability::{CapabilityKey, CapabilityValue};
+use rbs_core::media::ColorSpace;
 use rbs_gpu::context::{CAP_NV12_SURFACE, CAP_P010, CAP_P010_SURFACE};
 use rbs_gpu::{
     CanvasDesc, Compositor, GpuContext, GpuError, Layer, TextureDesc, TextureId, TexturePool,
@@ -34,6 +35,27 @@ fn bits(format: YuvFormat) -> u32 {
 }
 
 /// Reference BT.709 limited-range (Y, Cb, Cr) codes for a linear RGB colour.
+fn oetf_srgb(l: f64) -> f64 {
+    let l = l.clamp(0.0, 1.0);
+    if l <= 0.0031308 {
+        12.92 * l
+    } else {
+        1.055 * l.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Reference sRGB full-range (Y, Cb, Cr) codes for a linear RGB colour.
+fn reference_screen(format: YuvFormat, rgb: [f64; 3]) -> [u16; 3] {
+    let max = f64::from((1u32 << bits(format)) - 1);
+    let mid = f64::from(1u32 << (bits(format) - 1));
+    let [r, g, b] = rgb.map(oetf_srgb);
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let cb = (b - y) / 1.8556;
+    let cr = (r - y) / 1.5748;
+    let code = |v: f64| v.round().clamp(0.0, max) as u16;
+    [code(max * y), code(mid + max * cb), code(mid + max * cr)]
+}
+
 fn reference(format: YuvFormat, rgb: [f64; 3]) -> [u16; 3] {
     let k = f64::from(1u32 << (bits(format) - 8));
     let [r, g, b] = rgb.map(oetf);
@@ -117,6 +139,29 @@ fn canvas(ctx: &GpuContext, pool: &mut TexturePool, colours: &[[f32; 3]]) -> Tex
     canvas
 }
 
+fn check_color(format: YuvFormat, color: ColorSpace, rgb: [f32; 3], want: [u16; 3]) {
+    let Some(ctx) = common::gpu() else { return };
+    if !supported(ctx, format, false) {
+        return;
+    }
+    let mut pool = TexturePool::new();
+    let canvas = canvas(ctx, &mut pool, &[rgb]);
+    let luma = pool.acquire(ctx, &yuv::luma_desc(format, W, H)).unwrap();
+    let chroma = pool.acquire(ctx, &yuv::chroma_desc(format, W, H)).unwrap();
+    let mut conv = YuvConverter::with_color(ctx, format, W, H, color).unwrap();
+    conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
+    let y = codes(format, &readback::read_bytes(ctx, &pool, luma).unwrap());
+    let uv = codes(format, &readback::read_bytes(ctx, &pool, chroma).unwrap());
+    let got = [y[0], uv[0], uv[1]];
+    let tolerance = if bits(format) == 8 { 1 } else { 2 };
+    for i in 0..3 {
+        assert!(
+            (i32::from(got[i]) - i32::from(want[i])).abs() <= tolerance,
+            "{format:?} {color:?} {rgb:?}: got YCbCr {got:?}, want {want:?}"
+        );
+    }
+}
+
 fn check(format: YuvFormat, rgb: [f32; 3]) {
     let Some(ctx) = common::gpu() else { return };
     if !supported(ctx, format, false) {
@@ -180,6 +225,41 @@ fn reference_values_match_bt709_tables() {
     assert_eq!(p010([0.0, 0.0, 0.0]), [64, 512, 512]);
     assert_eq!(p010([1.0, 1.0, 1.0]), [940, 512, 512]);
     assert_eq!(p010([1.0, 0.0, 0.0]), [250, 409, 960]);
+}
+
+#[test]
+fn screen_nv12_matches_srgb_full_range() {
+    for rgb in COLOURS {
+        let want = reference_screen(
+            YuvFormat::Nv12,
+            [f64::from(rgb[0]), f64::from(rgb[1]), f64::from(rgb[2])],
+        );
+        check_color(YuvFormat::Nv12, ColorSpace::SRGB_VIDEO, rgb, want);
+    }
+    // A dark UI grey sits in the BT.709 toe and would be far below this sRGB code.
+    let dark = [0.013_f32, 0.013, 0.013];
+    let want = reference_screen(YuvFormat::Nv12, [0.013, 0.013, 0.013]);
+    assert!(
+        want[0] > 20,
+        "sRGB code of a dark grey stays above the video toe: {want:?}"
+    );
+    check_color(YuvFormat::Nv12, ColorSpace::SRGB_VIDEO, dark, want);
+}
+
+#[test]
+fn screen_reference_is_full_range() {
+    let nv12 = |rgb| reference_screen(YuvFormat::Nv12, rgb);
+    assert_eq!(nv12([0.0, 0.0, 0.0]), [0, 128, 128]);
+    assert_eq!(nv12([1.0, 1.0, 1.0]), [255, 128, 128]);
+}
+
+#[test]
+fn other_colours_are_rejected() {
+    let Some(ctx) = common::gpu() else { return };
+    assert!(matches!(
+        YuvConverter::with_color(ctx, YuvFormat::Nv12, W, H, ColorSpace::BT709_FULL),
+        Err(GpuError::Unsupported(_))
+    ));
 }
 
 #[test]

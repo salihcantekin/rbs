@@ -87,6 +87,41 @@ fn round_trip(format: YuvFormat, tol: f32) {
 }
 
 #[test]
+fn srgb_full_range_round_trips() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let mut conv =
+        YuvConverter::with_color(ctx, YuvFormat::Nv12, W, H, ColorSpace::SRGB_VIDEO).unwrap();
+    let mut dec = YuvDecoder::new(ctx);
+    let luma = pool
+        .acquire(ctx, &yuv::luma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let chroma = pool
+        .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    for rgb in [
+        [0.0_f32, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        [0.013, 0.013, 0.013],
+        [0.18, 0.18, 0.18],
+    ] {
+        let canvas = canvas(ctx, &mut pool, rgb);
+        conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
+        dec.decode(
+            ctx,
+            &pool,
+            YuvSource::Planes { luma, chroma },
+            ColorSpace::SRGB_VIDEO,
+            out,
+        )
+        .unwrap();
+        let px = readback::read_rgba16f(ctx, &pool, out).unwrap();
+        assert_close(at(&px, W, 4, 2), [rgb[0], rgb[1], rgb[2], 1.0], 0.02);
+    }
+}
+
+#[test]
 fn nv12_round_trip() {
     round_trip(YuvFormat::Nv12, 0.02);
 }

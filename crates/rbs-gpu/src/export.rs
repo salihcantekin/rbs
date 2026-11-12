@@ -32,8 +32,8 @@ use objc2_io_surface::{
 };
 use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTextureUsage};
 use rbs_core::media::{
-    ColorSpace, Lease, LeaseOwner, NativeSurface, Size, SurfaceSync, TextureId, VideoFormat,
-    VideoFrame,
+    ColorRange, ColorSpace, Lease, LeaseOwner, NativeSurface, Size, SurfaceSync, TextureId,
+    VideoFormat, VideoFrame,
 };
 use rbs_core::time::Timestamp;
 
@@ -51,9 +51,13 @@ pub const MAX_EXPORT_SURFACES: usize = 32;
 
 /// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` ('420v'): NV12, limited range.
 pub const FOURCC_NV12: u32 = u32::from_be_bytes(*b"420v");
+/// `kCVPixelFormatType_420YpCbCr8BiPlanarFullRange` ('420f'): NV12, full range.
+pub const FOURCC_NV12_FULL: u32 = u32::from_be_bytes(*b"420f");
 /// `kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange` ('x420'): 10-bit codes in the high
 /// bits of 16-bit words (P010), limited range.
 pub const FOURCC_P010: u32 = u32::from_be_bytes(*b"x420");
+/// `kCVPixelFormatType_420YpCbCr10BiPlanarFullRange` ('xf20'): P010, full range.
+pub const FOURCC_P010_FULL: u32 = u32::from_be_bytes(*b"xf20");
 
 /// Plane offsets are page aligned, like CoreVideo's own pixel buffers.
 const PLANE_ALIGN: usize = 4096;
@@ -154,12 +158,32 @@ impl SurfaceExporter {
         height: u32,
         surfaces: usize,
     ) -> Result<Self, GpuError> {
+        Self::with_color(
+            ctx,
+            format,
+            width,
+            height,
+            surfaces,
+            ColorSpace::BT709_LIMITED,
+        )
+    }
+
+    /// [`Self::new`] for `color`: [`ColorSpace::BT709_LIMITED`] or [`ColorSpace::SRGB_VIDEO`].
+    /// Full range allocates `'420f'` or `'xf20'`.
+    pub fn with_color(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        surfaces: usize,
+        color: ColorSpace,
+    ) -> Result<Self, GpuError> {
         if !(2..=MAX_EXPORT_SURFACES).contains(&surfaces) {
             return Err(GpuError::Unsupported("export ring size outside 2..=32"));
         }
-        // Checks the size, the P010 capability and builds the pipelines.
-        let converter = YuvConverter::new(ctx, format, width, height)?;
-        let layout = Layout::new(ctx, format, width, height)?;
+        // Checks the size, the colour, the P010 capability and builds the pipelines.
+        let converter = YuvConverter::with_color(ctx, format, width, height, color)?;
+        let layout = Layout::new(ctx, format, width, height, color)?;
         let mut ring = Vec::with_capacity(surfaces);
         let mut planes = Vec::with_capacity(surfaces);
         for _ in 0..surfaces {
@@ -169,11 +193,7 @@ impl SurfaceExporter {
         }
         Ok(Self {
             converter,
-            format: VideoFormat::new(
-                Size::new(width, height),
-                format.pixel_format(),
-                ColorSpace::BT709_LIMITED,
-            ),
+            format: VideoFormat::new(Size::new(width, height), format.pixel_format(), color),
             ring: Arc::new(Ring {
                 surfaces: ring.into_boxed_slice(),
             }),
@@ -184,7 +204,7 @@ impl SurfaceExporter {
         })
     }
 
-    /// The format of exported frames: NV12 or P010, BT.709 limited range.
+    /// The format of exported frames: NV12 or P010, and the colour given at creation.
     pub fn format(&self) -> &VideoFormat {
         &self.format
     }
@@ -325,6 +345,7 @@ impl SurfaceExporter {
 /// Byte layout of one surface of the ring, computed once.
 struct Layout {
     format: YuvFormat,
+    fourcc: u32,
     width: u32,
     height: u32,
     luma_row: usize,
@@ -334,7 +355,13 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<Self, GpuError> {
+    fn new(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+    ) -> Result<Self, GpuError> {
         let (luma_mtl, chroma_mtl) = mtl_formats(format);
         let sample = sample_bytes(format);
         // SAFETY: the HAL device is only borrowed to query alignments; the guard is
@@ -367,8 +394,15 @@ impl Layout {
         let chroma_row = row(w * sample, chroma_align);
         let chroma_offset = align_up(luma_row * h, PLANE_ALIGN);
         let alloc = align_up(chroma_offset + chroma_row * (h / 2), PLANE_ALIGN);
+        let fourcc = match (format, color.range) {
+            (YuvFormat::Nv12, ColorRange::Full) => FOURCC_NV12_FULL,
+            (YuvFormat::Nv12, _) => FOURCC_NV12,
+            (YuvFormat::P010, ColorRange::Full) => FOURCC_P010_FULL,
+            (YuvFormat::P010, _) => FOURCC_P010,
+        };
         Ok(Self {
             format,
+            fourcc,
             width,
             height,
             luma_row,
@@ -475,10 +509,7 @@ impl Layout {
             ),
         ];
         let planes = CFArray::from_retained_objects(&planes);
-        let fourcc = match self.format {
-            YuvFormat::Nv12 => FOURCC_NV12,
-            YuvFormat::P010 => FOURCC_P010,
-        };
+        let fourcc = self.fourcc;
         let width = num(w);
         let height = num(h);
         let alloc = num(self.alloc);

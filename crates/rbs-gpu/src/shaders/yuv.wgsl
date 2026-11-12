@@ -91,3 +91,71 @@ fn fs_chroma_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32>
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+
+// Screen delivery (ColorSpace::SRGB_VIDEO): sRGB OETF, full range. A separate entry point
+// from the BT.709 limited path above, so that path does not branch on this mode.
+// `code_max` is the largest legal code (255 or 1023). Full-range chroma can round one
+// code past that end; it is clamped here and not on the limited-range path.
+override code_max: f32 = 255.0;
+
+fn oetf_srgb(l: vec3<f32>) -> vec3<f32> {
+    let c = clamp(l, vec3<f32>(0.0), vec3<f32>(1.0));
+    let lo = 12.92 * c;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
+fn load_srgb(x: i32, y: i32) -> vec3<f32> {
+    return oetf_srgb(textureLoad(canvas, vec2<i32>(x, y), 0).rgb);
+}
+
+fn store_y(p: vec3<f32>) -> f32 {
+    return clamp(round(y_black + y_range * luma(p)), 0.0, code_max) * code_scale;
+}
+
+fn store_c(p: vec3<f32>) -> vec2<f32> {
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return clamp(
+        round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)),
+        vec2<f32>(0.0),
+        vec2<f32>(code_max),
+    ) * code_scale;
+}
+
+@fragment
+fn fs_luma_srgb(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    return store_y(load_srgb(i32(pos.x), i32(pos.y)));
+}
+
+@fragment
+fn fs_chroma_srgb(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let x = i32(pos.x) * 2;
+    let y = i32(pos.y) * 2;
+    let p = (load_srgb(x, y) + load_srgb(x + 1, y) + load_srgb(x, y + 1) + load_srgb(x + 1, y + 1))
+        * 0.25;
+    return store_c(p);
+}
+
+fn sample_srgb(p: vec2<f32>) -> vec3<f32> {
+    let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return vec3<f32>(0.0);
+    }
+    return oetf_srgb(textureSampleLevel(canvas, unused_sampler, uv, 0.0).rgb);
+}
+
+@fragment
+fn fs_luma_srgb_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    return store_y(sample_srgb(pos.xy));
+}
+
+@fragment
+fn fs_chroma_srgb_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let c = floor(pos.xy) * 2.0;
+    let p = (sample_srgb(c + vec2<f32>(0.5, 0.5)) + sample_srgb(c + vec2<f32>(1.5, 0.5))
+        + sample_srgb(c + vec2<f32>(0.5, 1.5)) + sample_srgb(c + vec2<f32>(1.5, 1.5)))
+        * 0.25;
+    return store_c(p);
+}

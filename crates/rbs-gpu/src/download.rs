@@ -102,7 +102,27 @@ impl YuvDownload {
         width: u32,
         height: u32,
     ) -> Result<Self, GpuError> {
-        Self::scaled(ctx, format, width, height, width, height, DOWNLOAD_BUFFERS)
+        Self::with_color(ctx, format, width, height, ColorSpace::BT709_LIMITED)
+    }
+
+    /// [`Self::new`] for `color`: [`ColorSpace::BT709_LIMITED`] or [`ColorSpace::SRGB_VIDEO`].
+    pub fn with_color(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+    ) -> Result<Self, GpuError> {
+        Self::scaled_color(
+            ctx,
+            format,
+            width,
+            height,
+            width,
+            height,
+            DOWNLOAD_BUFFERS,
+            color,
+        )
     }
 
     /// A download of `src_width x src_height` canvases to `width x height` frames
@@ -118,12 +138,37 @@ impl YuvDownload {
         height: u32,
         buffers: usize,
     ) -> Result<Self, GpuError> {
+        Self::scaled_color(
+            ctx,
+            format,
+            src_width,
+            src_height,
+            width,
+            height,
+            buffers,
+            ColorSpace::BT709_LIMITED,
+        )
+    }
+
+    /// [`Self::scaled`] for `color`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scaled_color(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        buffers: usize,
+        color: ColorSpace,
+    ) -> Result<Self, GpuError> {
         if buffers < 2 {
             return Err(GpuError::Unsupported(
                 "a download needs at least 2 frame buffers",
             ));
         }
-        let converter = YuvConverter::scaled(ctx, format, src_width, src_height, width, height)?;
+        let converter =
+            YuvConverter::scaled_color(ctx, format, src_width, src_height, width, height, color)?;
         let sample = match format {
             YuvFormat::Nv12 => 1,
             YuvFormat::P010 => 2,
@@ -173,11 +218,7 @@ impl YuvDownload {
         let buffers = (0..buffers).map(|_| shared_buffer(size)).collect();
         Ok(Self {
             converter,
-            format: VideoFormat::new(
-                Size::new(width, height),
-                format.pixel_format(),
-                ColorSpace::BT709_LIMITED,
-            ),
+            format: VideoFormat::new(Size::new(width, height), format.pixel_format(), color),
             luma: luma_tex.create_view(&wgpu::TextureViewDescriptor::default()),
             luma_tex,
             chroma: chroma_tex.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -193,8 +234,8 @@ impl YuvDownload {
         })
     }
 
-    /// The format of the frames this download delivers: the canvas size, NV12 or P010,
-    /// BT.709 limited range (the converter's output).
+    /// The format of the frames this download delivers: the output size, NV12 or P010,
+    /// and the colour the converter encoded (BT.709 limited range by default).
     pub fn format(&self) -> &VideoFormat {
         &self.format
     }

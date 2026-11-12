@@ -312,6 +312,14 @@ impl ColorSpace {
         MatrixCoefficients::Bt709,
         ColorRange::Full,
     );
+    /// sRGB transfer with the BT.709 matrix, full range. A desktop picture stored as
+    /// Y'CbCr so a player that honours the tag matches the screen.
+    pub const SRGB_VIDEO: Self = Self::new(
+        ColorPrimaries::Bt709,
+        TransferFunction::Srgb,
+        MatrixCoefficients::Bt709,
+        ColorRange::Full,
+    );
     /// BT.2100 PQ limited range Y'CbCr (HDR10).
     pub const BT2100_PQ: Self = Self::new(
         ColorPrimaries::Bt2020,

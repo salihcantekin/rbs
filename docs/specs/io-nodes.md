@@ -128,7 +128,7 @@ Counters are those of the capture node: `picture_size` is known from constructio
 
 Invariants:
 
-1. Frames on "video" have `frame_format()`: canvas size, NV12 or P010, `ColorSpace::BT709_LIMITED`; the canvas frame's timestamp and sequence; system memory.
+1. Frames on "video" have `frame_format()`: canvas size, NV12 or P010, and the colour given to `new` (default `ColorSpace::BT709_LIMITED`) or `with_color` (`ColorSpace::SRGB_VIDEO` for a screen match); the canvas frame's timestamp and sequence; system memory. The planes are encoded with that same colour.
 2. Never waits for the GPU. A frame submitted on tick `i` appears on tick `i + 1` at the earliest; a full staging ring drops the new canvas frame (`busy`).
 3. Once ended, every canvas the export took up to the end time is on "video" in order (one per tick), and no later canvas is taken. Canvases dropped as on the run path (`busy`, no free buffer, a failed readback) are counted in `busy` or `lost`. Whether the encoder took the last one is the studio's check (`EncoderNodeStats::last_frame`, recording spec 5a). The run path costs one relaxed atomic load and a compare per tick.
 

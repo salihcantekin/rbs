@@ -9,10 +9,12 @@ mod common;
 use common::solid;
 use objc2_io_surface::{IOSurfaceLockOptions, IOSurfaceRef};
 use rbs_core::capability::CapabilityValue;
-use rbs_core::media::{FramePayload, NativeSurface, PixelFormat, SurfaceSync, VideoFrame};
+use rbs_core::media::{
+    ColorSpace, FramePayload, NativeSurface, PixelFormat, SurfaceSync, VideoFrame,
+};
 use rbs_core::time::Timestamp;
 use rbs_gpu::context::CAP_P010;
-use rbs_gpu::export::{FOURCC_NV12, FOURCC_P010, SurfaceExporter};
+use rbs_gpu::export::{FOURCC_NV12, FOURCC_NV12_FULL, FOURCC_P010, SurfaceExporter};
 use rbs_gpu::{
     CanvasDesc, Compositor, GpuContext, GpuError, Layer, TextureDesc, TextureId, TexturePool,
     YuvConverter, YuvFormat, readback, yuv,
@@ -144,6 +146,39 @@ fn round_trip(format: YuvFormat) {
 #[test]
 fn nv12_surface_matches_planes() {
     round_trip(YuvFormat::Nv12);
+}
+
+#[test]
+fn screen_surface_is_full_range_and_matches_the_srgb_planes() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = canvas(ctx, &mut pool);
+    let luma = pool
+        .acquire(ctx, &yuv::luma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let chroma = pool
+        .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let mut conv =
+        YuvConverter::with_color(ctx, YuvFormat::Nv12, W, H, ColorSpace::SRGB_VIDEO).unwrap();
+    conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
+    let want = [
+        readback::read_bytes(ctx, &pool, luma).unwrap(),
+        readback::read_bytes(ctx, &pool, chroma).unwrap(),
+    ];
+    let mut exporter =
+        SurfaceExporter::with_color(ctx, YuvFormat::Nv12, W, H, 2, ColorSpace::SRGB_VIDEO).unwrap();
+    assert_eq!(exporter.format().color, ColorSpace::SRGB_VIDEO);
+    exporter
+        .export(ctx, &pool, canvas, Timestamp::from_nanos(1), 1)
+        .unwrap();
+    let frame = ready(ctx, &mut exporter);
+    assert_eq!(frame.format().color, ColorSpace::SRGB_VIDEO);
+    let io = io_surface(&frame);
+    assert_eq!(io.pixel_format(), FOURCC_NV12_FULL);
+    let got = surface_bytes(io);
+    assert_eq!(got[0], want[0]);
+    assert_eq!(got[1], want[1]);
 }
 
 #[test]

@@ -99,6 +99,8 @@ impl ExportEnd {
 pub struct VideoExportNode {
     descriptor: NodeDescriptor,
     format: YuvFormat,
+    /// Colour the planes are encoded with and the frames are tagged with.
+    color: ColorSpace,
     width: u32,
     height: u32,
     download: Option<YuvDownload>,
@@ -109,11 +111,20 @@ pub struct VideoExportNode {
 }
 
 impl VideoExportNode {
-    /// An export of `width x height` canvases (both even) to `format`.
+    /// An export of `width x height` canvases (both even) to `format`, Rec. 709 limited range.
     pub fn new(format: YuvFormat, width: u32, height: u32) -> Self {
+        Self::with_color(format, width, height, ColorSpace::BT709_LIMITED)
+    }
+
+    /// An export that encodes and tags frames as `color`.
+    ///
+    /// `YuvDownload` accepts [`ColorSpace::BT709_LIMITED`] (the default) and
+    /// [`ColorSpace::SRGB_VIDEO`] (sRGB, full range). Anything else fails in `prepare`.
+    pub fn with_color(format: YuvFormat, width: u32, height: u32, color: ColorSpace) -> Self {
         Self {
             descriptor: video_export_descriptor(),
             format,
+            color,
             width,
             height,
             download: None,
@@ -129,7 +140,7 @@ impl VideoExportNode {
         VideoFormat::new(
             Size::new(self.width, self.height),
             self.format.pixel_format(),
-            ColorSpace::BT709_LIMITED,
+            self.color,
         )
     }
 
@@ -150,8 +161,9 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let download = YuvDownload::new(ctx.shared, self.format, self.width, self.height)
-            .map_err(|e| NodeError::Failed(format!("video export: {e}")))?;
+        let download =
+            YuvDownload::with_color(ctx.shared, self.format, self.width, self.height, self.color)
+                .map_err(|e| NodeError::Failed(format!("video export: {e}")))?;
         self.seen = download.stats();
         self.download = Some(download);
         self.last = None;
@@ -225,5 +237,22 @@ impl Node<GpuRuntime> for VideoExportNode {
                 .lost
                 .fetch_add(download.in_flight() as u64, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_tag_is_bt709_and_screen_is_srgb_video() {
+        let video = VideoExportNode::new(YuvFormat::Nv12, 16, 8);
+        assert_eq!(video.frame_format().color, ColorSpace::BT709_LIMITED);
+        let screen = VideoExportNode::with_color(YuvFormat::Nv12, 16, 8, ColorSpace::SRGB_VIDEO);
+        assert_eq!(screen.frame_format().color, ColorSpace::SRGB_VIDEO);
+        assert_eq!(
+            screen.frame_format().color.range,
+            rbs_core::media::ColorRange::Full
+        );
     }
 }

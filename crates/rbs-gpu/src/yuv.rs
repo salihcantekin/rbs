@@ -15,7 +15,7 @@
 use crate::context::{CAP_NV12_SURFACE, CAP_P010, CAP_P010_SURFACE, CAP_SOFTWARE, GpuContext};
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
-use rbs_core::media::{PixelFormat, TextureId};
+use rbs_core::media::{ColorSpace, PixelFormat, TextureId};
 
 /// The encoder format a [`YuvConverter`] writes: 4:2:0 with interleaved chroma.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,6 +79,24 @@ impl YuvFormat {
             ("c_mid", 128.0 * k),
             ("c_range", 224.0 * k),
             ("code_scale", scale),
+        ]
+    }
+
+    /// Full-range code levels for the sRGB entry points, plus `code_max`.
+    fn screen_constants(self) -> [(&'static str, f64); 6] {
+        let (bits, scale) = match self {
+            Self::Nv12 => (8, 1.0 / 255.0),
+            Self::P010 => (10, 64.0 / 65535.0),
+        };
+        let max = f64::from((1u32 << bits) - 1);
+        let mid = f64::from(1u32 << (bits - 1));
+        [
+            ("y_black", 0.0),
+            ("y_range", max),
+            ("c_mid", mid),
+            ("c_range", max),
+            ("code_scale", scale),
+            ("code_max", max),
         ]
     }
 }
@@ -237,14 +255,25 @@ impl Staged {
 
 impl YuvConverter {
     /// Creates a converter to `format` for `width x height` canvases. Both must be even and
-    /// non-zero. P010 needs capability `gpu.p010`.
+    /// non-zero. P010 needs capability `gpu.p010`. Colour is BT.709 limited range.
     pub fn new(
         ctx: &GpuContext,
         format: YuvFormat,
         width: u32,
         height: u32,
     ) -> Result<Self, GpuError> {
-        Self::scaled(ctx, format, width, height, width, height)
+        Self::with_color(ctx, format, width, height, ColorSpace::BT709_LIMITED)
+    }
+
+    /// [`Self::new`] for `color`: [`ColorSpace::BT709_LIMITED`] or [`ColorSpace::SRGB_VIDEO`].
+    pub fn with_color(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+    ) -> Result<Self, GpuError> {
+        Self::scaled_color(ctx, format, width, height, width, height, color)
     }
 
     /// Creates a converter from `src_width x src_height` canvases to `width x height`
@@ -259,6 +288,27 @@ impl YuvConverter {
         src_height: u32,
         width: u32,
         height: u32,
+    ) -> Result<Self, GpuError> {
+        Self::scaled_color(
+            ctx,
+            format,
+            src_width,
+            src_height,
+            width,
+            height,
+            ColorSpace::BT709_LIMITED,
+        )
+    }
+
+    /// [`Self::scaled`] for `color`: [`ColorSpace::BT709_LIMITED`] or [`ColorSpace::SRGB_VIDEO`].
+    pub fn scaled_color(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
     ) -> Result<Self, GpuError> {
         if format == YuvFormat::P010 && !ctx.has(&CAP_P010) {
             return Err(GpuError::Unsupported(
@@ -287,6 +337,12 @@ impl YuvConverter {
                 height: src_height,
             });
         }
+        let screen = color == ColorSpace::SRGB_VIDEO;
+        if color != ColorSpace::BT709_LIMITED && !screen {
+            return Err(GpuError::Unsupported(
+                "encoder colour (BT.709 limited or sRGB full range)",
+            ));
+        }
         let one_to_one = src_width == width && src_height == height;
         let device = ctx.device();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -298,7 +354,11 @@ impl YuvConverter {
             bind_group_layouts: &[Some(&ctx.sampled_layout)],
             immediate_size: 0,
         });
-        let mut constants: Vec<(&str, f64)> = format.constants().to_vec();
+        let mut constants: Vec<(&str, f64)> = if screen {
+            format.screen_constants().to_vec()
+        } else {
+            format.constants().to_vec()
+        };
         if !one_to_one {
             let fit = fit_rect(src_width, src_height, width, height);
             constants.extend([
@@ -342,10 +402,12 @@ impl YuvConverter {
             YuvFormat::Nv12 => &CAP_NV12_SURFACE,
             YuvFormat::P010 => &CAP_P010_SURFACE,
         };
-        let (luma_entry, chroma_entry) = if one_to_one {
-            ("fs_luma", "fs_chroma")
-        } else {
-            ("fs_luma_scaled", "fs_chroma_scaled")
+        // Chosen once, at creation. The default entries and constants are the BT.709 path.
+        let (luma_entry, chroma_entry) = match (one_to_one, screen) {
+            (true, false) => ("fs_luma", "fs_chroma"),
+            (false, false) => ("fs_luma_scaled", "fs_chroma_scaled"),
+            (true, true) => ("fs_luma_srgb", "fs_chroma_srgb"),
+            (false, true) => ("fs_luma_srgb_scaled", "fs_chroma_srgb_scaled"),
         };
         Ok(Self {
             format,

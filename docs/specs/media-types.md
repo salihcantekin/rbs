@@ -37,7 +37,7 @@ Encoders and muxers convert master time to container ticks with `Timebase::ticks
 
 - `VideoFormat { size, pixel_format, color }`: the picture format of a frame.
 - `PixelFormat` (non-exhaustive): `Bgra8`, `Bgra8Srgb`, `Rgba8`, `Rgba8Srgb`, `Rgb10a2`, `Rgba16Float` (canvas working format), `Nv12`, `P010` (encoder hand-off), `I420`, `I444`, `Yuy2`, `Uyvy`. Each format reports plane count, bit depth, minimum row bytes and rows per plane; chroma sizes round up for odd dimensions.
-- `ColorSpace { primaries, transfer, matrix, range }`, with constants `SRGB`, `LINEAR_BT709` (SDR working space), `LINEAR_BT2020` (HDR working space), `BT709_LIMITED`, `BT709_FULL`, `BT2100_PQ`, `BT2100_HLG`.
+- `ColorSpace { primaries, transfer, matrix, range }`, with constants `SRGB`, `LINEAR_BT709` (SDR working space), `LINEAR_BT2020` (HDR working space), `BT709_LIMITED`, `BT709_FULL`, `SRGB_VIDEO` (sRGB transfer, BT.709 matrix, full range: a desktop picture stored as Y'CbCr), `BT2100_PQ`, `BT2100_HLG`.
 - `MemoryKind` (non-exhaustive): `System`, `Gpu` (engine device texture), `D3d11`, `D3d12`, `Vulkan`, `Metal`, `DmaBuf`. `as_str()` gives the values used for the `input.memory` style capabilities.
 - `VideoFrame` has private fields and accessors (`format`, `timestamp`, `sequence`, `source_time`, `payload`, `lease`), so the format always matches the payload and a native surface is never separated from its lease:
 

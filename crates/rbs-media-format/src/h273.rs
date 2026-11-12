@@ -107,6 +107,19 @@ mod tests {
     }
 
     #[test]
+    fn srgb_video_is_full_range_iec61966() {
+        assert_eq!(
+            ColorCodes::of(&ColorSpace::SRGB_VIDEO),
+            Some(ColorCodes {
+                primaries: 1,
+                transfer: 13,
+                matrix: 1,
+                full_range: true,
+            })
+        );
+    }
+
+    #[test]
     fn hdr_and_601() {
         let pq = ColorSpace::new(
             ColorPrimaries::Bt2020,
