@@ -56,6 +56,8 @@ pub enum SourceError {
     Audio(AudioIoError),
     /// A still source's picture could not be read or made (ADR-0074).
     Image(String),
+    /// A media file could not be opened or decoded (ADR-0108). Same role as `Image`.
+    Media(String),
 }
 
 impl SourceError {
@@ -90,6 +92,7 @@ impl fmt::Display for SourceError {
             SourceError::Capture(e) => write!(f, "capture: {e}"),
             SourceError::Audio(e) => write!(f, "audio: {e}"),
             SourceError::Image(e) => write!(f, "picture: {e}"),
+            SourceError::Media(e) => write!(f, "media: {e}"),
         }
     }
 }
@@ -123,6 +126,9 @@ pub struct SourceTarget {
     /// The opaque id of the audio input that belongs with a camera (its microphone),
     /// when the capture adapter knows it; the audio adapter resolves it (ADR-0096).
     pub related_audio: Option<String>,
+    /// A display's work area in the same pixels as [`Self::size`] (ADR-0104).
+    /// `None` when the adapter did not report one.
+    pub work_rect: Option<rbs_capture::WorkRect>,
 }
 
 /// A playback device a monitor can use ([`SourceTypes::monitor_devices`]).
@@ -218,6 +224,7 @@ impl SourcePicker {
             app: t.app,
             modes: Vec::new(),
             related_audio: None,
+            work_rect: t.work_rect,
         })
     }
 }
@@ -233,6 +240,11 @@ pub struct InstanceContext {
     pub audio: AudioGraphConfig,
     /// Largest sync offset an audio source may ask for (sizes its FIFO).
     pub max_audio_offset: Duration,
+    /// Shared cap of two browser helpers (ADR-0109). The composition root passes one
+    /// budget into every instantiate.
+    pub browser_budget: Arc<crate::browser::BrowserBudget>,
+    /// Helper tree the composition root wires. `None` until it sets a path.
+    pub browser_tree: Option<Arc<dyn crate::browser::BrowserTree>>,
 }
 
 impl InstanceContext {
@@ -242,12 +254,25 @@ impl InstanceContext {
             clock,
             audio,
             max_audio_offset: DEFAULT_MAX_AUDIO_OFFSET,
+            browser_budget: crate::browser::BrowserBudget::shared(),
+            browser_tree: None,
         }
     }
 
     /// Sets the largest sync offset an audio source may ask for.
     pub fn with_max_audio_offset(mut self, offset: Duration) -> Self {
         self.max_audio_offset = offset;
+        self
+    }
+
+    /// Shares the browser cap and the helper tree across sources.
+    pub fn with_browser(
+        mut self,
+        budget: Arc<crate::browser::BrowserBudget>,
+        tree: Option<Arc<dyn crate::browser::BrowserTree>>,
+    ) -> Self {
+        self.browser_budget = budget;
+        self.browser_tree = tree;
         self
     }
 }
@@ -290,6 +315,24 @@ pub struct StillSource {
     pub stats: Arc<CaptureNodeStats>,
 }
 
+/// A media-file node (ADR-0108). Video and audio pins are both always present.
+#[non_exhaustive]
+pub struct MediaSource {
+    /// The node. Standby holds no decoder and no queues.
+    pub node: rbs_nodes::MediaSourceNode,
+    /// Upload, drop, repeat, and underrun counters.
+    pub stats: Arc<rbs_nodes::MediaStats>,
+    /// The decoder factory chosen for this node.
+    pub adapter: AdapterId,
+}
+
+/// A browser node (ADR-0109). No helper until it is activated with a slot.
+#[non_exhaustive]
+pub struct BrowserSource {
+    /// The node.
+    pub node: crate::browser::BrowserSourceNode,
+}
+
 /// A node instance for a bound source.
 #[non_exhaustive]
 pub enum SourceInstance {
@@ -297,6 +340,10 @@ pub enum SourceInstance {
     Still(StillSource),
     /// Adopt into the render partition.
     Video(VideoSource),
+    /// Adopt into the render partition. Its audio pin is the ADR-0106 producer.
+    Media(MediaSource),
+    /// Adopt into the render partition. No audio pin.
+    Browser(BrowserSource),
     /// Adopt into the audio partition.
     Audio(AudioSource),
 }
@@ -312,6 +359,14 @@ impl fmt::Debug for SourceInstance {
                 .debug_struct("Video")
                 .field("adapter", &v.adapter)
                 .field("target", &v.target)
+                .finish_non_exhaustive(),
+            SourceInstance::Media(m) => f
+                .debug_struct("Media")
+                .field("adapter", &m.adapter)
+                .finish_non_exhaustive(),
+            SourceInstance::Browser(b) => f
+                .debug_struct("Browser")
+                .field("running", &b.node.helper_running())
                 .finish_non_exhaustive(),
             SourceInstance::Audio(a) => f
                 .debug_struct("Audio")
@@ -354,6 +409,7 @@ impl NodeTypes for NodeTypeTable {
 pub struct SourceTypes {
     capture: Registry<dyn CaptureFactory>,
     audio: Registry<dyn AudioBackend>,
+    media: Registry<dyn rbs_media_decode::MediaDecoderFactory>,
 }
 
 impl Default for SourceTypes {
@@ -419,6 +475,19 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::WIDTH,
             keys::HEIGHT,
         ],
+        SourceClass::Media => &[
+            keys::ADAPTER,
+            keys::PATH,
+            keys::LOOP,
+            keys::RESTART_WHEN_SHOWN,
+        ],
+        SourceClass::Browser => &[
+            keys::URL,
+            keys::WIDTH,
+            keys::HEIGHT,
+            keys::FPS,
+            keys::TRANSPARENT,
+        ],
     })
 }
 
@@ -427,6 +496,13 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
 /// What the OS offers (does the target exist, does the camera have this mode) is only
 /// known when the source opens and shows in its status then.
 pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<(), SourceError> {
+    if class_of(type_id) == Some(SourceClass::Media) {
+        return validate_media(settings);
+    }
+    if class_of(type_id) == Some(SourceClass::Browser) {
+        return crate::browser::validate_browser(settings)
+            .map_err(|(key, expected)| SourceError::InvalidSetting { key, expected });
+    }
     /// The largest picture side and frame rate accepted.
     const MAX_SIDE: u32 = 16_384;
     const MAX_FPS: u32 = 240;
@@ -542,6 +618,7 @@ impl SourceTypes {
         Self {
             capture: Registry::new(),
             audio: Registry::new(),
+            media: Registry::new(),
         }
     }
 
@@ -561,6 +638,15 @@ impl SourceTypes {
         self.audio.register(backend)
     }
 
+    /// Registers a media-file decoder. Call [`probe`](Self::probe) afterwards.
+    /// The scene type id stays `org.rbs.source.media`; this id is only the adapter.
+    pub fn register_media(
+        &mut self,
+        factory: Arc<dyn rbs_media_decode::MediaDecoderFactory>,
+    ) -> Result<(), DuplicateAdapter> {
+        self.media.register(factory)
+    }
+
     /// The capture adapters, to set a preference order or the user's choice.
     pub fn capture_adapters(&mut self) -> &mut Registry<dyn CaptureFactory> {
         &mut self.capture
@@ -575,6 +661,7 @@ impl SourceTypes {
     pub fn probe(&mut self) {
         self.capture.probe_all();
         self.audio.probe_all();
+        self.media.probe_all();
     }
 
     /// The capture adapter `adapter` of the capture type `type_id`, if it is one of
@@ -694,7 +781,10 @@ impl SourceTypes {
                     .map(|factory| SourcePicker { factory, kind })
                     .collect())
             }
-            SourceClass::Audio(_) | SourceClass::Still => Ok(Vec::new()),
+            SourceClass::Audio(_)
+            | SourceClass::Still
+            | SourceClass::Media
+            | SourceClass::Browser => Ok(Vec::new()),
         }
     }
 
@@ -703,8 +793,8 @@ impl SourceTypes {
         match class_of(type_id) {
             Some(SourceClass::Capture(kind)) => !self.capture_candidates(kind).is_empty(),
             Some(SourceClass::Audio(kind)) => !self.audio_candidates(kind).is_empty(),
-            // Needs no adapter (ADR-0074).
-            Some(SourceClass::Still) => true,
+            Some(SourceClass::Still) | Some(SourceClass::Browser) => true,
+            Some(SourceClass::Media) => !self.media_candidates(None).is_empty(),
             _ => false,
         }
     }
@@ -742,6 +832,8 @@ impl SourceTypes {
             let descriptor = match class_of(&t) {
                 Some(SourceClass::Capture(_)) => rbs_nodes::capture_descriptor(),
                 Some(SourceClass::Still) => rbs_nodes::still_descriptor(),
+                Some(SourceClass::Media) => rbs_nodes::media_descriptor(),
+                Some(SourceClass::Browser) => crate::browser::browser_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
             table.insert(t, descriptor);
@@ -770,6 +862,7 @@ impl SourceTypes {
                                 (r.kind == rbs_capture::RelatedKind::Audio).then_some(r.id)
                             }),
                             app: t.app,
+                            work_rect: t.work_rect,
                         });
                     }
                 }
@@ -787,11 +880,12 @@ impl SourceTypes {
                             app: None,
                             modes: Vec::new(),
                             related_audio: None,
+                            work_rect: None,
                         });
                     }
                 }
             }
-            SourceClass::Still => {}
+            SourceClass::Still | SourceClass::Media | SourceClass::Browser => {}
         }
         Ok(out)
     }
@@ -881,6 +975,8 @@ impl SourceTypes {
                 let stats = node.stats();
                 Ok(SourceInstance::Still(StillSource { node, stats }))
             }
+            SourceClass::Media => self.instantiate_media(source, ctx),
+            SourceClass::Browser => self.instantiate_browser(source, ctx),
             SourceClass::Audio(kind) => {
                 let candidates = choose(&self.audio_candidates(kind), named, type_id)?;
                 let (backend, endpoint) = match target {
@@ -913,6 +1009,189 @@ impl SourceTypes {
             }
         }
     }
+
+    fn media_candidates(
+        &self,
+        named: Option<&str>,
+    ) -> Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>> {
+        let mut all = self.media.select(&Requirement::new()).candidates;
+        let order: Vec<_> = self.media.ids().cloned().collect();
+        all.sort_by_key(|factory| {
+            let id = factory.id();
+            let rank = self.media.capabilities(&id).map(pixel_rank).unwrap_or(2);
+            let index = order
+                .iter()
+                .position(|item| item == &id)
+                .unwrap_or(usize::MAX);
+            (rank, index)
+        });
+        if let Some(name) = named {
+            all.retain(|factory| factory.id().as_str() == name);
+        }
+        all
+    }
+
+    fn instantiate_media(
+        &self,
+        source: &Source,
+        ctx: &InstanceContext,
+    ) -> Result<SourceInstance, SourceError> {
+        validate_media(&source.settings)?;
+        let path_text = text(&source.settings, keys::PATH)?.ok_or(SourceError::InvalidSetting {
+            key: keys::PATH,
+            expected: "a local absolute path",
+        })?;
+        let path =
+            rbs_media_decode::accept_local_media_path(path_text).map_err(|error| match error {
+                rbs_media_decode::PathError::Invalid(expected) => SourceError::InvalidSetting {
+                    key: keys::PATH,
+                    expected,
+                },
+                rbs_media_decode::PathError::Media(text) => SourceError::Media(text),
+            })?;
+        let named = text(&source.settings, keys::ADAPTER)?;
+        let candidates = self.media_candidates(named);
+        if candidates.is_empty() {
+            return Err(match named {
+                Some(name) => SourceError::AdapterUnavailable(AdapterId::new(name)),
+                None => SourceError::NoAdapter(source.type_id.clone()),
+            });
+        }
+        let factory = Arc::clone(&candidates[0]);
+        // Probe without keeping the decoder (ADR-0108 decision 3).
+        {
+            let mut decoder = factory
+                .open(&path)
+                .map_err(|error| SourceError::Media(error.to_string()))?;
+            let sample = decoder
+                .pull()
+                .map_err(|error| SourceError::Media(error.to_string()))?;
+            let picture =
+                sample
+                    .and_then(|sample| sample.picture)
+                    .ok_or(SourceError::InvalidSetting {
+                        key: keys::PATH,
+                        expected: "a file with a picture stream",
+                    })?;
+            if let Some(why) =
+                rbs_media_decode::refuse_picture(picture.width, picture.height, picture.bytes.len())
+            {
+                return Err(SourceError::InvalidSetting {
+                    key: keys::WIDTH,
+                    expected: why.expected(),
+                });
+            }
+        }
+        let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
+        let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
+        let node = rbs_nodes::MediaSourceNode::new(
+            factory.clone(),
+            path,
+            loop_playback,
+            restart,
+            Arc::clone(&ctx.clock),
+            ctx.audio.format.sample_rate.hz(),
+            u16::try_from(ctx.audio.format.channels.channels()).unwrap_or(2),
+            ctx.audio.block_frames,
+        );
+        let stats = node.stats();
+        Ok(SourceInstance::Media(MediaSource {
+            node,
+            stats,
+            adapter: factory.id(),
+        }))
+    }
+
+    fn instantiate_browser(
+        &self,
+        source: &Source,
+        ctx: &InstanceContext,
+    ) -> Result<SourceInstance, SourceError> {
+        let settings = crate::browser::browser_settings(&source.settings)
+            .map_err(|(key, expected)| SourceError::InvalidSetting { key, expected })?;
+        let node = crate::browser::BrowserSourceNode::new(
+            settings,
+            Arc::clone(&ctx.browser_budget),
+            source.id,
+            ctx.browser_tree.clone(),
+        );
+        Ok(SourceInstance::Browser(BrowserSource { node }))
+    }
+}
+
+fn pixel_rank(caps: &rbs_core::capability::CapabilitySet) -> u8 {
+    match caps.get(&rbs_media_decode::caps::PIXEL) {
+        Some(rbs_core::capability::CapabilityValue::Set(values))
+            if values
+                .iter()
+                .any(|value| value == rbs_media_decode::pixel::ZERO_COPY) =>
+        {
+            0
+        }
+        Some(rbs_core::capability::CapabilityValue::Set(values))
+            if values
+                .iter()
+                .any(|value| value == rbs_media_decode::pixel::CPU_UPLOAD) =>
+        {
+            1
+        }
+        _ => 2,
+    }
+}
+
+fn validate_media(settings: &Settings) -> Result<(), SourceError> {
+    for key in settings.keys() {
+        if ![
+            keys::ADAPTER,
+            keys::PATH,
+            keys::LOOP,
+            keys::RESTART_WHEN_SHOWN,
+        ]
+        .contains(&key.as_str())
+        {
+            return Err(SourceError::InvalidSetting {
+                key: "settings",
+                expected: "only keys this source type uses",
+            });
+        }
+    }
+    match settings.get(keys::PATH) {
+        Some(SettingValue::Text(path)) => {
+            // Shape only here. `instantiate` canonicalizes before any decoder open.
+            if rbs_media_decode::accept_local_media_path(path).is_err() && raw_path_is_remote(path)
+            {
+                return Err(SourceError::InvalidSetting {
+                    key: keys::PATH,
+                    expected: "a local absolute path, not a URL, UNC path, or device path",
+                });
+            }
+        }
+        Some(_) => {
+            return Err(SourceError::InvalidSetting {
+                key: keys::PATH,
+                expected: "text",
+            });
+        }
+        None => {
+            return Err(SourceError::InvalidSetting {
+                key: keys::PATH,
+                expected: "a local absolute path",
+            });
+        }
+    }
+    flag(settings, keys::LOOP)?;
+    flag(settings, keys::RESTART_WHEN_SHOWN)?;
+    text(settings, keys::ADAPTER)?;
+    Ok(())
+}
+
+fn raw_path_is_remote(path: &str) -> bool {
+    let lower = path.trim().to_ascii_lowercase();
+    lower.contains("://")
+        || path.trim().starts_with(r"\\")
+        || path.trim().starts_with("//")
+        || lower.starts_with("/dev/")
+        || lower.starts_with("/dev\\")
 }
 
 /// The pixels of an image or colour source from its settings (ADR-0074).

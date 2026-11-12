@@ -27,6 +27,7 @@
 //!   updates do not make the toolkit redraw the window (ADR-0035).
 
 pub mod background;
+pub mod browser_tree;
 pub mod canvas_profile;
 pub mod caption;
 pub mod edit_history;

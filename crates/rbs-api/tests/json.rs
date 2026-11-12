@@ -313,6 +313,11 @@ fn every_request() -> Vec<Request> {
             item: 7,
             locked: true,
         })),
+        c(Command::ItemSetShowFor(SetItemShowFor {
+            item: 7,
+            show_for_ms: Some(5_000),
+        })),
+        c(Command::ItemShow(ShowItem { item: 7 })),
         c(Command::EditUndo),
         c(Command::EditRedo),
         c(Command::OutputProfiles),
@@ -377,6 +382,24 @@ fn every_request() -> Vec<Request> {
                 easing: GlideEasing::Linear,
             }),
         })),
+        c(Command::SourceSetRegion(SetSourceRegion {
+            source: 3,
+            region: Some([10, 20, 30, 40]),
+        })),
+        c(Command::SourceGetRegion(SourceRef { source: 3 })),
+        c(Command::SourceSetChrome(SetSourceChrome {
+            source: 3,
+            chrome: Some(ChromeSpec {
+                top: 40,
+                right: 0,
+                bottom: 0,
+                left: 0,
+                fill: ChromeFill::Fit,
+            }),
+        })),
+        c(Command::SourceGetChrome(SourceRef { source: 3 })),
+        c(Command::SourceFitChrome(SourceRef { source: 3 })),
+        c(Command::SourceResetChrome(SourceRef { source: 3 })),
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
             canvas: Some(canvas()),

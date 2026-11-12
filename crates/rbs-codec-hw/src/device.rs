@@ -24,6 +24,8 @@ impl Profiles {
     pub const HEVC_MAIN: Profiles = Profiles::NONE.with(Profile::HevcMain);
     /// HEVC Main and Main 10.
     pub const HEVC_ALL: Profiles = Profiles::HEVC_MAIN.with(Profile::HevcMain10);
+    /// AV1 Main (8-bit).
+    pub const AV1_MAIN: Profiles = Profiles::NONE.with(Profile::Av1Main);
 
     const fn bit(p: Profile) -> u32 {
         1 << (p as u32)
@@ -60,7 +62,7 @@ impl Profiles {
 /// Limits of one codec on one device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodecCaps {
-    /// `h264` or `hevc`.
+    /// `h264`, `hevc` or `av1`.
     pub codec: CodecId,
     /// Smallest and largest picture widths.
     pub width: (u32, u32),
@@ -111,7 +113,7 @@ impl CodecCaps {
 pub struct DeviceCaps {
     /// Device name for logs and diagnostics.
     pub name: String,
-    /// Codecs in the order H.264, HEVC; absent codecs are not listed.
+    /// Codecs in the order H.264, HEVC, AV1; absent codecs are not listed.
     pub codecs: Vec<CodecCaps>,
 }
 

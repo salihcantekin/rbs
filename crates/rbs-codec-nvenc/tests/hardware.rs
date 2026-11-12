@@ -188,6 +188,68 @@ fn still_rate(config: &VideoEncoderConfig, frames: u64) -> (f64, bool) {
     (bytes as f64 * 8.0 / seconds, filler)
 }
 
+/// AV1 is low-overhead OBUs. The extradata is a sequence header, and every keyframe
+/// repeats it. Skips when this GPU has no AV1 encoder.
+#[test]
+fn av1_is_obu_with_a_sequence_header() {
+    if !encodes("av1") {
+        return;
+    }
+    let config = config(CodecId::Av1, PixelFormat::Nv12);
+    let mut session = NvencFactory::new().create_session(&config).unwrap();
+    let stream = session.stream().clone();
+    assert_eq!(stream.bitstream, BitstreamFormat::Obu);
+    let parsed = rbs_media_format::av1::Av1Config::from_extradata(&stream.extradata).unwrap();
+    assert_eq!(
+        parsed.profile,
+        0,
+        "extradata {:02x?}",
+        stream.extradata.as_ref()
+    );
+    assert!(parsed.subsampling_x && parsed.subsampling_y);
+
+    let packets = encode(&mut session, &config.format, 30);
+    assert_eq!(packets.len(), 30);
+    for (i, p) in packets.iter().enumerate() {
+        assert_eq!(p.codec(), CodecId::Av1);
+        assert_eq!(p.bitstream(), BitstreamFormat::Obu);
+        assert_eq!(p.keyframe(), i % 30 == 0);
+        assert_eq!(p.data()[0] & 0x80, 0, "OBU forbidden bit");
+    }
+    // A keyframe may open with a temporal delimiter; the sequence header follows.
+    assert!(
+        obu_types(packets[0].data()).contains(&1),
+        "keyframe OBUs {:?}",
+        obu_types(packets[0].data())
+    );
+    assert!(!parsed.high_bitdepth && !parsed.twelve_bit && !parsed.monochrome);
+}
+
+fn obu_types(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < data.len() && out.len() < 6 {
+        let header = data[at];
+        out.push((header >> 3) & 0x0f);
+        let has_size = header & 0x02 != 0;
+        let mut pos = at + 1 + usize::from(header & 0x04 != 0);
+        if !has_size || pos >= data.len() {
+            break;
+        }
+        let mut size = 0usize;
+        for i in 0..4 {
+            let byte = data[pos + i];
+            size |= usize::from(byte & 0x7f) << (i * 7);
+            pos += 1;
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        at = pos + size;
+    }
+    out
+}
+
 /// `cbr_padded` fills a still picture up to the target with filler data; plain CBR
 /// does not (so the padding is real, not just accepted).
 #[test]

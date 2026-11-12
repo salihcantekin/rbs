@@ -64,6 +64,11 @@ pub enum EditKind {
     Look,
     /// The collection glide or a source's slide override changed (ADR-0100).
     Glide,
+    /// How long Show draws a hidden item changed (ADR-0105). The cue itself is not
+    /// an undo step.
+    ShowFor,
+    /// A source's capture region changed (ADR-0103). Distinct from [`Self::Crop`].
+    Region,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

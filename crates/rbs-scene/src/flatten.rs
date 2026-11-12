@@ -4,7 +4,14 @@
 use std::collections::BTreeSet;
 
 use crate::collection::{SceneCollection, SceneError, allowed_on};
-use crate::model::{CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SourceId};
+use crate::model::{
+    CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SourceId,
+};
+
+/// Media file source. Temporal: Active only while a shown scene draws it (ADR-0107).
+const TEMPORAL_MEDIA: &str = "org.rbs.source.media";
+/// Browser source. Temporal, same rule as [`TEMPORAL_MEDIA`] (ADR-0107).
+const TEMPORAL_BROWSER: &str = "org.rbs.source.browser";
 
 /// A 2D affine transform, with the same convention as `rbs-gpu`'s layer transform:
 /// maps `(x, y)` to `(a*x + c*y + tx, b*x + d*y + ty)`; for layers it maps the unit
@@ -111,8 +118,30 @@ impl SceneCollection {
     /// inside a hidden nested scene, are left out; so are fully transparent ones.
     ///
     /// A nested scene is drawn into its item's box: its own canvas-sized coordinate
-    /// space is scaled to the box.
+    /// space is scaled to the box. This is [`Self::flatten_cued`] with an empty cue set.
     pub fn flatten(&self, canvas: CanvasId, scene: SceneId) -> Result<Vec<FlatLayer>, SceneError> {
+        self.flatten_cued(canvas, scene, &BTreeSet::new())
+    }
+
+    /// Like [`Self::flatten`], and also draws an item whose id is in `cued` even when
+    /// `visible` is false (ADR-0105). The set is not written onto the item.
+    ///
+    /// An empty set does not look up any id. Nested content under a hidden nested
+    /// scene stays omitted unless that nested-scene item is itself visible or cued.
+    /// Callers pass cues only for a shown scene (the canvas program, or preview when
+    /// set): an item that is not in that scene's tree, including a cue on another
+    /// scene, is not in the result.
+    ///
+    /// Hot path (ADR-0105 decision 8): this merge is a lookup of the active cue map,
+    /// bounded by running cues, on the control thread when the layer list is rebuilt.
+    /// It is not a per-frame scan of every item, and it does not run from
+    /// `Node::process`. The implementation PR records `hot-path-review` for the merge.
+    pub fn flatten_cued(
+        &self,
+        canvas: CanvasId,
+        scene: SceneId,
+        cued: &BTreeSet<ItemId>,
+    ) -> Result<Vec<FlatLayer>, SceneError> {
         let c = self
             .canvas(canvas)
             .ok_or(SceneError::UnknownCanvas(canvas))?;
@@ -123,12 +152,15 @@ impl SceneCollection {
         let size = (c.size.width as f32, c.size.height as f32);
         let mut out = Vec::new();
         let mut path = Vec::new();
+        // Empty cue map: the loop does not probe a set (P13).
+        let cued = (!cued.is_empty()).then_some(cued);
         self.flatten_into(
             canvas,
             scene,
             size,
             Affine2::IDENTITY,
             1.0,
+            cued,
             &mut path,
             &mut out,
         );
@@ -140,6 +172,7 @@ impl SceneCollection {
                 size,
                 Affine2::IDENTITY,
                 1.0,
+                cued,
                 &mut path,
                 &mut out,
             );
@@ -155,6 +188,7 @@ impl SceneCollection {
         size: (f32, f32),
         outer: Affine2,
         opacity: f32,
+        cued: Option<&BTreeSet<ItemId>>,
         path: &mut Vec<ItemId>,
         out: &mut Vec<FlatLayer>,
     ) {
@@ -162,7 +196,7 @@ impl SceneCollection {
         let Some(s) = self.scene(scene) else {
             return;
         };
-        for item in s.items.iter().filter(|i| i.visible) {
+        for item in s.items.iter().filter(|i| item_drawn(i, cued)) {
             let layout = item.layout_on(canvas);
             let alpha = opacity * layout.opacity;
             if alpha <= 0.0 {
@@ -171,18 +205,30 @@ impl SceneCollection {
             let placed = Affine2::of_layout(layout).then(&outer);
             path.push(item.id);
             match item.content {
-                ItemContent::Source(source) => out.push(FlatLayer {
-                    source,
-                    path: path.clone(),
-                    transform: placed,
-                    crop: layout.crop,
-                    opacity: alpha,
-                    style: layout.style,
-                    box_size: [layout.size[0].abs(), layout.size[1].abs()],
-                }),
+                ItemContent::Source(source) => {
+                    // Region and item crop are both full-picture insets. One crop
+                    // goes to the compositor; it turns that into one UV rect. An
+                    // empty intersection with the delivered picture is the existing
+                    // empty-crop skip (ADR-0103). This is a pre-frame edit of the
+                    // crop field, not a per-layer branch in the compositor.
+                    let crop = self
+                        .source(source)
+                        .and_then(|s| s.region)
+                        .map(|region| region.intersect_crop(layout.crop))
+                        .unwrap_or(layout.crop);
+                    out.push(FlatLayer {
+                        source,
+                        path: path.clone(),
+                        transform: placed,
+                        crop,
+                        opacity: alpha,
+                        style: layout.style,
+                        box_size: [layout.size[0].abs(), layout.size[1].abs()],
+                    });
+                }
                 ItemContent::Scene(nested) => {
                     let inner = Affine2::scale(1.0 / size.0, 1.0 / size.1).then(&placed);
-                    self.flatten_into(canvas, nested, size, inner, alpha, path, out);
+                    self.flatten_into(canvas, nested, size, inner, alpha, cued, path, out);
                 }
             }
             path.pop();
@@ -201,6 +247,19 @@ impl SceneCollection {
         canvas: CanvasId,
         scene: SceneId,
     ) -> Result<BTreeSet<SourceId>, SceneError> {
+        self.visible_sources_cued(canvas, scene, &BTreeSet::new())
+    }
+
+    /// Like [`Self::visible_sources`], and a cued hidden item counts as drawn for
+    /// video and for the program mixer (ADR-0105 decision 6). An empty set does not
+    /// look up any id. A hidden nested scene is not entered unless that nested item
+    /// is visible or cued.
+    pub fn visible_sources_cued(
+        &self,
+        canvas: CanvasId,
+        scene: SceneId,
+        cued: &BTreeSet<ItemId>,
+    ) -> Result<BTreeSet<SourceId>, SceneError> {
         let c = self
             .canvas(canvas)
             .ok_or(SceneError::UnknownCanvas(canvas))?;
@@ -211,6 +270,7 @@ impl SceneCollection {
         let mut found = BTreeSet::new();
         let mut shown = BTreeSet::new();
         let mut seen = BTreeSet::new();
+        let cued = (!cued.is_empty()).then_some(cued);
         // Global sources (ADR-0065) are part of every scene the canvas shows.
         let mut stack: Vec<SceneId> = c.globals.into_iter().chain([scene]).collect();
         while let Some(id) = stack.pop() {
@@ -221,18 +281,20 @@ impl SceneCollection {
                 continue;
             };
             for item in &s.items {
+                let show = item_drawn(item, cued);
                 match item.content {
                     ItemContent::Source(source) => {
                         // A deactivated source is not drawn and is not wanted.
-                        // A hidden one is not drawn either; `wanted_sources` keeps it
-                        // running so showing it again does not wait for the device.
+                        // A hidden one is not drawn either, unless a timed-show cue
+                        // names it (ADR-0105); `wanted_sources` keeps capture and
+                        // stills running so showing them again does not wait.
                         let standby = self.source(source).is_some_and(|src| src.standby());
-                        if item.visible && !standby {
+                        if show && !standby {
                             found.insert(source);
                             shown.insert(source);
                         }
                     }
-                    ItemContent::Scene(nested) if item.visible => stack.push(nested),
+                    ItemContent::Scene(nested) if show => stack.push(nested),
                     ItemContent::Scene(_) => {}
                 }
             }
@@ -253,6 +315,9 @@ impl SceneCollection {
     /// and leaving the program or preview scene do not release the device, so showing
     /// the source again, or switching back to its scene, does not wait for the camera
     /// to open. A source that is not placed anywhere stays Standby.
+    ///
+    /// `org.rbs.source.media` and `org.rbs.source.browser` are still listed here when
+    /// placed. [`Self::running_sources`] is the set the binder sets Active.
     pub fn wanted_sources(&self) -> BTreeSet<SourceId> {
         let mut wanted = BTreeSet::new();
         for scene in self.scenes() {
@@ -267,10 +332,94 @@ impl SceneCollection {
         wanted
     }
 
+    /// Sources the binder sets Active (ADR-0107).
+    ///
+    /// Capture sources and stills are [`Self::wanted_sources`]: placed and not
+    /// deactivated, even when hidden or off the shown scene. `org.rbs.source.media`
+    /// and `org.rbs.source.browser` are Active only when some canvas's program scene,
+    /// or its preview scene when that field is set, draws them with `visible` true.
+    /// Opacity does not matter, including 0. A hidden item does not, unless the host
+    /// passes its source in [`Self::running_sources_cued`]. A scene that is
+    /// not program or preview does not. One visible placement across the canvases is
+    /// enough. A follower counts once the host has written the scene it is showing,
+    /// including a followed program, into `program`.
+    pub fn running_sources(&self) -> BTreeSet<SourceId> {
+        self.running_sources_cued(&BTreeSet::new())
+    }
+
+    /// Like [`Self::running_sources`], and temporal sources in `cued` are Active too
+    /// (ADR-0105 decision 7, ADR-0107 decision 4). The host passes source ids of
+    /// items a shown scene is actually drawing for a cue. An empty set adds nothing.
+    /// Capture sources and stills stay on [`Self::wanted_sources`]. A deactivated
+    /// source is not made Active.
+    pub fn running_sources_cued(&self, cued: &BTreeSet<SourceId>) -> BTreeSet<SourceId> {
+        let mut running = BTreeSet::new();
+        for id in self.wanted_sources() {
+            if !self.is_temporal(id) {
+                running.insert(id);
+            }
+        }
+        for canvas in self.canvases() {
+            for scene in [canvas.program, canvas.preview].into_iter().flatten() {
+                let Ok(visible) = self.visible_sources(canvas.id, scene) else {
+                    continue;
+                };
+                for id in visible {
+                    if self.is_temporal(id) {
+                        running.insert(id);
+                    }
+                }
+            }
+        }
+        if !cued.is_empty() {
+            for id in cued {
+                if self.is_temporal(*id) && self.source(*id).is_some_and(|source| !source.standby())
+                {
+                    running.insert(*id);
+                }
+            }
+        }
+        running
+    }
+
+    /// Source ids that a shown scene draws only because `cued` names the item
+    /// (ADR-0105). Empty `cued` returns an empty set and does not walk scenes.
+    /// The host passes this set into [`Self::running_sources_cued`] and into
+    /// `SceneBinder::sync_cued`.
+    pub fn cued_drawn_sources(&self, cued: &BTreeSet<ItemId>) -> BTreeSet<SourceId> {
+        if cued.is_empty() {
+            return BTreeSet::new();
+        }
+        let mut out = BTreeSet::new();
+        for canvas in self.canvases() {
+            for scene in [canvas.program, canvas.preview].into_iter().flatten() {
+                let Ok(with) = self.visible_sources_cued(canvas.id, scene, cued) else {
+                    continue;
+                };
+                let Ok(plain) = self.visible_sources(canvas.id, scene) else {
+                    continue;
+                };
+                out.extend(with.difference(&plain).copied());
+            }
+        }
+        out
+    }
+
+    /// True for the two temporal type ids (ADR-0107). No other type, including a
+    /// plugin, is temporal.
+    fn is_temporal(&self, id: SourceId) -> bool {
+        self.source(id).is_some_and(|source| {
+            matches!(source.type_id.as_str(), TEMPORAL_MEDIA | TEMPORAL_BROWSER)
+        })
+    }
+
     /// Wanted sources placed on a scene `canvas` may show (including its global scene).
     /// The program compositor keeps these linked so `plan()` does not drop them for
     /// having no sink while they are hidden or off the current scene; layers still come
     /// only from [`Self::flatten`].
+    ///
+    /// Temporal sources are omitted. A hidden temporal source is not linked. One a
+    /// shown scene draws is linked from that scene's `visible_sources`, not from here.
     pub fn warm_sources(&self, canvas: CanvasId) -> BTreeSet<SourceId> {
         let Some(c) = self.canvas(canvas) else {
             return BTreeSet::new();
@@ -283,6 +432,7 @@ impl SceneCollection {
             .collect();
         self.wanted_sources()
             .into_iter()
+            .filter(|id| !self.is_temporal(*id))
             .filter(|id| {
                 self.placements_of(*id)
                     .iter()
@@ -290,4 +440,10 @@ impl SceneCollection {
             })
             .collect()
     }
+}
+
+/// Visible, or named by a non-empty cue set. An empty cue (`None`) does not look
+/// the id up.
+fn item_drawn(item: &SceneItem, cued: Option<&BTreeSet<ItemId>>) -> bool {
+    item.visible || cued.is_some_and(|ids| ids.contains(&item.id))
 }

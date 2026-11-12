@@ -91,7 +91,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0080](0080-hide-sources-in-the-mixer.md) | Hide sources in the Mixer | Accepted |
 | [0081](0081-master-strip-in-the-mixer.md) | Master strip in the Mixer: a per-canvas master volume and mute | Accepted |
 | [0082](0082-audio-filter-chains-on-sources.md) | Audio filter chains on sources: shared parameter schema (rbs-params), audio filter nodes, gain and noise gate | Accepted |
-| [0083](0083-mixer-orientation-chosen-by-the-user.md) | The Mixer orientation (rows or columns) is chosen by the user, saved per workspace | Proposed |
+| [0083](0083-mixer-orientation-chosen-by-the-user.md) | The Mixer orientation (rows or columns) is chosen by the user, saved per workspace | Accepted |
 | [0084](0084-source-transform-commands-and-source-context-menu.md) | Source transform commands (flip, rotate, fit, align) and a categorized source context menu | Accepted |
 | [0085](0085-more-containers-codecs-and-advanced-encoder-settings.md) | More containers and codecs, and advanced video and audio encoder settings | Proposed |
 | [0086](0086-recording-sources-separately-iso.md) | Record sources separately (ISO recording) next to the master recording | Proposed |
@@ -109,5 +109,12 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0098](0098-transition-keeps-the-preview-scene.md) | Transition keeps the preview scene; swapping is a setting, off by default | Accepted |
 | [0099](0099-studio-in-its-own-process.md) | Run the studio in its own process | Proposed |
 | [0100](0100-configurable-glide-duration-and-easing.md) | Configurable glide duration and easing (collection defaults + multi-scene source override) | Accepted |
-| [0101](0101-mixer-columns-panes-and-pinned-master.md) | Mixer columns use fixed strips, side-by-side clusters and horizontal scroll | Proposed |
-| [0102](0102-output-size-distinct-from-canvas.md) | Output size distinct from the canvas | Proposed |
+| [0101](0101-mixer-columns-panes-and-pinned-master.md) | Mixer columns use fixed strips, side-by-side clusters and horizontal scroll | Accepted |
+| [0102](0102-output-size-distinct-from-canvas.md) | Output size distinct from the canvas | Accepted (macOS done; Windows remains) |
+| [0103](0103-source-region.md) | A source may store a capture region distinct from the item crop | Proposed |
+| [0104](0104-display-chrome-insets.md) | Display chrome insets hide the taskbar or Dock via the source region | Proposed |
+| [0105](0105-timed-show.md) | Timed show draws a hidden item for a deadline without undo | Proposed |
+| [0106](0106-picture-and-sound-on-one-source.md) | A source that has both picture and sound names the queue reader as the mixer producer | Proposed |
+| [0107](0107-temporal-sources-sleep-when-hidden.md) | Temporal sources sleep unless a shown scene draws them | Proposed |
+| [0108](0108-media-file-source.md) | A local media-file source for video and animated pictures | Proposed |
+| [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |

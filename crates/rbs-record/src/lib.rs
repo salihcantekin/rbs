@@ -21,6 +21,7 @@ mod clip;
 mod recording;
 mod select;
 mod studio;
+mod timed_show;
 
 pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_clip};
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};

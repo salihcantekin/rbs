@@ -916,6 +916,31 @@ impl App {
     /// given (toolbar, Source menu). The panel is opened or expanded first.
     /// Opens the device picker (ADR-0094 B1) in the window the command came from.
     fn ask_add_source(&mut self, what: menu_bar::AddWhat) {
+        use menu_bar::AddWhat;
+        use studio_host::SourceKind;
+        if let AddWhat::Kind(code) = what {
+            match self.studio.kind_at(code) {
+                Some(SourceKind::Image) => {
+                    pick_png();
+                    return;
+                }
+                Some(SourceKind::Media) => {
+                    pick_media();
+                    return;
+                }
+                Some(SourceKind::Color) => {
+                    // Library shapes are richer; Add source places a filled rectangle.
+                    self.studio.add_stamp(2);
+                    return;
+                }
+                Some(SourceKind::Browser) => {
+                    // Synthetic helper ignores the page; any URL starts a test pattern.
+                    self.studio.add_browser_page("https://example.com/");
+                    return;
+                }
+                _ => {}
+            }
+        }
         // A picker open elsewhere closes first.
         self.close_picker_ui();
         self.picker_host = self.run_origin.clone();
@@ -2912,6 +2937,28 @@ fn pick_png() {
     }
 }
 
+/// Add source → Media file. The dialog is asynchronous (ADR-0055 / ADR-0108).
+fn pick_media() {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_media("Choose a media file").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app.studio.add_media_file(&path),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// The system file dialog for import and export (ADR-0051).
 mod file_dialog {
     use std::path::PathBuf;
@@ -2933,6 +2980,22 @@ mod file_dialog {
         Ok(rfd::AsyncFileDialog::new()
             .set_title(title)
             .add_filter("PNG image", &["png"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
+    /// A media file for the Media source; `Ok(None)` when cancelled.
+    /// The demo decoder accepts any regular file (bytes ignored).
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_media(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter(
+                "Media",
+                &["mp4", "mkv", "webm", "mov", "m4v", "mp3", "wav", "flac", "aac"],
+            )
+            .add_filter("All files", &["*"])
             .pick_file()
             .await
             .map(|f| f.path().to_owned()))
@@ -2960,6 +3023,11 @@ mod file_dialog {
 
     #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn open_png(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_media(_title: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
 
@@ -3518,6 +3586,32 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_source_region, |app, id: i32, region: i32| {
         app.studio.set_source_region(id, region);
+    });
+    on!(
+        on_set_source_capture_region,
+        |app, id: i32, clear: bool, l: i32, t: i32, r: i32, b: i32| {
+            app.studio
+                .set_source_capture_region(id, clear, l, t, r, b);
+        }
+    );
+    on!(
+        on_set_display_chrome,
+        |app, id: i32, on: bool, top: i32, right: i32, bottom: i32, left: i32, fill: i32| {
+            app.studio
+                .set_display_chrome(id, on, top, right, bottom, left, fill);
+        }
+    );
+    on!(on_fit_display_chrome, |app, id: i32| {
+        app.studio.fit_display_chrome(id);
+    });
+    on!(on_reset_display_chrome, |app, id: i32| {
+        app.studio.reset_display_chrome(id);
+    });
+    on!(on_set_item_show_for, |app, item: i32, show_for_ms: i32| {
+        app.studio.set_item_show_for(item, show_for_ms);
+    });
+    on!(on_show_item, |app, item: i32| {
+        app.studio.show_item(item);
     });
     on!(
         on_set_source_style,

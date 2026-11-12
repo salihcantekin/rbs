@@ -22,16 +22,19 @@ pub enum Profile {
     HevcMain,
     /// HEVC Main 10.
     HevcMain10,
+    /// AV1 Main, 8-bit 4:2:0.
+    Av1Main,
 }
 
 impl Profile {
     /// Every profile, in capability order.
-    pub const ALL: [Profile; 5] = [
+    pub const ALL: [Profile; 6] = [
         Profile::H264Baseline,
         Profile::H264Main,
         Profile::H264High,
         Profile::HevcMain,
         Profile::HevcMain10,
+        Profile::Av1Main,
     ];
 
     /// The `codec.video.profiles` value (`h264.high`, ...).
@@ -42,6 +45,7 @@ impl Profile {
             Profile::H264High => "h264.high",
             Profile::HevcMain => "hevc.main",
             Profile::HevcMain10 => "hevc.main10",
+            Profile::Av1Main => "av1.main",
         }
     }
 }
@@ -83,7 +87,7 @@ pub enum Preset {
 /// Everything an engine needs to open a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Plan {
-    /// `h264` or `hevc`.
+    /// `h264`, `hevc` or `av1`.
     pub codec: CodecId,
     /// Picture width.
     pub width: u32,
@@ -169,8 +173,8 @@ pub fn rate_control(rc: &RateControl) -> Result<Rc, String> {
 /// device does not have (`cbr_padded` needs it on every codec, as declared), and
 /// colours without H.273 code points. Refused as `InvalidConfig`: invalid bitrates or
 /// quality levels and a zero frame rate. The
-/// default profile is H.264 High (else Main, else Baseline) and HEVC Main or Main 10
-/// by pixel format.
+/// default profile is H.264 High (else Main, else Baseline), HEVC Main or Main 10
+/// by pixel format, and AV1 Main. AV1 is 8-bit: P010 is refused.
 pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, CreateError> {
     let codec = config.codec;
     let caps = device
@@ -207,6 +211,7 @@ pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, Cr
             .find(|p| has(*p)),
         (CodecId::Hevc, Some("main") | None, false) => Some(Profile::HevcMain),
         (CodecId::Hevc, Some("main10") | None, true) => Some(Profile::HevcMain10),
+        (CodecId::Av1, Some("main") | None, false) => Some(Profile::Av1Main),
         _ => None,
     }
     .filter(|p| has(*p))
@@ -347,6 +352,10 @@ mod tests {
             CreateError::Unsupported { .. }
         ));
         assert!(matches!(
+            refused(config(CodecId::Av1, PixelFormat::P010)),
+            CreateError::Unsupported { .. }
+        ));
+        assert!(matches!(
             refused(config(CodecId::Hevc, PixelFormat::Nv12).with_profile("main10")),
             CreateError::Unsupported { .. }
         ));
@@ -402,6 +411,33 @@ mod tests {
                 .unwrap()
                 .cbr_padding
         );
+    }
+
+    #[test]
+    fn av1_main_on_a_device_that_lists_it() {
+        let mut device = discrete_gpu();
+        device.codecs.push(crate::device::CodecCaps {
+            codec: CodecId::Av1,
+            width: (160, 8192),
+            height: (64, 8192),
+            mb_per_sec: 0,
+            profiles: Profiles::AV1_MAIN,
+            cbr: true,
+            vbr: true,
+            quality: true,
+            dynamic_bitrate: true,
+            cbr_padding: true,
+        });
+        let mapped = plan(&config(CodecId::Av1, PixelFormat::Nv12), &device).unwrap();
+        assert_eq!(mapped.profile, Profile::Av1Main);
+        assert!(!mapped.ten_bit);
+        assert!(matches!(
+            plan(
+                &config(CodecId::Av1, PixelFormat::Nv12).with_profile("high"),
+                &device
+            ),
+            Err(CreateError::Unsupported { .. })
+        ));
     }
 
     #[test]

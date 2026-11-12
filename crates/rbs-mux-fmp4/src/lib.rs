@@ -2,7 +2,7 @@
 //!
 //! Pure Rust, no external libraries, all platforms. Writes ISO BMFF with movie
 //! fragments (`ftyp` + `moov` with `mvex`, then `moof` + `mdat` pairs): H.264 in `avc1`
-//! sample entries and AAC in `mp4a`/`esds`. Every fragment is self-contained, so a
+//! sample entries, HEVC in `hvc1`, AV1 in `av01` and AAC in `mp4a`/`esds`. Every fragment is self-contained, so a
 //! recording is playable up to its last complete fragment after a crash (`mux.live`),
 //! and the same bytes serve CMAF-style segmenting later (the file itself carries all
 //! tracks in each fragment, so it does not claim the `cmfc` brand).
@@ -36,7 +36,8 @@
 //!   lengths without AUD, SPS and PPS, which live in the sample entry. Annex B input
 //!   needs SPS and PPS in the extradata.
 //!
-//! Limitations: H.264 and AAC only (HEVC, AV1 and Opus to come); no `sidx` or `mfra`;
+//! Limitations: H.264, HEVC, AV1 (OBU samples, an `av01` entry) and AAC (Opus to come);
+//! no `sidx` or `mfra`;
 //! an in-band SPS or PPS that differs from the extradata is refused (`InvalidPacket`),
 //! since a fragmented file has one sample entry: a format change needs a new output.
 
@@ -70,7 +71,7 @@ impl AdapterFactory for Fmp4MuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Mp4Fragmented.as_str()]))
-            .with(caps::CODECS, set(&["h264", "hevc", "aac"]))
+            .with(caps::CODECS, set(&["h264", "hevc", "av1", "aac"]))
             .with(caps::LIVE, CapabilityValue::Flag(true)))
     }
 }

@@ -20,9 +20,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_api::request::{
-    AlignAxis, Axis, BoxPlaced, Empty, FitKind, GlobalSourceList, ItemAdded, ItemRemoved, LookInfo,
-    LookList, ProfileList, RecordStarted, SceneAdded, SceneSourceList, SourceAdded,
-    SourceSettingsInfo, StreamStarted, TargetList,
+    AlignAxis, Axis, BoxPlaced, ChromeSpec, Empty, FitKind, GlobalSourceList, ItemAdded,
+    ItemRemoved, LookInfo, LookList, ProfileList, RecordStarted, SceneAdded, SceneSourceList,
+    SourceAdded, SourceChromeInfo, SourceRegionInfo, SourceSettingsInfo, StreamStarted, TargetList,
 };
 use rbs_api::types as api;
 use rbs_api::{
@@ -46,12 +46,16 @@ use rbs_record::{
     AudioSettings, ExtraCanvas, Link, OutputId, OutputSettings, Progress, RecordAdapters,
     RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
+use rbs_sources::BrowserTree;
 use rbs_scene::model::{
-    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene,
-    SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
-    SourceMonitor,
+    Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
+    MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape,
+    Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
 };
-use rbs_scene::{AutoLayout, CenterAxis, FitMode, SceneError, Undo};
+use rbs_scene::{
+    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, Undo, place_chrome, recrop_keeping,
+    visible_size,
+};
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
@@ -106,6 +110,11 @@ pub enum SourceKind {
     Image,
     /// A solid colour or a gradient (ADR-0074). Not in [`SourceKind::ALL`].
     Color,
+    /// A local video or animated picture (ADR-0108). Not in [`SourceKind::ALL`]:
+    /// added with a path like [`SourceKind::Image`].
+    Media,
+    /// A web page from the browser helper (ADR-0109). Not in [`SourceKind::ALL`].
+    Browser,
 }
 
 impl SourceKind {
@@ -130,6 +139,8 @@ impl SourceKind {
             SourceKind::ApplicationAudio => types::APPLICATION_AUDIO_SOURCE,
             SourceKind::Image => types::IMAGE_SOURCE,
             SourceKind::Color => types::COLOR_SOURCE,
+            SourceKind::Media => types::MEDIA_SOURCE,
+            SourceKind::Browser => types::BROWSER_SOURCE,
         })
     }
 
@@ -137,7 +148,12 @@ impl SourceKind {
     pub fn of(type_id: &NodeTypeId) -> Option<SourceKind> {
         SourceKind::ALL
             .into_iter()
-            .chain([SourceKind::Image, SourceKind::Color])
+            .chain([
+                SourceKind::Image,
+                SourceKind::Color,
+                SourceKind::Media,
+                SourceKind::Browser,
+            ])
             .find(|k| k.type_id() == *type_id)
     }
 
@@ -152,6 +168,24 @@ impl SourceKind {
             SourceKind::ApplicationAudio => "Application audio",
             SourceKind::Image => "Image",
             SourceKind::Color => "Colour",
+            SourceKind::Media => "Media file",
+            SourceKind::Browser => "Browser",
+        }
+    }
+
+    /// The `kind` parameter of `source.add` / the control API.
+    pub fn api_id(self) -> &'static str {
+        match self {
+            SourceKind::Screen => "screen",
+            SourceKind::Window => "window",
+            SourceKind::Camera => "camera",
+            SourceKind::AudioInput => "audio_input",
+            SourceKind::SystemAudio => "system_audio",
+            SourceKind::ApplicationAudio => "application_audio",
+            SourceKind::Image => "image",
+            SourceKind::Color => "color",
+            SourceKind::Media => "media",
+            SourceKind::Browser => "browser",
         }
     }
 
@@ -161,6 +195,11 @@ impl SourceKind {
             self,
             SourceKind::AudioInput | SourceKind::SystemAudio | SourceKind::ApplicationAudio
         )
+    }
+
+    /// True when Add source opens a file or URL dialog instead of a device list.
+    pub fn picks_path(self) -> bool {
+        matches!(self, SourceKind::Media | SourceKind::Image)
     }
 }
 
@@ -317,6 +356,26 @@ pub struct SourceRow {
     /// A colour source draws its fill. False leaves the inside empty. True for every
     /// other kind and when the setting is absent.
     pub filled: bool,
+    /// Capture region in full-picture pixels (ADR-0103); absent when `cap_has` is false.
+    pub cap_has: bool,
+    pub cap_l: u32,
+    pub cap_t: u32,
+    pub cap_r: u32,
+    pub cap_b: u32,
+    /// Display chrome (ADR-0104); off when `chrome_on` is false. `chrome_fill`: 0 cover,
+    /// 1 fit.
+    pub chrome_on: bool,
+    pub chrome_t: u32,
+    pub chrome_r: u32,
+    pub chrome_b: u32,
+    pub chrome_l: u32,
+    pub chrome_fill: u8,
+    /// The listed display reported a work area for Reset chrome.
+    pub has_work_rect: bool,
+    /// Stored timed-show duration (ADR-0105); 0 when unset.
+    pub show_for_ms: u32,
+    /// Milliseconds left on a running Show cue; 0 when none.
+    pub cue_remaining_ms: u32,
 }
 
 impl PartialEq for SourceRow {
@@ -341,6 +400,20 @@ impl PartialEq for SourceRow {
             && self.glide == other.glide
             && self.fill == other.fill
             && self.filled == other.filled
+            && self.cap_has == other.cap_has
+            && self.cap_l == other.cap_l
+            && self.cap_t == other.cap_t
+            && self.cap_r == other.cap_r
+            && self.cap_b == other.cap_b
+            && self.chrome_on == other.chrome_on
+            && self.chrome_t == other.chrome_t
+            && self.chrome_r == other.chrome_r
+            && self.chrome_b == other.chrome_b
+            && self.chrome_l == other.chrome_l
+            && self.chrome_fill == other.chrome_fill
+            && self.has_work_rect == other.has_work_rect
+            && self.show_for_ms == other.show_for_ms
+            && self.cue_remaining_ms == other.cue_remaining_ms
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -620,6 +693,16 @@ pub enum Command {
         /// The file.
         path: std::path::PathBuf,
     },
+    /// Add a media file source (ADR-0108), centred at half the canvas, one undo step.
+    AddMedia {
+        /// A local regular file. The demo decoder ignores contents.
+        path: std::path::PathBuf,
+    },
+    /// Add a browser page (ADR-0109), fitted to the canvas, one undo step.
+    AddBrowser {
+        /// `http`, `https`, or `file` URL.
+        url: String,
+    },
     /// The fill colour of a colour source (`#rrggbb` or `#rrggbbaa`), one undo step.
     SetSourceFill {
         /// The source.
@@ -701,6 +784,8 @@ pub enum Command {
     StopThumbnails,
     /// Ask for what the Source settings window shows ([`Update::SourceSettings`]).
     OpenSourceSettings(SourceId),
+    /// The Source settings window closed: drop a late region preview.
+    CloseSourceSettings,
     /// Change a source's stored settings by a patch (a `null` removes a key; one undo
     /// step, ADR-0077): what Apply and OK of the Source settings window send.
     SetSourceSettings {
@@ -845,6 +930,33 @@ pub enum Command {
         /// Which part.
         region: CropRegion,
     },
+    /// Capture region on the source (ADR-0103). One undo step; does not restart capture.
+    SetSourceCaptureRegion {
+        /// The source.
+        id: SourceId,
+        /// The region, or `None` to clear.
+        region: Option<SourceRegion>,
+    },
+    /// Display chrome insets (ADR-0104). One undo step.
+    SetDisplayChrome {
+        /// The source.
+        id: SourceId,
+        /// The chrome, or `None` to turn it off.
+        chrome: Option<DisplayChrome>,
+    },
+    /// Places the item with the stored chrome fill (ADR-0104).
+    FitDisplayChrome(SourceId),
+    /// Copies chrome from the display work area (ADR-0104).
+    ResetDisplayChrome(SourceId),
+    /// How long Show draws a hidden item (ADR-0105). One undo step.
+    SetItemShowFor {
+        /// The scene item.
+        item: ItemId,
+        /// Milliseconds, or `None` to clear.
+        show_for_ms: Option<u32>,
+    },
+    /// Live timed show until `now + show_for_ms` (ADR-0105).
+    ShowItem(ItemId),
     /// Shape and border of a video source's picture (ADR-0053), replacing the whole
     /// style of the layout the canvas shows. A style that is not valid is refused with
     /// [`Update::Error`].
@@ -1334,6 +1446,8 @@ impl Refusal {
             SceneError::EmptyName
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
+            | SceneError::InvalidShowFor
+            | SceneError::ChromeNotDisplay
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
             _ => Self::Failed(edit_error(e)),
         }
@@ -1476,6 +1590,15 @@ pub enum Update {
     },
     /// What the Source settings window of a source shows ([`Command::OpenSourceSettings`]).
     SourceSettings(SourceSettingsView),
+    /// Region-section preview grab (ADR-0103); `None` when the adapter cannot grab.
+    RegionPreview {
+        /// The source.
+        id: SourceId,
+        /// Generation so a closed window drops a late answer.
+        generation: u64,
+        /// The grab, when one was made.
+        picture: Option<rbs_capture::RegionGrab>,
+    },
     /// A source was deleted, or (`from_scene`) removed from one scene;
     /// [`Command::UndoDelete`] brings it back.
     Deleted {
@@ -1673,6 +1796,12 @@ enum Msg {
         adapter: String,
         target: String,
         picture: Option<rbs_capture::Thumbnail>,
+    },
+    /// A region-preview worker finished.
+    RegionPreview {
+        generation: u64,
+        id: SourceId,
+        picture: Option<rbs_capture::RegionGrab>,
     },
 }
 
@@ -1978,6 +2107,23 @@ pub struct SourceSettingsView {
     pub fps: Option<u32>,
     /// Draw the cursor (screens and windows).
     pub cursor: bool,
+    /// Capture region (ADR-0103).
+    pub cap_has: bool,
+    pub cap_l: u32,
+    pub cap_t: u32,
+    pub cap_r: u32,
+    pub cap_b: u32,
+    /// Display chrome (ADR-0104); screen capture only.
+    pub chrome_on: bool,
+    pub chrome_t: u32,
+    pub chrome_r: u32,
+    pub chrome_b: u32,
+    pub chrome_l: u32,
+    pub chrome_fill: u8,
+    pub has_work_rect: bool,
+    /// Delivered picture size when known (for region drag scale).
+    pub pic_w: u32,
+    pub pic_h: u32,
 }
 
 /// A listed target as the UI shows it.
@@ -2035,6 +2181,8 @@ struct Host {
     swap_after_transition: bool,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
+    /// The generation of the region-preview grab that may still deliver (ADR-0103).
+    region_grabs: Arc<AtomicU64>,
     /// The collection as last handed to `autosave`.
     saved: Option<SceneCollection>,
     studio: Studio,
@@ -2088,6 +2236,8 @@ struct Host {
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
     gpu: Arc<GpuContext>,
+    /// The browser helper tree when `rbs-browser-helper` was found (ADR-0109).
+    browser_tree: Option<Arc<dyn BrowserTree>>,
     /// The preview's ring size from the canvas rate at the last start, when this
     /// platform publishes a preview. Restarts size the ring again from the canvas
     /// that is about to run.
@@ -2192,7 +2342,8 @@ fn run(
                     | Msg::ApiWake
                     | Msg::PickFailed(_)
                     | Msg::ReplayWritten(_)
-                    | Msg::Thumbnail { .. } => {}
+                    | Msg::Thumbnail { .. }
+                    | Msg::RegionPreview { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -2315,6 +2466,19 @@ fn round(
                 });
             }
         }
+        Some(Msg::RegionPreview {
+            generation,
+            id,
+            picture,
+        }) => {
+            if generation == host.region_grabs.load(AtomicOrdering::Acquire) {
+                notify(Update::RegionPreview {
+                    id,
+                    generation,
+                    picture,
+                });
+            }
+        }
         Some(Msg::ApiWake) | None => {}
     }
     // One API request per round: a UI command that arrived meanwhile is taken by the
@@ -2401,6 +2565,14 @@ fn round(
     if let Some(left) = host.report_replay(now, notify) {
         wait = wait.min(left);
     }
+    // One wake for the soonest timed-show deadline. An empty cue map adds nothing
+    // (ADR-0105, P13).
+    if host.studio.expire_cues(now) {
+        host.apply(notify);
+    }
+    if let Some(left) = host.studio.cue_wait(now) {
+        wait = wait.min(left);
+    }
     host.publish(notify);
     wait
 }
@@ -2428,6 +2600,9 @@ fn start(
     let (run_size, run_fps) = collection
         .canvas(canvas)
         .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
+    let browser_tree: Option<Arc<dyn BrowserTree>> = crate::browser_tree::HelperBrowserTree::new()
+        .ok()
+        .map(|tree| Arc::new(tree) as Arc<dyn BrowserTree>);
     let mut settings = StudioSettings::new(canvas);
     // Width and height stay as configured. The ring follows the canvas that runs:
     // a saved collection can use another rate than the one the descriptor was built with.
@@ -2441,12 +2616,13 @@ fn start(
     let run = held.as_ref().and_then(|h| run_copy(&collection, canvas, h));
     let first = engine();
     let clock = first.clock();
-    let studio = Studio::start(
+    let studio = Studio::start_with_tree(
         first,
         Arc::clone(&gpu),
         run.as_ref().unwrap_or(&collection),
         &adapters.sources,
         &settings,
+        browser_tree.clone(),
     )
     .map_err(|e| e.to_string())?;
     let screens = adapters
@@ -2467,6 +2643,19 @@ fn start(
     let kinds: Vec<SourceKind> = SourceKind::ALL
         .into_iter()
         .filter(|k| installed.contains(&k.type_id()))
+        .chain(
+            [
+                SourceKind::Image,
+                SourceKind::Color,
+                SourceKind::Media,
+                SourceKind::Browser,
+            ]
+            .into_iter()
+            .filter(|k| installed.contains(&k.type_id())),
+        )
+        .filter(|k| {
+            *k != SourceKind::Browser || browser_tree.is_some()
+        })
         .collect();
     let encoders: Vec<EncoderInfo> = adapters
         .video_encoders
@@ -2544,6 +2733,7 @@ fn start(
             key_account: config.key_account,
             engine: Box::new(engine),
             gpu,
+            browser_tree,
             preview_surfaces: settings.preview.map(|p| p.surfaces),
             dead: None,
             restarting: false,
@@ -2560,6 +2750,7 @@ fn start(
             recent_dir: config.recent_dir,
             swap_after_transition: config.swap_after_transition,
             thumbs: Arc::new(AtomicU64::new(0)),
+            region_grabs: Arc::new(AtomicU64::new(0)),
             // A collection that had to be completed is saved at the first publish.
             saved: loaded,
             events: EventPublisher::new(),
@@ -2808,6 +2999,14 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
+            Command::AddMedia { path } => match self.add_media_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::AddBrowser { url } => match self.add_browser_page(&url) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
             Command::SetSourceFill { id, color } => match self.set_source_fill(id, &color) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
@@ -2865,9 +3064,15 @@ impl Host {
                 self.thumbs.fetch_add(1, AtomicOrdering::AcqRel);
             }
             Command::OpenSourceSettings(id) => match self.source_settings_view(id) {
-                Ok(view) => notify(Update::SourceSettings(view)),
+                Ok(view) => {
+                    notify(Update::SourceSettings(view));
+                    self.grab_region_preview(id);
+                }
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
+            Command::CloseSourceSettings => {
+                self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel);
+            }
             Command::SetSourceSettings { id, patch } => {
                 let done = self.patch_source_settings(id, &patch);
                 self.answer(done, notify);
@@ -3017,6 +3222,42 @@ impl Host {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text())),
+            },
+            Command::SetSourceCaptureRegion { id, region } => {
+                match self.set_capture_region(id, region) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
+            Command::SetDisplayChrome { id, chrome } => {
+                match self.set_display_chrome(id, chrome) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
+            Command::FitDisplayChrome(id) => match self.fit_display_chrome(id) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
+            },
+            Command::ResetDisplayChrome(id) => match self.reset_display_chrome(id) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
+            },
+            Command::SetItemShowFor { item, show_for_ms } => {
+                match self.set_item_show_for(item, show_for_ms) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
+            Command::ShowItem(item) => match self.show_item(item) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
             },
             Command::SetSourceStyle { gesture, id, style } => {
                 let edit = self
@@ -3259,6 +3500,63 @@ impl Host {
     /// Grabs the pictures of `rows` on up to two threads, each target once, and posts
     /// them as they come. Nothing runs when the list is closed: a newer generation
     /// ends the workers at their next row (P13).
+    /// One Region-section grab for Source settings (ADR-0103). Off the control thread.
+    fn grab_region_preview(&self, id: SourceId) {
+        let Some(source) = self.collection.source(id) else {
+            return;
+        };
+        let Some(kind) = SourceKind::of(&source.type_id) else {
+            return;
+        };
+        if !matches!(
+            kind,
+            SourceKind::Screen | SourceKind::Window | SourceKind::Camera
+        ) {
+            return;
+        }
+        let adapter = match source.settings.get(keys::ADAPTER) {
+            Some(SettingValue::Text(text)) => text.clone(),
+            _ => return,
+        };
+        let target = match source.settings.get(keys::TARGET) {
+            Some(SettingValue::Text(text)) => text.clone(),
+            _ => return,
+        };
+        let type_id = kind.type_id();
+        let adapter_id = rbs_core::registry::AdapterId::new(adapter);
+        let Some(factory) = self
+            .adapters
+            .sources
+            .capture_factory(&type_id, &adapter_id)
+        else {
+            return;
+        };
+        let generation = self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+        let current = Arc::clone(&self.region_grabs);
+        let inbox = Weak::clone(&self.inbox);
+        let _ = std::thread::Builder::new()
+            .name("rbs-region-grab".into())
+            .spawn(move || {
+                if current.load(AtomicOrdering::Acquire) != generation {
+                    return;
+                }
+                let picture = factory
+                    .region_grab(
+                        &rbs_capture::TargetId::new(target),
+                        rbs_capture::REGION_GRAB_LONG,
+                    )
+                    .ok();
+                let Some(tx) = inbox.upgrade() else {
+                    return;
+                };
+                let _ = tx.send(Msg::RegionPreview {
+                    generation,
+                    id,
+                    picture,
+                });
+            });
+    }
+
     fn grab_thumbnails(&self, kind: SourceKind, rows: Vec<(String, String)>, max: (u32, u32)) {
         let generation = self.thumbs.fetch_add(1, AtomicOrdering::AcqRel) + 1;
         let type_id = kind.type_id();
@@ -3753,12 +4051,13 @@ impl Host {
         let run = self.run_collection();
         let engine = (self.engine)();
         let clock = engine.clock();
-        let studio = Studio::start(
+        let studio = Studio::start_with_tree(
             engine,
             Arc::clone(&self.gpu),
             run.as_ref().unwrap_or(&self.collection),
             &self.adapters.sources,
             &settings,
+            self.browser_tree.clone(),
         )
         .map_err(|e| e.to_string())?;
         self.studio = studio;
@@ -5130,6 +5429,77 @@ impl Host {
         self.add_still(base, SourceKind::Image, settings, layout, None)
     }
 
+    /// Adds a local media file as a source, centred at half the canvas.
+    fn add_browser_page(&mut self, url: &str) -> Result<SourceId, Refusal> {
+        if self.browser_tree.is_none() {
+            return Err(Refusal::Invalid(
+                "Browser sources need rbs-browser-helper next to the app.".into(),
+            ));
+        }
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or_else(|| Refusal::NotFound("The canvas is gone.".into()))?;
+        let (w, h) = {
+            let width = i64::from(canvas.size.width).min(1920) & !1;
+            let height = i64::from(canvas.size.height).min(1080) & !1;
+            (width.max(2), height.max(2))
+        };
+        let mut settings = Settings::new();
+        settings.insert(keys::URL.into(), SettingValue::Text(url.trim().to_owned()));
+        settings.insert(keys::WIDTH.into(), SettingValue::Int(w));
+        settings.insert(keys::HEIGHT.into(), SettingValue::Int(h));
+        rbs_sources::validate_settings(&SourceKind::Browser.type_id(), &settings)
+            .map_err(|error| Refusal::Invalid(error.to_string()))?;
+        let layout = Layout::fit(canvas.size.width, canvas.size.height, w as u32, h as u32);
+        self.add_still("Page", SourceKind::Browser, settings, layout, None)
+    }
+
+    fn add_media_file(&mut self, path: &std::path::Path) -> Result<SourceId, Refusal> {
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or_else(|| Refusal::NotFound("The canvas is gone.".to_owned()))?;
+        let w = canvas.size.width as f32 * 0.5;
+        let h = canvas.size.height as f32 * 0.5;
+        let layout = Layout::new(
+            [
+                ((canvas.size.width as f32 - w) * 0.5).max(0.0),
+                ((canvas.size.height as f32 - h) * 0.5).max(0.0),
+            ],
+            [w, h],
+        );
+        let path_text = path.display().to_string();
+        let mut settings = Settings::new();
+        settings.insert(keys::PATH.into(), SettingValue::Text(path_text));
+        rbs_sources::validate_settings(&SourceKind::Media.type_id(), &settings)
+            .map_err(|error| Refusal::Invalid(error.to_string()))?;
+        let base = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Media");
+        let name = unique_name(&self.collection, base);
+        let (source, undo_source) = self
+            .collection
+            .add_source(&name, SourceKind::Media.type_id(), settings)
+            .map_err(|e| Refusal::of(&e))?;
+        match self
+            .collection
+            .add_item(self.edited(), ItemContent::Source(source), layout, None)
+        {
+            Ok((_, undo_item)) => {
+                self.history
+                    .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
+                Ok(source)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(undo_source);
+                Err(Refusal::of(&e))
+            }
+        }
+    }
+
     /// The shared end of adding a still source: one source, one item, one undo step.
     fn add_still(
         &mut self,
@@ -5547,7 +5917,46 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::Visibility, &name, 0, vec![undo]);
+        // Opening the eye drops a running cue so the deadline cannot hide it later
+        // (ADR-0105). Hiding does not start one.
+        if visible {
+            self.studio.drop_cue(item);
+        }
         Ok(true)
+    }
+
+    /// Sets or clears `show_for_ms` (ADR-0105). One undo step. `Ok(false)` when the
+    /// item already has that duration.
+    fn set_item_show_for(
+        &mut self,
+        item: ItemId,
+        show_for_ms: Option<u32>,
+    ) -> Result<bool, Refusal> {
+        let (_, found) = self
+            .collection
+            .item(item)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no item {}.", item.get())))?;
+        if found.show_for_ms == show_for_ms {
+            return Ok(false);
+        }
+        let name = self.item_name(found);
+        let undo = self
+            .collection
+            .set_item_show_for(item, show_for_ms)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::ShowFor, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Shows a hidden item until `now + show_for_ms` (ADR-0105). Live: no undo, and
+    /// `visible` is not written. `Ok(false)` when the item is already visible or has
+    /// no duration. Unknown items are `Err`.
+    fn show_item(&mut self, item: ItemId) -> Result<bool, Refusal> {
+        let (_, found) = self
+            .collection
+            .item(item)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no item {}.", item.get())))?;
+        Ok(self.studio.show_cue(item, found.visible, found.show_for_ms))
     }
 
     /// The name of what an item places.
@@ -5891,6 +6300,27 @@ impl Host {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
+        let (cap_has, cap_l, cap_t, cap_r, cap_b) = match source.region {
+            Some(r) => (true, r.left, r.top, r.right, r.bottom),
+            None => (false, 0, 0, 0, 0),
+        };
+        let (chrome_on, chrome_t, chrome_r, chrome_b, chrome_l, chrome_fill) = match source.chrome {
+            Some(c) => (
+                true,
+                c.top,
+                c.right,
+                c.bottom,
+                c.left,
+                match c.fill {
+                    ChromeFill::Cover => 0,
+                    ChromeFill::Fit => 1,
+                    _ => 0,
+                },
+            ),
+            None => (false, 0, 0, 0, 0, 0),
+        };
+        let has_work_rect =
+            kind == SourceKind::Screen && self.display_work(id).is_some();
         Ok(SourceSettingsView {
             id,
             name: source.name.clone(),
@@ -5902,7 +6332,91 @@ impl Host {
                 source.settings.get(keys::CURSOR),
                 Some(SettingValue::Bool(false))
             ),
+            cap_has,
+            cap_l,
+            cap_t,
+            cap_r,
+            cap_b,
+            chrome_on,
+            chrome_t,
+            chrome_r,
+            chrome_b,
+            chrome_l,
+            chrome_fill,
+            has_work_rect,
+            pic_w: self.sizes.get(&id).map(|(w, _)| *w).unwrap_or(0),
+            pic_h: self.sizes.get(&id).map(|(_, h)| *h).unwrap_or(0),
         })
+    }
+
+    /// Capture, chrome and timed-show fields for a sources list row.
+    fn source_row_extra(
+        &self,
+        source: &Source,
+        item: ItemId,
+    ) -> (
+        bool,
+        u32,
+        u32,
+        u32,
+        u32,
+        bool,
+        u32,
+        u32,
+        u32,
+        u32,
+        u8,
+        bool,
+        u32,
+        u32,
+    ) {
+        let (cap_has, cap_l, cap_t, cap_r, cap_b) = match source.region {
+            Some(r) => (true, r.left, r.top, r.right, r.bottom),
+            None => (false, 0, 0, 0, 0),
+        };
+        let (chrome_on, chrome_t, chrome_r, chrome_b, chrome_l, chrome_fill) = match source.chrome
+        {
+            Some(c) => (
+                true,
+                c.top,
+                c.right,
+                c.bottom,
+                c.left,
+                match c.fill {
+                    ChromeFill::Cover => 0,
+                    ChromeFill::Fit => 1,
+                    _ => 0,
+                },
+            ),
+            None => (false, 0, 0, 0, 0, 0),
+        };
+        let has_work_rect = source.type_id.as_str() == rbs_scene::DISPLAY_SOURCE_TYPE
+            && self.display_work(source.id).is_some();
+        let show_for_ms = self
+            .collection
+            .item(item)
+            .and_then(|(_, i)| i.show_for_ms)
+            .unwrap_or(0);
+        let cue_remaining_ms = self
+            .studio
+            .cue_remaining_ms(item, self.clock.now())
+            .unwrap_or(0);
+        (
+            cap_has,
+            cap_l,
+            cap_t,
+            cap_r,
+            cap_b,
+            chrome_on,
+            chrome_t,
+            chrome_r,
+            chrome_b,
+            chrome_l,
+            chrome_fill,
+            has_work_rect,
+            show_for_ms,
+            cue_remaining_ms,
+        )
     }
 
     /// A source's stored settings as JSON values (`source.get_settings`).
@@ -6104,6 +6618,220 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.history.record(EditKind::Glide, &name, 0, vec![undo]);
         Ok(true)
+    }
+
+    /// Sets or clears a source region (ADR-0103). One undo step, not an item crop.
+    /// A sound-only source is refused. When the picture size is known, a region
+    /// that leaves no pixel is refused. Setting a region also places the item box
+    /// with Cover so a canvas-sized region fills the canvas (settings Apply).
+    fn set_capture_region(
+        &mut self,
+        id: SourceId,
+        region: Option<SourceRegion>,
+    ) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        if SourceKind::of(&source.type_id).is_some_and(|kind| kind.is_audio()) {
+            return Err(Refusal::Invalid("A sound source has no picture.".into()));
+        }
+        if let Some(region) = region
+            && let Some(picture) = self.sizes.get(&id).copied()
+            && region.size(picture).is_none()
+        {
+            return Err(Refusal::Invalid("The region leaves no picture.".into()));
+        }
+        if source.region == region {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_source_region(id, region)
+            .map_err(|e| Refusal::of(&e))?;
+        let mut steps = vec![undo];
+        if region.is_some()
+            && let Ok(Some(fit)) = self.fit_item_to_visible(id, FitMode::Fill)
+        {
+            steps.push(fit);
+        }
+        self.history.record(EditKind::Region, &name, 0, steps);
+        Ok(true)
+    }
+
+    /// Places the edited scene's item for `id` using the visible picture size
+    /// (region ∩ crop). `None` when size or canvas is unknown.
+    fn fit_item_to_visible(
+        &mut self,
+        id: SourceId,
+        mode: FitMode,
+    ) -> Result<Option<Undo>, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let picture = self.sizes.get(&id).copied().ok_or_else(|| {
+            Refusal::Invalid("This source has no picture yet, so its size is not known.".into())
+        })?;
+        let visible = visible_size(picture, source.region, Crop::default()).ok_or_else(|| {
+            Refusal::Invalid("The region leaves no picture.".into())
+        })?;
+        let item = self.item_of(id).map_err(Refusal::NotFound)?.1.id;
+        let (_, old, own) = self.crop_target(item).map_err(|e| match e {
+            CropRefusal::NotFound(t) => Refusal::NotFound(t),
+            CropRefusal::Invalid(t) => Refusal::Invalid(t),
+            CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
+        })?;
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .map(|c| (c.size.width, c.size.height))
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".into()))?;
+        let layout = old
+            .fitted(canvas, visible, mode)
+            .ok_or_else(|| Refusal::Invalid("The region leaves no picture.".into()))?;
+        if layout == old {
+            return Ok(None);
+        }
+        let undo = self
+            .collection
+            .set_item_layout(item, own, layout)
+            .map_err(|e| Refusal::of(&e))?;
+        Ok(Some(undo))
+    }
+
+    /// Writes display chrome and the region those insets describe (ADR-0104).
+    /// The item box stays. `None` clears chrome and the region.
+    fn set_display_chrome(
+        &mut self,
+        id: SourceId,
+        chrome: Option<DisplayChrome>,
+    ) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        if source.type_id.as_str() != rbs_scene::DISPLAY_SOURCE_TYPE {
+            return Err(Refusal::Invalid(
+                "Only a display source can hide the taskbar or Dock.".into(),
+            ));
+        }
+        if let Some(chrome) = chrome
+            && let Some(picture) = self.sizes.get(&id).copied()
+            && chrome.region().size(picture).is_none()
+        {
+            return Err(Refusal::Invalid("The region leaves no picture.".into()));
+        }
+        if source.chrome == chrome {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_display_chrome(id, chrome)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Region, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Places the source's item with the stored chrome fill (ADR-0104). The region
+    /// and the capture node stay.
+    fn fit_display_chrome(&mut self, id: SourceId) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let chrome = source
+            .chrome
+            .ok_or_else(|| Refusal::Invalid("Chrome is off.".into()))?;
+        let name = source.name.clone();
+        let picture = self.sizes.get(&id).copied().ok_or_else(|| {
+            Refusal::Invalid("This source has no picture yet, so its size is not known.".into())
+        })?;
+        let item = self.item_of(id).map_err(Refusal::NotFound)?.1.id;
+        let (_, old, own) = self.crop_target(item).map_err(|e| match e {
+            CropRefusal::NotFound(t) => Refusal::NotFound(t),
+            CropRefusal::Invalid(t) => Refusal::Invalid(t),
+            CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
+        })?;
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .map(|c| (c.size.width, c.size.height))
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".into()))?;
+        let layout = place_chrome(chrome, canvas, picture, old)
+            .ok_or_else(|| Refusal::Invalid("The region leaves no picture.".into()))?;
+        if layout == old {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_item_layout(item, own, layout)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::Transform, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Copies chrome insets from the display's work area. A no-op, with no undo
+    /// step, when the adapter did not report `work_rect` (ADR-0104).
+    fn reset_display_chrome(&mut self, id: SourceId) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        if source.type_id.as_str() != rbs_scene::DISPLAY_SOURCE_TYPE {
+            return Err(Refusal::Invalid(
+                "Only a display source can hide the taskbar or Dock.".into(),
+            ));
+        }
+        let fill = source.chrome.map(|c| c.fill).unwrap_or(ChromeFill::Cover);
+        let Some((work, picture)) = self.display_work(id) else {
+            return Ok(false);
+        };
+        let Some(chrome) = DisplayChrome::from_work(
+            picture,
+            Some((work.x, work.y, work.width, work.height)),
+            fill,
+        ) else {
+            return Ok(false);
+        };
+        if source.chrome == Some(chrome) {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_display_chrome(id, Some(chrome))
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Region, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// The listed display's work area and the picture size it belongs to.
+    fn display_work(&self, id: SourceId) -> Option<(rbs_capture::WorkRect, (u32, u32))> {
+        let source = self.collection.source(id)?;
+        let target_id = match source.settings.get(keys::TARGET) {
+            Some(SettingValue::Text(text)) => text.as_str(),
+            _ => return None,
+        };
+        let adapter = match source.settings.get(keys::ADAPTER) {
+            Some(SettingValue::Text(text)) => Some(text.as_str()),
+            _ => None,
+        };
+        let found = self
+            .adapters
+            .sources
+            .targets(&source.type_id)
+            .ok()?
+            .into_iter()
+            .find(|target| {
+                target.target == target_id && adapter.is_none_or(|id| target.adapter.as_str() == id)
+            })?;
+        let work = found.work_rect?;
+        let picture = self.sizes.get(&id).copied().or(found.size)?;
+        Some((work, picture))
     }
 
     /// Places a source the collection has on top of the program scene (one step).
@@ -6603,15 +7331,16 @@ impl Host {
     ) -> Result<bool, CropRefusal> {
         let (source, old, own) = self.crop_target(item)?;
         let size = self.sizes.get(&source).copied();
+        let region = self.collection.source(source).and_then(|s| s.region);
         let layout = if keep_scale {
             let size = size.ok_or(CropRefusal::NoPicture)?;
             if crop == old.crop {
                 return Ok(false);
             }
-            old.recrop(size, crop)
+            recrop_keeping(old, size, region, crop)
                 .ok_or_else(|| CropRefusal::Invalid(NO_AREA.into()))?
         } else {
-            if size.is_some_and(|(w, h)| !crop.fits(w, h)) {
+            if size.is_some_and(|picture| visible_size(picture, region, crop).is_none()) {
                 return Err(CropRefusal::Invalid(NO_AREA.into()));
             }
             old.with_crop(crop)
@@ -6662,17 +7391,11 @@ impl Host {
             .map(|c| (c.size.width, c.size.height))
             .ok_or_else(|| Refusal::Failed("the canvas is gone".into()))?;
         let picture = || {
-            let (w, h) = self.sizes.get(&source).copied().ok_or_else(|| {
+            let capture = self.sizes.get(&source).copied().ok_or_else(|| {
                 Refusal::Invalid("This source has no picture yet, so its size is not known.".into())
             })?;
-            if old.crop.fits(w, h) {
-                Ok((
-                    w - old.crop.left - old.crop.right,
-                    h - old.crop.top - old.crop.bottom,
-                ))
-            } else {
-                Err(Refusal::Invalid(NO_AREA.into()))
-            }
+            let region = self.collection.source(source).and_then(|s| s.region);
+            visible_size(capture, region, old.crop).ok_or_else(|| Refusal::Invalid(NO_AREA.into()))
         };
         let layout = match op {
             TransformOp::FlipHorizontal => old.flipped_horizontally(),
@@ -6933,6 +7656,22 @@ impl Host {
                         (None, _) => SourceStatus::Running,
                     },
                 };
+                let (
+                    cap_has,
+                    cap_l,
+                    cap_t,
+                    cap_r,
+                    cap_b,
+                    chrome_on,
+                    chrome_t,
+                    chrome_r,
+                    chrome_b,
+                    chrome_l,
+                    chrome_fill,
+                    has_work_rect,
+                    show_for_ms,
+                    cue_remaining_ms,
+                ) = self.source_row_extra(s, item.id);
                 SourceRow {
                     id: s.id,
                     item: item.id,
@@ -6981,6 +7720,20 @@ impl Host {
                         s.settings.get(keys::FILLED),
                         Some(SettingValue::Bool(false))
                     ),
+                    cap_has,
+                    cap_l,
+                    cap_t,
+                    cap_r,
+                    cap_b,
+                    chrome_on,
+                    chrome_t,
+                    chrome_r,
+                    chrome_b,
+                    chrome_l,
+                    chrome_fill,
+                    has_work_rect,
+                    show_for_ms,
+                    cue_remaining_ms,
                 }
             })
             .collect()
@@ -7070,6 +7823,9 @@ fn edit_error(e: &SceneError) -> String {
             "This source is not in the scene any more.".to_owned()
         }
         SceneError::InvalidSyncOffset | SceneError::InvalidVolume => format!("{e}."),
+        SceneError::ChromeNotDisplay => {
+            "Only a display source can hide the taskbar or Dock.".to_owned()
+        }
         SceneError::UnknownFilter(_) => "This filter is not there any more.".to_owned(),
         other => format!("The scene could not be changed ({other:?}). Try again."),
     }
@@ -7724,6 +8480,24 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::ItemSetShowFor(p) => {
+                let changed = host
+                    .set_item_show_for(ItemId::from_raw(p.item), p.show_for_ms)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::ItemShow(p) => {
+                let started = host
+                    .show_item(ItemId::from_raw(p.item))
+                    .map_err(|e| refused(&e))?;
+                if started {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::ItemFlip(p) => {
                 let op = match p.axis {
                     Axis::Horizontal => TransformOp::FlipHorizontal,
@@ -8151,6 +8925,96 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceSetRegion(p) => {
+                let region = p.region.map(SourceRegion::from_array);
+                if host
+                    .set_capture_region(SourceId::from_raw(p.source), region)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceGetRegion(p) => {
+                let source = host
+                    .collection
+                    .source(SourceId::from_raw(p.source))
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            ErrorKind::NotFound,
+                            format!("There is no source {}.", p.source),
+                        )
+                    })?;
+                if SourceKind::of(&source.type_id).is_some_and(|kind| kind.is_audio()) {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "A sound source has no picture.",
+                    ));
+                }
+                Ok(Response::SourceRegion(SourceRegionInfo {
+                    source: p.source,
+                    region: source.region.map(SourceRegion::to_array),
+                }))
+            }
+            C::SourceSetChrome(p) => {
+                let chrome = p.chrome.map(|spec| {
+                    let fill = match spec.fill {
+                        rbs_api::request::ChromeFill::Cover => ChromeFill::Cover,
+                        rbs_api::request::ChromeFill::Fit => ChromeFill::Fit,
+                    };
+                    DisplayChrome::new(spec.top, spec.right, spec.bottom, spec.left).with_fill(fill)
+                });
+                if host
+                    .set_display_chrome(SourceId::from_raw(p.source), chrome)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceGetChrome(p) => {
+                let source = host
+                    .collection
+                    .source(SourceId::from_raw(p.source))
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            ErrorKind::NotFound,
+                            format!("There is no source {}.", p.source),
+                        )
+                    })?;
+                Ok(Response::SourceChrome(SourceChromeInfo {
+                    source: p.source,
+                    chrome: source.chrome.map(|chrome| ChromeSpec {
+                        top: chrome.top,
+                        right: chrome.right,
+                        bottom: chrome.bottom,
+                        left: chrome.left,
+                        fill: match chrome.fill {
+                            ChromeFill::Cover => rbs_api::request::ChromeFill::Cover,
+                            ChromeFill::Fit => rbs_api::request::ChromeFill::Fit,
+                            _ => rbs_api::request::ChromeFill::Cover,
+                        },
+                    }),
+                }))
+            }
+            C::SourceFitChrome(p) => {
+                if host
+                    .fit_display_chrome(SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceResetChrome(p) => {
+                if host
+                    .reset_display_chrome(SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             // Answered by the endpoint; never reaches a target.
             // `tokens.*` are answered before (`WithTokens`) when the API was attached
             // with the settings.
@@ -8380,6 +9244,8 @@ fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
         SourceKind::ApplicationAudio => api::SourceKind::ApplicationAudio,
         SourceKind::Image => api::SourceKind::Image,
         SourceKind::Color => api::SourceKind::Color,
+        SourceKind::Media => api::SourceKind::Media,
+        SourceKind::Browser => api::SourceKind::Browser,
     })
 }
 
@@ -8393,6 +9259,8 @@ fn app_kind(k: api::SourceKind) -> SourceKind {
         api::SourceKind::ApplicationAudio => SourceKind::ApplicationAudio,
         api::SourceKind::Image => SourceKind::Image,
         api::SourceKind::Color => SourceKind::Color,
+        api::SourceKind::Media => SourceKind::Media,
+        api::SourceKind::Browser => SourceKind::Browser,
     }
 }
 

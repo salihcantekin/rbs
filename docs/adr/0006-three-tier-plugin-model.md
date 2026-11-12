@@ -24,6 +24,7 @@ Details: [plugin SDK spec](../specs/plugin-sdk.md).
 - Untrusted plugins cannot crash the engine; native plugins are signed and opt-in.
 - Plugins can be written in any language that compiles to WASM components.
 - Three hosts to maintain; the sandbox and process tiers can arrive after the native tier.
+- 2026-11-12: the tier choice above is unchanged. The browser source contract is [ADR-0109](0109-browser-source.md) (Proposed).
 
 ## Alternatives considered
 

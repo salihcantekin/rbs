@@ -8,6 +8,7 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 use rbs_media_format::aac::AudioSpecificConfig;
+use rbs_media_format::av1::Av1Config;
 use rbs_media_format::avc::AvcConfig;
 use rbs_media_format::hvcc::Hvcc;
 use rbs_media_format::nal::{self, h264, hevc};
@@ -73,11 +74,19 @@ const MAX_TRACKS: usize = 126;
 const DURATION_BYTES: usize = 2 + 1 + 8;
 
 enum Kind {
-    /// H.264; `length_size` is `None` for Annex B input, converted to 4-byte lengths.
+    /// H.264 or HEVC. `length_size` is `None` for Annex B input, converted to 4-byte lengths.
     Video {
         length_size: Option<u8>,
     },
+    /// AV1 temporal unit, copied as OBUs.
+    Obu,
     Audio,
+}
+
+impl Kind {
+    fn is_video(&self) -> bool {
+        matches!(self, Kind::Video { .. } | Kind::Obu)
+    }
 }
 
 /// Byte offsets in the output of the header fields `finish` patches.
@@ -313,10 +322,7 @@ impl MatroskaMuxer {
                         format, frame_rate, ..
                     },
                 ) => {
-                    if tracks
-                        .iter()
-                        .any(|t: &Track| matches!(t.kind, Kind::Video { .. }))
-                    {
+                    if tracks.iter().any(|t: &Track| t.kind.is_video()) {
                         // A keyframe chunk must be an entry point for every stream; with
                         // two video tracks whose GOPs differ, clusters rarely are.
                         return Err(CreateError::Unsupported {
@@ -365,6 +371,49 @@ impl MatroskaMuxer {
                     });
                 }
                 (
+                    CodecId::Av1,
+                    StreamParams::Video {
+                        format, frame_rate, ..
+                    },
+                ) => {
+                    if tracks.iter().any(|t: &Track| t.kind.is_video()) {
+                        return Err(CreateError::Unsupported {
+                            what: "more than one video stream in Matroska".into(),
+                        });
+                    }
+                    if stream.bitstream != BitstreamFormat::Obu {
+                        return Err(CreateError::InvalidConfig(format!(
+                            "AV1 in {:?} framing",
+                            stream.bitstream
+                        )));
+                    }
+                    let parsed = Av1Config::from_extradata(&stream.extradata)
+                        .map_err(|e| CreateError::InvalidConfig(format!("AV1 extradata: {e}")))?;
+                    let mut private = Vec::new();
+                    parsed.build(&mut private);
+                    ebml::uint(&mut header, TRACK_TYPE, 1);
+                    ebml::bytes(&mut header, CODEC_ID, b"V_AV1");
+                    ebml::bytes(&mut header, CODEC_PRIVATE, &private);
+                    let interval =
+                        u64::try_from(frame_rate.frame_duration().as_nanos()).unwrap_or(u64::MAX);
+                    if interval > 0 {
+                        ebml::uint(&mut header, DEFAULT_DURATION, interval);
+                    }
+                    let video = ebml::open(&mut header, VIDEO);
+                    ebml::uint(&mut header, PIXEL_WIDTH, u64::from(format.size.width));
+                    ebml::uint(&mut header, PIXEL_HEIGHT, u64::from(format.size.height));
+                    ebml::close(&mut header, video);
+                    tracks.push(Track {
+                        codec: CodecId::Av1,
+                        bitstream: BitstreamFormat::Obu,
+                        kind: Kind::Obu,
+                        parameter_sets: Vec::new(),
+                        last_dts: None,
+                        in_cluster: false,
+                        default_duration: frame_rate.frame_duration(),
+                    });
+                }
+                (
                     CodecId::Aac,
                     StreamParams::Audio {
                         format, frame_size, ..
@@ -402,7 +451,7 @@ impl MatroskaMuxer {
                         ),
                     });
                 }
-                (CodecId::H264 | CodecId::Hevc | CodecId::Aac, _) => {
+                (CodecId::H264 | CodecId::Hevc | CodecId::Av1 | CodecId::Aac, _) => {
                     return Err(CreateError::InvalidConfig(format!(
                         "{} stream with {:?} parameters",
                         stream.codec, stream.params
@@ -420,7 +469,7 @@ impl MatroskaMuxer {
 
         let lead = config.max_buffered();
         Ok(Self {
-            has_video: tracks.iter().any(|t| matches!(t.kind, Kind::Video { .. })),
+            has_video: tracks.iter().any(|t| t.kind.is_video()),
             tracks,
             header,
             cluster_span: lead.min(MAX_CLUSTER_SPAN),
@@ -520,12 +569,7 @@ impl MatroskaMuxer {
         let keyframe = if self.has_video {
             self.blocks
                 .iter()
-                .find(|b| {
-                    matches!(
-                        self.tracks[usize::from(b.track) - 1].kind,
-                        Kind::Video { .. }
-                    )
-                })
+                .find(|b| self.tracks[usize::from(b.track) - 1].kind.is_video())
                 .is_some_and(|b| b.keyframe)
         } else {
             true
@@ -667,13 +711,14 @@ impl Muxer for MatroskaMuxer {
                 }
                 (Payload::Staged { start: 0 }, converted)
             }
+            Kind::Obu => (Payload::Shared(packet.data().clone()), data.len()),
             Kind::Audio => (Payload::Shared(packet.data().clone()), data.len()),
         };
         if len > MAX_SAMPLE_BYTES {
             return Err(MuxError::Overflow("sample size"));
         }
         let keyframe = packet.keyframe() || matches!(track.kind, Kind::Audio);
-        let video_key = matches!(track.kind, Kind::Video { .. }) && packet.keyframe();
+        let video_key = track.kind.is_video() && packet.keyframe();
         let track_in_cluster = track.in_cluster;
 
         // A cluster ends before a video keyframe (so clusters start at entry points),

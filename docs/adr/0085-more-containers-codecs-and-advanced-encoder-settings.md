@@ -31,7 +31,7 @@ Forces: no vendor names in engine code, choice by capability (P3); every encoder
 
 - Editors get intermediate and lossless files; streamers keep the safe default; advanced users get real control, and the UI cannot offer a combination the machine cannot do.
 - Every adapter that wants Advanced options writes its schema; an adapter without one still works with the standard keys it declares.
-- More encoder/OS combinations to test; hardware runs are listed per adapter in its spec section as today. AV1 and ProRes will be absent on machines that do not probe them, by design.
+- More encoder/OS combinations to test; hardware runs are listed per adapter in its spec section as today. AV1 and ProRes will be absent on machines that do not probe them, by design. The Windows-testable slice (NVENC AV1 Main, 8-bit, into Matroska and fragmented MP4, offered in Recording when the probe lists `av1`) is specified in [output-ports](../specs/output-ports.md) and [recording](../specs/recording.md). Streaming stays H.264 until enhanced RTMP and MPEG-TS carry AV1. The rest of this ADR (other containers, audio codecs, advanced option schemas, presets) stays Proposed.
 - Spec follow-ups in the PRs: `output-ports.md` (`mux.codecs`, options capabilities, new codec and container ids), `recording.md` (settings), `user-data.md` (profile format), `control-api.md` (`output.options`), `media-types.md` (ids), `ui-design-system.md` (Format card, Advanced sections).
 - ISO audio files (ADR-0086) depend on the `Wav`/`Flac` containers and on PCM/FLAC.
 

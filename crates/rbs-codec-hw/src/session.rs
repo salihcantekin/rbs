@@ -10,8 +10,8 @@
 
 use rbs_codec::{EncodeError, EncoderChange, RateControl, VideoEncoder};
 use rbs_core::media::{
-    BitstreamFormat, Bytes, CodecId, EncodedPacket, FramePayload, StreamDescriptor, SystemFrame,
-    VideoFormat, VideoFrame,
+    Bytes, CodecId, EncodedPacket, FramePayload, StreamDescriptor, SystemFrame, VideoFormat,
+    VideoFrame,
 };
 use rbs_core::time::Timestamp;
 
@@ -56,7 +56,7 @@ impl EngineError {
 /// One finished picture.
 #[derive(Debug)]
 pub struct Output {
-    /// Annex B access unit (exact size; the one payload allocation per packet).
+    /// Encoded picture (exact size; the one payload allocation per packet).
     pub data: Vec<u8>,
     /// IDR picture.
     pub keyframe: bool,
@@ -222,7 +222,7 @@ impl<E: Engine> Session<E> {
         self.in_flight -= 1;
         let packet = EncodedPacket::new(
             self.codec,
-            BitstreamFormat::AnnexB,
+            self.stream.bitstream,
             expected.pts,
             expected.pts,
             output.keyframe,
@@ -488,7 +488,9 @@ mod tests {
     use rbs_codec::conformance::{self, SystemFrameSource};
     use rbs_codec::{CreateError, VideoEncoderConfig, VideoEncoderFactory};
     use rbs_core::capability::CapabilitySet;
-    use rbs_core::media::{ColorSpace, MemoryKind, PixelFormat, Size, StreamParams};
+    use rbs_core::media::{
+        BitstreamFormat, ColorSpace, MemoryKind, PixelFormat, Size, StreamParams,
+    };
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
     use rbs_core::timing::{Cadence, FrameRate};
 

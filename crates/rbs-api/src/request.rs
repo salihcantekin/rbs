@@ -127,6 +127,85 @@ pub struct SetSourceGlide {
     pub glide: Option<crate::types::Glide>,
 }
 
+/// How a display's work area is placed on the canvas (protocol 1.41, ADR-0104).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChromeFill {
+    /// Cover the canvas (layout fill).
+    #[default]
+    Cover,
+    /// Fit inside the canvas (layout fit).
+    Fit,
+}
+
+impl ChromeFill {
+    /// True for [`ChromeFill::Cover`], which documents and answers omit.
+    pub fn is_cover(&self) -> bool {
+        *self == Self::Cover
+    }
+}
+
+/// Display chrome insets in capture pixels (protocol 1.41, ADR-0104).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChromeSpec {
+    /// Pixels cut from the top.
+    #[serde(default)]
+    pub top: u32,
+    /// Pixels cut from the right.
+    #[serde(default)]
+    pub right: u32,
+    /// Pixels cut from the bottom.
+    #[serde(default)]
+    pub bottom: u32,
+    /// Pixels cut from the left.
+    #[serde(default)]
+    pub left: u32,
+    /// `"cover"` (default) or `"fit"`. Not part of the stored region.
+    #[serde(default, skip_serializing_if = "ChromeFill::is_cover")]
+    pub fill: ChromeFill,
+}
+
+/// `source.set_region` (protocol 1.41, ADR-0103). One undo step, distinct from
+/// `item.set_crop`. `null` clears the region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceRegion {
+    /// The source's id.
+    pub source: u32,
+    /// `[left, top, right, bottom]` in full-picture pixels, or `null`.
+    pub region: Option<[u32; 4]>,
+}
+
+/// `source.get_region`'s answer (protocol 1.41).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRegionInfo {
+    /// The source's id.
+    pub source: u32,
+    /// The region, or `null` for the whole picture.
+    pub region: Option<[u32; 4]>,
+}
+
+/// `source.set_chrome` (protocol 1.41, ADR-0104). Writes the insets and the region
+/// they describe. Does not move the item box. `null` clears chrome and the region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceChrome {
+    /// The source's id.
+    pub source: u32,
+    /// The insets, or `null` to turn chrome off.
+    pub chrome: Option<ChromeSpec>,
+}
+
+/// `source.get_chrome`'s answer (protocol 1.41).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceChromeInfo {
+    /// The source's id.
+    pub source: u32,
+    /// The chrome, or `null` when it is off.
+    pub chrome: Option<ChromeSpec>,
+}
+
 /// `source.delete`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRef {
@@ -745,6 +824,26 @@ pub struct SetItemLocked {
     pub locked: bool,
 }
 
+/// `item.set_show_for` (ADR-0105). Undoable document state. No protocol minor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemShowFor {
+    /// The item's id (`source.list`).
+    pub item: u32,
+    /// Milliseconds in `1..=600000`, or `null` / absent to clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_for_ms: Option<u32>,
+}
+
+/// `item.show` (ADR-0105). Live session cue. Does not change `visible` and is not
+/// undone. No protocol minor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShowItem {
+    /// The item's id (`source.list`).
+    pub item: u32,
+}
+
 /// `record.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordStart {
@@ -934,6 +1033,10 @@ pub enum Command {
     ItemSetVisible(SetItemVisible),
     /// `item.set_locked` (protocol 1.6).
     ItemSetLocked(SetItemLocked),
+    /// `item.set_show_for` (ADR-0105). Undoable. No protocol minor.
+    ItemSetShowFor(SetItemShowFor),
+    /// `item.show` (ADR-0105). Live, not undoable. No protocol minor.
+    ItemShow(ShowItem),
     /// `scene.sources` (protocol 1.9): the source items of any scene.
     SceneSources(SceneRef),
     /// `canvas.set_preview` (protocol 1.9).
@@ -1024,6 +1127,19 @@ pub enum Command {
     CollectionSetGlide(SetCollectionGlide),
     /// `source.set_glide` (protocol 1.35, ADR-0100).
     SourceSetGlide(SetSourceGlide),
+    /// `source.set_region` (protocol 1.41, ADR-0103).
+    SourceSetRegion(SetSourceRegion),
+    /// `source.get_region` (protocol 1.41).
+    SourceGetRegion(SourceRef),
+    /// `source.set_chrome` (protocol 1.41, ADR-0104).
+    SourceSetChrome(SetSourceChrome),
+    /// `source.get_chrome` (protocol 1.41).
+    SourceGetChrome(SourceRef),
+    /// `source.fit_chrome` (protocol 1.41): places the item with the stored fill.
+    SourceFitChrome(SourceRef),
+    /// `source.reset_chrome` (protocol 1.41): copies insets from `work_rect`.
+    /// A no-op when the adapter did not report one.
+    SourceResetChrome(SourceRef),
     /// `events.subscribe`: answered on the control thread with the `seq` of the topics'
     /// state keys, read after the subscriber mask was set. The target never sees it.
     EventsSubscribe(Subscribe),
@@ -1095,6 +1211,8 @@ impl Command {
             Command::GlobalRemove(_) => "global.remove",
             Command::ItemSetVisible(_) => "item.set_visible",
             Command::ItemSetLocked(_) => "item.set_locked",
+            Command::ItemSetShowFor(_) => "item.set_show_for",
+            Command::ItemShow(_) => "item.show",
             Command::EditUndo => "edit.undo",
             Command::EditRedo => "edit.redo",
             Command::OutputProfiles => "output.profiles",
@@ -1126,6 +1244,12 @@ impl Command {
             Command::CollectionSwitch(_) => "collection.switch",
             Command::CollectionSetGlide(_) => "collection.set_glide",
             Command::SourceSetGlide(_) => "source.set_glide",
+            Command::SourceSetRegion(_) => "source.set_region",
+            Command::SourceGetRegion(_) => "source.get_region",
+            Command::SourceSetChrome(_) => "source.set_chrome",
+            Command::SourceGetChrome(_) => "source.get_chrome",
+            Command::SourceFitChrome(_) => "source.fit_chrome",
+            Command::SourceResetChrome(_) => "source.reset_chrome",
             Command::EventsSubscribe(_) => "events.subscribe",
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
@@ -1224,6 +1348,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("settings.clear_recent_targets", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
     m("item.set_locked", Some(Scope::Control)),
+    m("item.set_show_for", Some(Scope::Control)),
+    m("item.show", Some(Scope::Control)),
     m("scene.sources", Some(Scope::Read)),
     m("canvas.set_preview", Some(Scope::Control)),
     m("canvas.transition", Some(Scope::Control)),
@@ -1269,6 +1395,12 @@ pub const METHODS: &[MethodInfo] = &[
     m("collection.switch", Some(Scope::Control)),
     m("collection.set_glide", Some(Scope::Control)),
     m("source.set_glide", Some(Scope::Control)),
+    m("source.set_region", Some(Scope::Control)),
+    m("source.get_region", Some(Scope::Control)),
+    m("source.set_chrome", Some(Scope::Control)),
+    m("source.get_chrome", Some(Scope::Control)),
+    m("source.fit_chrome", Some(Scope::Control)),
+    m("source.reset_chrome", Some(Scope::Control)),
     m("events.subscribe", Some(Scope::Read)),
     m("events.unsubscribe", Some(Scope::Read)),
     m("tokens.list", Some(Scope::Tokens)),
@@ -1445,6 +1577,10 @@ enum WireRequest {
     ItemSetVisible(SetItemVisible),
     #[serde(rename = "item.set_locked")]
     ItemSetLocked(SetItemLocked),
+    #[serde(rename = "item.set_show_for")]
+    ItemSetShowFor(SetItemShowFor),
+    #[serde(rename = "item.show")]
+    ItemShow(ShowItem),
     #[serde(rename = "scene.sources")]
     SceneSources(SceneRef),
     #[serde(rename = "canvas.set_preview")]
@@ -1535,6 +1671,18 @@ enum WireRequest {
     CollectionSetGlide(SetCollectionGlide),
     #[serde(rename = "source.set_glide")]
     SourceSetGlide(SetSourceGlide),
+    #[serde(rename = "source.set_region")]
+    SourceSetRegion(SetSourceRegion),
+    #[serde(rename = "source.get_region")]
+    SourceGetRegion(SourceRef),
+    #[serde(rename = "source.set_chrome")]
+    SourceSetChrome(SetSourceChrome),
+    #[serde(rename = "source.get_chrome")]
+    SourceGetChrome(SourceRef),
+    #[serde(rename = "source.fit_chrome")]
+    SourceFitChrome(SourceRef),
+    #[serde(rename = "source.reset_chrome")]
+    SourceResetChrome(SourceRef),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(Subscribe),
     #[serde(rename = "events.unsubscribe")]
@@ -1615,6 +1763,8 @@ impl From<WireRequest> for Request {
             WireRequest::GlobalRemove(p) => Request::Command(C::GlobalRemove(p)),
             WireRequest::ItemSetVisible(p) => Request::Command(C::ItemSetVisible(p)),
             WireRequest::ItemSetLocked(p) => Request::Command(C::ItemSetLocked(p)),
+            WireRequest::ItemSetShowFor(p) => Request::Command(C::ItemSetShowFor(p)),
+            WireRequest::ItemShow(p) => Request::Command(C::ItemShow(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
             WireRequest::EditRedo(_) => Request::Command(C::EditRedo),
             WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
@@ -1646,6 +1796,12 @@ impl From<WireRequest> for Request {
             WireRequest::CollectionSwitch(p) => Request::Command(C::CollectionSwitch(p)),
             WireRequest::CollectionSetGlide(p) => Request::Command(C::CollectionSetGlide(p)),
             WireRequest::SourceSetGlide(p) => Request::Command(C::SourceSetGlide(p)),
+            WireRequest::SourceSetRegion(p) => Request::Command(C::SourceSetRegion(p)),
+            WireRequest::SourceGetRegion(p) => Request::Command(C::SourceGetRegion(p)),
+            WireRequest::SourceSetChrome(p) => Request::Command(C::SourceSetChrome(p)),
+            WireRequest::SourceGetChrome(p) => Request::Command(C::SourceGetChrome(p)),
+            WireRequest::SourceFitChrome(p) => Request::Command(C::SourceFitChrome(p)),
+            WireRequest::SourceResetChrome(p) => Request::Command(C::SourceResetChrome(p)),
             WireRequest::EventsSubscribe(p) => Request::Command(C::EventsSubscribe(p)),
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
@@ -1719,6 +1875,8 @@ impl From<Request> for WireRequest {
                 C::GlobalRemove(p) => WireRequest::GlobalRemove(p),
                 C::ItemSetVisible(p) => WireRequest::ItemSetVisible(p),
                 C::ItemSetLocked(p) => WireRequest::ItemSetLocked(p),
+                C::ItemSetShowFor(p) => WireRequest::ItemSetShowFor(p),
+                C::ItemShow(p) => WireRequest::ItemShow(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
                 C::EditRedo => WireRequest::EditRedo(Empty {}),
                 C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
@@ -1750,6 +1908,12 @@ impl From<Request> for WireRequest {
                 C::CollectionSwitch(p) => WireRequest::CollectionSwitch(p),
                 C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
                 C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
+                C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
+                C::SourceGetRegion(p) => WireRequest::SourceGetRegion(p),
+                C::SourceSetChrome(p) => WireRequest::SourceSetChrome(p),
+                C::SourceGetChrome(p) => WireRequest::SourceGetChrome(p),
+                C::SourceFitChrome(p) => WireRequest::SourceFitChrome(p),
+                C::SourceResetChrome(p) => WireRequest::SourceResetChrome(p),
                 C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
@@ -1967,6 +2131,10 @@ pub enum Response {
     GlobalSources(GlobalSourceList),
     /// `source.get_settings` (protocol 1.17).
     SourceSettings(SourceSettingsInfo),
+    /// `source.get_region` (protocol 1.41).
+    SourceRegion(SourceRegionInfo),
+    /// `source.get_chrome` (protocol 1.41).
+    SourceChrome(SourceChromeInfo),
     /// `look.list` (protocol 1.34).
     Looks(LookList),
     /// `item.set_box` (protocol 1.34).

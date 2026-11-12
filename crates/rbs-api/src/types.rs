@@ -61,6 +61,10 @@ pub enum SourceKind {
     Image,
     /// A solid colour (protocol 1.34, ADR-0075).
     Color,
+    /// A local media file (protocol TBD, ADR-0108).
+    Media,
+    /// A browser page from the helper process (protocol TBD, ADR-0109).
+    Browser,
 }
 
 /// Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does
@@ -690,7 +694,8 @@ pub struct RecordingProfile {
     pub container: Container,
     /// The video encoder's adapter id, or `null` for the best one.
     pub encoder: Option<String>,
-    /// H.264, or HEVC. Omitted when H.264, so a 1.33 client still reads the object.
+    /// H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.
+    /// `"av1"` is protocol 1.40.
     #[serde(default, skip_serializing_if = "VideoCodec::is_h264")]
     pub video_codec: VideoCodec,
     /// Rate control.
@@ -734,6 +739,8 @@ pub enum VideoCodec {
     H264,
     /// HEVC (H.265).
     Hevc,
+    /// AV1 (protocol 1.40). A 1.39 client treats the value as unknown.
+    Av1,
 }
 
 impl VideoCodec {
@@ -768,7 +775,8 @@ impl Delivery {
 pub struct Encoding {
     /// The video encoder's adapter id, or `null` for the best one.
     pub encoder: Option<String>,
-    /// H.264, or HEVC. Omitted when H.264, so a 1.33 client still reads the object.
+    /// H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.
+    /// `"av1"` is protocol 1.40.
     #[serde(default, skip_serializing_if = "VideoCodec::is_h264")]
     pub video_codec: VideoCodec,
     /// Rate control.

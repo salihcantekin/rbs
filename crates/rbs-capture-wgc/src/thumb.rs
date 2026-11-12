@@ -4,7 +4,9 @@
 
 use std::time::{Duration, Instant};
 
-use rbs_capture::{CaptureError, ErrorDomain, THUMBNAIL_MAX, TargetId, Thumbnail};
+use rbs_capture::{
+    CaptureError, ErrorDomain, REGION_GRAB_LONG, RegionGrab, THUMBNAIL_MAX, TargetId, Thumbnail,
+};
 use rbs_core::media::Size;
 
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureSession};
@@ -57,18 +59,35 @@ fn missing() -> windows::core::Error {
 }
 
 pub(crate) fn thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
-    let started = Instant::now();
     let limit = Size::new(
         max.width.min(THUMBNAIL_MAX.width),
         max.height.min(THUMBNAIL_MAX.height),
     );
+    let (w, h, rgba) = grab_rgba(target, limit, "thumbnail")?;
+    Thumbnail::new(w, h, rgba).ok_or(CaptureError::FormatUnsupported)
+}
+
+/// Region-section grab (ADR-0103): same path as a thumbnail, long side ≤ 960.
+pub(crate) fn region_grab(target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError> {
+    let side = max_long.min(REGION_GRAB_LONG).max(1);
+    let limit = Size::new(side, side);
+    let (w, h, rgba) = grab_rgba(target, limit, "region_grab")?;
+    RegionGrab::new(w, h, rgba).ok_or(CaptureError::FormatUnsupported)
+}
+
+fn grab_rgba(
+    target: &TargetId,
+    limit: Size,
+    unsupported: &'static str,
+) -> Result<(u32, u32, Vec<u8>), CaptureError> {
+    let started = Instant::now();
     if limit.width == 0 || limit.height == 0 {
         return Err(CaptureError::FormatUnsupported);
     }
     let (resolved, _) = resolve(target).ok_or(CaptureError::TargetNotFound)?;
     ensure_winrt();
     if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
-        return Err(CaptureError::Unsupported("thumbnail"));
+        return Err(CaptureError::Unsupported(unsupported));
     }
     let (device, context) = create_device().map_err(|e| retry(&e))?;
     let item = create_item(resolved).map_err(|e| retry(&e))?;
@@ -100,7 +119,7 @@ pub(crate) fn thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, Captu
     // yellow border would flash, so a system that cannot drop it gets no thumbnail.
     if session.SetIsBorderRequired(false).is_err() {
         close();
-        return Err(CaptureError::Unsupported("thumbnail"));
+        return Err(CaptureError::Unsupported(unsupported));
     }
     let _ = session.SetIsCursorCaptureEnabled(false);
     if let Err(e) = session.StartCapture() {
@@ -120,7 +139,7 @@ pub(crate) fn thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, Captu
         close();
         return Err(timed_out());
     };
-    let picture = (|| -> windows::core::Result<Option<Thumbnail>> {
+    let picture = (|| -> windows::core::Result<Option<(u32, u32, Vec<u8>)>> {
         let content = frame.ContentSize()?;
         let (w, h) = (
             u32::try_from(content.Width)
@@ -140,7 +159,7 @@ pub(crate) fn thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, Captu
         let pixels = shrink_and_read(&device, &context, &source, (w, h), level, (lw, lh))?;
         let (data, pitch) = pixels;
         let rgba = crate::downscale_bgra(&data, lw, lh, pitch, tw, th);
-        Ok(Thumbnail::new(tw, th, rgba))
+        Ok(Some((tw, th, rgba)))
     })();
     let _ = frame.Close();
     close();

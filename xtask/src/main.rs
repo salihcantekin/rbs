@@ -349,8 +349,10 @@ enum Class {
 fn class(name: &str) -> Option<Class> {
     Some(match name {
         "rbs-core" | "rbs-graph" | "rbs-scene" | "rbs-capture" | "rbs-audio-io" | "rbs-codec"
-        | "rbs-mux" | "rbs-transport" | "rbs-vcam" => Class::Core,
-        "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" => Class::Helper,
+        | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" => Class::Core,
+        "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
+            Class::Helper
+        }
         "rbs-codec-hw" | "rbs-vcam-mf-source" => Class::Support,
         "rbs-gpu" | "rbs-audio" | "rbs-audio-filters" | "rbs-engine" | "rbs-nodes"
         | "rbs-sources" | "rbs-record" | "rbs-filters" => Class::Engine,
@@ -391,7 +393,9 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-transport-srt"
         | "rbs-thread-os"
         | "rbs-vcam-mf"
-        | "rbs-vcam-test" => Class::Adapter,
+        | "rbs-vcam-test"
+        | "rbs-media-decode-test"
+        | "rbs-browser-runner" => Class::Adapter,
         other if other.starts_with("rbs-") => return None,
         _ => return None,
     })

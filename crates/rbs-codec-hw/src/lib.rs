@@ -21,9 +21,9 @@
 //! adapters of this workspace and may change with them; it is not a stable
 //! contract for third parties.
 //!
-//! Limits shared by every hardware adapter for now: H.264 and HEVC only (AV1 needs
-//! its profiles here first), system-memory input only (native surfaces come with
-//! the `rbs-gpu` exporters, ADR-0025), no B-frames.
+//! Limits shared by every hardware adapter for now: H.264, HEVC and AV1 Main
+//! (8-bit; a device lists AV1 only when its probe finds it), system-memory input
+//! only (native surfaces come with the `rbs-gpu` exporters, ADR-0025), no B-frames.
 
 pub mod copy;
 pub mod device;

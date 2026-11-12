@@ -138,6 +138,12 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
                 .register_audio(Arc::new(rbs_audio_io_test::TestAudioBackend::new())),
         );
     }
+    // Scripted RGBA clips until FFmpeg is linked (ADR-0108). Any local path works.
+    note(a.sources.register_media(Arc::new(
+        rbs_media_decode_test::ScriptFactory::new(
+            rbs_media_decode_test::ScriptClip::silent_frames(),
+        ),
+    )));
     (a, errors)
 }
 

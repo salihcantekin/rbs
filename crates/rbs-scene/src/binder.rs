@@ -5,15 +5,20 @@
 //! filter chained after its source, and one compositor node per canvas for the program
 //! scene (and one for the preview scene in studio mode). Node ids stay the same across
 //! edits, so the runtime keeps running nodes across a swap (ADR-0020). The wanted
-//! lifecycle state of every node comes from [`SceneCollection::wanted_sources`].
+//! lifecycle state of every node comes from [`SceneCollection::running_sources`]:
+//! capture sources and stills from [`SceneCollection::wanted_sources`], and media
+//! and browser sources only while a shown scene draws them (ADR-0107).
 //!
 //! The binder owns the nodes and links it creates and touches nothing else. Outputs
 //! (stream, recording, preview panels, projectors) are attached by the application to
 //! [`SceneBinder::compositor`]; a compositor without one is not scheduled.
 //!
 //! With [`SceneBinder::with_audio`], each canvas also gets a mixer node (ADR-0039)
-//! fed by the audio-only sources visible in its program scene. The application
-//! attaches the canvas's audio encoder to [`SceneBinder::mixer`].
+//! fed by the sources with audio that are visible in its program scene. An
+//! audio-only source is linked from its filter-chain tail. A source that also has
+//! video keeps that node in the render partition and links its own audio pin
+//! across partitions (ADR-0106); the host names the queue reader after lowering.
+//! The application attaches the canvas's audio encoder to [`SceneBinder::mixer`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -24,6 +29,7 @@ use rbs_graph::description::{
     GraphDescription, GraphError, Link, NodeId, PartitionId, SchedulePlan,
 };
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId};
+use rbs_graph::partition::Crossing;
 
 use crate::collection::{SceneCollection, SceneError};
 use crate::flatten::Affine2;
@@ -104,10 +110,31 @@ pub struct BoundCompositor {
 pub struct BoundAudio {
     /// The source.
     pub source: SourceId,
-    /// The node whose audio the mixer hears: the tail of the source's filter chain
-    /// (the source's node when it has no enabled filter). It is in the mixer's
-    /// partition, so it is also the strip's producer (ADR-0037, ADR-0082).
+    /// The strip's producer (ADR-0037).
+    ///
+    /// For an audio-only source this is the tail of its audio filter chain (the
+    /// source node when no filter is enabled), in the mixer's partition (ADR-0082).
+    ///
+    /// For a source that also has video this is that source node until the host
+    /// calls [`BindReport::assign_queue_readers`] after lowering. That call sets it
+    /// to the partition-queue reader. The strip must use the reader, not the video
+    /// node (ADR-0106). There is no audio-filter chain on this path.
     pub producer: NodeId,
+}
+
+/// A logical audio link from a picture-and-sound source into one canvas mixer
+/// (ADR-0106). One entry per canvas whose program scene hears the source. The
+/// queue reader does not exist until [`rbs_graph::partition::Lowering::lower`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PictureSound {
+    /// The canvas whose mixer hears the source.
+    pub canvas: CanvasId,
+    /// The source.
+    pub source: SourceId,
+    /// The logical link, from the source node's own audio pin to the mixer.
+    /// [`rbs_graph::partition::Crossing::link`] uses the same value.
+    pub link: Link,
 }
 
 /// The bound mixer and what it mixes.
@@ -145,9 +172,10 @@ pub enum BindProblem {
     /// filter with the highest id in the loop is the one left out). The filter passes
     /// its sound unchanged until the key is valid (ADR-0095).
     KeyUnavailable(FilterId),
-    /// The source has video and audio outputs; only its video is bound. Its audio
-    /// would reach the mixer through a partition queue, whose reader the mixer sees
-    /// as the producer, which the binder cannot name yet.
+    /// Retained so callers can still match it (ADR-0039). Sync does not report it
+    /// when a picture-and-sound source's logical audio link is created (ADR-0106).
+    /// A node with only a video output never takes this path; a camera microphone
+    /// stays a companion source (ADR-0096).
     AudioOnVideoSource(SourceId),
 }
 
@@ -188,6 +216,11 @@ pub struct BindReport {
     /// Mixer nodes this sync removed (their canvas is gone), with every link into
     /// and out of them.
     pub retired_mixers: Vec<NodeId>,
+    /// Logical audio links from picture-and-sound sources into canvas mixers, in
+    /// canvas id then source id order. The host passes lowered crossings to
+    /// [`Self::assign_queue_readers`] so each matching mixer input's producer
+    /// becomes that crossing's reader.
+    pub picture_sound: Vec<PictureSound>,
 }
 
 /// Why binding failed. The graph and the binder are unchanged.
@@ -415,7 +448,9 @@ impl SceneBinder {
     /// Also binds audio (ADR-0039): one mixer node per canvas and the audio-only
     /// source nodes go into `partition`, an audio partition (ADR-0037; never
     /// `PartitionId::RENDER`, which ticks at frame rate). Each mixer gets a link from
-    /// every audio-only source visible in its canvas's program scene.
+    /// every source with audio that is visible in its canvas's program scene. A
+    /// source that also has video stays in the render partition; its audio pin is a
+    /// logical cross-partition link (ADR-0106).
     pub fn with_audio(mut self, partition: PartitionId) -> Self {
         self.audio = Some(partition);
         self
@@ -458,9 +493,32 @@ impl SceneBinder {
         collection: &SceneCollection,
         graph: &mut GraphDescription,
     ) -> Result<BindReport, BindError> {
+        self.sync_cued(collection, graph, &BTreeSet::new(), &BTreeSet::new())
+    }
+
+    /// Like [`Self::sync`]. `cued_items` are drawn by flatten and counted by
+    /// `visible_sources` (program mixer included) even when `visible` is false.
+    /// `cued_sources` is the temporal Active union (ADR-0105 decision 7): source ids
+    /// of items a shown scene is drawing for a cue. Both default to empty from
+    /// [`Self::sync`] until the host has a cue map. An empty set adds no branch in
+    /// the item walk beyond the existing visibility test.
+    pub fn sync_cued(
+        &mut self,
+        collection: &SceneCollection,
+        graph: &mut GraphDescription,
+        cued_items: &BTreeSet<ItemId>,
+        cued_sources: &BTreeSet<SourceId>,
+    ) -> Result<BindReport, BindError> {
         let mut draft_graph = graph.clone();
         let mut draft = self.state.clone();
-        let report = draft.sync(&*self.types, self.audio, collection, &mut draft_graph)?;
+        let report = draft.sync(
+            &*self.types,
+            self.audio,
+            collection,
+            &mut draft_graph,
+            cued_items,
+            cued_sources,
+        )?;
         *graph = draft_graph;
         self.state = draft;
         Ok(report)
@@ -615,6 +673,8 @@ impl State {
         audio: Option<PartitionId>,
         collection: &SceneCollection,
         graph: &mut GraphDescription,
+        cued_items: &BTreeSet<ItemId>,
+        cued_sources: &BTreeSet<SourceId>,
     ) -> Result<BindReport, BindError> {
         let mut report = BindReport::default();
         self.heal(graph, &mut report)?;
@@ -866,7 +926,7 @@ impl State {
                 }
             };
             let flat = collection
-                .flatten(canvas, scene)
+                .flatten_cued(canvas, scene, cued_items)
                 .map_err(BindError::Scene)?;
             let mut layers = Vec::with_capacity(flat.len());
             for layer in flat {
@@ -887,14 +947,27 @@ impl State {
                     });
                 }
             }
-            // Producers keep wanted sources on this canvas scheduled (linked), including
+            // Producers keep warm sources on this canvas scheduled (linked), including
             // hidden and off-scene ones, so devices stay open. Drawn layers still come
-            // only from flatten; a faded (opacity 0) source is wanted and linked too.
+            // only from flatten. A source the scene draws at opacity 0 stays linked.
             let mut producers: Vec<BoundNode> = Vec::new();
+            // Program keeps every warm source linked, including hidden and off the
+            // current scene. Temporal sources are omitted from `warm_sources`
+            // (ADR-0107). The program scene still links one it draws, including at
+            // opacity 0, so a fade keeps it scheduled. A hidden temporal source is
+            // in neither set unless a timed-show cue draws it (ADR-0105).
             let warm = match role {
-                Role::Program => collection.warm_sources(canvas),
+                Role::Program => {
+                    let mut warm = collection.warm_sources(canvas);
+                    warm.extend(
+                        collection
+                            .visible_sources_cued(canvas, scene, cued_items)
+                            .map_err(BindError::Scene)?,
+                    );
+                    warm
+                }
                 Role::Preview => collection
-                    .visible_sources(canvas, scene)
+                    .visible_sources_cued(canvas, scene, cued_items)
                     .map_err(BindError::Scene)?,
             };
             let ordered = layers.iter().map(|l| l.source).chain(warm.iter().copied());
@@ -938,8 +1011,10 @@ impl State {
             );
         }
 
-        // One mixer per canvas; its inputs are the audio-only sources visible in the
-        // canvas's program scene.
+        // One mixer per canvas. Its inputs are the sources with audio visible in the
+        // canvas's program scene. Audio-only sources are linked from their chain
+        // tail. A source that also has video is linked from its own audio pin
+        // (ADR-0106); the host names the queue reader after lowering.
         if let (Some((desc, pins)), Some(partition)) = (mixer_desc, audio) {
             let canvases: BTreeSet<CanvasId> = collection.canvases().map(|c| c.id).collect();
             let unneeded: Vec<CanvasId> = self
@@ -952,11 +1027,6 @@ impl State {
                 if let Some(m) = self.mixers.remove(&c) {
                     retire(graph, m.node.node)?;
                     report.retired_mixers.push(m.node.node);
-                }
-            }
-            for (id, bound) in &self.sources {
-                if bound.source.pins.output.is_some() && bound.source.pins.audio.is_some() {
-                    report.problems.push(BindProblem::AudioOnVideoSource(*id));
                 }
             }
             for canvas in collection.canvases() {
@@ -978,7 +1048,7 @@ impl State {
                 };
                 let heard: BTreeSet<SourceId> = match canvas.program {
                     Some(scene) => collection
-                        .visible_sources(canvas.id, scene)
+                        .visible_sources_cued(canvas.id, scene, cued_items)
                         .map_err(BindError::Scene)?
                         .into_iter()
                         .collect(),
@@ -986,6 +1056,10 @@ impl State {
                 };
                 let mut inputs = Vec::new();
                 let mut outs: BTreeMap<NodeId, String> = BTreeMap::new();
+                // Picture-and-sound sources whose logical link this canvas hears.
+                // The producer stored below is the source node until the host names
+                // the reader; it is not a filter tail (ADR-0106 decision 7).
+                let mut picture_sound: Vec<(SourceId, NodeId)> = Vec::new();
                 for id in &heard {
                     let Some(bound) = self.sources.get(id) else {
                         continue;
@@ -1000,6 +1074,14 @@ impl State {
                             });
                             outs.insert(tail.node, out.clone());
                         }
+                    } else if let Some(out) = bound.source.pins.audio.clone() {
+                        let node = bound.source.node;
+                        inputs.push(BoundAudio {
+                            source: *id,
+                            producer: node,
+                        });
+                        outs.insert(node, out);
+                        picture_sound.push((*id, node));
                     }
                 }
                 mix.links.retain(|link| {
@@ -1016,6 +1098,21 @@ impl State {
                         mix.links.push(link);
                     }
                 }
+                let mixer_node = mix.node.node;
+                for (source, node) in picture_sound {
+                    if let Some(link) = mix
+                        .links
+                        .iter()
+                        .copied()
+                        .find(|l| l.from.node == node && l.to.node == mixer_node)
+                    {
+                        report.picture_sound.push(PictureSound {
+                            canvas: canvas.id,
+                            source,
+                            link,
+                        });
+                    }
+                }
                 report.mixers.insert(
                     canvas.id,
                     BoundMixer {
@@ -1027,10 +1124,13 @@ impl State {
             }
         }
 
-        // Wanted states.
-        let wanted = collection.wanted_sources();
+        // Wanted states. Capture sources and stills follow `wanted_sources`.
+        // Media and browser sources follow `running_sources` (ADR-0107): Active
+        // only while a shown program or preview scene draws them, or the host's
+        // cue set names them (ADR-0105).
+        let running = collection.running_sources_cued(cued_sources);
         for (id, bound) in &self.sources {
-            let state = if wanted.contains(id) {
+            let state = if running.contains(id) {
                 Lifecycle::Active
             } else {
                 Lifecycle::Standby
@@ -1052,6 +1152,42 @@ impl State {
             set_state(graph, m.node.node, Lifecycle::Active)?;
         }
         Ok(report)
+    }
+}
+
+impl BindReport {
+    /// Sets each picture-and-sound mixer input's producer to the queue reader of
+    /// its logical link (ADR-0106).
+    ///
+    /// Call this after `Lowering::lower`, passing `Lowered::crossings`, or after
+    /// `Engine::apply`, passing `Engine::crossings`. Both must be the same lowering
+    /// the runtime applied: a second `Lowering` would number readers differently.
+    /// Reader ids are allocated only there. This method does not allocate any.
+    ///
+    /// An input whose link is not among `crossings` is left unchanged. Audio-only
+    /// inputs are not listed in [`Self::picture_sound`] and stay on their chain tail.
+    /// Strips stay keyed by [`SourceId`](crate::model::SourceId); use the producer
+    /// this call writes, which is the reader in the mixer's partition, not the
+    /// video node.
+    pub fn assign_queue_readers(&mut self, crossings: &[Crossing]) {
+        let pending = self.picture_sound.clone();
+        for listed in pending {
+            let Some(reader) = crossings
+                .iter()
+                .find(|c| c.link == listed.link)
+                .map(|c| c.reader)
+            else {
+                continue;
+            };
+            let Some(mixer) = self.mixers.get_mut(&listed.canvas) else {
+                continue;
+            };
+            for input in mixer.inputs.iter_mut() {
+                if input.source == listed.source {
+                    input.producer = reader;
+                }
+            }
+        }
     }
 }
 

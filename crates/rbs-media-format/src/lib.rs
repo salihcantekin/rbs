@@ -8,6 +8,7 @@
 //!   conversion.
 //! - [`avc`]: `AVCDecoderConfigurationRecord` (avcC) parsing and building.
 //! - [`hvcc`]: `HEVCDecoderConfigurationRecord` (hvcC) parsing.
+//! - [`av1`]: `AV1CodecConfigurationRecord` (av1C) parsing and building.
 //! - [`aac`]: `AudioSpecificConfig` parsing and ADTS headers.
 //! - [`h273`]: ITU-T H.273 colour code points for encoder adapters.
 //! - [`amf0`]: AMF0 values for FLV script tags and RTMP commands.
@@ -18,6 +19,7 @@
 
 pub mod aac;
 pub mod amf0;
+pub mod av1;
 pub mod avc;
 pub mod flv;
 pub mod h273;

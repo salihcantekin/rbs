@@ -1,6 +1,6 @@
 # ADR-0101: Mixer columns use fixed strips, side-by-side clusters and horizontal scroll
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-11
 - Deciders: owner
 - Refines: [ADR-0078](0078-saved-section-state-and-shared-section-components.md) decision 5 (Mixer arrangements), [ADR-0083](0083-mixer-orientation-chosen-by-the-user.md) decision 5 (columns scroll, min strip width), [ADR-0081](0081-master-strip-in-the-mixer.md) (Master placement)
@@ -33,4 +33,4 @@ The Mixer's columns layout shared the panel width across group clusters and drew
 
 ## Review
 
-Independent review per ADR-0014. Record: reviewer, date, verdict, concerns and resolutions.
+- 2026-11-12: Owner (Salih) accepts this ADR. Column strips keep `size.mixer.strip`, clusters sit side by side, and the row scrolls horizontally. Status: Accepted.

@@ -19,12 +19,20 @@
 //! The crate never depends on an adapter (P1): adapters come in as port factory trait
 //! objects, and engine code never names a vendor (P3).
 
+mod browser;
 mod filters;
 mod layers;
 mod registry;
 pub mod still;
 pub mod types;
 
+pub use browser::{
+    BROWSER_CAP, BROWSER_NODE_TYPE, BrowserBudget, BrowserClaim, BrowserGrant, BrowserScheme,
+    BrowserControlSidecar, BrowserFrameSink, BrowserSession, BrowserSettings, BrowserSourceNode,
+    BrowserStartError, BrowserTree,
+    MAX_HELPERS, NOT_PERMITTED, ShowClass, SourceReach, agent_may_set_browser_url,
+    browser_descriptor, browser_scheme, browser_url_is_network, file_directory_scope,
+};
 pub use filters::{filter_settings, filter_values, filter_values_lenient};
 pub use layers::{GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layers, resolve_slide};
 pub use registry::{

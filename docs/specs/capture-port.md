@@ -49,7 +49,18 @@ pub struct CaptureTarget { pub id, pub kind, pub name: String,
     pub size: Option<(u32, u32)>, pub modes: Vec<CameraMode>,
     pub app: Option<String>,
     pub scale: Option<DisplayScale>,
-    pub related: Option<RelatedDevice> }   // + new / with_size / with_scale / with_modes / with_app / with_related
+    pub related: Option<RelatedDevice>,
+    pub work_rect: Option<WorkRect> }   // + new / with_size / with_scale / with_modes / with_app / with_related / with_work_rect
+
+/// A display work area in the same pixels as `CaptureTarget::size` (ADR-0104; minor
+/// additive field). Origin is the top-left of the framebuffer. `None` for windows,
+/// cameras, the PipeWire portal, ScreenCaptureKit in this version, and any adapter
+/// that did not read one. Windows Graphics Capture fills it from `rcWork` versus
+/// `rcMonitor`, scaled into the framebuffer when those rectangles are not already
+/// in capture pixels (`work_rect_in_framebuffer`). "Reset to system" is a no-op
+/// when this is `None`.
+#[non_exhaustive]
+pub struct WorkRect { pub x: u32, pub y: u32, pub width: u32, pub height: u32 }
 
 /// OS pixels per logical point of a display (ADR-0102 decision 8). Windows:
 /// effective DPI over 96 (`from_dpi`, scale = dpi / 96). macOS: framebuffer width
@@ -123,6 +134,15 @@ pub trait CaptureFactory: AdapterFactory {
     /// avoid one, and every camera or microphone, returns Unsupported (also the
     /// default). TargetNotFound if gone. No target names or pixels in logs.
     fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError>;
+
+    /// One sRGB RGBA8 picture for the source Region section (ADR-0103 decision 4).
+    /// Not `thumbnail`: the long side is at most `REGION_GRAB_LONG` (960), and
+    /// `THUMBNAIL_MAX` is not raised. Scaled to fit in a square of
+    /// `min(max_long, 960)`, aspect kept, never upscaled. Empty `max_long` ->
+    /// FormatUnsupported. Same privacy and no-session rules as `thumbnail`. The
+    /// host keeps one grab in flight and drops it when the section closes. Default
+    /// and cameras: Unsupported. The test adapter implements it.
+    fn region_grab(&self, target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError>;
 }
 
 #[non_exhaustive]

@@ -96,6 +96,8 @@ pub(crate) fn profile(p: Profile) -> u16 {
         Profile::H264High => sys::MFX_PROFILE_AVC_HIGH,
         Profile::HevcMain => sys::MFX_PROFILE_HEVC_MAIN,
         Profile::HevcMain10 => sys::MFX_PROFILE_HEVC_MAIN10,
+        // The probe does not list AV1, so `plan` does not produce this profile.
+        Profile::Av1Main => unreachable!("this adapter does not probe AV1"),
     }) as u16
 }
 

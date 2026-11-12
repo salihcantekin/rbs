@@ -72,7 +72,12 @@ fn video(i: SourceInstance) -> VideoSource {
 fn types_are_installed_only_by_probed_adapters_that_capture_their_kind() {
     let mut reg = SourceTypes::new();
     // Still sources need no adapter (ADR-0074).
-    let still = [types::IMAGE_SOURCE, types::COLOR_SOURCE].map(ty);
+    let still = [
+        types::IMAGE_SOURCE,
+        types::COLOR_SOURCE,
+        types::BROWSER_SOURCE,
+    ]
+    .map(ty);
     assert_eq!(reg.installed(), still);
     reg.register_capture(Arc::new(TestCaptureFactory::new()))
         .unwrap();
@@ -91,6 +96,7 @@ fn types_are_installed_only_by_probed_adapters_that_capture_their_kind() {
             types::AUDIO_OUTPUT_SOURCE,
             types::IMAGE_SOURCE,
             types::COLOR_SOURCE,
+            types::BROWSER_SOURCE,
         ]
         .map(ty)
     );
@@ -201,6 +207,7 @@ fn an_empty_registry_still_has_the_compositor_the_mixer_and_the_filters() {
             "org.rbs.filter.chroma-key",
             "org.rbs.filter.color-correction",
             "org.rbs.filter.sharpen",
+            "org.rbs.source.browser",
             "org.rbs.source.color",
             "org.rbs.source.image",
         ]
@@ -215,6 +222,7 @@ fn instances_match_the_descriptors_the_binder_uses() {
         let settings = match t.as_str() {
             types::WINDOW_SOURCE => settings(&[(keys::TARGET, text("test-window-0"))]),
             types::IMAGE_SOURCE => settings(&[(keys::SAMPLE, text("slate"))]),
+            types::BROWSER_SOURCE => settings(&[(keys::URL, text("https://example.com/"))]),
             _ => Settings::new(),
         };
         let instance = reg
@@ -224,6 +232,8 @@ fn instances_match_the_descriptors_the_binder_uses() {
             SourceInstance::Video(v) => Node::<GpuRuntime>::descriptor(&v.node),
             SourceInstance::Audio(a) => Node::<()>::descriptor(&a.node),
             SourceInstance::Still(s) => Node::<GpuRuntime>::descriptor(&s.node),
+            SourceInstance::Media(m) => Node::<GpuRuntime>::descriptor(&m.node),
+            SourceInstance::Browser(b) => Node::<GpuRuntime>::descriptor(&b.node),
             other => panic!("unexpected {other:?}"),
         };
         assert_eq!(

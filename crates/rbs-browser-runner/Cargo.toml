@@ -1,0 +1,19 @@
+[package]
+name = "rbs-browser-runner"
+description = "Test-double browser helper executable (ADR-0109). Stands in for a CEF process tree. The studio does not link CEF."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rbs-browser-helper"
+path = "src/main.rs"

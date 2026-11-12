@@ -316,7 +316,8 @@ impl Format {
 }
 
 /// The video codec a recording asks for. H.264 is the default and is omitted from
-/// saved files. HEVC is offered only where an encoder lists it.
+/// saved files. HEVC and AV1 are offered only where an encoder lists them. A stream
+/// stays H.264: RTMP and MPEG-TS do not carry AV1 yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoCodec {
@@ -325,11 +326,13 @@ pub enum VideoCodec {
     H264,
     /// HEVC (H.265), 8-bit.
     Hevc,
+    /// AV1 Main, 8-bit.
+    Av1,
 }
 
 impl VideoCodec {
-    /// Both, in the order the UI lists them.
-    pub const ALL: [VideoCodec; 2] = [VideoCodec::H264, VideoCodec::Hevc];
+    /// All of them, in the order the UI lists them.
+    pub const ALL: [VideoCodec; 3] = [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1];
 
     /// True for [`VideoCodec::H264`], so a saved file can omit the field.
     pub fn is_h264(self) -> bool {
@@ -341,6 +344,7 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => "H.264",
             VideoCodec::Hevc => "HEVC",
+            VideoCodec::Av1 => "AV1",
         }
     }
 
@@ -349,7 +353,20 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => CodecId::H264,
             VideoCodec::Hevc => CodecId::Hevc,
+            VideoCodec::Av1 => CodecId::Av1,
         }
+    }
+
+    /// True when `profile` is a name this codec can ask an encoder for. `None` is
+    /// automatic and always allowed.
+    pub fn allows_profile(self, profile: Option<&str>) -> bool {
+        matches!(
+            (self, profile),
+            (_, None)
+                | (VideoCodec::H264, Some("high" | "main" | "baseline"))
+                | (VideoCodec::Hevc, Some("main" | "main10"))
+                | (VideoCodec::Av1, Some("main"))
+        )
     }
 }
 
@@ -400,7 +417,7 @@ pub struct Encoding {
     /// The video encoder's adapter id, or `None` for the best one this system has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
-    /// H.264, or HEVC where an encoder lists it. Omitted when H.264.
+    /// H.264, or HEVC or AV1 where an encoder lists it. Omitted when H.264.
     #[serde(default, skip_serializing_if = "is_h264")]
     pub video_codec: VideoCodec,
     /// How the encoder spends bits.
@@ -577,7 +594,7 @@ pub struct RecordProfile {
     /// The video encoder's adapter id, or `None` for the best one this system has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
-    /// H.264, or HEVC where an encoder lists it. Omitted when H.264.
+    /// H.264, or HEVC or AV1 where an encoder lists it. Omitted when H.264.
     #[serde(default, skip_serializing_if = "is_h264")]
     pub video_codec: VideoCodec,
     /// How the encoder spends bits. Fields below that a file from an earlier version
@@ -770,6 +787,7 @@ impl RecordProfile {
             video_codec: match self.video_codec {
                 VideoCodec::H264 => api::VideoCodec::H264,
                 VideoCodec::Hevc => api::VideoCodec::Hevc,
+                VideoCodec::Av1 => api::VideoCodec::Av1,
             },
             rate_control: match self.rate_control {
                 RateMode::Cbr => api::RateMode::Cbr,
@@ -830,6 +848,7 @@ impl RecordProfile {
             video_codec: match p.video_codec {
                 api::VideoCodec::H264 => VideoCodec::H264,
                 api::VideoCodec::Hevc => VideoCodec::Hevc,
+                api::VideoCodec::Av1 => VideoCodec::Av1,
             },
             rate_control: match p.rate_control {
                 api::RateMode::Cbr => RateMode::Cbr,
@@ -877,6 +896,7 @@ impl Encoding {
             video_codec: match self.video_codec {
                 VideoCodec::H264 => api::VideoCodec::H264,
                 VideoCodec::Hevc => api::VideoCodec::Hevc,
+                VideoCodec::Av1 => api::VideoCodec::Av1,
             },
             rate_control: match self.rate_control {
                 RateMode::Cbr => api::RateMode::Cbr,
@@ -913,6 +933,7 @@ impl Encoding {
             video_codec: match e.video_codec {
                 api::VideoCodec::H264 => VideoCodec::H264,
                 api::VideoCodec::Hevc => VideoCodec::Hevc,
+                api::VideoCodec::Av1 => VideoCodec::Av1,
             },
             rate_control: match e.rate_control {
                 api::RateMode::Cbr => RateMode::Cbr,

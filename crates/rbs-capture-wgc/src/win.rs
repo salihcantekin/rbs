@@ -12,7 +12,7 @@ use std::time::Duration;
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
     CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, SyncKind, TargetId,
-    TargetKind, caps, choose_framebuffer,
+    TargetKind, caps, choose_framebuffer, work_rect_in_framebuffer,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -148,6 +148,7 @@ struct Monitor {
     handle: HMONITOR,
     device: String,
     rect: RECT,
+    work: RECT,
     primary: bool,
 }
 
@@ -177,6 +178,7 @@ fn monitors() -> Vec<Monitor> {
                 handle,
                 device: wide_to_string(&info.szDevice),
                 rect: info.monitorInfo.rcMonitor,
+                work: info.monitorInfo.rcWork,
                 primary: info.monitorInfo.dwFlags & 1 != 0,
             });
         }
@@ -531,12 +533,18 @@ impl CaptureFactory for WgcCaptureFactory {
                         } else {
                             format!("Display {}", index + 1)
                         };
+                        let work = work_rect_in_framebuffer(
+                            (w, h),
+                            (m.rect.left, m.rect.top, m.rect.right, m.rect.bottom),
+                            (m.work.left, m.work.top, m.work.right, m.work.bottom),
+                        );
                         let target = CaptureTarget::new(
                             TargetId::new(format!("{DISPLAY_PREFIX}{}", m.device)),
                             TargetKind::Display,
                             name,
                         )
-                        .with_size(w, h);
+                        .with_size(w, h)
+                        .with_work_rect(work);
                         match scale {
                             Some(scale) => target.with_scale(scale),
                             None => target,
@@ -567,6 +575,14 @@ impl CaptureFactory for WgcCaptureFactory {
         max: Size,
     ) -> Result<rbs_capture::Thumbnail, CaptureError> {
         crate::thumb::thumbnail(target, max)
+    }
+
+    fn region_grab(
+        &self,
+        target: &TargetId,
+        max_long: u32,
+    ) -> Result<rbs_capture::RegionGrab, CaptureError> {
+        crate::thumb::region_grab(target, max_long)
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {

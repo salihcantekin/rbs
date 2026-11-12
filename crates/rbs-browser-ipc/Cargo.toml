@@ -1,0 +1,12 @@
+[package]
+name = "rbs-browser-ipc"
+description = "Length-prefixed IPC for the browser helper tree root (ADR-0109). The studio does not link CEF."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -823,6 +823,7 @@ impl Recording {
             &settings.studio(),
             Strictness::Strict,
             Some(prepared),
+            None,
         )?;
         let started = studio
             .finish_first_attach()

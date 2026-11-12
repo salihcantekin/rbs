@@ -950,6 +950,28 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "item.show",
+        title: "Show now",
+        tooltip: "Draw a hidden source for its show duration, without changing the eye or undo",
+        icon: Some("bolt"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.show"),
+        params: &[target("item"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
+        id: "item.set_show_for",
+        title: "Show duration",
+        tooltip: "How long Show draws this source while it is hidden, from 1 ms to 10 minutes",
+        icon: Some("hourglass"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.set_show_for"),
+        params: &[target("item"), COLLECTION, target("show_for_ms")],
+        checkable: false,
+    },
+    Entry {
         id: "item.locked.toggle",
         title: "Locked",
         tooltip: "Lock the source's picture so the preview does not select, move or resize it",
@@ -1793,6 +1815,10 @@ pub const NOT_IN_MENU: &[&str] = &[
     "ui.collection.import",
     "ui.collection.export",
     "ui.collection.delete",
+    // Show and its duration run from the Sources row (not built yet) and from a
+    // shortcut or the control API. They are not on the menu bar (ADR-0105).
+    "item.show",
+    "item.set_show_for",
 ];
 
 /// The icon an id shows, from the design system's icon set: the entry's, or for an
@@ -1840,6 +1866,8 @@ pub fn choice_icon(id: &CommandId, checked: bool) -> Option<&'static str> {
             Some("camera") => "camera",
             Some("audio_input") => "mic",
             Some("system_audio") | Some("application_audio") => "speaker",
+            Some("media") | Some("image") => "image",
+            Some("browser") => "window",
             Some("existing") => "copy",
             _ => "plus",
         },

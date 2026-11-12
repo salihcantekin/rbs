@@ -19,6 +19,7 @@ FFmpeg gives access to almost every software and hardware codec quickly. Avoidin
 - Fast path to a working encoder on all platforms in Phase 0.
 - Removing FFmpeg later is a matter of adapter coverage, not refactoring.
 - CI must build with and without the FFmpeg feature.
+- 2026-11-12: the media-file source adapter named in the decision is specified by [ADR-0108](0108-media-file-source.md) (Proposed). This decision is unchanged.
 
 ## Alternatives considered
 

@@ -21,9 +21,13 @@ pub const APPLICATION_AUDIO_SOURCE: &str = "org.rbs.source.application-audio";
 pub const IMAGE_SOURCE: &str = "org.rbs.source.image";
 /// A solid colour or a two-colour gradient (ADR-0074).
 pub const COLOR_SOURCE: &str = "org.rbs.source.color";
+/// One local video, GIF, APNG, or animated WebP file (ADR-0108).
+pub const MEDIA_SOURCE: &str = "org.rbs.source.media";
+/// A page rendered by a helper tree (ADR-0109). Network-capable, including `file`.
+pub const BROWSER_SOURCE: &str = "org.rbs.source.browser";
 
 /// Every built-in source type, in a fixed order.
-pub const ALL: [&str; 8] = [
+pub const ALL: [&str; 10] = [
     DISPLAY_SOURCE,
     WINDOW_SOURCE,
     CAMERA_SOURCE,
@@ -32,6 +36,8 @@ pub const ALL: [&str; 8] = [
     APPLICATION_AUDIO_SOURCE,
     IMAGE_SOURCE,
     COLOR_SOURCE,
+    MEDIA_SOURCE,
+    BROWSER_SOURCE,
 ];
 
 /// Settings keys. Keys a type does not use are ignored, so a document written by a
@@ -68,6 +74,17 @@ pub mod keys {
     /// Bool, color: draw the fill. Absent or true fills the shape; false leaves the
     /// inside empty (the stored colour stays, so turning it back on restores it).
     pub const FILLED: &str = "filled";
+    /// Bool, media: play again at the end. Default true. Does not by itself require a
+    /// new node; the binder still replaces on any settings edit until a parameter
+    /// channel exists (ADR-0108 decision 7).
+    pub const LOOP: &str = "loop";
+    /// Bool, media: seek to the start on the next wake. Default true. Read on wake,
+    /// not by replacing the node.
+    pub const RESTART_WHEN_SHOWN: &str = "restart_when_shown";
+    /// Text, browser: `http`, `https`, or `file` URL. Network-capable even for `file`.
+    pub const URL: &str = "url";
+    /// Bool, browser: keep straight alpha. Default false, which forces opaque alpha.
+    pub const TRANSPARENT: &str = "transparent";
 }
 
 /// What a source type captures.
@@ -80,6 +97,10 @@ pub enum SourceClass {
     Audio(EndpointKind),
     /// A picture that does not change on its own (image, colour, gradient).
     Still,
+    /// A local media file (ADR-0108). Always a video pin and an audio pin.
+    Media,
+    /// A browser page (ADR-0109). Network-capable. Video pin only.
+    Browser,
 }
 
 /// The class of a built-in source type, or `None` for any other type.
@@ -92,6 +113,8 @@ pub fn class_of(type_id: &NodeTypeId) -> Option<SourceClass> {
         AUDIO_OUTPUT_SOURCE => SourceClass::Audio(EndpointKind::OutputLoopback),
         APPLICATION_AUDIO_SOURCE => SourceClass::Audio(EndpointKind::Application),
         IMAGE_SOURCE | COLOR_SOURCE => SourceClass::Still,
+        MEDIA_SOURCE => SourceClass::Media,
+        BROWSER_SOURCE => SourceClass::Browser,
         _ => return None,
     })
 }

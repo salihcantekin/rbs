@@ -1,0 +1,16 @@
+[package]
+name = "rbs-media-decode-test"
+description = "Fake media-file decoder for conformance (ADR-0108). Scripted RGBA frames and optional PCM. Not FFmpeg."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-media-decode = { path = "../rbs-media-decode" }
+
+[lints]
+workspace = true

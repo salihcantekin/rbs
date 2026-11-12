@@ -8,9 +8,10 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, CanvasId, CollectionGlide, Crop, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle,
-    Layout, MAX_GLIDE_MS, MAX_SOURCE_VOLUME, MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope,
-    SettingValue, Settings, Shadow, Shape, SourceAudio, SourceGlide, SourceId, SourceMonitor,
+    Border, CanvasId, CollectionGlide, Crop, DisplayChrome, FilterId, GlideEasing, ItemContent,
+    ItemId, ItemStyle, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, MAX_SOURCE_VOLUME,
+    MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape,
+    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -420,6 +421,248 @@ fn placed_sources_stay_wanted_off_air_until_deactivated() {
 }
 
 #[test]
+fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
+    let mut s = studio();
+    let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
+    let (shelf, _) = s.col.add_scene("Shelf", SceneScope::Shared).unwrap();
+    let (preview, _) = s.col.add_scene("Preview", SceneScope::Shared).unwrap();
+    let (media, _) = s
+        .col
+        .add_source("Film", ty("media"), Settings::new())
+        .unwrap();
+    let (browser, _) = s
+        .col
+        .add_source("Page", ty("browser"), Settings::new())
+        .unwrap();
+    let (logo, _) = s
+        .col
+        .add_source("Logo", ty("image"), Settings::new())
+        .unwrap();
+    let (hidden_media, _) = s
+        .col
+        .add_item(live, ItemContent::Source(media), full(1.0, 1.0), None)
+        .unwrap();
+    let (hidden_page, _) = s
+        .col
+        .add_item(live, ItemContent::Source(browser), full(1.0, 1.0), None)
+        .unwrap();
+    let (hidden_cam, _) = s
+        .col
+        .add_item(live, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    let (hidden_logo, _) = s
+        .col
+        .add_item(live, ItemContent::Source(logo), full(1.0, 1.0), None)
+        .unwrap();
+    s.col.set_item_visible(hidden_media, false).unwrap();
+    s.col.set_item_visible(hidden_page, false).unwrap();
+    s.col.set_item_visible(hidden_cam, false).unwrap();
+    s.col.set_item_visible(hidden_logo, false).unwrap();
+    s.col.set_program(s.wide, Some(live)).unwrap();
+
+    // Hidden media and browser are not running. A hidden camera and a hidden
+    // still stay running. Placement alone still counts as wanted.
+    assert!(!s.col.running_sources().contains(&media));
+    assert!(!s.col.running_sources().contains(&browser));
+    assert!(s.col.running_sources().contains(&s.cam));
+    assert!(s.col.running_sources().contains(&logo));
+    assert!(s.col.wanted_sources().contains(&media));
+    assert!(!s.col.warm_sources(s.wide).contains(&media));
+    assert!(!s.col.warm_sources(s.wide).contains(&browser));
+    assert!(s.col.warm_sources(s.wide).contains(&s.cam));
+    assert!(s.col.warm_sources(s.wide).contains(&logo));
+
+    // Opacity 0 with visible true still counts, for both temporal type ids.
+    s.col.set_item_visible(hidden_media, true).unwrap();
+    s.col
+        .set_item_layout(hidden_media, None, full(1.0, 1.0).with_opacity(0.0))
+        .unwrap();
+    s.col.set_item_visible(hidden_page, true).unwrap();
+    s.col
+        .set_item_layout(hidden_page, None, full(1.0, 1.0).with_opacity(0.0))
+        .unwrap();
+    assert!(s.col.running_sources().contains(&media));
+    assert!(s.col.running_sources().contains(&browser));
+    assert!(
+        !s.col
+            .flatten(s.wide, live)
+            .unwrap()
+            .iter()
+            .any(|l| l.source == media || l.source == browser)
+    );
+
+    // Placed only on a scene that is not program or preview: not running.
+    s.col.remove_item(hidden_media).unwrap();
+    s.col.remove_item(hidden_page).unwrap();
+    s.col
+        .add_item(shelf, ItemContent::Source(media), full(1.0, 1.0), None)
+        .unwrap();
+    s.col
+        .add_item(shelf, ItemContent::Source(browser), full(1.0, 1.0), None)
+        .unwrap();
+    assert!(!s.col.running_sources().contains(&media));
+    assert!(!s.col.running_sources().contains(&browser));
+    assert!(s.col.wanted_sources().contains(&media));
+
+    // The preview scene counts. One visible placement on any canvas is enough.
+    s.col
+        .add_item(preview, ItemContent::Source(browser), full(1.0, 1.0), None)
+        .unwrap();
+    s.col.set_preview(s.wide, Some(preview)).unwrap();
+    assert!(s.col.running_sources().contains(&browser));
+    assert!(!s.col.running_sources().contains(&media));
+    let (tall_live, _) = s.col.add_scene("Tall live", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(tall_live, ItemContent::Source(media), full(1.0, 1.0), None)
+        .unwrap();
+    s.col.set_program(s.tall, Some(tall_live)).unwrap();
+    assert!(s.col.running_sources().contains(&media));
+}
+
+#[test]
+fn timed_show_draws_a_hidden_item_without_writing_visible() {
+    let mut s = studio();
+    let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
+    let (shelf, _) = s.col.add_scene("Shelf", SceneScope::Shared).unwrap();
+    let (inner, _) = s.col.add_scene("Inner", SceneScope::Shared).unwrap();
+    let (preview, _) = s.col.add_scene("Preview", SceneScope::Shared).unwrap();
+    let (media, _) = s
+        .col
+        .add_source("Film", ty("media"), Settings::new())
+        .unwrap();
+    let (logo, _) = s
+        .col
+        .add_source("Logo", ty("image"), Settings::new())
+        .unwrap();
+    let (sponsor, _) = s
+        .col
+        .add_item(live, ItemContent::Source(media), full(1.0, 1.0), None)
+        .unwrap();
+    let (plate, _) = s
+        .col
+        .add_item(live, ItemContent::Source(logo), full(1.0, 1.0), None)
+        .unwrap();
+    let (nest, _) = s
+        .col
+        .add_item(live, ItemContent::Scene(inner), full(1.0, 1.0), None)
+        .unwrap();
+    let (nested_logo, _) = s
+        .col
+        .add_item(inner, ItemContent::Source(logo), full(1.0, 1.0), None)
+        .unwrap();
+    let (shelf_item, _) = s
+        .col
+        .add_item(shelf, ItemContent::Source(media), full(1.0, 1.0), None)
+        .unwrap();
+    let (preview_item, _) = s
+        .col
+        .add_item(preview, ItemContent::Source(media), full(1.0, 1.0), None)
+        .unwrap();
+    for id in [sponsor, plate, nest, nested_logo, shelf_item, preview_item] {
+        s.col.set_item_visible(id, false).unwrap();
+    }
+    s.col.set_program(s.wide, Some(live)).unwrap();
+    s.col.set_preview(s.wide, Some(preview)).unwrap();
+
+    assert_eq!(
+        s.col.set_item_show_for(sponsor, Some(0)),
+        Err(SceneError::InvalidShowFor)
+    );
+    assert_eq!(
+        s.col.set_item_show_for(sponsor, Some(MAX_SHOW_FOR_MS + 1)),
+        Err(SceneError::InvalidShowFor)
+    );
+    let set = s.col.set_item_show_for(sponsor, Some(5_000)).unwrap();
+    assert_eq!(s.col.item(sponsor).unwrap().1.show_for_ms, Some(5_000));
+    assert!(!s.col.item(sponsor).unwrap().1.visible);
+    s.col.undo(set).unwrap();
+    assert_eq!(s.col.item(sponsor).unwrap().1.show_for_ms, None);
+    s.col.set_item_show_for(sponsor, Some(5_000)).unwrap();
+
+    let cued = BTreeSet::from([sponsor]);
+    assert!(s.col.flatten(s.wide, live).unwrap().is_empty());
+    let drawn = s.col.flatten_cued(s.wide, live, &cued).unwrap();
+    assert_eq!(drawn.len(), 1);
+    assert_eq!(drawn[0].source, media);
+    assert_eq!(drawn[0].path, vec![sponsor]);
+    assert!(!s.col.item(sponsor).unwrap().1.visible);
+    assert!(
+        s.col
+            .visible_sources_cued(s.wide, live, &cued)
+            .unwrap()
+            .contains(&media)
+    );
+    assert!(
+        !s.col
+            .visible_sources(s.wide, live)
+            .unwrap()
+            .contains(&media)
+    );
+    assert_eq!(s.col.cued_drawn_sources(&cued), BTreeSet::from([media]));
+    assert!(
+        s.col
+            .running_sources_cued(&BTreeSet::from([media]))
+            .contains(&media)
+    );
+    assert!(!s.col.running_sources().contains(&media));
+    // A still stays on the warm rule whether or not a cue names it.
+    assert!(s.col.running_sources().contains(&logo));
+
+    // A cue on a scene that is not the program does not appear on program output.
+    let shelf_cue = BTreeSet::from([shelf_item]);
+    assert!(
+        s.col
+            .flatten_cued(s.wide, live, &shelf_cue)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(s.col.cued_drawn_sources(&shelf_cue).is_empty());
+
+    // Preview draws its own cue and does not put it on the program list.
+    let preview_cue = BTreeSet::from([preview_item]);
+    assert!(
+        s.col
+            .flatten_cued(s.wide, live, &preview_cue)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        s.col
+            .flatten_cued(s.wide, preview, &preview_cue)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(s.col.cued_drawn_sources(&preview_cue).contains(&media));
+
+    // A hidden nested scene stays closed unless that nested item is cued.
+    let inner_only = BTreeSet::from([nested_logo]);
+    assert!(
+        s.col
+            .flatten_cued(s.wide, live, &inner_only)
+            .unwrap()
+            .is_empty()
+    );
+    let opened = BTreeSet::from([nest, nested_logo]);
+    let nested = s.col.flatten_cued(s.wide, live, &opened).unwrap();
+    assert_eq!(nested.len(), 1);
+    assert_eq!(nested[0].source, logo);
+    assert_eq!(nested[0].path, vec![nest, nested_logo]);
+
+    // Opacity 0 is not a layer, and it still counts as drawn for the mixer set.
+    s.col
+        .set_item_layout(sponsor, None, full(1.0, 1.0).with_opacity(0.0))
+        .unwrap();
+    assert!(s.col.flatten_cued(s.wide, live, &cued).unwrap().is_empty());
+    assert!(
+        s.col
+            .visible_sources_cued(s.wide, live, &cued)
+            .unwrap()
+            .contains(&media)
+    );
+}
+
+#[test]
 fn filters_keep_order_and_ids() {
     let mut s = studio();
     let (f1, _) = s.col.add_filter(s.cam, ty("lut"), Settings::new()).unwrap();
@@ -498,7 +741,7 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
     let len = scene
         .and_then(|s| col.scene(s))
         .map_or(0, |s| s.items.len());
-    match rng.below(30) {
+    match rng.below(31) {
         29 => col.set_globals(canvas.ok_or(missing)?, scene),
         14 => {
             let (s, f) = filter.ok_or(missing)?;
@@ -575,6 +818,15 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
         8 => col.remove_item(item.ok_or(missing)?),
         9 => col.move_item(item.ok_or(missing)?, 0),
         10 => col.set_item_visible(item.ok_or(missing)?, n.is_multiple_of(2)),
+        30 => {
+            let ms = match n % 5 {
+                0 => None,
+                1 => Some(0),
+                2 => Some(MAX_SHOW_FOR_MS + 1),
+                _ => Some((n % 10_000) as u32 + 1),
+            };
+            col.set_item_show_for(item.ok_or(missing)?, ms)
+        }
         11 => col.set_item_layout(item.ok_or(missing.clone())?, canvas, layout),
         12 => col.set_program(canvas.ok_or(missing)?, scene),
         _ => col.set_scene_scope(
@@ -1761,4 +2013,37 @@ fn collection_and_source_glide_undo_and_refuse_out_of_range() {
     assert!(s.col.source(s.cam).unwrap().glide.is_some());
     s.col.undo(set).unwrap();
     assert!(s.col.source(s.cam).unwrap().glide.is_none());
+}
+
+#[test]
+fn chrome_is_only_for_a_display_and_one_undo_restores_the_region() {
+    let mut col = SceneCollection::new();
+    let (cam, _) = col
+        .add_source("Cam", ty("camera"), Settings::new())
+        .unwrap();
+    assert!(matches!(
+        col.set_display_chrome(cam, Some(DisplayChrome::new(1, 0, 0, 0))),
+        Err(SceneError::ChromeNotDisplay)
+    ));
+    let (display, _) = col
+        .add_source("Screen", ty("display"), Settings::new())
+        .unwrap();
+    let set = col
+        .set_display_chrome(display, Some(DisplayChrome::new(8, 0, 40, 0)))
+        .unwrap();
+    assert_eq!(
+        col.source(display).unwrap().region,
+        Some(SourceRegion::new(0, 8, 0, 40))
+    );
+    let cleared = col.set_source_region(display, None).unwrap();
+    assert!(col.source(display).unwrap().region.is_none());
+    assert!(col.source(display).unwrap().chrome.is_some());
+    col.undo(cleared).unwrap();
+    assert_eq!(
+        col.source(display).unwrap().region,
+        Some(SourceRegion::new(0, 8, 0, 40))
+    );
+    col.undo(set).unwrap();
+    assert!(col.source(display).unwrap().chrome.is_none());
+    assert!(col.source(display).unwrap().region.is_none());
 }

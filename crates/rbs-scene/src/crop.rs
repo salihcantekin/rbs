@@ -1,7 +1,73 @@
-//! Crop edits that keep the picture's scale (ADR-0058).
+//! Crop edits that keep the picture's scale (ADR-0058), and the source-region
+//! size those edits use (ADR-0103, ADR-0104).
 
+use crate::arrange::FitMode;
 use crate::flatten::Affine2;
-use crate::model::{Crop, Layout};
+use crate::model::{ChromeFill, Crop, DisplayChrome, Layout, SourceRegion};
+
+/// The picture size fit and recrop use: the region size when `region` is set,
+/// otherwise `picture`. The item crop is then taken inside that rectangle.
+/// `None` when the intersection leaves no pixel.
+pub fn visible_size(
+    picture: (u32, u32),
+    region: Option<SourceRegion>,
+    crop: Crop,
+) -> Option<(u32, u32)> {
+    let (base, crop) = match region {
+        Some(region) => (region.size(picture)?, region.crop_inside(crop)),
+        None => (picture, crop),
+    };
+    if !crop.fits(base.0, base.1) {
+        return None;
+    }
+    Some((
+        base.0 - crop.left - crop.right,
+        base.1 - crop.top - crop.bottom,
+    ))
+}
+
+/// [`Layout::recrop`] against the region size when a region is set.
+///
+/// The crop stored on the layout stays the full-picture item crop. The box is
+/// computed from the region size and the part of the item crop that lies inside
+/// the region, so a source pixel of the sampled picture keeps its place.
+pub fn recrop_keeping(
+    layout: Layout,
+    picture: (u32, u32),
+    region: Option<SourceRegion>,
+    crop: Crop,
+) -> Option<Layout> {
+    let (base, old_crop, new_crop) = match region {
+        Some(region) => (
+            region.size(picture)?,
+            region.crop_inside(layout.crop),
+            region.crop_inside(crop),
+        ),
+        None => (picture, layout.crop, crop),
+    };
+    let mut adjusted = layout;
+    adjusted.crop = old_crop;
+    let mut out = adjusted.recrop(base, new_crop)?;
+    out.crop = crop;
+    Some(out)
+}
+
+/// Places `layout`'s box with the chrome fill, using the region size as the
+/// picture. The crop is unchanged. `None` when the region leaves no pixel.
+/// Cover and fit are layout placements, not a compositor scale (ADR-0104).
+pub fn place_chrome(
+    chrome: DisplayChrome,
+    canvas: (u32, u32),
+    picture: (u32, u32),
+    layout: Layout,
+) -> Option<Layout> {
+    let size = chrome.region().size(picture)?;
+    let mode = match chrome.fill {
+        ChromeFill::Cover => FitMode::Fill,
+        ChromeFill::Fit => FitMode::Fit,
+    };
+    layout.fitted(canvas, size, mode)
+}
 
 impl Crop {
     /// True when the crop leaves at least one pixel in each direction of a
@@ -130,6 +196,76 @@ mod tests {
             l.recrop((100, 100), Crop::new(u32::MAX, 0, u32::MAX, 0))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_region_sizes_the_picture_and_intersects_the_item_crop() {
+        use crate::model::SourceRegion;
+
+        let picture = (1920, 1080);
+        let region = SourceRegion::new(0, 40, 0, 80);
+        assert_eq!(region.size(picture), Some((1920, 960)));
+        // A picture smaller than the insets leaves nothing; the stored region stays.
+        assert_eq!(region.size((100, 50)), None);
+        let item = Crop::new(10, 0, 0, 100);
+        assert_eq!(region.intersect_crop(item), Crop::new(10, 40, 0, 100));
+        assert_eq!(region.crop_inside(item), Crop::new(10, 0, 0, 20));
+        assert_eq!(visible_size(picture, Some(region), item), Some((1910, 940)));
+        assert_eq!(visible_size(picture, None, item), Some((1910, 980)));
+    }
+
+    #[test]
+    fn recrop_keeps_the_full_picture_crop_and_the_region_scale() {
+        let picture = (1000, 500);
+        let region = SourceRegion::new(100, 0, 100, 0);
+        let layout = Layout::new([0.0, 0.0], [800.0, 500.0]);
+        let next =
+            recrop_keeping(layout, picture, Some(region), Crop::new(200, 0, 100, 0)).expect("fits");
+        assert_eq!(next.crop, Crop::new(200, 0, 100, 0));
+        // Region is 800 wide. The extra 100 on the left shrinks the box by 100/800.
+        assert!((next.size[0] - 700.0).abs() < 1e-2);
+        assert!((next.position[0] - 100.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn chrome_insets_become_the_region_and_a_missing_work_area_is_absent() {
+        use crate::model::ChromeFill;
+
+        let picture = (1920, 1080);
+        assert!(DisplayChrome::from_work(picture, None, ChromeFill::Cover).is_none());
+        let chrome = DisplayChrome::from_work(picture, Some((0, 25, 1920, 1000)), ChromeFill::Fit)
+            .expect("work area");
+        assert_eq!(chrome.region(), SourceRegion::new(0, 25, 0, 55));
+        assert_eq!(chrome.fill, ChromeFill::Fit);
+        assert_eq!(chrome.region().size(picture), Some((1920, 1000)));
+        // Menu bar and Dock are two edges of the same four fields.
+        assert_eq!(
+            (chrome.top, chrome.bottom, chrome.left, chrome.right),
+            (25, 55, 0, 0)
+        );
+    }
+
+    #[test]
+    fn cover_and_fit_place_the_box_and_leave_the_crop() {
+        use crate::model::ChromeFill;
+
+        let chrome = DisplayChrome::new(40, 0, 0, 0).with_fill(ChromeFill::Cover);
+        let layout = Layout::new([10.0, 10.0], [100.0, 80.0]).with_crop(Crop::new(1, 2, 3, 4));
+        let cover = place_chrome(chrome, (1920, 1080), (1920, 1080), layout).expect("place");
+        assert_eq!(cover.crop, layout.crop);
+        assert!(cover.size[0] >= 1920.0 - 1e-2);
+        assert!(cover.size[1] >= 1080.0 - 1e-2);
+        let fit = place_chrome(
+            chrome.with_fill(ChromeFill::Fit),
+            (1920, 1080),
+            (1920, 1080),
+            layout,
+        )
+        .expect("place");
+        assert_eq!(fit.crop, layout.crop);
+        assert!(fit.size[0] <= 1920.0 + 1e-2);
+        assert!(fit.size[1] <= 1080.0 + 1e-2);
+        assert!(fit.size[0] < cover.size[0] || fit.size[1] < cover.size[1]);
     }
 
     #[test]

@@ -19,7 +19,7 @@ path = "src/main.rs"
 fault-injection = []
 # `RBS_DEMO_SOURCES=1` adds the deterministic reference adapters (synthetic displays,
 # cameras and audio), for screenshots and UI checks on machines without devices. Off
-# in normal builds.
+# in normal builds. Media uses `rbs-media-decode-test` always until FFmpeg ships.
 demo-sources = ["dep:rbs-capture-test", "dep:rbs-audio-io-test"]
 
 [dependencies]
@@ -64,6 +64,8 @@ rbs-params = { path = "../rbs-params" }
 # CaptureError::Cancelled from OS pickers.
 rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }
+rbs-browser-runner = { path = "../rbs-browser-runner" }
+rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
@@ -93,6 +95,8 @@ rbs-crash = { path = "../rbs-crash" }
 rbs-vcam = { path = "../rbs-vcam" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
+# Stand-in media decoder until an FFmpeg adapter ships (ADR-0108 / ADR-0007).
+rbs-media-decode-test = { path = "../rbs-media-decode-test" }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 # The system file dialog for importing and exporting output profiles and scene

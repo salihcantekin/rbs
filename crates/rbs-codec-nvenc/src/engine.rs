@@ -261,10 +261,20 @@ impl Drop for Device {
     }
 }
 
+/// Documented minimum picture size when the driver does not report one, even sides.
+fn min_side(codec: CodecId) -> (u32, u32) {
+    match codec {
+        CodecId::H264 => (146, 50),
+        CodecId::Av1 => (160, 64),
+        _ => (130, 34),
+    }
+}
+
 fn codec_guid(codec: CodecId) -> Option<sys::GUID> {
     match codec {
         CodecId::H264 => Some(sys::NV_ENC_CODEC_H264_GUID),
         CodecId::Hevc => Some(sys::NV_ENC_CODEC_HEVC_GUID),
+        CodecId::Av1 => Some(sys::NV_ENC_CODEC_AV1_GUID),
         _ => None,
     }
 }
@@ -293,7 +303,7 @@ pub(crate) fn probe(ordinal: c_int) -> Result<DeviceCaps, String> {
         .map_err(|_| "cuCtxPushCurrent failed".to_string())?;
     let guids = device.codec_guids();
     let mut codecs = Vec::new();
-    for codec in [CodecId::H264, CodecId::Hevc] {
+    for codec in [CodecId::H264, CodecId::Hevc, CodecId::Av1] {
         let Some(guid) = codec_guid(codec) else {
             continue;
         };
@@ -310,31 +320,26 @@ pub(crate) fn probe(ordinal: c_int) -> Result<DeviceCaps, String> {
         let modes = cap(sys::NV_ENC_CAPS_SUPPORTED_RATECONTROL_MODES);
         codecs.push(CodecCaps {
             codec,
-            // Older drivers do not report minimums; 146x50 (H.264) and 130x34 (HEVC)
-            // are the documented NVENC limits, rounded up to even.
+            // Older drivers do not report minimums. Documented NVENC limits, rounded
+            // up to even sides: 146x50 (H.264), 130x34 (HEVC), 160x64 (AV1).
             width: (
-                side(
-                    cap(sys::NV_ENC_CAPS_WIDTH_MIN),
-                    if codec == CodecId::H264 { 146 } else { 130 },
-                ),
+                side(cap(sys::NV_ENC_CAPS_WIDTH_MIN), min_side(codec).0),
                 side(cap(sys::NV_ENC_CAPS_WIDTH_MAX), 0),
             ),
             height: (
-                side(
-                    cap(sys::NV_ENC_CAPS_HEIGHT_MIN),
-                    if codec == CodecId::H264 { 50 } else { 34 },
-                ),
+                side(cap(sys::NV_ENC_CAPS_HEIGHT_MIN), min_side(codec).1),
                 side(cap(sys::NV_ENC_CAPS_HEIGHT_MAX), 0),
             ),
             mb_per_sec: u64::try_from(cap(sys::NV_ENC_CAPS_MB_PER_SEC_MAX)).unwrap_or(0),
-            profiles: if codec == CodecId::H264 {
-                Profiles::H264_ALL
-            } else if cap(sys::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE) != 0
-                && formats.contains(&sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT)
-            {
-                Profiles::HEVC_ALL
-            } else {
-                Profiles::HEVC_MAIN
+            profiles: match codec {
+                CodecId::H264 => Profiles::H264_ALL,
+                CodecId::Av1 => Profiles::AV1_MAIN,
+                _ if cap(sys::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE) != 0
+                    && formats.contains(&sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT) =>
+                {
+                    Profiles::HEVC_ALL
+                }
+                _ => Profiles::HEVC_MAIN,
             },
             // A zero mask means the driver does not report modes; every NVENC
             // generation has CBR and VBR. Constant quality is VBR with a target.
@@ -482,12 +487,35 @@ impl NvencEngine {
             Profile::H264High => sys::NV_ENC_H264_PROFILE_HIGH_GUID,
             Profile::HevcMain => sys::NV_ENC_HEVC_PROFILE_MAIN_GUID,
             Profile::HevcMain10 => sys::NV_ENC_HEVC_PROFILE_MAIN10_GUID,
+            Profile::Av1Main => sys::NV_ENC_AV1_PROFILE_MAIN_GUID,
         };
         config.gopLength = plan.gop;
         // P frames only: no reordering, one output per input in order.
         config.frameIntervalP = 1;
         apply_rc(&mut config.rcParams, plan.rc);
         match plan.codec {
+            CodecId::Av1 => {
+                // SAFETY: the preset filled the AV1 member of the union for the AV1
+                // codec GUID; it is the only member used.
+                let av1 = unsafe { &mut config.encodeCodecConfig.av1Config };
+                av1.level = sys::NV_ENC_LEVEL_AV1_AUTOSELECT;
+                av1.tier = 0;
+                av1.idrPeriod = plan.gop;
+                // Low-overhead OBUs (each with a size), sequence header repeated on
+                // every key frame, so a keyframe starts a decodable stream. Annex B
+                // length prefixes are a different framing and stay off.
+                av1.set_outputAnnexBFormat(0);
+                av1.set_enableTimingInfo(0);
+                av1.set_disableSeqHdr(0);
+                av1.set_repeatSeqHdr(1);
+                av1.set_enableBitstreamPadding(u32::from(plan.cbr_padding));
+                av1.set_chromaFormatIDC(1);
+                av1.useBFramesAsRef = sys::NV_ENC_BFRAME_REF_MODE_DISABLED;
+                av1.colorPrimaries = u32::from(plan.color.primaries);
+                av1.transferCharacteristics = u32::from(plan.color.transfer);
+                av1.matrixCoefficients = u32::from(plan.color.matrix);
+                av1.colorRange = u32::from(plan.color.full_range);
+            }
             CodecId::H264 => {
                 // SAFETY: the preset filled the H.264 member of the union for the
                 // H.264 codec GUID; it is the only member used.

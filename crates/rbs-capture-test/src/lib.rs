@@ -23,7 +23,8 @@ use std::time::Duration;
 use rbs_capture::conformance::TestHooks;
 use rbs_capture::{
     CameraMode, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail, caps,
+    CaptureTarget, ErrorDomain, REGION_GRAB_LONG, RegionGrab, THUMBNAIL_MAX, TargetId, TargetKind,
+    Thumbnail, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
@@ -289,6 +290,28 @@ impl CaptureFactory for TestCaptureFactory {
             }
         }
         Thumbnail::new(w, h, rgba).ok_or(CaptureError::FormatUnsupported)
+    }
+
+    fn region_grab(&self, target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError> {
+        let found = self
+            .targets
+            .iter()
+            .find(|t| &t.info.id == target && t.present.load(Ordering::Acquire))
+            .ok_or(CaptureError::TargetNotFound)?;
+        if found.info.kind == TargetKind::Camera {
+            return Err(CaptureError::Unsupported("region_grab"));
+        }
+        let side = max_long.min(REGION_GRAB_LONG);
+        let fit = fit_inside(unpack(found.size.load(Ordering::Acquire)), (side, side))
+            .ok_or(CaptureError::FormatUnsupported)?;
+        let (w, h) = fit;
+        let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+        for y in 0..h {
+            for x in 0..w {
+                rgba.extend_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, 64, 255]);
+            }
+        }
+        RegionGrab::new(w, h, rgba).ok_or(CaptureError::FormatUnsupported)
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
@@ -681,6 +704,30 @@ mod tests {
             Ok(session) => session,
             Err(e) => panic!("open {id}: {e}"),
         }
+    }
+
+    #[test]
+    fn a_region_grab_is_larger_than_a_thumbnail_and_stops_at_960() {
+        let factory = TestCaptureFactory::new();
+        let grab = factory
+            .region_grab(&TargetId::new("test-display-0"), 4_000)
+            .expect("grab");
+        assert_eq!((grab.width(), grab.height()), (960, 540));
+        assert!(grab.width().max(grab.height()) <= REGION_GRAB_LONG);
+        assert!(grab.width() > THUMBNAIL_MAX.width);
+        assert_eq!(grab.rgba().len(), 960 * 540 * 4);
+        assert!(matches!(
+            factory.region_grab(&TargetId::new("test-camera-0"), 960),
+            Err(CaptureError::Unsupported(_))
+        ));
+        assert!(matches!(
+            factory.region_grab(&TargetId::new("missing"), 960),
+            Err(CaptureError::TargetNotFound)
+        ));
+        assert!(matches!(
+            factory.region_grab(&TargetId::new("test-display-0"), 0),
+            Err(CaptureError::FormatUnsupported)
+        ));
     }
 
     fn frame(session: &mut dyn CaptureSession) -> Option<VideoFrame> {

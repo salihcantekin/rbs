@@ -113,7 +113,7 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 
 1. Register the platform's capture and audio adapters, `probe`.
 2. `SceneBinder::new(types.node_types()).with_audio(AUDIO)`; `sync`. `node_types` also installs the descriptor of every built-in video filter type (`rbs_filters::catalogue`, [video-filters.md](video-filters.md)); filter settings convert with `filter_values` (edits, strict) and `filter_values_lenient` (documents).
-3. For each `report.created_sources`, `instantiate` and adopt the instance into the node's partition (`Video` into the render partition, `Audio` into the audio partition).
+3. For each `report.created_sources`, `instantiate` and adopt the instance into the node's partition (`Video`, `Still`, `Media` and `Browser` into the render partition, `Audio` into the audio partition).
 4. Create the compositor (`node_layers`) and mixer instances, attach each canvas's encoders to `compositor(canvas, Program)` and `mixer(canvas)`. Mixer strips are kept per `SourceId` and rebuilt from `report.mixers[canvas].inputs` after every sync.
 4a. For each scheduled filter node without an instance, create a `FilterNode` of its type with the source's known picture size and adopt it into the render partition; send new values on `report.changed_filters` (ADR-0062).
 5. Apply and collect. Only then take back the instances of `retired_sources` and `retired_filters`: `Controller::take` returns idle instances only.
@@ -139,6 +139,29 @@ Windows result (SC-PC, RTX 4090, 2026-11-03), PASS: every type installed with WG
 
 - A settings schema per type (with the plugin SDK and control API): which keys apply live without a new node.
 - Plugin source types: descriptor and factory from the plugin manifest, added to the table.
-- Sources with video and audio (cameras with microphones): the binder needs the partition queue's reader as the mixer producer (`AudioOnVideoSource` until then).
+- Sources with video and audio (cameras with microphones): the binder needs the partition queue's reader as the mixer producer (`AudioOnVideoSource` until then). [ADR-0106](../adr/0106-picture-and-sound-on-one-source.md) (Proposed, 2026-11-12) decides that producer for a source that itself has both outputs. A camera's microphone stays an [ADR-0096](../adr/0096-capture-audio-companions-and-camera-microphone.md) companion. This line remains the contract until ADR-0106 is accepted and implemented.
 - Audio that does not depend on the scene (a global microphone or system audio in every scene).
 - Restore tokens for picker-only targets (PipeWire portal): the application stores `CaptureSession::target_to_store` back into the `target` setting, which today makes a new node.
+
+## Source region and display chrome (ADR-0103, ADR-0104)
+
+`region` and `chrome` live on `rbs_scene::Source`, not in settings. The binder compares settings only, so editing them does not replace the capture node. Chrome is refused on every type except `org.rbs.source.display`. Applying chrome writes the four insets into `region`. Cover and fit place the item box; they are not a compositor scale. `work_rect` is copied from `SourceTarget` when Reset runs, and Reset does nothing when that field is absent.
+
+The settings Region section and the add-source region step are not in the desktop UI yet (rule 16). The capture port's `region_grab` (long side at most 960, not `thumbnail`) is what that preview will call.
+
+## Media file (`org.rbs.source.media`, ADR-0108)
+
+Node type `org.rbs.media` (`rbs_nodes::media_descriptor`): one video pin and one audio pin on every instance, including a file with no audio stream (that pin emits silence) and including Standby and a failed decode. The pin set does not follow the container. `SourceInstance::Media { node, stats, adapter }` and `SourceClass::Media`. Changing `path` replaces the node (existing binder break-before-make). `loop` (default true) and `restart_when_shown` (default true) do not require a new node; the binder still replaces on any settings edit because `rbs-scene` has no parameter channel yet. The node stores both flags and the media cursor with no decoder while Standby.
+
+`path` must canonicalize to a local regular file before any decoder `pull`. A URL, UNC path, device path, directory, pipe, or symlink, junction, or substituted drive that does not resolve to a local regular file is `InvalidSetting`. A missing or undecodable file is `SourceError::Media(String)`. A side over 8192 or one frame over 128 MiB is `InvalidSetting` before either queue is allocated.
+
+Decode is the port `rbs-media-decode` (`MediaDecoder`, capability `media.decode.pixel` of `zero-copy` or `cpu-upload`). **FFmpeg adapter not linked in this tree yet (ADR-0007).** Conformance uses `rbs-media-decode-test`. While Active the node keeps two lock-free queues (video lookahead at most 8 frames and 128 MiB, audio at most four graph blocks). `process` only dequeues. End of file with `loop` false joins the worker on the control path, drops the queues, holds the last picture, and emits silence.
+
+`Studio` in `rbs-record` adopts `SourceInstance::Media` into the render partition the way it adopts a still, and stores the decoder adapter id. It does not register a decoder and does not link FFmpeg (ADR-0007). `org.rbs.source.media` is installed only when the host has registered and probed a `MediaDecoderFactory` (the same rule as a capture type that has no adapter). Tests register `rbs-media-decode-test`. The host does not write `adapter` unless the user set it. When `adapter` is absent, pick `zero-copy` before `cpu-upload`, then registration order. The ADR-0106 queue reader of the audio pin is the strip producer; this crate does not change `rbs-scene`.
+
+## Browser (`org.rbs.source.browser`, ADR-0109)
+
+Network-capable, including a `file` URL. Settings: `url` (`http`, `https`, or `file`), even `width` and `height` default 1920×1080 and at most 8192, `fps` default 30 and in 1..=60, `transparent` default false (opaque alpha). No CSS, no click forwarding, no JS binding, no device prompt, no audio pin. Straight-alpha sRGB `Rgba8`.
+
+The studio does not link or load CEF. A real CEF build replaces the helper executable and is a process tree. This tree's stand-in is the `rbs-browser-runner` binary (`rbs-browser-ipc` messages). `Studio` adopts `SourceInstance::Browser` into the render partition and shares one `BrowserBudget` (`InstanceContext::with_browser`). Before each apply it grants slots to shown pages: program before preview, lower source id inside a class, at most two. Headless crates pass `Studio::start_with_tree` from the composition root (`rbs-app` uses `rbs-browser-helper` via `browser_tree::HelperBrowserTree` when the executable is found). Without a tree, prepare reports that no helper was set. A source without a slot reports `browser_cap` and starts nothing. A helper exit is Unavailable, releases the slot, counts toward back-off, and must not panic the host. The studio allocates the frame buffer; the render path drops it without joining a dead child. Installed and Standby start no process. An agent without the network permission gets `not_permitted` / `network` for any `url`, including `file` (`agent_may_set_browser_url`). The control API kind is not in `rbs-api` yet; the reason string is the contract.
+

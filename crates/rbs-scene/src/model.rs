@@ -222,6 +222,191 @@ impl Filter {
     }
 }
 
+/// Display capture (`org.rbs.source.display`). Only this type may store chrome (ADR-0104).
+pub const DISPLAY_SOURCE_TYPE: &str = "org.rbs.source.display";
+
+/// Edge insets of a source region, in full-picture pixels (ADR-0103).
+///
+/// `left` and `right` are pixels cut from those edges of the delivered picture, and
+/// the same for `top` and `bottom`. Absent on the source means the whole picture.
+/// The stored insets are not rewritten when the picture shrinks; the sampled rect is
+/// their intersection with the picture and with the item crop.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceRegion {
+    /// Pixels cut from the left.
+    pub left: u32,
+    /// Pixels cut from the top.
+    pub top: u32,
+    /// Pixels cut from the right.
+    pub right: u32,
+    /// Pixels cut from the bottom.
+    pub bottom: u32,
+}
+
+impl SourceRegion {
+    /// Insets in full-picture pixels.
+    pub const fn new(left: u32, top: u32, right: u32, bottom: u32) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// `[left, top, right, bottom]`, the control-API order.
+    pub const fn to_array(self) -> [u32; 4] {
+        [self.left, self.top, self.right, self.bottom]
+    }
+
+    /// The region named by [`Self::to_array`].
+    pub const fn from_array(edges: [u32; 4]) -> Self {
+        let [left, top, right, bottom] = edges;
+        Self::new(left, top, right, bottom)
+    }
+
+    /// Width and height of this region inside `picture`, after clamping each inset
+    /// so it stays inside the picture (`w = picture_w − left − right`). `None` when
+    /// that intersection leaves no pixel.
+    pub fn size(self, picture: (u32, u32)) -> Option<(u32, u32)> {
+        let (pw, ph) = picture;
+        if pw == 0 || ph == 0 {
+            return None;
+        }
+        let left = self.left.min(pw);
+        let right = self.right.min(pw - left);
+        let top = self.top.min(ph);
+        let bottom = self.bottom.min(ph - top);
+        let width = pw - left - right;
+        let height = ph - top - bottom;
+        (width >= 1 && height >= 1).then_some((width, height))
+    }
+
+    /// Intersection with an item crop. Both are full-picture edge insets; the wider
+    /// inset on each edge wins (ADR-0103 decision 2).
+    pub fn intersect_crop(self, item: Crop) -> Crop {
+        Crop::new(
+            self.left.max(item.left),
+            self.top.max(item.top),
+            self.right.max(item.right),
+            self.bottom.max(item.bottom),
+        )
+    }
+
+    /// The item crop measured inside this region: insets beyond the region's own.
+    /// Scale-keeping (fit, recrop) uses these with [`Self::size`].
+    pub fn crop_inside(self, item: Crop) -> Crop {
+        Crop::new(
+            item.left.saturating_sub(self.left),
+            item.top.saturating_sub(self.top),
+            item.right.saturating_sub(self.right),
+            item.bottom.saturating_sub(self.bottom),
+        )
+    }
+}
+
+/// How a display's work area is placed in the item box (ADR-0104).
+///
+/// This chooses a layout (`Fit` letterboxes, `Cover` fills). It is not a second
+/// scale pass in the compositor.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ChromeFill {
+    /// The smallest centred box that covers the canvas (layout fill).
+    #[default]
+    Cover,
+    /// The largest centred box that fits the canvas (layout fit).
+    Fit,
+}
+
+impl ChromeFill {
+    /// `"cover"` or `"fit"`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cover => "cover",
+            Self::Fit => "fit",
+        }
+    }
+
+    /// The fill named by [`Self::as_str`].
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "cover" => Some(Self::Cover),
+            "fit" => Some(Self::Fit),
+            _ => None,
+        }
+    }
+}
+
+/// Taskbar or Dock insets of a display source (ADR-0104).
+///
+/// Only [`DISPLAY_SOURCE_TYPE`] may store this. The four insets are capture pixels.
+/// Applying chrome writes [`DisplayChrome::region`] onto the source; `fill` stays
+/// out of that rectangle.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DisplayChrome {
+    /// Pixels cut from the top.
+    pub top: u32,
+    /// Pixels cut from the right.
+    pub right: u32,
+    /// Pixels cut from the bottom.
+    pub bottom: u32,
+    /// Pixels cut from the left.
+    pub left: u32,
+    /// How Fit places the region on a canvas. Not part of the stored region.
+    pub fill: ChromeFill,
+}
+
+impl DisplayChrome {
+    /// Insets with cover fill.
+    pub const fn new(top: u32, right: u32, bottom: u32, left: u32) -> Self {
+        Self {
+            top,
+            right,
+            bottom,
+            left,
+            fill: ChromeFill::Cover,
+        }
+    }
+
+    /// The same insets with `fill`.
+    pub const fn with_fill(mut self, fill: ChromeFill) -> Self {
+        self.fill = fill;
+        self
+    }
+
+    /// The source region those insets describe. Fill is not included.
+    pub const fn region(self) -> SourceRegion {
+        SourceRegion::new(self.left, self.top, self.right, self.bottom)
+    }
+
+    /// Insets of a work rectangle `(x, y, width, height)` inside `picture`, in the
+    /// same pixels. `None` when `work` is absent (Reset is a no-op) or the rectangle
+    /// does not sit inside the picture.
+    pub fn from_work(
+        picture: (u32, u32),
+        work: Option<(u32, u32, u32, u32)>,
+        fill: ChromeFill,
+    ) -> Option<Self> {
+        let (x, y, width, height) = work?;
+        let (pw, ph) = picture;
+        let right_edge = x.checked_add(width)?;
+        let bottom_edge = y.checked_add(height)?;
+        if width == 0 || height == 0 || right_edge > pw || bottom_edge > ph {
+            return None;
+        }
+        Some(Self {
+            top: y,
+            right: pw - right_edge,
+            bottom: ph - bottom_edge,
+            left: x,
+            fill,
+        })
+    }
+}
+
 /// Something that produces video or audio, shared by every scene that places it
 /// (glossary: Source).
 #[non_exhaustive]
@@ -247,6 +432,13 @@ pub struct Source {
     /// hints for finding it again, not settings (ADR-0077). The binder never compares
     /// them, so changing them never makes a new source node.
     pub hints: BTreeMap<String, String>,
+    /// Capture region in full-picture pixels (ADR-0103). `None` is the whole picture.
+    /// Not settings: the binder does not compare it, so editing it does not replace
+    /// the capture node.
+    pub region: Option<SourceRegion>,
+    /// Display chrome (ADR-0104). `None` is off. Only a display source may set it.
+    /// Not settings, same as [`Self::region`].
+    pub chrome: Option<DisplayChrome>,
 }
 
 /// Most milliseconds a glide may last (ADR-0100).
@@ -487,6 +679,8 @@ impl Source {
             audio: SourceAudio::default(),
             glide: None,
             hints: BTreeMap::new(),
+            region: None,
+            chrome: None,
         }
     }
 }
@@ -779,6 +973,17 @@ impl Layout {
     }
 }
 
+/// Longest timed show, in milliseconds (ADR-0105). Absent means no duration.
+pub const MAX_SHOW_FOR_MS: u32 = 600_000;
+
+/// True when `show_for_ms` is absent or in `1..=MAX_SHOW_FOR_MS`.
+pub fn show_for_is_valid(show_for_ms: Option<u32>) -> bool {
+    match show_for_ms {
+        None => true,
+        Some(ms) => (1..=MAX_SHOW_FOR_MS).contains(&ms),
+    }
+}
+
 /// One placement of a source or scene in a scene (a "scene item"). The same source in
 /// two scenes is two items sharing one source.
 #[non_exhaustive]
@@ -788,8 +993,12 @@ pub struct SceneItem {
     pub id: ItemId,
     /// What it places.
     pub content: ItemContent,
-    /// Hidden items are not drawn and do not keep their source Active.
+    /// The lasting eye. Hidden items are not drawn, except while a timed-show cue
+    /// names this item (ADR-0105). The cue does not write this flag.
     pub visible: bool,
+    /// How long `item.show` draws this item while it is hidden, in milliseconds
+    /// (ADR-0105). `None` means Show does nothing. When set, `1..=MAX_SHOW_FOR_MS`.
+    pub show_for_ms: Option<u32>,
     /// Locked items cannot be selected, moved, resized or cropped with the pointer on
     /// the picture panel (ADR-0059). Properties, the control API and undo still change
     /// them; flattening and binding ignore the flag.
@@ -808,6 +1017,7 @@ impl SceneItem {
             id,
             content,
             visible: true,
+            show_for_ms: None,
             locked: false,
             layout,
             overrides: BTreeMap::new(),

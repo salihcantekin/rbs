@@ -1,6 +1,6 @@
 # ADR-0083: The Mixer orientation is chosen by the user, not only by the panel shape
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-09
 - Deciders: Salih (owner)
 - Refines: [ADR-0078](0078-saved-section-state-and-shared-section-components.md) decision 5 (the Mixer picks its layout from the panel shape)
@@ -40,4 +40,4 @@ Forces: the choice is view state, not scene or engine state (P8); the Mixer alre
 ## Review
 
 - 2026-11-09, independent AI session (round 1, reviewing only the ADRs, specs and code): changes requested. Concerns covered contract details, claims about existing code, hot-path and zero-cost rules, and number allocation across these ADRs; each was resolved in the text above (the numbers of protocol minors and scene formats are now assigned at merge time, not claimed by ADRs).
-- Round 2 (verification by a different fresh reviewer) and the owner's approval are still needed before the status can become Accepted (ADR-0014).
+- 2026-11-12: Owner (Salih) accepts this ADR. The feature is in the tree: three modes (`auto`, rows, columns), workspace `panel_options`, the Layout menu and `ui.mixer.set_orientation`. Status: Accepted.

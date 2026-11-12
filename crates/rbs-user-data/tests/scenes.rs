@@ -10,8 +10,9 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    Border, CollectionGlide, Crop, Fallback, GlideEasing, ItemContent, ItemStyle, Layout,
-    SceneScope, SettingValue, Settings, Shadow, Shape, SourceGlide, SourceMonitor,
+    Border, CollectionGlide, Crop, DisplayChrome, Fallback, GlideEasing, ItemContent, ItemStyle,
+    Layout, SceneScope, SettingValue, Settings, Shadow, Shape, SourceGlide, SourceMonitor,
+    SourceRegion,
 };
 use rbs_user_data::document;
 use rbs_user_data::{DataError, UserData};
@@ -167,7 +168,7 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 11",
+        "format = 14",
         "monitor = \"only\"",
         "monitor = \"also\"",
         "follow = 0",
@@ -304,11 +305,32 @@ fn format_11_loads_as_default_glide_and_format_12_round_trips() {
     )
     .unwrap();
     let text = document::render(&show, Some("Show")).unwrap();
-    assert!(text.contains("format = 12"), "{text}");
+    assert!(text.contains("format = 14"), "{text}");
     assert!(text.contains("duration_ms = 0"), "{text}");
     assert!(text.contains("easing = \"linear\""), "{text}");
     let back = document::parse::<SceneCollection>(&text).unwrap().document;
     assert_eq!(back, show);
+}
+
+#[test]
+fn show_for_ms_round_trips_and_an_older_format_refuses_it() {
+    let mut show = show();
+    let item = show.scenes().next().unwrap().items[0].id;
+    show.set_item_show_for(item, Some(4_000)).unwrap();
+    let text = document::render(&show, Some("Show")).unwrap();
+    assert!(text.contains("show_for_ms = 4000"), "{text}");
+    assert!(text.contains("format = 14"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back.item(item).unwrap().1.show_for_ms, Some(4_000));
+    assert_eq!(back, show);
+
+    let older = format!(
+        "format = 12\nkind = \"scene-collection\"\n{CANVAS}{SOURCE}\n[[scenes]]\nid = 0\nname = \"S\"\n[[scenes.items]]\nid = 0\nsource = 0\nshow_for_ms = 4000\nlayout = {{ position = [0.0, 0.0], size = [1.0, 1.0] }}\n"
+    );
+    match document::parse::<SceneCollection>(&older) {
+        Err(DataError::Invalid(why)) => assert!(why.contains("show_for_ms"), "{why}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
 }
 
 #[test]
@@ -659,4 +681,35 @@ fn styles_are_checked_on_load() {
         "{CANVAS}[[scenes]]\nid = 0\nname = \"A\"\n[[scenes]]\nid = 1\nname = \"B\"\n[[scenes.items]]\nid = 0\nscene = 0\nlayout = {{ position = [0.0, 0.0], size = [10.0, 10.0], style = {{ shape = \"circle\" }} }}\n"
     );
     assert!(invalid(&nested).contains("shape and border"));
+}
+
+#[test]
+fn a_region_and_display_chrome_round_trip_and_an_older_file_refuses_them() {
+    let mut col = SceneCollection::new();
+    let (display, _) = col
+        .add_source("Screen", ty("display"), Settings::new())
+        .unwrap();
+    col.set_display_chrome(
+        display,
+        Some(DisplayChrome::new(24, 0, 48, 0).with_fill(rbs_scene::ChromeFill::Fit)),
+    )
+    .unwrap();
+    col.set_source_region(display, Some(SourceRegion::new(0, 24, 0, 48)))
+        .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 14"), "{text}");
+    assert!(text.contains("region = [0, 24, 0, 48]"), "{text}");
+    assert!(text.contains("fill = \"fit\""), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    let source = back.source(display).unwrap();
+    assert_eq!(source.region, Some(SourceRegion::new(0, 24, 0, 48)));
+    assert_eq!(
+        source.chrome.map(|c| c.fill),
+        Some(rbs_scene::ChromeFill::Fit)
+    );
+
+    let old = format!(
+        "format = 13\nkind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"S\"\ntype = \"org.rbs.source.display\"\nregion = [1, 0, 0, 0]\n"
+    );
+    assert!(document::parse::<SceneCollection>(&old).is_err());
 }

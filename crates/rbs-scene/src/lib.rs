@@ -27,7 +27,10 @@ pub use collection::{
     IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
     SceneError, Undo,
 };
+pub use crop::{place_chrome, recrop_keeping, visible_size};
 pub use flatten::{Affine2, FlatLayer};
 pub use model::{
-    COMPANION_OF_HINT, CollectionGlide, GlideEasing, MAX_GLIDE_MS, STANDBY_HINT, SourceGlide,
+    COMPANION_OF_HINT, ChromeFill, CollectionGlide, DISPLAY_SOURCE_TYPE, DisplayChrome,
+    GlideEasing, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, STANDBY_HINT, SourceGlide, SourceRegion,
+    show_for_is_valid,
 };

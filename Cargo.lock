@@ -4319,6 +4319,8 @@ dependencies = [
  "rbs-audio-io-pipewire",
  "rbs-audio-io-test",
  "rbs-audio-io-wasapi",
+ "rbs-browser-ipc",
+ "rbs-browser-runner",
  "rbs-capture",
  "rbs-capture-avf",
  "rbs-capture-mf",
@@ -4341,6 +4343,7 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-media-decode-test",
  "rbs-mux",
  "rbs-mux-fmp4",
  "rbs-mux-matroska",
@@ -4464,6 +4467,17 @@ dependencies = [
  "rbs-core",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "rbs-browser-ipc"
+version = "0.0.1"
+
+[[package]]
+name = "rbs-browser-runner"
+version = "0.0.1"
+dependencies = [
+ "rbs-browser-ipc",
 ]
 
 [[package]]
@@ -4803,6 +4817,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-media-decode"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-media-decode-test"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-media-decode",
+]
+
+[[package]]
 name = "rbs-media-format"
 version = "0.0.1"
 dependencies = [
@@ -4874,12 +4903,15 @@ dependencies = [
  "rbs-engine",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-media-decode",
+ "rbs-media-decode-test",
  "rbs-mux",
  "rbs-mux-matroska",
  "rbs-transport",
  "rbs-transport-file",
  "rbs-vcam",
  "rbs-vcam-test",
+ "rtrb",
  "wgpu",
 ]
 
@@ -4910,6 +4942,7 @@ dependencies = [
  "rbs-audio-filters",
  "rbs-audio-io",
  "rbs-audio-io-test",
+ "rbs-browser-ipc",
  "rbs-capture-test",
  "rbs-codec",
  "rbs-codec-mf",
@@ -4918,6 +4951,7 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-media-decode-test",
  "rbs-mux",
  "rbs-nodes",
  "rbs-scene",
@@ -4948,12 +4982,14 @@ dependencies = [
 name = "rbs-sources"
 version = "0.0.1"
 dependencies = [
+ "bytes",
  "png",
  "rbs-audio",
  "rbs-audio-filters",
  "rbs-audio-io",
  "rbs-audio-io-test",
  "rbs-audio-io-wasapi",
+ "rbs-browser-ipc",
  "rbs-capture",
  "rbs-capture-mf",
  "rbs-capture-test",
@@ -4963,6 +4999,8 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-media-decode",
+ "rbs-media-decode-test",
  "rbs-nodes",
  "rbs-params",
  "rbs-scene",

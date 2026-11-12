@@ -24,9 +24,11 @@
 //! the session's CUDA context on the calling thread and pops it again.
 //!
 //! The encoder runs with picture type decision, no B-frames and no look-ahead, so each
-//! frame yields one packet in order and none is dropped. Output is Annex B with the
-//! parameter sets in band on every IDR picture and, as extradata, the sequence
-//! parameters NVENC reports at creation (`nvEncGetSequenceParams`).
+//! frame yields one packet in order and none is dropped. H.264 and HEVC output is
+//! Annex B with the parameter sets in band on every IDR picture. AV1 output is
+//! low-overhead OBUs (`BitstreamFormat::Obu`) with the sequence header repeated on
+//! every keyframe. Extradata is the sequence parameters NVENC reports at creation
+//! (`nvEncGetSequenceParams`): Annex B parameter sets, or the AV1 sequence-header OBU.
 //!
 //! Input is system memory only for now: native D3D11/D3D12/CUDA surfaces wait for the
 //! `rbs-gpu` exporters on Windows and Linux (ADR-0025). The copy is counted in
@@ -75,7 +77,9 @@ mod platform {
 
     use rbs_codec::{CreateError, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory};
     use rbs_core::capability::CapabilitySet;
-    use rbs_core::media::{BitstreamFormat, Bytes, EncodedPacket, StreamDescriptor, StreamParams};
+    use rbs_core::media::{
+        BitstreamFormat, Bytes, CodecId, EncodedPacket, StreamDescriptor, StreamParams,
+    };
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 
     use rbs_codec_hw::device::{DeviceCaps, capability_set};
@@ -122,9 +126,14 @@ mod platform {
                 .codec(config.codec)
                 .is_some_and(|c| c.dynamic_bitrate);
             let (engine, extradata) = NvencEngine::open(0, &plan)?;
+            let bitstream = if config.codec == CodecId::Av1 {
+                BitstreamFormat::Obu
+            } else {
+                BitstreamFormat::AnnexB
+            };
             let stream = StreamDescriptor::new(
                 config.codec,
-                BitstreamFormat::AnnexB,
+                bitstream,
                 Bytes::from(extradata),
                 StreamParams::video(config.format, config.frame_rate),
             );

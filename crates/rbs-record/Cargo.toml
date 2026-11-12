@@ -32,6 +32,9 @@ rbs-vcam = { path = "../rbs-vcam" }
 # Reference adapters of the capture and audio input ports (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+# Fake media decoder. Production does not register FFmpeg (ADR-0007, ADR-0108).
+rbs-media-decode-test = { path = "../rbs-media-decode-test" }
+rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 # The in-process virtual camera (records what it takes).
 rbs-vcam-test = { path = "../rbs-vcam-test" }
 # The real AAC session over its fake engine (runs on every platform).

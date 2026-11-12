@@ -8,6 +8,7 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 use rbs_media_format::aac::AudioSpecificConfig;
+use rbs_media_format::av1::Av1Config;
 use rbs_media_format::avc::AvcConfig;
 use rbs_media_format::hvcc::Hvcc;
 use rbs_media_format::nal::{self, h264, hevc};
@@ -42,11 +43,19 @@ const MAX_FRAGMENT_SAMPLES: usize = 1 << 16;
 const MAX_COMPOSITION_DELAY: Duration = Duration::from_secs(60);
 
 enum Kind {
-    /// H.264; `length_size` is `None` for Annex B input, converted to 4-byte lengths.
+    /// H.264 or HEVC. `length_size` is `None` for Annex B input, converted to 4-byte lengths.
     Video {
         length_size: Option<u8>,
     },
+    /// AV1 temporal unit, copied as OBUs.
+    Obu,
     Audio,
+}
+
+impl Kind {
+    fn is_video(&self) -> bool {
+        matches!(self, Kind::Video { .. } | Kind::Obu)
+    }
 }
 
 struct Sample {
@@ -279,7 +288,7 @@ fn mp4a_entry(out: &mut Vec<u8>, channels: u16, rate: u32, asc: &[u8]) {
 }
 
 fn trak(out: &mut Vec<u8>, track: &Track, entry: &dyn Fn(&mut Vec<u8>), width: u16, height: u16) {
-    let video = matches!(track.kind, Kind::Video { .. });
+    let video = track.kind.is_video();
     let trak = boxes::open(out, b"trak");
     let tkhd = boxes::open_full(out, b"tkhd", 0, 3); // enabled, in movie
     boxes::zeros(out, 8); // creation, modification
@@ -361,8 +370,12 @@ impl Fmp4Muxer {
         header.extend_from_slice(b"iso6");
         boxes::u32(&mut header, 0);
         // Not `cmfc`: a CMAF track file has one track, and these fragments carry all.
+        let av1 = config.streams.iter().any(|s| s.codec == CodecId::Av1);
         for brand in [b"iso6", b"isom", b"mp41"] {
             header.extend_from_slice(brand);
+        }
+        if av1 {
+            header.extend_from_slice(b"av01");
         }
         boxes::close(&mut header, ftyp);
 
@@ -377,10 +390,7 @@ impl Fmp4Muxer {
                         format, frame_rate, ..
                     },
                 ) => {
-                    if tracks
-                        .iter()
-                        .any(|t: &Track| matches!(t.kind, Kind::Video { .. }))
-                    {
+                    if tracks.iter().any(|t: &Track| t.kind.is_video()) {
                         // A keyframe chunk must be an entry point for every stream; with
                         // two video tracks whose GOPs differ, fragments rarely are.
                         return Err(CreateError::Unsupported {
@@ -439,6 +449,55 @@ impl Fmp4Muxer {
                     tracks.push(track);
                 }
                 (
+                    CodecId::Av1,
+                    StreamParams::Video {
+                        format, frame_rate, ..
+                    },
+                ) => {
+                    if tracks.iter().any(|t: &Track| t.kind.is_video()) {
+                        return Err(CreateError::Unsupported {
+                            what: "more than one video stream in fragmented MP4".into(),
+                        });
+                    }
+                    if stream.bitstream != BitstreamFormat::Obu {
+                        return Err(CreateError::InvalidConfig(format!(
+                            "AV1 in {:?} framing",
+                            stream.bitstream
+                        )));
+                    }
+                    let parsed = Av1Config::from_extradata(&stream.extradata)
+                        .map_err(|e| CreateError::InvalidConfig(format!("AV1 extradata: {e}")))?;
+                    let mut config_record = Vec::new();
+                    parsed.build(&mut config_record);
+                    let (Ok(width), Ok(height)) = (
+                        u16::try_from(format.size.width),
+                        u16::try_from(format.size.height),
+                    ) else {
+                        return Err(CreateError::InvalidConfig("picture size".into()));
+                    };
+                    let track = Track {
+                        id,
+                        codec: CodecId::Av1,
+                        bitstream: BitstreamFormat::Obu,
+                        kind: Kind::Obu,
+                        timescale: VIDEO_TIMESCALE,
+                        nominal: frame_rate.frame_duration(),
+                        samples: Vec::new(),
+                        staging: Vec::new(),
+                        committed: 0,
+                        parameter_sets: Vec::new(),
+                        last_dts: None,
+                    };
+                    trak(
+                        &mut traks,
+                        &track,
+                        &|out| visual_entry(out, b"av01", b"av1C", width, height, &config_record),
+                        width,
+                        height,
+                    );
+                    tracks.push(track);
+                }
+                (
                     CodecId::Aac,
                     StreamParams::Audio {
                         format, frame_size, ..
@@ -480,7 +539,7 @@ impl Fmp4Muxer {
                     );
                     tracks.push(track);
                 }
-                (CodecId::H264 | CodecId::Hevc | CodecId::Aac, _) => {
+                (CodecId::H264 | CodecId::Hevc | CodecId::Av1 | CodecId::Aac, _) => {
                     return Err(CreateError::InvalidConfig(format!(
                         "{} stream with {:?} parameters",
                         stream.codec, stream.params
@@ -519,7 +578,7 @@ impl Fmp4Muxer {
         boxes::close(&mut header, moov);
 
         Ok(Self {
-            has_video: tracks.iter().any(|t| matches!(t.kind, Kind::Video { .. })),
+            has_video: tracks.iter().any(|t| t.kind.is_video()),
             tracks,
             header,
             fragment: config.max_buffered(),
@@ -649,7 +708,7 @@ impl Fmp4Muxer {
         let keyframe = if self.has_video {
             self.tracks
                 .iter()
-                .find(|t| matches!(t.kind, Kind::Video { .. }))
+                .find(|t| t.kind.is_video())
                 .and_then(|t| t.samples.first())
                 .is_some_and(|s| s.keyframe)
         } else {
@@ -782,13 +841,14 @@ impl Muxer for Fmp4Muxer {
                 stored = Bytes::new();
                 converted
             }
+            Kind::Obu => data.len(),
             Kind::Audio => data.len(),
         };
         if size > MAX_SAMPLE_BYTES {
             return Err(MuxError::Overflow("sample size"));
         }
         let keyframe = packet.keyframe();
-        let is_video = matches!(track.kind, Kind::Video { .. });
+        let is_video = track.kind.is_video();
         let track_has_samples = !track.samples.is_empty();
 
         // A fragment ends before a video keyframe (so fragments start at entry points),

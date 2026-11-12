@@ -1,6 +1,6 @@
 # ADR-0102: Output size distinct from the canvas
 
-- Status: Proposed
+- Status: Accepted (macOS done; Windows remains)
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Refines: [ADR-0047](0047-several-outputs-per-canvas.md) decision 3 (encoder sharing also matches output size), [ADR-0066](0066-virtual-camera.md) decision 4 (the scaled converter's kernel; the 1:1 path and letterbox stay)
@@ -70,3 +70,5 @@ What OBS does not do, and this decision requires: one pass per output from the l
 - **A per-frame branch on the kernel.** An unused mode would still be tested on the hot path. Rejected; the colour-mode rule already forbids it.
 
 ## Review
+
+- 2026-11-12: Owner (Salih) accepts this ADR. The macOS path is done: each recording and stream stores its own output size, protocol 1.39, the scale kernels, and the settings rows. The Windows side remains. Status: Accepted.

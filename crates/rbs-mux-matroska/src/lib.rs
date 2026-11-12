@@ -4,7 +4,7 @@
 //! live recording: an EBML header and a Segment of unknown size with `Info` and
 //! `Tracks`, then one Cluster per chunk. H.264 is `V_MPEG4/ISO/AVC` with the avcC as
 //! codec private data; length-prefixed HEVC is `V_MPEGH/ISO/HEVC` with the hvcC;
-//! AAC is `A_AAC` with the AudioSpecificConfig. Every Cluster is
+//! AV1 is `V_AV1` with the av1C; AAC is `A_AAC` with the AudioSpecificConfig. Every Cluster is
 //! complete, so a recording is playable up to its last Cluster after a crash
 //! (`mux.live`).
 //!
@@ -39,7 +39,7 @@
 //!   data. An in-band parameter set that differs from the extradata is refused
 //!   (`InvalidPacket`). Annex B HEVC is refused until hvcC can be built from it.
 //!
-//! Limitations: H.264, HEVC (length-prefixed) and AAC only (AV1 and Opus to come); no Cues, chapters or
+//! Limitations: H.264, HEVC (length-prefixed), AV1 (OBU samples) and AAC (Opus to come); no Cues, chapters or
 //! tags; no WebM doc type yet (it needs VP9/AV1 and Opus).
 
 mod ebml;
@@ -72,7 +72,7 @@ impl AdapterFactory for MatroskaMuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Matroska.as_str()]))
-            .with(caps::CODECS, set(&["h264", "hevc", "aac"]))
+            .with(caps::CODECS, set(&["h264", "hevc", "av1", "aac"]))
             .with(caps::LIVE, CapabilityValue::Flag(true))
             .with(caps::PATCHES, CapabilityValue::Flag(true)))
     }

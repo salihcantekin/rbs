@@ -72,6 +72,13 @@ pub(crate) const NV_ENC_CODEC_HEVC_GUID: GUID = guid(
     0x4d7b,
     [0x94, 0x25, 0xbd, 0xa9, 0x97, 0x5f, 0x76, 0x03],
 );
+/// `NV_ENC_CODEC_AV1_GUID` (SDK 12.1).
+pub(crate) const NV_ENC_CODEC_AV1_GUID: GUID = guid(
+    0x0a35_2289,
+    0x0aa7,
+    0x4759,
+    [0x86, 0x2d, 0x5d, 0x15, 0xcd, 0x16, 0xd2, 0x54],
+);
 pub(crate) const NV_ENC_H264_PROFILE_BASELINE_GUID: GUID = guid(
     0x0727bcaa,
     0x78c4,
@@ -101,6 +108,13 @@ pub(crate) const NV_ENC_HEVC_PROFILE_MAIN10_GUID: GUID = guid(
     0x3a5b,
     0x411a,
     [0x80, 0x18, 0x0a, 0x3f, 0x5e, 0x3c, 0x9b, 0xe5],
+);
+/// `NV_ENC_AV1_PROFILE_MAIN_GUID` (SDK 12.1).
+pub(crate) const NV_ENC_AV1_PROFILE_MAIN_GUID: GUID = guid(
+    0x5f2a_39f5,
+    0xf14e,
+    0x4f95,
+    [0x9a, 0x9e, 0xb7, 0x6d, 0x56, 0x8f, 0xcf, 0x97],
 );
 /// `NV_ENC_PRESET_P1_GUID` ..= `NV_ENC_PRESET_P7_GUID`.
 pub(crate) const NV_ENC_PRESET_GUIDS: [GUID; 7] = [

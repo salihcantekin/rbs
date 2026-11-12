@@ -206,6 +206,8 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `scene.switch {scene}` | `control` | Put a scene on air; live, not undoable (protocol 1.6) |
 | `item.add {source}` | `control` | Place an existing source in the program scene again (protocol 1.6) |
 | `item.set_visible {item, visible}`, `item.set_locked {item, locked}` | `control` | Show or hide, lock or unlock an item (protocol 1.6) |
+| `item.set_show_for {item, show_for_ms}` | `control` | How long Show draws a hidden item, `1..=600000` ms, or `null` to clear. One undo step (ADR-0105). No protocol minor. `invalid_params` outside that range |
+| `item.show {item}` | `control` | Live cue: draw a hidden item until now + `show_for_ms`. Does not change `visible`, does not push undo, and is not restored by undo. Does nothing when the item is visible or has no duration. Session only: a reload has no cue until Show is pressed again (ADR-0105). No protocol minor |
 | `source.rename {source, name}` | `control` | Rename a source (protocol 1.6) |
 | `canvas.set_preview {scene}` | `control` | Studio mode: preview a scene (entering the mode when it is off), or leave the mode with `null`; live, not undoable (protocol 1.9, ADR-0061) |
 | `canvas.transition` | `control` | Studio mode: put the preview scene on air (a source in both scenes slides to its new box using the collection glide, or that source's override when set; a source only in the incoming scene fades in with the collection glide; ADR-0100); the preview keeps its scene unless the app's "Swap scenes after a transition" setting is on, then the old program scene goes to preview (protocol 1.31, ADR-0098; it always swapped from 1.9 to 1.30); live, not undoable (protocol 1.9) |
@@ -435,6 +437,20 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 ### Protocol 1.35: configurable glide (ADR-0100)
 
 `collection.set_glide { duration_ms, easing }` sets the collection morph defaults (`duration_ms` in `0..=5000`, `easing` `"linear"` or `"ease-in-out"`). `source.set_glide { source, glide }` sets a per-source slide override (`glide` is `{ duration_ms, easing }` or `null` to clear). Each is one undo step. Fade-ins always use the collection duration and a linear ramp. `scene.list` and `scene.changed` carry the collection `glide` (absent when 400 ms and ease-in-out) and each `sources` entry may carry `glide` when overridden. `source.list` / `source.changed` rows carry the same optional `glide`. A 1.34 server answers `method_not_found` and omits the fields.
+
+### Protocol 1.41: source region and display chrome (ADR-0103, ADR-0104)
+
+`source.set_region { source, region }` sets or clears a source's region. `region` is `[left, top, right, bottom]` in full-picture pixels, or `null` for the whole picture. `source.get_region { source }` returns `{ source, region }`. Both need `control`. One undo step, an edit kind of its own, not `item.set_crop`. `not_found` for an unknown source. `invalid_params` for a sound-only source, or for a region that leaves no pixel after intersection with the picture size the source has already reported. When that size is not known yet, the region is stored.
+
+`source.set_chrome { source, chrome }` writes display chrome and the region those insets describe. `chrome` is `{ top, right, bottom, left, fill }` (`fill` `"cover"` or `"fit"`, default cover) or `null` to clear chrome and the region. It does not move the item box and does not restart capture. Only `org.rbs.source.display` may store it (`invalid_params` otherwise). `source.get_chrome` returns the stored chrome or `null`. `source.fit_chrome { source }` is a separate undo step that places the item with the stored fill (cover fills the canvas, fit letterboxes) using the region size. `source.reset_chrome { source }` copies insets from the display's `work_rect` when the adapter reported one; when it did not, the call changes nothing and records no undo step.
+
+The settings Region section, its 960-pixel grab, and the add-source region step are not in the desktop UI yet (rule 16). `region_grab` on the capture port is the method that preview will call. It is not `thumbnail`, and `THUMBNAIL_MAX` is unchanged.
+
+A 1.40 server answers `method_not_found` to these methods.
+
+### Protocol 1.40: AV1 in recording settings
+
+A recording profile's `video_codec` may be `"av1"` (omitted still means H.264, `"hevc"` is unchanged). The server offers it when an encoder lists `av1`; a stream's `video_codec` stays H.264 because neither RTMP nor MPEG-TS carries AV1 yet, and a `settings.set` that stores `"av1"` on `stream` is kept but the desktop does not offer it for a stream. A 1.39 client treats an unknown `video_codec` the way it treats any unknown enum value. Old profile files without the field stay H.264.
 
 ### Protocol 1.39: output size (ADR-0102)
 

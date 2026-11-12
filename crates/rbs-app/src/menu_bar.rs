@@ -264,16 +264,6 @@ pub enum AddWhat {
 /// API's `source.add` has no such kind).
 const EXISTING: &str = "existing";
 
-/// The control API names of the source kinds, in `SourceKind::ALL` order (the
-/// `kind` choices of `source.add`).
-const KIND_IDS: [&str; 6] = [
-    "screen",
-    "window",
-    "camera",
-    "audio_input",
-    "system_audio",
-    "application_audio",
-];
 
 fn panel_of(id: &CommandId) -> Option<PanelId> {
     PanelId::parse(id.param("id")?).ok()
@@ -880,12 +870,9 @@ impl CommandState for Shown<'_> {
             "source.add" => {
                 let mut list: Vec<(String, String, bool)> = self
                     .studio
-                    .kind_codes()
+                    .add_source_kinds()
                     .into_iter()
-                    .filter_map(|(code, label)| {
-                        let name = KIND_IDS.get(usize::try_from(code).ok()?)?;
-                        Some((label.to_owned(), (*name).to_owned(), false))
-                    })
+                    .map(|(_, api_id, label)| (label.to_owned(), api_id.to_owned(), false))
                     .collect();
                 if self.studio.has_existing_sources() {
                     list.push(("Existing source".to_owned(), EXISTING.to_owned(), false));
@@ -1461,7 +1448,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         if id.base() == "source.add" {
             let what = match id.param(param)? {
                 EXISTING => AddWhat::Existing,
-                k => AddWhat::Kind(KIND_IDS.iter().position(|n| *n == k)? as i32),
+                k => AddWhat::Kind(state.studio.kind_code_for_api(k)?),
             };
             return Some(Run::AddSource(what));
         }

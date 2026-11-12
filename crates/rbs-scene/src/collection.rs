@@ -9,9 +9,10 @@ use rbs_graph::node::NodeTypeId;
 
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
-    AudioFrom, Canvas, CanvasId, CollectionGlide, Fallback, Filter, FilterId, ItemContent, ItemId,
-    Layout, MAX_GLIDE_MS, MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope,
-    SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
+    AudioFrom, Canvas, CanvasId, CollectionGlide, DISPLAY_SOURCE_TYPE, DisplayChrome, Fallback,
+    Filter, FilterId, ItemContent, ItemId, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS,
+    MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
+    Source, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, show_for_is_valid,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -81,6 +82,10 @@ pub enum SceneError {
     InvalidSyncOffset,
     /// A glide duration is above [`MAX_GLIDE_MS`] (ADR-0100).
     InvalidGlide,
+    /// `show_for_ms` is set and is not in `1..=MAX_SHOW_FOR_MS` (ADR-0105).
+    InvalidShowFor,
+    /// Chrome was set on a source that is not a display (ADR-0104).
+    ChromeNotDisplay,
     /// A global scene (ADR-0065) would be shown as program or preview, nested, nest a
     /// scene, or not be scoped to its own canvas.
     GlobalScene(SceneId),
@@ -158,6 +163,10 @@ impl fmt::Display for SceneError {
             SceneError::InvalidGlide => {
                 write!(f, "glide duration must be from 0 to {MAX_GLIDE_MS} ms")
             }
+            SceneError::InvalidShowFor => {
+                write!(f, "show duration must be from 1 to {MAX_SHOW_FOR_MS} ms")
+            }
+            SceneError::ChromeNotDisplay => f.write_str("only a display source can store chrome"),
         }
     }
 }
@@ -224,6 +233,20 @@ enum Op {
         source: SourceId,
         expected: Option<SourceGlide>,
         new: Option<SourceGlide>,
+    },
+    /// Replaces a source's region (ADR-0103). Not a settings change.
+    SetSourceRegion {
+        source: SourceId,
+        expected: Option<SourceRegion>,
+        new: Option<SourceRegion>,
+    },
+    /// Replaces a display source's chrome and the region it writes (ADR-0104).
+    SetSourceChrome {
+        source: SourceId,
+        expected_chrome: Option<DisplayChrome>,
+        expected_region: Option<SourceRegion>,
+        new_chrome: Option<DisplayChrome>,
+        new_region: Option<SourceRegion>,
     },
     InsertScene {
         scene: Scene,
@@ -870,6 +893,8 @@ impl SceneCollection {
             audio: SourceAudio::default(),
             glide: None,
             hints: Default::default(),
+            region: None,
+            chrome: None,
         };
         let undo = self.apply_with(
             Op::InsertSource {
@@ -1044,6 +1069,46 @@ impl SceneCollection {
             source: id,
             expected,
             new: glide,
+        })
+    }
+
+    /// Sets or clears a source's region (ADR-0103). One undo step. The binder does
+    /// not see it, so the capture node stays. `None` is the whole picture.
+    pub fn set_source_region(
+        &mut self,
+        id: SourceId,
+        region: Option<SourceRegion>,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_source(id)?.region;
+        self.apply(Op::SetSourceRegion {
+            source: id,
+            expected,
+            new: region,
+        })
+    }
+
+    /// Writes display chrome and the region those insets describe (ADR-0104).
+    ///
+    /// `None` clears chrome and the region together. Refused for any type other
+    /// than [`DISPLAY_SOURCE_TYPE`]. Does not move scene items.
+    pub fn set_display_chrome(
+        &mut self,
+        id: SourceId,
+        chrome: Option<DisplayChrome>,
+    ) -> Result<Undo, SceneError> {
+        let source = self.get_source(id)?;
+        if source.type_id.as_str() != DISPLAY_SOURCE_TYPE {
+            return Err(SceneError::ChromeNotDisplay);
+        }
+        let expected_chrome = source.chrome;
+        let expected_region = source.region;
+        let new_region = chrome.map(DisplayChrome::region);
+        self.apply(Op::SetSourceChrome {
+            source: id,
+            expected_chrome,
+            expected_region,
+            new_chrome: chrome,
+            new_region,
         })
     }
 
@@ -1225,6 +1290,7 @@ impl SceneCollection {
             id,
             content,
             visible: true,
+            show_for_ms: None,
             locked: false,
             layout,
             overrides: BTreeMap::new(),
@@ -1254,10 +1320,26 @@ impl SceneCollection {
         })
     }
 
-    /// Shows or hides an item.
+    /// Shows or hides an item. The lasting eye; a timed-show cue is host session
+    /// state and is not written here (ADR-0105).
     pub fn set_item_visible(&mut self, id: ItemId, visible: bool) -> Result<Undo, SceneError> {
         let mut item = self.get_item(id)?.clone();
         item.visible = visible;
+        self.replace_item(item)
+    }
+
+    /// Sets how long Show draws a hidden item, or clears it (`None`). One undo step.
+    /// `InvalidShowFor` when the duration is outside `1..=MAX_SHOW_FOR_MS` (ADR-0105).
+    pub fn set_item_show_for(
+        &mut self,
+        id: ItemId,
+        show_for_ms: Option<u32>,
+    ) -> Result<Undo, SceneError> {
+        if !show_for_is_valid(show_for_ms) {
+            return Err(SceneError::InvalidShowFor);
+        }
+        let mut item = self.get_item(id)?.clone();
+        item.show_for_ms = show_for_ms;
         self.replace_item(item)
     }
 
@@ -1638,6 +1720,52 @@ impl SceneCollection {
                     new: expected,
                 })
             }
+            Op::SetSourceRegion {
+                source,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .sources
+                    .get_mut(&source)
+                    .ok_or(SceneError::UnknownSource(source))?;
+                if slot.region != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.region = new;
+                Ok(Op::SetSourceRegion {
+                    source,
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::SetSourceChrome {
+                source,
+                expected_chrome,
+                expected_region,
+                new_chrome,
+                new_region,
+            } => {
+                let slot = self
+                    .sources
+                    .get_mut(&source)
+                    .ok_or(SceneError::UnknownSource(source))?;
+                if slot.chrome != expected_chrome || slot.region != expected_region {
+                    return Err(SceneError::UndoConflict);
+                }
+                if slot.type_id.as_str() != DISPLAY_SOURCE_TYPE && new_chrome.is_some() {
+                    return Err(SceneError::ChromeNotDisplay);
+                }
+                slot.chrome = new_chrome;
+                slot.region = new_region;
+                Ok(Op::SetSourceChrome {
+                    source,
+                    expected_chrome: new_chrome,
+                    expected_region: new_region,
+                    new_chrome: expected_chrome,
+                    new_region: expected_region,
+                })
+            }
             Op::ReplaceSource {
                 mut expected,
                 mut new,
@@ -1877,6 +2005,9 @@ impl SceneCollection {
             if s.glide.is_some_and(|g| !g.is_valid()) {
                 return Err(SceneError::InvalidGlide);
             }
+            if s.chrome.is_some() && s.type_id.as_str() != DISPLAY_SOURCE_TYPE {
+                return Err(SceneError::ChromeNotDisplay);
+            }
             for f in &s.filters {
                 if !filters.insert(f.id) {
                     return Err(SceneError::DuplicateFilter(f.id));
@@ -1898,6 +2029,9 @@ impl SceneCollection {
                 self.get_canvas(c)?;
             }
             for item in &s.items {
+                if !show_for_is_valid(item.show_for_ms) {
+                    return Err(SceneError::InvalidShowFor);
+                }
                 for (canvas, layout) in std::iter::once((None, &item.layout))
                     .chain(item.overrides.iter().map(|(c, l)| (Some(*c), l)))
                 {

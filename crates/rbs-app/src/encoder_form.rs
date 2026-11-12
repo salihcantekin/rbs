@@ -147,9 +147,13 @@ impl EncoderForm {
             Choices::with_current(keyframes, profile.keyframe_seconds, |s| format!("{s} s"));
 
         let mut profiles = vec![("Automatic".to_owned(), None)];
-        if profile.video_codec == VideoCodec::Hevc {
-            profiles.push(("Main".to_owned(), Some("main".to_owned())));
-        } else {
+        match profile.video_codec {
+            VideoCodec::Hevc | VideoCodec::Av1 => {
+                profiles.push(("Main".to_owned(), Some("main".to_owned())));
+            }
+            VideoCodec::H264 => {}
+        }
+        if profile.video_codec == VideoCodec::H264 {
             for p in ["high", "main", "baseline"] {
                 if options.h264_profiles.iter().any(|h| h == p) {
                     profiles.push((profile_label(p), Some(p.to_owned())));

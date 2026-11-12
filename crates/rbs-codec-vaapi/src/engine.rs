@@ -272,6 +272,8 @@ const fn va_profile(profile: Profile) -> sys::VAProfile {
         Profile::H264High => sys::VAProfileH264High,
         Profile::HevcMain => sys::VAProfileHEVCMain,
         Profile::HevcMain10 => sys::VAProfileHEVCMain10,
+        // The probe does not list AV1, so `plan` does not produce this profile.
+        Profile::Av1Main => unreachable!("this adapter does not probe AV1"),
     }
 }
 
@@ -281,6 +283,9 @@ const fn va_profile(profile: Profile) -> sys::VAProfile {
 /// some rate control and, for HEVC, no coding tool required that the adapter does
 /// not write. The full-power entry point is preferred over low power.
 fn encode_config(display: &Display, profile: Profile) -> Option<EncodeConfig> {
+    if profile == Profile::Av1Main {
+        return None;
+    }
     let hevc = matches!(profile, Profile::HevcMain | Profile::HevcMain10);
     let rt_format = if profile == Profile::HevcMain10 {
         sys::VA_RT_FORMAT_YUV420_10

@@ -122,6 +122,8 @@ pub(crate) fn properties(plan: &Plan) -> Result<Vec<(Name, Value)>, String> {
         Profile::H264High => sys::AMF_VIDEO_ENCODER_PROFILE_HIGH,
         Profile::HevcMain => sys::AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN,
         Profile::HevcMain10 => sys::AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN_10,
+        // The probe does not list AV1, so `plan` does not produce this profile.
+        Profile::Av1Main => return Err("AV1 is not encoded by this adapter".into()),
     });
     let preset = i64::from(match (hevc, plan.preset) {
         (false, Preset::Speed) => sys::AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED,

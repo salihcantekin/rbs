@@ -35,6 +35,7 @@ Forces: P4 (no CPU readback), P6 (no allocation or I/O in `Node::process`), P13 
 - `rbs-sources` gains the `png` dependency (justification above). Core and port crates are untouched.
 - The pictures' pixels stay in CPU memory for the life of the node (decision 10); the GPU texture only while warm.
 - Animated pictures (GIF, APNG, video), SVG, text and browser content are not covered. They need a source that produces frames over time and are decided separately.
+- 2026-11-12: media files are [ADR-0108](0108-media-file-source.md) and the browser source is [ADR-0109](0109-browser-source.md) (both Proposed). Text and SVG remain undecided. The sentence above is unchanged.
 
 ## Reference tools (CLAUDE.md rule 17)
 

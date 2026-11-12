@@ -9,7 +9,7 @@ use rbs_core::time::Clock;
 use rbs_core::timing::FrameRate;
 
 use crate::error::CaptureError;
-use crate::target::{CaptureTarget, Permission, TargetId, TargetKind, Thumbnail};
+use crate::target::{CaptureTarget, Permission, RegionGrab, TargetId, TargetKind, Thumbnail};
 
 /// A GPU device, identified the way OS interop APIs identify it.
 #[non_exhaustive]
@@ -324,5 +324,23 @@ pub trait CaptureFactory: AdapterFactory {
     fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
         let _ = (target, max);
         Err(CaptureError::Unsupported("thumbnail"))
+    }
+
+    /// One picture for the source Region section (ADR-0103 decision 4).
+    ///
+    /// Not [`Self::thumbnail`]: the long side is at most [`REGION_GRAB_LONG`]
+    /// (960), whatever `max_long` asks for, and [`THUMBNAIL_MAX`] is not raised.
+    /// The picture is scaled to fit in a square of that side, keeps the target's
+    /// aspect, is never scaled up and is at least 1 x 1, in sRGB. An empty
+    /// `max_long` returns [`CaptureError::FormatUnsupported`].
+    ///
+    /// The same rules as `thumbnail` otherwise: no session, no prompt, no visible
+    /// side effect, about one second, UI-only (not logged, not stored). The host
+    /// keeps one grab in flight and cancels it when the section closes; this
+    /// method itself does not queue. Cameras that cannot grab without a light
+    /// return [`CaptureError::Unsupported`].
+    fn region_grab(&self, target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError> {
+        let _ = (target, max_long);
+        Err(CaptureError::Unsupported("region_grab"))
     }
 }

@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 12
+//! format = 14
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -36,6 +36,8 @@
 //! settings = { cursor = true }
 //! # monitor = "also"         # heard on the monitor output: "only" or "also" (format 10, ADR-0097)
 //! # glide = { duration_ms = 600, easing = "linear" }  # slide override (format 12, ADR-0100)
+//! # region = [0, 40, 0, 80]   # full-picture insets, left top right bottom (format 14, ADR-0103)
+//! # chrome = { top = 40, bottom = 80, fill = "cover" }  # display only (format 14, ADR-0104)
 //!
 //! [[scenes]]
 //! id = 0
@@ -46,13 +48,14 @@
 //! id = 0
 //! source = 0                   # or: scene = <id> for a nested scene
 //! layout = { position = [0.0, 0.0], size = [1920.0, 1080.0] }
+//! # show_for_ms = 5000         # timed show while hidden (format 13, ADR-0105)
 //! ```
 //!
 //! Layouts may also have `rotation` (degrees), `crop` (`[left, top, right, bottom]`
 //! source pixels), `opacity` and `style` (ADR-0053, format 2: `shape = "rectangle" |
 //! "circle" | "ellipse"`, `radius` for rectangles, `border = { width, color =
 //! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false`,
-//! `locked = true` (format 3) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
+//! `locked = true` (format 3), `show_for_ms` (1 to 600000, format 13, ADR-0105; omitted when unset) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
 //! enabled, settings }]`, `volume` (0 to 1, default 1) and `muted = true` (format 3,
 //! ADR-0059), `sync_offset_ms` (-200 to 200, default 0; format 4, ADR-0062), `hints = { target_app = "...", target_title = "..." }` (format 8, ADR-0077). Setting values are TOML booleans, integers, floats or
 //! strings. Loading validates the whole collection
@@ -67,8 +70,9 @@ use rbs_scene::model::{
     Border, Canvas, CanvasId, CollectionGlide, Crop, Fallback, Filter, FilterId, GlideEasing,
     ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene, SceneId, SceneItem, SceneScope,
     SettingValue, Settings, Shadow, Shape, Source, SourceAudio, SourceGlide, SourceId,
-    SourceMonitor,
+    SourceMonitor, SourceRegion,
 };
+use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, SceneCollection};
 use serde::{Deserialize, Serialize};
 
@@ -286,6 +290,71 @@ struct SourceDoc {
     /// Hints for finding the target again (`target_app`, `target_title`; format 8, ADR-0077).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     hints: BTreeMap<String, String>,
+    /// Full-picture insets `[left, top, right, bottom]` (format 14, ADR-0103). Absent: whole picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    region: Option<[u32; 4]>,
+    /// Display chrome (format 14, ADR-0104). Absent: off. Only a display source may have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chrome: Option<ChromeDoc>,
+}
+
+/// Display chrome in the document (ADR-0104).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChromeDoc {
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    top: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    right: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    bottom: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    left: u32,
+    /// `"cover"` (default) or `"fit"`.
+    #[serde(default, skip_serializing_if = "FillName::is_cover")]
+    fill: FillName,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FillName {
+    #[default]
+    Cover,
+    Fit,
+}
+
+impl FillName {
+    fn is_cover(&self) -> bool {
+        *self == Self::Cover
+    }
+}
+
+impl ChromeDoc {
+    fn from(chrome: DisplayChrome) -> Self {
+        Self {
+            top: chrome.top,
+            right: chrome.right,
+            bottom: chrome.bottom,
+            left: chrome.left,
+            fill: match chrome.fill {
+                ChromeFill::Cover => FillName::Cover,
+                ChromeFill::Fit => FillName::Fit,
+                _ => FillName::Cover,
+            },
+        }
+    }
+
+    fn chrome(&self) -> Result<DisplayChrome, String> {
+        let fill = match self.fill {
+            FillName::Cover => ChromeFill::Cover,
+            FillName::Fit => ChromeFill::Fit,
+        };
+        Ok(DisplayChrome::new(self.top, self.right, self.bottom, self.left).with_fill(fill))
+    }
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// A source's monitor mode in the document (ADR-0097 decision 5).
@@ -375,6 +444,9 @@ struct ItemDoc {
     visible: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     locked: bool,
+    /// Timed-show duration while hidden (format 13, ADR-0105). Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    show_for_ms: Option<u32>,
     layout: LayoutDoc,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     overrides: Vec<OverrideDoc>,
@@ -604,7 +676,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 12;
+    const FORMAT: u32 = 14;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -620,10 +692,13 @@ impl Document for SceneCollection {
     /// format 10 body without it. Format 11 adds the optional canvas `order` (the
     /// scene list); a format 10 body is a format 11 body without it. Format 12 adds the
     /// collection `glide` and optional per-source `glide` (ADR-0100); a format 11 body
-    /// is a format 12 body without them.
+    /// is a format 12 body without them. Format 13 adds the optional item
+    /// `show_for_ms` (ADR-0105); a format 12 body is a format 13 body without it.
+    /// Format 14 adds the optional source `region` and `chrome` (ADR-0103, ADR-0104);
+    /// a format 13 body is a format 14 body without them.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=11 => {
+            1..=13 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -668,6 +743,34 @@ impl Document for SceneCollection {
                         .any(|s| s.contains_key("glide"));
                 if from < 12 && glided {
                     return Err(format!("format {from} has no `glide` (format 12)"));
+                }
+                let timed = body
+                    .get("scenes")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .filter_map(|s| s.get("items"))
+                    .filter_map(toml::Value::as_array)
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|i| i.contains_key("show_for_ms"));
+                if from < 13 && timed {
+                    return Err(format!(
+                        "format {from} has no item `show_for_ms` (format 13)"
+                    ));
+                }
+                let regioned = body
+                    .get("sources")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|s| s.contains_key("region") || s.contains_key("chrome"));
+                if from < 14 && regioned {
+                    return Err(format!(
+                        "format {from} has no source `region` or `chrome` (format 14)"
+                    ));
                 }
                 Ok(())
             }
@@ -733,6 +836,8 @@ impl Document for SceneCollection {
                     monitor: s.audio.monitor.into(),
                     glide: s.glide.map(GlideDoc::from),
                     hints: s.hints.clone(),
+                    region: s.region.map(SourceRegion::to_array),
+                    chrome: s.chrome.map(ChromeDoc::from),
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -764,6 +869,7 @@ impl Document for SceneCollection {
                             scene,
                             visible: i.visible,
                             locked: i.locked,
+                            show_for_ms: i.show_for_ms,
                             layout: LayoutDoc::of(&i.layout),
                             overrides: i
                                 .overrides
@@ -858,9 +964,11 @@ impl Document for SceneCollection {
                     .with_monitor(s.monitor.into());
                 source.glide = s.glide.map(SourceGlide::from);
                 source.hints = s.hints;
-                source
+                source.region = s.region.map(SourceRegion::from_array);
+                source.chrome = s.chrome.map(|chrome| chrome.chrome()).transpose()?;
+                Ok(source)
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         let scenes = b
             .scenes
             .into_iter()
@@ -887,6 +995,7 @@ impl Document for SceneCollection {
                             SceneItem::new(ItemId::from_raw(i.id), content, i.layout.layout()?);
                         item.visible = i.visible;
                         item.locked = i.locked;
+                        item.show_for_ms = i.show_for_ms;
                         for o in i.overrides {
                             let canvas = CanvasId::from_raw(o.canvas);
                             if item.overrides.insert(canvas, o.layout.layout()?).is_some() {

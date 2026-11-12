@@ -20,6 +20,9 @@ rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }
 rbs-vcam = { path = "../rbs-vcam" }
+rbs-media-decode = { path = "../rbs-media-decode" }
+# Lock-free lookahead queues (ADR-0108). The render thread only pops.
+rtrb = "0.4"
 # Pixel buffers of system-memory frames (same crate and version as rbs-core).
 bytes = "1.9"
 # Only to read the render device's graphics API (`wgpu::Backend`); same version and
@@ -33,6 +36,7 @@ rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-vcam-test = { path = "../rbs-vcam-test" }
 # Allocation guard for the nodes' `process` (performance budgets: no allocation on hot paths).
 allocation-counter = "0.8"
+rbs-media-decode-test = { path = "../rbs-media-decode-test" }
 
 [lints]
 workspace = true

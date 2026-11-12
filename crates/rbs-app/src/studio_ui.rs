@@ -30,7 +30,9 @@ use rbs_audio::LevelMeter;
 use rbs_core::fault::SourceFault;
 use rbs_record::Link;
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
-use rbs_scene::model::{Border, ItemStyle, SceneId, Shape, SourceId};
+use rbs_scene::model::{
+    Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, SceneId, Shape, SourceId, SourceRegion,
+};
 use rbs_transport::Secret;
 use rbs_ui::fader;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
@@ -1352,15 +1354,35 @@ impl StudioUi {
     }
 
     /// The source kinds this system offers: `(code, label)`, code being the index in
-    /// `SourceKind::ALL` (the Add source menu's).
+    /// `kind_list` (the Add source menu's).
     pub fn kind_codes(&self) -> Vec<(i32, &'static str)> {
         self.kind_list
             .iter()
-            .filter_map(|k| {
-                let code = SourceKind::ALL.iter().position(|a| a == k)?;
-                Some((code as i32, k.label()))
-            })
+            .enumerate()
+            .map(|(index, kind)| (index as i32, kind.label()))
             .collect()
+    }
+
+    /// Add source menu rows: `(code, api kind id, label)`.
+    pub fn add_source_kinds(&self) -> Vec<(i32, &'static str, &'static str)> {
+        self.kind_list
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| (index as i32, kind.api_id(), kind.label()))
+            .collect()
+    }
+
+    /// Index in `kind_list` for a `source.add?kind=` value.
+    pub fn kind_code_for_api(&self, api_id: &str) -> Option<i32> {
+        self.kind_list
+            .iter()
+            .position(|kind| kind.api_id() == api_id)
+            .map(|index| index as i32)
+    }
+
+    /// The kind at a menu code, when it is still installed.
+    pub fn kind_at(&self, code: i32) -> Option<SourceKind> {
+        self.kind_list.get(code as usize).copied()
     }
 
     /// Whether another scene has a source the scene on air does not (Add source's
@@ -1370,7 +1392,7 @@ impl StudioUi {
     }
 
     pub fn list_targets(&mut self, code: i32) {
-        let Some(kind) = SourceKind::ALL.get(code as usize).copied() else {
+        let Some(kind) = self.kind_list.get(code as usize).copied() else {
             return;
         };
         self.send(Command::ListTargets(kind));
@@ -1497,6 +1519,7 @@ impl StudioUi {
     pub fn source_settings_closed(&mut self) {
         self.source_settings.set_vec(Vec::new());
         self.source_settings_view = None;
+        self.send(Command::CloseSourceSettings);
     }
 
     /// Apply or OK in the Source settings window: the chosen mode, rate and cursor are
@@ -1579,8 +1602,7 @@ impl StudioUi {
 
     /// The kind picked in Settings › Global sources.
     fn global_source_kind(&self) -> Option<SourceKind> {
-        let (code, _) = self.kind_codes().get(self.global_kind as usize).copied()?;
-        SourceKind::ALL.get(code as usize).copied()
+        self.kind_list.get(self.global_kind as usize).copied()
     }
 
     /// The collection's sources of the picked kind that are not global.
@@ -1753,7 +1775,7 @@ impl StudioUi {
         use crate::menu_bar::AddWhat;
         let picker = match what {
             AddWhat::Kind(code) => {
-                let Some(kind) = SourceKind::ALL.get(code as usize).copied() else {
+                let Some(kind) = self.kind_list.get(code as usize).copied() else {
                     return;
                 };
                 self.send(Command::ListTargets(kind));
@@ -1985,6 +2007,111 @@ impl StudioUi {
             id: SourceId::from_raw(id as u32),
             region,
         });
+    }
+
+    /// Capture region on the source (ADR-0103). `clear` removes the region.
+    pub fn set_source_capture_region(
+        &mut self,
+        id: i32,
+        clear: bool,
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    ) {
+        if self.host.is_none() {
+            return;
+        }
+        let region = if clear {
+            None
+        } else {
+            Some(SourceRegion::new(
+                left.max(0) as u32,
+                top.max(0) as u32,
+                right.max(0) as u32,
+                bottom.max(0) as u32,
+            ))
+        };
+        self.send(Command::SetSourceCaptureRegion {
+            id: SourceId::from_raw(id as u32),
+            region,
+        });
+    }
+
+    /// Display chrome (ADR-0104). `on` false turns chrome off.
+    pub fn set_display_chrome(
+        &mut self,
+        id: i32,
+        on: bool,
+        top: i32,
+        right: i32,
+        bottom: i32,
+        left: i32,
+        fill: i32,
+    ) {
+        if self.host.is_none() {
+            return;
+        }
+        let chrome = if on {
+            let fill = if fill == 1 {
+                ChromeFill::Fit
+            } else {
+                ChromeFill::Cover
+            };
+            Some(
+                DisplayChrome::new(
+                    top.max(0) as u32,
+                    right.max(0) as u32,
+                    bottom.max(0) as u32,
+                    left.max(0) as u32,
+                )
+                .with_fill(fill),
+            )
+        } else {
+            None
+        };
+        self.send(Command::SetDisplayChrome {
+            id: SourceId::from_raw(id as u32),
+            chrome,
+        });
+    }
+
+    pub fn fit_display_chrome(&mut self, id: i32) {
+        if self.host.is_none() {
+            return;
+        }
+        self.send(Command::FitDisplayChrome(SourceId::from_raw(id as u32)));
+    }
+
+    pub fn reset_display_chrome(&mut self, id: i32) {
+        if self.host.is_none() {
+            return;
+        }
+        self.send(Command::ResetDisplayChrome(SourceId::from_raw(id as u32)));
+    }
+
+    /// Stored timed-show duration on the item (ADR-0105). `show_for_ms` 0 clears.
+    pub fn set_item_show_for(&mut self, item: i32, show_for_ms: i32) {
+        if self.host.is_none() {
+            return;
+        }
+        let show_for_ms = if show_for_ms <= 0 {
+            None
+        } else {
+            Some((show_for_ms as u32).min(rbs_scene::MAX_SHOW_FOR_MS))
+        };
+        self.send(Command::SetItemShowFor {
+            item: ItemId::from_raw(item as u32),
+            show_for_ms,
+        });
+    }
+
+    /// Live timed show for a hidden item (ADR-0105).
+    pub fn show_item(&mut self, item: i32) {
+        if self.host.is_none() {
+            return;
+        }
+        self.send(Command::ShowItem(ItemId::from_raw(item as u32)));
     }
 
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
@@ -2328,6 +2455,27 @@ impl StudioUi {
         v
     }
 
+    /// Video codecs the settings control offers. A stream stays H.264: RTMP and
+    /// MPEG-TS do not carry HEVC or AV1. A recording lists HEVC and AV1 when an
+    /// encoder on this computer does, and keeps a saved codec visible.
+    fn video_codecs(&self, out: i32, e: &Encoding) -> Vec<VideoCodec> {
+        if out == output::STREAM {
+            return vec![VideoCodec::H264];
+        }
+        let mut list = vec![VideoCodec::H264];
+        let have = &self.options(e).codecs;
+        if have.iter().any(|c| c == "hevc") {
+            list.push(VideoCodec::Hevc);
+        }
+        if have.iter().any(|c| c == "av1") {
+            list.push(VideoCodec::Av1);
+        }
+        if !list.contains(&e.video_codec) {
+            list.push(e.video_codec);
+        }
+        list
+    }
+
     /// What the `EncoderFields` of an [`output`] show.
     fn encoder_data(&self, out: i32) -> EncoderData {
         let e = self.encoding_of(out);
@@ -2342,18 +2490,7 @@ impl StudioUi {
         let (presets, preset) = choices(&form.presets);
         let (profiles, profile) = choices(&form.profiles);
         let (b_frames, b_frame) = choices(&form.b_frames);
-        let codecs: Vec<VideoCodec> = if out == output::STREAM {
-            vec![VideoCodec::H264]
-        } else {
-            let mut list = vec![VideoCodec::H264];
-            if self.options(&e).codecs.iter().any(|c| c == "hevc") {
-                list.push(VideoCodec::Hevc);
-            }
-            if e.video_codec == VideoCodec::Hevc && !list.contains(&VideoCodec::Hevc) {
-                list.push(VideoCodec::Hevc);
-            }
-            list
-        };
+        let codecs = self.video_codecs(out, &e);
         let codec_index = codecs.iter().position(|c| *c == e.video_codec).unwrap_or(0);
         EncoderData {
             codecs: strings(codecs.iter().map(|c| c.label().to_owned())),
@@ -2465,21 +2602,10 @@ impl StudioUi {
                 true
             }
             enc_field::VIDEO_CODEC => {
-                let codecs: Vec<VideoCodec> = if out == output::STREAM {
-                    vec![VideoCodec::H264]
-                } else {
-                    let mut list = vec![VideoCodec::H264];
-                    if self.options(&e).codecs.iter().any(|c| c == "hevc") {
-                        list.push(VideoCodec::Hevc);
-                    }
-                    list
-                };
-                match codecs.get(value as usize).copied() {
+                match self.video_codecs(out, &e).get(value as usize).copied() {
                     Some(codec) => {
                         e.video_codec = codec;
-                        if codec == VideoCodec::Hevc
-                            && matches!(e.profile.as_deref(), Some("high" | "baseline"))
-                        {
+                        if !codec.allows_profile(e.profile.as_deref()) {
                             e.profile = None;
                         }
                         true
@@ -3272,6 +3398,27 @@ impl StudioUi {
         });
     }
 
+    /// Adds a media file the user picked (ADR-0108). The scripted demo decoder
+    /// ignores file bytes; any regular file path is enough for a Program test.
+    pub fn add_media_file(&mut self, path: &std::path::Path) {
+        self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = false;
+        self.send(Command::AddMedia {
+            path: path.to_owned(),
+        });
+    }
+
+    /// Adds a browser page (ADR-0109). The helper paints synthetic frames until CEF ships.
+    pub fn add_browser_page(&mut self, url: &str) {
+        self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = false;
+        self.send(Command::AddBrowser {
+            url: url.to_owned(),
+        });
+    }
+
     /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
     /// changes nothing.
     pub fn set_source_fill(&mut self, id: i32, color: &str) {
@@ -3909,8 +4056,9 @@ impl StudioUi {
                 let rows: Vec<KindData> = self
                     .kind_list
                     .iter()
-                    .map(|k| KindData {
-                        code: SourceKind::ALL.iter().position(|a| a == k).unwrap_or(0) as i32,
+                    .enumerate()
+                    .map(|(index, k)| KindData {
+                        code: index as i32,
                         label: k.label().into(),
                     })
                     .collect();
@@ -4033,6 +4181,33 @@ impl StudioUi {
                 self.source_settings.set_vec(vec![data]);
                 self.source_settings_view = Some(choices);
             }
+            Update::RegionPreview {
+                id,
+                generation: _,
+                picture,
+            } => {
+                if let Some(mut row) = self.source_settings.row_data(0)
+                    && row.id == id.get() as i32
+                {
+                    if let Some(grab) = picture {
+                        if row.pic_w <= 0 || row.pic_h <= 0 {
+                            row.pic_w = grab.width() as i32;
+                            row.pic_h = grab.height() as i32;
+                        }
+                        let buffer =
+                            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                grab.rgba(),
+                                grab.width(),
+                                grab.height(),
+                            );
+                        row.region_preview = slint::Image::from_rgba8(buffer);
+                        row.has_region_preview = true;
+                    } else {
+                        row.has_region_preview = false;
+                    }
+                    self.source_settings.set_row_data(0, row);
+                }
+            }
             Update::Targets(kind, list) => {
                 if let Some(p) = &mut self.add_picker
                     && p.answer(kind, &list)
@@ -4040,9 +4215,9 @@ impl StudioUi {
                     self.picker_dirty = true;
                 }
                 let picked = self
-                    .kind_codes()
+                    .kind_list
                     .get(self.global_kind as usize)
-                    .and_then(|(code, _)| SourceKind::ALL.get(*code as usize).copied());
+                    .copied();
                 if picked == Some(kind) {
                     self.global_targets = list.clone();
                     self.refresh_global_existing();
@@ -4389,6 +4564,21 @@ impl StudioUi {
                         slint::Color::from_argb_u8(alpha, red, green, blue)
                     },
                     filled: r.filled,
+                    item_id: r.item.get() as i32,
+                    cap_has: r.cap_has,
+                    cap_l: r.cap_l as i32,
+                    cap_t: r.cap_t as i32,
+                    cap_r: r.cap_r as i32,
+                    cap_b: r.cap_b as i32,
+                    chrome_on: r.chrome_on,
+                    chrome_t: r.chrome_t as i32,
+                    chrome_r: r.chrome_r as i32,
+                    chrome_b: r.chrome_b as i32,
+                    chrome_l: r.chrome_l as i32,
+                    chrome_fill: r.chrome_fill as i32,
+                    has_work_rect: r.has_work_rect,
+                    show_for_ms: r.show_for_ms as i32,
+                    cue_remaining_ms: r.cue_remaining_ms as i32,
                 }
             })
             .collect();
@@ -4983,6 +5173,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::SystemAudio | SourceKind::ApplicationAudio) => "speaker",
         Some(SourceKind::Image) => "image",
         Some(SourceKind::Color) => "palette",
+        Some(SourceKind::Media) => "film",
+        Some(SourceKind::Browser) => "globe",
         None => "window",
     }
 }
@@ -4993,7 +5185,9 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
 /// filters changed, 14 removed from one scene, 15 made global or moved back into a
 /// scene, 16 look applied, 17 source pointed at another target, 18 source settings
-/// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing.
+/// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing,
+/// 21 how long Show draws a hidden item (the cue itself is not an undo step),
+/// 22 the source's capture region.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -5019,6 +5213,8 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::SourceSettings => 18,
                 EditKind::Transform => 19,
                 EditKind::Glide => 20,
+                EditKind::ShowFor => 21,
+                EditKind::Region => 22,
             },
             s.name.as_str(),
         ),
@@ -5174,6 +5370,22 @@ fn source_settings_data(view: &SourceSettingsView) -> (SourceSettingsData, Setti
         rate_index,
         has_cursor,
         cursor: view.cursor,
+        cap_has: view.cap_has,
+        cap_l: view.cap_l as i32,
+        cap_t: view.cap_t as i32,
+        cap_r: view.cap_r as i32,
+        cap_b: view.cap_b as i32,
+        chrome_on: view.chrome_on,
+        chrome_t: view.chrome_t as i32,
+        chrome_r: view.chrome_r as i32,
+        chrome_b: view.chrome_b as i32,
+        chrome_l: view.chrome_l as i32,
+        chrome_fill: view.chrome_fill as i32,
+        has_work_rect: view.has_work_rect,
+        pic_w: view.pic_w as i32,
+        pic_h: view.pic_h as i32,
+        has_region_preview: false,
+        region_preview: slint::Image::default(),
     };
     (
         data,
@@ -5334,6 +5546,20 @@ mod tests {
             size,
             fps,
             cursor: true,
+            cap_has: false,
+            cap_l: 0,
+            cap_t: 0,
+            cap_r: 0,
+            cap_b: 0,
+            chrome_on: false,
+            chrome_t: 0,
+            chrome_r: 0,
+            chrome_b: 0,
+            chrome_l: 0,
+            chrome_fill: 0,
+            has_work_rect: false,
+            pic_w: 0,
+            pic_h: 0,
         }
     }
 
@@ -5370,6 +5596,20 @@ mod tests {
             size: None,
             fps: Some(144),
             cursor: false,
+            cap_has: false,
+            cap_l: 0,
+            cap_t: 0,
+            cap_r: 0,
+            cap_b: 0,
+            chrome_on: false,
+            chrome_t: 0,
+            chrome_r: 0,
+            chrome_b: 0,
+            chrome_l: 0,
+            chrome_fill: 0,
+            has_work_rect: true,
+            pic_w: 3440,
+            pic_h: 1440,
         };
         let (data, choices) = source_settings_data(&view);
         assert!(data.has_cursor && !data.cursor);

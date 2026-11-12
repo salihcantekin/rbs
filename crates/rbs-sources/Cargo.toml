@@ -23,6 +23,9 @@ rbs-nodes = { path = "../rbs-nodes" }
 rbs-filters = { path = "../rbs-filters" }
 rbs-params = { path = "../rbs-params" }
 rbs-audio-filters = { path = "../rbs-audio-filters" }
+rbs-media-decode = { path = "../rbs-media-decode" }
+rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+bytes = "1.9"
 # PNG files for image sources (ADR-0074): pure Rust, MIT or Apache-2.0, control thread only.
 png = "0.18"
 
@@ -30,6 +33,7 @@ png = "0.18"
 # Reference adapters of the capture and audio input ports (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+rbs-media-decode-test = { path = "../rbs-media-decode-test" }
 
 [lints]
 workspace = true

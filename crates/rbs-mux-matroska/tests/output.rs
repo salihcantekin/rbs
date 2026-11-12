@@ -677,6 +677,59 @@ fn finish_patches_the_duration_and_segment_size() {
     assert!((duration - expected).abs() < 0.001, "{duration} ms");
 }
 
+/// Main-profile sequence header OBU (8-bit 4:2:0, 320x240), from `rbs-media-format`.
+const AV1_SEQUENCE: &[u8] = &[
+    0x0a, 0x0d, 0x00, 0x00, 0x00, 0x04, 0x3c, 0xff, 0xbc, 0x00, 0x02, 0x02, 0x02, 0x02, 0x00,
+];
+
+#[test]
+fn av1_is_v_av1_with_the_sample_copied() {
+    use rbs_core::media::{
+        ColorSpace, PixelFormat, Size, StreamDescriptor, StreamParams, VideoFormat,
+    };
+    use rbs_core::timing::FrameRate;
+
+    let video = StreamDescriptor::new(
+        CodecId::Av1,
+        BitstreamFormat::Obu,
+        Bytes::from_static(AV1_SEQUENCE),
+        StreamParams::video(
+            VideoFormat::new(
+                Size::new(320, 240),
+                PixelFormat::Nv12,
+                ColorSpace::BT709_LIMITED,
+            ),
+            FrameRate::FPS_30,
+        ),
+    );
+    let mut muxer = MatroskaMuxerFactory
+        .create(&MuxerConfig::new(MKV, vec![video]))
+        .unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    let header = chunks[0].data.as_ref();
+    assert!(header.windows(5).any(|w| w == b"V_AV1"));
+    assert!(header.windows(2).any(|w| w == [0x81, 0x00]));
+
+    const SAMPLE: [u8; 4] = [0x32, 0x02, 0xaa, 0xbb];
+    let packet = EncodedPacket::new(
+        CodecId::Av1,
+        BitstreamFormat::Obu,
+        Timestamp::from_nanos(1_000_000_000),
+        Timestamp::from_nanos(1_000_000_000),
+        true,
+        Bytes::from_static(&SAMPLE),
+    )
+    .unwrap();
+    muxer.write(StreamIndex(0), &packet, &mut chunks).unwrap();
+    muxer.finish(&mut chunks).unwrap();
+    let media = chunks
+        .iter()
+        .find(|c| matches!(c.kind, ChunkKind::Media { .. }))
+        .unwrap();
+    assert!(media.data.windows(4).any(|w| w == SAMPLE));
+}
+
 #[test]
 fn an_empty_recording_gets_no_patches() {
     let config = MuxerConfig::new(MKV, vec![aac_stream()]);

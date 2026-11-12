@@ -1,0 +1,17 @@
+[package]
+name = "rbs-media-decode"
+description = "Media-file decode port: open a local file the host already accepted, seek, and return pictures and PCM (ADR-0108). FFmpeg is not linked in this crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Port (docs/architecture/overview.md#layers): foundation only. Adapters implement
+# [`MediaDecoderFactory`]. The node owns the clock, loop, cursor, and queues.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+
+[lints]
+workspace = true

@@ -44,3 +44,6 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Maximize / Restore | Let one panel fill the main window for a while / bring the other panels back. Not saved in the workspace | Full screen, zoom | Transient maximize |
 | Toolbar | The row of command buttons under the menu bar, which the user chooses in Customize toolbar | Ribbon, action bar | Workspace `toolbar` (ADR-0050) |
 | Menu bar | The menus at the top of the window (or of the screen on macOS) that hold every command | App menu, main menu | Slint `MenuBar` built from the command registry |
+| Capture region | Pixels cut from the full capture of a screen, window or camera source, stored on the source (not the scene crop) | Crop | `Source::region` (ADR-0103) |
+| Display chrome | Insets that hide taskbar or Dock on a display capture, stored on the source | Work area crop | `Source::chrome` (ADR-0104) |
+| Timed show / Show | A hidden source may store how long Show draws it; Show is a live cue until that time ends | Flash, stinger | `show_for_ms`, `item.show` (ADR-0105) |

@@ -1,6 +1,6 @@
 [package]
 name = "rbs-codec-nvenc"
-description = "NVIDIA NVENC adapter for the RBS encoder port: H.264 and HEVC on Windows and Linux, loaded at run time."
+description = "NVIDIA NVENC adapter for the RBS encoder port: H.264, HEVC and AV1 on Windows and Linux, loaded at run time."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

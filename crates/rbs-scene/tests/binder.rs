@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rbs_core::lifecycle::Lifecycle;
@@ -9,10 +10,12 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
+use rbs_graph::partition::Lowering;
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindError, BindProblem, Role, SceneBinder, resolve};
 use rbs_scene::model::{
-    CanvasId, ItemContent, Layout, SceneId, SceneScope, SettingValue, Settings, SourceId,
+    CanvasId, Crop, DisplayChrome, ItemContent, Layout, SceneId, SceneScope, SettingValue,
+    Settings, SourceId, SourceRegion,
 };
 
 const AUDIO: PartitionId = PartitionId(7);
@@ -32,7 +35,7 @@ fn types(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
             vec![Pin::many("layers", LinkKind::Video)],
             vec![Pin::one("video", LinkKind::Video)],
         ),
-        "org.rbs.source.camera" | "org.rbs.source.screen" => d(
+        "org.rbs.source.camera" | "org.rbs.source.screen" | "org.rbs.source.display" => d(
             NodeKind::Source,
             vec![],
             vec![Pin::one("video", LinkKind::Video)],
@@ -42,7 +45,7 @@ fn types(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
             vec![],
             vec![Pin::one("audio", LinkKind::Audio)],
         ),
-        "org.rbs.source.camera-mic" => d(
+        "org.rbs.source.camera-mic" | "org.rbs.source.media" | "org.rbs.source.browser" => d(
             NodeKind::Source,
             vec![],
             vec![
@@ -667,23 +670,362 @@ fn each_canvas_mixes_only_its_own_program() {
 }
 
 #[test]
-fn a_source_with_video_and_audio_binds_only_its_video() {
-    let (mut s, _) = audio_setup();
+fn a_picture_and_sound_source_names_the_queue_reader() {
+    let (mut s, mic) = audio_setup();
     let (both, _) = s
         .col
-        .add_source("Cam+mic", ty("org.rbs.source.camera-mic"), Settings::new())
+        .add_source("Film", ty("org.rbs.source.camera-mic"), Settings::new())
         .unwrap();
     s.col
         .add_item(s.live, ItemContent::Source(both), full(), None)
         .unwrap();
-    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
-    assert_eq!(report.problems, [BindProblem::AudioOnVideoSource(both)]);
+    let mut report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        !report
+            .problems
+            .iter()
+            .any(|p| matches!(p, BindProblem::AudioOnVideoSource(_))),
+        "{:?}",
+        report.problems
+    );
     let node = s.binder.source_node(both).unwrap();
+    let mic_node = s.binder.source_node(mic).unwrap();
+    let cam = s.binder.source_node(s.cam).unwrap();
     assert_eq!(s.graph.node(node).unwrap().partition, PartitionId::RENDER);
     let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
     assert!(links_into(&s, comp).contains(&node));
     let mixer = s.binder.mixer(s.wide).unwrap();
+    assert!(links_into(&s, mixer).contains(&node));
+    // A video-only capture is not folded into this path.
+    assert!(!links_into(&s, mixer).contains(&cam));
+    assert_eq!(report.picture_sound.len(), 1);
+    let listed = report.picture_sound[0];
+    assert_eq!(listed.canvas, s.wide);
+    assert_eq!(listed.source, both);
+    assert_eq!(listed.link.from.node, node);
+    assert_eq!(listed.link.to.node, mixer);
+    assert_eq!(
+        report.mixers[&s.wide]
+            .inputs
+            .iter()
+            .find(|i| i.source == both)
+            .unwrap()
+            .producer,
+        node,
+        "before lower, the input still names the source node"
+    );
+    let again = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(again.picture_sound, report.picture_sound);
+
+    let mut lowering = Lowering::new();
+    let lowered = lowering.lower(&s.graph);
+    let crossing = lowered
+        .crossings
+        .iter()
+        .find(|c| c.link == listed.link)
+        .unwrap();
+    assert!(crossing.reader.is_reserved());
+    assert_ne!(crossing.reader, node);
+    assert_ne!(crossing.reader, crossing.writer);
+    let audio = lowered.parts.get(&AUDIO).unwrap();
+    assert_eq!(audio.node(crossing.reader).unwrap().partition, AUDIO);
+    let render = lowered.parts.get(&PartitionId::RENDER).unwrap();
+    assert!(render.node(node).is_some());
+    assert!(render.node(crossing.writer).is_some());
+
+    report.assign_queue_readers(&lowered.crossings);
+    let producer = report.mixers[&s.wide]
+        .inputs
+        .iter()
+        .find(|i| i.source == both)
+        .unwrap()
+        .producer;
+    assert_eq!(producer, crossing.reader);
+    assert_ne!(producer, node);
+    let mic_producer = report.mixers[&s.wide]
+        .inputs
+        .iter()
+        .find(|i| i.source == mic)
+        .unwrap()
+        .producer;
+    assert_eq!(mic_producer, mic_node);
+
+    // Hidden: the logical audio link goes away. The node is not temporal, so the
+    // picture stays warm.
+    let item = s
+        .col
+        .scene(s.live)
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.content == ItemContent::Source(both))
+        .unwrap()
+        .id;
+    s.col.set_item_visible(item, false).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.picture_sound.is_empty());
     assert!(!links_into(&s, mixer).contains(&node));
+    assert!(links_into(&s, comp).contains(&node));
+    assert_eq!(state(&s, node), Lifecycle::Active);
+}
+
+#[test]
+fn each_canvas_gets_its_own_reader_for_a_picture_and_sound_source() {
+    let (mut s, _) = audio_setup();
+    let (both, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.camera-mic"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(both), full(), None)
+        .unwrap();
+    let (vertical, _) = s.col.add_scene("Vertical", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(vertical, ItemContent::Source(both), full(), None)
+        .unwrap();
+    s.col.set_program(s.tall, Some(vertical)).unwrap();
+    let mut report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.picture_sound.len(), 2);
+    let wide_link = report
+        .picture_sound
+        .iter()
+        .find(|p| p.canvas == s.wide)
+        .unwrap()
+        .link;
+    let tall_link = report
+        .picture_sound
+        .iter()
+        .find(|p| p.canvas == s.tall)
+        .unwrap()
+        .link;
+    assert_ne!(wide_link, tall_link);
+    let lowered = Lowering::new().lower(&s.graph);
+    let reader = |link| {
+        lowered
+            .crossings
+            .iter()
+            .find(|c| c.link == link)
+            .unwrap()
+            .reader
+    };
+    let wide_reader = reader(wide_link);
+    let tall_reader = reader(tall_link);
+    assert_ne!(wide_reader, tall_reader);
+    report.assign_queue_readers(&lowered.crossings);
+    let producer = |canvas, source| {
+        report.mixers[&canvas]
+            .inputs
+            .iter()
+            .find(|i| i.source == source)
+            .unwrap()
+            .producer
+    };
+    assert_eq!(producer(s.wide, both), wide_reader);
+    assert_eq!(producer(s.tall, both), tall_reader);
+}
+
+#[test]
+fn a_picture_and_sound_source_does_not_take_an_audio_filter_chain() {
+    let (mut s, _) = audio_setup();
+    let (both, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.camera-mic"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(both), full(), None)
+        .unwrap();
+    let (audio_fx, _) = s
+        .col
+        .add_filter(both, ty("org.rbs.audio-filter.gain"), Settings::new())
+        .unwrap();
+    let (video_fx, _) = s
+        .col
+        .add_filter(both, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        report
+            .problems
+            .contains(&BindProblem::NoVideoPins(audio_fx))
+    );
+    assert!(s.binder.filter_node(both, audio_fx).is_none());
+    let node = s.binder.source_node(both).unwrap();
+    let fx = s.binder.filter_node(both, video_fx).unwrap();
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    assert!(links_into(&s, mixer).contains(&node));
+    assert!(!links_into(&s, mixer).contains(&fx));
+    assert!(links_into(&s, comp).contains(&fx));
+    assert_eq!(report.picture_sound[0].link.from.node, node);
+}
+
+fn item_of(s: &Setup, scene: SceneId, source: SourceId) -> rbs_scene::model::ItemId {
+    s.col
+        .scene(scene)
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.content == ItemContent::Source(source))
+        .unwrap()
+        .id
+}
+
+#[test]
+fn a_hidden_temporal_source_is_standby() {
+    let mut s = setup();
+    let (media, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    let (browser, _) = s
+        .col
+        .add_source("Page", ty("org.rbs.source.browser"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(media), full(), None)
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(browser), full(), None)
+        .unwrap();
+    s.col
+        .set_item_visible(item_of(&s, s.live, media), false)
+        .unwrap();
+    s.col
+        .set_item_visible(item_of(&s, s.live, browser), false)
+        .unwrap();
+    s.col
+        .set_item_visible(item_of(&s, s.live, s.cam), false)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let media_node = s.binder.source_node(media).unwrap();
+    let browser_node = s.binder.source_node(browser).unwrap();
+    let cam_node = s.binder.source_node(s.cam).unwrap();
+    assert_eq!(state(&s, media_node), Lifecycle::Standby);
+    assert_eq!(state(&s, browser_node), Lifecycle::Standby);
+    assert_eq!(state(&s, cam_node), Lifecycle::Active);
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    let linked = links_into(&s, comp);
+    assert!(!linked.contains(&media_node));
+    assert!(!linked.contains(&browser_node));
+    assert!(linked.contains(&cam_node));
+    assert!(!s.col.warm_sources(s.wide).contains(&media));
+    assert!(s.col.warm_sources(s.wide).contains(&s.cam));
+}
+
+#[test]
+fn a_timed_show_cue_keeps_a_hidden_temporal_source_active_and_heard() {
+    let (mut s, _mic) = audio_setup();
+    let (media, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    let (item, _) = s
+        .col
+        .add_item(s.live, ItemContent::Source(media), full(), None)
+        .unwrap();
+    s.col.set_item_visible(item, false).unwrap();
+    let hidden = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(media).unwrap();
+    assert_eq!(state(&s, node), Lifecycle::Standby);
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    assert!(!links_into(&s, comp).contains(&node));
+    assert!(
+        !hidden.compositors[&(s.wide, Role::Program)]
+            .layers
+            .iter()
+            .any(|layer| layer.source == media)
+    );
+
+    let items = BTreeSet::from([item]);
+    let sources = BTreeSet::from([media]);
+    let report = s
+        .binder
+        .sync_cued(&s.col, &mut s.graph, &items, &sources)
+        .unwrap();
+    assert_eq!(state(&s, node), Lifecycle::Active);
+    assert!(links_into(&s, comp).contains(&node));
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    assert!(links_into(&s, mixer).contains(&node));
+    assert!(
+        report.mixers[&s.wide]
+            .inputs
+            .iter()
+            .any(|i| i.source == media)
+    );
+    assert!(
+        report.compositors[&(s.wide, Role::Program)]
+            .layers
+            .iter()
+            .any(|layer| layer.source == media && layer.path == vec![item])
+    );
+    assert!(!s.col.item(item).unwrap().1.visible);
+}
+
+#[test]
+fn temporal_sources_run_when_a_shown_scene_draws_them() {
+    let mut s = setup();
+    let (media, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    let (browser, _) = s
+        .col
+        .add_source("Page", ty("org.rbs.source.browser"), Settings::new())
+        .unwrap();
+    // Opacity 0 with visible true stays Active and linked.
+    s.col
+        .add_item(
+            s.live,
+            ItemContent::Source(media),
+            full().with_opacity(0.0),
+            None,
+        )
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let media_node = s.binder.source_node(media).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    assert_eq!(state(&s, media_node), Lifecycle::Active);
+    assert!(links_into(&s, comp).contains(&media_node));
+    // Flatten omits opacity 0. The source is still drawn for the lifecycle rule.
+    assert!(
+        !s.col
+            .flatten(s.wide, s.live)
+            .unwrap()
+            .iter()
+            .any(|layer| layer.source == media)
+    );
+
+    // Placed only on a scene that is not program or preview: Standby, not linked.
+    s.col.remove_item(item_of(&s, s.live, media)).unwrap();
+    let (other, _) = s.col.add_scene("Shelf", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(other, ItemContent::Source(media), full(), None)
+        .unwrap();
+    s.col
+        .add_item(other, ItemContent::Source(browser), full(), None)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let browser_node = s.binder.source_node(browser).unwrap();
+    assert_eq!(state(&s, media_node), Lifecycle::Standby);
+    assert_eq!(state(&s, browser_node), Lifecycle::Standby);
+    assert!(!links_into(&s, comp).contains(&media_node));
+    assert!(!links_into(&s, comp).contains(&browser_node));
+
+    // Preview draws the browser: Active. The film stays on the shelf.
+    let (preview, _) = s.col.add_scene("Preview", SceneScope::Shared).unwrap();
+    let moved = item_of(&s, other, browser);
+    s.col.remove_item(moved).unwrap();
+    s.col
+        .add_item(preview, ItemContent::Source(browser), full(), None)
+        .unwrap();
+    s.col.set_preview(s.wide, Some(preview)).unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let browser_node = s.binder.source_node(browser).unwrap();
+    assert_eq!(state(&s, media_node), Lifecycle::Standby);
+    assert_eq!(state(&s, browser_node), Lifecycle::Active);
+    let preview_comp = s.binder.compositor(s.wide, Role::Preview).unwrap();
+    assert!(links_into(&s, preview_comp).contains(&browser_node));
+    assert!(!links_into(&s, comp).contains(&browser_node));
 }
 
 #[test]
@@ -1147,7 +1489,7 @@ fn direct_globals(s: &Setup, canvas: rbs_scene::model::CanvasId) -> Vec<SourceId
 /// Checks the graph against the collection without using the binder's own report for
 /// the expectations.
 fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64, step: usize) {
-    let wanted = s.col.wanted_sources();
+    let wanted = s.col.running_sources();
     let mut accounted = std::collections::BTreeSet::new();
     let tail_of = |src: SourceId| -> Option<NodeId> {
         if !has_video(s, src) {
@@ -1283,17 +1625,20 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
         accounted.insert(mixer);
         assert_eq!(state(s, mixer), Lifecycle::Active);
         assert_eq!(s.graph.node(mixer).unwrap().partition, AUDIO);
+        // Audio-only: the random edits never bind an audio filter, so the mixer
+        // hears the source node. Picture-and-sound: the source node's own audio
+        // pin, not a video-filter tail (ADR-0106). Both are `source_node`.
         let mut expected: Vec<NodeId> = canvas
             .program
             .map(|p| s.col.visible_sources(canvas.id, p).unwrap())
             .into_iter()
             .flatten()
-            .filter(|src| has_audio(s, *src) && !has_video(s, *src))
+            .filter(|src| has_audio(s, *src))
             .filter_map(|src| s.binder.source_node(src))
             .collect();
         if canvas.program.is_some() {
             for src in direct_globals(s, canvas.id) {
-                if has_audio(s, src) && !has_video(s, src) {
+                if has_audio(s, src) {
                     let node = s.binder.source_node(src);
                     assert!(
                         node.is_none_or(|n| expected.contains(&n)),
@@ -1491,4 +1836,57 @@ fn removing_the_key_source_or_the_ducker_cleans_up_the_key_link() {
     let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
     assert!(report.problems.is_empty());
     assert!(s.graph.node(duck).is_none());
+}
+
+#[test]
+fn a_region_and_chrome_do_not_replace_the_source_node() {
+    let mut s = setup();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let screen = s.binder.source_node(s.screen).unwrap();
+    s.col
+        .set_source_region(s.screen, Some(SourceRegion::new(10, 0, 20, 0)))
+        .unwrap();
+    let item = s
+        .col
+        .scene(s.live)
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.content == ItemContent::Source(s.screen))
+        .unwrap()
+        .id;
+    s.col
+        .set_item_layout(item, None, full().with_crop(Crop::new(4, 0, 0, 0)))
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.replaced_sources.is_empty());
+    assert_eq!(s.binder.source_node(s.screen), Some(screen));
+    let layer = report.compositors[&(s.wide, Role::Program)]
+        .layers
+        .iter()
+        .find(|l| l.source == s.screen)
+        .unwrap();
+    // Full-picture insets: the wider edge of region and item crop.
+    assert_eq!(layer.crop, Crop::new(10, 0, 20, 0));
+
+    let (display, _) = s
+        .col
+        .add_source("Display", ty("org.rbs.source.display"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(display), full(), None)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(display).unwrap();
+    s.col
+        .set_display_chrome(display, Some(DisplayChrome::new(8, 0, 40, 0)))
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.replaced_sources.is_empty());
+    assert_eq!(s.binder.source_node(display), Some(node));
+    assert_eq!(
+        s.col.source(display).unwrap().region,
+        Some(SourceRegion::new(0, 8, 0, 40))
+    );
+    assert_eq!(s.col.source(display).unwrap().settings, Settings::new());
 }

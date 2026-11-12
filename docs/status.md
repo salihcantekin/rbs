@@ -23,8 +23,11 @@ ADR status is the file header, not only the index. Where those two disagree, bot
 | MCP | Started | `rbs-mcp` answers stdio while RBS is unreachable: the only tool is `studio_summary`. No IPC session yet |
 | Compact spacing | Running | Appearance format 2, `density` `regular` or `compact`. Compact steps `space.*` and `size.control.*` down one token |
 | Performance budgets in CI | Not enforced | ADR-0009 Accepted. CI does not run `cargo bench`. Idle-cost rows in the performance-budgets spec have no workflow |
-| Browser source, ISO, markers, loudness, OBS importer, NDI | Not started | Later roadmap and Proposed ADRs 0086–0092 |
+| Browser source, ISO, markers, loudness, OBS importer, NDI | Partial | Browser type and node are in the tree (ADR-0109 Proposed); the studio adopts the node and does not link CEF. Media-file type and node are in the tree (ADR-0108 Proposed); the studio adopts the node and does not link FFmpeg. ISO, markers, loudness, the OBS importer, and NDI stay later roadmap and Proposed ADRs 0086–0092 |
 | Configurable glide (duration / easing) | Done | ADR-0100 Accepted. Collection defaults (Settings › General) and per-source override (Properties); scene format 12; protocol 1.35. Not on the Transition rail or panel |
+| Mixer orientation | Running, ADR Accepted | ADR-0083 Accepted 2026-11-12. `auto`, rows and columns, saved in the workspace `panel_options`. The Layout menu and `ui.mixer.set_orientation` are in the tree |
+| Mixer columns | Running, ADR Accepted | ADR-0101 Accepted 2026-11-12. Column strips keep `size.mixer.strip`, clusters sit side by side, and the row scrolls horizontally |
+| Output size | Partial, ADR Accepted | ADR-0102 Accepted 2026-11-12. Each recording and stream stores its own size; equal size stays the 1:1 download. macOS is done. The Windows side remains |
 
 Do not treat a Proposed ADR as shipped because code for an early step has merged.
 
@@ -38,3 +41,10 @@ Not scheduled. Each item already has a decision or a partial start. None of them
 | Say it will not fit, and check the disk, before Record or Go live | Not started | ADR-0087 Proposed (encoder sessions, throughput, disk space and write speed before the start). ADR-0090 Proposed (while a take runs: time left on disk, stop cleanly before the disk is full). The replay length estimate is unrelated |
 | A different mix for the stream, the recording and the headphones | Partial | ADR-0097 Accepted. Headphones (monitor) are in the tree. A strip still has one mix for stream and recording. Buses, so an output can omit music from the recording while the stream keeps it, are not built |
 | A failed piece does not end the show, and says why in one sentence | Partial | A node that panics is skipped (`catch_unwind`, ADR-0055). The window still dies with the studio (ADR-0099 Proposed, not built). A source fault is not yet one plain sentence on screen and on the control API |
+| Picture and sound on one source | Partial | ADR-0106 Proposed. Binder `picture_sound` and `assign_queue_readers` are in the tree; the studio reconciles readers after apply. Ship waits on acceptance |
+| Temporal sources sleep when hidden | Partial | ADR-0107 Proposed. Media and browser are Active only while a shown scene draws them (or a timed-show cue). Capture and stills stay wanted while placed. The ADR is not accepted |
+| A local media file as a source | Partial | ADR-0108 Proposed. Type and node in the tree with RGBA `SourceUpload`. FFmpeg is not linked; `rbs-app` always registers `ScriptFactory` until an FFmpeg adapter ships. Add Source → Media file opens a path picker |
+| A browser page as a source | Partial | ADR-0109 Proposed. Type and node in the tree. `rbs-app` starts `rbs-browser-helper` (bright synthetic checker, no CEF). Add Source → Browser places a page. Cap 2 helpers; no audio pin, no JS, no device prompts |
+| Source region (not item crop) | Partial | ADR-0103 Proposed. Source settings: region_grab preview + drag, Apply also Cover-fits the item on the canvas |
+| Display chrome (hide taskbar / Dock) | Partial | ADR-0104 Proposed. Source settings: one edge + thickness UI (stores four insets); Reset from work_rect; Fit |
+| Timed show (show for N ms, no undo) | Partial | ADR-0105 Proposed. Properties Show now + duration; Sources bolt while hidden; eye is lasting visibility only |

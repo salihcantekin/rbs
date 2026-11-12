@@ -34,7 +34,7 @@ use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::export::{ExportEnd, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::{
-    OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode,
+    MediaStats, OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode,
     VirtualCameraNode, VirtualCameraNodeStats,
 };
 use rbs_scene::SceneCollection;
@@ -42,14 +42,17 @@ use rbs_scene::binder::{
     BindProblem, BindReport, BoundCompositor, BoundLayer, BoundMixer, Role, SceneBinder,
 };
 use rbs_scene::model::{
-    CanvasId, FilterId, MasterAudio, SceneId, SourceAudio, SourceId, SourceMonitor,
+    CanvasId, FilterId, ItemId, MasterAudio, SceneId, SourceAudio, SourceId, SourceMonitor,
 };
 use rbs_sources::{
-    InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, glide_layers,
-    glide_max_duration, node_layers,
+    BrowserBudget, BrowserClaim, BrowserControlSidecar, BrowserTree, InstanceContext, ShowClass,
+    SourceInstance, SourceTypes, filter_values_lenient, glide_layers, glide_max_duration,
+    node_layers,
 };
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 use rbs_vcam::{CameraFormat, VcamError, VirtualCameraConfig, VirtualCameraFactory};
+
+use crate::timed_show::ShowCues;
 
 use crate::recording::{
     AudioSettings, FinishReport, Partitions, Progress, RENDER, RecordAdapters, RecordError,
@@ -291,6 +294,12 @@ pub struct Updated {
 pub(crate) enum Watch {
     Video(Arc<CaptureNodeStats>),
     Audio(Arc<InputStats>, Arc<LevelMeter>),
+    /// Media-file counters (ADR-0108). The picture size is known after a frame.
+    Media(Arc<MediaStats>),
+    /// Browser page size from settings (ADR-0109). The node lives in the render partition.
+    Browser {
+        size: (u32, u32),
+    },
 }
 
 /// A source's running instance.
@@ -794,6 +803,8 @@ pub struct Studio {
     /// The collection last bound (sources are looked up in it when a plan first
     /// schedules them).
     collection: SceneCollection,
+    /// Timed-show cues (ADR-0105). Session only: not saved, empty after a restart.
+    cues: ShowCues,
     compositor: NodeId,
     layers: LayerSender,
     bound: BoundCompositor,
@@ -849,6 +860,13 @@ pub struct Studio {
     monitor: Option<monitor::MonitorRun>,
     /// Soloed sources (session state, never saved; ADR-0097 decision 5).
     solo: BTreeSet<SourceId>,
+    /// One cap of two browser helpers for every source this studio instantiates
+    /// (ADR-0109).
+    browser_budget: Arc<BrowserBudget>,
+    /// Helper tree wired by the composition root (`rbs-app`).
+    browser_tree: Option<Arc<dyn BrowserTree>>,
+    /// Control-thread handles that poll helper processes (ADR-0109).
+    browser_controls: Vec<Arc<BrowserControlSidecar>>,
 }
 
 impl fmt::Debug for Studio {
@@ -897,6 +915,28 @@ impl Studio {
             settings,
             Strictness::Lenient,
             None,
+            None,
+        )
+    }
+
+    /// [`Studio::start`] with a browser helper tree from the composition root (ADR-0109).
+    pub fn start_with_tree(
+        engine: Engine,
+        gpu: Arc<GpuContext>,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        settings: &StudioSettings,
+        browser_tree: Option<Arc<dyn BrowserTree>>,
+    ) -> Result<Self, RecordError> {
+        Self::start_with(
+            engine,
+            gpu,
+            collection,
+            sources,
+            settings,
+            Strictness::Lenient,
+            None,
+            browser_tree,
         )
     }
 
@@ -912,6 +952,7 @@ impl Studio {
         settings: &StudioSettings,
         strictness: Strictness,
         recording: Option<Prepared>,
+        browser_tree: Option<Arc<dyn BrowserTree>>,
     ) -> Result<Self, RecordError> {
         let canvas_id = settings.canvas;
         let mut last_follow = BTreeMap::new();
@@ -1097,6 +1138,7 @@ impl Studio {
             binder,
             graph,
             collection: collection.clone(),
+            cues: ShowCues::new(),
             compositor: compositor_id,
             layers,
             bound,
@@ -1128,6 +1170,9 @@ impl Studio {
             camera: None,
             monitor: None,
             solo: BTreeSet::new(),
+            browser_budget: BrowserBudget::shared(),
+            browser_tree,
+            browser_controls: Vec::new(),
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)
@@ -1493,10 +1538,7 @@ impl Studio {
             }
             None => None,
         };
-        let report = self
-            .binder
-            .sync(collection, &mut self.graph)
-            .map_err(RecordError::Bind)?;
+        let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
         // already ran: the update goes on so the sources it created get their entries,
         // and the error is returned after it.
@@ -1552,7 +1594,7 @@ impl Studio {
     fn reconcile(
         &mut self,
         sources: &SourceTypes,
-        report: Option<BindReport>,
+        mut report: Option<BindReport>,
         strictness: Strictness,
     ) -> Result<(Vec<StartFailure>, Vec<BindProblem>), RecordError> {
         let mut failed = Vec::new();
@@ -1566,7 +1608,7 @@ impl Studio {
         }
         let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
-        if let Some(report) = report {
+        if let Some(report) = report.as_mut() {
             if report.retired_compositors.contains(&self.compositor)
                 || self
                     .mixer
@@ -1678,7 +1720,10 @@ impl Studio {
         // Instances for the sources the plan schedules (only those are opened).
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
-        let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph);
+        self.browser_controls.clear();
+        // One budget and one helper tree from the composition root (ADR-0109).
+        let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
+            .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone());
         for entry in &mut self.entries {
             // A rename updates the collection without rebuilding the node: keep the
             // name the UI and diagnostics show in step with it.
@@ -1766,6 +1811,32 @@ impl Studio {
                         offset: Some(offset),
                     });
                 }
+                SourceInstance::Media(m) => {
+                    // Render partition, the same way as a still (ADR-0108). The audio
+                    // pin crosses to the mixer; its queue reader is the strip producer.
+                    entry.state.adapter = m.adapter;
+                    self.engine
+                        .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(m.node))?;
+                    entry.instance = Some(Instance {
+                        partition: RENDER,
+                        gpu: true,
+                        watch: Watch::Media(m.stats),
+                        offset: None,
+                    });
+                }
+                SourceInstance::Browser(b) => {
+                    // Render partition (ADR-0109). Size is known from the page settings.
+                    let size = b.node.picture_size();
+                    self.browser_controls.push(b.node.control());
+                    self.engine
+                        .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(b.node))?;
+                    entry.instance = Some(Instance {
+                        partition: RENDER,
+                        gpu: true,
+                        watch: Watch::Browser { size },
+                        offset: None,
+                    });
+                }
                 _ => {
                     if strictness == Strictness::Strict {
                         return Err(RecordError::UnsupportedSource(entry.state.name.clone()));
@@ -1797,7 +1868,8 @@ impl Studio {
                         .find(|e| e.source == entry.source)
                         .and_then(|e| match &e.instance.as_ref()?.watch {
                             Watch::Video(stats) => stats.picture_size(),
-                            _ => None,
+                            Watch::Browser { size } => Some(*size),
+                            Watch::Media(_) | Watch::Audio(_, _) => None,
                         })
                         .map(|(w, h)| [w, h]);
                     let shared: Arc<dyn FilterType> = Arc::new(ty);
@@ -1842,37 +1914,94 @@ impl Studio {
         // Strips: until the swap, the old schedule may still feed inputs that leave, so
         // the strips sent before the apply cover the old and the new inputs; the ones of
         // inputs that left go after it.
+        //
+        // A picture-and-sound producer is the partition-queue reader. That id exists
+        // only after this apply lowers the graph (ADR-0106), so those strips stay keyed
+        // by source across the swap: the reader already sent is kept, and a source heard
+        // for the first time waits. `assign_queue_readers` then names every reader,
+        // including on the apply that follows `replaced_sources`, and the strips are
+        // taken from the mixer inputs.
+        let picture_sound: BTreeSet<SourceId> = report
+            .as_ref()
+            .map(|r| {
+                r.picture_sound
+                    .iter()
+                    .filter(|p| p.canvas == self.settings.canvas)
+                    .map(|p| p.source)
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut trimmed = None;
         if let (Some(mixer), Some(bound)) = (&mut self.mixer, &self.bound_mixer) {
             let live: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
             self.meters.retain(|s, _| live.contains(s));
-            let new: Vec<MixStrip> = bound
-                .inputs
-                .iter()
-                .map(|i| MixStrip {
-                    producer: i.producer,
-                    source: i.source,
-                    meter: self.meters.get(&i.source).cloned(),
-                    audio: self.mix.get(&i.source).copied().unwrap_or_default(),
-                })
-                .collect();
-            let mut union = new.clone();
+            let mut staged: Vec<MixStrip> = Vec::new();
+            for input in &bound.inputs {
+                let producer = if picture_sound.contains(&input.source) {
+                    let Some(kept) = self.strips.iter().find(|s| s.source == input.source) else {
+                        continue;
+                    };
+                    kept.producer
+                } else {
+                    input.producer
+                };
+                staged.push(MixStrip {
+                    producer,
+                    source: input.source,
+                    meter: self.meters.get(&input.source).cloned(),
+                    audio: self.mix.get(&input.source).copied().unwrap_or_default(),
+                });
+            }
+            let mut union = staged.clone();
             union.extend(
                 self.strips
                     .iter()
-                    .filter(|old| !new.iter().any(|n| n.producer == old.producer))
+                    .filter(|old| !staged.iter().any(|n| n.producer == old.producer))
                     .cloned(),
             );
             let _ = mixer
                 .params
                 .send(mixer_params(&union, &mixer.master, self.master, &self.solo));
-            if union.len() != new.len() {
-                trimmed = Some(mixer_params(&new, &mixer.master, self.master, &self.solo));
+            if union.len() != staged.len() {
+                trimmed = Some(mixer_params(
+                    &staged,
+                    &mixer.master,
+                    self.master,
+                    &self.solo,
+                ));
             }
-            self.strips = new;
+            self.strips = staged;
         }
 
+        // Program-shown pages take a helper slot before preview-only ones (ADR-0109).
+        self.browser_budget.grant(&browser_claims(&self.collection));
         let applied = self.engine.apply(&self.graph);
+        if applied.is_ok()
+            && let Some(report) = report.as_mut()
+        {
+            report.assign_queue_readers(self.engine.crossings());
+            self.bound_mixer = report.mixers.get(&self.settings.canvas).cloned();
+            if let (Some(mixer), Some(bound)) = (&self.mixer, self.bound_mixer.as_ref()) {
+                let new: Vec<MixStrip> = bound
+                    .inputs
+                    .iter()
+                    .map(|input| MixStrip {
+                        producer: input.producer,
+                        source: input.source,
+                        meter: self.meters.get(&input.source).cloned(),
+                        audio: self.mix.get(&input.source).copied().unwrap_or_default(),
+                    })
+                    .collect();
+                let same = new.len() == self.strips.len()
+                    && new.iter().zip(&self.strips).all(|(left, right)| {
+                        left.producer == right.producer && left.source == right.source
+                    });
+                if !same {
+                    trimmed = Some(mixer_params(&new, &mixer.master, self.master, &self.solo));
+                    self.strips = new;
+                }
+            }
+        }
         if let (Some(params), Some(mixer)) = (trimmed, &mut self.mixer) {
             let _ = mixer.params.send(params);
         }
@@ -2221,7 +2350,8 @@ impl Studio {
         let entry = self.entries.iter().find(|e| e.source == source)?;
         match &entry.instance.as_ref()?.watch {
             Watch::Video(stats) => stats.picture_size(),
-            _ => None,
+            Watch::Browser { size } => Some(*size),
+            Watch::Media(_) | Watch::Audio(_, _) => None,
         }
     }
 
@@ -2256,12 +2386,63 @@ impl Studio {
             })
     }
 
+    /// Binds `collection`, dropping cues whose item is gone or whose eye is open, and
+    /// passing the remaining cue into flatten and the temporal Active set (ADR-0105).
+    /// An empty map calls [`SceneBinder::sync`] with the empty default.
+    fn sync_cued(
+        &mut self,
+        collection: &SceneCollection,
+    ) -> Result<BindReport, rbs_scene::binder::BindError> {
+        self.cues
+            .retain(|id| collection.item(id).is_some_and(|(_, item)| !item.visible));
+        if self.cues.is_empty() {
+            return self.binder.sync(collection, &mut self.graph);
+        }
+        let items = self.cues.items();
+        let sources = collection.cued_drawn_sources(&items);
+        self.binder
+            .sync_cued(collection, &mut self.graph, &items, &sources)
+    }
+
+    /// Starts or restarts a timed show. Does nothing when `visible` is true or
+    /// `show_for_ms` is absent (ADR-0105). The deadline is `now + show_for_ms` on
+    /// the studio clock. Returns whether a cue is now running for `item`.
+    pub fn show_cue(&mut self, item: ItemId, visible: bool, show_for_ms: Option<u32>) -> bool {
+        let now = self.engine.clock().now();
+        self.cues.show(item, visible, show_for_ms, now)
+    }
+
+    /// Drops the cue when the eye opens. The deadline must not hide the item later.
+    pub fn drop_cue(&mut self, item: ItemId) -> bool {
+        self.cues.drop_item(item)
+    }
+
+    /// Ends cues whose deadline has passed. False when the map is empty or every
+    /// deadline is still ahead, without scanning the scene.
+    pub fn expire_cues(&mut self, now: Timestamp) -> bool {
+        self.cues.expire(now)
+    }
+
+    /// How long the control thread may sleep before the soonest cue ends. `None`
+    /// when no cue is running, so nothing is armed (P13).
+    pub fn cue_wait(&self, now: Timestamp) -> Option<Duration> {
+        self.cues.wait(now)
+    }
+
+    /// Milliseconds left on a timed-show cue for `item`. `None` when it has none.
+    pub fn cue_remaining_ms(&self, item: ItemId, now: Timestamp) -> Option<u32> {
+        self.cues.remaining_ms(item, now)
+    }
+
     /// Runs the engine's control loop once and notes failures: a source that fails is
     /// marked in [`Studio::sources`] until it runs again; a studio node that fails for
     /// good sets [`Studio::failure`], a node of an output or of an encoder it uses
     /// [`Studio::output_failure`] of every output using it.
     /// Call it again after `wait` (at most about 100 ms).
     pub fn service(&mut self) -> Serviced {
+        for control in &self.browser_controls {
+            control.control_tick();
+        }
         let serviced = self.engine.service();
         if !self.pending_takes.is_empty() {
             let engine = &mut self.engine;
@@ -3022,6 +3203,20 @@ impl Studio {
                     resyncs: 0,
                     errors: v.gpu_errors.load(Ordering::Relaxed),
                 },
+                Watch::Media(stats) => SourceProgress {
+                    name: e.state.name.clone(),
+                    frames: stats.uploaded.load(Ordering::Relaxed),
+                    peak_db: None,
+                    resyncs: 0,
+                    errors: stats.dropped_video.load(Ordering::Relaxed),
+                },
+                Watch::Browser { .. } => SourceProgress {
+                    name: e.state.name.clone(),
+                    frames: 0,
+                    peak_db: None,
+                    resyncs: 0,
+                    errors: 0,
+                },
                 Watch::Audio(a, meter) => {
                     let c = a.read();
                     SourceProgress {
@@ -3225,6 +3420,45 @@ impl Studio {
             .collect();
         (reports, errors)
     }
+}
+
+/// Shown browser sources, program before preview. Hidden pages are omitted, so they
+/// take no helper slot (ADR-0109, ADR-0107).
+fn browser_claims(collection: &SceneCollection) -> Vec<BrowserClaim> {
+    let mut claims = Vec::new();
+    for source in collection.sources() {
+        if source.type_id.as_str() != rbs_sources::types::BROWSER_SOURCE {
+            continue;
+        }
+        let mut class = None;
+        for canvas in collection.canvases() {
+            for (scene, show) in [
+                (canvas.program, ShowClass::Program),
+                (canvas.preview, ShowClass::Preview),
+            ] {
+                let Some(scene) = scene else {
+                    continue;
+                };
+                let Ok(visible) = collection.visible_sources(canvas.id, scene) else {
+                    continue;
+                };
+                if !visible.contains(&source.id) {
+                    continue;
+                }
+                class = Some(match class {
+                    Some(ShowClass::Program) => ShowClass::Program,
+                    _ => show,
+                });
+            }
+        }
+        if let Some(class) = class {
+            claims.push(BrowserClaim {
+                source: source.id,
+                class,
+            });
+        }
+    }
+    claims
 }
 
 /// Engine errors and links that could not cross partitions, as failures.

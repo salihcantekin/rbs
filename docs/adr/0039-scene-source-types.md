@@ -34,6 +34,7 @@ Forces:
 - Pickers can list targets per type (`SourceTypes::targets`) without knowing adapters.
 - Settings edits restart the source through a break-before-make swap (filters keep their state); live tweaks need parameter channels and, later, a settings schema per type that marks which keys apply live.
 - Not decided here: plugin source types (they bring their own descriptor and factory through the plugin SDK), audio of sources that also have video, audio that does not depend on the scene (a global microphone or system audio; today it must be placed in every program scene), audio filters, per-source monitoring, mixer buses, keeping preview audio warm, and which settings keys become a schema.
+- 2026-11-12: the video-and-audio item in the list above is the subject of [ADR-0106](0106-picture-and-sound-on-one-source.md) (Proposed). Decisions 1–7 are unchanged.
 
 ## Alternatives considered
 

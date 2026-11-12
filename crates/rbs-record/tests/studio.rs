@@ -1143,3 +1143,164 @@ fn a_canvas_that_does_not_run_costs_nothing_and_its_sources_close_when_it_stops(
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// A media file and a browser page are adopted on the render partition (ADR-0108,
+/// ADR-0109). The fake decoder is registered here only. No FFmpeg and no helper process.
+#[test]
+fn media_and_browser_sources_are_adopted_on_the_render_partition() {
+    use std::sync::Arc;
+
+    use rbs_core::media::video::Size;
+    use rbs_media_decode_test::{ScriptClip, ScriptFactory};
+    use rbs_scene::SceneCollection;
+    use rbs_scene::model::{SceneScope, SettingValue};
+    use rbs_sources::types::keys;
+
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut r = rig();
+    r.adapters
+        .sources
+        .register_media(Arc::new(ScriptFactory::new(ScriptClip::silent_frames())))
+        .unwrap();
+    r.adapters.probe();
+
+    let dir = std::env::temp_dir().join(format!(
+        "rbs-record-media-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("clip.mp4");
+    std::fs::write(&file, b"not-decoded").unwrap();
+    struct RemoveDir(std::path::PathBuf);
+    impl Drop for RemoveDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = RemoveDir(dir);
+
+    let mut col = SceneCollection::new();
+    let (canvas, _) = col.add_canvas("Main", Size::new(W, H), FPS).unwrap();
+    let (scene, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
+    let mut media_settings = Settings::new();
+    media_settings.insert(
+        keys::PATH.to_owned(),
+        SettingValue::Text(file.to_string_lossy().into_owned()),
+    );
+    let (clip, _) = col
+        .add_source(
+            "Clip",
+            NodeTypeId::new_static(types::MEDIA_SOURCE),
+            media_settings,
+        )
+        .unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(clip),
+        Layout::new([0.0, 0.0], [W as f32, H as f32]),
+        None,
+    )
+    .unwrap();
+    let mut page_settings = Settings::new();
+    page_settings.insert(
+        keys::URL.to_owned(),
+        SettingValue::Text("https://example.com/page".to_owned()),
+    );
+    page_settings.insert(keys::WIDTH.to_owned(), SettingValue::Int(64));
+    page_settings.insert(keys::HEIGHT.to_owned(), SettingValue::Int(36));
+    let (page, _) = col
+        .add_source(
+            "Page",
+            NodeTypeId::new_static(types::BROWSER_SOURCE),
+            page_settings,
+        )
+        .unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(page),
+        Layout::new([0.0, 0.0], [W as f32, H as f32]),
+        None,
+    )
+    .unwrap();
+    col.set_program(canvas, Some(scene)).unwrap();
+
+    use rbs_browser_ipc::Configure;
+    use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserTree};
+
+    struct TestBrowserTree;
+
+    struct TestSession;
+
+    impl BrowserSession for TestSession {
+        fn poll(&mut self) -> Option<i32> {
+            None
+        }
+        fn stop(&mut self) {}
+    }
+
+    impl BrowserTree for TestBrowserTree {
+        fn start(
+            &self,
+            config: &Configure,
+            sink: std::sync::Arc<BrowserFrameSink>,
+        ) -> Result<Box<dyn BrowserSession>, String> {
+            let pixels = usize::try_from(config.width)
+                .unwrap_or(0)
+                .saturating_mul(usize::try_from(config.height).unwrap_or(0))
+                .saturating_mul(4);
+            let mut rgba = vec![8u8; pixels];
+            for chunk in rgba.chunks_exact_mut(4) {
+                chunk[3] = 255;
+            }
+            sink.publish(&rgba, config.width, config.height);
+            Ok(Box::new(TestSession))
+        }
+    }
+
+    let (engine, _clock) = engine_at_start();
+    let tree: std::sync::Arc<dyn BrowserTree> = std::sync::Arc::new(TestBrowserTree);
+    let mut studio = Studio::start_with_tree(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+        Some(tree),
+    )
+    .unwrap();
+    // The file's audio pin reaches the mixer, so the node is open before any output.
+    let media = studio
+        .sources()
+        .into_iter()
+        .find(|s| s.source == clip)
+        .expect("media source scheduled");
+    assert_eq!(media.adapter.as_str(), "org.rbs.media-decode.test");
+    assert!(media.failed.is_none(), "{media:?}");
+
+    let id = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://page", ContainerId::Matroska),
+        )
+        .unwrap();
+    let browser = studio
+        .sources()
+        .into_iter()
+        .find(|s| s.source == page)
+        .expect("browser source scheduled");
+    assert_ne!(
+        browser.failed.as_deref(),
+        Some("unsupported instance kind"),
+        "{browser:?}"
+    );
+    assert!(browser.failed.is_none(), "{browser:?}");
+    assert_eq!(studio.picture_size(page), Some((64, 36)));
+    let _ = studio.stop_output(id);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

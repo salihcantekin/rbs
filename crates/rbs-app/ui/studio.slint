@@ -23,7 +23,7 @@ export struct FilterFieldData { label: string, help: string, log: bool, options:
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterLevels { input: float, reduction: float }
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int }
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
 // by name; `in-globals`: it is a global source too; `places`: how many items place it.
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
@@ -43,7 +43,7 @@ export struct MarkData { x: length, y: length, w: length, h: length, kind: int }
 export struct ModeData { label: string, rates: [string] }
 // What the Source settings window shows for one source (ADR-0077): the camera's modes with
 // the chosen mode and rate, or the rates of a screen or window and its cursor choice.
-export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool }
+export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }
 // `heading` is set on the first row of a group ("Same application", "Other").
 // `picture` is the target's thumbnail when `has-picture`; `wants-picture` is set for displays and windows, whose rows keep the kind's icon until the picture comes.
 export struct SourceTargetData { name: string, current: bool, index: int, heading: string, picture: image, has-picture: bool, wants-picture: bool }
@@ -325,6 +325,15 @@ export global Studio {
     callback set-source-crop(int /* id */, int /* left */, int /* top */, int /* right */, int /* bottom */);
     // 0 full picture, 1 canvas size centred, 2 left half, 3 right half.
     callback set-source-region(int /* id */, int /* region */);
+    // Capture region on the source (ADR-0103), not item crop.
+    callback set-source-capture-region(int /* id */, bool /* clear */, int /* left */, int /* top */, int /* right */, int /* bottom */);
+    // Display chrome (ADR-0104); fill 0 cover, 1 fit.
+    callback set-display-chrome(int /* id */, bool /* on */, int /* top */, int /* right */, int /* bottom */, int /* left */, int /* fill */);
+    callback fit-display-chrome(int /* id */);
+    callback reset-display-chrome(int /* id */);
+    // Timed show (ADR-0105): `show_for_ms` 0 clears; `show-item` is live.
+    callback set-item-show-for(int /* item */, int /* show_for_ms */);
+    callback show-item(int /* item */);
     // 0 flip horizontally, 1 flip vertically, 2 turn 90 clockwise, 3 turn 90 counter-clockwise,
     // 4 reserved (was 180°; use two 90° turns), 5 fit, 6 fill, 7 stretch, 8 centre, 9 reset (ADR-0084).
     callback transform-source(int /* id */, int /* op */);
@@ -899,14 +908,34 @@ component SourceRowView inherits Rectangle {
                         overflow: elide;
                     }
                 }
-                // Shown or hidden in the scene: the icon and the accessible state both say it.
+                // Eye = lasting hide/show (undoable). Bolt = timed cue while still hidden.
                 VerticalLayout {
                     alignment: center;
                     IconButton {
                         icon: data.visible ? IconName.eye : IconName.eye-off;
-                        name: data.visible ? @tr("Hide {}", data.name) : @tr("Show {}", data.name);
+                        name: data.visible
+                            ? @tr("Hide {}", data.name)
+                            : (data.show-for-ms > 0
+                                ? @tr("Unhide {} permanently", data.name)
+                                : @tr("Show {}", data.name));
                         checked: !data.visible;
                         clicked => { Studio.set-source-visible(data.id, !data.visible); }
+                    }
+                }
+                if data.picture && data.show-for-ms > 0: VerticalLayout {
+                    alignment: center;
+                    spacing: Tokens.space-1;
+                    IconButton {
+                        icon: IconName.bolt;
+                        name: @tr("Timed show {} for {} ms", data.name, data.show-for-ms);
+                        enabled: !data.visible;
+                        clicked => { Studio.show-item(data.item-id); }
+                    }
+                    if data.cue-remaining-ms > 0: Text {
+                        text: data.cue-remaining-ms + @tr(" ms left");
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        horizontal-alignment: center;
                     }
                 }
                 // Locked on the picture panel (sources with a picture only).
@@ -4201,6 +4230,50 @@ component SourceProperties inherits VerticalLayout {
     if tab == 0: TransformFields { data: data; }
     if tab == 1: FiltersFields { data: data; }
     if tab == 2: AudioFields { data: data; }
+    if data.picture: Section {
+        title: @tr("Timed show");
+        id: "properties.timed-show";
+        hint: @tr("Hide with the eye first, then press Show now (or the bolt in Sources). It appears for the duration and hides again without Undo. The eye alone is a lasting show.");
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                label: @tr("Show duration of {} in milliseconds", data.name);
+                value: data.show-for-ms;
+                edited(v) => { Studio.set-item-show-for(data.item-id, max(0, min(600000, round(v)))); }
+            }
+            Text {
+                text: @tr("ms");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            Button {
+                text: @tr("Show now");
+                kind: "primary";
+                dense: true;
+                enabled: data.show-for-ms > 0 && !data.visible;
+                clicked => { Studio.show-item(data.item-id); }
+            }
+            Button {
+                text: @tr("Clear");
+                dense: true;
+                enabled: data.show-for-ms > 0;
+                clicked => { Studio.set-item-show-for(data.item-id, 0); }
+            }
+        }
+        if data.cue-remaining-ms > 0: Text {
+            text: data.cue-remaining-ms + @tr(" ms left on Program");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+    }
     // Global sources (ADR-0065): on, the source is shown and heard in every scene.
     // Custom glide (ADR-0100): only for a picture source with more than one place.
     Section {
