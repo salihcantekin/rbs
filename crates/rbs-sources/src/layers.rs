@@ -156,6 +156,10 @@ pub fn layer_style(style: &ItemStyle, box_size: [f32; 2]) -> LayerStyle {
         Shape::Rectangle { radius } if radius > 0.0 => LayerShape::Rounded { radius },
         Shape::Circle => LayerShape::Circle,
         Shape::Ellipse => LayerShape::Ellipse,
+        Shape::Triangle => LayerShape::Triangle,
+        Shape::Arrow => LayerShape::Arrow,
+        Shape::Rectangle { .. } => LayerShape::Box,
+        // A shape this build does not draw yet stays a plain box.
         _ => LayerShape::Box,
     };
     let (width, color) = style.border.map_or((0.0, [0; 4]), |b| (b.width, b.color));

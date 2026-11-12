@@ -110,3 +110,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0099](0099-studio-in-its-own-process.md) | Run the studio in its own process | Proposed |
 | [0100](0100-configurable-glide-duration-and-easing.md) | Configurable glide duration and easing (collection defaults + multi-scene source override) | Accepted |
 | [0101](0101-mixer-columns-panes-and-pinned-master.md) | Mixer columns use fixed strips, side-by-side clusters and horizontal scroll | Proposed |
+| [0102](0102-output-size-distinct-from-canvas.md) | Output size distinct from the canvas | Proposed |

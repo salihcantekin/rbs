@@ -174,7 +174,7 @@ fn pipeline_from(
         vec![NodeLayer::new(capture, 0, 0.0, 0.0, W as f32, H as f32)],
     );
     let comp = rig.add(Box::new(comp));
-    let export = VideoExportNode::new(YuvFormat::Nv12, W, H);
+    let export = VideoExportNode::new(YuvFormat::Nv12, W, H, W, H);
     let end = export.end();
     let export = rig.add(Box::new(export));
     let frames = Arc::new(Mutex::new(Vec::new()));

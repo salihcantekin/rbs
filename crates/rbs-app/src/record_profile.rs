@@ -1,9 +1,10 @@
 //! The recording's output settings in the app (glossary: output profile): folder,
-//! format, encoder, and every encoder setting that changes the recording's quality
-//! (rate control and bitrates, quality level, keyframe interval, profile, preset,
-//! B-frames, CBR padding). Kept in the `recording` section of the output profile in
-//! use (ADR-0051, `user_session`); `recording.toml`, which older versions kept, is read
-//! once to make the first profile. Toolkit-free and tested without a window.
+//! format, encoder, output size, and every encoder setting that changes the
+//! recording's quality (rate control and bitrates, quality level, keyframe interval,
+//! profile, preset, B-frames, CBR padding). Kept in the `recording` section of the
+//! output profile in use (ADR-0051, `user_session`); `recording.toml`, which older
+//! versions kept, is read once to make the first profile. Toolkit-free and tested
+//! without a window.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -31,6 +32,170 @@ pub const KEYFRAME_SECONDS: [u32; 6] = [1, 2, 3, 4, 5, 10];
 
 /// Most B-frames a profile may ask for.
 pub const MAX_B_FRAMES: u32 = 4;
+
+/// Smallest side of an explicit output size (ADR-0102 decision 7).
+pub const OUTPUT_SIZE_MIN: u32 = 2;
+/// Largest side of an explicit output size. A canvas may be taller; an absent size
+/// keeps that canvas.
+pub const OUTPUT_SIZE_MAX: u32 = 7680;
+/// Long sides Settings offers, each fitted to the canvas (ADR-0102 decision 4).
+pub const OUTPUT_LONG_SIDES: [u32; 4] = [1280, 1920, 2560, 3840];
+
+/// Encoded picture size of one recording or one stream (ADR-0102). Absent in a file
+/// and on the wire means the same as that output's canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputSize {
+    /// Width in pixels. Even, from [`OUTPUT_SIZE_MIN`] to [`OUTPUT_SIZE_MAX`].
+    pub width: u32,
+    /// Height in pixels. Even, from [`OUTPUT_SIZE_MIN`] to [`OUTPUT_SIZE_MAX`].
+    pub height: u32,
+}
+
+impl OutputSize {
+    /// Both sides.
+    pub fn pair(self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+/// One row of the Output size list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputSizeOption {
+    /// `None`: same as this output's canvas. Nothing is stored.
+    pub size: Option<OutputSize>,
+    /// The words in the list.
+    pub label: String,
+}
+
+/// Why `size` cannot be stored, or `None` when it is absent or both sides are even
+/// and in range. Matching the canvas aspect is [`output_size_matches`].
+pub fn output_size_problem(size: Option<OutputSize>) -> Option<String> {
+    let size = size?;
+    let even = size.width.is_multiple_of(2) && size.height.is_multiple_of(2);
+    let in_range = (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&size.width)
+        && (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&size.height);
+    if even && in_range {
+        None
+    } else {
+        Some(format!(
+            "Output size {} x {} must have even sides, each from {OUTPUT_SIZE_MIN} to {OUTPUT_SIZE_MAX}.",
+            size.width, size.height
+        ))
+    }
+}
+
+/// The picture for long side `long` on `canvas`. The long side stays on the canvas's
+/// long axis (a square canvas stays square). The short side is the even integer
+/// closest to the canvas aspect (ADR-0102 decision 4). `None` when a side is outside
+/// 2..=7680 or the canvas has a zero side.
+pub fn fit_output_size(long: u32, canvas: (u32, u32)) -> Option<OutputSize> {
+    if canvas.0 == 0 || canvas.1 == 0 || long == 0 {
+        return None;
+    }
+    let size = if canvas.0 == canvas.1 {
+        OutputSize {
+            width: long,
+            height: long,
+        }
+    } else if canvas.0 > canvas.1 {
+        OutputSize {
+            width: long,
+            height: fit_short_side(long, canvas.1, canvas.0)?,
+        }
+    } else {
+        OutputSize {
+            width: fit_short_side(long, canvas.0, canvas.1)?,
+            height: long,
+        }
+    };
+    let in_range = (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&size.width)
+        && (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&size.height);
+    let even = size.width.is_multiple_of(2) && size.height.is_multiple_of(2);
+    if in_range && even { Some(size) } else { None }
+}
+
+/// Even short side for `long` on a canvas whose short and long sides are
+/// `canvas_short` and `canvas_long`. A half rounds away from zero; an odd nearest
+/// integer takes the closer even neighbour, and a tie keeps the smaller one.
+fn fit_short_side(long: u32, canvas_short: u32, canvas_long: u32) -> Option<u32> {
+    if canvas_long == 0 {
+        return None;
+    }
+    let num = u64::from(long) * u64::from(canvas_short);
+    let den = u64::from(canvas_long);
+    let nearest = (2 * num + den) / (2 * den);
+    let short = if nearest.is_multiple_of(2) {
+        nearest
+    } else if num > nearest * den {
+        nearest + 1
+    } else {
+        nearest.saturating_sub(1)
+    };
+    u32::try_from(short).ok()
+}
+
+/// True when `size` is the canvas-aspect fit of its long side and both sides are in
+/// range (ADR-0102 decisions 4 and 7).
+pub fn output_size_matches(size: (u32, u32), canvas: (u32, u32)) -> bool {
+    let long = size.0.max(size.1);
+    fit_output_size(long, canvas).is_some_and(|fitted| fitted.pair() == size)
+}
+
+/// Output size rows for `canvas`: "Same as canvas", then the long sides
+/// [`OUTPUT_LONG_SIDES`] fitted to the canvas. A result equal to the canvas, or
+/// outside 2..=7680, is left out. A saved size that is neither is appended so the
+/// list still shows it. Fewer pixels than the canvas is "downscale"; more is
+/// "upscale".
+pub fn output_size_options(canvas: (u32, u32), saved: Option<OutputSize>) -> Vec<OutputSizeOption> {
+    let mut options = vec![OutputSizeOption {
+        size: None,
+        label: "Same as canvas".to_owned(),
+    }];
+    let canvas_pixels = u64::from(canvas.0) * u64::from(canvas.1);
+    for long in OUTPUT_LONG_SIDES {
+        let Some(size) = fit_output_size(long, canvas) else {
+            continue;
+        };
+        if size.pair() == canvas {
+            continue;
+        }
+        options.push(OutputSizeOption {
+            size: Some(size),
+            label: output_size_label(size, canvas_pixels),
+        });
+    }
+    if let Some(size) = saved
+        && size.pair() != canvas
+        && !options.iter().any(|o| o.size == Some(size))
+    {
+        options.push(OutputSizeOption {
+            size: Some(size),
+            label: output_size_label(size, canvas_pixels),
+        });
+    }
+    options
+}
+
+fn output_size_label(size: OutputSize, canvas_pixels: u64) -> String {
+    let pixels = u64::from(size.width) * u64::from(size.height);
+    let scale = if pixels < canvas_pixels {
+        "downscale"
+    } else if pixels > canvas_pixels {
+        "upscale"
+    } else {
+        return format!("{} x {}", size.width, size.height);
+    };
+    format!("{} x {} ({scale})", size.width, size.height)
+}
+
+/// The first `recording-vertical` section: the main recording section, with no
+/// output size. A size fitted to the horizontal canvas is not stored on the
+/// vertical one (ADR-0102 decision 1).
+pub fn vertical_recording_from_main(main: &RecordProfile) -> RecordProfile {
+    let mut copied = main.clone();
+    copied.output_size = None;
+    copied
+}
 
 /// How the encoder spends bits, as the user picks it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -450,6 +615,10 @@ pub struct RecordProfile {
     /// Lifts only the darkest tones on a Video encode. Omitted when off.
     #[serde(default, skip_serializing_if = "is_false")]
     pub open_shadows: bool,
+    /// Encoded picture size. Omitted until the user picks one: absent means this
+    /// recording's canvas (ADR-0102).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_size: Option<OutputSize>,
 }
 
 impl RecordProfile {
@@ -475,6 +644,7 @@ impl RecordProfile {
             audio_kbps: 0,
             delivery: Delivery::Video,
             open_shadows: false,
+            output_size: None,
         };
         p.set_encoding(Encoding::new(12_000));
         p
@@ -555,7 +725,9 @@ impl RecordProfile {
         if !self.folder.is_absolute() {
             return Some("The folder must be a full path, for example C:\\Videos.".into());
         }
-        self.encoding().problem()
+        self.encoding()
+            .problem()
+            .or_else(|| output_size_problem(self.output_size))
     }
 
     /// The file a recording started at `now` (local time) is written to:
@@ -622,6 +794,10 @@ impl RecordProfile {
                 Delivery::Screen => api::Delivery::Screen,
             },
             open_shadows: self.open_shadows,
+            output_size: self.output_size.map(|s| api::Dimensions {
+                width: s.width,
+                height: s.height,
+            }),
         }
     }
 
@@ -678,6 +854,10 @@ impl RecordProfile {
                 api::Delivery::Screen => Delivery::Screen,
             },
             open_shadows: p.open_shadows,
+            output_size: p.output_size.map(|s| OutputSize {
+                width: s.width,
+                height: s.height,
+            }),
         }
     }
 }
@@ -927,6 +1107,7 @@ mod tests {
         want.audio_kbps = 128;
         assert_eq!(p, want);
         assert_eq!(p.delivery, Delivery::Video);
+        assert_eq!(p.output_size, None, "an old file encodes at its canvas");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1096,5 +1277,134 @@ mod tests {
         );
         assert_eq!(Format::Mkv.container(), ContainerId::Matroska);
         assert_eq!(Format::Mp4.container(), ContainerId::Mp4Fragmented);
+    }
+
+    #[test]
+    fn an_explicit_output_size_is_saved_and_an_absent_one_is_not() {
+        let d = dir("output-size");
+        let mut p = RecordProfile::new();
+        p.folder = d.join("rec");
+        save(&d, &p).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(
+            !text.contains("output_size"),
+            "same as canvas is left out of the file: {text}"
+        );
+        assert_eq!(load(&d).0.output_size, None);
+        p.output_size = Some(OutputSize {
+            width: 1280,
+            height: 720,
+        });
+        save(&d, &p).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(text.contains("width = 1280"), "{text}");
+        assert!(text.contains("height = 720"), "{text}");
+        assert_eq!(load(&d).0.output_size, p.output_size);
+        let api = p.to_api();
+        assert_eq!(
+            api.output_size.map(|s| (s.width, s.height)),
+            Some((1280, 720))
+        );
+        assert_eq!(RecordProfile::from_api(&api).output_size, p.output_size);
+        // One side only is not a size.
+        let half = text.replace("height = 720\n", "");
+        std::fs::write(file(&d), half).unwrap();
+        let (got, why) = load(&d);
+        assert_eq!(got.output_size, None);
+        assert!(why.is_some(), "a half-specified size is refused");
+        p.output_size = Some(OutputSize {
+            width: 1921,
+            height: 1080,
+        });
+        assert!(p.problem().unwrap().contains("even sides"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn output_size_presets_keep_the_canvas_aspect() {
+        let canvas = (1920, 1080);
+        let options = output_size_options(canvas, None);
+        assert_eq!(options[0].size, None);
+        assert_eq!(options[0].label, "Same as canvas");
+        let sizes: Vec<_> = options.iter().filter_map(|o| o.size).collect();
+        assert!(!sizes.iter().any(|s| s.pair() == canvas));
+        assert!(
+            sizes
+                .iter()
+                .all(|s| s.width.is_multiple_of(2) && s.height.is_multiple_of(2))
+        );
+        assert!(sizes.iter().all(|s| s.width * 9 == s.height * 16));
+        assert!(options.iter().any(|o| o.label == "1280 x 720 (downscale)"));
+        assert!(options.iter().any(|o| o.label == "2560 x 1440 (upscale)"));
+        assert!(options.iter().any(|o| o.label == "3840 x 2160 (upscale)"));
+        assert!(!options.iter().any(|o| o.label.contains("1920 x 1080")));
+
+        // An odd nearest short side takes the closer even neighbour (562.5 → 562).
+        assert_eq!(
+            fit_output_size(1000, canvas).map(OutputSize::pair),
+            Some((1000, 562))
+        );
+        // Exact odd integer: the two even neighbours tie, and the smaller one wins.
+        assert_eq!(
+            fit_output_size(22, (200, 100)).map(OutputSize::pair),
+            Some((22, 10))
+        );
+
+        let vertical = (1080, 1920);
+        let options = output_size_options(vertical, None);
+        assert!(options.iter().any(|o| {
+            o.size.map(OutputSize::pair) == Some((720, 1280)) && o.label.contains("downscale")
+        }));
+        assert!(options.iter().any(|o| {
+            o.size.map(OutputSize::pair) == Some((1440, 2560)) && o.label.contains("upscale")
+        }));
+        assert!(
+            !options
+                .iter()
+                .any(|o| o.size.map(OutputSize::pair) == Some(vertical))
+        );
+        assert!(options.iter().filter_map(|o| o.size).all(|s| {
+            s.height > s.width && s.width.is_multiple_of(2) && s.height.is_multiple_of(2)
+        }));
+
+        // A long side that cannot fit inside 2..=7680 is not offered.
+        assert_eq!(fit_output_size(1280, (7680, 2)), None);
+        assert!(
+            output_size_options((7680, 2), None)
+                .iter()
+                .all(|o| o.size.is_none())
+        );
+
+        let saved = fit_output_size(1600, canvas).unwrap();
+        assert_eq!(saved.pair(), (1600, 900));
+        let options = output_size_options(canvas, Some(saved));
+        assert!(options.iter().any(|o| o.size == Some(saved)));
+        assert!(output_size_matches(saved.pair(), canvas));
+        assert!(!output_size_matches((1280, 800), canvas));
+        // A stored size equal to the canvas is the default row, not a second one.
+        let same = OutputSize {
+            width: 1920,
+            height: 1080,
+        };
+        assert!(
+            !output_size_options(canvas, Some(same))
+                .iter()
+                .any(|o| o.size == Some(same))
+        );
+    }
+
+    #[test]
+    fn the_first_vertical_recording_omits_the_main_output_size() {
+        let mut main = RecordProfile::new();
+        main.output_size = Some(OutputSize {
+            width: 1280,
+            height: 720,
+        });
+        main.video_kbps = 8_000;
+        let vertical = vertical_recording_from_main(&main);
+        assert_eq!(vertical.output_size, None);
+        assert_eq!(vertical.video_kbps, main.video_kbps);
+        assert_eq!(vertical.folder, main.folder);
+        assert_eq!(vertical.format, main.format);
     }
 }

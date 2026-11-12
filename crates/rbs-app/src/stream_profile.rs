@@ -11,7 +11,7 @@ use rbs_core::media::ContainerId;
 use rbs_transport::{ReconnectPolicy, TransportInput};
 use serde::{Deserialize, Serialize};
 
-use crate::record_profile::{Encoding, RateMode};
+use crate::record_profile::{Encoding, OutputSize, RateMode, output_size_problem};
 
 /// The file format version this build writes and reads.
 const FORMAT: u32 = 1;
@@ -170,6 +170,10 @@ pub struct StreamProfile {
     /// stops that recording. Off by default.
     #[serde(default)]
     pub auto_record: bool,
+    /// Encoded picture size. Omitted until the user picks one: absent means this
+    /// stream's canvas (ADR-0102).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_size: Option<OutputSize>,
 }
 
 impl StreamProfile {
@@ -184,6 +188,7 @@ impl StreamProfile {
             srt_latency_ms: None,
             encoding: stream_encoding(),
             auto_record: false,
+            output_size: None,
         }
     }
 
@@ -228,7 +233,9 @@ impl StreamProfile {
         {
             return Some("An SRT latency of 0 ms is not possible.".into());
         }
-        self.encoding.problem()
+        self.encoding
+            .problem()
+            .or_else(|| output_size_problem(self.output_size))
     }
 
     /// What is still missing before Go live can work: the server, or (RTMP) the key.
@@ -260,6 +267,10 @@ impl StreamProfile {
             srt_latency_ms: self.srt_latency_ms,
             encoding: self.encoding.to_api(),
             auto_record: self.auto_record,
+            output_size: self.output_size.map(|s| rbs_api::types::Dimensions {
+                width: s.width,
+                height: s.height,
+            }),
         }
     }
 
@@ -274,6 +285,11 @@ impl StreamProfile {
         if let Some(on) = patch.auto_record {
             p.auto_record = on;
         }
+        // Omitted or null stores the same as this stream's canvas (protocol 1.39).
+        p.output_size = patch.output_size.map(|s| OutputSize {
+            width: s.width,
+            height: s.height,
+        });
         // Free text the form never offers would make every later Go live fail.
         if let Some(name) = &p.encoding.profile
             && !["high", "main", "baseline"].contains(&name.as_str())
@@ -396,7 +412,7 @@ pub fn save(config: &Path, profile: &StreamProfile) -> std::io::Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
-    use crate::record_profile::RateMode;
+    use crate::record_profile::{OutputSize, RateMode};
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rbs-app-{name}-{}", std::process::id()));
@@ -531,10 +547,39 @@ mod tests {
         p.encoding.encoder = Some("org.rbs.codec.nvenc".into());
         p.auto_record = true;
         save(&d, &p).unwrap();
-        assert_eq!(load(&d), (p, None));
+        assert_eq!(load(&d), (p.clone(), None));
         let text = std::fs::read_to_string(file(&d)).unwrap();
         assert!(text.contains("[encoding]"), "{text}");
         assert!(!text.to_lowercase().contains("secret"), "{text}");
+        assert!(
+            !text.contains("output_size"),
+            "same as canvas is left out of the file: {text}"
+        );
+        p.output_size = Some(OutputSize {
+            width: 1280,
+            height: 720,
+        });
+        save(&d, &p).unwrap();
+        assert_eq!(load(&d).0.output_size, p.output_size);
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(text.contains("width = 1280"), "{text}");
+        assert!(text.contains("height = 720"), "{text}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_old_stream_file_encodes_at_its_canvas() {
+        let d = dir("old-stream");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            file(&d),
+            "format_version = 1\nserver = \"rtmp://live.example.com/app\"\n",
+        )
+        .unwrap();
+        let (p, why) = load(&d);
+        assert_eq!(why, None);
+        assert_eq!(p.output_size, None);
+        assert_eq!(p.server, "rtmp://live.example.com/app");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -552,6 +597,7 @@ mod tests {
             srt_latency_ms: Some(1_000),
             encoding: api.encoding.clone(),
             auto_record: None,
+            output_size: None,
         };
         patch.encoding.video_kbps = 9_000;
         let changed = p.with_api(&patch).unwrap();
@@ -563,6 +609,25 @@ mod tests {
         assert_eq!(changed.to_api().encoding, patch.encoding);
         // "Record when the stream starts" stays unless the patch names it.
         assert!(!changed.auto_record);
+        // Omitting the size stores the same as the canvas, including over a saved one.
+        p.output_size = Some(OutputSize {
+            width: 1280,
+            height: 720,
+        });
+        assert_eq!(p.with_api(&patch).unwrap().output_size, None);
+        patch.output_size = Some(rbs_api::types::Dimensions {
+            width: 1280,
+            height: 720,
+        });
+        assert_eq!(
+            p.with_api(&patch).unwrap().output_size,
+            Some(OutputSize {
+                width: 1280,
+                height: 720,
+            })
+        );
+        patch.output_size = None;
+        p.output_size = None;
         patch.auto_record = Some(true);
         assert!(p.with_api(&patch).unwrap().auto_record);
         patch.auto_record = None;

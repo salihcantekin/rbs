@@ -123,6 +123,17 @@ impl Layout {
         out
     }
 
+    /// Rotation set to `degrees` clockwise about the centre, wrapped into `0..360`.
+    /// A non-finite value leaves the layout unchanged. The box stays.
+    pub fn angled(&self, degrees: f32) -> Self {
+        if !degrees.is_finite() {
+            return *self;
+        }
+        let mut out = *self;
+        out.rotation = wrap_degrees(degrees);
+        out
+    }
+
     /// Not turned.
     pub fn unturned(&self) -> Self {
         let mut out = *self;
@@ -210,6 +221,16 @@ mod tests {
 
     fn close(a: [f32; 2], b: [f32; 2]) -> bool {
         near(a[0], b[0]) && near(a[1], b[1])
+    }
+
+    #[test]
+    fn an_angle_replaces_the_rotation_and_wraps() {
+        let l = lay().with_rotation(90.0);
+        assert!(near(l.angled(20.0).rotation, 20.0));
+        assert!(near(l.angled(-20.0).rotation, 340.0));
+        assert!(near(l.angled(380.0).rotation, 20.0));
+        assert!(close(l.angled(20.0).centre(), l.centre()));
+        assert!(near(l.angled(f32::NAN).rotation, 90.0));
     }
 
     #[test]

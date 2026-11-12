@@ -5,6 +5,8 @@ use std::fmt;
 use rbs_core::media::{PixelFormat, Size};
 use rbs_core::timing::FrameRate;
 
+use crate::framebuffer::DisplayScale;
+
 /// What kind of thing a capture target is.
 ///
 /// Non-exhaustive: more kinds (for example per-application capture) may be added in a
@@ -135,7 +137,14 @@ pub struct CaptureTarget {
     /// Human readable name: monitor name, window title, camera model.
     pub name: String,
     /// Native size in pixels when known (displays and windows).
+    ///
+    /// For a display this is the framebuffer in physical pixels. It is not multiplied
+    /// by [`Self::scale`] (ADR-0102 decision 8).
     pub size: Option<(u32, u32)>,
+    /// OS pixels per logical point of a display, when the adapter read it.
+    /// `None` for windows, cameras and displays whose scale was not read.
+    /// The canvas size is [`Self::size`], not this ratio.
+    pub scale: Option<DisplayScale>,
     /// Supported modes for cameras; empty for displays and windows.
     pub modes: Vec<CameraMode>,
     /// Name of the application that owns the window, when the OS tells it
@@ -188,10 +197,17 @@ impl CaptureTarget {
             kind,
             name: name.into(),
             size: None,
+            scale: None,
             modes: Vec::new(),
             app: None,
             related: None,
         }
+    }
+
+    /// Sets the OS scale of a display. The pixel size is unchanged.
+    pub fn with_scale(mut self, scale: DisplayScale) -> Self {
+        self.scale = Some(scale);
+        self
     }
 
     /// Sets the related device.

@@ -46,8 +46,8 @@ use objc2_screen_capture_kit::{
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, GpuDeviceId, Permission, SyncKind, THUMBNAIL_MAX, TargetId,
-    TargetKind, Thumbnail, caps,
+    CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, Permission, SyncKind,
+    THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail, caps, choose_framebuffer,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -228,6 +228,16 @@ fn display_scale(display: &SCDisplay) -> f64 {
     } else {
         f64::from(pixels) / points as f64
     }
+}
+
+/// The same ratio as [`display_scale`], as integers, for the Video settings label.
+/// The pixel size stays the framebuffer; this ratio is not applied to it.
+fn display_scale_ratio(display: &SCDisplay) -> Option<DisplayScale> {
+    // SAFETY: plain property reads of an immutable SCDisplay.
+    let (id, points) = unsafe { (display.displayID(), display.width()) };
+    let (pixels, _) = display_pixel_size(id);
+    let points = u32::try_from(points).ok().filter(|p| *p > 0)?;
+    DisplayScale::from_pixels_per_point(pixels, points)
 }
 
 /// Pixels per point of the display that shows the centre of `window` (the main
@@ -594,17 +604,30 @@ impl CaptureFactory for SckCaptureFactory {
                         .map(|(index, d)| {
                             let id = d.displayID();
                             let (w, h) = display_pixel_size(id);
+                            let scale = display_scale_ratio(&d);
+                            // The mode is already the framebuffer. The scale is only the label.
+                            let (w, h) = choose_framebuffer(DisplayReading {
+                                monitor: None,
+                                mode: (w > 0 && h > 0).then_some((w, h)),
+                                scale,
+                            })
+                            .map(|c| (c.width, c.height))
+                            .unwrap_or((w, h));
                             let name = if id == main {
                                 format!("Display {} (main)", index + 1)
                             } else {
                                 format!("Display {}", index + 1)
                             };
-                            CaptureTarget::new(
+                            let target = CaptureTarget::new(
                                 TargetId::new(format!("{DISPLAY_PREFIX}{id}")),
                                 TargetKind::Display,
                                 name,
                             )
-                            .with_size(w, h)
+                            .with_size(w, h);
+                            match scale {
+                                Some(scale) => target.with_scale(scale),
+                                None => target,
+                            }
                         })
                         .collect())
                 }

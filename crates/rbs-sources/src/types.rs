@@ -65,6 +65,9 @@ pub mod keys {
     pub const COLOR2: &str = "color2";
     /// Int, color: gradient angle in degrees, 0 = top to bottom. Default 0.
     pub const ANGLE: &str = "angle";
+    /// Bool, color: draw the fill. Absent or true fills the shape; false leaves the
+    /// inside empty (the stored colour stays, so turning it back on restores it).
+    pub const FILLED: &str = "filled";
 }
 
 /// What a source type captures.

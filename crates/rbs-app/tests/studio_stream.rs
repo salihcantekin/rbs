@@ -368,6 +368,7 @@ fn request() -> StreamRequest {
         encoder: None,
         video,
         audio_bitrate_bps: 160_000,
+        size: None,
     }
 }
 
@@ -444,6 +445,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         encoder: None,
         video: VideoSettings::default(),
         audio_bitrate_bps: 128_000,
+        size: None,
     }));
     let recording = |rx: &_| {
         next(rx, |u| match u {
@@ -751,6 +753,7 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
         encoder: None,
         video: VideoSettings::default(),
         audio_bitrate_bps: 128_000,
+        size: None,
     }));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     host.send(Command::StartStream(request()));
@@ -1197,6 +1200,46 @@ fn stream_settings_are_read_and_changed_through_settings_but_never_the_server() 
     assert_eq!(
         got["result"]["data"]["stream"]["encoding"]["audio_kbps"], 192,
         "{got}"
+    );
+    // Output size (protocol 1.39) sits beside encoding. Omitted or null stores the
+    // canvas; a size that does not fit this canvas is refused and writes nothing.
+    assert!(
+        got["result"]["data"]["stream"].get("output_size").is_none(),
+        "{got}"
+    );
+    let mut sized = patch.clone();
+    sized["stream"]["output_size"] = serde_json::json!({"width": 1280, "height": 720});
+    let set = c.call("settings.set", sized);
+    assert_eq!(
+        set["result"]["data"]["stream"]["output_size"]["width"], 1280,
+        "{set}"
+    );
+    let saved = next(&rx, |u| match u {
+        Update::StreamProfile(p) => Some(p),
+        _ => None,
+    });
+    assert_eq!(
+        saved.output_size.map(|s| (s.width, s.height)),
+        Some((1280, 720))
+    );
+    let mut shaped = patch.clone();
+    shaped["stream"]["output_size"] = serde_json::json!({"width": 1280, "height": 800});
+    let refused = c.call("settings.set", shaped);
+    assert_eq!(
+        refused["error"]["data"]["kind"], "invalid_params",
+        "{refused}"
+    );
+    let got = c.call("settings.get", none.clone());
+    assert_eq!(
+        got["result"]["data"]["stream"]["output_size"]["height"], 720,
+        "{got}"
+    );
+    let cleared = c.call("settings.set", patch.clone());
+    assert!(
+        cleared["result"]["data"]["stream"]
+            .get("output_size")
+            .is_none(),
+        "{cleared}"
     );
 
     // While a stream runs its settings stay; the same settings are accepted.

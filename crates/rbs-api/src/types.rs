@@ -513,6 +513,10 @@ pub enum ShapeKind {
     Circle,
     /// The ellipse that fills the box.
     Ellipse,
+    /// An isosceles triangle, tip on the top edge of the box.
+    Triangle,
+    /// An arrow pointing toward the right edge of the box.
+    Arrow,
 }
 
 /// Shape, border and shadow of a picture (ADR-0053). Lengths are in the item's box
@@ -715,6 +719,10 @@ pub struct RecordingProfile {
     /// Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).
     #[serde(default, skip_serializing_if = "is_false")]
     pub open_shadows: bool,
+    /// Encoded picture size. Omitted or `null`: the same as this recording's canvas
+    /// (protocol 1.39, ADR-0102).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_size: Option<Dimensions>,
 }
 
 /// The video codec of a recording or a stream. H.264 is omitted on the wire.
@@ -810,6 +818,10 @@ pub struct StreamSettings {
     /// stops that recording (protocol 1.11; `false` from older servers).
     #[serde(default)]
     pub auto_record: bool,
+    /// Encoded picture size. Omitted or `null`: the same as this stream's canvas
+    /// (protocol 1.39, ADR-0102). Not inside `encoding`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_size: Option<Dimensions>,
 }
 
 /// The stream settings an API client may change (`settings.set`; protocol 1.2): all of
@@ -828,6 +840,10 @@ pub struct StreamSettingsPatch {
     /// client's patch never turns it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_record: Option<bool>,
+    /// Encoded picture size (protocol 1.39). Absent or `null` stores the same as this
+    /// stream's canvas, which clears a custom size. Not inside `encoding`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_size: Option<Dimensions>,
 }
 
 /// Settings the control thread owns.

@@ -48,7 +48,20 @@ pub struct TargetId(String);
 pub struct CaptureTarget { pub id, pub kind, pub name: String,
     pub size: Option<(u32, u32)>, pub modes: Vec<CameraMode>,
     pub app: Option<String>,
-    pub related: Option<RelatedDevice> }   // + new / with_size / with_modes / with_app / with_related
+    pub scale: Option<DisplayScale>,
+    pub related: Option<RelatedDevice> }   // + new / with_size / with_scale / with_modes / with_app / with_related
+
+/// OS pixels per logical point of a display (ADR-0102 decision 8). Windows:
+/// effective DPI over 96 (`from_dpi`, scale = dpi / 96). macOS: framebuffer width
+/// over the point width (`from_pixels_per_point`). `None` when the adapter did not
+/// read it. Hosts show [`DisplayScale::percent`] on the main-display canvas row.
+/// They must not multiply `size` by the scale. `choose_framebuffer` picks the size:
+/// the pixel mode (`EnumDisplaySettings` / `CGDisplayMode`) when it was read,
+/// otherwise the monitor rectangle, and never a size scaled by the percent.
+#[derive(Copy, Eq)] pub struct DisplayScale; // from_dpi / from_pixels_per_point / percent
+pub struct DisplayReading { pub monitor: Option<(u32, u32)>, pub mode: Option<(u32, u32)>, pub scale: Option<DisplayScale> }
+pub struct FramebufferChoice { pub width, pub height, pub percent: Option<u32> } // label()
+pub fn choose_framebuffer(reading: DisplayReading) -> Option<FramebufferChoice>;
 
 /// ADR-0096 decision 5. Opaque id of a device of another kind that belongs with a target
 /// (a camera's built-in microphone). `#[non_exhaustive]`, additive.

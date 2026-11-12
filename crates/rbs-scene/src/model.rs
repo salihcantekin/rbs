@@ -582,6 +582,11 @@ pub enum Shape {
     Circle,
     /// The ellipse that fills the box.
     Ellipse,
+    /// An isosceles triangle with its tip on the top edge of the box and its base
+    /// along the bottom.
+    Triangle,
+    /// An arrow pointing toward the right edge of the box.
+    Arrow,
 }
 
 impl Default for Shape {
@@ -677,7 +682,7 @@ impl ItemStyle {
     pub fn is_valid(&self) -> bool {
         let shape = match self.shape {
             Shape::Rectangle { radius } => radius.is_finite() && radius >= 0.0,
-            Shape::Circle | Shape::Ellipse => true,
+            Shape::Circle | Shape::Ellipse | Shape::Triangle | Shape::Arrow => true,
         };
         let border = self
             .border

@@ -150,6 +150,7 @@ fn main() -> ExitCode {
         encoder: None,
         video: e.video_settings(),
         audio_bitrate_bps: e.audio_bps(),
+        size: None,
     }));
     let also_record = std::env::var_os("RBS_ALSO_RECORD").map(std::path::PathBuf::from);
     let same = std::env::var_os("RBS_RECORD_SAME").is_some_and(|v| v == "1");
@@ -207,6 +208,7 @@ fn main() -> ExitCode {
                         encoder: None,
                         video: record_video.clone(),
                         audio_bitrate_bps: e.audio_bps(),
+                        size: None,
                     }));
                     record_state = Some(1);
                 }

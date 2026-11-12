@@ -28,7 +28,7 @@ use rbs_core::time::Timestamp;
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::pool::TexturePool;
-use crate::yuv::{YuvConverter, YuvFormat};
+use crate::yuv::{ScaleKernel, YuvConverter, YuvFormat};
 
 /// Staging buffers in flight between the GPU and the CPU. At 60 fps a frame normally
 /// completes within one or two ticks; four leave room for a slow readback.
@@ -287,6 +287,11 @@ impl YuvDownload {
     /// and the colour the converter encoded (BT.709 limited range by default).
     pub fn format(&self) -> &VideoFormat {
         &self.format
+    }
+
+    /// The scale kernel this download's converter was built with (ADR-0102).
+    pub fn kernel(&self) -> ScaleKernel {
+        self.converter.kernel()
     }
 
     /// Bytes per row of both planes in delivered frames.

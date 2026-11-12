@@ -218,7 +218,7 @@ mod windows_record {
             Node::<GpuRuntime>::descriptor(&comp),
             PartitionId::RENDER,
         );
-        let export = VideoExportNode::new(YuvFormat::Nv12, WIDTH, HEIGHT);
+        let export = VideoExportNode::new(YuvFormat::Nv12, WIDTH, HEIGHT, WIDTH, HEIGHT);
         let export_stats = export.stats();
         let config = VideoEncoderConfig::new(
             CodecId::H264,

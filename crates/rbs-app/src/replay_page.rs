@@ -135,7 +135,7 @@ pub fn update(app: &mut App, u: &Update) {
         Update::ReplaySaved(result) => {
             app.replay.saved(result.clone());
             // A notice for the moment, the Live controls keep the file.
-            app.error = Some(UiError::Notice(match result {
+            app.show_error(UiError::Notice(match result {
                 Ok(path) => format!("Clip saved: {}", file_name(path)),
                 Err(why) => why.clone(),
             }));

@@ -66,7 +66,7 @@ use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
 use crate::monitor_settings::MonitorSettings;
 use crate::recent_targets::{Recent, RecentTargets};
-use crate::record_profile::{API_PROFILE_ID, RecordProfile};
+use crate::record_profile::{API_PROFILE_ID, RecordProfile, output_size_matches};
 use crate::remote_control::ApiTokens;
 use crate::stream_key::{self, KeyStore, MemoryKeyStore};
 use crate::stream_profile::{Protocol, StreamProfile, parse_server};
@@ -312,6 +312,11 @@ pub struct SourceRow {
     pub target: String,
     /// Per-source slide override (ADR-0100); `None` uses the collection defaults.
     pub glide: Option<rbs_scene::SourceGlide>,
+    /// A colour source's fill (`color`), empty for every other kind.
+    pub fill: String,
+    /// A colour source draws its fill. False leaves the inside empty. True for every
+    /// other kind and when the setting is absent.
+    pub filled: bool,
 }
 
 impl PartialEq for SourceRow {
@@ -334,6 +339,8 @@ impl PartialEq for SourceRow {
             && self.in_globals == other.in_globals
             && self.target == other.target
             && self.glide == other.glide
+            && self.fill == other.fill
+            && self.filled == other.filled
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -381,6 +388,8 @@ pub enum TransformOp {
     FlipVertical,
     /// Turn clockwise by this many degrees (negative turns the other way).
     Turn(f32),
+    /// Set the rotation to this many degrees clockwise, wrapped into `0..360`.
+    SetAngle(f32),
     /// Not turned.
     ResetRotation,
     /// Place on the canvas (needs the picture size).
@@ -599,6 +608,34 @@ pub enum Command {
         /// The sample's id (`rbs_sources::still::SAMPLES`).
         sample: String,
     },
+    /// Add a colour shape on the scene being edited, centred, one undo step.
+    /// 0 circle, 1 square, 2 rectangle, 3 rounded rectangle, 4 ellipse, 5 triangle,
+    /// 6 arrow.
+    AddStamp {
+        /// Which shape.
+        kind: u8,
+    },
+    /// Add an image source from a PNG file, fitted into the canvas, one undo step.
+    AddImage {
+        /// The file.
+        path: std::path::PathBuf,
+    },
+    /// The fill colour of a colour source (`#rrggbb` or `#rrggbbaa`), one undo step.
+    SetSourceFill {
+        /// The source.
+        id: SourceId,
+        /// The colour.
+        color: String,
+    },
+    /// Whether a colour source draws its fill. Off leaves the inside empty and, when
+    /// the shape has no border, turns a border on so the shape stays visible. One
+    /// undo step.
+    SetSourceFilled {
+        /// The source.
+        id: SourceId,
+        /// Draw the fill.
+        on: bool,
+    },
     /// Remove a filter (one undo step).
     RemoveFilter(FilterId),
     /// Move a filter to `index` in its chain (one undo step).
@@ -797,6 +834,8 @@ pub enum Command {
         id: SourceId,
         /// What to do.
         op: TransformOp,
+        /// Moves that share a non-zero gesture are one undo step. 0 never joins.
+        gesture: u64,
     },
     /// Show a part of a video source's picture filling as much of the canvas as fits
     /// (ADR-0058, Properties' Show buttons). One undo step.
@@ -1029,6 +1068,8 @@ pub struct RecordRequest {
     pub video: VideoSettings,
     /// Audio bitrate in bit/s.
     pub audio_bitrate_bps: u64,
+    /// Encoded picture size (ADR-0102). `None`: this output's canvas.
+    pub size: Option<(u32, u32)>,
 }
 
 /// The canvas an output records or streams (ADR-0093 decision 6).
@@ -1155,6 +1196,8 @@ pub struct StreamRequest {
     pub video: VideoSettings,
     /// Audio bitrate in bit/s.
     pub audio_bitrate_bps: u64,
+    /// Encoded picture size (ADR-0102). `None`: this output's canvas.
+    pub size: Option<(u32, u32)>,
 }
 
 impl StreamRequest {
@@ -1180,6 +1223,7 @@ impl StreamRequest {
             encoder,
             video: e.video_settings(),
             audio_bitrate_bps: e.audio_bps(),
+            size: p.output_size.map(|s| s.pair()),
         })
     }
 }
@@ -1326,6 +1370,16 @@ pub struct VerticalState {
     pub follow: bool,
 }
 
+/// The main display's framebuffer, for the Video settings row (ADR-0102 decision 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MainDisplay {
+    /// Physical pixels. Not multiplied by [`Self::scale`].
+    pub size: (u32, u32),
+    /// OS pixels per logical point, when the adapter read it. `None` when it did not
+    /// (the label then has no percent).
+    pub scale: Option<rbs_capture::DisplayScale>,
+}
+
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
@@ -1376,9 +1430,10 @@ pub enum Update {
         size: Size,
         /// The canvas's rate.
         fps: FrameRate,
-        /// The main display's size in pixels, when known (for "Main display" in
-        /// Settings).
-        display: Option<(u32, u32)>,
+        /// The main display's framebuffer in physical pixels, when known, and its OS
+        /// scale for the Video settings label (ADR-0102). The canvas uses `size` and
+        /// is not multiplied by the scale.
+        display: Option<MainDisplay>,
     },
     /// The canvas the studio runs now, after [`Command::SetCanvas`]: changed, or
     /// unchanged when the change was refused (an [`Update::Error`] says why). Connect
@@ -2394,21 +2449,20 @@ fn start(
         &settings,
     )
     .map_err(|e| e.to_string())?;
-    let display = adapters
+    let screens = adapters
         .sources
         .targets(&SourceKind::Screen.type_id())
-        .unwrap_or_default()
-        .into_iter()
+        .unwrap_or_default();
+    let display = screens
+        .iter()
         .find(|t| t.is_default)
-        .or_else(|| {
-            adapters
-                .sources
-                .targets(&SourceKind::Screen.type_id())
-                .unwrap_or_default()
-                .into_iter()
-                .next()
-        })
-        .and_then(|t| t.size);
+        .or_else(|| screens.first())
+        .and_then(|t| {
+            t.size.map(|size| MainDisplay {
+                size,
+                scale: t.scale,
+            })
+        });
     let installed = adapters.sources.installed();
     let kinds: Vec<SourceKind> = SourceKind::ALL
         .into_iter()
@@ -2746,6 +2800,23 @@ impl Host {
                     notify,
                 );
             }
+            Command::AddStamp { kind } => match self.add_stamp(kind) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::AddImage { path } => match self.add_image_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::SetSourceFill { id, color } => match self.set_source_fill(id, &color) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::SetSourceFilled { id, on } => match self.set_source_filled(id, on) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
             Command::ApplyLook { source, look } => {
                 self.run_ui_api(
                     rbs_api::Command::LookApply(rbs_api::request::ApplyLook {
@@ -2931,9 +3002,9 @@ impl Host {
                 };
                 notify(Update::CropPlaced { seq, ok });
             }
-            Command::TransformSource { id, op } => {
+            Command::TransformSource { id, op, gesture } => {
                 let edit = match self.item_of(id).map(|(_, item)| item.id) {
-                    Ok(item) => self.transform_item(item, op),
+                    Ok(item) => self.transform_item(item, op, gesture),
                     Err(t) => Err(Refusal::NotFound(t)),
                 };
                 match edit {
@@ -3400,6 +3471,12 @@ impl Host {
         }
     }
 
+    /// The main canvas in pixels, for an output size fitted to it (ADR-0102).
+    fn main_canvas_size(&self) -> (u32, u32) {
+        let canvas = self.api_canvas();
+        (canvas.width, canvas.height)
+    }
+
     /// The canvas as the control API shows it.
     fn api_canvas(&self) -> api::Canvas {
         let (size, rate) = self
@@ -3729,6 +3806,9 @@ impl Host {
             a.bitrate_bps = r.audio_bitrate_bps;
             a
         });
+        // The size this recording starts with. A later settings change waits for the
+        // next start (ADR-0102). `None` stays the canvas, including a side above 7680.
+        out.size = r.size;
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
         let started = started.map(|(id, video_encoder, audio_encoder)| {
@@ -3962,6 +4042,16 @@ impl Host {
             encoder,
             video: p.video_settings(),
             audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
+            // A vertical recording with no section of its own keeps the main encoding
+            // and encodes at the vertical canvas: the main size is not copied.
+            size: match c {
+                OutputCanvas::Main => p.output_size.map(|s| s.pair()),
+                OutputCanvas::Vertical => self
+                    .vertical_profile
+                    .as_ref()
+                    .and_then(|v| v.output_size)
+                    .map(|s| s.pair()),
+            },
         })
     }
 
@@ -4061,6 +4151,9 @@ impl Host {
             a.bitrate_bps = r.audio_bitrate_bps;
             a
         });
+        // The size this stream starts with. A later settings change waits for the
+        // next start (ADR-0102). `None` stays the canvas.
+        out.size = r.size;
         let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
         // Before the host tracks it: recovery stops an output a panicked start left
         // running (ADR-0055 decision 3).
@@ -4900,8 +4993,9 @@ impl Host {
         self.delete(id).map(|_| ()).map_err(Refusal::Failed)
     }
 
-    /// Adds a sample picture as an image source covering the canvas: a background at
-    /// the bottom of the scene being edited, a frame on top (ADR-0074).
+    /// Adds a sample covering the canvas: a background at the bottom of the scene
+    /// being edited, a frame on top (ADR-0074). `frame-thin` and `frame-thick` are a
+    /// transparent colour with a border, so the thickness stays editable.
     fn add_sample(&mut self, id: &str) -> Result<SourceId, Refusal> {
         let sample = rbs_sources::still::SAMPLES
             .iter()
@@ -4911,19 +5005,37 @@ impl Host {
             .collection
             .canvas(self.canvas)
             .ok_or_else(|| Refusal::NotFound("The canvas is gone.".to_owned()))?;
-        let layout = Layout::new(
+        let mut layout = Layout::new(
             [0.0, 0.0],
             [canvas.size.width as f32, canvas.size.height as f32],
         );
         let name = unique_name(&self.collection, sample.name);
-        let mut settings = Settings::new();
-        settings.insert(
-            keys::SAMPLE.into(),
-            SettingValue::Text(sample.id.to_owned()),
-        );
+        let (type_id, settings) =
+            if let Some((width, radius)) = rbs_sources::still::plain_frame(sample.id) {
+                layout = layout.with_style(
+                    ItemStyle::new(Shape::Rectangle { radius })
+                        .with_border(Some(Border::new(width, [255, 255, 255, 255]))),
+                );
+                let mut settings = Settings::new();
+                settings.insert(
+                    keys::COLOR.into(),
+                    SettingValue::Text("#00000000".to_owned()),
+                );
+                // The border is drawn in the item's box, so the picture itself stays tiny.
+                settings.insert(keys::WIDTH.into(), SettingValue::Int(2));
+                settings.insert(keys::HEIGHT.into(), SettingValue::Int(2));
+                (SourceKind::Color.type_id(), settings)
+            } else {
+                let mut settings = Settings::new();
+                settings.insert(
+                    keys::SAMPLE.into(),
+                    SettingValue::Text(sample.id.to_owned()),
+                );
+                (SourceKind::Image.type_id(), settings)
+            };
         let (source, undo_source) = self
             .collection
-            .add_source(&name, SourceKind::Image.type_id(), settings)
+            .add_source(&name, type_id, settings)
             .map_err(|e| Refusal::of(&e))?;
         let index = (sample.kind == rbs_sources::still::SampleKind::Background).then_some(0);
         match self
@@ -4940,6 +5052,202 @@ impl Host {
                 Err(Refusal::of(&e))
             }
         }
+    }
+
+    /// Adds a colour shape, centred on the canvas being edited. The picture is a tiny
+    /// texture; the shape is the item's outline, so the colour fills the box.
+    fn add_stamp(&mut self, kind: u8) -> Result<SourceId, Refusal> {
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or_else(|| Refusal::NotFound("The canvas is gone.".to_owned()))?;
+        let short = (canvas.size.width.min(canvas.size.height) as f32 * 0.28).clamp(48.0, 480.0);
+        let (base, w, h, shape) = match kind {
+            0 => ("Circle", short, short, Shape::Circle),
+            1 => ("Square", short, short, Shape::Rectangle { radius: 0.0 }),
+            2 => (
+                "Rectangle",
+                short * 1.6,
+                short,
+                Shape::Rectangle { radius: 0.0 },
+            ),
+            3 => (
+                "Rounded rectangle",
+                short * 1.6,
+                short,
+                Shape::Rectangle { radius: 32.0 },
+            ),
+            4 => ("Ellipse", short * 1.6, short, Shape::Ellipse),
+            5 => ("Triangle", short, short, Shape::Triangle),
+            6 => ("Arrow", short * 1.8, short * 0.9, Shape::Arrow),
+            _ => return Err(Refusal::Invalid("There is no shape like that.".into())),
+        };
+        let layout = Layout::new(
+            [
+                ((canvas.size.width as f32 - w) * 0.5).max(0.0),
+                ((canvas.size.height as f32 - h) * 0.5).max(0.0),
+            ],
+            [w, h],
+        )
+        .with_style(ItemStyle::new(shape));
+        let mut settings = Settings::new();
+        settings.insert(keys::COLOR.into(), SettingValue::Text("#2f6fed".to_owned()));
+        // The shape is the item's box. The texture only carries the fill.
+        settings.insert(keys::WIDTH.into(), SettingValue::Int(2));
+        settings.insert(keys::HEIGHT.into(), SettingValue::Int(2));
+        self.add_still(base, SourceKind::Color, settings, layout, None)
+    }
+
+    /// Adds a PNG file as an image source, fitted inside half the canvas and centred.
+    fn add_image_file(&mut self, path: &std::path::Path) -> Result<SourceId, Refusal> {
+        let (pw, ph, _) = rbs_sources::still::decode_png(path).map_err(Refusal::Invalid)?;
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or_else(|| Refusal::NotFound("The canvas is gone.".to_owned()))?;
+        let max_w = canvas.size.width as f32 * 0.5;
+        let max_h = canvas.size.height as f32 * 0.5;
+        let scale = (max_w / pw as f32).min(max_h / ph as f32);
+        let w = (pw as f32 * scale).max(1.0);
+        let h = (ph as f32 * scale).max(1.0);
+        let layout = Layout::new(
+            [
+                ((canvas.size.width as f32 - w) * 0.5).max(0.0),
+                ((canvas.size.height as f32 - h) * 0.5).max(0.0),
+            ],
+            [w, h],
+        );
+        let mut settings = Settings::new();
+        settings.insert(
+            keys::PATH.into(),
+            SettingValue::Text(path.display().to_string()),
+        );
+        let base = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Image");
+        self.add_still(base, SourceKind::Image, settings, layout, None)
+    }
+
+    /// The shared end of adding a still source: one source, one item, one undo step.
+    fn add_still(
+        &mut self,
+        base: &str,
+        kind: SourceKind,
+        settings: Settings,
+        layout: Layout,
+        index: Option<usize>,
+    ) -> Result<SourceId, Refusal> {
+        let name = unique_name(&self.collection, base);
+        let (source, undo_source) = self
+            .collection
+            .add_source(&name, kind.type_id(), settings)
+            .map_err(|e| Refusal::of(&e))?;
+        match self
+            .collection
+            .add_item(self.edited(), ItemContent::Source(source), layout, index)
+        {
+            Ok((_, undo_item)) => {
+                self.history
+                    .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
+                Ok(source)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(undo_source);
+                Err(Refusal::of(&e))
+            }
+        }
+    }
+
+    /// Sets a colour source's fill. One undo step; the picture is built again.
+    fn set_source_fill(&mut self, id: SourceId, color: &str) -> Result<bool, Refusal> {
+        let mut patch = std::collections::BTreeMap::new();
+        patch.insert(
+            keys::COLOR.to_owned(),
+            serde_json::Value::String(color.to_owned()),
+        );
+        self.patch_source_settings(id, &patch)
+    }
+
+    /// Turns a colour source's fill on or off. Off clears the inside and, when the
+    /// shape has no border, adds one in the fill colour so the shape stays visible.
+    /// Both changes are one undo step. The stored colour is kept.
+    fn set_source_filled(&mut self, id: SourceId, on: bool) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        if SourceKind::of(&source.type_id) != Some(SourceKind::Color) {
+            return Err(Refusal::Invalid("Fill is for a colour source.".into()));
+        }
+        let was_on = !matches!(
+            source.settings.get(keys::FILLED),
+            Some(SettingValue::Bool(false))
+        );
+        if was_on == on {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let type_id = source.type_id.clone();
+        let stroke = {
+            let text = match source.settings.get(keys::COLOR) {
+                Some(SettingValue::Text(t)) => t.as_str(),
+                _ => "",
+            };
+            let mut color = rbs_sources::still::parse_color(text).unwrap_or([255, 255, 255, 255]);
+            color[3] = 255;
+            color
+        };
+        let mut settings = source.settings.clone();
+        if on {
+            settings.remove(keys::FILLED);
+        } else {
+            settings.insert(keys::FILLED.to_owned(), SettingValue::Bool(false));
+        }
+        rbs_sources::validate_settings(&type_id, &settings)
+            .map_err(|e| Refusal::Invalid(e.to_string()))?;
+        let placed = if on {
+            None
+        } else {
+            self.item_of(id).ok().map(|(_, item)| {
+                let layout = *item.layout_on(self.canvas);
+                let own = item
+                    .overrides
+                    .contains_key(&self.canvas)
+                    .then_some(self.canvas);
+                (item.id, layout, own)
+            })
+        };
+        let undo_settings = self
+            .collection
+            .set_source_settings(id, settings)
+            .map_err(|e| Refusal::of(&e))?;
+        let mut records = vec![undo_settings];
+        let mut kind = EditKind::SourceSettings;
+        if let Some((item, mut layout, own)) = placed
+            && layout.style.border.is_none()
+        {
+            layout.style = layout.style.with_border(Some(Border::new(4.0, stroke)));
+            if !layout.style.is_valid() {
+                let _ = self.collection.undo(records.remove(0));
+                return Err(Refusal::Invalid(
+                    "The outline could not be turned on.".into(),
+                ));
+            }
+            match self.collection.set_item_layout(item, own, layout) {
+                Ok(undo) => {
+                    records.push(undo);
+                    kind = EditKind::Style;
+                }
+                Err(e) => {
+                    let _ = self.collection.undo(records.remove(0));
+                    return Err(Refusal::of(&e));
+                }
+            }
+        }
+        self.history.record(kind, &name, 0, records);
+        Ok(true)
     }
 
     /// Deletes a source from every scene; returns its name.
@@ -6320,7 +6628,7 @@ impl Host {
         notify: &dyn Fn(Update),
     ) -> Result<Response, ApiError> {
         let changed = self
-            .transform_item(ItemId::from_raw(item), op)
+            .transform_item(ItemId::from_raw(item), op, 0)
             .map_err(|e| refused(&e))?;
         if changed {
             self.apply(notify);
@@ -6331,7 +6639,12 @@ impl Host {
     /// Flips, turns, fits or centres an item (ADR-0084) on the layout the canvas shows,
     /// as one undo step; `Ok(false)` when nothing changes. A locked item and an
     /// operation that needs a picture size the source has not reported are refused.
-    fn transform_item(&mut self, item: ItemId, op: TransformOp) -> Result<bool, Refusal> {
+    fn transform_item(
+        &mut self,
+        item: ItemId,
+        op: TransformOp,
+        gesture: u64,
+    ) -> Result<bool, Refusal> {
         let locked = self.collection.item(item).is_some_and(|(_, i)| i.locked);
         let (source, old, own) = self.crop_target(item).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
@@ -6365,6 +6678,7 @@ impl Host {
             TransformOp::FlipHorizontal => old.flipped_horizontally(),
             TransformOp::FlipVertical => old.flipped_vertically(),
             TransformOp::Turn(degrees) => old.turned(degrees),
+            TransformOp::SetAngle(degrees) => old.angled(degrees),
             TransformOp::ResetRotation => old.unturned(),
             TransformOp::Center(axis) => old.centred(canvas, axis),
             TransformOp::Fit(mode) => old
@@ -6383,7 +6697,7 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(source);
         self.history
-            .record(EditKind::Transform, &name, 0, vec![undo]);
+            .record(EditKind::Transform, &name, gesture, vec![undo]);
         Ok(true)
     }
 
@@ -6659,6 +6973,14 @@ impl Host {
                                 .any(|(sc, _)| *sc == g)
                         }),
                     glide: s.glide,
+                    fill: match s.settings.get(keys::COLOR) {
+                        Some(SettingValue::Text(t)) => t.clone(),
+                        _ => String::new(),
+                    },
+                    filled: !matches!(
+                        s.settings.get(keys::FILLED),
+                        Some(SettingValue::Bool(false))
+                    ),
                 }
             })
             .collect()
@@ -7714,6 +8036,7 @@ impl ApiTarget<'_> {
                     if let Some(why) = profile.problem() {
                         return Err(ApiError::new(ErrorKind::InvalidParams, why));
                     }
+                    output_size_for_canvas(profile.output_size, host.main_canvas_size())?;
                     // A vertical recording without settings of its own runs on these.
                     let uses = host.outs[0].recording.is_some()
                         || (host.vertical_profile.is_none()
@@ -7736,6 +8059,7 @@ impl ApiTarget<'_> {
                         let stream = current
                             .with_api(patch)
                             .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+                        output_size_for_canvas(stream.output_size, host.main_canvas_size())?;
                         if host.outs[0].streaming.is_some() && stream != *current {
                             return Err(ApiError::new(
                                 ErrorKind::Conflict,
@@ -7979,6 +8303,29 @@ impl ApiTarget<'_> {
     }
 }
 
+/// `invalid_params` when an explicit size is not the canvas-aspect fit (ADR-0102
+/// decisions 4 and 7). Absent stays the canvas. Even sides and the 2..=7680 range
+/// are already refused by the profile's own check.
+fn output_size_for_canvas(
+    size: Option<crate::record_profile::OutputSize>,
+    canvas: (u32, u32),
+) -> Result<(), ApiError> {
+    let Some(size) = size else {
+        return Ok(());
+    };
+    if output_size_matches(size.pair(), canvas) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            ErrorKind::InvalidParams,
+            format!(
+                "Output size {} x {} does not keep this canvas's shape.",
+                size.width, size.height
+            ),
+        ))
+    }
+}
+
 fn check_profile(id: &str) -> Result<(), ApiError> {
     if id == API_PROFILE_ID {
         Ok(())
@@ -8065,6 +8412,8 @@ fn api_style(s: &ItemStyle) -> api::ItemStyle {
         Shape::Rectangle { radius } => (api::ShapeKind::Rectangle, radius),
         Shape::Circle => (api::ShapeKind::Circle, 0.0),
         Shape::Ellipse => (api::ShapeKind::Ellipse, 0.0),
+        Shape::Triangle => (api::ShapeKind::Triangle, 0.0),
+        Shape::Arrow => (api::ShapeKind::Arrow, 0.0),
         _ => (api::ShapeKind::Rectangle, 0.0),
     };
     api::ItemStyle {
@@ -8089,6 +8438,8 @@ fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, String> {
         _ if s.radius != 0.0 => return Err("radius is only for shape \"rectangle\"".into()),
         api::ShapeKind::Circle => Shape::Circle,
         api::ShapeKind::Ellipse => Shape::Ellipse,
+        api::ShapeKind::Triangle => Shape::Triangle,
+        api::ShapeKind::Arrow => Shape::Arrow,
     };
     let color = |c: &str| {
         api::parse_color(c).ok_or_else(|| format!("colour {c:?} is not #rrggbb or #rrggbbaa"))

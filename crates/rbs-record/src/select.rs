@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use rbs_codec::{AudioEncoder, AudioEncoderConfig, AudioEncoderFactory, VideoEncoderConfig};
 use rbs_codec::{VideoEncoderFactory, caps as codec_caps};
-use rbs_core::capability::{Constraint, Requirement};
+use rbs_core::capability::{CapabilitySet, CapabilityValue, Constraint, Requirement};
 use rbs_core::media::ContainerId;
+use rbs_core::media::Size;
 use rbs_core::registry::{AdapterFactory, AdapterId, Registry};
 use rbs_mux::{MuxerFactory, caps as mux_caps};
 use rbs_nodes::VideoEncoderNode;
@@ -102,9 +103,53 @@ pub(crate) fn is_audio_candidate(
         .any(|f| f.id() == *adapter)
 }
 
+/// Why `size` is outside a declared `codec.video.width` or `codec.video.height`.
+///
+/// An encoder that does not declare a range, or whose probe is missing, is not
+/// refused for range (ADR-0102). A declared range that excludes a side is.
+fn picture_outside(caps: Option<&CapabilitySet>, size: Size) -> Option<String> {
+    let caps = caps?;
+    let width = side_outside(
+        caps,
+        &codec_caps::VIDEO_WIDTH,
+        size.width,
+        "codec.video.width",
+    );
+    let height = side_outside(
+        caps,
+        &codec_caps::VIDEO_HEIGHT,
+        size.height,
+        "codec.video.height",
+    );
+    match (width, height) {
+        (None, None) => None,
+        (Some(w), None) => Some(w),
+        (None, Some(h)) => Some(h),
+        (Some(w), Some(h)) => Some(format!("{w}; {h}")),
+    }
+}
+
+/// `name min..=max excludes value` when the declared range does not contain `value`.
+fn side_outside(
+    caps: &CapabilitySet,
+    key: &rbs_core::capability::CapabilityKey,
+    value: u32,
+    name: &str,
+) -> Option<String> {
+    match caps.get(key) {
+        Some(CapabilityValue::IntRange { min, max }) => {
+            let v = i64::from(value);
+            (v < *min || v > *max).then(|| format!("{name} {min}..={max} excludes {value}"))
+        }
+        _ => None,
+    }
+}
+
 /// The first video encoder, best first, that lists the codec, the input memory kind and
 /// the pixel format of `config` and opens a session for it (a candidate that refuses a
-/// setting, such as a rate-control mode it lacks, is skipped with its reason).
+/// setting, such as a rate-control mode it lacks, is skipped with its reason). A
+/// candidate whose declared width or height range excludes the picture is skipped the
+/// same way; if none remain, the error is [`RecordError::NoAdapter`].
 pub(crate) fn video_encoder(
     registry: &Registry<dyn VideoEncoderFactory>,
     config: &VideoEncoderConfig,
@@ -112,6 +157,11 @@ pub(crate) fn video_encoder(
     let selection = registry.select(&video_requirement(config));
     let mut tried = rejected(&selection);
     for factory in &selection.candidates {
+        if let Some(why) = picture_outside(registry.capabilities(&factory.id()), config.format.size)
+        {
+            tried.push((factory.id(), why));
+            continue;
+        }
         match VideoEncoderNode::open(Arc::clone(factory), config.clone()) {
             Ok(node) => return Ok((node, Chosen::of(factory.as_ref()))),
             Err(e) => tried.push((factory.id(), e.to_string())),
@@ -188,6 +238,7 @@ pub(crate) fn transport(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -198,5 +249,121 @@ mod tests {
         assert_eq!(scheme_of("C:\\x.mkv"), None);
         assert_eq!(scheme_of("://x"), None);
         assert_eq!(scheme_of("a b://x"), None);
+    }
+
+    /// A declared width or height range that excludes the picture skips that encoder
+    /// before a session is opened. An encoder that declares no range is still tried.
+    #[test]
+    fn a_declared_range_that_excludes_the_picture_skips_the_encoder() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use rbs_codec::{CreateError, RateControl, VideoEncoder};
+        use rbs_core::media::{CodecId, ColorSpace, MemoryKind, PixelFormat, VideoFormat};
+        use rbs_core::registry::{AdapterFactory, ProbeError};
+        use rbs_core::timing::FrameRate;
+
+        struct RangeFactory {
+            id: &'static str,
+            width: Option<(i64, i64)>,
+            height: Option<(i64, i64)>,
+            creates: Arc<AtomicU64>,
+        }
+
+        impl AdapterFactory for RangeFactory {
+            fn id(&self) -> AdapterId {
+                AdapterId::new(self.id)
+            }
+            fn display_name(&self) -> &str {
+                self.id
+            }
+            fn probe(&self) -> Result<CapabilitySet, ProbeError> {
+                let mut caps = CapabilitySet::new()
+                    .with(codec_caps::VIDEO_ENCODE, set(&["h264"]))
+                    .with(codec_caps::INPUT_MEMORY, set(&["system"]))
+                    .with(codec_caps::INPUT_PIXEL_FORMAT, set(&["nv12"]));
+                if let Some((min, max)) = self.width {
+                    caps.insert(
+                        codec_caps::VIDEO_WIDTH,
+                        CapabilityValue::IntRange { min, max },
+                    );
+                }
+                if let Some((min, max)) = self.height {
+                    caps.insert(
+                        codec_caps::VIDEO_HEIGHT,
+                        CapabilityValue::IntRange { min, max },
+                    );
+                }
+                Ok(caps)
+            }
+        }
+
+        impl VideoEncoderFactory for RangeFactory {
+            fn create(&self, _: &VideoEncoderConfig) -> Result<Box<dyn VideoEncoder>, CreateError> {
+                self.creates.fetch_add(1, Ordering::Relaxed);
+                Err(CreateError::Unsupported {
+                    what: "not opened (test)".into(),
+                })
+            }
+        }
+
+        fn set(values: &[&str]) -> CapabilityValue {
+            CapabilityValue::Set(values.iter().map(|v| (*v).to_owned()).collect())
+        }
+
+        let narrow_creates = Arc::new(AtomicU64::new(0));
+        let open_creates = Arc::new(AtomicU64::new(0));
+        let mut registry: Registry<dyn VideoEncoderFactory> = Registry::new();
+        registry
+            .register(Arc::new(RangeFactory {
+                id: "narrow",
+                width: Some((2, 32)),
+                height: Some((2, 18)),
+                creates: Arc::clone(&narrow_creates),
+            }))
+            .unwrap();
+        registry
+            .register(Arc::new(RangeFactory {
+                id: "open",
+                width: None,
+                height: None,
+                creates: Arc::clone(&open_creates),
+            }))
+            .unwrap();
+        registry.probe_all();
+
+        let config = VideoEncoderConfig::new(
+            CodecId::H264,
+            VideoFormat::new(
+                Size::new(64, 36),
+                PixelFormat::Nv12,
+                ColorSpace::BT709_LIMITED,
+            ),
+            FrameRate::FPS_30,
+            MemoryKind::System,
+            RateControl::Cbr { bitrate_bps: 1 },
+        );
+        let Err(err) = video_encoder(&registry, &config) else {
+            panic!("expected NoAdapter");
+        };
+        let RecordError::NoAdapter { port, tried } = err else {
+            panic!("expected NoAdapter, got {err}");
+        };
+        assert_eq!(port, Port::VideoEncoder);
+        assert_eq!(
+            narrow_creates.load(Ordering::Relaxed),
+            0,
+            "skipped before open"
+        );
+        assert_eq!(
+            open_creates.load(Ordering::Relaxed),
+            1,
+            "no range: still tried"
+        );
+        assert!(
+            tried.iter().any(|(id, why)| {
+                id.as_str() == "narrow" && why.contains("excludes") && why.contains("64")
+            }),
+            "{tried:?}"
+        );
     }
 }

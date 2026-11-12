@@ -46,7 +46,7 @@ Arrows only point down or sideways into ports. Adapters never depend on each oth
 ## Key concepts
 
 - **Media graph**: nodes and typed links (GPU video frame, audio block, encoded packet, data/event). The graph can change while running; changes apply atomically on a frame boundary. Spec: [media-graph.md](../specs/media-graph.md).
-- **Canvas**: an output resolution, frame rate and colour space with its own compositor node. Many canvases share the same sources.
+- **Canvas**: the composition grid (pixel grid, frame rate and colour space) with its own compositor node. Output size is the encoded picture size. Many canvases share the same sources.
 - **Scene**: a declarative tree given to a compositor: layers, groups, transforms, crops, masks, blend modes, filter chains. Scenes can nest and be used as sources.
 - **Command log**: every state change is a command. Undo, redo, remote control, macros and replay share this mechanism.
 - **Port and adapter**: a trait plus capability model for one kind of external technology, and the implementations of it. Spec: [backend-ports.md](../specs/backend-ports.md).

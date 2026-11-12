@@ -109,8 +109,12 @@ pub struct SourceTarget {
     /// The OS default of its kind (audio endpoints only; capture has no default).
     pub is_default: bool,
     /// Native size in pixels when the adapter knows it (displays and windows), so a
-    /// picker can place the source with its aspect ratio.
+    /// picker can place the source with its aspect ratio. A display's size is the
+    /// framebuffer in physical pixels.
     pub size: Option<(u32, u32)>,
+    /// OS pixels per logical point of a display, when the adapter read it (ADR-0102).
+    /// The canvas uses [`Self::size`] and is not multiplied by this.
+    pub scale: Option<rbs_capture::DisplayScale>,
     /// The application that owns a window, when the OS tells it (grouping only).
     pub app: Option<String>,
     /// What a camera offers, empty for everything else: the modes the Source settings
@@ -210,6 +214,7 @@ impl SourcePicker {
             name: t.name,
             is_default: false,
             size: t.size,
+            scale: t.scale,
             app: t.app,
             modes: Vec::new(),
             related_audio: None,
@@ -410,6 +415,7 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::COLOR,
             keys::COLOR2,
             keys::ANGLE,
+            keys::FILLED,
             keys::WIDTH,
             keys::HEIGHT,
         ],
@@ -435,6 +441,7 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
     text(settings, keys::TARGET)?;
     flag(settings, keys::CURSOR)?;
     flag(settings, keys::EXCLUDE_OWN_PROCESS)?;
+    flag(settings, keys::FILLED)?;
     let (w, h) = (
         positive(settings, keys::WIDTH)?,
         positive(settings, keys::HEIGHT)?,
@@ -757,6 +764,7 @@ impl SourceTypes {
                             name: t.name,
                             is_default: false,
                             size: t.size,
+                            scale: t.scale,
                             modes: source_modes(&t.modes),
                             related_audio: t.related.and_then(|r| {
                                 (r.kind == rbs_capture::RelatedKind::Audio).then_some(r.id)
@@ -775,6 +783,7 @@ impl SourceTypes {
                             name: e.name,
                             is_default: e.is_default,
                             size: None,
+                            scale: None,
                             app: None,
                             modes: Vec::new(),
                             related_audio: None,
@@ -935,8 +944,15 @@ fn still_pixels(type_id: &str, settings: &Settings) -> Result<crate::still::Pict
                 }),
         }
     };
-    let first = colour(keys::COLOR)?.unwrap_or([0, 0, 0, 255]);
-    let second = colour(keys::COLOR2)?;
+    let mut first = colour(keys::COLOR)?.unwrap_or([0, 0, 0, 255]);
+    let mut second = colour(keys::COLOR2)?;
+    // Absent means filled, so an older document stays a solid colour.
+    if flag(settings, keys::FILLED)?.is_some_and(|on| !on) {
+        first[3] = 0;
+        if let Some(end) = second.as_mut() {
+            end[3] = 0;
+        }
+    }
     let angle = match settings.get(keys::ANGLE) {
         None => 0.0,
         Some(SettingValue::Int(n)) => *n as f32,
@@ -980,6 +996,44 @@ fn default_capture_target(
         let first = f.enumerate(kind).ok()?.into_iter().next()?;
         Some((Arc::clone(f), first.id))
     })
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+
+    fn colour_settings(filled: Option<bool>) -> Settings {
+        let mut settings = Settings::new();
+        settings.insert(keys::COLOR.into(), SettingValue::Text("#ff8000".into()));
+        settings.insert(keys::WIDTH.into(), SettingValue::Int(2));
+        settings.insert(keys::HEIGHT.into(), SettingValue::Int(1));
+        if let Some(on) = filled {
+            settings.insert(keys::FILLED.into(), SettingValue::Bool(on));
+        }
+        settings
+    }
+
+    #[test]
+    fn a_hollow_colour_keeps_its_rgb_and_clears_the_alpha() {
+        let (_, _, px) = still_pixels(types::COLOR_SOURCE, &colour_settings(Some(false))).unwrap();
+        assert_eq!(px, [255, 128, 0, 0, 255, 128, 0, 0]);
+    }
+
+    #[test]
+    fn a_missing_filled_flag_stays_opaque() {
+        let (_, _, px) = still_pixels(types::COLOR_SOURCE, &colour_settings(None)).unwrap();
+        assert_eq!(px[3], 255);
+        assert_eq!(px[7], 255);
+    }
+
+    #[test]
+    fn filled_must_be_a_bool() {
+        let id = NodeTypeId::new(types::COLOR_SOURCE);
+        let mut bad = colour_settings(None);
+        bad.insert(keys::FILLED.into(), SettingValue::Text("no".into()));
+        assert!(validate_settings(&id, &bad).is_err());
+        assert!(validate_settings(&id, &colour_settings(Some(false))).is_ok());
+    }
 }
 
 fn default_endpoint(

@@ -37,7 +37,7 @@ pub const CAUGHT_TEXT: &str;
 
 - `src/entry.rs` is the only module that calls `slint::Timer::single_shot`, `slint::Timer::start`, `slint::invoke_from_event_loop`, `slint::spawn_local`, `slint::Window::on_close_requested` and `slint::Window::set_rendering_notifier`. Its wrappers (`single_shot`, `start`, `invoke`, `spawn_local`, `on_close_requested`, `set_rendering_notifier`) run the body (for a task: each poll, and its drop) under `contain`. A panic in a close handler keeps the window; a panic in a task ends the task, which is then dropped inside the boundary.
 - `Ctx::update` runs the change, and each change queued while the state was borrowed, under `contain`. Callbacks of the generated globals are installed through the `on!` macro (its body runs in `Ctx::update`) or start with `entry::guard`; `tests/entry_points.rs` checks every `.on_*(` in `src/`.
-- A caught panic shows `CAUGHT_TEXT` in the error bar, at most once every 5 s. Crash texts (`CAUGHT_TEXT`, also from the studio's thread, and the unclean-exit notice) use the error bar's notice kind (`Shell.error-kind` 3), which shows the text as it is, without the "That did not work:" prefix of failed actions.
+- A caught panic shows `CAUGHT_TEXT` in the error bar, at most once every 5 s. The bar then closes on its own with the other notices (`delay.toast`), or sooner with Dismiss. Crash texts (`CAUGHT_TEXT`, also from the studio's thread, and the unclean-exit notice) use the error bar's notice kind (`Shell.error-kind` 3), which shows the text as it is, without the "That did not work:" prefix of failed actions.
 
 ### Studio control thread (`rbs-app::studio_host`)
 

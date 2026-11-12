@@ -48,7 +48,7 @@ pub use math::{Affine2, UvRect};
 pub use pool::{DEFAULT_POOL_SLOTS, PooledTexture, TextureDesc, TexturePool};
 pub use rbs_core::media::TextureId;
 pub use upload::SourceUpload;
-pub use yuv::{YuvConverter, YuvFormat};
+pub use yuv::{ScaleKernel, YuvConverter, YuvFormat};
 pub use yuv_decode::{YuvDecoder, YuvSource};
 
 /// The canvas working format: linear light, 16-bit float per channel, premultiplied alpha.

@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-gpu`
-- Related ADRs: [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0022](../adr/0022-native-ui-toolkit.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md)
+- Related ADRs: [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0022](../adr/0022-native-ui-toolkit.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0102](../adr/0102-output-size-distinct-from-canvas.md)
 - Related specs: [media-graph.md](media-graph.md), [performance-budgets.md](performance-budgets.md)
 
 ## Purpose
@@ -129,22 +129,38 @@ impl Compositor {
 - A layer whose texture id is stale or missing is skipped and counted in `RenderStats::skipped_layers`; the rest of the canvas renders (P7).
 - `UvRect` is ordered (`u0 < u1`, `v0 < v1`). A layer whose crop is not (`u1 <= u0` or `v1 <= v0`, or NaN: a crop larger than the picture) is skipped in both loops of `render` and counted in `RenderStats::empty_crop_layers` (ADR-0058); without the skip, both pipelines would draw it mirrored.
 - The target must be an `Rgba16Float` texture of the canvas size with render-attachment usage, else `GpuError::TargetMismatch`.
-- **Styles (ADR-0053).** A layer whose style draws nothing extra (`LayerStyle::is_plain`: a box without a border, a box size with no area, values that are not finite) and a layer whose transform is singular are drawn by the plain pipeline exactly as before: same shader, same 64-byte record. Other layers are drawn by a second pipeline (`vs_styled`, `fs_styled`; same pipeline layout, blend state and target) that reads a 48-byte style record (kind, radius, border width; box size; border colour) from a second storage binding in group 0, indexed by the layer record's `params.w`; the plain shader never reads it. `render` fills both arrays in one loop over the drawn layers (skipped layers leave no record, so instance and style indices stay in step) and switches pipelines only between consecutive layers that differ. Both arrays are sized by `new` and `reserve_layers`. The styled vertex shader grows the quad by one canvas pixel on each side; the fragment shader clamps the texture coordinate to the crop, evaluates the signed distance to the shape on `unit × box_size` (rounded rectangle with the radius clamped to half the shorter side, the largest centred circle, or an ellipse by its gradient-normalised implicit function), converts it to canvas pixels along the edge normal (`w = length(Jᵀ n)`, `J` from `dpdx`/`dpdy` of the box position taken before any branch, `n` by central differences) and computes `outer = clamp(0.5 - d / w)` and `inner` the same for `d + border_width`. The colour is `(border · t + content · (1 - border.a · t)) · outer · opacity` with `t = (outer - inner) / outer` (0 where `outer` is 0), after the XRGB and sRGB handling of plain layers.
+- **Styles (ADR-0053).** A layer whose style draws nothing extra (`LayerStyle::is_plain`: a box without a border, a box size with no area, values that are not finite) and a layer whose transform is singular are drawn by the plain pipeline exactly as before: same shader, same 64-byte record. Other layers are drawn by a second pipeline (`vs_styled`, `fs_styled`; same pipeline layout, blend state and target) that reads a 48-byte style record (kind, radius, border width; box size; border colour) from a second storage binding in group 0, indexed by the layer record's `params.w`; the plain shader never reads it. `render` fills both arrays in one loop over the drawn layers (skipped layers leave no record, so instance and style indices stay in step) and switches pipelines only between consecutive layers that differ. Both arrays are sized by `new` and `reserve_layers`. The styled vertex shader grows the quad by one canvas pixel on each side; the fragment shader clamps the texture coordinate to the crop, evaluates the signed distance to the shape on `unit × box_size` (rounded rectangle with the radius clamped to half the shorter side, the largest centred circle, an ellipse by its gradient-normalised implicit function, a triangle with its tip on the top edge, or an arrow pointing right; the last two are polygon distances of 3 and 7 edges, and the loop always runs 7 times), converts it to canvas pixels along the edge normal (`w = length(Jᵀ n)`, `J` from `dpdx`/`dpdy` of the box position taken before any branch, `n` by central differences) and computes `outer = clamp(0.5 - d / w)` and `inner` the same for `d + border_width`. The colour is `(border · t + content · (1 - border.a · t)) · outer · opacity` with `t = (outer - inner) / outer` (0 where `outer` is 0), after the XRGB and sRGB handling of plain layers.
 
 ### Encoder conversion (NV12, P010)
 
 ```rust
 pub enum YuvFormat { Nv12, P010 }
 
+/// Kernel a converter builds (ADR-0102). One converter holds that kernel's two pipelines only.
+pub enum ScaleKernel {
+    OneToOne,    // sizes equal: fs_luma / fs_chroma
+    Box(u32),    // integer N >= 2: fs_luma_box / fs_chroma_box; the value is N
+    CatmullRom,  // upscale: fs_luma_catmull / fs_chroma_catmull
+    Bilinear,    // any other downscale: fs_luma_scaled / fs_chroma_scaled
+}
+/// The kernel [`YuvConverter::scaled`] builds. Equal sizes are [`ScaleKernel::OneToOne`].
+pub fn scale_kernel(src_width: u32, src_height: u32, width: u32, height: u32) -> ScaleKernel;
+
 impl YuvConverter {
     /// P010 needs `gpu.p010`; otherwise `GpuError::Unsupported`.
     pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<YuvConverter, GpuError>;
-    /// `src` canvases to `width x height` planes (ADR-0066 decision 4). Equal sizes are `new`
-    /// (pixel for pixel, `textureLoad`); otherwise the canvas is fitted with its aspect ratio
-    /// kept (`fit_rect`, centred), sampled bilinearly, and the rest is black (Y 16, C 128).
-    /// Chroma averages four bilinear samples at the luma pixel centres of its 2x2 block.
+    /// `src` canvases to `width x height` planes (ADR-0066 decision 4, kernels in ADR-0102).
+    /// Equal sizes are `new` (pixel for pixel, `textureLoad`). Otherwise the kernel is chosen
+    /// once, from the fitted picture: integer downscale (`N >= 2`) is a box average in linear
+    /// light, upscale is Catmull-Rom, and any other downscale is the existing bilinear sample.
+    /// A recording or stream fills the output (its aspect matches the canvas, so no bars).
+    /// The virtual camera still fits with aspect kept (`fit_rect`, centred) and black outside
+    /// that rectangle (Y 16, C 128). Chroma is the mean of the four luma-pixel centres of its
+    /// 2x2 block after that kernel.
     pub fn scaled(ctx: &GpuContext, format: YuvFormat, src_width: u32, src_height: u32, width: u32, height: u32)
         -> Result<YuvConverter, GpuError>;
+    /// The kernel this converter built (`scale_kernel` of its sizes).
+    pub fn kernel(&self) -> ScaleKernel;
     /// Both return the submission of their GPU work, so callers can tell when it completed.
     pub fn convert(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, luma: TextureId, chroma: TextureId)
         -> Result<wgpu::SubmissionIndex, GpuError>;
@@ -160,12 +176,17 @@ pub fn surface_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc; 
 ```
 
 - Input: a linear `Rgba16Float` canvas, composited over black (alpha is ignored). Output: Y plane (w x h) and interleaved CbCr plane (w/2 x h/2), both render targets: `R8Unorm` and `Rg8Unorm` for NV12, `R16Unorm` and `Rg16Unorm` for P010. Width and height must be even.
-- Colour, chosen when the converter is created (two pipelines, no per-frame test of the other):
-  - **Video** (the default, `ColorSpace::BT709_LIMITED`): linear light is encoded with the BT.709 OETF, then converted with BT.709 coefficients to limited range: Y 16-235 and CbCr 16-240 for NV12; Y 64-940 and CbCr 64-960 for P010. This is the entry points `fs_luma` / `fs_chroma` (and the scaled pair). `YuvConverter::new` and `scaled` build only this pipeline.
-  - **Open shadows** (Video only, off unless `with_tone` / `scaled_tone` is asked for it): before the BT.709 OETF, linear light below middle grey (0.18) is raised as `0.18 * (L / 0.18) ^ 0.7`. Black, middle grey and every lighter value are unchanged. The codes and the frame tag stay Rec. 709 limited range, on NV12 and on P010. Separate entry points (`fs_luma_open` / `fs_chroma_open` and the scaled pair), built only when the grade is on, so the default path does not test it. Asking for it with any other colour space is `GpuError::Unsupported`.
-  - **Screen** (`ColorSpace::SRGB_VIDEO`: sRGB transfer, BT.709 primaries and matrix, full range): the same matrix with the sRGB OETF and full-range codes (Y and CbCr 0-255 for NV12; 0-1023 for P010). Separate entry points (`fs_luma_srgb` / `fs_chroma_srgb` and the scaled pair), created only by `with_color` / `scaled_color` for that colour space. Chroma codes are clamped to the legal range. Any other colour space is `GpuError::Unsupported`.
+- Colour, chosen when the converter is created (two pipelines, no per-frame test of the other). The scale kernel is chosen the same way (ADR-0102): the pipeline's entry point is the one pair for that colour mode and that kernel, so a frame never branches on a kernel or a colour mode it is not using. One shader module may contain every entry point.
+  - **1:1** (`ScaleKernel::OneToOne`, source size equals output size): `fs_luma` / `fs_chroma`, `textureLoad`, unchanged. `YuvConverter::new` builds only this.
+  - **Integer downscale** (`ScaleKernel::Box`, the canvas is an integer `N >= 2` times the fitted picture on both axes): `fs_luma_box` / `fs_chroma_box`. Each output pixel is the equal-weight mean of its `N×N` canvas texels in linear light, then the OETF and matrix. `N` is a pipeline constant.
+  - **Upscale** (`ScaleKernel::CatmullRom`, the fitted picture is larger than the canvas on both axes): `fs_luma_catmull` / `fs_chroma_catmull`. Keys Catmull-Rom (`a = -0.5`) in linear light, samples clamped to the canvas edge, then the OETF and matrix. No Lanczos entry point.
+  - **Other downscale** (`ScaleKernel::Bilinear`): the existing bilinear entry points `fs_luma_scaled` / `fs_chroma_scaled`, unchanged, in linear light.
+  - **Video** (the default, `ColorSpace::BT709_LIMITED`): linear light is encoded with the BT.709 OETF, then converted with BT.709 coefficients to limited range: Y 16-235 and CbCr 16-240 for NV12; Y 64-940 and CbCr 64-960 for P010. `YuvConverter::new` and `scaled` build only this colour mode's pipeline.
+  - **Open shadows** (Video only, off unless `with_tone` / `scaled_tone` is asked for it): before the BT.709 OETF, linear light below middle grey (0.18) is raised as `0.18 * (L / 0.18) ^ 0.7`. Black, middle grey and every lighter value are unchanged. The codes and the frame tag stay Rec. 709 limited range, on NV12 and on P010. Separate entry points (`fs_luma_open` / `fs_chroma_open`, and `fs_luma_open_box` / `fs_chroma_open_box`, `fs_luma_open_catmull` / `fs_chroma_open_catmull`, `fs_luma_open_scaled` / `fs_chroma_open_scaled`), built only for the grade and the kernel in use, so the default path does not test it. Asking for it with any other colour space is `GpuError::Unsupported`.
+  - **Screen** (`ColorSpace::SRGB_VIDEO`: sRGB transfer, BT.709 primaries and matrix, full range): the same matrix with the sRGB OETF and full-range codes (Y and CbCr 0-255 for NV12; 0-1023 for P010). Separate entry points (`fs_luma_srgb` / `fs_chroma_srgb`, and `fs_luma_srgb_box` / `fs_chroma_srgb_box`, `fs_luma_srgb_catmull` / `fs_chroma_srgb_catmull`, `fs_luma_srgb_scaled` / `fs_chroma_srgb_scaled`), created only by `with_color` / `scaled_color` for that colour space and kernel. Chroma codes are clamped to the legal range. Any other colour space is `GpuError::Unsupported`.
   - P010 stores each 10-bit code in the high bits of a 16-bit word (code << 6, low six bits zero); the shader rounds to whole codes before scaling so the low bits stay zero. The 10-bit Video output is SDR BT.709 (for example HEVC Main10); HDR transfer functions are out of scope. Chroma is the average of each 2x2 block (centre siting).
-- Two render passes per frame (luma at full size, chroma at half size), one full-screen triangle each. Both pixel formats, both colour modes and the open-shadows grade share one shader module; the code levels are pipeline-overridable constants and each mode is a separate entry point, so a frame never branches on a mode that is not in use. Render passes are used instead of compute because the plane formats are render targets, while storage writes to them need optional features.
+- The preview publisher's bilinear fit to the panel is not this converter and is unchanged (ADR-0102). It is not the encoded output.
+- Two render passes per frame (luma at full size, chroma at half size), one full-screen triangle each. Both pixel formats, both colour modes, the open-shadows grade and the scale kernels share one shader module; the code levels are pipeline-overridable constants and each mode and each kernel is a separate entry point, so a frame never branches on a mode that is not in use. Render passes are used instead of compute because the plane formats are render targets, while storage writes to them need optional features.
 - The frame's colour fields (primaries, transfer, matrix, range) travel with the converted frame so encoders can write VUI information.
 - Hand-off target: hardware encoders (NVENC, AMF, QSV, VideoToolbox, VA-API, Vulkan Video) consume one multi-planar NV12 or P010 surface. Where the device has `gpu.nv12_surface` or `gpu.p010_surface` (D3D12 and Vulkan), `convert_to_surface` writes a single pool texture of `surface_desc`.
   - Hardware adapters render straight into its two plane views.
@@ -234,12 +255,13 @@ pub const DOWNLOAD_RING: usize = 4;      // staging buffers in flight
 pub const DOWNLOAD_BUFFERS: usize = 6;   // recycled frame buffers
 impl YuvDownload {
     pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<YuvDownload, GpuError>;
-    /// Scaled (`YuvConverter::scaled`) with `buffers` (>= 2) frame buffers: enough for
+    /// Scaled (`YuvConverter::scaled`, kernel per ADR-0102) with `buffers` (>= 2) frame buffers: enough for
     /// every frame consumers may hold at once plus one, so recycling never allocates
     /// (the virtual camera holds up to five: ADR-0066 decision 3).
     pub fn scaled(ctx: &GpuContext, format: YuvFormat, src_width: u32, src_height: u32, width: u32, height: u32,
         buffers: usize) -> Result<YuvDownload, GpuError>;
     pub fn format(&self) -> &VideoFormat;  // size, NV12/P010, the colour passed to `new` or `with_color`
+    pub fn kernel(&self) -> ScaleKernel;   // the converter's kernel (ADR-0102)
     pub fn stride(&self) -> usize;         // bytes per row of both planes, a multiple of 256
     /// Converts and starts the readback; `Ok(false)` (counted `busy`) when every staging
     /// buffer is in flight. Hot path, never waits.
@@ -584,8 +606,9 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 
 - Pool: reuse, generation and stale-id handling, trim, capacity, leases (a leased slot survives the owner's release, is reused after the last lease drops on another thread, frames share the lease).
 - Golden images (sampled pixels with tolerance): single opaque layer placement, crop, opacity blend over a background layer, sRGB source decode, layer order, stale layer skipped, an `opaque` layer drawn opaque over a source whose alpha is 0.
-- Styled layers (`tests/style.rs`, ADR-0053): rounded corners cut only the corners; a circle centred in a wide box; an ellipse filling the box; a half-transparent border over the picture; opacity multiplying shape and border; a rotated circle staying round; a flipped layer keeping its corners; a circle under a 4:1 squash following the picture with a one-pixel edge (0.75 coverage a quarter pixel inside the edge, where a mean pixel width would give 1.0); a cropped styled layer sampling exactly what a plain one does; plain layers around styled ones unchanged; boxes without area.
+- Styled layers (`tests/style.rs`, ADR-0053): rounded corners cut only the corners; a circle centred in a wide box; an ellipse filling the box; a triangle covering the base and leaving the top corners clear; an arrow pointing right and leaving the corners clear; a half-transparent border over the picture; opacity multiplying shape and border; a rotated circle staying round; a flipped layer keeping its corners; a circle under a 4:1 squash following the picture with a one-pixel edge (0.75 coverage a quarter pixel inside the edge, where a mean pixel width would give 1.0); a cropped styled layer sampling exactly what a plain one does; plain layers around styled ones unchanged; boxes without area.
 - NV12: known colours (black, white, mid grey, pure red) produce BT.709 limited-range values within ±1. The same colours through `ColorSpace::SRGB_VIDEO` produce sRGB full-range codes within ±1 (black is 0, white is 255), and decoding those planes with that colour space returns the linear colour. Any other colour space is rejected.
+- Scaled conversion (ADR-0102): equal sizes match the 1:1 `textureLoad` path pixel for pixel (`kernel` is `OneToOne`). A 2× downscale of flat blocks is the linear box mean (a block of one colour stays that colour; a checker of two known colours becomes their mean) before the OETF (`kernel` is `Box(2)`). An upscale of a one-pixel edge is sharper than the bilinear entry point on the same edge (`kernel` is `CatmullRom`). A non-integer downscale still matches the existing bilinear result (`kernel` is `Bilinear`). A converter built for one kernel does not contain the other kernels' pipelines (`kernel` is that one choice).
 - P010 (where `gpu.p010`; required on Linux CI): the same colours produce 10-bit values within ±2, and the low six bits of every word are zero.
 - NV12 and P010 surfaces (where `gpu.nv12_surface` / `gpu.p010_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.
 - YUV source decode (any adapter): NV12 and P010 (where `gpu.p010`) planes from the encoder conversion of black, white, 18 % grey, red, green and a blue mix decode back to the linear colour within 0.02 (NV12) or 0.01 (P010); BT.601 full-range codes decode to red; a multi-planar NV12 source (where `gpu.nv12_surface`) decodes like planes; a wrong target size, swapped planes and a PQ colour space are rejected; one source caches one bind group.

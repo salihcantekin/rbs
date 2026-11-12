@@ -10,7 +10,8 @@
 //! chroma at half size) and submit them. It does not allocate in RBS code. Render
 //! passes are used instead of a compute pass because the plane formats are render targets,
 //! while storage writes to them need optional features. NV12 and P010 share one shader;
-//! the code levels are pipeline-overridable constants.
+//! the code levels are pipeline-overridable constants. The scale kernel is chosen when
+//! the converter is created ([`scale_kernel`]); a frame does not branch on another kernel.
 
 use crate::context::{CAP_NV12_SURFACE, CAP_P010, CAP_P010_SURFACE, CAP_SOFTWARE, GpuContext};
 use crate::error::GpuError;
@@ -149,6 +150,8 @@ pub struct YuvConverter {
     /// Canvas size; equal to the output size except for scaled converters.
     src_width: u32,
     src_height: u32,
+    /// Chosen at creation. `convert` does not read it.
+    kernel: ScaleKernel,
     luma: wgpu::RenderPipeline,
     chroma: wgpu::RenderPipeline,
     /// Software adapters only: planes and a buffer for the staged surface path.
@@ -299,10 +302,12 @@ impl YuvConverter {
     }
 
     /// Creates a converter from `src_width x src_height` canvases to `width x height`
-    /// planes. With equal sizes it is [`YuvConverter::new`] (pixel for pixel). Otherwise
-    /// the canvas is fitted into the output with its aspect ratio kept and bilinear
-    /// filtering, and the rest is black (ADR-0066 decision 4). Every size must be even
-    /// and non-zero.
+    /// planes. Equal sizes are [`YuvConverter::new`] (pixel for pixel, `textureLoad`).
+    /// Otherwise the kernel is chosen once from the fitted picture ([`scale_kernel`],
+    /// ADR-0102): an integer downscale of `N >= 2` on both axes is a box average in
+    /// linear light, an upscale is Catmull-Rom, and any other scale is the existing
+    /// bilinear sample. The canvas keeps its aspect ratio and is centred ([`fit_rect`],
+    /// ADR-0066); the rest of the output is black. Every size must be even and non-zero.
     pub fn scaled(
         ctx: &GpuContext,
         format: YuvFormat,
@@ -389,7 +394,7 @@ impl YuvConverter {
                 "encoder colour (BT.709 limited or sRGB full range)",
             ));
         }
-        let one_to_one = src_width == width && src_height == height;
+        let kernel = scale_kernel(src_width, src_height, width, height);
         let device = ctx.device();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rbs-gpu yuv"),
@@ -405,14 +410,26 @@ impl YuvConverter {
         } else {
             format.constants().to_vec()
         };
-        if !one_to_one {
-            let fit = fit_rect(src_width, src_height, width, height);
+        // Fit constants only on a scaled kernel. The 1:1 entry points do not sample
+        // and do not read them. Box uses the exact `src / N` rectangle, which matches
+        // [`fit_rect`] when the ratio is an integer (no `1/N` rounding).
+        let fit = match kernel {
+            ScaleKernel::OneToOne => None,
+            ScaleKernel::Box(n) => Some(box_fit(src_width, src_height, width, height, n)),
+            ScaleKernel::CatmullRom | ScaleKernel::Bilinear => {
+                Some(fit_rect(src_width, src_height, width, height))
+            }
+        };
+        if let Some(fit) = fit {
             constants.extend([
                 ("fit_x", fit[0]),
                 ("fit_y", fit[1]),
                 ("fit_w", fit[2]),
                 ("fit_h", fit[3]),
             ]);
+        }
+        if let ScaleKernel::Box(n) = kernel {
+            constants.push(("box_n", f64::from(n)));
         }
         let pipeline = |entry: &str, target: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -448,31 +465,18 @@ impl YuvConverter {
             YuvFormat::Nv12 => &CAP_NV12_SURFACE,
             YuvFormat::P010 => &CAP_P010_SURFACE,
         };
-        // Chosen once, at creation. The default entries and constants are the BT.709 path.
-        // Open shadows is its own entry point, so the default path does not test the grade.
-        let (luma_entry, chroma_entry) = if screen {
-            if one_to_one {
-                ("fs_luma_srgb", "fs_chroma_srgb")
-            } else {
-                ("fs_luma_srgb_scaled", "fs_chroma_srgb_scaled")
-            }
-        } else if open_shadows {
-            if one_to_one {
-                ("fs_luma_open", "fs_chroma_open")
-            } else {
-                ("fs_luma_open_scaled", "fs_chroma_open_scaled")
-            }
-        } else if one_to_one {
-            ("fs_luma", "fs_chroma")
-        } else {
-            ("fs_luma_scaled", "fs_chroma_scaled")
-        };
+        // Chosen once, at creation. One luma pipeline and one chroma pipeline: the
+        // other kernels' entry points stay in the module and are not built. Open
+        // shadows and sRGB are their own entry points, so the default path does not
+        // test them.
+        let (luma_entry, chroma_entry) = entry_points(kernel, screen, open_shadows);
         Ok(Self {
             format,
             width,
             height,
             src_width,
             src_height,
+            kernel,
             luma: pipeline(luma_entry, format.luma_format()),
             chroma: pipeline(chroma_entry, format.chroma_format()),
             staged: (ctx.has(surface_cap) && ctx.has(&CAP_SOFTWARE))
@@ -483,6 +487,11 @@ impl YuvConverter {
     /// The format this converter writes.
     pub fn format(&self) -> YuvFormat {
         self.format
+    }
+
+    /// The scale kernel this converter was built with. One pair of pipelines.
+    pub fn kernel(&self) -> ScaleKernel {
+        self.kernel
     }
 
     /// Writes the planes of `canvas` into `luma` and `chroma` and returns the submission,
@@ -615,6 +624,110 @@ impl YuvConverter {
     }
 }
 
+/// Scale kernel a converter builds (ADR-0102). One converter holds that kernel's two
+/// pipelines only; the shader module may contain every entry point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScaleKernel {
+    /// Source size equals output size. `textureLoad`, no scaler.
+    OneToOne,
+    /// Integer downscale by `N` (`N >= 2`) on both axes of the fitted picture.
+    Box(u32),
+    /// Fitted picture is larger than the canvas on both axes. Keys Catmull-Rom.
+    CatmullRom,
+    /// Any other scale, including a non-integer downscale. Existing bilinear sample.
+    Bilinear,
+}
+
+/// The kernel [`YuvConverter::scaled`] builds for these sizes.
+///
+/// Equal sizes are [`ScaleKernel::OneToOne`]. Otherwise the choice follows the fitted
+/// picture ([`fit_rect`]): both canvas sides are an integer `N >= 2` times that picture
+/// for [`ScaleKernel::Box`], both fitted sides are larger than the canvas for
+/// [`ScaleKernel::CatmullRom`], and anything else (a non-integer downscale, or a
+/// letterbox whose picture is not scaled) is [`ScaleKernel::Bilinear`].
+pub fn scale_kernel(src_width: u32, src_height: u32, width: u32, height: u32) -> ScaleKernel {
+    if src_width == width && src_height == height {
+        return ScaleKernel::OneToOne;
+    }
+    if let Some(n) = integer_downscale_n(src_width, src_height, width, height) {
+        return ScaleKernel::Box(n);
+    }
+    // `fit_rect` uses one scale, so the fitted picture is larger on both axes exactly
+    // when the output is larger on both axes.
+    if width > src_width && height > src_height {
+        return ScaleKernel::CatmullRom;
+    }
+    ScaleKernel::Bilinear
+}
+
+/// `N >= 2` when the fitted picture is exactly `src / N` on both axes.
+fn integer_downscale_n(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Option<u32> {
+    if dst_w == 0 || dst_h == 0 {
+        return None;
+    }
+    // Width limits the fit when `dst_w / src_w <= dst_h / src_h`.
+    let width_limits = u64::from(dst_w) * u64::from(src_h) <= u64::from(dst_h) * u64::from(src_w);
+    let n = if width_limits {
+        if !src_w.is_multiple_of(dst_w) {
+            return None;
+        }
+        src_w / dst_w
+    } else if !src_h.is_multiple_of(dst_h) {
+        return None;
+    } else {
+        src_h / dst_h
+    };
+    if n >= 2
+        && src_w.is_multiple_of(n)
+        && src_h.is_multiple_of(n)
+        && src_w / n <= dst_w
+        && src_h / n <= dst_h
+    {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+/// Fitted rectangle for an integer downscale, in output pixels: `src / N`, centred.
+///
+/// Matches [`fit_rect`] when the scale is exactly `1/N`, without rounding `1/N`.
+fn box_fit(src_width: u32, src_height: u32, width: u32, height: u32, n: u32) -> [f64; 4] {
+    let fw = f64::from(src_width / n);
+    let fh = f64::from(src_height / n);
+    [
+        (f64::from(width) - fw) / 2.0,
+        (f64::from(height) - fh) / 2.0,
+        fw,
+        fh,
+    ]
+}
+
+/// Entry points for one colour mode and one kernel. The open-shadows and sRGB names
+/// infix the same way as the 1:1 pair (`_open`, `_srgb`).
+fn entry_points(
+    kernel: ScaleKernel,
+    screen: bool,
+    open_shadows: bool,
+) -> (&'static str, &'static str) {
+    match (screen, open_shadows, kernel) {
+        (true, _, ScaleKernel::OneToOne) => ("fs_luma_srgb", "fs_chroma_srgb"),
+        (true, _, ScaleKernel::Box(_)) => ("fs_luma_srgb_box", "fs_chroma_srgb_box"),
+        (true, _, ScaleKernel::CatmullRom) => ("fs_luma_srgb_catmull", "fs_chroma_srgb_catmull"),
+        (true, _, ScaleKernel::Bilinear) => ("fs_luma_srgb_scaled", "fs_chroma_srgb_scaled"),
+        (false, true, ScaleKernel::OneToOne) => ("fs_luma_open", "fs_chroma_open"),
+        (false, true, ScaleKernel::Box(_)) => ("fs_luma_open_box", "fs_chroma_open_box"),
+        (false, true, ScaleKernel::CatmullRom) => {
+            ("fs_luma_open_catmull", "fs_chroma_open_catmull")
+        }
+        (false, true, ScaleKernel::Bilinear) => ("fs_luma_open_scaled", "fs_chroma_open_scaled"),
+        (false, false, ScaleKernel::OneToOne) => ("fs_luma", "fs_chroma"),
+        (false, false, ScaleKernel::Box(_)) => ("fs_luma_box", "fs_chroma_box"),
+        (false, false, ScaleKernel::CatmullRom) => ("fs_luma_catmull", "fs_chroma_catmull"),
+        (false, false, ScaleKernel::Bilinear) => ("fs_luma_scaled", "fs_chroma_scaled"),
+    }
+}
+
 /// The picture's rectangle `[x, y, w, h]` in output pixels when a `src` canvas is fitted
 /// into a `dst` output with its aspect ratio kept and centred.
 pub fn fit_rect(src_width: u32, src_height: u32, width: u32, height: u32) -> [f64; 4] {
@@ -640,4 +753,131 @@ fn plane<'p>(
         return Err(GpuError::TargetMismatch(id));
     }
     Ok(tex.view())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Integer `N` when the fitted picture is a whole number of pixels on both
+    /// sides and each canvas side is `N` times that picture.
+    fn n_from_fit(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Option<u32> {
+        let fit = fit_rect(src_w, src_h, dst_w, dst_h);
+        let fw = fit[2].round();
+        let fh = fit[3].round();
+        if (fit[2] - fw).abs() > 1e-6 || (fit[3] - fh).abs() > 1e-6 || fw < 1.0 || fh < 1.0 {
+            return None;
+        }
+        let nw = f64::from(src_w) / fw;
+        let nh = f64::from(src_h) / fh;
+        let n = nw.round();
+        if n >= 2.0 && (nw - n).abs() < 1e-6 && (nh - n).abs() < 1e-6 {
+            Some(n as u32)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn scale_kernel_matches_the_fitted_picture() {
+        let samples = [
+            (1920, 1080, 1920, 1080, ScaleKernel::OneToOne),
+            (3840, 2160, 1920, 1080, ScaleKernel::Box(2)),
+            (1920, 1080, 640, 360, ScaleKernel::Box(3)),
+            (1920, 1080, 3840, 2160, ScaleKernel::CatmullRom),
+            (1920, 1080, 2560, 1440, ScaleKernel::CatmullRom),
+            (1920, 1080, 1280, 720, ScaleKernel::Bilinear),
+            (32, 16, 16, 16, ScaleKernel::Box(2)),
+            (1920, 1080, 960, 720, ScaleKernel::Box(2)),
+            (8, 8, 16, 8, ScaleKernel::Bilinear),
+        ];
+        for (sw, sh, dw, dh, want) in samples {
+            assert_eq!(scale_kernel(sw, sh, dw, dh), want, "{sw}x{sh} -> {dw}x{dh}");
+        }
+        for sw in (2..=32).step_by(2) {
+            for sh in (2..=32).step_by(2) {
+                for dw in (2..=32).step_by(2) {
+                    for dh in (2..=32).step_by(2) {
+                        let kernel = scale_kernel(sw, sh, dw, dh);
+                        let fit = fit_rect(sw, sh, dw, dh);
+                        let larger = fit[2] > f64::from(sw) && fit[3] > f64::from(sh);
+                        match kernel {
+                            ScaleKernel::OneToOne => assert_eq!((sw, sh), (dw, dh)),
+                            ScaleKernel::Box(n) => {
+                                assert_eq!(
+                                    n_from_fit(sw, sh, dw, dh),
+                                    Some(n),
+                                    "{sw}x{sh} -> {dw}x{dh}"
+                                );
+                                let exact = box_fit(sw, sh, dw, dh, n);
+                                for (got, want) in fit.iter().zip(exact) {
+                                    assert!(
+                                        (got - want).abs() < 1e-6,
+                                        "fit {fit:?} vs box {exact:?} for {sw}x{sh} -> {dw}x{dh}"
+                                    );
+                                }
+                                assert!(!larger);
+                            }
+                            ScaleKernel::CatmullRom => {
+                                assert!(larger, "{sw}x{sh} -> {dw}x{dh}");
+                            }
+                            ScaleKernel::Bilinear => {
+                                assert!(
+                                    n_from_fit(sw, sh, dw, dh).is_none(),
+                                    "{sw}x{sh} -> {dw}x{dh} fit {fit:?} looked like {:?}",
+                                    n_from_fit(sw, sh, dw, dh)
+                                );
+                                assert!(!larger, "{sw}x{sh} -> {dw}x{dh} fit {fit:?}");
+                                assert!(sw != dw || sh != dh);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_kernel_has_its_own_entry_points() {
+        let kernels = [
+            ScaleKernel::OneToOne,
+            ScaleKernel::Box(2),
+            ScaleKernel::CatmullRom,
+            ScaleKernel::Bilinear,
+        ];
+        assert_eq!(
+            kernels.map(|k| entry_points(k, false, false)),
+            [
+                ("fs_luma", "fs_chroma"),
+                ("fs_luma_box", "fs_chroma_box"),
+                ("fs_luma_catmull", "fs_chroma_catmull"),
+                ("fs_luma_scaled", "fs_chroma_scaled"),
+            ]
+        );
+        for (screen, open) in [(false, false), (false, true), (true, false)] {
+            let mut seen = Vec::new();
+            for kernel in kernels {
+                let pair = entry_points(kernel, screen, open);
+                assert!(!pair.0.contains("lanczos") && !pair.1.contains("lanczos"));
+                assert!(
+                    !seen.contains(&pair),
+                    "{pair:?} repeated for one colour mode"
+                );
+                seen.push(pair);
+            }
+        }
+        // The 1:1 names are the textureLoad entries.
+        assert_eq!(
+            entry_points(ScaleKernel::OneToOne, false, false).0,
+            "fs_luma"
+        );
+        assert_eq!(
+            entry_points(ScaleKernel::OneToOne, false, true).0,
+            "fs_luma_open"
+        );
+        assert_eq!(
+            entry_points(ScaleKernel::OneToOne, true, false).0,
+            "fs_luma_srgb"
+        );
+    }
 }

@@ -57,6 +57,7 @@ fn stream_settings() -> StreamSettings {
         srt_latency_ms: None,
         encoding: encoding(),
         auto_record: true,
+        output_size: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn profile() -> RecordingProfile {
         audio_kbps: 160,
         delivery: Delivery::Video,
         open_shadows: false,
+        output_size: None,
     }
 }
 
@@ -383,6 +385,7 @@ fn every_request() -> Vec<Request> {
                 srt_latency_ms: Some(500),
                 encoding: encoding(),
                 auto_record: Some(true),
+                output_size: None,
             }),
         })),
         c(Command::EventsSubscribe(Subscribe {
@@ -1105,6 +1108,7 @@ fn stream_settings_are_a_minor_addition() {
             srt_latency_ms: None,
             encoding: encoding(),
             auto_record: Some(true),
+            output_size: None,
         }
     );
     // Protocol 1.11 added `auto_record`: a 1.2 server's settings read as off, and a
@@ -1117,6 +1121,40 @@ fn stream_settings_are_a_minor_addition() {
     assert_eq!(patch.auto_record, None);
     let text = serde_json::to_value(&patch).unwrap();
     assert!(text.get("auto_record").is_none(), "{text}");
+}
+
+/// Protocol 1.39 added `output_size` (ADR-0102). Omitted and `null` are the same as
+/// the canvas, so a 1.38 client still reads the object. A size is two sides.
+#[test]
+fn output_size_is_omitted_when_it_matches_the_canvas() {
+    let text = serde_json::to_value(profile()).unwrap();
+    assert!(text.get("output_size").is_none(), "{text}");
+    let stream = serde_json::to_value(stream_settings()).unwrap();
+    assert!(stream.get("output_size").is_none(), "{stream}");
+
+    let mut with_null = text.clone();
+    with_null["output_size"] = Value::Null;
+    let read: RecordingProfile = serde_json::from_value(with_null).unwrap();
+    assert_eq!(read.output_size, None);
+    let mut stream_null = stream.clone();
+    stream_null["output_size"] = Value::Null;
+    let patch: StreamSettingsPatch = serde_json::from_value(stream_null).unwrap();
+    assert_eq!(patch.output_size, None);
+
+    let mut sized = profile();
+    sized.output_size = Some(Dimensions {
+        width: 1280,
+        height: 720,
+    });
+    let text = serde_json::to_value(&sized).unwrap();
+    assert_eq!(text["output_size"]["width"], 1280);
+    assert_eq!(text["output_size"]["height"], 720);
+    let back: RecordingProfile = serde_json::from_value(text.clone()).unwrap();
+    assert_eq!(back.output_size, sized.output_size);
+    // One side only is not a size.
+    let mut half = text;
+    half["output_size"] = json!({"width": 1280});
+    assert!(serde_json::from_value::<RecordingProfile>(half).is_err());
 }
 
 /// Protocol 1.3 added item layouts and `item.set_style` (ADR-0053): a 1.2 source row

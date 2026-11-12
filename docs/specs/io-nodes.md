@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-nodes`, `rbs-gpu` (`upload`, `download`)
-- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0036](../adr/0036-windows-preview-layer.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0025](../adr/0025-encoder-surface-export.md), [0026](../adr/0026-partitions-and-queues.md), [0038](../adr/0038-io-graph-nodes.md)
+- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0036](../adr/0036-windows-preview-layer.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0025](../adr/0025-encoder-surface-export.md), [0026](../adr/0026-partitions-and-queues.md), [0038](../adr/0038-io-graph-nodes.md), [0102](../adr/0102-output-size-distinct-from-canvas.md)
 - Builds on: [media graph](media-graph.md) (node contract, partitions), [capture port](capture-port.md), [output ports](output-ports.md), [GPU compositor](gpu-compositor.md)
 
 ## Purpose
@@ -32,8 +32,11 @@ impl CaptureSourceNode {                                      // Node<GpuRuntime
 // rbs_nodes::export
 pub const VIDEO_EXPORT_NODE_TYPE: &str = "org.rbs.video-export"; // VideoFilter; "canvas" -> "video"
 impl VideoExportNode {                                        // Node<GpuRuntime>
-    pub fn new(format: YuvFormat, width: u32, height: u32) -> Self;
+    pub fn new(format: YuvFormat, canvas_width: u32, canvas_height: u32, width: u32, height: u32) -> Self;
+    // `with_color` and `with_tone` take the same canvas size and output size.
+    // `width` x `height` is the encoded picture (ADR-0102). Equal to the canvas: 1:1.
     pub fn frame_format(&self) -> VideoFormat;                // the encoder config's input format
+    pub fn kernel(&self) -> ScaleKernel;                      // after prepare, the download's kernel; before, scale_kernel of the sizes
     pub fn stats(&self) -> Arc<ExportNodeStats>;              // frames, busy, lost
     pub fn end(&self) -> Arc<ExportEnd>;                      // ADR-0045
 }
@@ -121,14 +124,14 @@ Counters are those of the capture node: `picture_size` is known from constructio
 
 | Call | Does |
 | --- | --- |
-| `prepare` | Creates a `YuvDownload` for the size and format (converter, plane textures, staging ring, frame buffers) |
+| `prepare` | Creates a `YuvDownload` for the output size and format (converter, plane textures, staging ring, frame buffers). Output size equal to the canvas: `with_tone` (1:1 `textureLoad`). A different size: `scaled_tone` from the canvas size to the output size, one pass (ADR-0102) |
 | `prepare` (again) | Clears `ExportEnd::ended`; the end time stays |
 | `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. On a tick past the end with no readback in flight, `ended` is set. Every delivered frame's time is stored in `ExportNodeStats::last_frame` |
 | `release` | Counts readbacks still in flight in `lost`, then drops the download |
 
 Invariants:
 
-1. Frames on "video" have `frame_format()`: canvas size, NV12 or P010, and the colour given to `new` (default `ColorSpace::BT709_LIMITED`) or `with_color` (`ColorSpace::SRGB_VIDEO` for a screen match); the canvas frame's timestamp and sequence; system memory. The planes are encoded with that same colour. `with_tone(..., open_shadows)` lifts only the darkest tones before a Rec. 709 encode and still tags `BT709_LIMITED`.
+1. Frames on "video" have `frame_format()`: the output size (the canvas size when they are equal), NV12 or P010, and the colour given to `new` (default `ColorSpace::BT709_LIMITED`) or `with_color` (`ColorSpace::SRGB_VIDEO` for a screen match); the canvas frame's timestamp and sequence; system memory. The planes are encoded with that same colour. `with_tone(..., open_shadows)` lifts only the darkest tones before a Rec. 709 encode and still tags `BT709_LIMITED`. A different output size is scaled once from the linear canvas inside that download; the node does not read another export's planes.
 2. Never waits for the GPU. A frame submitted on tick `i` appears on tick `i + 1` at the earliest; a full staging ring drops the new canvas frame (`busy`).
 3. Once ended, every canvas the export took up to the end time is on "video" in order (one per tick), and no later canvas is taken. Canvases dropped as on the run path (`busy`, no free buffer, a failed readback) are counted in `busy` or `lost`. Whether the encoder took the last one is the studio's check (`EncoderNodeStats::last_frame`, recording spec 5a). The run path costs one relaxed atomic load and a compare per tick.
 
@@ -216,7 +219,7 @@ Render partition, `GpuRuntime`, not essential. The session is opened by the stud
 
 | Call | Does |
 | --- | --- |
-| `prepare` | Refuses anything but NV12 (`Failed`). Creates `YuvDownload::scaled` from the canvas size to the camera size with `CAMERA_BUFFERS` frame buffers; resets the cadence |
+| `prepare` | Refuses anything but NV12 (`Failed`). Creates `YuvDownload::scaled` from the canvas size to the camera size with `CAMERA_BUFFERS` frame buffers; resets the cadence. Equal sizes stay the 1:1 `textureLoad` path. A different size uses the ADR-0102 kernel (box, Catmull-Rom or the existing bilinear) on ADR-0066's fitted rectangle |
 | `process` | 1. `take_ready`: each submission that ended this tick (delivered, stale, no buffer, failed) gives its reserved token back in submission order; the delivered frame goes to `session.send` with the last one (`sent`, or `refused` when `send` errs), the others are dropped and free their slots (`lost`). 2. The newest canvas is taken only when a camera frame is due on `Cadence::frames(first canvas time, camera rate)` (index at or before the canvas time past the last one taken): a 60 fps canvas feeds a 30 fps camera every other tick, a slower canvas every tick. 3. A due frame first reserves a session slot; none free skips it before any GPU work (`consumer_busy`). Then `submit`; a full staging ring (`busy`) or a failed conversion (`failed`) drops the token. Always returns `Ok` |
 | `release` | Counts readbacks still in flight in `lost`, drops the download and the tokens |
 

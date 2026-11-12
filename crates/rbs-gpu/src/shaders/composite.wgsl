@@ -115,6 +115,30 @@ fn vs_styled(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     return out;
 }
 
+// Signed distance to a polygon of `n` points (at most 7). The loop always runs 7 times
+// so it stays uniform; points past `n` are ignored. Negative inside.
+fn polygon_distance(p: vec2<f32>, v: array<vec2<f32>, 7>, n: i32) -> f32 {
+    var d = dot(p - v[0], p - v[0]);
+    var s = 1.0;
+    var j = n - 1;
+    for (var i: i32 = 0; i < 7; i++) {
+        if (i < n) {
+            let e = v[j] - v[i];
+            let w = p - v[i];
+            let b = w - e * clamp(dot(w, e) / max(dot(e, e), 1e-6), 0.0, 1.0);
+            d = min(d, dot(b, b));
+            let c0 = p.y >= v[i].y;
+            let c1 = p.y < v[j].y;
+            let c2 = e.x * w.y > e.y * w.x;
+            if ((c0 && c1 && c2) || (!c0 && !c1 && !c2)) {
+                s = -s;
+            }
+            j = i;
+        }
+    }
+    return s * sqrt(d);
+}
+
 // Signed distance from `p` (relative to the box centre, box units) to the shape's edge,
 // negative inside. `half` is half the box size.
 fn shape_distance(kind: f32, radius: f32, p: vec2<f32>, half: vec2<f32>) -> f32 {
@@ -129,14 +153,36 @@ fn shape_distance(kind: f32, radius: f32, p: vec2<f32>, half: vec2<f32>) -> f32 
         // The largest circle centred in the box.
         return length(p) - short;
     }
-    // Ellipse filling the box: the implicit function over its gradient's length, a
-    // close distance estimate near the edge, where antialiasing needs it.
-    let h = max(half, vec2<f32>(1e-3));
-    let k = length(p / h);
-    if (k < 0.5) {
-        return -short;
+    if (kind < 3.5) {
+        // Ellipse filling the box: the implicit function over its gradient's length, a
+        // close distance estimate near the edge, where antialiasing needs it.
+        let h = max(half, vec2<f32>(1e-3));
+        let k = length(p / h);
+        if (k < 0.5) {
+            return -short;
+        }
+        return (k - 1.0) * k / max(length(p / (h * h)), 1e-6);
     }
-    return (k - 1.0) * k / max(length(p / (h * h)), 1e-6);
+    // Triangle (tip on the top edge) and arrow (pointing right). Both fill the box.
+    var v: array<vec2<f32>, 7>;
+    var n: i32 = 3;
+    if (kind < 4.5) {
+        v[0] = vec2<f32>(0.0, -half.y);
+        v[1] = vec2<f32>(half.x, half.y);
+        v[2] = vec2<f32>(-half.x, half.y);
+    } else {
+        let neck = half.x * 0.15;
+        let shaft = half.y * 0.38;
+        v[0] = vec2<f32>(half.x, 0.0);
+        v[1] = vec2<f32>(neck, half.y);
+        v[2] = vec2<f32>(neck, shaft);
+        v[3] = vec2<f32>(-half.x, shaft);
+        v[4] = vec2<f32>(-half.x, -shaft);
+        v[5] = vec2<f32>(neck, -shaft);
+        v[6] = vec2<f32>(neck, -half.y);
+        n = 7;
+    }
+    return polygon_distance(p, v, n);
 }
 
 @fragment

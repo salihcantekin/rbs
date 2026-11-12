@@ -129,7 +129,7 @@ fn a_still_is_uploaded_once_and_stays_on_the_canvas() {
     let export = add(
         &mut graph,
         &mut ctl,
-        Box::new(VideoExportNode::new(YuvFormat::Nv12, W, H)),
+        Box::new(VideoExportNode::new(YuvFormat::Nv12, W, H, W, H)),
     );
     let frames = Arc::new(Mutex::new(Vec::new()));
     let probe = add(

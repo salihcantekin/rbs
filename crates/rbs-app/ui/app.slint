@@ -82,10 +82,14 @@ export global Shell {
     // 0 none, 1 "<subject> closed." (undo), 2 automatic switch from workspace <subject>.
     in property <int> toast-kind;
     in property <string> toast-subject;
+    // Bumps when a new toast replaces the one showing, so its countdown starts again.
+    in property <int> toast-generation;
     // 0 none, 1 layout locked, 2 other error with <error-detail>, 3 a notice whose
     // <error-detail> is the whole text (ADR-0055: a caught panic, an unclean last exit).
     in property <int> error-kind;
     in property <string> error-detail;
+    // Bumps when a new error replaces the one showing, so its countdown starts again.
+    in property <int> error-generation;
     // Where the bottom toast and the top error bar are while they show (the main
     // window's): the preview layer hides only while one overlaps the picture.
     in-out property <Cover> bottom-toast;
@@ -1586,41 +1590,159 @@ component StatusBar inherits Rectangle {
     collection-menu := CommandMenu { context: "collections"; }
 }
 
+// A notice card (undo toast, delete toast, error bar). One control tall and at
+// most `size.toast.max` wide: stretch stays 0, because a layout that stretches
+// inside a free-floating child of the window takes the window and covers the
+// preview. The fill stays quiet; the outline, the side mark and the icon are
+// what make it visible on every theme. While `timed`, the seconds left sit at
+// the right end in an edge-coloured chip with a filled hourglass, and the card
+// closes when they run out; Dismiss closes it sooner. The countdown steps
+// by `delay.toast-tick` (not an animation, so it still runs under reduce motion).
+// The first-close notice sets `timed` off: its buttons hide the windows (ADR-0056).
 component Toast inherits Rectangle {
     in property <string> text;
     in property <string> action;
+    // The action button's lead icon (`none` draws the words alone).
+    in property <IconName> action-icon: IconName.none;
     // Reports its rectangle as `Shell.top-toast` (the error bar) instead of
     // `Shell.bottom-toast`.
     in property <bool> top;
+    in property <bool> timed: true;
+    // A new notice, even with the same words, starts the countdown again.
+    in property <int> generation;
+    in property <IconName> mark: IconName.info;
     callback act();
     callback dismiss();
     // A direct child of the window, so its own coordinates are the window's.
     property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
-    init => { report(); }
+    property <int> total-ms: round(Tokens.delay-toast / 1ms);
+    property <int> tick-ms: max(1, round(Tokens.delay-toast-tick / 1ms));
+    property <int> left-ms: total-ms;
+    // Never reads 0: the last step closes the card while it still says 1 s.
+    property <int> seconds: max(1, ceil(root.left-ms * 1.0 / root.tick-ms));
+    // False, then true, restarts the one-second step (a running timer keeps its phase).
+    property <bool> clock: false;
+    init => { report(); root.restart(); }
     changed rect => { report(); }
+    changed generation => { root.restart(); }
+    changed text => { root.restart(); }
     function report() {
         if top { Shell.top-toast = rect; } else { Shell.bottom-toast = rect; }
     }
-    height: Tokens.size-control-lg + 2 * Tokens.space-2;
-    width: row.preferred-width;
-    background: Theme.surface-overlay;
-    border-color: Theme.border-subtle;
-    border-width: Tokens.size-border;
-    border-radius: Tokens.radius-md;
-    accessible-role: AccessibleRole.text;
-    accessible-label: text;
-    row := HorizontalLayout {
-        padding: Tokens.space-2;
-        padding-left: Tokens.space-3;
-        spacing: Tokens.space-3;
-        Text {
-            text: root.text;
-            color: Theme.text-primary;
-            font-size: Tokens.type-body-size;
-            vertical-alignment: center;
+    function restart() {
+        root.left-ms = root.total-ms;
+        if root.timed {
+            root.clock = false;
+            root.clock = true;
         }
-        if action != "": Button { text: root.action; kind: "primary"; clicked => { act(); } }
-        Button { text: @tr("Dismiss"); kind: "ghost"; clicked => { dismiss(); } }
+    }
+    Timer {
+        interval: Tokens.delay-toast-tick;
+        running: root.clock;
+        triggered => {
+            root.clock = false;
+            if root.left-ms <= root.tick-ms {
+                root.left-ms = 0;
+                root.dismiss();
+            } else {
+                root.left-ms = root.left-ms - root.tick-ms;
+                root.clock = true;
+            }
+        }
+    }
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    // The row, its vertical padding and the outline. Fixed, so the card cannot
+    // grow with the window the way an unsized layout does.
+    height: Tokens.size-control-md + 2 * Tokens.space-1 + 2 * Tokens.size-toast-border;
+    width: min(Tokens.size-toast-max, body.preferred-width);
+    background: Theme.toast-surface;
+    border-color: Theme.toast-edge;
+    border-width: Tokens.size-toast-border;
+    border-radius: Tokens.radius-md;
+    clip: true;
+    accessible-role: none;
+    body := HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            width: Tokens.size-toast-rail;
+            vertical-stretch: 1;
+            background: Theme.toast-edge;
+            accessible-role: none;
+        }
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            padding-left: Tokens.space-3;
+            padding-right: Tokens.space-3;
+            padding-top: Tokens.space-1;
+            padding-bottom: Tokens.space-1;
+            spacing: Tokens.space-3;
+            alignment: center;
+            // A fixed-height button stays at the top of a row that stretches. Centre
+            // every child on the card, the words included.
+            cross-axis-alignment: center;
+            VerticalLayout {
+                alignment: center;
+                width: Tokens.size-icon-box;
+                Icon { name: root.mark; ink: Theme.toast-edge; }
+            }
+            Text {
+                text: root.text;
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                max-width: Tokens.size-toast-max;
+                overflow: elide;
+            }
+            if action != "": Button {
+                text: root.action;
+                kind: "primary";
+                lead: root.action-icon;
+                clicked => { act(); }
+            }
+            Button {
+                text: @tr("Dismiss");
+                kind: "secondary";
+                lead: IconName.close;
+                clicked => { dismiss(); }
+            }
+            // Past the buttons, so the time reads as the end of the card, not another action.
+            // The chip is the edge colour with the surface colour on it, so the passing
+            // time stands out from the quiet fill.
+            if root.timed: VerticalLayout {
+                horizontal-stretch: 0;
+                alignment: center;
+                padding-left: Tokens.space-3;
+                Rectangle {
+                    horizontal-stretch: 0;
+                    background: Theme.toast-edge;
+                    border-radius: Tokens.radius-sm;
+                    HorizontalLayout {
+                        padding-left: Tokens.space-2;
+                        padding-right: Tokens.space-2;
+                        padding-top: Tokens.space-1;
+                        padding-bottom: Tokens.space-1;
+                        spacing: Tokens.space-1;
+                        alignment: center;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon { name: IconName.hourglass; ink: Theme.toast-surface; }
+                        }
+                        Text {
+                            horizontal-stretch: 0;
+                            text: @tr("{} s", root.seconds);
+                            color: Theme.toast-surface;
+                            font-size: Tokens.type-body-size;
+                            font-weight: Tokens.type-label-weight;
+                            vertical-alignment: center;
+                            accessible-label: @tr("{n} second left" | "{n} seconds left" % root.seconds);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1913,6 +2035,9 @@ export component MainWindow inherits Window {
         y: parent.height - self.height - Tokens.space-6;
         text: Shell.toast-kind == 1 ? @tr("{} closed.", Shell.toast-subject) : @tr("Switched workspace automatically from {}.", Shell.toast-subject);
         action: @tr("Undo");
+        action-icon: IconName.undo;
+        mark: IconName.undo;
+        generation: Shell.toast-generation;
         act => { Shell.toast-undo(); }
         dismiss => { Shell.toast-dismiss(); }
     }
@@ -1921,6 +2046,8 @@ export component MainWindow inherits Window {
         y: parent.height - self.height - Tokens.space-6;
         text: Studio.deleted-from-scene ? @tr("{} removed from this scene.", Studio.deleted) : @tr("{} deleted.", Studio.deleted);
         action: @tr("Undo");
+        action-icon: IconName.undo;
+        generation: Studio.deleted-generation;
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
     }
@@ -1939,9 +2066,12 @@ export component MainWindow inherits Window {
         x: (parent.width - self.width) / 2;
         y: frame.height + Tokens.space-2;
         top: true;
+        // Closing this one hides the windows, so it waits for OK or Dismiss.
+        timed: false;
         text: Shell.background-notice == 1 ? @tr("RBS keeps running in the Dock. Quit with Cmd+Q.")
             : @tr("RBS keeps running in the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
         action: @tr("OK");
+        action-icon: IconName.check;
         act => { Shell.background-notice-ok(); }
         dismiss => { Shell.background-notice-ok(); }
     }
@@ -1949,6 +2079,8 @@ export component MainWindow inherits Window {
         x: (parent.width - self.width) / 2;
         y: frame.height + Tokens.space-2;
         top: true;
+        generation: Shell.error-generation;
+        mark: Shell.error-kind == 3 ? IconName.info : IconName.warning;
         text: Shell.error-kind == 1 ? @tr("The layout is locked. Unlock it from the workspace menu.")
             : Shell.error-kind == 3 ? Shell.error-detail
             : @tr("That did not work: {}", Shell.error-detail);

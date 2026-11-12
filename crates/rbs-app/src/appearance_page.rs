@@ -490,7 +490,7 @@ pub fn reload(ctx: &Ctx, app: &mut App) {
     let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
     let Some(file) = file else {
         notes.push("Themes are not available: the token file cannot be read.".into());
-        app.error = Some(super::UiError::Other(notes.join(" ")));
+        app.show_error(super::UiError::Other(notes.join(" ")));
         return;
     };
     {
@@ -509,7 +509,7 @@ pub fn reload(ctx: &Ctx, app: &mut App) {
         notes.push(page_note);
     }
     if !notes.is_empty() {
-        app.error = Some(super::UiError::Other(notes.join(" ")));
+        app.show_error(super::UiError::Other(notes.join(" ")));
     }
     show(ctx, app);
 }

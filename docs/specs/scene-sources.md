@@ -28,7 +28,7 @@ pub const APPLICATION_AUDIO_SOURCE: &str = "org.rbs.source.application-audio"; /
 pub const IMAGE_SOURCE: &str = "org.rbs.source.image";               // still, a PNG file or a built-in sample (ADR-0074)
 pub const COLOR_SOURCE: &str = "org.rbs.source.color";               // still, a solid colour or a gradient (ADR-0074)
 pub const ALL: [&str; 8];
-pub mod keys { ADAPTER, TARGET, CURSOR, WIDTH, HEIGHT, FPS, PATH, SAMPLE, COLOR, COLOR2, ANGLE }
+pub mod keys { ADAPTER, TARGET, CURSOR, WIDTH, HEIGHT, FPS, PATH, SAMPLE, COLOR, COLOR2, ANGLE, FILLED }
 pub enum SourceClass { Capture(TargetKind), Audio(EndpointKind), Still }
 pub fn class_of(type_id: &NodeTypeId) -> Option<SourceClass>;
 
@@ -54,7 +54,7 @@ impl SourceTypes {
         -> Result<(Box<dyn AudioOutput>, AdapterId, EndpointId), SourceError>; // Standby; NoAdapter, NoTarget, Audio(EndpointNotFound)
 }
 pub struct MonitorDevice { adapter, target, name, is_default, device_key: Option<String> }
-pub struct SourceTarget { adapter, target, name, is_default, size: Option<(u32, u32)>, app: Option<String> }  // size: displays and windows, when known; app: owning application of a window, when the OS tells it (grouping and labels only)
+pub struct SourceTarget { adapter, target, name, is_default, size: Option<(u32, u32)>, scale: Option<DisplayScale>, app: Option<String> }  // size: displays and windows, when known (a display is the framebuffer in physical pixels); scale: that display's OS pixels per point, when known (ADR-0102; not applied to size); app: owning application of a window, when the OS tells it (grouping and labels only)
 #[derive(Clone)] pub struct SourcePicker;  // Send; holds the adapter's factory only
 impl SourcePicker {
     pub fn adapter(&self) -> AdapterId;
@@ -91,8 +91,9 @@ pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<Nod
 | `color` | Text | color | `#rrggbb` or `#rrggbbaa`; default `#000000` |
 | `color2` | Text | color | Second colour; present makes a linear gradient from `color` |
 | `angle` | Int | color | Gradient direction in degrees, 0 = top to bottom, 90 = left to right; default 0 |
+| `filled` | Bool | color | Draw the fill. Absent or true fills the shape. False leaves the inside empty: the stored `color` stays and its alpha is not drawn, so turning the fill back on restores it |
 
-Built-in samples (generated in code, original to this repository, ADR-0074 decision 6): backgrounds `aurora`, `sunset`, `slate`, `dots`; frames (transparent in the middle) `frame-thin`, `frame-thick`, `frame-neon`, `lower-third`.
+Built-in samples (generated in code, original to this repository, ADR-0074 decision 6): backgrounds `aurora`, `sunset`, `slate`, `dots`; frames (transparent in the middle) `frame-thin`, `frame-thick`, `frame-neon`, `lower-third`. Adding `frame-thin` or `frame-thick` from the Library or `source.add_sample` creates a transparent colour source with that border (width 4 or 28, corner radius 6 or 40) instead of the generated picture, so the thickness stays the item's border. The pictures are still generated, for the Library's thumbnails and for an image source whose `sample` is that id. The Library does not list `lower-third`: the words are part of the picture. `source.add_sample` still accepts it, and an image source whose `sample` is that id still draws it.
 
 Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 

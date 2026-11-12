@@ -105,9 +105,13 @@ impl Studio {
         }
 
         // Adapters first: nothing is in the graph if none can serve.
+        // The replay buffer stays at the canvas size (ADR-0102): both sizes equal,
+        // so prepare uses the 1:1 download. An output's size does not apply here.
         let (width, height) = self.size;
         let export = VideoExportNode::with_tone(
             settings.video.format,
+            width,
+            height,
             width,
             height,
             settings.video.color,

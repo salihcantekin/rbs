@@ -47,6 +47,10 @@ pub enum LayerShape {
     Circle,
     /// The ellipse that fills the box.
     Ellipse,
+    /// An isosceles triangle with its tip on the top edge and its base on the bottom.
+    Triangle,
+    /// An arrow pointing right: a shaft and a head, filling the box.
+    Arrow,
 }
 
 /// Shape and border of a layer (ADR-0053). Lengths are in the layer's own box units:
@@ -102,6 +106,8 @@ impl LayerStyle {
             LayerShape::Rounded { .. } => (1.0, 0.0),
             LayerShape::Circle => (2.0, 0.0),
             LayerShape::Ellipse => (3.0, 0.0),
+            LayerShape::Triangle => (4.0, 0.0),
+            LayerShape::Arrow => (5.0, 0.0),
         };
         if kind == 1.0 && radius == 0.0 && width == 0.0 {
             return None;
@@ -572,6 +578,16 @@ mod tests {
             shape(LayerStyle::new(LayerShape::Ellipse, 0.0, [0; 4], BOX))[0],
             3.0
         );
+        assert_eq!(
+            shape(LayerStyle::new(LayerShape::Triangle, 0.0, [0; 4], BOX))[0],
+            4.0
+        );
+        assert_eq!(
+            shape(LayerStyle::new(LayerShape::Arrow, 0.0, [0; 4], BOX))[0],
+            5.0
+        );
+        assert!(!LayerStyle::new(LayerShape::Triangle, 0.0, [0; 4], BOX).is_plain());
+        assert!(!LayerStyle::new(LayerShape::Arrow, 0.0, [0; 4], BOX).is_plain());
     }
 
     #[test]

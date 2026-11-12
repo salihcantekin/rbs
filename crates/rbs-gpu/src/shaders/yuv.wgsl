@@ -56,15 +56,18 @@ fn fs_chroma(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
 
-// Scaled conversion (ADR-0066 decision 4): the canvas is fitted into the output with its
-// aspect ratio kept and bilinear filtering; the rest of the output is black. Used only
-// by converters whose output size differs from the canvas; the entries above are the
-// one-to-one path and are unchanged.
+// Scaled conversion (ADR-0066 decision 4, kernels in ADR-0102). The canvas is fitted
+// into the output with its aspect ratio kept; the rest of the output is black. The
+// one-to-one entries above are unchanged and do not sample. This bilinear pair is the
+// non-integer (and any other non-box, non-upscale) path. Integer downscale and upscale
+// are the box and Catmull-Rom entries further down; a pipeline is built for one pair.
 // The picture's rectangle in output pixels, set per pipeline.
 override fit_x: f32 = 0.0;
 override fit_y: f32 = 0.0;
 override fit_w: f32 = 1.0;
 override fit_h: f32 = 1.0;
+// Integer downscale ratio N (>= 2). Set only on the box pipelines.
+override box_n: i32 = 2;
 
 fn sample_prime(p: vec2<f32>) -> vec3<f32> {
     let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
@@ -86,6 +89,100 @@ fn fs_chroma_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32>
     let c = floor(pos.xy) * 2.0;
     let p = (sample_prime(c + vec2<f32>(0.5, 0.5)) + sample_prime(c + vec2<f32>(1.5, 0.5))
         + sample_prime(c + vec2<f32>(0.5, 1.5)) + sample_prime(c + vec2<f32>(1.5, 1.5))) * 0.25;
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
+}
+
+// Integer downscale (ADR-0102): each output pixel is the equal-weight mean of its
+// N×N canvas texels in linear light. N and the fit rectangle are pipeline constants.
+// Outside the fitted picture the result is black, as on the bilinear path.
+fn box_linear(ix: i32, iy: i32) -> vec3<f32> {
+    let cx = f32(ix) + 0.5;
+    let cy = f32(iy) + 0.5;
+    let lx = i32(floor(cx - fit_x));
+    let ly = i32(floor(cy - fit_y));
+    let nx = i32(round(fit_w));
+    let ny = i32(round(fit_h));
+    if (lx < 0 || ly < 0 || lx >= nx || ly >= ny) {
+        return vec3<f32>(0.0);
+    }
+    let dims = vec2<i32>(textureDimensions(canvas));
+    let origin = vec2<i32>(lx, ly) * box_n;
+    var sum = vec3<f32>(0.0);
+    for (var j = 0; j < box_n; j++) {
+        for (var i = 0; i < box_n; i++) {
+            let s = clamp(origin + vec2<i32>(i, j), vec2<i32>(0), dims - vec2<i32>(1));
+            sum += textureLoad(canvas, s, 0).rgb;
+        }
+    }
+    return sum / (f32(box_n) * f32(box_n));
+}
+
+@fragment
+fn fs_luma_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    let p = oetf_709(box_linear(i32(pos.x), i32(pos.y)));
+    return round(y_black + y_range * luma(p)) * code_scale;
+}
+
+@fragment
+fn fs_chroma_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    // The four luma pixels of this chroma sample, each already box-filtered.
+    let x = i32(pos.x) * 2;
+    let y = i32(pos.y) * 2;
+    let p = (oetf_709(box_linear(x, y)) + oetf_709(box_linear(x + 1, y))
+        + oetf_709(box_linear(x, y + 1)) + oetf_709(box_linear(x + 1, y + 1))) * 0.25;
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
+}
+
+// Upscale (ADR-0102): Keys Catmull-Rom, a = -0.5, in linear light. Samples outside
+// the canvas clamp to the edge texel. Outside the fitted picture the result is black.
+fn keys(d: f32) -> f32 {
+    let x = abs(d);
+    let near = (1.5 * x - 2.5) * x * x + 1.0;
+    let far = ((-0.5 * x + 2.5) * x - 4.0) * x + 2.0;
+    let w = select(far, near, x <= 1.0);
+    return select(0.0, w, x <= 2.0);
+}
+
+fn catmull_linear(p: vec2<f32>) -> vec3<f32> {
+    let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return vec3<f32>(0.0);
+    }
+    let dims = vec2<i32>(textureDimensions(canvas));
+    let coord = uv * vec2<f32>(dims) - vec2<f32>(0.5);
+    let base = floor(coord);
+    let f = coord - base;
+    var acc = vec3<f32>(0.0);
+    for (var y = -1; y <= 2; y++) {
+        let wy = keys(f.y - f32(y));
+        for (var x = -1; x <= 2; x++) {
+            let wx = keys(f.x - f32(x));
+            let s = clamp(vec2<i32>(base) + vec2<i32>(x, y), vec2<i32>(0), dims - vec2<i32>(1));
+            acc += textureLoad(canvas, s, 0).rgb * (wx * wy);
+        }
+    }
+    return acc;
+}
+
+@fragment
+fn fs_luma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    let p = oetf_709(catmull_linear(pos.xy));
+    return round(y_black + y_range * luma(p)) * code_scale;
+}
+
+@fragment
+fn fs_chroma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let c = floor(pos.xy) * 2.0;
+    let p = (oetf_709(catmull_linear(c + vec2<f32>(0.5, 0.5)))
+        + oetf_709(catmull_linear(c + vec2<f32>(1.5, 0.5)))
+        + oetf_709(catmull_linear(c + vec2<f32>(0.5, 1.5)))
+        + oetf_709(catmull_linear(c + vec2<f32>(1.5, 1.5)))) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
@@ -149,6 +246,45 @@ fn fs_chroma_open_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2
     let p = (sample_open(c + vec2<f32>(0.5, 0.5)) + sample_open(c + vec2<f32>(1.5, 0.5))
         + sample_open(c + vec2<f32>(0.5, 1.5)) + sample_open(c + vec2<f32>(1.5, 1.5)))
         * 0.25;
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
+}
+
+@fragment
+fn fs_luma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    let p = oetf_709(open_shadows(box_linear(i32(pos.x), i32(pos.y))));
+    return round(y_black + y_range * luma(p)) * code_scale;
+}
+
+@fragment
+fn fs_chroma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let x = i32(pos.x) * 2;
+    let y = i32(pos.y) * 2;
+    let p = (oetf_709(open_shadows(box_linear(x, y)))
+        + oetf_709(open_shadows(box_linear(x + 1, y)))
+        + oetf_709(open_shadows(box_linear(x, y + 1)))
+        + oetf_709(open_shadows(box_linear(x + 1, y + 1)))) * 0.25;
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
+}
+
+@fragment
+fn fs_luma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    let p = oetf_709(open_shadows(catmull_linear(pos.xy)));
+    return round(y_black + y_range * luma(p)) * code_scale;
+}
+
+@fragment
+fn fs_chroma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let c = floor(pos.xy) * 2.0;
+    let p = (oetf_709(open_shadows(catmull_linear(c + vec2<f32>(0.5, 0.5))))
+        + oetf_709(open_shadows(catmull_linear(c + vec2<f32>(1.5, 0.5))))
+        + oetf_709(open_shadows(catmull_linear(c + vec2<f32>(0.5, 1.5))))
+        + oetf_709(open_shadows(catmull_linear(c + vec2<f32>(1.5, 1.5))))) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
@@ -220,5 +356,34 @@ fn fs_chroma_srgb_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2
     let p = (sample_srgb(c + vec2<f32>(0.5, 0.5)) + sample_srgb(c + vec2<f32>(1.5, 0.5))
         + sample_srgb(c + vec2<f32>(0.5, 1.5)) + sample_srgb(c + vec2<f32>(1.5, 1.5)))
         * 0.25;
+    return store_c(p);
+}
+
+@fragment
+fn fs_luma_srgb_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    return store_y(oetf_srgb(box_linear(i32(pos.x), i32(pos.y))));
+}
+
+@fragment
+fn fs_chroma_srgb_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let x = i32(pos.x) * 2;
+    let y = i32(pos.y) * 2;
+    let p = (oetf_srgb(box_linear(x, y)) + oetf_srgb(box_linear(x + 1, y))
+        + oetf_srgb(box_linear(x, y + 1)) + oetf_srgb(box_linear(x + 1, y + 1))) * 0.25;
+    return store_c(p);
+}
+
+@fragment
+fn fs_luma_srgb_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    return store_y(oetf_srgb(catmull_linear(pos.xy)));
+}
+
+@fragment
+fn fs_chroma_srgb_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let c = floor(pos.xy) * 2.0;
+    let p = (oetf_srgb(catmull_linear(c + vec2<f32>(0.5, 0.5)))
+        + oetf_srgb(catmull_linear(c + vec2<f32>(1.5, 0.5)))
+        + oetf_srgb(catmull_linear(c + vec2<f32>(0.5, 1.5)))
+        + oetf_srgb(catmull_linear(c + vec2<f32>(1.5, 1.5)))) * 0.25;
     return store_c(p);
 }

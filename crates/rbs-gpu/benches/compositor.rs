@@ -10,8 +10,8 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_gpu::{
-    CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, LayerShape, LayerStyle, TextureDesc,
-    TexturePool, YuvConverter, YuvFormat, readback, yuv,
+    CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, LayerShape, LayerStyle, ScaleKernel,
+    TextureDesc, TexturePool, YuvConverter, YuvFormat, readback, yuv,
 };
 
 const W: u32 = 1920;
@@ -59,6 +59,11 @@ fn bench(c: &mut Criterion) {
     )
     .expect("compositor");
     let mut conv = YuvConverter::new(&ctx, YuvFormat::Nv12, W, H).expect("nv12");
+    assert_eq!(
+        conv.kernel(),
+        ScaleKernel::OneToOne,
+        "1:1 converter must stay on textureLoad"
+    );
 
     let mut group = c.benchmark_group("frame_1080p");
     group.sample_size(20);
@@ -138,8 +143,11 @@ fn bench(c: &mut Criterion) {
         });
     });
     // Scaled conversion for the virtual camera (ADR-0066): the 1080p canvas to 720p NV12.
+    // 1920×1080 → 1280×720 is not an integer ratio, so it stays the bilinear entry
+    // (`fs_luma_scaled` / `fs_chroma_scaled`).
     let mut scaled =
         YuvConverter::scaled(&ctx, YuvFormat::Nv12, W, H, 1280, 720).expect("scaled nv12");
+    assert_eq!(scaled.kernel(), ScaleKernel::Bilinear);
     let luma720 = pool
         .acquire(&ctx, &yuv::luma_desc(YuvFormat::Nv12, 1280, 720))
         .expect("luma 720");
@@ -150,6 +158,23 @@ fn bench(c: &mut Criterion) {
         b.iter(|| {
             scaled
                 .convert(&ctx, &pool, canvas, luma720, chroma720)
+                .expect("convert");
+            ctx.wait_idle().expect("wait");
+        });
+    });
+    // Integer 2× box downscale (ADR-0102): the same 1080p canvas to 960×540 NV12.
+    // `YuvConverter::scaled` selects `fs_luma_box` / `fs_chroma_box` for this ratio.
+    let mut box2 = YuvConverter::scaled(&ctx, YuvFormat::Nv12, W, H, 960, 540).expect("box 2x");
+    assert_eq!(box2.kernel(), ScaleKernel::Box(2));
+    let luma540 = pool
+        .acquire(&ctx, &yuv::luma_desc(YuvFormat::Nv12, 960, 540))
+        .expect("luma 540");
+    let chroma540 = pool
+        .acquire(&ctx, &yuv::chroma_desc(YuvFormat::Nv12, 960, 540))
+        .expect("chroma 540");
+    group.bench_function("nv12_planes_box_2x", |b| {
+        b.iter(|| {
+            box2.convert(&ctx, &pool, canvas, luma540, chroma540)
                 .expect("convert");
             ctx.wait_idle().expect("wait");
         });

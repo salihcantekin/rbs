@@ -10,7 +10,7 @@ mod support;
 use std::sync::atomic::Ordering;
 
 use rbs_codec::RateControl;
-use rbs_core::media::ContainerId;
+use rbs_core::media::{ContainerId, Size};
 use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_record::{
     AUDIO_ENCODER, AUDIO_ENCODER_2, END_TAIL_LIMIT, MAX_OUTPUTS_PER_CANVAS, OUTPUT, OUTPUT_2,
@@ -476,6 +476,129 @@ fn a_further_canvas_starts_and_stops_while_the_studio_runs() {
     let reached = run_until(&mut studio, &clock, |_| r.log.count(0) >= before + 8);
     assert!(reached, "{:?}", studio.output_progress(id));
     let report = studio.stop_output(id).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+fn live() -> OutputSettings {
+    OutputSettings::packets("stream://live/app")
+}
+
+fn picture(r: &Rig) -> Size {
+    r.video_config.lock().unwrap().as_ref().unwrap().format.size
+}
+
+#[test]
+fn an_unset_output_size_is_the_canvas_and_the_same_size_shares() {
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig();
+    let (mut studio, clock) = start(&r);
+
+    let rec = studio.start_output(&r.adapters, &recording()).unwrap();
+    assert_eq!(picture(&r), Size::new(W, H));
+    let sessions = r.video_sessions.load(Ordering::Relaxed);
+
+    // Odd, below 2, or above 7680: nothing starts, and the running output stays.
+    for (width, height) in [(33u32, 18), (1, 2), (0, 2), (7690, 2), (7682, 4), (3, 4)] {
+        let mut bad = recording();
+        bad.size = Some((width, height));
+        let err = studio.start_output(&r.adapters, &bad).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RecordError::OutputSize {
+                    width: w,
+                    height: h
+                } if w == width && h == height
+            ),
+            "{err}"
+        );
+    }
+    assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
+    assert_eq!(studio.outputs(), [rec]);
+
+    // The same resolved size (explicit canvas size, same video settings) shares.
+    let mut same = live();
+    same.size = Some((W, H));
+    let joined = studio.start_output(&r.adapters, &same).unwrap();
+    let report = studio.output(joined).unwrap();
+    assert!(report.video_shared && report.audio_shared, "{report:?}");
+    assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
+    assert_eq!(slots(&studio), [true, true, true, false, false, true]);
+
+    let reached = run_until(&mut studio, &clock, |_| {
+        r.log.count(0) >= 8 && r.stream_log.count(0) >= 8
+    });
+    assert!(reached);
+
+    let end = clock.now();
+    assert!(studio.end_output(joined));
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.output_tail_done(joined)
+    }));
+    assert!(clock.now() < end + END_TAIL_LIMIT, "ended by itself");
+    let report = studio.stop_output(joined).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    assert_eq!(report.flush_lost, 0, "a shared encoder is not flushed");
+    let before = r.log.count(0);
+    let reached = run_until(&mut studio, &clock, |_| r.log.count(0) >= before + 8);
+    assert!(reached, "the recording keeps delivering");
+    assert_eq!(slots(&studio), [true, true, true, false, false, false]);
+    assert!(studio.output(rec).is_some());
+
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_different_output_size_uses_its_own_encoder() {
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig();
+    let (mut studio, clock) = start(&r);
+
+    let rec = studio.start_output(&r.adapters, &recording()).unwrap();
+    let sessions = r.video_sessions.load(Ordering::Relaxed);
+    assert_eq!(picture(&r), Size::new(W, H));
+
+    let mut half = live();
+    half.size = Some((W / 2, H / 2));
+    let small = studio.start_output(&r.adapters, &half).unwrap();
+    let report = studio.output(small).unwrap();
+    assert!(!report.video_shared, "other size: an encoder of its own");
+    assert!(
+        report.audio_shared,
+        "same audio settings: the AAC encoder is shared"
+    );
+    assert_eq!(picture(&r), Size::new(W / 2, H / 2));
+    // open probes a session and prepare opens another, as the first output did.
+    assert_eq!(r.video_sessions.load(Ordering::Relaxed), 2 * sessions);
+    assert_eq!(slots(&studio), [true, true, true, true, false, true]);
+
+    let reached = run_until(&mut studio, &clock, |_| {
+        r.log.count(0) >= 8 && r.stream_log.count(0) >= 8
+    });
+    assert!(reached, "{:?}", studio.output_progress(small));
+
+    // The canvas-sized output stops. The scaled one keeps delivering.
+    let end = clock.now();
+    assert!(studio.end_output(rec));
+    assert!(run_until(&mut studio, &clock, |s| s.output_tail_done(rec)));
+    assert!(clock.now() < end + END_TAIL_LIMIT, "ended by itself");
+    let report = studio.stop_output(rec).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    assert_eq!(r.log.trailers.load(Ordering::Relaxed), 1);
+    assert_eq!(r.stream_log.finished.load(Ordering::Relaxed), 0);
+    assert_eq!(slots(&studio), [false, true, false, true, false, true]);
+    let before = r.stream_log.count(0);
+    let reached = run_until(&mut studio, &clock, |_| r.stream_log.count(0) >= before + 8);
+    assert!(reached, "the scaled output keeps delivering");
+
+    let report = studio.stop_output(small).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");

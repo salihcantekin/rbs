@@ -57,9 +57,6 @@ mod ui {
 }
 use ui::*;
 
-/// How long a toast stays before it dismisses itself.
-const TOAST_TIME: Duration = Duration::from_secs(8);
-
 /// A caught panic is shown at most once in this time.
 const CAUGHT_QUIET: Duration = Duration::from_secs(5);
 
@@ -163,8 +160,11 @@ struct App {
     /// The next sync slides the auto-hide flyout back. Cleared when `reveal` is set.
     dismiss_flyout: bool,
     toast: Option<Toast>,
+    /// Bumps for each toast, so a replacement restarts the countdown.
     toast_serial: u64,
     error: Option<UiError>,
+    /// Bumps for each error bar notice, so a replacement restarts the countdown.
+    error_generation: i32,
     /// `ui.theme.reload` ran; the next sync reads the theme files again.
     reload_themes: bool,
     /// `ui.theme.select` ran; the next sync applies this theme id.
@@ -310,7 +310,7 @@ impl App {
     /// Shows why an Output profile or Scene collection menu action did not work.
     fn library_done(&mut self, done: Result<(), String>) {
         if let Err(e) = done {
-            self.error = Some(UiError::Other(e));
+            self.show_error(UiError::Other(e));
         }
     }
 
@@ -379,10 +379,10 @@ impl App {
                     .map(|w| (w.name, w.built_in))
                     .collect();
                 if let Some((path, e)) = l.problems.first() {
-                    self.error = Some(UiError::Other(format!("{}: {e}", path.display())));
+                    self.show_error(UiError::Other(format!("{}: {e}", path.display())));
                 }
             }
-            Err(e) => self.error = Some(UiError::Other(e.to_string())),
+            Err(e) => self.show_error(UiError::Other(e.to_string())),
         }
     }
 
@@ -394,7 +394,7 @@ impl App {
             config::set_last_workspace(&self.config, &ws.name).map_err(StoreError::Io)
         });
         if let Err(e) = result {
-            self.error = Some(UiError::Other(e.to_string()));
+            self.show_error(UiError::Other(e.to_string()));
         }
     }
 
@@ -416,8 +416,8 @@ impl App {
                 self.set_toast(toast);
                 self.changed();
             }
-            Err(CommandError::Locked) => self.error = Some(UiError::Locked),
-            Err(e) => self.error = Some(UiError::Other(e.to_string())),
+            Err(CommandError::Locked) => self.show_error(UiError::Locked),
+            Err(e) => self.show_error(UiError::Other(e.to_string())),
         }
     }
 
@@ -426,6 +426,12 @@ impl App {
             self.toast_serial += 1;
         }
         self.toast = toast;
+    }
+
+    /// Shows `error` in the error bar and restarts its countdown.
+    fn show_error(&mut self, error: UiError) {
+        self.error = Some(error);
+        self.error_generation = self.error_generation.wrapping_add(1);
     }
 
     /// After any layout change: save soon. Window sizes are re-keyed in
@@ -448,7 +454,7 @@ impl App {
         self.flush();
         match self.store.load(name) {
             Ok(ws) => self.command(LayoutCommand::Switch(ws), Origin::Command),
-            Err(e) => self.error = Some(UiError::Other(e.to_string())),
+            Err(e) => self.show_error(UiError::Other(e.to_string())),
         }
     }
 
@@ -490,7 +496,7 @@ impl App {
         if let Ok(cid) = rbs_ui::command::CommandId::parse(id)
             && let Err(reason) = shown.enabled(&cid)
         {
-            self.error = Some(UiError::Other(reason));
+            self.show_error(UiError::Other(reason));
             return;
         }
         let Some(run) = menu_bar::run(id, &shown) else {
@@ -531,7 +537,7 @@ impl App {
             }
             Run::SaveWorkspaceAs(Some(name)) => {
                 if let Err(e) = self.save_workspace_as(&name) {
-                    self.error = Some(UiError::Other(e));
+                    self.show_error(UiError::Other(e));
                 }
             }
             // Asking for a name needs someone at the window: not from a control surface
@@ -607,14 +613,14 @@ impl App {
             Run::StopRecording => self.studio.stop_recording(),
             Run::GoLiveVertical => {
                 if let Err(e) = self.studio.go_live_vertical() {
-                    self.error = Some(UiError::Other(e));
+                    self.show_error(UiError::Other(e));
                 }
             }
             Run::AskEndVerticalStream if confirm => self.confirm_end_vertical = true,
             Run::AskEndVerticalStream => self.studio.end_vertical_stream(),
             Run::RecordVertical => {
                 if let Err(e) = self.studio.record_vertical() {
-                    self.error = Some(UiError::Other(e));
+                    self.show_error(UiError::Other(e));
                 }
             }
             Run::StopVerticalRecording => self.studio.stop_vertical_recording(),
@@ -798,6 +804,15 @@ impl App {
         ask(self.main.global::<Studio>());
         for f in &self.floats {
             ask(f.window.global::<Studio>());
+        }
+    }
+
+    /// Asks every window to scroll Properties to the section the Library gear opened.
+    fn bump_look_reveal(&mut self) {
+        let bump = |g: Studio<'_>| g.set_look_reveal(g.get_look_reveal().wrapping_add(1));
+        bump(self.main.global::<Studio>());
+        for f in &self.floats {
+            bump(f.window.global::<Studio>());
         }
     }
 
@@ -1122,16 +1137,10 @@ struct Ctx {
     /// Changes asked for while the state was borrowed; applied before the next sync.
     queue: Rc<RefCell<Vec<Op>>>,
     pending: Rc<Cell<bool>>,
-    /// Dismisses a toast after [`TOAST_TIME`]; runs only while a toast is shown.
-    toast_timer: Rc<slint::Timer>,
-    toast_shown: Rc<Cell<u64>>,
     /// Writes the layout [`SAVE_DELAY`] after the last change.
     save_timer: Rc<slint::Timer>,
     /// Refreshes the meters; runs only while the Mixer shows audio sources (U5, U16).
     meter_timer: Rc<slint::Timer>,
-    /// Dismisses the "deleted" toast after [`TOAST_TIME`].
-    deleted_timer: Rc<slint::Timer>,
-    deleted_shown: Rc<Cell<u64>>,
     /// Ticks the live duration once a second while live or recording.
     live_timer: Rc<slint::Timer>,
 }
@@ -1195,7 +1204,7 @@ fn show_caught() {
             let ctx = CTX.with(|c| c.borrow().clone());
             if let Some(ctx) = ctx {
                 if let Ok(mut app) = ctx.app.try_borrow_mut() {
-                    app.error = Some(UiError::Notice(rbs_crash::CAUGHT_TEXT.into()));
+                    app.show_error(UiError::Notice(rbs_crash::CAUGHT_TEXT.into()));
                 }
                 ctx.sync();
             }
@@ -1291,7 +1300,7 @@ impl Ctx {
             if let Some(e) = applied.error {
                 // A caught panic on the studio's thread reads as a notice, not as an
                 // action that failed (ADR-0055).
-                app.error = Some(if e == rbs_crash::CAUGHT_TEXT {
+                app.show_error(if e == rbs_crash::CAUGHT_TEXT {
                     UiError::Notice(e)
                 } else {
                     UiError::Other(e)
@@ -1339,6 +1348,11 @@ impl Ctx {
                 && !app.session.workspace().is_open(&p)
             {
                 app.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            }
+            if let Some(source) = applied.focus_shape {
+                let _ = app.session.set_section_closed("properties.shape", false);
+                app.show_source_properties(source, 0);
+                app.bump_look_reveal();
             }
             if let Some(camera) = applied.camera {
                 app.vcam.sending(camera);
@@ -1432,7 +1446,7 @@ impl Ctx {
                 return;
             }
             let Ok(w) = SettingsWindow::new() else {
-                app.error = Some(UiError::Other(
+                app.show_error(UiError::Other(
                     "The settings window cannot be opened.".into(),
                 ));
                 return;
@@ -1735,23 +1749,6 @@ impl Ctx {
             }
         } else {
             self.meter_timer.stop();
-        }
-
-        if !s.deleted.is_empty() {
-            if self.deleted_shown.get() != s.deleted_serial || !self.deleted_timer.running() {
-                self.deleted_shown.set(s.deleted_serial);
-                let ctx = self.clone();
-                entry::start(
-                    &self.deleted_timer,
-                    slint::TimerMode::SingleShot,
-                    TOAST_TIME,
-                    move || {
-                        ctx.update(|app| app.studio.deleted.clear());
-                    },
-                );
-            }
-        } else {
-            self.deleted_timer.stop();
         }
 
         #[cfg(any(target_os = "macos", windows))]
@@ -2222,8 +2219,10 @@ impl Ctx {
             g.set_can_redo(app.session.can_redo());
             g.set_toast_kind(toast_kind);
             g.set_toast_subject(toast_subject.as_str().into());
+            g.set_toast_generation(app.toast_serial as i32);
             g.set_error_kind(error_kind);
             g.set_error_detail(error_detail.as_str().into());
+            g.set_error_generation(app.error_generation);
             g.set_end_stream_confirm(app.confirm_end);
             g.set_end_vertical_confirm(app.confirm_end_vertical);
             g.set_vertical_outputs(app.studio.vertical.is_some());
@@ -2262,22 +2261,6 @@ impl Ctx {
             app.menus.push(&w.global::<Menus>());
         }
 
-        if app.toast.is_some() {
-            if self.toast_shown.get() != app.toast_serial || !self.toast_timer.running() {
-                self.toast_shown.set(app.toast_serial);
-                let ctx = self.clone();
-                entry::start(
-                    &self.toast_timer,
-                    slint::TimerMode::SingleShot,
-                    TOAST_TIME,
-                    move || {
-                        ctx.update(|app| app.toast = None);
-                    },
-                );
-            }
-        } else {
-            self.toast_timer.stop();
-        }
         self.sync_studio(&mut app);
         if app.save_due {
             let ctx = self.clone();
@@ -2907,6 +2890,28 @@ fn transfer(library: Library, import: bool, name: String) {
     }
 }
 
+/// The Library's "Choose a PNG file". The dialog is asynchronous (ADR-0055).
+fn pick_png() {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_png("Choose a PNG image").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app.studio.add_image_file(&path),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// The system file dialog for import and export (ADR-0051).
 mod file_dialog {
     use std::path::PathBuf;
@@ -2917,6 +2922,17 @@ mod file_dialog {
         Ok(rfd::AsyncFileDialog::new()
             .set_title(title)
             .add_filter("RBS settings", &["toml"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
+    /// A PNG picture; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_png(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter("PNG image", &["png"])
             .pick_file()
             .await
             .map(|f| f.path().to_owned()))
@@ -2939,6 +2955,11 @@ mod file_dialog {
 
     #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn open(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_png(_title: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
 
@@ -3080,7 +3101,7 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
         return;
     }
     let Ok(w) = SourceSettingsWindow::new() else {
-        app.error = Some(UiError::Other(
+        app.show_error(UiError::Other(
             "The source settings window cannot be opened.".into(),
         ));
         return;
@@ -3168,6 +3189,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_remove_from_scene, |app, id: i32| {
         app.studio.remove_from_scene(id);
+    });
+    on!(on_ask_remove_selected, |app| {
+        let id = app.studio.selected;
+        if id >= 0 {
+            app.ask_remove_source(id, false);
+        }
     });
     on!(on_set_global, |app, id: i32, global: bool| {
         app.studio.set_global(id, global);
@@ -3291,6 +3318,44 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_add_sample, |app, id: slint::SharedString| {
         app.studio.add_sample(id.as_str());
+    });
+    on!(on_apply_look_at, |app, index: i32| {
+        app.studio.apply_look_at(index);
+    });
+    on!(on_add_stamp, |app, kind: i32| {
+        app.studio.add_stamp(kind);
+    });
+    on!(on_add_image, |_app| {
+        pick_png();
+    });
+    on!(
+        on_set_source_fill,
+        |app, id: i32, color: slint::SharedString| {
+            app.studio.set_source_fill(id, color.as_str());
+        }
+    );
+    on!(on_open_filter_settings, |app, source: i32, filter: i32| {
+        app.studio.select_filter(source, filter);
+        app.show_source_properties(source, 1);
+        app.bump_look_reveal();
+    });
+    on!(on_open_shape_settings, |app, source: i32| {
+        let _ = app.session.set_section_closed("properties.shape", false);
+        app.show_source_properties(source, 0);
+        app.bump_look_reveal();
+    });
+    on!(on_open_look_settings, |app, id: slint::SharedString| {
+        let Some((source, tab, filter)) = app.studio.look_target(id.as_str()) else {
+            return;
+        };
+        if tab == 0 {
+            let _ = app.session.set_section_closed("properties.shape", false);
+        }
+        if let Some(filter) = filter {
+            app.studio.select_filter(source, filter);
+        }
+        app.show_source_properties(source, tab);
+        app.bump_look_reveal();
     });
     on!(on_select_filter, |app, source: i32, filter: i32| {
         app.studio.select_filter(source, filter);
@@ -3442,6 +3507,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         };
         app.studio.transform_source(id, op);
     });
+    on!(
+        on_set_source_rotation,
+        |app, id: i32, degrees: f32, gesture: i32| {
+            app.studio.set_source_rotation(id, degrees, gesture);
+        }
+    );
+    on!(on_set_source_filled, |app, id: i32, on: bool| {
+        app.studio.set_source_filled(id, on);
+    });
     on!(on_set_source_region, |app, id: i32, region: i32| {
         app.studio.set_source_region(id, region);
     });
@@ -3496,6 +3570,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_encoding, |app, out: i32, field: i32, value: i32| {
         app.studio.set_encoding(out, field, value);
     });
+    on!(on_set_output_size, |app, out: i32, index: i32| {
+        app.studio.set_output_size(out, index);
+    });
     on!(on_go_live, |app| {
         app.studio.go_live();
     });
@@ -3542,7 +3619,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         if on_close.supported() && app.bg.on_close != on_close {
             app.bg.on_close = on_close;
             if let Err(e) = background::save(&app.config, &app.bg) {
-                app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
+                app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
             }
         }
     });
@@ -3551,7 +3628,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         if app.bg.exclude_own_window != on {
             app.bg.exclude_own_window = on;
             if let Err(e) = background::save(&app.config, &app.bg) {
-                app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
+                app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
             }
             let exclude = app.bg.exclude_own_window;
             app.main.global::<Studio>().set_exclude_own_window(exclude);
@@ -3566,7 +3643,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio
                 .send(studio_host::Command::SetSwapAfterTransition(on));
             if let Err(e) = background::save(&app.config, &app.bg) {
-                app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
+                app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
             }
         }
     });
@@ -3840,6 +3917,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     if let Some(why) = look_error.or(reset_note) {
         error = error.or(Some(UiError::Other(why)));
     }
+    let error_generation = i32::from(error.is_some());
     let main = MainWindow::new()?;
     rbs_app::window_events::install(&main);
     look::apply(
@@ -3875,6 +3953,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toast: None,
             toast_serial: 0,
             error,
+            error_generation,
             reload_themes: false,
             select_theme: None,
             open_settings: None,
@@ -3916,12 +3995,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         })),
         queue: Rc::new(RefCell::new(Vec::new())),
         pending: Rc::new(Cell::new(false)),
-        toast_timer: Rc::new(slint::Timer::default()),
-        toast_shown: Rc::new(Cell::new(0)),
         save_timer: Rc::new(slint::Timer::default()),
         meter_timer: Rc::new(slint::Timer::default()),
-        deleted_timer: Rc::new(slint::Timer::default()),
-        deleted_shown: Rc::new(Cell::new(0)),
         live_timer: Rc::new(slint::Timer::default()),
     };
     install(&main.global::<Shell>(), &ctx);
@@ -4021,7 +4096,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         let _ = entry::invoke(move || {
             let ctx = CTX.with(|c| c.borrow().clone());
             if let Some(ctx) = ctx {
-                ctx.update(move |app| app.error = Some(UiError::Notice(notice)));
+                ctx.update(move |app| app.show_error(UiError::Notice(notice)));
             }
         });
     }

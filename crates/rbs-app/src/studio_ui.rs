@@ -14,15 +14,16 @@ use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{
-    AUDIO_KBPS, Delivery, Encoding, Format, RateMode, RecordProfile, VIDEO_KBPS, VideoCodec,
+    AUDIO_KBPS, Delivery, Encoding, Format, OutputSize, RateMode, RecordProfile, VIDEO_KBPS,
+    VideoCodec, output_size_options, vertical_recording_from_main,
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, OutputCanvas, RecordRequest, RecordingUpdate,
-    SceneList, SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest,
-    StreamUpdate, StudioHost, Target, TransformOp, Update,
+    Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordRequest,
+    RecordingUpdate, SceneList, SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats,
+    StreamRequest, StreamUpdate, StudioHost, Target, TransformOp, Update,
 };
 use rbs_app::user_session::{RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession};
 use rbs_audio::LevelMeter;
@@ -191,6 +192,10 @@ pub struct StudioUi {
     filter_ui: filters::FilterUi,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
+    /// The source just added is a plain frame: Properties opens on its border.
+    reveal_shape: bool,
+    /// Taken by [`Self::apply`] when a plain frame was selected.
+    focus_shape: Option<i32>,
     /// Moving and resizing on the picture panel (ADR-0048).
     edit: PreviewEdit,
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
@@ -292,8 +297,8 @@ pub struct StudioUi {
     pub folder_serial: u64,
     /// The canvas (Settings, Video), as saved; the studio runs it once started.
     pub canvas: CanvasProfile,
-    /// The main display's size, when known.
-    display: Option<(u32, u32)>,
+    /// The main display's framebuffer and OS scale, when known.
+    display: Option<MainDisplay>,
     /// A canvas change was sent; the studio restarts.
     canvas_restarting: bool,
     /// Why the canvas could not be saved, loaded or changed.
@@ -446,6 +451,8 @@ impl StudioUi {
             selected: -1,
             inspected: Cell::new(-1),
             adding: false,
+            reveal_shape: false,
+            focus_shape: None,
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
@@ -561,6 +568,7 @@ impl StudioUi {
         g.set_sources(ModelRc::from(self.sources.clone()));
         g.set_scenes(ModelRc::from(self.scenes.clone()));
         g.set_library_looks(ModelRc::from(self.library_looks.clone()));
+        g.set_library_look_names(ModelRc::new(VecModel::from(library_look_names())));
         g.set_library_samples(ModelRc::from(self.library_samples.clone()));
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
@@ -643,6 +651,11 @@ impl StudioUi {
         g.set_out_format(Format::ALL.iter().position(|f| *f == p.format).unwrap_or(0) as i32);
         g.set_out_formats(strings(Format::ALL.iter().map(|f| f.label().to_owned())));
         g.set_out_enc(self.encoder_data(output::RECORDING));
+        let canvas = self.settings_canvas_size();
+        let rec_size = self.recording_output_size();
+        let rec_sizes = output_size_options(canvas, rec_size);
+        g.set_out_sizes(strings(rec_sizes.iter().map(|o| o.label.clone())));
+        g.set_out_size(size_index(&rec_sizes, rec_size));
         g.set_out_note(self.profile_note.as_str().into());
         g.set_out_summary(
             format!(
@@ -690,6 +703,7 @@ impl StudioUi {
         g.set_preview_state(preview_state);
         g.set_deleted(self.deleted.as_str().into());
         g.set_deleted_from_scene(self.deleted_from_scene);
+        g.set_deleted_generation(self.deleted_serial as i32);
         g.set_global_kind_names(strings(
             self.kind_codes().iter().map(|(_, l)| (*l).to_owned()),
         ));
@@ -1636,6 +1650,18 @@ impl StudioUi {
         self.send(Command::TransformSource {
             id: SourceId::from_raw(id as u32),
             op,
+            gesture: 0,
+        });
+    }
+
+    /// Sets the picture's rotation in degrees clockwise. Moves that share `gesture`
+    /// are one undo step.
+    pub fn set_source_rotation(&mut self, id: i32, degrees: f32, gesture: i32) {
+        self.deleted.clear();
+        self.send(Command::TransformSource {
+            id: SourceId::from_raw(id as u32),
+            op: TransformOp::SetAngle(degrees),
+            gesture: gesture.max(0) as u64,
         });
     }
 
@@ -1962,8 +1988,8 @@ impl StudioUi {
     }
 
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
-    /// 0 rectangle, 1 circle, 2 ellipse. A colour that is not `#rrggbb` or `#rrggbbaa`
-    /// changes nothing.
+    /// 0 rectangle, 1 circle, 2 ellipse, 3 triangle, 4 arrow. A colour that is not
+    /// `#rrggbb` or `#rrggbbaa` changes nothing.
     pub fn set_source_style(
         &mut self,
         id: i32,
@@ -1979,6 +2005,8 @@ impl StudioUi {
         let shape = match shape {
             1 => Shape::Circle,
             2 => Shape::Ellipse,
+            3 => Shape::Triangle,
+            4 => Shape::Arrow,
             _ => Shape::Rectangle { radius },
         };
         // The shadow is not in the panel yet; keep one an API client set.
@@ -2207,7 +2235,7 @@ impl StudioUi {
             OutputCanvas::Main => &mut self.profile,
             OutputCanvas::Vertical => self
                 .vertical_profile
-                .get_or_insert_with(|| self.profile.clone()),
+                .get_or_insert_with(|| vertical_recording_from_main(&self.profile)),
         }
     }
 
@@ -2495,6 +2523,7 @@ impl StudioUi {
             encoder,
             video: p.video_settings(),
             audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
+            size: p.output_size.map(OutputSize::pair),
         };
         self.rec_state = rec_state::STARTING;
         self.set_note(String::new(), false);
@@ -2529,6 +2558,53 @@ impl StudioUi {
     pub fn set_format(&mut self, i: i32) {
         if let Some(f) = Format::ALL.get(i as usize) {
             self.record_form_mut().format = *f;
+            self.save_profile_form();
+        }
+    }
+
+    /// The canvas whose Recording and Stream sections are showing, in pixels.
+    fn settings_canvas_size(&self) -> (u32, u32) {
+        match self.settings_canvas {
+            OutputCanvas::Vertical => self
+                .vertical
+                .map(|v| (v.size.width, v.size.height))
+                .unwrap_or((self.canvas.width, self.canvas.height)),
+            OutputCanvas::Main => (self.canvas.width, self.canvas.height),
+        }
+    }
+
+    /// The output size the Recording section shows. A vertical canvas with no
+    /// section of its own is the vertical canvas, not the main recording's size.
+    fn recording_output_size(&self) -> Option<OutputSize> {
+        match self.settings_canvas {
+            OutputCanvas::Main => self.profile.output_size,
+            OutputCanvas::Vertical => self.vertical_profile.as_ref().and_then(|p| p.output_size),
+        }
+    }
+
+    /// An Output size row was picked. Saved for the next recording or stream; the
+    /// studio is not restarted and scene items stay where they are (ADR-0102).
+    pub fn set_output_size(&mut self, out: i32, index: i32) {
+        let canvas = self.settings_canvas_size();
+        let current = if out == output::STREAM {
+            self.stream_form().output_size
+        } else {
+            self.recording_output_size()
+        };
+        let Some(picked) = output_size_options(canvas, current)
+            .get(index as usize)
+            .map(|o| o.size)
+        else {
+            return;
+        };
+        if picked == current {
+            return;
+        }
+        if out == output::STREAM {
+            self.stream_form_mut().output_size = picked;
+            self.save_stream_form();
+        } else {
+            self.record_form_mut().output_size = picked;
             self.save_profile_form();
         }
     }
@@ -2601,6 +2677,13 @@ impl StudioUi {
             encoder: self.encoder_id(&p.encoding()),
             video: p.video_settings(),
             audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
+            // No vertical section yet: encode at the vertical canvas, not at the
+            // main recording's size (ADR-0102).
+            size: self
+                .vertical_profile
+                .as_ref()
+                .and_then(|v| v.output_size)
+                .map(OutputSize::pair),
         };
         self.vertical_rec = VerticalOut::Starting;
         self.send(Command::StartVerticalRecording(request));
@@ -2879,6 +2962,9 @@ impl StudioUi {
                 .unwrap_or(0) as i32,
         );
         g.set_st_enc(self.encoder_data(output::STREAM));
+        let st_sizes = output_size_options(self.settings_canvas_size(), st.output_size);
+        g.set_st_sizes(strings(st_sizes.iter().map(|o| o.label.clone())));
+        g.set_st_size(size_index(&st_sizes, st.output_size));
         g.set_st_note(self.stream_note.as_str().into());
         let summary = match &parsed {
             None => "No server yet".to_owned(),
@@ -3052,13 +3138,20 @@ impl StudioUi {
             }
         };
         let mut v: Vec<_> = SIZES.iter().map(|s| (*s, label(*s))).collect();
-        let display = self
-            .display
-            .and_then(|(w, h)| canvas_profile::canvas_for_display(w, h));
-        if let Some(d) = display {
+        if let Some(main) = self.display
+            && let Some(d) = canvas_profile::canvas_for_display(main.size.0, main.size.1)
+        {
+            // The fitted size stays in pixels. The scale is only the row's label.
+            let text = rbs_capture::choose_framebuffer(rbs_capture::DisplayReading {
+                monitor: None,
+                mode: Some(d),
+                scale: main.scale,
+            })
+            .map(|c| c.label())
+            .unwrap_or_else(|| format!("{} (main display)", label(d)));
             match v.iter_mut().find(|(s, _)| *s == d) {
-                Some(entry) => entry.1 = format!("{} (main display)", label(d)),
-                None => v.push((d, format!("{} (main display)", label(d)))),
+                Some(entry) => entry.1 = text,
+                None => v.push((d, text)),
             }
         }
         let saved = (self.canvas.width, self.canvas.height);
@@ -3149,12 +3242,93 @@ impl StudioUi {
         });
     }
 
-    /// Adds a sample picture to the scene being edited (ADR-0075).
+    /// Adds the look at `index` in the Library's list.
+    pub fn apply_look_at(&mut self, index: i32) {
+        let looks = rbs_scene::look::built_in();
+        let Some(look) = looks.get(index as usize) else {
+            return;
+        };
+        self.apply_look(look.id);
+    }
+
+    /// Adds a colour shape (0 circle … 6 arrow) and opens Shape and border.
+    pub fn add_stamp(&mut self, kind: i32) {
+        let Ok(kind) = u8::try_from(kind) else {
+            return;
+        };
+        self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = true;
+        self.send(Command::AddStamp { kind });
+    }
+
+    /// Adds a PNG the user picked. The new source is selected.
+    pub fn add_image_file(&mut self, path: &std::path::Path) {
+        self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = false;
+        self.send(Command::AddImage {
+            path: path.to_owned(),
+        });
+    }
+
+    /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
+    /// changes nothing.
+    pub fn set_source_fill(&mut self, id: i32, color: &str) {
+        let Some(color) = rbs_api::types::parse_color(color.trim()) else {
+            return;
+        };
+        self.deleted.clear();
+        self.send(Command::SetSourceFill {
+            id: SourceId::from_raw(id as u32),
+            color: rbs_api::types::format_color(color),
+        });
+    }
+
+    /// Turns a colour source's fill on or off. Off leaves the inside empty.
+    pub fn set_source_filled(&mut self, id: i32, on: bool) {
+        self.deleted.clear();
+        self.send(Command::SetSourceFilled {
+            id: SourceId::from_raw(id as u32),
+            on,
+        });
+    }
+
+    /// Adds a sample picture to the scene being edited (ADR-0075). The new source
+    /// is selected. A plain frame also asks Properties to open on its border.
     pub fn add_sample(&mut self, sample: &str) {
         self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = rbs_sources::still::plain_frame(sample).is_some();
         self.send(Command::AddSample {
             sample: sample.to_owned(),
         });
+    }
+
+    /// Where the Library gear sends the selected source: the Properties tab
+    /// (0 Transform, 1 Filters) and the filter of the look's type, when the source
+    /// already has one.
+    pub fn look_target(&self, id: &str) -> Option<(i32, i32, Option<i32>)> {
+        let look = rbs_scene::look::find(id)?;
+        if self.selected < 0 {
+            return None;
+        }
+        let tab = match look.group {
+            rbs_scene::look::LookGroup::Shape => 0,
+            _ => 1,
+        };
+        let filter = look.filters.first().and_then(|wanted| {
+            self.rows
+                .iter()
+                .find(|r| r.id.get() as i32 == self.selected)
+                .and_then(|r| {
+                    r.filters
+                        .iter()
+                        .find(|f| f.type_id == wanted.type_id)
+                        .map(|f| f.id.get() as i32)
+                })
+        });
+        Some((self.selected, tab, filter))
     }
 
     pub fn refresh_library(&mut self) {
@@ -3803,6 +3977,7 @@ impl StudioUi {
             Update::VerticalPictureFailed => self.vertical_picture_failed = true,
             Update::Sources(rows) => {
                 self.set_rows(rows);
+                out.focus_shape = self.focus_shape.take();
                 self.refresh_existing();
                 self.refresh_marks();
             }
@@ -4121,6 +4296,8 @@ impl StudioUi {
                 let (shape, radius) = match style.shape {
                     Shape::Circle => (1, 0.0),
                     Shape::Ellipse => (2, 0.0),
+                    Shape::Triangle => (3, 0.0),
+                    Shape::Arrow => (4, 0.0),
                     Shape::Rectangle { radius } => (0, radius),
                     _ => (0, 0.0),
                 };
@@ -4170,6 +4347,7 @@ impl StudioUi {
                     locked: r.locked,
                     flip_h: r.layout.is_some_and(|l| l.flip_state().horizontal),
                     flip_v: r.layout.is_some_and(|l| l.flip_state().vertical),
+                    rotation: r.layout.map_or(0.0, |l| l.rotation),
                     audio: r.kind.is_some_and(SourceKind::is_audio),
                     muted: r.audio.muted,
                     volume: fader::position_of(r.audio.volume),
@@ -4191,6 +4369,26 @@ impl StudioUi {
                             1
                         }
                     }),
+                    solid: r.kind == Some(SourceKind::Color),
+                    fill: {
+                        let text = if r.fill.is_empty() {
+                            "#ffffff"
+                        } else {
+                            r.fill.as_str()
+                        };
+                        text.into()
+                    },
+                    fill_swatch: {
+                        let text = if r.fill.is_empty() {
+                            "#ffffff"
+                        } else {
+                            r.fill.as_str()
+                        };
+                        let [red, green, blue, alpha] =
+                            rbs_api::types::parse_color(text).unwrap_or([255, 255, 255, 255]);
+                        slint::Color::from_argb_u8(alpha, red, green, blue)
+                    },
+                    filled: r.filled,
                 }
             })
             .collect();
@@ -4201,6 +4399,10 @@ impl StudioUi {
         if let (true, Some(added), None) = (self.adding, new.next(), new.next()) {
             self.selected = added.id;
             self.adding = false;
+            if self.reveal_shape {
+                self.focus_shape = Some(added.id);
+                self.reveal_shape = false;
+            }
         } else if !data.iter().any(|d| d.id == self.selected) {
             self.selected = -1;
         }
@@ -4438,6 +4640,8 @@ pub struct Applied {
     pub vertical_added: bool,
     /// Studio mode just started: a closed Preview panel opens (UI spec, Studio mode).
     pub studio_mode_started: bool,
+    /// A plain frame was just added and selected: open Properties on its border.
+    pub focus_shape: Option<i32>,
     /// A control API client asked to switch: scene collections (`true`) or output
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.
@@ -4477,6 +4681,13 @@ fn choices<T: Clone + PartialEq>(c: &Choices<T>) -> (ModelRc<SharedString>, i32)
 
 fn kbps(k: u32) -> String {
     format!("{k} kbit/s")
+}
+
+fn size_index(
+    options: &[rbs_app::record_profile::OutputSizeOption],
+    saved: Option<OutputSize>,
+) -> i32 {
+    options.iter().position(|o| o.size == saved).unwrap_or(0) as i32
 }
 
 fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
@@ -4681,6 +4892,10 @@ fn color_text(c: [u8; 4]) -> String {
 }
 
 /// The Library's looks, in the order the panel lists them (ADR-0075).
+fn library_look_names() -> Vec<slint::SharedString> {
+    library_looks().into_iter().map(|l| l.name).collect()
+}
+
 fn library_looks() -> Vec<LookData> {
     rbs_scene::look::built_in()
         .into_iter()
@@ -4706,6 +4921,8 @@ const THUMB_REQUEST: (u32, u32) = (192, 108);
 
 /// The sample pictures with their thumbnails (made once, when the Library first shows).
 fn library_samples() -> Vec<SampleData> {
+    let mut background = 0i32;
+    let mut frame = 0i32;
     rbs_sources::still::SAMPLES
         .iter()
         .filter_map(|s| {
@@ -4713,10 +4930,23 @@ fn library_samples() -> Vec<SampleData> {
             let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                 &px, THUMB.0, THUMB.1,
             );
+            let is_frame = s.kind == rbs_sources::still::SampleKind::Frame;
+            // Place within its own kind, so the two columns stay even when the
+            // other kind is hidden.
+            let slot = if is_frame {
+                let n = frame;
+                frame += 1;
+                n
+            } else {
+                let n = background;
+                background += 1;
+                n
+            };
             Some(SampleData {
                 id: s.id.into(),
                 name: s.name.into(),
-                frame: s.kind == rbs_sources::still::SampleKind::Frame,
+                frame: is_frame,
+                slot,
                 thumb: slint::Image::from_rgba8(buffer),
             })
         })
@@ -5247,6 +5477,42 @@ mod tests {
         // As after `Update::Started`: Go live is possible.
         ui.cannot_record = None;
         (ui, d)
+    }
+
+    #[test]
+    fn the_main_display_row_stays_in_pixels_and_shows_the_scale() {
+        let (mut ui, d) = ui("display-scale");
+        ui.display = Some(MainDisplay {
+            size: (3840, 2160),
+            scale: rbs_capture::DisplayScale::from_pixels_per_point(2, 1),
+        });
+        let sizes = ui.canvas_sizes();
+        let row = sizes.iter().find(|(s, _)| *s == (3840, 2160)).unwrap();
+        assert_eq!(row.1, "3840 x 2160 (main display, 200%)");
+        assert_eq!(
+            sizes.iter().find(|(s, _)| *s == (1920, 1080)).unwrap().1,
+            "1920 x 1080"
+        );
+        assert!(sizes.iter().all(|(s, _)| *s != (7680, 4320)));
+
+        ui.display = Some(MainDisplay {
+            size: (3440, 1440),
+            scale: rbs_capture::DisplayScale::from_dpi(144),
+        });
+        let sizes = ui.canvas_sizes();
+        let row = sizes.iter().find(|(s, _)| *s == (3440, 1440)).unwrap();
+        assert_eq!(row.1, "3440 x 1440 (main display, 150%)");
+
+        ui.display = Some(MainDisplay {
+            size: (2560, 1440),
+            scale: None,
+        });
+        let sizes = ui.canvas_sizes();
+        assert_eq!(
+            sizes.iter().find(|(s, _)| *s == (2560, 1440)).unwrap().1,
+            "2560 x 1440 (main display)"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

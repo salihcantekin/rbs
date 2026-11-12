@@ -177,6 +177,8 @@ pub const THEMEABLE: &[Themeable] = &[
     colour("color.surface.raised", "Panel background"),
     colour("color.surface.overlay", "Menu and popover background"),
     colour("color.surface.sunken", "Well background"),
+    colour("color.toast.surface", "Notice background"),
+    colour("color.toast.edge", "Notice outline"),
     colour("color.text.primary", "Text"),
     colour("color.text.secondary", "Secondary text"),
     colour("color.text.disabled", "Disabled text"),
@@ -298,6 +300,13 @@ pub const THEMEABLE: &[Themeable] = &[
     length("radius.lg", "Large corner radius", Shapes, 0.0, 32.0),
     length("size.border", "Border width", Shapes, 1.0, 4.0),
     length("size.focus-ring", "Focus ring width", Shapes, 2.0, 6.0),
+    length(
+        "size.toast.border",
+        "Notice outline width",
+        Shapes,
+        2.0,
+        4.0,
+    ),
     motion("motion.fast", "Short animation"),
     motion("motion.normal", "Animation"),
 ];

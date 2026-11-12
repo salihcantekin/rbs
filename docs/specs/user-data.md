@@ -84,7 +84,7 @@ The body is a set of sections, each a TOML table; section names are lowercase AS
 | `scenes` | array of tables `id`, `name`, `canvas?`, `items?` | `canvas` = scope `Canvas(id)`; absent = `Shared` |
 | `scenes.items` | array of tables `id`, `source?` or `scene?` (exactly one), `visible?` (default true), `locked?` (default false, format 3), `layout`, `overrides?` | Bottom first |
 | `layout` | table `position = [x, y]`, `size = [w, h]`, `rotation?` (0), `crop? = [left, top, right, bottom]` (0s), `opacity?` (1), `style?` | Canvas pixels; crop in source pixels |
-| `layout.style` | table `shape?` (`"rectangle"` default, `"circle"`, `"ellipse"`), `radius?` (0; rectangles only), `border? = { width, color }`, `shadow? = { offset? = [x, y], blur?, color }` | Format 2 (ADR-0053). Box units; colours `"#rrggbb"` or `"#rrggbbaa"` (written as `#rrggbbaa`); a radius on another shape and colours in other forms are refused |
+| `layout.style` | table `shape?` (`"rectangle"` default, `"circle"`, `"ellipse"`, `"triangle"`, `"arrow"`), `radius?` (0; rectangles only), `border? = { width, color }`, `shadow? = { offset? = [x, y], blur?, color }` | Format 2 (ADR-0053). Box units; colours `"#rrggbb"` or `"#rrggbbaa"` (written as `#rrggbbaa`); a radius on another shape and colours in other forms are refused. `triangle` is an isosceles triangle with its tip on the top edge; `arrow` points at the right edge. An older build refuses a file that uses either |
 | `overrides` | array of tables `canvas`, `layout` | At most one per canvas |
 | `settings` | table of booleans, integers, floats and strings | Other TOML types are refused |
 

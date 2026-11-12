@@ -405,6 +405,57 @@ fn a_control_api_client_drives_the_studio() {
     let bad = c.call("settings.set", json!({"profiles": [profile]}));
     assert_eq!(bad["error"]["data"]["kind"], "invalid_params");
 
+    // Output size (protocol 1.39): omitted is the canvas. A fitted size is stored,
+    // omitting it again clears it, and a size that does not fit is refused.
+    let settings = c.call("settings.get", json!({}));
+    let mut profile = settings["result"]["data"]["profiles"][0].clone();
+    assert!(profile.get("output_size").is_none(), "{profile}");
+    profile["output_size"] = json!({"width": 1280, "height": 720});
+    let set = c.call("settings.set", json!({"profiles": [profile.clone()]}));
+    assert_eq!(
+        set["result"]["data"]["profiles"][0]["output_size"]["width"], 1280,
+        "{set}"
+    );
+    assert_eq!(
+        set["result"]["data"]["profiles"][0]["output_size"]["height"], 720,
+        "{set}"
+    );
+    let p = next(&updates, |u| match u {
+        Update::Profile(p) => Some(p),
+        _ => None,
+    });
+    assert_eq!(
+        p.output_size.map(|s| (s.width, s.height)),
+        Some((1280, 720))
+    );
+    profile.as_object_mut().unwrap().remove("output_size");
+    let cleared = c.call("settings.set", json!({"profiles": [profile.clone()]}));
+    assert!(
+        cleared["result"]["data"]["profiles"][0]
+            .get("output_size")
+            .is_none(),
+        "{cleared}"
+    );
+    profile["output_size"] = json!(null);
+    let nulled = c.call("settings.set", json!({"profiles": [profile.clone()]}));
+    assert!(nulled["result"].is_object(), "{nulled}");
+    assert!(
+        nulled["result"]["data"]["profiles"][0]
+            .get("output_size")
+            .is_none(),
+        "{nulled}"
+    );
+    profile["output_size"] = json!({"width": 1280, "height": 800});
+    let bad = c.call("settings.set", json!({"profiles": [profile]}));
+    assert_eq!(bad["error"]["data"]["kind"], "invalid_params", "{bad}");
+    let still = c.call("settings.get", json!({}));
+    assert!(
+        still["result"]["data"]["profiles"][0]
+            .get("output_size")
+            .is_none(),
+        "{still}"
+    );
+
     // Output profiles and scene collections (protocol 1.4): `failed` until the UI
     // sent its libraries, then listed; a switch is checked here and handed to the UI,
     // which answers with the libraries again.

@@ -11,11 +11,13 @@ pub mod camera;
 pub mod caps;
 pub mod conformance;
 mod error;
+mod framebuffer;
 pub mod handoff;
 mod session;
 mod target;
 
 pub use error::{CaptureError, ErrorDomain};
+pub use framebuffer::{DisplayReading, DisplayScale, FramebufferChoice, choose_framebuffer};
 pub use session::{
     CaptureChange, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, GpuDeviceId,
     GpuImportTarget, SyncKind,

@@ -24,6 +24,8 @@ pub const THEME_COLORS: &[&str] = &[
     "color.surface.raised",
     "color.surface.overlay",
     "color.surface.sunken",
+    "color.toast.surface",
+    "color.toast.edge",
     "color.text.primary",
     "color.text.secondary",
     "color.text.disabled",
@@ -59,6 +61,8 @@ pub const FIXED: &[(&str, &str)] = &[
 /// visible and icons legible (rule U7), and the main window must fit the 1280 x 720 minimum (rule U11).
 pub const MINIMUMS: &[(&str, f32, &str)] = &[
     ("size.focus-ring", 2.0, "rule U7"),
+    ("size.toast.border", 2.0, "the notice stays visible"),
+    ("size.toast.rail", 4.0, "the notice stays visible"),
     ("size.panel.pad", 8.0, "ADR-0076"),
     ("size.section.gap", 12.0, "ADR-0076"),
     ("size.field.gap", 6.0, "ADR-0076"),
@@ -84,6 +88,7 @@ pub const LENGTHS: &[&str] = &[
     "size.control.sm",
     "size.control.md",
     "size.control.lg",
+    "size.color.code",
     "radius.sm",
     "radius.md",
     "radius.lg",
@@ -133,6 +138,9 @@ pub const LENGTHS: &[&str] = &[
     "size.library.thumb-h",
     "size.target.thumb-w",
     "size.target.thumb-h",
+    "size.toast.border",
+    "size.toast.rail",
+    "size.toast.max",
 ];
 
 /// Duration tokens every file defines (milliseconds).
@@ -142,6 +150,8 @@ pub const DURATIONS: &[&str] = &[
     "delay.repeat-start",
     "delay.repeat",
     "delay.tooltip",
+    "delay.toast",
+    "delay.toast-tick",
 ];
 
 /// Text styles every file defines.
@@ -359,6 +369,22 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     // The brand mark in the RBS menu button, resting (raised) and under the pointer (overlay).
     ("color.brand", "color.surface.raised", 3.0, 3.0),
     ("color.brand", "color.surface.overlay", 3.0, 3.0),
+    // The notice card (toast and error bar): text on its fill, its edge and the
+    // controls on it, and the edge against the window and the panels it floats over.
+    ("color.text.primary", "color.toast.surface", 4.5, 7.0),
+    ("color.text.secondary", "color.toast.surface", 4.5, 7.0),
+    // The outline, the side mark and the notice icon are the edge colour on the fill.
+    ("color.toast.edge", "color.toast.surface", 4.5, 7.0),
+    // The countdown chip is filled with the edge colour; the seconds and the hourglass
+    // are the surface colour, and the seconds are text.
+    ("color.toast.surface", "color.toast.edge", 4.5, 7.0),
+    ("color.border.focus", "color.toast.surface", 3.0, 3.0),
+    ("color.border.strong", "color.toast.surface", 3.0, 3.0),
+    ("color.accent", "color.toast.surface", 3.0, 3.0),
+    ("color.toast.edge", "color.surface.base", 3.0, 3.0),
+    ("color.toast.edge", "color.surface.raised", 3.0, 3.0),
+    ("color.toast.edge", "color.surface.overlay", 3.0, 3.0),
+    ("color.toast.edge", "color.surface.sunken", 3.0, 3.0),
 ];
 
 /// Surfaces `color.state.live` must stand out from (3:1). Not `surface.raised` or

@@ -425,6 +425,8 @@ enum ShapeName {
     Rectangle,
     Circle,
     Ellipse,
+    Triangle,
+    Arrow,
 }
 
 fn is_rectangle(v: &ShapeName) -> bool {
@@ -488,7 +490,9 @@ impl StyleDoc {
             Shape::Rectangle { radius } => (ShapeName::Rectangle, wide(radius)),
             Shape::Circle => (ShapeName::Circle, 0.0),
             Shape::Ellipse => (ShapeName::Ellipse, 0.0),
-            // Shapes this build does not know cannot exist in its model.
+            Shape::Triangle => (ShapeName::Triangle, 0.0),
+            Shape::Arrow => (ShapeName::Arrow, 0.0),
+            // A shape added by a newer build is stored as a plain rectangle.
             _ => (ShapeName::Rectangle, 0.0),
         };
         Self {
@@ -517,6 +521,8 @@ impl StyleDoc {
             }
             ShapeName::Circle => Shape::Circle,
             ShapeName::Ellipse => Shape::Ellipse,
+            ShapeName::Triangle => Shape::Triangle,
+            ShapeName::Arrow => Shape::Arrow,
         };
         let border = match &self.border {
             Some(b) => Some(Border::new(b.width as f32, color(&b.color)?)),

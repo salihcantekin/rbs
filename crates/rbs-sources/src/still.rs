@@ -185,6 +185,18 @@ pub const SAMPLES: [Sample; 8] = [
     },
 ];
 
+/// A frame added as a transparent colour with a border, so its thickness stays
+/// editable, instead of a picture with the ring baked in. `(width, corner radius)`
+/// in the item's box units (canvas pixels when the frame fills the canvas). The
+/// numbers match the generated picture of the same id, which the Library shows.
+pub fn plain_frame(id: &str) -> Option<(f32, f32)> {
+    match id {
+        "frame-thin" => Some((4.0, 6.0)),
+        "frame-thick" => Some((28.0, 40.0)),
+        _ => None,
+    }
+}
+
 /// Signed distance from `(px, py)` to a rounded rectangle centred in `w` x `h`
 /// inset by `inset`, negative inside.
 fn rounded_rect_distance(px: f32, py: f32, w: f32, h: f32, inset: f32, radius: f32) -> f32 {

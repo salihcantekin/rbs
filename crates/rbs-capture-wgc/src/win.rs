@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, GpuDeviceId, SyncKind, TargetId, TargetKind, caps,
+    CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, SyncKind, TargetId,
+    TargetKind, caps, choose_framebuffer,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -46,7 +47,8 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIFactory4, IDXGIResource1,
 };
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
+    HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::System::Com::{CoIncrementMTAUsage, IAgileObject};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
@@ -58,6 +60,10 @@ use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
+    MDT_EFFECTIVE_DPI, SetThreadDpiAwarenessContext,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     IsWindowVisible, WS_EX_TOOLWINDOW,
@@ -190,6 +196,91 @@ fn monitors() -> Vec<Monitor> {
     list
 }
 
+/// Reads the framebuffer while this thread is per-monitor DPI aware, then restores
+/// the previous context.
+///
+/// A DPI-unaware thread makes `GetDpiForMonitor` return 96 and `GetMonitorInfo`
+/// return virtualized points. The canvas needs the monitor's effective DPI and the
+/// pixel rectangle (ADR-0102). `EnumDisplaySettings` is unaffected and stays the
+/// size when the rectangle disagrees.
+fn with_monitor_dpi<T>(body: impl FnOnce() -> T) -> T {
+    struct Restore(DPI_AWARENESS_CONTEXT);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // `is_invalid` treats -1 as invalid, but that value is the real
+            // `DPI_AWARENESS_CONTEXT_UNAWARE`. Only a null return means the set failed.
+            if !self.0.0.is_null() {
+                // SAFETY: `self.0` is the context this thread had before the call
+                // below. The values are process-wide sentinels, not owned handles,
+                // so restoring one releases nothing.
+                unsafe {
+                    SetThreadDpiAwarenessContext(self.0);
+                }
+            }
+        }
+    }
+    // SAFETY: the constant is a documented sentinel, not a pointer this process
+    // allocated. The previous context is restored when `Restore` drops, including
+    // if `body` panics. The call only changes this thread.
+    let previous =
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    let _restore = Restore(previous);
+    body()
+}
+
+/// Current pixel mode (`ENUM_CURRENT_SETTINGS`). `None` when the mode cannot be read.
+fn pixel_mode(device: &str) -> Option<(u32, u32)> {
+    if device.is_empty() {
+        return None;
+    }
+    let mut wide: Vec<u16> = device.encode_utf16().collect();
+    wide.push(0);
+    let mut mode = DEVMODEW {
+        dmSize: u16::try_from(std::mem::size_of::<DEVMODEW>()).unwrap_or(0),
+        ..DEVMODEW::default()
+    };
+    if mode.dmSize == 0 {
+        return None;
+    }
+    // SAFETY: `mode` is a DEVMODEW with `dmSize` set to its size, which
+    // EnumDisplaySettingsW requires. `wide` is null-terminated and lives for the
+    // call. The API writes the current mode into `mode`.
+    let ok =
+        unsafe { EnumDisplaySettingsW(PCWSTR(wide.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode) };
+    (ok.as_bool() && mode.dmPelsWidth > 0 && mode.dmPelsHeight > 0)
+        .then_some((mode.dmPelsWidth, mode.dmPelsHeight))
+}
+
+/// The monitor's effective DPI, or `None` when it cannot be read.
+fn effective_dpi(handle: HMONITOR) -> Option<u32> {
+    let mut x = 0u32;
+    let mut y = 0u32;
+    // SAFETY: `x` and `y` are writable u32s. `handle` comes from EnumDisplayMonitors
+    // in this call. MDT_EFFECTIVE_DPI is the monitor's scale, not a size.
+    let ok = unsafe { GetDpiForMonitor(handle, MDT_EFFECTIVE_DPI, &mut x, &mut y) };
+    ok.ok().and(match (x, y) {
+        (0, 0) => None,
+        (0, y) => Some(y),
+        (x, _) => Some(x),
+    })
+}
+
+/// Framebuffer size and scale (`dpi / 96`). The pixel mode wins over `GetMonitorInfo`
+/// when both were read and they differ. The scale is not applied to the size.
+fn framebuffer_of(monitor: &Monitor) -> ((u32, u32), Option<DisplayScale>) {
+    let reported = rect_size(&monitor.rect);
+    let scale = effective_dpi(monitor.handle).and_then(DisplayScale::from_dpi);
+    let choice = choose_framebuffer(DisplayReading {
+        monitor: Some(reported),
+        mode: pixel_mode(&monitor.device),
+        scale,
+    });
+    match choice {
+        Some(choice) => ((choice.width, choice.height), scale),
+        None => (reported, scale),
+    }
+}
+
 fn rect_size(rect: &RECT) -> (u32, u32) {
     (
         u32::try_from(rect.right - rect.left).unwrap_or(0),
@@ -308,10 +399,15 @@ fn window_id(hwnd: HWND) -> TargetId {
 pub(crate) fn resolve(id: &TargetId) -> Option<(Resolved, (u32, u32))> {
     let id = id.as_str();
     if let Some(device) = id.strip_prefix(DISPLAY_PREFIX) {
-        return monitors()
-            .into_iter()
-            .find(|m| m.device == device)
-            .map(|m| (Resolved::Display(m.handle), rect_size(&m.rect)));
+        return with_monitor_dpi(|| {
+            monitors()
+                .into_iter()
+                .find(|m| m.device == device)
+                .map(|m| {
+                    let (size, _) = framebuffer_of(&m);
+                    (Resolved::Display(m.handle), size)
+                })
+        });
     }
     let (pid, value) = id.strip_prefix(WINDOW_PREFIX)?.split_once(':')?;
     let pid = u32::from_str_radix(pid, 16).ok()?;
@@ -424,24 +520,30 @@ impl AdapterFactory for WgcCaptureFactory {
 impl CaptureFactory for WgcCaptureFactory {
     fn enumerate(&self, kind: TargetKind) -> Result<Vec<CaptureTarget>, CaptureError> {
         match kind {
-            TargetKind::Display => Ok(monitors()
-                .into_iter()
-                .enumerate()
-                .map(|(index, m)| {
-                    let (w, h) = rect_size(&m.rect);
-                    let name = if m.primary {
-                        format!("Display {} (primary)", index + 1)
-                    } else {
-                        format!("Display {}", index + 1)
-                    };
-                    CaptureTarget::new(
-                        TargetId::new(format!("{DISPLAY_PREFIX}{}", m.device)),
-                        TargetKind::Display,
-                        name,
-                    )
-                    .with_size(w, h)
-                })
-                .collect()),
+            TargetKind::Display => Ok(with_monitor_dpi(|| {
+                monitors()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, m)| {
+                        let ((w, h), scale) = framebuffer_of(&m);
+                        let name = if m.primary {
+                            format!("Display {} (primary)", index + 1)
+                        } else {
+                            format!("Display {}", index + 1)
+                        };
+                        let target = CaptureTarget::new(
+                            TargetId::new(format!("{DISPLAY_PREFIX}{}", m.device)),
+                            TargetKind::Display,
+                            name,
+                        )
+                        .with_size(w, h);
+                        match scale {
+                            Some(scale) => target.with_scale(scale),
+                            None => target,
+                        }
+                    })
+                    .collect()
+            })),
             TargetKind::Window => Ok(windows_list()
                 .into_iter()
                 .filter_map(|hwnd| {

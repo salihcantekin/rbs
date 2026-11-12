@@ -389,6 +389,9 @@ impl RecordSettings {
             video: self.video.clone(),
             audio: self.audio.clone(),
             canvas: None,
+            // RecordSettings does not store an output size. A recording started this
+            // way encodes at its canvas. Studio outputs carry the size themselves.
+            size: None,
         }
     }
 }
@@ -463,6 +466,14 @@ pub enum RecordError {
     ReplayArmed,
     /// The monitor output plays already ([`Studio::start_monitor`]).
     MonitorPlaying,
+    /// An explicit output size is odd or outside 2..=7680 (ADR-0102). Nothing was
+    /// started. An absent size is the canvas, including a side above 7680.
+    OutputSize {
+        /// The refused width.
+        width: u32,
+        /// The refused height.
+        height: u32,
+    },
 }
 
 impl fmt::Display for RecordError {
@@ -501,6 +512,12 @@ impl fmt::Display for RecordError {
             }
             RecordError::ReplayArmed => f.write_str("the replay buffer is armed already"),
             RecordError::MonitorPlaying => f.write_str("the monitor output plays already"),
+            RecordError::OutputSize { width, height } => {
+                write!(
+                    f,
+                    "output size {width}x{height} is not an even size from 2 to 7680"
+                )
+            }
             RecordError::TooManyOutputs => write!(
                 f,
                 "this canvas already feeds the most outputs at once ({}); a studio runs at most {}",

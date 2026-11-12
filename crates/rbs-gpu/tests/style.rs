@@ -319,3 +319,46 @@ fn a_crop_that_leaves_no_picture_draws_nothing_plain_or_styled() {
         }
     }
 }
+
+#[test]
+fn a_triangle_covers_the_base_and_leaves_the_top_corners() {
+    let Some(px) = render(|ctx, pool| {
+        let t = red(ctx, pool);
+        vec![styled(
+            t,
+            Affine2::rect(0.0, 0.0, 64.0, 64.0),
+            LayerShape::Triangle,
+            [64.0, 64.0],
+        )]
+    }) else {
+        return;
+    };
+    // Tip at the top centre, base along the bottom. The top corners are outside.
+    assert_close(at(&px, W, 2, 2), NONE, TOL);
+    assert_close(at(&px, W, 61, 2), NONE, TOL);
+    assert_close(at(&px, W, 32, 4), RED, TOL);
+    assert_close(at(&px, W, 4, 60), RED, TOL);
+    assert_close(at(&px, W, 59, 60), RED, TOL);
+    assert_close(at(&px, W, 32, 32), RED, TOL);
+}
+
+#[test]
+fn an_arrow_points_right_and_leaves_the_corners() {
+    let Some(px) = render(|ctx, pool| {
+        let t = red(ctx, pool);
+        vec![styled(
+            t,
+            Affine2::rect(0.0, 0.0, 64.0, 64.0),
+            LayerShape::Arrow,
+            [64.0, 64.0],
+        )]
+    }) else {
+        return;
+    };
+    // The shaft is the left middle; the head reaches the right middle. Corners stay clear.
+    assert_close(at(&px, W, 2, 2), NONE, TOL);
+    assert_close(at(&px, W, 61, 2), NONE, TOL);
+    assert_close(at(&px, W, 4, 32), RED, TOL);
+    assert_close(at(&px, W, 60, 32), RED, TOL);
+    assert_close(at(&px, W, 32, 32), RED, TOL);
+}

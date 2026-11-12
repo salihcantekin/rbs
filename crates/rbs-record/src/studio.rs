@@ -179,6 +179,38 @@ pub struct OutputSettings {
     /// The canvas this output takes (ADR-0093): the main canvas or one of
     /// [`StudioSettings::extra_canvases`]. `None`: the main canvas.
     pub canvas: Option<CanvasId>,
+    /// Encoded picture size (ADR-0102). `None`: this output's canvas, including a
+    /// side above 7680. An explicit size is even on both sides, from 2 to 7680.
+    /// Not a [`VideoSettings`] field: two outputs share an encoder only when this
+    /// resolves to the same size as well.
+    pub size: Option<(u32, u32)>,
+}
+
+/// Smallest side of an explicit output size (ADR-0102 decision 7).
+const OUTPUT_SIZE_MIN: u32 = 2;
+/// Largest side of an explicit output size. A canvas may be taller (8192); an
+/// absent size keeps that canvas.
+const OUTPUT_SIZE_MAX: u32 = 7680;
+
+/// The picture an output encodes. `None` is `canvas`. An explicit size must be even
+/// and in 2..=7680 on both sides; otherwise [`RecordError::OutputSize`] and nothing
+/// is chosen. The aspect is not re-fitted: a later settings UI stores same-aspect
+/// sizes, and a different aspect is letterboxed by the scaled download.
+pub(crate) fn resolve_output_size(
+    size: Option<(u32, u32)>,
+    canvas: (u32, u32),
+) -> Result<(u32, u32), RecordError> {
+    let Some((width, height)) = size else {
+        return Ok(canvas);
+    };
+    let even = width.is_multiple_of(2) && height.is_multiple_of(2);
+    let in_range = (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&width)
+        && (OUTPUT_SIZE_MIN..=OUTPUT_SIZE_MAX).contains(&height);
+    if even && in_range {
+        Ok((width, height))
+    } else {
+        Err(RecordError::OutputSize { width, height })
+    }
 }
 
 impl OutputSettings {
@@ -204,6 +236,7 @@ impl OutputSettings {
             video: VideoSettings::default(),
             audio: Some(AudioSettings::default()),
             canvas: None,
+            size: None,
         }
     }
 
@@ -418,6 +451,8 @@ enum VideoPlan {
         encoder: Box<VideoEncoderNode>,
         chosen: Chosen,
         settings: VideoSettings,
+        /// Resolved output size the encoder is opened with.
+        size: (u32, u32),
     },
     Shared(usize),
 }
@@ -472,24 +507,30 @@ pub(crate) struct Prepared {
 }
 
 impl Prepared {
-    /// Chooses every adapter of an output of a `width x height` canvas at `fps`; opens
-    /// only the encoder sessions it does not share (their stream descriptors make the
-    /// output). A running encoder in `running` is shared when the output's settings
-    /// equal the ones it was opened with and its adapter is a candidate of this
-    /// output's selection (ADR-0047 decision 3).
+    /// Chooses every adapter of an output of a canvas at `fps`; opens only the encoder
+    /// sessions it does not share (their stream descriptors make the output). A running
+    /// encoder in `running` is shared when the output's video settings and resolved
+    /// output size equal the ones it was opened with and its adapter is a candidate of
+    /// this output's selection (ADR-0047, ADR-0102). `canvas_size` is that output's canvas.
     pub(crate) fn choose(
         adapters: &RecordAdapters,
         out: &OutputSettings,
         canvas: CanvasId,
-        (width, height): (u32, u32),
+        canvas_size: (u32, u32),
         fps: FrameRate,
         audio_graph: AudioGraphConfig,
         running: &Chains,
     ) -> Result<Self, RecordError> {
+        let (width, height) = resolve_output_size(out.size, canvas_size)?;
+        let (canvas_width, canvas_height) = canvas_size;
         // System memory: the export reads the canvas back (the P4 exception of
         // ADR-0038); native export will take the memory kind from the encoder.
+        // Equal size prepares the 1:1 download; a different size scales once from
+        // this canvas, never from another output.
         let export = VideoExportNode::with_tone(
             out.video.format,
+            canvas_width,
+            canvas_height,
             width,
             height,
             out.video.color,
@@ -500,6 +541,7 @@ impl Prepared {
             c.as_ref().is_some_and(|c| {
                 c.canvas == canvas
                     && c.settings == out.video
+                    && c.size == (width, height)
                     // An export asked to end takes no later canvas (ADR-0045).
                     && c.end.requested().is_none()
                     && select::is_video_candidate(
@@ -522,6 +564,7 @@ impl Prepared {
                             encoder: Box::new(encoder),
                             chosen,
                             settings: out.video.clone(),
+                            size: (width, height),
                         },
                         stream,
                     )
@@ -592,6 +635,8 @@ struct VideoChain {
     /// The canvas it exports; an encoder is shared only between outputs of one canvas.
     canvas: CanvasId,
     settings: VideoSettings,
+    /// Resolved output size the encoder was opened with (ADR-0102).
+    size: (u32, u32),
     chosen: Chosen,
     stream: StreamDescriptor,
     export: Added,
@@ -2351,10 +2396,13 @@ impl Studio {
 
     /// Starts an output (a recording or a live stream) of the canvas to `out` while the
     /// studio runs. Adapters are chosen first (`NoAdapter` before anything opens), and a
-    /// running encoder is shared when `out`'s settings equal its own (ADR-0047); then a
-    /// video export and video encoder, an audio encoder (with `out.audio`), each unless
-    /// shared, and an output are added and applied. Sources only now scheduled (without
-    /// a preview) are opened. If one of the new nodes does not start, they are all
+    /// running encoder is shared when `out`'s video settings and resolved output size
+    /// equal its own (ADR-0047, ADR-0102); then a video export and video encoder, an
+    /// audio encoder (with `out.audio`), each unless shared, and an output are added
+    /// and applied. The size is the one this call resolves; changing it later does not
+    /// restart the studio or move scene items. An explicit size that is odd or outside
+    /// 2..=7680 is [`RecordError::OutputSize`] before any adapter is chosen. Sources
+    /// only now scheduled (without a preview) are opened. If one of the new nodes does not start, they are all
     /// removed again and the call fails with `Start`; the studio and the other output
     /// keep running. The output may have created the destination.
     /// `TooManyOutputs` while the canvas feeds [`MAX_OUTPUTS_PER_CANVAS`] outputs or
@@ -2572,6 +2620,7 @@ impl Studio {
                 encoder,
                 chosen,
                 settings,
+                size,
             },
             Some((e, v)),
         ) = (p.video, new_video)
@@ -2588,6 +2637,7 @@ impl Studio {
             video_chain = Some(VideoChain {
                 canvas,
                 settings,
+                size,
                 chosen,
                 stream,
                 export: e,
@@ -3426,4 +3476,47 @@ fn mixer_params(
     MixerParams::new(strips)
         .with_master(master.gain())
         .with_master_meter(Arc::clone(meter))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_absent_size_keeps_the_canvas_and_an_illegal_size_is_refused() {
+        assert_eq!(resolve_output_size(None, (64, 36)).unwrap(), (64, 36));
+        // A vertical canvas may be 8192. "Same as canvas" is allowed; an explicit
+        // side above 7680 is not.
+        assert_eq!(
+            resolve_output_size(None, (1080, 8192)).unwrap(),
+            (1080, 8192)
+        );
+        assert!(matches!(
+            resolve_output_size(Some((1080, 8192)), (1080, 8192)),
+            Err(RecordError::OutputSize {
+                width: 1080,
+                height: 8192
+            })
+        ));
+        assert_eq!(
+            resolve_output_size(Some((7680, 2)), (64, 36)).unwrap(),
+            (7680, 2)
+        );
+        assert_eq!(resolve_output_size(Some((2, 2)), (64, 36)).unwrap(), (2, 2));
+        // A different aspect is not re-fitted here. The download letterboxes it.
+        assert_eq!(
+            resolve_output_size(Some((64, 64)), (64, 36)).unwrap(),
+            (64, 64)
+        );
+        for (width, height) in [(33, 18), (1, 2), (0, 36), (7690, 2), (4, 7682), (3, 3)] {
+            assert!(
+                matches!(
+                    resolve_output_size(Some((width, height)), (64, 36)),
+                    Err(RecordError::OutputSize { width: w, height: h }) if w == width && h == height
+                ),
+                "{width}x{height}"
+            );
+        }
+    }
 }

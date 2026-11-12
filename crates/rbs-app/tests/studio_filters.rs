@@ -585,6 +585,22 @@ fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
         "Thin frame",
         "a frame goes on top"
     );
+    assert_eq!(
+        got.first().unwrap().kind,
+        Some(rbs_app::studio_host::SourceKind::Color),
+        "a plain frame is a colour with a border, so its thickness stays editable"
+    );
+    assert_eq!(
+        got.first()
+            .unwrap()
+            .layout
+            .unwrap()
+            .style
+            .border
+            .unwrap()
+            .width,
+        4.0
+    );
     host.send(Command::AddSample {
         sample: "no-such-sample".into(),
     });
@@ -689,6 +705,11 @@ fn looks_samples_and_boxes_go_through_the_control_api() {
     let rows = sources(&mut c);
     assert_eq!(rows.first().unwrap()["id"], frame, "a frame goes on top");
     assert_eq!(rows.first().unwrap()["name"], "Thin frame");
+    assert_eq!(rows.first().unwrap()["kind"], "color");
+    assert_eq!(
+        rows.first().unwrap()["layout"]["style"]["border"]["width"],
+        4.0
+    );
 
     assert_eq!(
         kind(&c.call(

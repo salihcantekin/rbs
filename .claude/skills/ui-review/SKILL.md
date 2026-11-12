@@ -20,6 +20,7 @@ Rules: `docs/ui/principles.md` (U1-U21). Design system: `docs/specs/ui-design-sy
 11. **Streaming specifics (U15-U20).** Canvas being edited is clear; mixer, settings, notifications, projectors and control-surface rules hold; no automatic modal while live.
 12. **Evidence in the PR.** Screenshots in dark, light and high-contrast themes; short screen recording for interaction changes; checklist answers (OK / Issue / N/A, one line each).
 13. **Owner approval for visual changes (CLAUDE.md rule 16).** Before writing code, the owner saw a short proposal of what changes and how. After implementing, the owner saw the screenshots from item 12 (or tested locally) and approved them. CI and merge come only after that approval.
+14. **Row width.** A `Flickable` list takes the panel width by not setting `width` on the list and not setting `content-width` on the flickable (Properties; design system, "Filling a row"). `width: 100%` on that list is the preferred width of the contents, so a short control stays short. A control that fills the row uses `horizontal-stretch: 1` and no `width` binding. Its inner track sets `width: parent.width` so the options share it. Never set `preferred-width` or `min-width` to `0px` to stretch a field: the field disappears.
 
 The author fills this in; a different reviewer verifies the screenshots and the keyboard walkthrough.
 

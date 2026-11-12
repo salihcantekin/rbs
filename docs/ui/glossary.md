@@ -7,10 +7,11 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Scene | A layout of sources shown on a canvas | Layout, page | `Scene` |
 | Source | Something that produces video or audio (screen capture, window capture, camera, image, text, media, browser, audio device), as placed in a scene with its position, size and crop. The panel listing them is "Sources" | Input, layer, element, item | Source node; placement is a scene item |
 | Look | A preset of a source's shape, border and filters, copied onto the selected source in one undoable step. Later edits to the source do not change the look | Preset, style, theme | `Look` |
-| Library | The panel with built-in looks and sample pictures. It is not the folder of saved themes, workspaces and scene collections (ADR-0051), which the UI never calls a library | Assets, templates | `rbs.library` |
+| Library | The panel that applies looks to the selected source and adds backgrounds, frames, a PNG file and shapes. It is not the folder of saved themes, workspaces and scene collections (ADR-0051), which the UI never calls a library | Assets, templates | `rbs.library` |
 | Filter | An effect applied to a source or audio | Effect, plugin | Filter node |
 | Transition | How the view changes from one scene to another | Effect | Transition node |
-| Canvas | An output picture size and frame rate, for example horizontal 1920x1080 or vertical 1080x1920 | Resolution | Canvas |
+| Canvas | The pixel grid and frame rate a scene is drawn on, for example horizontal 1920x1080 or vertical 1080x1920. Scene items are placed in these pixels | Resolution, Output size | Canvas |
+| Output size | The encoded picture size of one recording or one stream. "Same as canvas", when nothing is stored, encodes at that output's canvas. It is not the size of the preview panel | Resolution, Canvas | `output_size` on the output profile; absent means that output's canvas (ADR-0102) |
 | Output | A destination: a streaming service, a recording, a virtual camera | Target | Output node |
 | Go live / End stream | Start / stop streaming to the selected outputs | Start stream, Stop live | - |
 | Record | Save the program to a file. "Capture" is used only in source type names (Screen capture, Window capture) | Save, Capture (as a verb for recording) | Recording output |
@@ -29,7 +30,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Solo in monitor | While any source is soloed, the monitor plays only soloed sources; the outputs are unchanged | Cue, PFL | Monitor solo (session state) |
 | Shortcut | A key combination for a command; "global shortcut" when it works outside RBS | Hotkey | - |
 | Stinger | A transition that plays a video over the change | Video transition | Stinger transition node |
-| Output profile | A saved set of output settings (service, encoder, bitrate, recording format). It holds no scenes and no panel layout | Profile, workspace | Output configuration |
+| Output profile | A saved set of output settings (service, encoder, bitrate, recording format, output size). It holds no scenes and no panel layout | Profile, workspace | Output configuration |
 | Remote control | Letting other apps (Stream Deck, panels, scripts) control and watch RBS through the control API. Off by default | API server, WebSocket server | Control API server (`rbs-api`, `rbs-api-ws`) |
 | Access token | A secret one app uses for remote control, with a name and an access level (View only, Control, Full control). Shown once; can be revoked | Password, key, API key | `rbs_api::Token` with its scopes |
 | Access from other computers | Remote control by apps on other computers on the network, over an encrypted connection. Off by default | Network mode, LAN access, remote access | Network access, TLS (`WsConfig::network`, ADR-0046) |

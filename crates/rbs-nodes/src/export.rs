@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rbs_core::media::{ColorSpace, Size, VideoFormat};
 use rbs_core::time::Timestamp;
-use rbs_gpu::YuvFormat;
 use rbs_gpu::download::{DownloadStats, YuvDownload};
 use rbs_gpu::node::GpuRuntime;
+use rbs_gpu::{ScaleKernel, YuvFormat};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx};
 
@@ -103,6 +103,10 @@ pub struct VideoExportNode {
     color: ColorSpace,
     /// Raises only the darkest tones before the Rec. 709 encode. The tag stays `color`.
     open_shadows: bool,
+    /// Canvas the input frames are.
+    canvas_width: u32,
+    canvas_height: u32,
+    /// Encoded picture. Equal to the canvas: the 1:1 download. Otherwise one scale.
     width: u32,
     height: u32,
     download: Option<YuvDownload>,
@@ -113,23 +117,59 @@ pub struct VideoExportNode {
 }
 
 impl VideoExportNode {
-    /// An export of `width x height` canvases (both even) to `format`, Rec. 709 limited range.
-    pub fn new(format: YuvFormat, width: u32, height: u32) -> Self {
-        Self::with_color(format, width, height, ColorSpace::BT709_LIMITED)
+    /// An export of `canvas_width x canvas_height` canvases to `width x height`
+    /// pictures (all even) in `format`, Rec. 709 limited range.
+    ///
+    /// Equal sizes are the 1:1 download. A different size scales once from the canvas
+    /// (ADR-0102).
+    pub fn new(
+        format: YuvFormat,
+        canvas_width: u32,
+        canvas_height: u32,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self::with_color(
+            format,
+            canvas_width,
+            canvas_height,
+            width,
+            height,
+            ColorSpace::BT709_LIMITED,
+        )
     }
 
     /// An export that encodes and tags frames as `color`.
     ///
     /// `YuvDownload` accepts [`ColorSpace::BT709_LIMITED`] (the default) and
     /// [`ColorSpace::SRGB_VIDEO`] (sRGB, full range). Anything else fails in `prepare`.
-    pub fn with_color(format: YuvFormat, width: u32, height: u32, color: ColorSpace) -> Self {
-        Self::with_tone(format, width, height, color, false)
+    /// `width x height` is the encoded picture. Equal to the canvas: 1:1.
+    pub fn with_color(
+        format: YuvFormat,
+        canvas_width: u32,
+        canvas_height: u32,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+    ) -> Self {
+        Self::with_tone(
+            format,
+            canvas_width,
+            canvas_height,
+            width,
+            height,
+            color,
+            false,
+        )
     }
 
     /// [`Self::with_color`] with the open-shadows grade. The frames stay tagged `color`.
     /// The grade applies only to Rec. 709 limited range and fails in `prepare` otherwise.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_tone(
         format: YuvFormat,
+        canvas_width: u32,
+        canvas_height: u32,
         width: u32,
         height: u32,
         color: ColorSpace,
@@ -140,6 +180,8 @@ impl VideoExportNode {
             format,
             color,
             open_shadows,
+            canvas_width,
+            canvas_height,
             width,
             height,
             download: None,
@@ -150,13 +192,29 @@ impl VideoExportNode {
         }
     }
 
-    /// The format of the frames on "video": the encoder's input format.
+    /// The format of the frames on "video": the encoder's input format (the output size).
     pub fn frame_format(&self) -> VideoFormat {
         VideoFormat::new(
             Size::new(self.width, self.height),
             self.format.pixel_format(),
             self.color,
         )
+    }
+
+    /// The kernel [`Self::prepare`] builds.
+    ///
+    /// Before prepare this is [`rbs_gpu::yuv::scale_kernel`] of the canvas and the
+    /// output. After, it is the download's converter (`YuvConverter::kernel`).
+    pub fn kernel(&self) -> ScaleKernel {
+        match &self.download {
+            Some(download) => download.kernel(),
+            None => rbs_gpu::yuv::scale_kernel(
+                self.canvas_width,
+                self.canvas_height,
+                self.width,
+                self.height,
+            ),
+        }
     }
 
     /// The node's counters.
@@ -176,14 +234,32 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let download = YuvDownload::with_tone(
-            ctx.shared,
-            self.format,
-            self.width,
-            self.height,
-            self.color,
-            self.open_shadows,
-        )
+        // Equal size: the 1:1 `textureLoad` path. A different size: one scaled
+        // download from this canvas (ADR-0102). The two outputs of one canvas each
+        // read that canvas; neither reads the other's planes.
+        let same = self.canvas_width == self.width && self.canvas_height == self.height;
+        let download = if same {
+            YuvDownload::with_tone(
+                ctx.shared,
+                self.format,
+                self.width,
+                self.height,
+                self.color,
+                self.open_shadows,
+            )
+        } else {
+            YuvDownload::scaled_tone(
+                ctx.shared,
+                self.format,
+                self.canvas_width,
+                self.canvas_height,
+                self.width,
+                self.height,
+                rbs_gpu::download::DOWNLOAD_BUFFERS,
+                self.color,
+                self.open_shadows,
+            )
+        }
         .map_err(|e| NodeError::Failed(format!("video export: {e}")))?;
         self.seen = download.stats();
         self.download = Some(download);
@@ -267,17 +343,47 @@ mod tests {
 
     #[test]
     fn the_default_tag_is_bt709_and_screen_is_srgb_video() {
-        let video = VideoExportNode::new(YuvFormat::Nv12, 16, 8);
+        let video = VideoExportNode::new(YuvFormat::Nv12, 16, 8, 16, 8);
         assert_eq!(video.frame_format().color, ColorSpace::BT709_LIMITED);
-        let screen = VideoExportNode::with_color(YuvFormat::Nv12, 16, 8, ColorSpace::SRGB_VIDEO);
+        assert_eq!(video.frame_format().size, Size::new(16, 8));
+        assert_eq!(video.kernel(), ScaleKernel::OneToOne);
+        let screen =
+            VideoExportNode::with_color(YuvFormat::Nv12, 16, 8, 16, 8, ColorSpace::SRGB_VIDEO);
         assert_eq!(screen.frame_format().color, ColorSpace::SRGB_VIDEO);
         assert_eq!(
             screen.frame_format().color.range,
             rbs_core::media::ColorRange::Full
         );
-        let opened =
-            VideoExportNode::with_tone(YuvFormat::Nv12, 16, 8, ColorSpace::BT709_LIMITED, true);
+        let opened = VideoExportNode::with_tone(
+            YuvFormat::Nv12,
+            16,
+            8,
+            16,
+            8,
+            ColorSpace::BT709_LIMITED,
+            true,
+        );
         assert_eq!(opened.frame_format().color, ColorSpace::BT709_LIMITED);
         assert!(opened.open_shadows);
+    }
+
+    #[test]
+    fn the_kernel_follows_the_canvas_and_the_output() {
+        let one = VideoExportNode::new(YuvFormat::Nv12, 64, 36, 64, 36);
+        assert_eq!(one.kernel(), ScaleKernel::OneToOne);
+        assert_eq!(one.frame_format().size, Size::new(64, 36));
+
+        // Integer 2× downscale: box. A non-integer downscale, including 1080p to 720p,
+        // stays bilinear. An upscale is Catmull-Rom. A different aspect is not refused
+        // here; the scaled download letterboxes it.
+        let half = VideoExportNode::new(YuvFormat::Nv12, 64, 36, 32, 18);
+        assert_eq!(half.kernel(), ScaleKernel::Box(2));
+        assert_eq!(half.frame_format().size, Size::new(32, 18));
+        let hd = VideoExportNode::new(YuvFormat::Nv12, 1920, 1080, 1280, 720);
+        assert_eq!(hd.kernel(), ScaleKernel::Bilinear);
+        let up = VideoExportNode::new(YuvFormat::Nv12, 1280, 720, 1920, 1080);
+        assert_eq!(up.kernel(), ScaleKernel::CatmullRom);
+        let bars = VideoExportNode::new(YuvFormat::Nv12, 64, 36, 64, 64);
+        assert_eq!(bars.kernel(), ScaleKernel::Bilinear);
     }
 }

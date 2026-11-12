@@ -310,6 +310,7 @@ fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
         encoder: encoder.map(str::to_owned),
         video,
         audio_bitrate_bps: 128_000,
+        size: None,
     }
 }
 
