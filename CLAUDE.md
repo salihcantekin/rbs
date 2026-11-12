@@ -34,6 +34,14 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 - `docs/adr`: decisions. `docs/specs`: contracts. `docs/ui`: binding UI rules and glossary. `docs/roadmap.md`: phases.
 - `.claude/skills`: repeatable procedures. Use them.
 
+## Worktrees and `target/`
+
+A git worktree is a second checkout. Cargo puts `target/` in that checkout unless `CARGO_TARGET_DIR` is set, so each worktree grows its own copy. One debug `target/` used to reach about 55 GB, and several worktrees together filled the disk.
+
+- Before the first `cargo` command in a new worktree, set `CARGO_TARGET_DIR` to the primary checkout's `target` (`git worktree list` shows that checkout). Do not compile into the worktree's own `target/`.
+- `[profile.dev]` keeps line tables only, and `[profile.dev.package."*"]` drops debug info for every dependency (`Cargo.toml`). Do not turn full debug info back on for dependencies. A crate you are stepping through may set its own `debug` in a package override.
+- When the branch is merged or abandoned, remove the worktree with `git worktree remove`. Do not leave the directory, and do not delete the shared `target/` while another checkout is using it.
+
 ## Commands
 
 ```sh

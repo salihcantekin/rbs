@@ -277,7 +277,6 @@ pub fn apply(theme: &Theme<'_>, tokens: &Tokens<'_>, look: Option<&Look>) {
     theme.set_os_scheme(rbs_app::win::os_scheme_slot());
     if let Err(why) = result {
         crate::studio_ui::log(&format!("token file not applied: {why}"));
-        return;
     }
     #[cfg(windows)]
     menus_follow(theme);
@@ -651,8 +650,9 @@ mod tests {
         let (look, note) = super::load(&data, &mut fonts);
         let Look { themes, .. } = look.unwrap();
         assert!(note.is_none(), "{note:?}");
-        assert!(themes[0].high_contrast());
-        assert_eq!(themes[1].length["radius.md"], 9.0);
+        // System mode is the built-in pair, even when the file names other themes.
+        assert!(!themes[0].high_contrast());
+        assert_ne!(themes[1].length.get("radius.md").copied(), Some(9.0));
 
         let fixed = Appearance::new(
             AppearanceMode::Fixed,

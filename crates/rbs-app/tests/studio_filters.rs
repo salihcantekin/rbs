@@ -646,6 +646,152 @@ fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
 }
 
 #[test]
+fn looks_samples_and_boxes_go_through_the_control_api() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let looks = ok(&c.call("look.list", json!({})))["looks"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        looks
+            .iter()
+            .any(|l| { l["id"] == "builtin:warm" && l["name"] == "Warm" && l["group"] == "color" })
+    );
+    assert!(
+        looks
+            .iter()
+            .any(|l| l["id"] == "builtin:circle" && l["group"] == "shape")
+    );
+
+    let screen = add(&mut c, "screen", "Screen");
+    let voice = add(&mut c, "audio_input", "Voice");
+
+    assert_eq!(
+        kind(&c.call("source.add_sample", json!({"sample": "no-such-sample"}))),
+        "not_found"
+    );
+    let background = ok(&c.call("source.add_sample", json!({"sample": "aurora"})))["source"]
+        .as_u64()
+        .unwrap();
+    let rows = sources(&mut c);
+    assert_eq!(
+        rows.last().unwrap()["id"],
+        background,
+        "a background is below"
+    );
+    assert_eq!(rows.last().unwrap()["kind"], "image");
+    assert_eq!(rows.last().unwrap()["name"], "Aurora");
+    let frame = ok(&c.call("source.add_sample", json!({"sample": "frame-thin"})))["source"]
+        .as_u64()
+        .unwrap();
+    let rows = sources(&mut c);
+    assert_eq!(rows.first().unwrap()["id"], frame, "a frame goes on top");
+    assert_eq!(rows.first().unwrap()["name"], "Thin frame");
+
+    assert_eq!(
+        kind(&c.call(
+            "look.apply",
+            json!({"source": screen, "look": "builtin:no-such-look"})
+        )),
+        "not_found"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "look.apply",
+            json!({"source": 9_999_999, "look": "builtin:warm"})
+        )),
+        "not_found"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "look.apply",
+            json!({"source": voice, "look": "builtin:warm"})
+        )),
+        "invalid_params",
+    );
+
+    ok(&c.call(
+        "look.apply",
+        json!({"source": screen, "look": "builtin:warm"}),
+    ));
+    let warm = filters_of(&mut c, screen);
+    assert_eq!(warm.len(), 1);
+    assert_eq!(warm[0]["type"], "org.rbs.filter.color-correction");
+    let warm_settings = warm[0]["settings"].clone();
+    ok(&c.call(
+        "look.apply",
+        json!({"source": screen, "look": "builtin:vivid"}),
+    ));
+    let vivid = filters_of(&mut c, screen);
+    assert_eq!(vivid.len(), 1, "replaced, not stacked");
+    assert_eq!(vivid[0]["id"], warm[0]["id"]);
+    assert_ne!(vivid[0]["settings"], warm_settings);
+    ok(&c.call(
+        "look.apply",
+        json!({"source": screen, "look": "builtin:circle"}),
+    ));
+    let shape = |rows: &[Value]| {
+        rows.iter().find(|s| s["id"] == screen).unwrap()["layout"]["style"]["shape"].clone()
+    };
+    assert_eq!(shape(&sources(&mut c)), "circle");
+    ok(&c.call("edit.undo", json!({})));
+    assert_ne!(shape(&sources(&mut c)), "circle");
+
+    let before = sources(&mut c)
+        .into_iter()
+        .find(|s| s["id"] == screen)
+        .unwrap()["layout"]["position"]
+        .clone();
+    let placed = c.call(
+        "item.set_box",
+        json!({
+            "source": screen,
+            "position": [12.0, 24.0],
+            "size": [320.0, 180.0],
+            "gesture": 4,
+            "seq": 9
+        }),
+    );
+    assert_eq!(ok(&placed)["seq"].as_u64(), Some(9));
+    assert_eq!(ok(&placed)["ok"], true);
+    ok(&c.call(
+        "item.set_box",
+        json!({
+            "source": screen,
+            "position": [40.0, 24.0],
+            "size": [320.0, 180.0],
+            "gesture": 4,
+            "seq": 10
+        }),
+    ));
+    ok(&c.call("edit.undo", json!({})));
+    let row = sources(&mut c)
+        .into_iter()
+        .find(|s| s["id"] == screen)
+        .unwrap();
+    assert_eq!(
+        row["layout"]["position"], before,
+        "one gesture is one undo step"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "item.set_box",
+            json!({"source": screen, "position": [0.0, 0.0], "size": [0.0, 10.0]})
+        )),
+        "invalid_params"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "item.set_box",
+            json!({"source": 9_999_999, "position": [1.0, 1.0], "size": [10.0, 10.0]})
+        )),
+        "not_found"
+    );
+}
+
+#[test]
 fn a_display_can_capture_the_system_sound_too() {
     let Some((_host, _updates, _api, mut c)) = start() else {
         return;

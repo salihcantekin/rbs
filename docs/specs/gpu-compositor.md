@@ -160,8 +160,12 @@ pub fn surface_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc; 
 ```
 
 - Input: a linear `Rgba16Float` canvas, composited over black (alpha is ignored). Output: Y plane (w x h) and interleaved CbCr plane (w/2 x h/2), both render targets: `R8Unorm` and `Rg8Unorm` for NV12, `R16Unorm` and `Rg16Unorm` for P010. Width and height must be even.
-- Colour: linear light is encoded with the BT.709 OETF, then converted with BT.709 coefficients to limited range: Y 16-235 and CbCr 16-240 for NV12; Y 64-940 and CbCr 64-960 for P010. P010 stores each 10-bit code in the high bits of a 16-bit word (code << 6, low six bits zero); the shader rounds to whole codes before scaling so the low bits stay zero. The 10-bit output is SDR BT.709 (for example HEVC Main10); HDR transfer functions are out of scope. Chroma is the average of each 2x2 block (centre siting).
-- Two render passes per frame (luma at full size, chroma at half size), one full-screen triangle each. Both formats share one shader; the code levels are pipeline-overridable constants, so there is no per-frame branch. Render passes are used instead of compute because the plane formats are render targets, while storage writes to them need optional features.
+- Colour, chosen when the converter is created (two pipelines, no per-frame test of the other):
+  - **Video** (the default, `ColorSpace::BT709_LIMITED`): linear light is encoded with the BT.709 OETF, then converted with BT.709 coefficients to limited range: Y 16-235 and CbCr 16-240 for NV12; Y 64-940 and CbCr 64-960 for P010. This is the entry points `fs_luma` / `fs_chroma` (and the scaled pair). `YuvConverter::new` and `scaled` build only this pipeline.
+  - **Open shadows** (Video only, off unless `with_tone` / `scaled_tone` is asked for it): before the BT.709 OETF, linear light below middle grey (0.18) is raised as `0.18 * (L / 0.18) ^ 0.7`. Black, middle grey and every lighter value are unchanged. The codes and the frame tag stay Rec. 709 limited range, on NV12 and on P010. Separate entry points (`fs_luma_open` / `fs_chroma_open` and the scaled pair), built only when the grade is on, so the default path does not test it. Asking for it with any other colour space is `GpuError::Unsupported`.
+  - **Screen** (`ColorSpace::SRGB_VIDEO`: sRGB transfer, BT.709 primaries and matrix, full range): the same matrix with the sRGB OETF and full-range codes (Y and CbCr 0-255 for NV12; 0-1023 for P010). Separate entry points (`fs_luma_srgb` / `fs_chroma_srgb` and the scaled pair), created only by `with_color` / `scaled_color` for that colour space. Chroma codes are clamped to the legal range. Any other colour space is `GpuError::Unsupported`.
+  - P010 stores each 10-bit code in the high bits of a 16-bit word (code << 6, low six bits zero); the shader rounds to whole codes before scaling so the low bits stay zero. The 10-bit Video output is SDR BT.709 (for example HEVC Main10); HDR transfer functions are out of scope. Chroma is the average of each 2x2 block (centre siting).
+- Two render passes per frame (luma at full size, chroma at half size), one full-screen triangle each. Both pixel formats, both colour modes and the open-shadows grade share one shader module; the code levels are pipeline-overridable constants and each mode is a separate entry point, so a frame never branches on a mode that is not in use. Render passes are used instead of compute because the plane formats are render targets, while storage writes to them need optional features.
 - The frame's colour fields (primaries, transfer, matrix, range) travel with the converted frame so encoders can write VUI information.
 - Hand-off target: hardware encoders (NVENC, AMF, QSV, VideoToolbox, VA-API, Vulkan Video) consume one multi-planar NV12 or P010 surface. Where the device has `gpu.nv12_surface` or `gpu.p010_surface` (D3D12 and Vulkan), `convert_to_surface` writes a single pool texture of `surface_desc`.
   - Hardware adapters render straight into its two plane views.
@@ -235,7 +239,7 @@ impl YuvDownload {
     /// (the virtual camera holds up to five: ADR-0066 decision 3).
     pub fn scaled(ctx: &GpuContext, format: YuvFormat, src_width: u32, src_height: u32, width: u32, height: u32,
         buffers: usize) -> Result<YuvDownload, GpuError>;
-    pub fn format(&self) -> &VideoFormat;  // size, NV12/P010, BT709_LIMITED
+    pub fn format(&self) -> &VideoFormat;  // size, NV12/P010, the colour passed to `new` or `with_color`
     pub fn stride(&self) -> usize;         // bytes per row of both planes, a multiple of 256
     /// Converts and starts the readback; `Ok(false)` (counted `busy`) when every staging
     /// buffer is in flight. Hot path, never waits.
@@ -272,14 +276,14 @@ impl SurfaceExporter {
     /// The oldest converted frame whose GPU work completed, or `None`. Never blocks.
     /// `GpuError::DeviceLost` once the device is lost (pending frames are discarded).
     pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>;
-    pub fn format(&self) -> &VideoFormat;   // NV12 or P010, ColorSpace::BT709_LIMITED
+    pub fn format(&self) -> &VideoFormat;   // NV12 or P010, the colour passed to `new` or `with_color`
     pub fn stats(&self) -> ExportStats;     // converted, delivered, busy
     pub fn held(&self) -> usize;            // frames the encoder still holds
     pub fn lease_owner(&self) -> Arc<dyn LeaseOwner>; // kept by the engine until encoder shutdown
 }
 ```
 
-- Surfaces: bi-planar IOSurfaces, `'420v'` (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, NV12) or `'x420'` (`kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange`, P010), limited range. Row pitch is aligned to IOSurface's row alignment and Metal's minimum linear texture alignment for the plane format; plane offsets are page aligned (4096). After creation the plane count, sizes, bytes per element and row pitch are checked against the request.
+- Surfaces: bi-planar IOSurfaces. Video (limited range) is `'420v'` (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, NV12) or `'x420'` (`kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange`, P010). Screen (full range) is `'420f'` or `'xf20'`. `new` allocates the limited-range surfaces. Row pitch is aligned to IOSurface's row alignment and Metal's minimum linear texture alignment for the plane format; plane offsets are page aligned (4096). After creation the plane count, sizes, bytes per element and row pitch are checked against the request.
 - Each plane is aliased as a Metal render target (`R8Unorm`/`RG8Unorm`, or `R16Unorm`/`RG16Unorm`) owned by the exporter; it uses no pool slots. The two-plane conversion renders into them, so there is no copy and no CPU readback.
 - Unified memory only (Apple silicon) for now: whether GPU writes to an IOSurface-backed texture are visible to VideoToolbox on a discrete GPU without a synchronize step is not verified. Intel Macs with a discrete GPU fall back to the CPU path until it is.
 - The lease owner is the ring: it retains every IOSurface and keeps one atomic count per surface. A frame's lease keeps the ring, and so its surface, alive whatever is dropped first (exporter, pool, device). All surfaces are created in `new`; the ring never grows. A surface is written only when it is not pending and its count is zero (`Acquire` load, paired with the `Release` decrement of the encoder's last lease).
@@ -300,6 +304,14 @@ Engine side, owned by the render executor:
 pub const MAX_PREVIEW_SURFACES: usize = 8;
 
 pub struct PreviewDesc { pub width: u32, pub height: u32, pub surfaces: usize }
+
+/// Ring size while frames are `frame_interval` apart and each replaced frame is held
+/// for `hold`: one shown, `ceil(hold / frame_interval)` retiring, one being written
+/// and one in flight. `PreviewLayer::surfaces_needed` is this with the layer's retire
+/// time. A hold of zero is 3. The macOS default of 34 ms is 5 at 30 fps and 6 at
+/// 60 fps; a ring of 3 drops frames at both rates (`ExportBusy`). Callers cap at
+/// `MAX_PREVIEW_SURFACES` (8).
+pub fn ring_needed(frame_interval: Duration, hold: Duration) -> usize;
 
 impl PreviewPublisher {
     /// Creates `surfaces` (2..=8) 'RGBA' IOSurfaces, aliases them as render targets and
@@ -395,7 +407,7 @@ impl PreviewLayer {                       // not Send: the UI's main thread
   - `RELEASE` (UI to the session port): generation, slot. Only the subscribed UI holds a send right to the session port, so no other process can release a surface. The engine accepts releases only there.
 - **End of a subscription.** The engine asks the kernel for a no-senders notice on the session port. It arrives once the UI's send right is gone: the UI dropped its subscriber and every frame, or exited (also while it held every surface and no `FRAME` could be sent). A `FRAME` send that finds the UI's port dead ends it too. Either way the UI holds no surface any more, so every surface is free again. The UI learns that the engine is gone from a dead-name notice on the service port (`GpuError::Disconnected`).
 - **Never block the render thread.** Every engine-side `mach_msg` call uses a zero timeout: in `tick`, at most ring size + 1 receives on the session port and 2 on the service port (so strangers flooding the service port cannot lengthen a tick), and the sends of `SURFACES` and `FRAME`. A `FRAME` that cannot be queued is dropped and its surface stays free (counted in `dropped`); since a UI holds at most one frame per surface, that needs a UI that stopped receiving. Queue limits are raised to `MACH_PORT_QLIMIT_MAX`, so releases (at most one per surface) cannot fill the session port. A send that times out has its rights returned by the kernel (pseudo-receive); they are destroyed at once, so no reference leaks.
-- **Lifetime.** The engine writes a surface only when it is not pending and the UI does not hold it. A slot is held from its `FRAME` until the UI's `RELEASE`. The UI releases a frame by dropping `PreviewFrame`, which it does only after nothing in the UI reads the surface: for Slint, after a later frame's submission is done; for `PreviewLayer`, best effort, a retire time after the frame was replaced as the layer's contents and the change was flushed to the window server (Core Animation applies it at the next refresh, or the one after, and reports no completion; IOSurface use counts and `IOSurfaceIsInUse` do not track layer contents). The retire time is two refresh periods of the slowest display (default 34 ms). Too short a time can show one torn monitoring frame, never a memory hazard. At 60 fps the layer holds up to four surfaces, so a UI using it needs a ring of `surfaces_needed` (6); a smaller ring makes the engine drop frames, never deadlock. The UI process retains every IOSurface it looked up, so a crashed or slow engine never leaves the UI with a dangling surface; at worst it shows a stale image. IOSurfaces are reference counted across processes and survive until both sides drop them.
+- **Lifetime.** The engine writes a surface only when it is not pending and the UI does not hold it. A slot is held from its `FRAME` until the UI's `RELEASE`. The UI releases a frame by dropping `PreviewFrame`, which it does only after nothing in the UI reads the surface: for Slint, after a later frame's submission is done; for `PreviewLayer`, best effort, a retire time after the frame was replaced as the layer's contents and the change was flushed to the window server (Core Animation applies it at the next refresh, or the one after, and reports no completion; IOSurface use counts and `IOSurfaceIsInUse` do not track layer contents). The retire time is two refresh periods of the slowest display (default 34 ms). Too short a time can show one torn monitoring frame, never a memory hazard. At 60 fps the layer holds up to four surfaces, so a UI using it needs a ring of `surfaces_needed` (6). At 30 fps the same 34 ms hold needs 5 (`ring_needed`: two frames still retiring, plus the one shown, the one being written and the one in flight). A ring of 3 only covers a hold of zero (shown, in flight, being written), so it drops frames at both 30 and 60 fps. A smaller ring than `surfaces_needed` makes the engine drop frames, never deadlock. The UI process retains every IOSurface it looked up, so a crashed or slow engine never leaves the UI with a dangling surface; at worst it shows a stale image. IOSurfaces are reference counted across processes and survive until both sides drop them.
 - **Colour.** The surface holds sRGB-encoded, opaque RGBA8 (`ColorSpace::SRGB`), the format the UI composites. The preview is for monitoring; the program output to encoders stays on the encoder export path.
 - **Security.** Any process of the same user can look up the service; without the token it gets nothing, and without the session port it cannot release a surface. The token must reach the UI through the control API in the product; the demo passes it on the command line, where other processes of the same user can read it. The token is not a defence against a process that can already read the engine's memory or control API.
 - **Namespace.** Engine and UI must share a bootstrap namespace (the same login session). An engine started over ssh or as a LaunchDaemon cannot be reached this way, and a sandboxed UI needs a mach-lookup exception (or an app-group name prefix). Handing a port over at spawn or through the control API is the fallback for those set-ups.
@@ -426,7 +438,7 @@ impl PreviewLayer {                       // not Send: the window's thread
     /// composition swapchain (WARP) or in a remote desktop session (`SM_REMOTESESSION`: the factory claims support there but nothing shows): use `textures` instead.
     pub fn new(subscriber: &PreviewSubscriber) -> Result<PreviewLayer, GpuError>;
     pub fn surfaces(&self) -> usize;
-    pub fn surfaces_needed(&self, frame_interval: Duration) -> usize; // shown + retiring + written + in flight; 5 at 60 fps
+    pub fn surfaces_needed(&self, frame_interval: Duration) -> usize; // shown + retiring + written + in flight; 5 at 30 and 60 fps
     /// Topmost composition target of the window, above the toolkit's swapchain.
     pub unsafe fn attach_to_hwnd(&mut self, hwnd: NonZeroIsize) -> Result<(), GpuError>;
     pub fn detach(&mut self, now: Timestamp);
@@ -510,6 +522,7 @@ pub const COMPOSITOR_NODE_TYPE: &str = "org.rbs.compositor";
 pub fn compositor_descriptor() -> NodeDescriptor;   // kind Compositor; input "layers" (many-link Video), output "canvas" (Video)
 
 pub struct PixelCrop { pub left: u32, pub top: u32, pub right: u32, pub bottom: u32 }
+pub enum Easing { Linear, EaseInOut }  // ADR-0100; EaseInOut is smoothstep u²(3−2u)
 pub struct NodeLayer {
     pub producer: NodeId,     // the graph node whose video this layer draws (BoundLayer::producer)
     pub link: usize,          // hint: index of its link on the "layers" pin when the list was made
@@ -517,10 +530,12 @@ pub struct NodeLayer {
     pub crop: PixelCrop,      // in source pixels; turned into texture coordinates with the real source size
     pub opacity: f32,         // 0.0..=1.0; the value a fade ends at
     pub fade: Option<Fade>,   // animates opacity, evaluated against tick time
+    pub slide: Option<Slide>, // animates the box from another place (ADR-0100)
     pub opaque: bool,         // ignore source alpha (XRGB sources)
     pub style: LayerStyle,    // shape and border (ADR-0053), converted from the scene's ItemStyle by rbs-sources
 }
-pub struct Fade { pub from: f32, pub start: Timestamp, pub duration: Duration }  // linear from `from` to `opacity`
+pub struct Fade { pub from: f32, pub start: Timestamp, pub duration: Duration, pub easing: Easing }
+pub struct Slide { pub from: Affine2, pub start: Timestamp, pub duration: Duration, pub easing: Easing }
 
 pub type LayerSender = ParamSender<Vec<NodeLayer>>;
 
@@ -538,7 +553,7 @@ impl CompositorNode {
   1. Takes the newest layer list from the parameter channel, if one was sent (`ParamReceiver::update`; no allocation, no waiting).
   2. Builds the layer list in a reserved buffer. Each `NodeLayer` finds its link: the hint is used when `Inputs::source(LAYERS_PIN, link)` is its producer, else `Inputs::find(LAYERS_PIN, producer)` looks it up (a list can meet an older or newer schedule, and link positions shift when a producer leaves the plan). A layer whose producer is not scheduled, whose link has no frame, or whose frame is not a pool texture is skipped; native frames are imported by the source wrapper before they reach a link. Layers past `capacity` are not drawn.
   3. Converts the crop with the texture's size. The source transfer is `Srgb` when the frame's colour space says sRGB and the texture format does not decode it in the sampler.
-  4. Evaluates a fade at the tick's time: before `start` the opacity is `from`, after `start + duration` it is `opacity`, linear in between.
+  4. Evaluates a fade at the tick's time: before `start` the opacity is `from`, after `start + duration` it is `opacity`; between them the unit time `u` is mapped by the fade's `easing` (`Linear`: `u`, `EaseInOut`: smoothstep `u²(3−2u)`). A slide is evaluated the same way for the box. A program-scene change sets a slide on every source that was already on that canvas and whose box changed (duration and easing from the collection glide, or that source's override when set; ADR-0100), and a fade from 0 on a source that was not (collection **duration**, `Easing::Linear`, so fade-ins keep today's look). A source whose box is unchanged is left alone. The list is sent once; the node evaluates it (ADR-0023, decision 7).
   5. Acquires a canvas texture, renders, and publishes it on "canvas": `Rgba16Float`, `ColorSpace::LINEAR_BT709`, the tick's time, and sequence = tick index. The pool slot is released at once, so the frame's lease keeps it alive.
   6. RBS code allocates nothing here (hot path). A ring larger than three only grows when consumers hold more frames than that.
 - Layer lists reach the node through the graph runtime's parameter channel ([ADR-0023](../adr/0023-node-parameter-channels.md)): the latest list wins, and the control side reuses the replaced list with `LayerSender::recycle` before `send`, so steady edits allocate nothing on either side. Fades are sent once as targets with timing (ADR-0023, decision 7), not as one list per frame.
@@ -570,7 +585,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - Pool: reuse, generation and stale-id handling, trim, capacity, leases (a leased slot survives the owner's release, is reused after the last lease drops on another thread, frames share the lease).
 - Golden images (sampled pixels with tolerance): single opaque layer placement, crop, opacity blend over a background layer, sRGB source decode, layer order, stale layer skipped, an `opaque` layer drawn opaque over a source whose alpha is 0.
 - Styled layers (`tests/style.rs`, ADR-0053): rounded corners cut only the corners; a circle centred in a wide box; an ellipse filling the box; a half-transparent border over the picture; opacity multiplying shape and border; a rotated circle staying round; a flipped layer keeping its corners; a circle under a 4:1 squash following the picture with a one-pixel edge (0.75 coverage a quarter pixel inside the edge, where a mean pixel width would give 1.0); a cropped styled layer sampling exactly what a plain one does; plain layers around styled ones unchanged; boxes without area.
-- NV12: known colours (black, white, mid grey, pure red) produce BT.709 limited-range values within ±1.
+- NV12: known colours (black, white, mid grey, pure red) produce BT.709 limited-range values within ±1. The same colours through `ColorSpace::SRGB_VIDEO` produce sRGB full-range codes within ±1 (black is 0, white is 255), and decoding those planes with that colour space returns the linear colour. Any other colour space is rejected.
 - P010 (where `gpu.p010`; required on Linux CI): the same colours produce 10-bit values within ±2, and the low six bits of every word are zero.
 - NV12 and P010 surfaces (where `gpu.nv12_surface` / `gpu.p010_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.
 - YUV source decode (any adapter): NV12 and P010 (where `gpu.p010`) planes from the encoder conversion of black, white, 18 % grey, red, green and a blue mix decode back to the linear colour within 0.02 (NV12) or 0.01 (P010); BT.601 full-range codes decode to red; a multi-planar NV12 source (where `gpu.nv12_surface`) decodes like planes; a wrong target size, swapped planes and a PQ colour space are rejected; one source caches one bind group.

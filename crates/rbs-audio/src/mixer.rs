@@ -452,16 +452,19 @@ impl<X: Runtime> Node<X> for MixerNode {
                     continue;
                 };
                 let mut peak = 0.0f32;
+                let mut sum_sq = 0.0f32;
                 if plain && g0 == g1 {
                     for (o, &x) in ch[..frames].iter_mut().zip(src) {
                         let y = x * g0;
                         peak = peak.max(y.abs());
+                        sum_sq += y * y;
                         *o += y;
                     }
                 } else if plain {
                     for (f, (o, &x)) in ch[..frames].iter_mut().zip(src).enumerate() {
                         let y = x * (g0 + dg * (f + 1) as f32);
                         peak = peak.max(y.abs());
+                        sum_sq += y * y;
                         *o += y;
                     }
                 } else if m0 == 0.0 && m1 == 0.0 {
@@ -470,6 +473,7 @@ impl<X: Runtime> Node<X> for MixerNode {
                         let w = (f + 1) as f32;
                         let y = x * (g0 + dg * w);
                         peak = peak.max(y.abs());
+                        sum_sq += y * y;
                         *o += y * (s0 + ds * w);
                     }
                 } else {
@@ -479,12 +483,13 @@ impl<X: Runtime> Node<X> for MixerNode {
                         let w = (f + 1) as f32;
                         let y = x * (g0 + dg * w);
                         peak = peak.max(y.abs());
+                        sum_sq += y * y;
                         *o += y * (s0 + ds * w);
                         *mo += y * (m0 + dm * w);
                     }
                 }
                 if let Some(m) = meter {
-                    m.record(c, peak);
+                    m.record_block(c, peak, sum_sq, frames as u32);
                 }
             }
         }
@@ -497,12 +502,14 @@ impl<X: Runtime> Node<X> for MixerNode {
         let meter = self.params.get().master_meter.as_deref();
         for (c, ch) in chans.iter_mut().enumerate().take(n) {
             let mut peak = 0.0f32;
+            let mut sum_sq = 0.0f32;
             for (f, y) in ch[..frames].iter_mut().enumerate() {
                 *y *= m0 + dm * (f + 1) as f32;
                 peak = peak.max(y.abs());
+                sum_sq += *y * *y;
             }
             if let Some(m) = meter {
-                m.record(c, peak);
+                m.record_block(c, peak, sum_sq, frames as u32);
             }
         }
         out.commit(format, t0, frames)?;

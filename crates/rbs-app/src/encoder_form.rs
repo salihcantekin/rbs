@@ -5,6 +5,7 @@
 
 use crate::record_profile::{
     Encoding, KEYFRAME_SECONDS, MAX_B_FRAMES, Preset, QUALITY_LEVELS, RateMode, VIDEO_KBPS,
+    VideoCodec,
 };
 use crate::studio_host::EncoderOptions;
 
@@ -146,9 +147,13 @@ impl EncoderForm {
             Choices::with_current(keyframes, profile.keyframe_seconds, |s| format!("{s} s"));
 
         let mut profiles = vec![("Automatic".to_owned(), None)];
-        for p in ["high", "main", "baseline"] {
-            if options.h264_profiles.iter().any(|h| h == p) {
-                profiles.push((profile_label(p), Some(p.to_owned())));
+        if profile.video_codec == VideoCodec::Hevc {
+            profiles.push(("Main".to_owned(), Some("main".to_owned())));
+        } else {
+            for p in ["high", "main", "baseline"] {
+                if options.h264_profiles.iter().any(|h| h == p) {
+                    profiles.push((profile_label(p), Some(p.to_owned())));
+                }
             }
         }
         let profiles = Choices::with_current(profiles, profile.profile.clone(), |p| {
@@ -200,6 +205,7 @@ mod tests {
             h264_profiles: ["baseline", "high", "main"].map(str::to_owned).to_vec(),
             b_frames_max: 0,
             cbr_padding: true,
+            codecs: vec!["h264".into(), "hevc".into()],
         }
     }
 

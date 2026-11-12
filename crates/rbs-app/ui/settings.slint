@@ -315,6 +315,32 @@ export component SettingsNotice inherits StatusLine {
     tone: root.problem ? 3 : 0;
 }
 
+// The Settings page's scroll. A panel that opens inside the page (a confirmation, the
+// shortcut recorder) reports its place; the page moves so that place is on screen.
+export global SettingsScroll {
+    in-out property <int> serial: 0;
+    in-out property <length> y: 0px;
+    in-out property <length> h: 0px;
+    public function reveal(ay: length, ah: length) {
+        self.y = ay;
+        self.h = ah;
+        self.serial += 1;
+    }
+}
+
+// Put one at the top of a panel that can open below the page: the page scrolls to it.
+export component RevealOnShow inherits Rectangle {
+    height: 0px;
+    // Once: scrolling moves this element, and reporting that again would chase itself.
+    property <bool> sent: false;
+    changed y => {
+        if !root.sent && self.absolute-position.y > 0px {
+            root.sent = true;
+            SettingsScroll.reveal(self.absolute-position.y, Tokens.size-control-lg * 4);
+        }
+    }
+}
+
 // A bordered group that asks before an action or shows something once (a new access
 // token): the same hairline as a card, on the overlay surface.
 export component SettingsCallout inherits Rectangle {

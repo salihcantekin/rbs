@@ -248,59 +248,46 @@ impl SceneCollection {
         Ok(found)
     }
 
-    /// Sources the scenes need running: those placed in the program or preview scene
-    /// of any canvas and not deactivated (media graph spec, Lifecycle). A hidden item
-    /// still counts, so showing it does not wait for the device. Projectors, outputs
-    /// and audio-only use add to this in the graph binder; a source wanted by none of
-    /// them is Standby.
+    /// Sources the collection needs running: every source placed in any scene, unless
+    /// the user deactivated it (`source.set_active`, the standby hint). Hiding an item
+    /// and leaving the program or preview scene do not release the device, so showing
+    /// the source again, or switching back to its scene, does not wait for the camera
+    /// to open. A source that is not placed anywhere stays Standby.
     pub fn wanted_sources(&self) -> BTreeSet<SourceId> {
         let mut wanted = BTreeSet::new();
-        for c in self.canvases() {
-            for scene in [c.program, c.preview].into_iter().flatten() {
-                if let Ok(sources) = self.visible_sources(c.id, scene) {
-                    wanted.extend(sources);
+        for scene in self.scenes() {
+            for item in &scene.items {
+                if let ItemContent::Source(id) = item.content
+                    && self.source(id).is_some_and(|source| !source.standby())
+                {
+                    wanted.insert(id);
                 }
-                wanted.extend(self.hidden_kept_warm(c.id, scene));
             }
         }
         wanted
     }
 
-    /// Hidden sources in `scene` that stay open: not drawn, not inside a hidden
-    /// nested scene, and not deactivated. Showing one does not wait for the device.
-    fn hidden_kept_warm(&self, canvas: CanvasId, scene: SceneId) -> BTreeSet<SourceId> {
-        let mut warm = BTreeSet::new();
+    /// Wanted sources placed on a scene `canvas` may show (including its global scene).
+    /// The program compositor keeps these linked so `plan()` does not drop them for
+    /// having no sink while they are hidden or off the current scene; layers still come
+    /// only from [`Self::flatten`].
+    pub fn warm_sources(&self, canvas: CanvasId) -> BTreeSet<SourceId> {
         let Some(c) = self.canvas(canvas) else {
-            return warm;
+            return BTreeSet::new();
         };
-        let Some(s) = self.scene(scene) else {
-            return warm;
-        };
-        if !allowed_on(s.scope, c.id) {
-            return warm;
-        }
-        let mut seen = BTreeSet::new();
-        let mut stack: Vec<SceneId> = c.globals.into_iter().chain([scene]).collect();
-        while let Some(id) = stack.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            let Some(s) = self.scene(id) else {
-                continue;
-            };
-            for item in &s.items {
-                match item.content {
-                    ItemContent::Source(source) if !item.visible => {
-                        let standby = self.source(source).is_some_and(|src| src.standby());
-                        if !standby {
-                            warm.insert(source);
-                        }
-                    }
-                    ItemContent::Scene(nested) if item.visible => stack.push(nested),
-                    _ => {}
-                }
-            }
-        }
-        warm
+        let globals = c.globals;
+        let showable: BTreeSet<SceneId> = self
+            .showable_scenes(canvas)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        self.wanted_sources()
+            .into_iter()
+            .filter(|id| {
+                self.placements_of(*id)
+                    .iter()
+                    .any(|(sc, _)| showable.contains(sc) || globals == Some(*sc))
+            })
+            .collect()
     }
 }

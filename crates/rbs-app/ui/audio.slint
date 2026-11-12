@@ -3,13 +3,20 @@
 // computer (`monitor.toml`), not to the scene collection. Rust pushes the state into
 // the `Studio` global and lists the devices when the page is shown.
 import { Theme, Tokens } from "tokens.slint";
-import { Select, Slider } from "components.slint";
+import { Select, Slider, ValueReadout } from "components.slint";
 import { SettingsCard, SettingRow, SettingsStatus } from "settings.slint";
 import { Studio } from "studio.slint";
 
 export component AudioSettings inherits Rectangle {
-    // The fader position while a drag runs; -1 otherwise.
+    // The fader position while a drag runs; -1 otherwise. Cleared once the host
+    // reports that position, so the knob does not jump back before the answer.
     property <float> drag: -1;
+    property <float> shown-volume: Studio.monitor-volume;
+    changed shown-volume => {
+        if root.drag >= 0 && Math.abs(root.shown-volume - root.drag) < 0.02 {
+            root.drag = -1;
+        }
+    }
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
@@ -42,21 +49,12 @@ export component AudioSettings inherits Rectangle {
                         value: root.drag >= 0 ? root.drag : Studio.monitor-volume;
                         value-text: Studio.monitor-volume-text;
                         enabled: Studio.monitor-available;
-                        moved(v) => { root.drag = v; }
-                        released => {
-                            if root.drag >= 0 { Studio.set-monitor-volume(root.drag); }
-                            root.drag = -1;
-                        }
-                        cancelled => { root.drag = -1; }
-                        reset => { Studio.set-monitor-volume(1); }
+                        moved(v) => { root.drag = v; Studio.preview-monitor-volume(v); }
+                        released => { if root.drag >= 0 { Studio.set-monitor-volume(root.drag); } }
+                        cancelled => { root.drag = -1; Studio.preview-monitor-volume(-1); }
+                        reset => { root.drag = -1; Studio.set-monitor-volume(1); }
                     }
-                    Text {
-                        text: Studio.monitor-volume-text;
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-body-size;
-                        vertical-alignment: center;
-                        accessible-role: none;
-                    }
+                    ValueReadout { text: Studio.monitor-volume-text; }
                 }
             }
             SettingsStatus {

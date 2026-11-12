@@ -55,11 +55,12 @@ impl LevelFeed {
                 let peak_db: Vec<f32> = (0..levels.channels())
                     .map(|ch| db(levels.peak(ch)))
                     .collect();
-                // No RMS accumulator yet: `rms_db` repeats the peak so a client still
-                // gets one finite number per channel (control-api spec).
+                let rms_db: Vec<f32> = (0..levels.channels())
+                    .map(|ch| db(levels.rms(ch)))
+                    .collect();
                 SourceLevels {
                     source: *id,
-                    rms_db: peak_db.clone(),
+                    rms_db,
                     peak_db,
                 }
             })
@@ -105,8 +106,8 @@ mod tests {
     #[test]
     fn a_subscribed_sample_reads_peaks_without_clearing_the_ui_take() {
         let meter = Arc::new(LevelMeter::new(2));
-        meter.record(0, 0.5);
-        meter.record(1, 0.25);
+        meter.record_block(0, 0.5, 0.25, 1);
+        meter.record_block(1, 0.25, 0.01, 1);
         let feed = LevelFeed::new();
         feed.replace_if_changed(vec![(7, Arc::clone(&meter))]);
         let Some(EventPayload::AudioLevels(rows)) =
@@ -117,7 +118,8 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].source, 7);
         assert!((rows[0].peak_db[0] + 6.0206).abs() < 1e-3);
-        assert_eq!(rows[0].rms_db, rows[0].peak_db);
+        assert!((rows[0].rms_db[0] + 6.0206).abs() < 1e-3);
+        assert!(rows[0].rms_db[1] < rows[0].peak_db[1]);
         assert_eq!(meter.take().peak(0), 0.5);
         assert!(LevelSampler(feed).sample(Topic::RecordState).is_none());
     }
@@ -137,5 +139,6 @@ mod tests {
             panic!("expected levels");
         };
         assert_eq!(rows[0].peak_db, vec![SILENCE_DB]);
+        assert_eq!(rows[0].rms_db, vec![SILENCE_DB]);
     }
 }

@@ -1,3 +1,6 @@
 [alias]
 # `cargo xtask check-layers` (principle P1, docs/architecture/principles.md).
 xtask = "run --quiet --package xtask --"
+
+# A worktree must not grow its own target/. Point CARGO_TARGET_DIR at the primary
+# checkout's target before the first cargo command (CLAUDE.md, "Worktrees and target/").

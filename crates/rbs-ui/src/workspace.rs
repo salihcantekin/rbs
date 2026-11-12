@@ -728,6 +728,12 @@ impl From<Window> for RawWindow {
 
 const MIXER_PANEL: &str = "rbs.mixer";
 const ORIENTATION_KEY: &str = "orientation";
+const SCENE_SHARE_KEY: &str = "scene_share";
+/// Default This scene pane share when both groups are shown (columns).
+const DEFAULT_SCENE_SHARE: f64 = 0.5;
+/// Inclusive bounds for a saved columns pane share.
+const SCENE_SHARE_MIN: f64 = 0.05;
+const SCENE_SHARE_MAX: f64 = 0.95;
 
 /// How the Mixer arranges its sources (ADR-0083).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1732,6 +1738,36 @@ impl Workspace {
         }
     }
 
+    /// This scene pane share of the Mixer columns groups row (ADR-0101). Missing or
+    /// invalid means half; out-of-range values are clamped.
+    pub fn mixer_scene_share(&self) -> f32 {
+        let raw = self
+            .panel_options
+            .get(MIXER_PANEL)
+            .and_then(|o| o.get(SCENE_SHARE_KEY))
+            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+            .unwrap_or(DEFAULT_SCENE_SHARE);
+        raw.clamp(SCENE_SHARE_MIN, SCENE_SHARE_MAX) as f32
+    }
+
+    /// Set the Mixer columns This scene pane share. `0.5` removes the key.
+    pub fn set_mixer_scene_share(&mut self, share: f32) {
+        let clamped = (share as f64).clamp(SCENE_SHARE_MIN, SCENE_SHARE_MAX);
+        if (clamped - DEFAULT_SCENE_SHARE).abs() < f64::EPSILON {
+            if let Some(options) = self.panel_options.get_mut(MIXER_PANEL) {
+                options.remove(SCENE_SHARE_KEY);
+                if options.is_empty() {
+                    self.panel_options.remove(MIXER_PANEL);
+                }
+            }
+            return;
+        }
+        self.panel_options
+            .entry(MIXER_PANEL.to_owned())
+            .or_default()
+            .insert(SCENE_SHARE_KEY.to_owned(), toml::Value::Float(clamped));
+    }
+
     /// The workspace prepared for sharing: display fingerprints and connector
     /// names are removed, so it holds no hardware identifiers.
     pub fn exported(&self) -> Workspace {
@@ -1887,6 +1923,27 @@ mod tests {
             .or_default()
             .insert("orientation".into(), toml::Value::String("diagonal".into()));
         assert_eq!(w.mixer_orientation(), MixerOrientation::Auto);
+    }
+
+    #[test]
+    fn mixer_scene_share_round_trips_and_clamps() {
+        let mut w = builtin::edit();
+        assert!((w.mixer_scene_share() - 0.5).abs() < f32::EPSILON);
+        assert!(!w.to_toml().unwrap().contains("scene_share"));
+        w.set_mixer_scene_share(0.35);
+        let again = Workspace::from_toml(&w.to_toml().unwrap()).unwrap();
+        assert!((again.mixer_scene_share() - 0.35).abs() < 1e-6);
+        w.set_mixer_scene_share(0.5);
+        assert!(
+            !w.panel_options
+                .get("rbs.mixer")
+                .is_some_and(|o| o.contains_key("scene_share"))
+        );
+        w.panel_options
+            .entry("rbs.mixer".into())
+            .or_default()
+            .insert("scene_share".into(), toml::Value::Float(2.0));
+        assert!((w.mixer_scene_share() - 0.95).abs() < f32::EPSILON);
     }
 
     #[test]

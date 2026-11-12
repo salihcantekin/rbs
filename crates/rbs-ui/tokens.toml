@@ -133,6 +133,27 @@ format = 2
 "size.tracking.caps" = 0.5
 # Width of the peak hold marker in a level bar.
 "size.meter.peak" = 2
+# Thickness of a level bar (its short side), so the low, mid and high zones read as bands.
+"size.meter.bar" = 12
+# Font size of the dB scale under the Mixer faders, and the height of that row.
+# Smaller than type.caption: the scale is a tick label, and the fader and the readout
+# stay the level's other cues. Not a text style: those cannot go below 11.
+"size.meter.scale" = 9
+"size.meter.scale-line" = 12
+# Fixed width of a level readout ("0 dB", "−60.0 dB", "Silent") beside a fader.
+"size.meter.readout" = 56
+# Width of one Mixer column strip (columns): padding + meter + VSlider + control column.
+# Must stay tight; the VSlider must not horizontal-stretch (its track is centred in its width).
+"size.mixer.strip" = 104
+# Drag handle between This scene and Global panes in the Mixer columns layout (reserved).
+"size.mixer.splitter" = 6
+# Width of the columns strip's control column (level readout above the icon buttons).
+"size.mixer.controls" = 48
+# Minimum height of a columns strip: panel pad is outside this box. Inside it,
+# top pad + name + gap + five control slots + bottom pad
+# (space.1 + control.sm + space.1 + 5*control.sm + 4*space.1 + space.1).
+# A shorter Mixer scrolls; the fader track stays at least as tall as that control column.
+"size.mixer.min-h" = 172
 # Transition panel widths: below `narrow` only the button shows, below `short`
 # the button says "Go" and the studio mode hint is hidden.
 "size.transition.narrow" = 40

@@ -3,7 +3,8 @@
 //! Pure Rust, no external libraries, all platforms. Writes Matroska (RFC 9559) for
 //! live recording: an EBML header and a Segment of unknown size with `Info` and
 //! `Tracks`, then one Cluster per chunk. H.264 is `V_MPEG4/ISO/AVC` with the avcC as
-//! codec private data; AAC is `A_AAC` with the AudioSpecificConfig. Every Cluster is
+//! codec private data; length-prefixed HEVC is `V_MPEGH/ISO/HEVC` with the hvcC;
+//! AAC is `A_AAC` with the AudioSpecificConfig. Every Cluster is
 //! complete, so a recording is playable up to its last Cluster after a crash
 //! (`mux.live`).
 //!
@@ -33,11 +34,12 @@
 //!   for late blocks, so every 16-bit block timestamp is exact. Players show the recording from its first
 //!   block, about one second in. Block timestamps are presentation times; the Cluster
 //!   timestamp is the earliest in the Cluster.
-//! - Length-prefixed H.264 is copied as is; Annex B input is converted to 4-byte
-//!   lengths without AUD, SPS and PPS, which live in the codec private data. An
-//!   in-band SPS or PPS that differs from the extradata is refused (`InvalidPacket`).
+//! - Length-prefixed H.264 and HEVC are copied as is; Annex B H.264 is converted to
+//!   4-byte lengths without AUD and parameter sets, which live in the codec private
+//!   data. An in-band parameter set that differs from the extradata is refused
+//!   (`InvalidPacket`). Annex B HEVC is refused until hvcC can be built from it.
 //!
-//! Limitations: H.264 and AAC only (HEVC, AV1 and Opus to come); no Cues, chapters or
+//! Limitations: H.264, HEVC (length-prefixed) and AAC only (AV1 and Opus to come); no Cues, chapters or
 //! tags; no WebM doc type yet (it needs VP9/AV1 and Opus).
 
 mod ebml;
@@ -70,7 +72,7 @@ impl AdapterFactory for MatroskaMuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Matroska.as_str()]))
-            .with(caps::CODECS, set(&["h264", "aac"]))
+            .with(caps::CODECS, set(&["h264", "hevc", "aac"]))
             .with(caps::LIVE, CapabilityValue::Flag(true))
             .with(caps::PATCHES, CapabilityValue::Flag(true)))
     }

@@ -347,14 +347,40 @@ impl AppearanceUi {
         self.commit(next)
     }
 
-    /// Follow the system or not. The choice stays, as a theme pick does.
-    pub fn set_follow_system(&mut self, follow: bool) -> Option<Appearance> {
+    /// Follow the system or not. On: the built-in Dark theme while the system is
+    /// dark and the built-in Light theme while it is light. Off: the theme already
+    /// chosen (`theme`), or `shown` when leaving the system pair so the windows do
+    /// not jump (0 dark, 1 light).
+    pub fn set_follow_system(&mut self, follow: bool, shown: usize) -> Option<Appearance> {
         let mut next = self.choice.clone();
-        next.mode = if follow {
-            AppearanceMode::System
+        if follow {
+            next.mode = AppearanceMode::System;
+            next.dark = ThemeId::BuiltIn(Base::Dark);
+            next.light = ThemeId::BuiltIn(Base::Light);
         } else {
-            AppearanceMode::Fixed
-        };
+            next.mode = AppearanceMode::Fixed;
+            if self.choice.mode == AppearanceMode::System {
+                next.theme = if shown == 0 {
+                    ThemeId::BuiltIn(Base::Dark)
+                } else {
+                    ThemeId::BuiltIn(Base::Light)
+                };
+            }
+        }
+        self.commit(next)
+    }
+
+    /// Uses the theme at `index` whatever the system appearance is. The system pair
+    /// is left as the built-in themes, so turning "Use the system appearance" back
+    /// on does not restore this choice.
+    pub fn use_theme(&mut self, index: usize) -> Option<Appearance> {
+        let id = self.entries.get(index)?.id.clone();
+        if self.entries[index].resolved.is_err() {
+            return None;
+        }
+        let mut next = self.choice.clone();
+        next.mode = AppearanceMode::Fixed;
+        next.theme = id;
         self.commit(next)
     }
 
@@ -903,9 +929,12 @@ mod tests {
         assert!(ui.forget(&id, Base::Dark).is_none());
         assert!(ui.keep.is_none());
 
-        // At start: a slot naming a theme whose file is gone takes the slot's default.
+        // At start, in Fixed mode: a slot naming a theme whose file is gone takes the
+        // slot's default. System mode never keeps a custom slot, so there is nothing
+        // to heal there.
         let lock = data.try_lock().unwrap().unwrap();
         let mut choice = data.appearance().0;
+        choice.mode = AppearanceMode::Fixed;
         choice.light = ThemeId::User(EntryId::parse("gone").unwrap());
         choice.dark = ThemeId::User(id);
         data.set_appearance(&lock, &choice).unwrap();
@@ -947,17 +976,27 @@ mod tests {
         let next = ui.pick(0, 3).unwrap();
         assert_eq!(next.dark, ThemeId::User(id.clone()));
         assert!(ui.keep.is_none());
-        assert_eq!(ui.choice.dark, ThemeId::User(id));
+        assert_eq!(ui.choice.dark, ThemeId::User(id.clone()));
         // A second pick stays as well. "Keep this look?" is not asked.
         ui.pick(1, 2).unwrap();
         assert!(ui.keep.is_none());
         assert_eq!(ui.choice.light, ThemeId::BuiltIn(Base::HighContrast));
         assert_ne!(ui.choice, before);
-        ui.set_follow_system(false).unwrap();
+        ui.set_follow_system(false, 0).unwrap();
         assert!(ui.keep.is_none());
         assert_eq!(ui.choice.mode, AppearanceMode::Fixed);
-        // Picking the same theme again changes nothing.
-        assert!(ui.pick(2, 0).is_none());
+        // Use pins one theme and leaves the system pair as the built-in themes.
+        let pinned = ui.use_theme(3).unwrap();
+        assert_eq!(pinned.mode, AppearanceMode::Fixed);
+        assert_eq!(pinned.theme, ThemeId::User(id.clone()));
+        assert_eq!(pinned.dark, ThemeId::User(id.clone()));
+        assert_eq!(pinned.light, ThemeId::BuiltIn(Base::HighContrast));
+        let back = ui.set_follow_system(true, 1).unwrap();
+        assert_eq!(back.mode, AppearanceMode::System);
+        assert_eq!(back.dark, ThemeId::BuiltIn(Base::Dark));
+        assert_eq!(back.light, ThemeId::BuiltIn(Base::Light));
+        // Picking the theme already in use changes nothing.
+        assert!(ui.pick(2, 3).is_none());
     }
 
     #[test]

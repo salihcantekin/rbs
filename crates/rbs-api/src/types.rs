@@ -57,6 +57,10 @@ pub enum SourceKind {
     SystemAudio,
     /// What one application plays.
     ApplicationAudio,
+    /// A picture: a file or a built-in sample (protocol 1.34, ADR-0075).
+    Image,
+    /// A solid colour (protocol 1.34, ADR-0075).
+    Color,
 }
 
 /// Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does
@@ -136,7 +140,8 @@ pub struct SourceInfo {
     pub id: u32,
     /// Its name, unique in the collection.
     pub name: String,
-    /// Its kind; `null` for a type this server cannot add.
+    /// Its kind; `null` for a type this server cannot name. `image` and `color` are
+    /// picture sources (protocol 1.34).
     pub kind: Option<SourceKind>,
     /// How it is doing.
     pub status: SourceStatus,
@@ -181,6 +186,10 @@ pub struct SourceInfo {
     /// absent when off).
     #[serde(default, skip_serializing_if = "MonitorMode::is_off")]
     pub monitor: MonitorMode,
+    /// Per-source slide override (protocol 1.35, ADR-0100); absent when the collection
+    /// defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide: Option<Glide>,
 }
 
 /// Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).
@@ -369,6 +378,43 @@ pub struct SceneInfo {
     pub name: String,
 }
 
+/// How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GlideEasing {
+    /// Straight lerp.
+    #[serde(rename = "linear")]
+    Linear,
+    /// Smoothstep ease in and out.
+    #[serde(rename = "ease-in-out")]
+    #[default]
+    EaseInOut,
+}
+
+/// Collection or source glide timing (protocol 1.35, ADR-0100).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Glide {
+    /// Milliseconds in `0..=5000`. `0` jumps.
+    pub duration_ms: u32,
+    /// Slide easing; fade-ins use the duration only.
+    pub easing: GlideEasing,
+}
+
+impl Default for Glide {
+    fn default() -> Self {
+        Self {
+            duration_ms: 400,
+            easing: GlideEasing::EaseInOut,
+        }
+    }
+}
+
+impl Glide {
+    /// True for the shipped default (400 ms, ease-in-out).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A source of the collection, wherever it is placed (protocol 1.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceEntry {
@@ -376,12 +422,17 @@ pub struct SourceEntry {
     pub id: u32,
     /// Its name.
     pub name: String,
-    /// Its kind; `null` for a type this server cannot add.
+    /// Its kind; `null` for a type this server cannot name. `image` and `color` are
+    /// picture sources (protocol 1.34).
     pub kind: Option<SourceKind>,
     /// A global source of the studio's canvas (protocol 1.10, ADR-0065): `item.add`
     /// refuses it. Absent when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub global: bool,
+    /// Per-source slide override (protocol 1.35, ADR-0100); absent when the collection
+    /// defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide: Option<Glide>,
 }
 
 /// The studio canvas's master volume and mute (protocol 1.15, ADR-0081).
@@ -425,6 +476,10 @@ pub struct SceneList {
     /// 1.0 and not muted.
     #[serde(default, skip_serializing_if = "Master::is_default")]
     pub master: Master,
+    /// Collection morph defaults (protocol 1.35, ADR-0100); absent when 400 ms and
+    /// ease-in-out.
+    #[serde(default, skip_serializing_if = "Glide::is_default")]
+    pub glide: Glide,
     /// Every source of the collection.
     pub sources: Vec<SourceEntry>,
 }
@@ -631,6 +686,9 @@ pub struct RecordingProfile {
     pub container: Container,
     /// The video encoder's adapter id, or `null` for the best one.
     pub encoder: Option<String>,
+    /// H.264, or HEVC. Omitted when H.264, so a 1.33 client still reads the object.
+    #[serde(default, skip_serializing_if = "VideoCodec::is_h264")]
+    pub video_codec: VideoCodec,
     /// Rate control.
     pub rate_control: RateMode,
     /// Video bitrate in kbit/s: the CBR rate, or the VBR target.
@@ -651,6 +709,49 @@ pub struct RecordingProfile {
     pub cbr_padding: bool,
     /// Audio bitrate in kbit/s.
     pub audio_kbps: u32,
+    /// Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37).
+    #[serde(default, skip_serializing_if = "Delivery::is_video")]
+    pub delivery: Delivery,
+    /// Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_shadows: bool,
+}
+
+/// The video codec of a recording or a stream. H.264 is omitted on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    /// H.264.
+    #[default]
+    H264,
+    /// HEVC (H.265).
+    Hevc,
+}
+
+impl VideoCodec {
+    /// True for H.264, so the field can be omitted on the wire.
+    fn is_h264(codec: &Self) -> bool {
+        *codec == Self::H264
+    }
+}
+
+/// How a recording or a stream encodes colour (protocol 1.37). Omitted when
+/// [`Delivery::Video`], so an older file and a 1.36 client stay on Rec. 709 limited range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delivery {
+    /// Rec. 709 camera encoding, limited range. YouTube, TV and streams.
+    #[default]
+    Video,
+    /// sRGB transfer, full range. Matches a desktop display.
+    Screen,
+}
+
+impl Delivery {
+    /// True for [`Delivery::Video`], so the field can be omitted on the wire.
+    fn is_video(delivery: &Self) -> bool {
+        *delivery == Self::Video
+    }
 }
 
 /// How a stream is encoded (`settings.get`, `settings.set`; protocol 1.2). The same
@@ -659,6 +760,9 @@ pub struct RecordingProfile {
 pub struct Encoding {
     /// The video encoder's adapter id, or `null` for the best one.
     pub encoder: Option<String>,
+    /// H.264, or HEVC. Omitted when H.264, so a 1.33 client still reads the object.
+    #[serde(default, skip_serializing_if = "VideoCodec::is_h264")]
+    pub video_codec: VideoCodec,
     /// Rate control.
     pub rate_control: RateMode,
     /// Video bitrate in kbit/s: the CBR rate, or the VBR target.
@@ -679,6 +783,12 @@ pub struct Encoding {
     pub cbr_padding: bool,
     /// Audio bitrate in kbit/s.
     pub audio_kbps: u32,
+    /// Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37).
+    #[serde(default, skip_serializing_if = "Delivery::is_video")]
+    pub delivery: Delivery,
+    /// Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_shadows: bool,
 }
 
 /// The stream settings (`settings.get`; protocol 1.2). The server's address is not
@@ -869,7 +979,7 @@ pub struct SourceLevels {
     pub source: u32,
     /// Peak per channel in dBFS. Silence is −120, the floor JSON can carry.
     pub peak_db: Vec<f32>,
-    /// RMS per channel in dBFS. Equal to `peak_db` until an RMS meter exists.
+    /// RMS per channel in dBFS, the root mean square since the previous sample.
     pub rms_db: Vec<f32>,
 }
 

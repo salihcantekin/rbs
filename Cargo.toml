@@ -21,6 +21,15 @@ unwrap_used = "warn"
 expect_used = "warn"
 undocumented_unsafe_blocks = "deny"
 
+# Smaller debug builds: line tables keep backtraces readable, and third-party
+# crates carry no debug info. A single target/ reached 55 GB with full DWARF
+# (Skia, Slint, wgpu), and each git worktree kept its own copy.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

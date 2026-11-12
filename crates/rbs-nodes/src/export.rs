@@ -101,6 +101,8 @@ pub struct VideoExportNode {
     format: YuvFormat,
     /// Colour the planes are encoded with and the frames are tagged with.
     color: ColorSpace,
+    /// Raises only the darkest tones before the Rec. 709 encode. The tag stays `color`.
+    open_shadows: bool,
     width: u32,
     height: u32,
     download: Option<YuvDownload>,
@@ -121,10 +123,23 @@ impl VideoExportNode {
     /// `YuvDownload` accepts [`ColorSpace::BT709_LIMITED`] (the default) and
     /// [`ColorSpace::SRGB_VIDEO`] (sRGB, full range). Anything else fails in `prepare`.
     pub fn with_color(format: YuvFormat, width: u32, height: u32, color: ColorSpace) -> Self {
+        Self::with_tone(format, width, height, color, false)
+    }
+
+    /// [`Self::with_color`] with the open-shadows grade. The frames stay tagged `color`.
+    /// The grade applies only to Rec. 709 limited range and fails in `prepare` otherwise.
+    pub fn with_tone(
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+        open_shadows: bool,
+    ) -> Self {
         Self {
             descriptor: video_export_descriptor(),
             format,
             color,
+            open_shadows,
             width,
             height,
             download: None,
@@ -161,9 +176,15 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let download =
-            YuvDownload::with_color(ctx.shared, self.format, self.width, self.height, self.color)
-                .map_err(|e| NodeError::Failed(format!("video export: {e}")))?;
+        let download = YuvDownload::with_tone(
+            ctx.shared,
+            self.format,
+            self.width,
+            self.height,
+            self.color,
+            self.open_shadows,
+        )
+        .map_err(|e| NodeError::Failed(format!("video export: {e}")))?;
         self.seen = download.stats();
         self.download = Some(download);
         self.last = None;
@@ -254,5 +275,9 @@ mod tests {
             screen.frame_format().color.range,
             rbs_core::media::ColorRange::Full
         );
+        let opened =
+            VideoExportNode::with_tone(YuvFormat::Nv12, 16, 8, ColorSpace::BT709_LIMITED, true);
+        assert_eq!(opened.frame_format().color, ColorSpace::BT709_LIMITED);
+        assert!(opened.open_shadows);
     }
 }

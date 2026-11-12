@@ -246,7 +246,11 @@ fn connect(host: &StudioHost) -> (ApiServer, Client) {
         "session.hello",
         json!({"protocols": ["1.33"], "client": {"name": "test", "version": "1"}}),
     );
-    assert_eq!(hello["result"]["protocol"], "1.33", "{hello}");
+    assert_eq!(
+        hello["result"]["protocol"],
+        rbs_api::session::PROTOCOL_VERSION,
+        "{hello}"
+    );
     (api, c)
 }
 

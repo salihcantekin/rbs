@@ -112,6 +112,19 @@ pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 
 No `Cargo.toml` may set `panic = "abort"`, and no `.cargo/` config may pass `panic=abort`; CI checks both.
 
+### FFI callbacks (ADR-0055 decision 7)
+
+Audit of 2026-11-11: callbacks RBS registers and an OS or vendor library calls back into (function items and blocks). Type aliases used only to call out are not callbacks (`CreateTap` and `DestroyTap` in the CoreAudio adapter).
+
+Already caught at the callback edge:
+
+- `crates/rbs-audio-io-coreaudio/src/mac.rs` — `io_proc` and `render_proc`, the real-time IO procs. Left as they were: one `catch_unwind` at that edge, nothing added on the cycle.
+- `crates/rbs-codec-audiotoolbox/src/mac.rs` — `input_proc`.
+- `crates/rbs-codec-videotoolbox/src/mac/session.rs` — `output_callback`.
+- `crates/rbs-app/src/native/quit.rs` — `should_terminate` (`rbs_crash::contain`).
+
+The same CoreAudio file's property-listener block and microphone permission block did not catch; they do now. Also wrapped in this audit: `crates/rbs-capture-sck/src/mac.rs` (completion blocks, `stream:didOutputSampleBuffer:ofType:`, `stream:didStopWithError:`), `crates/rbs-capture-avf/src/mac.rs` (camera permission block, sample-buffer delegate, disconnect and runtime-error block), `crates/rbs-app/src/native/background.rs` (`should_reopen`, `did_resign`, `did_become_active`; the show path was already under `contain`). `crates/rbs-app/src/native/capture.rs` registers no callback.
+
 ## Errors and failure behaviour
 
 - `install` fails only when `dir` cannot be created or the marker cannot be created, locked or renamed (for example on a file system without locks). The app then runs without unclean-exit detection.

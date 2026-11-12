@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 11
+//! format = 12
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -12,6 +12,10 @@
 //! scene = 1
 //! item = 1
 //! filter = 0
+//!
+//! # [glide]                    # collection morph (format 12, ADR-0100); absent: 400 ms, ease-in-out
+//! # duration_ms = 400
+//! # easing = "ease-in-out"     # or "linear"
 //!
 //! [[canvases]]
 //! id = 0
@@ -31,6 +35,7 @@
 //! type = "org.rbs.source.display"
 //! settings = { cursor = true }
 //! # monitor = "also"         # heard on the monitor output: "only" or "also" (format 10, ADR-0097)
+//! # glide = { duration_ms = 600, easing = "linear" }  # slide override (format 12, ADR-0100)
 //!
 //! [[scenes]]
 //! id = 0
@@ -59,9 +64,10 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, Canvas, CanvasId, Crop, Fallback, Filter, FilterId, ItemContent, ItemId, ItemStyle,
-    Layout, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow,
-    Shape, Source, SourceAudio, SourceId, SourceMonitor,
+    Border, Canvas, CanvasId, CollectionGlide, Crop, Fallback, Filter, FilterId, GlideEasing,
+    ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene, SceneId, SceneItem, SceneScope,
+    SettingValue, Settings, Shadow, Shape, Source, SourceAudio, SourceGlide, SourceId,
+    SourceMonitor,
 };
 use rbs_scene::{IdCounters, SceneCollection};
 use serde::{Deserialize, Serialize};
@@ -73,12 +79,105 @@ use crate::document::{self, Document};
 struct Body {
     #[serde(default)]
     next: Next,
+    /// Collection morph (format 12, ADR-0100); absent: defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glide: Option<GlideDoc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     canvases: Vec<CanvasDoc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sources: Vec<SourceDoc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scenes: Vec<SceneDoc>,
+}
+
+/// Collection or source glide in the document (ADR-0100).
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+struct GlideDoc {
+    #[serde(
+        default = "default_glide_ms",
+        skip_serializing_if = "is_default_glide_ms"
+    )]
+    duration_ms: u32,
+    #[serde(default, skip_serializing_if = "GlideEasingDoc::is_ease_in_out")]
+    easing: GlideEasingDoc,
+}
+
+fn default_glide_ms() -> u32 {
+    400
+}
+
+fn is_default_glide_ms(v: &u32) -> bool {
+    *v == 400
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum GlideEasingDoc {
+    Linear,
+    #[default]
+    EaseInOut,
+}
+
+impl GlideEasingDoc {
+    fn is_ease_in_out(&self) -> bool {
+        *self == Self::EaseInOut
+    }
+}
+
+impl From<GlideEasing> for GlideEasingDoc {
+    fn from(e: GlideEasing) -> Self {
+        match e {
+            GlideEasing::Linear => Self::Linear,
+            GlideEasing::EaseInOut => Self::EaseInOut,
+            _ => Self::EaseInOut,
+        }
+    }
+}
+
+impl From<GlideEasingDoc> for GlideEasing {
+    fn from(e: GlideEasingDoc) -> Self {
+        match e {
+            GlideEasingDoc::Linear => Self::Linear,
+            GlideEasingDoc::EaseInOut => Self::EaseInOut,
+        }
+    }
+}
+
+impl From<CollectionGlide> for GlideDoc {
+    fn from(g: CollectionGlide) -> Self {
+        Self {
+            duration_ms: g.duration_ms,
+            easing: g.easing.into(),
+        }
+    }
+}
+
+impl From<GlideDoc> for CollectionGlide {
+    fn from(g: GlideDoc) -> Self {
+        Self {
+            duration_ms: g.duration_ms,
+            easing: g.easing.into(),
+        }
+    }
+}
+
+impl From<SourceGlide> for GlideDoc {
+    fn from(g: SourceGlide) -> Self {
+        Self {
+            duration_ms: g.duration_ms,
+            easing: g.easing.into(),
+        }
+    }
+}
+
+impl From<GlideDoc> for SourceGlide {
+    fn from(g: GlideDoc) -> Self {
+        Self {
+            duration_ms: g.duration_ms,
+            easing: g.easing.into(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -181,6 +280,9 @@ struct SourceDoc {
     /// Heard on the monitor output (format 10, ADR-0097); absent: off.
     #[serde(default, skip_serializing_if = "MonitorDoc::is_off")]
     monitor: MonitorDoc,
+    /// Slide override (format 12, ADR-0100); absent: collection glide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glide: Option<GlideDoc>,
     /// Hints for finding the target again (`target_app`, `target_title`; format 8, ADR-0077).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     hints: BTreeMap<String, String>,
@@ -496,7 +598,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 11;
+    const FORMAT: u32 = 12;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -510,10 +612,12 @@ impl Document for SceneCollection {
     /// `follow` and `fallback` (ADR-0093); a format 8 body is a format 9 body without them.
     /// Format 10 adds the optional source `monitor` (ADR-0097); a format 9 body is a
     /// format 10 body without it. Format 11 adds the optional canvas `order` (the
-    /// scene list); a format 10 body is a format 11 body without it.
+    /// scene list); a format 10 body is a format 11 body without it. Format 12 adds the
+    /// collection `glide` and optional per-source `glide` (ADR-0100); a format 11 body
+    /// is a format 12 body without them.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=10 => {
+            1..=11 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -548,6 +652,17 @@ impl Document for SceneCollection {
                 if from < 11 && ordered {
                     return Err(format!("format {from} has no canvas `order` (format 11)"));
                 }
+                let glided = body.contains_key("glide")
+                    || body
+                        .get("sources")
+                        .and_then(toml::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(toml::Value::as_table)
+                        .any(|s| s.contains_key("glide"));
+                if from < 12 && glided {
+                    return Err(format!("format {from} has no `glide` (format 12)"));
+                }
                 Ok(())
             }
             _ => Err(format!("format {from} cannot be read")),
@@ -556,6 +671,7 @@ impl Document for SceneCollection {
 
     fn to_body(&self) -> Result<toml::Table, String> {
         let n = self.id_counters();
+        let glide = (!self.glide().is_default()).then(|| GlideDoc::from(self.glide()));
         let canvases = self
             .canvases()
             .map(|c| {
@@ -609,6 +725,7 @@ impl Document for SceneCollection {
                     sync_offset_ms: s.audio.sync_offset_ms,
                     mixer_hidden: s.audio.mixer_hidden,
                     monitor: s.audio.monitor.into(),
+                    glide: s.glide.map(GlideDoc::from),
                     hints: s.hints.clone(),
                 })
             })
@@ -669,6 +786,7 @@ impl Document for SceneCollection {
                 item: n.item,
                 filter: n.filter,
             },
+            glide,
             canvases,
             sources,
             scenes,
@@ -732,6 +850,7 @@ impl Document for SceneCollection {
                     .with_sync_offset(s.sync_offset_ms)
                     .with_mixer_hidden(s.mixer_hidden)
                     .with_monitor(s.monitor.into());
+                source.glide = s.glide.map(SourceGlide::from);
                 source.hints = s.hints;
                 source
             })
@@ -778,7 +897,8 @@ impl Document for SceneCollection {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let n = b.next;
-        SceneCollection::from_parts(
+        let glide = b.glide.map(CollectionGlide::from).unwrap_or_default();
+        SceneCollection::from_parts_with_glide(
             canvases,
             sources,
             scenes,
@@ -789,6 +909,7 @@ impl Document for SceneCollection {
                 item: n.item,
                 filter: n.filter,
             },
+            glide,
         )
         .map_err(|e| e.to_string())
     }

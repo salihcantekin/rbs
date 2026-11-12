@@ -7,6 +7,7 @@
 //! - [`nal`]: H.264 / HEVC NAL unit iteration and Annex B <-> length-prefixed
 //!   conversion.
 //! - [`avc`]: `AVCDecoderConfigurationRecord` (avcC) parsing and building.
+//! - [`hvcc`]: `HEVCDecoderConfigurationRecord` (hvcC) parsing.
 //! - [`aac`]: `AudioSpecificConfig` parsing and ADTS headers.
 //! - [`h273`]: ITU-T H.273 colour code points for encoder adapters.
 //! - [`amf0`]: AMF0 values for FLV script tags and RTMP commands.
@@ -20,6 +21,7 @@ pub mod amf0;
 pub mod avc;
 pub mod flv;
 pub mod h273;
+pub mod hvcc;
 pub mod nal;
 
 use std::fmt;

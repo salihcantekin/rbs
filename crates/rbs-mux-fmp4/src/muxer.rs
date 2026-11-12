@@ -9,7 +9,8 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 use rbs_media_format::aac::AudioSpecificConfig;
 use rbs_media_format::avc::AvcConfig;
-use rbs_media_format::nal::{self, h264};
+use rbs_media_format::hvcc::Hvcc;
+use rbs_media_format::nal::{self, h264, hevc};
 use rbs_mux::{CreateError, MuxError, Muxer, MuxerConfig};
 
 use crate::boxes;
@@ -116,19 +117,34 @@ fn nanos(t: Timestamp) -> i128 {
 
 /// Whether an Annex B unit goes into an `avc1` sample: parameter sets live in the
 /// sample entry and access unit delimiters are not needed.
-fn keep_unit(unit: &[u8]) -> bool {
-    !unit.is_empty() && !is_parameter_set(unit) && nal::h264_type(unit) != Some(h264::AUD)
+fn keep_unit(codec: CodecId, unit: &[u8]) -> bool {
+    !unit.is_empty() && !is_parameter_set(codec, unit) && !is_aud(codec, unit)
 }
 
-fn is_parameter_set(unit: &[u8]) -> bool {
-    matches!(nal::h264_type(unit), Some(h264::SPS | h264::PPS))
+fn is_aud(codec: CodecId, unit: &[u8]) -> bool {
+    match codec {
+        CodecId::Hevc => nal::hevc_type(unit) == Some(hevc::AUD),
+        _ => nal::h264_type(unit) == Some(h264::AUD),
+    }
 }
 
-/// Refuses an in-band SPS or PPS that differs from the sample entry's.
+fn is_parameter_set(codec: CodecId, unit: &[u8]) -> bool {
+    match codec {
+        CodecId::Hevc => {
+            matches!(
+                nal::hevc_type(unit),
+                Some(hevc::VPS | hevc::SPS | hevc::PPS)
+            )
+        }
+        _ => matches!(nal::h264_type(unit), Some(h264::SPS | h264::PPS)),
+    }
+}
+
+/// Refuses an in-band parameter set that differs from the sample entry's.
 fn check_parameter_set(track: &Track, unit: &[u8]) -> Result<(), MuxError> {
-    if is_parameter_set(unit) && !track.parameter_sets.iter().any(|p| p == unit) {
+    if is_parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
         return Err(MuxError::InvalidPacket(
-            "H.264 parameter sets changed; fragmented MP4 needs a new output".into(),
+            "parameter sets changed; fragmented MP4 needs a new output".into(),
         ));
     }
     Ok(())
@@ -172,9 +188,49 @@ fn avcc_for(stream: &StreamDescriptor) -> Result<(Vec<u8>, Option<u8>), CreateEr
     }
 }
 
+/// Length-prefixed HEVC whose extradata is an hvcC record.
+fn hvcc_for(stream: &StreamDescriptor) -> Result<(Vec<u8>, Option<u8>), CreateError> {
+    let invalid = |e| CreateError::InvalidConfig(format!("HEVC extradata: {e}"));
+    match stream.bitstream {
+        BitstreamFormat::LengthPrefixed { length_size } => {
+            if !matches!(length_size, 1 | 2 | 4) {
+                return Err(CreateError::InvalidConfig(format!(
+                    "NAL length size {length_size}"
+                )));
+            }
+            let hvcc = Hvcc::parse(stream.extradata.as_ref()).map_err(invalid)?;
+            if hvcc.length_size != length_size {
+                return Err(CreateError::InvalidConfig(
+                    "hvcC must match the packets' NAL length size".into(),
+                ));
+            }
+            Ok((stream.extradata.to_vec(), Some(length_size)))
+        }
+        other => Err(CreateError::Unsupported {
+            what: format!("HEVC in {other:?} framing"),
+        }),
+    }
+}
+
 /// `avc1` sample entry with its `avcC` box.
 fn avc1_entry(out: &mut Vec<u8>, width: u16, height: u16, avcc: &[u8]) {
-    let entry = boxes::open(out, b"avc1");
+    visual_entry(out, b"avc1", b"avcC", width, height, avcc);
+}
+
+/// `hvc1` sample entry with its `hvcC` box. Parameter sets live in the entry.
+fn hvc1_entry(out: &mut Vec<u8>, width: u16, height: u16, hvcc: &[u8]) {
+    visual_entry(out, b"hvc1", b"hvcC", width, height, hvcc);
+}
+
+fn visual_entry(
+    out: &mut Vec<u8>,
+    sample: &[u8; 4],
+    config_box: &[u8; 4],
+    width: u16,
+    height: u16,
+    config: &[u8],
+) {
+    let entry = boxes::open(out, sample);
     boxes::zeros(out, 6);
     boxes::u16(out, 1); // data_reference_index
     boxes::zeros(out, 16); // pre_defined, reserved
@@ -187,9 +243,10 @@ fn avc1_entry(out: &mut Vec<u8>, width: u16, height: u16, avcc: &[u8]) {
     boxes::zeros(out, 32); // compressorname
     boxes::u16(out, 0x0018); // depth
     boxes::u16(out, 0xffff); // pre_defined = -1
-    let config = boxes::open(out, b"avcC");
-    out.extend_from_slice(avcc);
-    boxes::close(out, config);
+    let record = config;
+    let box_at = boxes::open(out, config_box);
+    out.extend_from_slice(record);
+    boxes::close(out, box_at);
     boxes::close(out, entry);
 }
 
@@ -315,7 +372,7 @@ impl Fmp4Muxer {
             let id = i as u32 + 1;
             match (stream.codec, stream.params) {
                 (
-                    CodecId::H264,
+                    codec @ (CodecId::H264 | CodecId::Hevc),
                     StreamParams::Video {
                         format, frame_rate, ..
                     },
@@ -330,10 +387,23 @@ impl Fmp4Muxer {
                             what: "more than one video stream in fragmented MP4".into(),
                         });
                     }
-                    let (avcc, length_size) = avcc_for(stream)?;
-                    let parameter_sets = AvcConfig::parse(&avcc)
-                        .map(|c| c.sps.iter().chain(&c.pps).map(|p| p.to_vec()).collect())
-                        .map_err(|e| CreateError::InvalidConfig(format!("H.264 extradata: {e}")))?;
+                    let (config, length_size, parameter_sets, hevc) = if codec == CodecId::Hevc {
+                        let (hvcc, length_size) = hvcc_for(stream)?;
+                        let parameter_sets = Hvcc::parse(&hvcc)
+                            .map(|c| c.parameter_sets.iter().map(|p| p.to_vec()).collect())
+                            .map_err(|e| {
+                                CreateError::InvalidConfig(format!("HEVC extradata: {e}"))
+                            })?;
+                        (hvcc, length_size, parameter_sets, true)
+                    } else {
+                        let (avcc, length_size) = avcc_for(stream)?;
+                        let parameter_sets = AvcConfig::parse(&avcc)
+                            .map(|c| c.sps.iter().chain(&c.pps).map(|p| p.to_vec()).collect())
+                            .map_err(|e| {
+                                CreateError::InvalidConfig(format!("H.264 extradata: {e}"))
+                            })?;
+                        (avcc, length_size, parameter_sets, false)
+                    };
                     let (Ok(width), Ok(height)) = (
                         u16::try_from(format.size.width),
                         u16::try_from(format.size.height),
@@ -342,7 +412,7 @@ impl Fmp4Muxer {
                     };
                     let track = Track {
                         id,
-                        codec: CodecId::H264,
+                        codec,
                         bitstream: stream.bitstream,
                         kind: Kind::Video { length_size },
                         timescale: VIDEO_TIMESCALE,
@@ -356,7 +426,13 @@ impl Fmp4Muxer {
                     trak(
                         &mut traks,
                         &track,
-                        &|out| avc1_entry(out, width, height, &avcc),
+                        &|out| {
+                            if hevc {
+                                hvc1_entry(out, width, height, &config);
+                            } else {
+                                avc1_entry(out, width, height, &config);
+                            }
+                        },
                         width,
                         height,
                     );
@@ -404,7 +480,7 @@ impl Fmp4Muxer {
                     );
                     tracks.push(track);
                 }
-                (CodecId::H264 | CodecId::Aac, _) => {
+                (CodecId::H264 | CodecId::Hevc | CodecId::Aac, _) => {
                     return Err(CreateError::InvalidConfig(format!(
                         "{} stream with {:?} parameters",
                         stream.codec, stream.params
@@ -686,7 +762,7 @@ impl Muxer for Fmp4Muxer {
                         result = Err(e);
                         break;
                     }
-                    if keep_unit(unit) {
+                    if keep_unit(track.codec, unit) {
                         boxes::u32(&mut track.staging, unit.len() as u32);
                         track.staging.extend_from_slice(unit);
                     }

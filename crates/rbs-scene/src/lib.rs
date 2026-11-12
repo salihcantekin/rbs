@@ -28,4 +28,6 @@ pub use collection::{
     SceneError, Undo,
 };
 pub use flatten::{Affine2, FlatLayer};
-pub use model::{COMPANION_OF_HINT, STANDBY_HINT};
+pub use model::{
+    COMPANION_OF_HINT, CollectionGlide, GlideEasing, MAX_GLIDE_MS, STANDBY_HINT, SourceGlide,
+};

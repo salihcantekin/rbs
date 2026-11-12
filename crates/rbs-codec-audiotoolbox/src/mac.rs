@@ -121,6 +121,10 @@ struct Input {
     end: bool,
 }
 
+/// Test-only: the input callback panics once, inside its `catch_unwind`.
+#[cfg(test)]
+static INPUT_PROC_PANIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The converter's input callback.
 unsafe extern "C-unwind" fn input_proc(
     _converter: AudioConverterRef,
@@ -130,6 +134,10 @@ unsafe extern "C-unwind" fn input_proc(
     user: *mut c_void,
 ) -> i32 {
     let run = || {
+        #[cfg(test)]
+        if INPUT_PROC_PANIC.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            panic!("input proc");
+        }
         // SAFETY: `user` is the `Input` that `AacSession::fill` passed for this call;
         // it is not otherwise accessed while the converter runs.
         let input = unsafe { &mut *user.cast::<Input>() };
@@ -581,5 +589,63 @@ impl AudioEncoder for AacSession {
         // A flush ends the stream: what follows is a new stream on its own time base.
         self.last_end = None;
         self.drain(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list_and_input() -> (AudioBufferList, Input, u32) {
+        let list = AudioBufferList {
+            mNumberBuffers: 1,
+            mBuffers: [AudioBuffer {
+                mNumberChannels: 1,
+                mDataByteSize: 0,
+                mData: std::ptr::null_mut(),
+            }],
+        };
+        let input = Input {
+            data: std::ptr::null(),
+            channels: 2,
+            frames: 4,
+            end: false,
+        };
+        (list, input, 7)
+    }
+
+    #[test]
+    fn input_proc_contains_a_panic_and_rejects_a_bad_layout() {
+        let (mut list, mut input, mut packets) = list_and_input();
+        INPUT_PROC_PANIC.store(true, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: `list`, `packets` and `input` are stack locals that outlive the call.
+        // The converter argument is unused. The panic fires before any pointer is read.
+        let status = unsafe {
+            input_proc(
+                std::ptr::null_mut(),
+                NonNull::from(&mut packets),
+                NonNull::from(&mut list),
+                std::ptr::null_mut(),
+                (&mut input as *mut Input).cast(),
+            )
+        };
+        assert_eq!(status, BAD_INPUT);
+        assert_eq!(packets, 0);
+        assert!(!INPUT_PROC_PANIC.load(std::sync::atomic::Ordering::Relaxed));
+
+        packets = 7;
+        // SAFETY: as above. The channel count does not match, so no sample pointer is read.
+        let status = unsafe {
+            input_proc(
+                std::ptr::null_mut(),
+                NonNull::from(&mut packets),
+                NonNull::from(&mut list),
+                std::ptr::null_mut(),
+                (&mut input as *mut Input).cast(),
+            )
+        };
+        assert_eq!(status, BAD_INPUT);
+        assert_eq!(packets, 0);
+        assert_eq!(input.frames, 4);
     }
 }

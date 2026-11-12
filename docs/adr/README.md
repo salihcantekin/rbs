@@ -107,3 +107,6 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0096](0096-capture-audio-companions-and-camera-microphone.md) | "Capture audio too" companions and the camera's own microphone | Accepted |
 | [0097](0097-audio-monitoring-and-buses.md) | Audio monitoring (output port, per-strip monitor modes) and buses with per-source send levels | Accepted |
 | [0098](0098-transition-keeps-the-preview-scene.md) | Transition keeps the preview scene; swapping is a setting, off by default | Accepted |
+| [0099](0099-studio-in-its-own-process.md) | Run the studio in its own process | Proposed |
+| [0100](0100-configurable-glide-duration-and-easing.md) | Configurable glide duration and easing (collection defaults + multi-scene source override) | Accepted |
+| [0101](0101-mixer-columns-panes-and-pinned-master.md) | Mixer columns use fixed strips, side-by-side clusters and horizontal scroll | Proposed |

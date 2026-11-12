@@ -89,3 +89,4 @@ Windows constraints:
   - Status Accepted after three independent review rounds and this run; the human hot-path sign-off (P15) of the Windows publisher is part of the owner's pending review with ADR-0030 and ADR-0033.
 
 - Record, 2026-11-03: the owner (Salih) signed off the human hot-path review (P15) for this decision; see the sign-off table in `docs/architecture/hot-paths.md`.
+- 2026-11-11: the studio host now sizes its ring with `ring_needed` and this layer's default hold (one frame plus the 4 ms poll): 5 surfaces at 30 fps and 5 at 60 fps, capped at 8. A ring of 3 is short at both rates. See the same date on ADR-0034.

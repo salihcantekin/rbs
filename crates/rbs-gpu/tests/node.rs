@@ -335,6 +335,7 @@ fn a_fade_is_evaluated_at_tick_time() {
             from: 0.0,
             start: Timestamp::ZERO,
             duration: Duration::from_millis(100),
+            easing: rbs_gpu::node::Easing::Linear,
         });
         vec![layer]
     });

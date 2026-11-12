@@ -56,6 +56,22 @@ fn reference_screen(format: YuvFormat, rgb: [f64; 3]) -> [u16; 3] {
     [code(max * y), code(mid + max * cb), code(mid + max * cr)]
 }
 
+/// Open shadows: a power of 0.7 about middle grey, identity at and above it.
+fn open_shadows_linear(l: f64) -> f64 {
+    const KNEE: f64 = 0.18;
+    const GAMMA: f64 = 0.7;
+    let l = l.clamp(0.0, 1.0);
+    if l > 0.0 && l < KNEE {
+        KNEE * (l / KNEE).powf(GAMMA)
+    } else {
+        l
+    }
+}
+
+fn reference_open(format: YuvFormat, rgb: [f64; 3]) -> [u16; 3] {
+    reference(format, rgb.map(open_shadows_linear))
+}
+
 fn reference(format: YuvFormat, rgb: [f64; 3]) -> [u16; 3] {
     let k = f64::from(1u32 << (bits(format) - 8));
     let [r, g, b] = rgb.map(oetf);
@@ -162,6 +178,34 @@ fn check_color(format: YuvFormat, color: ColorSpace, rgb: [f32; 3], want: [u16; 
     }
 }
 
+fn check_open(format: YuvFormat, rgb: [f32; 3]) {
+    let Some(ctx) = common::gpu() else { return };
+    if !supported(ctx, format, false) {
+        return;
+    }
+    let mut pool = TexturePool::new();
+    let canvas = canvas(ctx, &mut pool, &[rgb]);
+    let luma = pool.acquire(ctx, &yuv::luma_desc(format, W, H)).unwrap();
+    let chroma = pool.acquire(ctx, &yuv::chroma_desc(format, W, H)).unwrap();
+    let mut conv =
+        YuvConverter::with_tone(ctx, format, W, H, ColorSpace::BT709_LIMITED, true).unwrap();
+    conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
+    let y = codes(format, &readback::read_bytes(ctx, &pool, luma).unwrap());
+    let uv = codes(format, &readback::read_bytes(ctx, &pool, chroma).unwrap());
+    let got = [y[0], uv[0], uv[1]];
+    let want = reference_open(
+        format,
+        [f64::from(rgb[0]), f64::from(rgb[1]), f64::from(rgb[2])],
+    );
+    let tolerance = if bits(format) == 8 { 1 } else { 2 };
+    for i in 0..3 {
+        assert!(
+            (i32::from(got[i]) - i32::from(want[i])).abs() <= tolerance,
+            "{format:?} open shadows {rgb:?}: got YCbCr {got:?}, want {want:?}"
+        );
+    }
+}
+
 fn check(format: YuvFormat, rgb: [f32; 3]) {
     let Some(ctx) = common::gpu() else { return };
     if !supported(ctx, format, false) {
@@ -251,6 +295,58 @@ fn screen_reference_is_full_range() {
     let nv12 = |rgb| reference_screen(YuvFormat::Nv12, rgb);
     assert_eq!(nv12([0.0, 0.0, 0.0]), [0, 128, 128]);
     assert_eq!(nv12([1.0, 1.0, 1.0]), [255, 128, 128]);
+}
+
+#[test]
+fn open_shadows_lifts_only_the_dark_end() {
+    let dark = [0.013, 0.013, 0.013];
+    let plain = reference(YuvFormat::Nv12, dark);
+    let opened = reference_open(YuvFormat::Nv12, dark);
+    assert!(
+        opened[0] >= plain[0] + 8,
+        "a dark grey moves up by more than the quantiser step: {opened:?} vs {plain:?}"
+    );
+    assert_eq!(
+        reference_open(YuvFormat::Nv12, [0.0, 0.0, 0.0]),
+        [16, 128, 128]
+    );
+    assert_eq!(
+        reference_open(YuvFormat::Nv12, [1.0, 1.0, 1.0]),
+        [235, 128, 128]
+    );
+    assert_eq!(
+        reference_open(YuvFormat::Nv12, [0.18, 0.18, 0.18]),
+        reference(YuvFormat::Nv12, [0.18, 0.18, 0.18])
+    );
+    let plain10 = reference(YuvFormat::P010, dark);
+    let open10 = reference_open(YuvFormat::P010, dark);
+    assert!(
+        open10[0] >= plain10[0] + 32,
+        "the same lift, in 10-bit codes: {open10:?} vs {plain10:?}"
+    );
+}
+
+#[test]
+fn open_shadows_matches_on_nv12_and_p010() {
+    for format in [YuvFormat::Nv12, YuvFormat::P010] {
+        for rgb in [
+            [0.0, 0.0, 0.0],
+            [0.013, 0.013, 0.013],
+            [0.18, 0.18, 0.18],
+            [1.0, 1.0, 1.0],
+        ] {
+            check_open(format, rgb);
+        }
+    }
+}
+
+#[test]
+fn open_shadows_on_screen_colour_is_rejected() {
+    let Some(ctx) = common::gpu() else { return };
+    assert!(matches!(
+        YuvConverter::with_tone(ctx, YuvFormat::Nv12, W, H, ColorSpace::SRGB_VIDEO, true),
+        Err(GpuError::Unsupported(_))
+    ));
 }
 
 #[test]

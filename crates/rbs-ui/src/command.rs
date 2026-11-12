@@ -222,10 +222,17 @@ const FLIP_AXIS: Param = Param {
     required: true,
 };
 
-/// Which way `item.move` steps in the layer order.
+/// Which way `item.move` / `scene.move` steps in order (front/back: protocol 1.36).
 const MOVE_DIRECTION: Param = Param {
     name: "direction",
-    ty: ParamType::OneOf(&["up", "down"]),
+    ty: ParamType::OneOf(&["up", "down", "front", "back"]),
+    required: true,
+};
+
+/// Which Properties tab `ui.properties.show` opens (ADR-0084 Source category).
+const PROPERTIES_TAB: Param = Param {
+    name: "tab",
+    ty: ParamType::OneOf(&["transform", "filters", "audio", "source"]),
     required: true,
 };
 
@@ -646,6 +653,20 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "ui.theme.select",
+        title: "Theme",
+        tooltip: "Switch to another theme",
+        icon: Some("palette"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: Kind::Picker {
+            method: "ui.theme.switch",
+            param: "id",
+        },
+        params: &[choice("id")],
+        checkable: false,
+    },
+    Entry {
         id: "ui.theme.reload",
         title: "Reload themes",
         tooltip: "Read the theme files again and apply them",
@@ -837,6 +858,17 @@ pub const ENTRIES: &[Entry] = &[
         menu: Menu::Scene,
         kind: action("scene.add"),
         params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.duplicate",
+        title: "Duplicate scene",
+        tooltip: "Copy the scene with the same sources and layouts",
+        icon: Some("copy"),
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.duplicate"),
+        params: &[target("scene"), COLLECTION],
         checkable: false,
     },
     Entry {
@@ -1124,12 +1156,34 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         id: "item.move",
         title: "Move",
-        tooltip: "Move the source over or under the next source with a picture",
+        tooltip: "Move the source among the layers: forward, back, to the front or to the back",
         icon: Some("chevron-up"),
         shortcut: None,
         menu: Menu::Source,
         kind: action("item.move"),
         params: &[target("item"), COLLECTION, MOVE_DIRECTION],
+        checkable: false,
+    },
+    Entry {
+        id: "source.settings",
+        title: "Source settings…",
+        tooltip: "Open the Source settings window for this source (mode, frame rate, cursor)",
+        icon: Some("gear"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("ui.source.settings"),
+        params: &[target("source"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
+        id: "ui.properties.show",
+        title: "Properties",
+        tooltip: "Open the Properties panel on a tab of the selected source",
+        icon: Some("sliders"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("ui.properties.show"),
+        params: &[target("source"), COLLECTION, PROPERTIES_TAB],
         checkable: false,
     },
     Entry {
@@ -1555,12 +1609,15 @@ pub enum MenuItem {
         /// Icon name from the icon set ([`icon`]).
         icon: Option<&'static str>,
     },
-    /// A submenu of a picker's choices; each is the picker's id with the choice.
+    /// A submenu of a picker's choices or a `{Group}` of commands.
     Choices {
-        /// The picker's title.
+        /// The picker's or group's title.
         title: String,
         /// Icon name from the icon set ([`icon`]).
         icon: Option<&'static str>,
+        /// Why the submenu cannot run; `None` when it can (entries inside may still
+        /// be filtered out). Locked transforms set this so the menu greys out.
+        disabled: Option<String>,
         /// `(title, id to run, checked)`.
         choices: Vec<(String, CommandId, bool)>,
     },
@@ -1568,9 +1625,9 @@ pub enum MenuItem {
     Separator,
 }
 
-/// What each menu holds, in order: command ids (with parameters), `|` separators and
-/// `#Heading` section headings. The menu bar draws a heading as a separator; the RBS
-/// menu shows its text ([`app_menu`]).
+/// What each menu holds, in order: command ids (with parameters), `|` separators,
+/// `#Heading` section headings (menu bar: separator; RBS menu: heading text), and
+/// `{Title:icon` … `}` groups (one submenu of the commands inside).
 pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
     (
         Menu::File,
@@ -1586,15 +1643,17 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
     (
         Menu::View,
         &[
-            "#Layout",
             "ui.workspace.select",
             "|",
+            "{Areas:panel-all",
             "ui.area.toggle?area=left",
             "ui.area.toggle?area=right",
             "ui.area.toggle?area=bottom",
             "canvas.vertical_preview.toggle",
             "ui.area.hide_all",
             "ui.area.show_all",
+            "}",
+            "{Layout:layout",
             "ui.layout.reset_sizes",
             "ui.workspace.reset",
             "ui.workspace.save",
@@ -1602,29 +1661,34 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.layout.lock",
             "ui.layout.undo",
             "ui.layout.redo",
-            "#Toolbar",
             "ui.toolbar.reset",
-            "#Transition",
+            "}",
+            "{Transition:transition",
             "ui.layout.studio_rail?at=between",
             "ui.layout.studio_rail?at=below",
-            "#Display",
+            "}",
+            "{Display:palette",
+            "ui.theme.select",
             "ui.theme.reload",
+            "}",
         ],
     ),
     (
         Menu::Scene,
         &[
-            "#Scenes",
             "scene.select",
             "scene.previous",
             "scene.next",
             "|",
             "scene.add",
+            "{Edit scene:pencil",
+            "scene.duplicate",
             "scene.rename",
             "scene.move?direction=up",
             "scene.move?direction=down",
             "scene.remove",
-            "#Studio mode",
+            "}",
+            "|",
             "canvas.studio_mode.toggle",
             "canvas.transition",
         ],
@@ -1633,7 +1697,22 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         Menu::Source,
         &[
             "source.add",
-            "#Selected source",
+            "|",
+            "{Transform:fit",
+            "item.flip?axis=horizontal",
+            "item.flip?axis=vertical",
+            "item.rotate",
+            "item.fit",
+            "item.align",
+            "item.reset_transform",
+            "}",
+            "{Arrange:chevron-up",
+            "item.move?direction=front",
+            "item.move?direction=up",
+            "item.move?direction=down",
+            "item.move?direction=back",
+            "}",
+            "{Visibility:eye",
             "source.active.toggle",
             "item.visible.toggle",
             "item.locked.toggle",
@@ -1641,25 +1720,24 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "source.mixer_hidden.toggle",
             "source.monitor",
             "source.monitor_solo.toggle",
-            "|",
-            "item.flip?axis=horizontal",
-            "item.flip?axis=vertical",
-            "item.rotate",
-            "item.fit",
-            "item.align",
-            "item.reset_transform",
-            "|",
+            "}",
+            "{Source:gear",
             "source.rename",
+            "source.settings",
+            "ui.properties.show?tab=filters",
             "source.reload",
-            "item.move?direction=up",
-            "item.move?direction=down",
+            "ui.properties.show?tab=source",
+            "}",
+            "|",
             "item.remove",
             "source.delete",
-            "#Mixer",
+            "|",
+            "{Mixer:layout",
             "ui.mixer.orientation",
             "mixer.hide_all",
             "mixer.hide_muted",
             "mixer.unhide_all",
+            "}",
         ],
     ),
     (
@@ -1667,15 +1745,16 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         &[
             "stream.toggle",
             "record.toggle",
+            "{Vertical:canvas-vertical",
             "stream.vertical.toggle",
             "record.vertical.toggle",
+            "canvas.add_vertical",
+            "}",
             "|",
             "vcam.toggle",
             "|",
             "replay.toggle",
             "replay.save",
-            "|",
-            "canvas.add_vertical",
         ],
     ),
     (
@@ -1725,8 +1804,20 @@ pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
     if let ("item.flip", Some("vertical")) = (e.id, id.param("axis")) {
         return Some("flip-v");
     }
-    if let ("item.move" | "scene.move", Some("down")) = (e.id, id.param("direction")) {
-        return Some("chevron-down");
+    if let ("item.move" | "scene.move", Some(direction)) = (e.id, id.param("direction")) {
+        return Some(match direction {
+            "down" | "back" => "chevron-down",
+            "front" => "export",
+            _ => "chevron-up",
+        });
+    }
+    if let ("ui.properties.show", Some(tab)) = (e.id, id.param("tab")) {
+        return Some(match tab {
+            "filters" => "sliders",
+            "source" => "search",
+            "audio" => "speaker",
+            _ => "move",
+        });
     }
     match (e.id, id.param("area")) {
         ("ui.area.toggle", Some("left")) => Some("panel-left"),
@@ -1734,6 +1825,53 @@ pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
         ("ui.area.toggle", Some("bottom")) => Some("panel-bottom"),
         _ => e.icon,
     }
+}
+
+/// The icon a picker's choice shows. Empty while the choice is the current one, so
+/// the checkmark takes the icon's place (spec, "Icons").
+pub fn choice_icon(id: &CommandId, checked: bool) -> Option<&'static str> {
+    if checked {
+        return None;
+    }
+    let name = match id.base() {
+        "source.add" => match id.param("kind") {
+            Some("screen") => "monitor",
+            Some("window") => "window",
+            Some("camera") => "camera",
+            Some("audio_input") => "mic",
+            Some("system_audio") | Some("application_audio") => "speaker",
+            Some("existing") => "copy",
+            _ => "plus",
+        },
+        "source.monitor" => match id.param("monitor") {
+            Some("off") => "headphones-off",
+            _ => "headphones",
+        },
+        "ui.mixer.orientation" => "layout",
+        "ui.theme.select" => "palette",
+        "ui.workspace.select" => "layout",
+        "ui.panel.select" => "window",
+        "ui.panel.move" => "move",
+        "scene.select" => "image",
+        "profile.select" => "sliders",
+        "collection.select" => "folder",
+        "item.rotate" => match id.param("degrees") {
+            Some("-90") => "rotate-ccw",
+            _ => "rotate-cw",
+        },
+        "item.fit" => "fit",
+        "item.align" => "center",
+        "item.flip" => match id.param("axis") {
+            Some("vertical") => "flip-v",
+            _ => "flip-h",
+        },
+        "item.reset_transform" => "reset",
+        "filter.add" => "plus",
+        _ => {
+            return entry(id.base()).and_then(|e| icon(id, e));
+        }
+    };
+    Some(name)
 }
 
 /// Whether a toolbar shows the id as its icon alone in every style: the area toggles
@@ -1749,10 +1887,31 @@ pub fn icon_only(id: &CommandId) -> bool {
 /// The title an id shows: the entry's, with the area named for area toggles, the
 /// panel for maximize and the position for `scene.position`.
 pub fn title(id: &CommandId, e: &Entry) -> String {
-    if let ("item.move" | "scene.move", Some(direction)) = (e.id, id.param("direction")) {
+    if let ("item.move", Some(direction)) = (e.id, id.param("direction")) {
         return match direction {
+            "front" => "Bring to front".to_owned(),
+            "up" => "Bring forward".to_owned(),
+            "down" => "Send backward".to_owned(),
+            "back" => "Send to back".to_owned(),
+            _ => e.title.to_owned(),
+        };
+    }
+    if let ("scene.move", Some(direction)) = (e.id, id.param("direction")) {
+        return match direction {
+            "front" => "Move to top".to_owned(),
+            "up" => "Move up".to_owned(),
             "down" => "Move down".to_owned(),
-            _ => "Move up".to_owned(),
+            "back" => "Move to bottom".to_owned(),
+            _ => e.title.to_owned(),
+        };
+    }
+    if let ("ui.properties.show", Some(tab)) = (e.id, id.param("tab")) {
+        return match tab {
+            "filters" => "Filters…".to_owned(),
+            "source" => "Choose another target…".to_owned(),
+            "audio" => "Audio…".to_owned(),
+            "transform" => "Transform…".to_owned(),
+            _ => e.title.to_owned(),
         };
     }
     if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
@@ -1807,6 +1966,7 @@ fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
         return MenuItem::Choices {
             title: title(&id, e),
             icon: icon(&id, e),
+            disabled: state.enabled(&id).err(),
             choices,
         };
     }
@@ -1834,7 +1994,9 @@ pub enum AppRow {
 /// The menus of [`MENU_LAYOUT`] with their rows, for the shell's state, in menu bar
 /// order. Menus without items are left out, and so are headings and separators that
 /// would end a menu, lead it (a separator) or come twice (a separator after a
-/// heading, a heading or separator after a separator, the later one wins).
+/// heading, a heading or separator after a separator, the later one wins). A
+/// `{Title:icon` … `}` group becomes one [`MenuItem::Choices`] submenu (as in
+/// [`context_menu`]); commands that do not [`CommandState::applies`] are left out.
 pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
     let mut out = Vec::new();
     for menu in Menu::ALL {
@@ -1842,14 +2004,54 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
             continue;
         };
         let mut rows: Vec<AppRow> = Vec::new();
+        #[allow(clippy::type_complexity)] // Local scratch, same shape as context_menu.
+        let mut group: Option<(
+            String,
+            Option<&'static str>,
+            Vec<(String, CommandId, bool)>,
+            Option<String>,
+        )> = None;
         for text in *ids {
+            if let Some(head) = text.strip_prefix('{') {
+                let (title, icon) = match head.split_once(':') {
+                    Some((t, i)) => (t, Some(i)),
+                    None => (head, None),
+                };
+                group = Some((title.to_owned(), icon, Vec::new(), None));
+                continue;
+            }
+            if *text == "}" {
+                if let Some((title, icon, choices, disabled)) = group.take() {
+                    // Always keep the group row: the menu bar's Slint shape is fixed
+                    // from Shape, so dropping a type-empty group would mis-index choices.
+                    rows.push(AppRow::Item(MenuItem::Choices {
+                        title,
+                        icon,
+                        // Runnable entries keep the submenu open; an empty group
+                        // (locked, wrong type, nothing selected) stays greyed out.
+                        disabled: if choices.is_empty() {
+                            disabled.or_else(|| Some("Nothing to do.".to_owned()))
+                        } else {
+                            None
+                        },
+                        choices,
+                    }));
+                }
+                continue;
+            }
             if *text == "|" {
+                if group.is_some() {
+                    continue;
+                }
                 if matches!(rows.last(), Some(AppRow::Item(_))) {
                     rows.push(AppRow::Separator);
                 }
                 continue;
             }
             if let Some(h) = text.strip_prefix('#') {
+                if group.is_some() {
+                    continue;
+                }
                 if matches!(rows.last(), Some(AppRow::Heading(_) | AppRow::Separator)) {
                     rows.pop();
                 }
@@ -1859,9 +2061,47 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
             let Ok(id) = CommandId::parse(text) else {
                 continue;
             };
-            if let Ok(Some(e)) = id.resolve() {
-                rows.push(AppRow::Item(item(id, e, state)));
+            let Ok(Some(e)) = id.resolve() else {
+                continue;
+            };
+            // Non-applying commands stay out of the submenu (mic: no Transform
+            // rows); the group row itself is still emitted above so the menu
+            // bar's choice indices stay aligned with the generated Slint shape.
+            if !state.applies(&id) {
+                continue;
             }
+            let made = item(id, e, state);
+            if let Some((_, _, choices, group_disabled)) = group.as_mut() {
+                match made {
+                    MenuItem::Command {
+                        title,
+                        disabled: None,
+                        checked,
+                        id,
+                        ..
+                    } => choices.push((title, id, checked.unwrap_or(false))),
+                    MenuItem::Command {
+                        disabled: Some(reason),
+                        ..
+                    } => {
+                        group_disabled.get_or_insert(reason);
+                    }
+                    MenuItem::Choices {
+                        disabled: None,
+                        choices: c,
+                        ..
+                    } => choices.extend(c),
+                    MenuItem::Choices {
+                        disabled: Some(reason),
+                        ..
+                    } => {
+                        group_disabled.get_or_insert(reason);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            rows.push(AppRow::Item(made));
         }
         while matches!(rows.last(), Some(AppRow::Heading(_) | AppRow::Separator)) {
             rows.pop();
@@ -1963,6 +2203,7 @@ pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
                 MenuItem::Choices {
                     title,
                     icon,
+                    disabled,
                     choices,
                 } => {
                     for (choice, run, current) in choices {
@@ -1972,7 +2213,7 @@ pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
                                 id: run,
                                 title,
                                 shortcut: None,
-                                disabled: None,
+                                disabled: disabled.clone(),
                                 checked: Some(current),
                                 icon,
                             });
@@ -2005,6 +2246,9 @@ pub enum Context {
     Preview,
     /// A source's strip or row in the Mixer, or its "more" button (target `source`).
     MixerSource,
+    /// The headphones button's menu on a Mixer strip (target `source`): monitor
+    /// modes and solo.
+    MixerMonitor,
     /// The Mixer outside its strips and rows.
     Mixer,
     /// A panel's tab or header menu (target `id`, the panel).
@@ -2026,13 +2270,14 @@ pub enum Context {
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 14] = [
+    pub const ALL: [Context; 15] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
         Context::Sources,
         Context::Preview,
         Context::MixerSource,
+        Context::MixerMonitor,
         Context::Mixer,
         Context::Panel,
         Context::Workspace,
@@ -2052,6 +2297,7 @@ impl Context {
             Context::Sources => "sources",
             Context::Preview => "preview",
             Context::MixerSource => "mixer-source",
+            Context::MixerMonitor => "mixer-monitor",
             Context::Mixer => "mixer",
             Context::Panel => "panel",
             Context::Workspace => "workspace",
@@ -2083,6 +2329,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
         &[
             "scene.select",
             "scene.rename",
+            "scene.duplicate",
             "|",
             "scene.move?direction=up",
             "scene.move?direction=down",
@@ -2110,17 +2357,26 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "item.reset_transform",
             "}",
             "|",
+            "{Arrange:chevron-up",
+            "item.move?direction=front",
+            "item.move?direction=up",
+            "item.move?direction=down",
+            "item.move?direction=back",
+            "}",
+            "|",
             "source.active.toggle",
             "item.visible.toggle",
             "item.locked.toggle",
             "source.muted.toggle",
             "|",
+            "{Source:gear",
             "source.rename",
+            "source.settings",
+            "ui.properties.show?tab=filters",
             "source.reload",
-            "ui.panel.select?id=rbs.properties",
+            "ui.properties.show?tab=source",
+            "}",
             "|",
-            "item.move?direction=up",
-            "item.move?direction=down",
             "item.remove",
             "source.delete",
         ],
@@ -2142,6 +2398,8 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
     (
         Context::MixerSource,
         &[
+            "ui.mixer.orientation",
+            "|",
             "source.muted.toggle",
             "source.mixer_hidden.toggle",
             "source.monitor",
@@ -2150,6 +2408,10 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "source.rename",
             "ui.panel.select?id=rbs.properties",
         ],
+    ),
+    (
+        Context::MixerMonitor,
+        &["*source.monitor", "|", "source.monitor_solo.toggle"],
     ),
     (
         Context::Mixer,
@@ -2229,28 +2491,52 @@ pub fn context_menu(
     target: &[(String, String)],
     state: &dyn CommandState,
 ) -> Vec<MenuItem> {
-    let Some((_, ids)) = CONTEXT_LAYOUT.iter().find(|(c, _)| *c == context) else {
+    let Some((_, layout)) = CONTEXT_LAYOUT.iter().find(|(c, _)| *c == context) else {
         return Vec::new();
     };
+    // The Mixer's "..." is the panel menu (context `panel`, target `id=rbs.mixer`).
+    // The layout picker is a submenu there, as it is on a right-click and on a
+    // strip's "..." (ADR-0083). The same command, not a second one.
+    let mut ids: Vec<&str> = Vec::with_capacity(layout.len() + 2);
+    if context == Context::Panel && target.iter().any(|(k, v)| k == "id" && v == "rbs.mixer") {
+        ids.push("ui.mixer.orientation");
+        ids.push("|");
+    }
+    ids.extend_from_slice(layout);
     let mut items: Vec<MenuItem> = Vec::new();
     // A group (`{Title:icon` ... `}`) is one submenu of every command and choice
     // inside it, so a family of commands takes one row of the menu.
     #[allow(clippy::type_complexity)] // A local scratch value, named once.
-    let mut group: Option<(String, Option<&'static str>, Vec<(String, CommandId, bool)>)> = None;
-    for text in *ids {
+    let mut group: Option<(
+        String,
+        Option<&'static str>,
+        Vec<(String, CommandId, bool)>,
+        Option<String>,
+    )> = None;
+    for text in &ids {
         if let Some(head) = text.strip_prefix('{') {
             let (title, icon) = match head.split_once(':') {
                 Some((t, i)) => (t, Some(i)),
                 None => (head, None),
             };
-            group = Some((title.to_owned(), icon, Vec::new()));
+            group = Some((title.to_owned(), icon, Vec::new(), None));
             continue;
         }
         if *text == "}" {
-            if let Some((title, icon, choices)) = group.take() {
+            if let Some((title, icon, choices, disabled)) = group.take() {
+                if choices.is_empty() && disabled.is_none() {
+                    continue;
+                }
                 items.push(MenuItem::Choices {
                     title,
                     icon,
+                    // Runnable entries keep the submenu open; only an empty group
+                    // stays greyed out (locked transform, no picture, …).
+                    disabled: if choices.is_empty() {
+                        disabled.or_else(|| Some("Nothing to do.".to_owned()))
+                    } else {
+                        None
+                    },
                     choices,
                 });
             }
@@ -2312,19 +2598,19 @@ pub fn context_menu(
                         break;
                     }
                     items.push(MenuItem::Command {
+                        icon: choice_icon(&run, current),
                         id: run,
                         title,
                         shortcut: None,
                         disabled: None,
                         checked: current.then_some(true),
-                        icon: e.icon,
                     });
                 }
             }
             continue;
         }
         let made = item(id, e, state);
-        if let Some((_, _, choices)) = group.as_mut() {
+        if let Some((_, _, choices, group_disabled)) = group.as_mut() {
             match made {
                 MenuItem::Command {
                     title,
@@ -2333,7 +2619,23 @@ pub fn context_menu(
                     id,
                     ..
                 } => choices.push((title, id, checked.unwrap_or(false))),
-                MenuItem::Choices { choices: c, .. } => choices.extend(c),
+                MenuItem::Command {
+                    disabled: Some(reason),
+                    ..
+                } => {
+                    group_disabled.get_or_insert(reason);
+                }
+                MenuItem::Choices {
+                    disabled: None,
+                    choices: c,
+                    ..
+                } => choices.extend(c),
+                MenuItem::Choices {
+                    disabled: Some(reason),
+                    ..
+                } => {
+                    group_disabled.get_or_insert(reason);
+                }
                 _ => {}
             }
             continue;
@@ -2494,7 +2796,7 @@ mod tests {
         }
         for (_, items) in MENU_LAYOUT {
             for i in *items {
-                if *i != "|" && !i.starts_with('#') {
+                if *i != "|" && *i != "}" && !i.starts_with(['#', '{']) {
                     let id = CommandId::parse(i).unwrap();
                     assert!(id.resolve().unwrap().is_some(), "{i}");
                     assert_eq!(id.to_string(), *i, "menu ids are written canonically");
@@ -2566,17 +2868,15 @@ mod tests {
         );
         assert!(choices[1].1.resolve().unwrap().is_some());
         assert!(choices[0].2 && !choices[1].2);
-        assert!(matches!(
-            &view[2],
-            MenuItem::Command { title, checked: Some(true), .. } if title == "Left area"
-        ));
-        assert!(matches!(
-            &view[3],
-            MenuItem::Command {
-                checked: Some(false),
-                ..
-            }
-        ));
+        let areas = view
+            .iter()
+            .find_map(|i| match i {
+                MenuItem::Choices { title, choices, .. } if title == "Areas" => Some(choices),
+                _ => None,
+            })
+            .expect("Areas submenu");
+        assert!(areas.iter().any(|(t, _, on)| t == "Left area" && *on));
+        assert!(areas.iter().any(|(t, _, on)| t == "Right area" && !*on));
     }
 
     #[test]
@@ -2614,11 +2914,21 @@ mod tests {
     }
 
     #[test]
-    fn headings_title_sections_and_are_separators_in_the_menu_bar() {
+    fn groups_collapse_sections_in_the_menu_bar() {
         let app = app_menu(&Fake);
         let (_, view) = app.iter().find(|(m, _)| *m == Menu::View).unwrap();
-        assert_eq!(view[0], AppRow::Heading("Layout"));
-        assert!(view.contains(&AppRow::Heading("Display")));
+        assert!(matches!(
+            &view[0],
+            AppRow::Item(MenuItem::Choices { title, .. }) if title == "Workspace"
+        ));
+        assert!(view.iter().any(|r| matches!(
+            r,
+            AppRow::Item(MenuItem::Choices { title, .. }) if title == "Areas"
+        )));
+        assert!(view.iter().any(|r| matches!(
+            r,
+            AppRow::Item(MenuItem::Choices { title, .. }) if title == "Display"
+        )));
         assert!(!matches!(
             view.last(),
             Some(AppRow::Heading(_) | AppRow::Separator)
@@ -2630,6 +2940,11 @@ mod tests {
             "no separator leads a menu"
         );
         assert!(view.iter().any(|i| matches!(i, MenuItem::Separator)));
+        let (_, source) = bar.iter().find(|(m, _)| *m == Menu::Source).unwrap();
+        assert!(source.iter().any(|i| matches!(
+            i,
+            MenuItem::Choices { title, .. } if title == "Transform"
+        )));
         assert!(search(&Fake, " ").is_empty());
         let found = search(&Fake, "SETTINGS stream");
         assert!(found.iter().any(|i| matches!(i, MenuItem::Command { id, .. } if id.to_string() == "ui.settings.open?section=stream")));
@@ -2654,6 +2969,17 @@ mod tests {
             let name = icon(&id, e).unwrap_or_else(|| panic!("{text} has no icon"));
             assert!(crate::icon::find(name).is_some(), "{text}: {name}");
         }
+    }
+
+    #[test]
+    fn picker_choices_have_icons_except_while_checked() {
+        let screen = CommandId::parse("source.add?kind=screen").unwrap();
+        assert_eq!(choice_icon(&screen, false), Some("monitor"));
+        assert_eq!(choice_icon(&screen, true), None);
+        let off = CommandId::parse("source.monitor?monitor=off&source=1").unwrap();
+        assert_eq!(choice_icon(&off, false), Some("headphones-off"));
+        let theme = CommandId::parse("ui.theme.select?id=builtin%3Adark").unwrap();
+        assert_eq!(choice_icon(&theme, false), Some("palette"));
     }
 
     #[test]
@@ -2739,6 +3065,7 @@ mod tests {
             ids(&scene),
             [
                 "scene.rename?scene=7",
+                "scene.duplicate?scene=7",
                 "|",
                 "scene.move?direction=up&scene=7",
                 "scene.move?direction=down&scene=7",
@@ -2762,30 +3089,24 @@ mod tests {
             [
                 "[Transform]",
                 "|",
+                "[Arrange]",
+                "|",
                 "source.active.toggle?source=12",
                 "item.visible.toggle?item=40",
                 "item.locked.toggle?item=40",
                 "|",
-                "source.rename?source=12",
-                "source.reload?source=12",
-                "ui.panel.select?id=rbs.properties",
+                "[Source]",
                 "|",
-                "item.move?direction=up&item=40",
-                "item.move?direction=down&item=40",
                 "item.remove?item=40",
                 "source.delete?source=12"
             ]
         );
         assert!(matches!(
-            &source[3],
+            &source[5],
             MenuItem::Command {
                 checked: Some(true),
                 ..
             }
-        ));
-        assert!(matches!(
-            &source[8],
-            MenuItem::Command { title, .. } if title == "Properties"
         ));
         // A picker without its choice is a submenu; with it, one item with the
         // state's title.
@@ -2826,6 +3147,79 @@ mod tests {
             MenuItem::Command { id, title, .. }
                 if id.to_string() == "scene.select?scene=3" && title == "Put on air"
         ));
+    }
+
+    struct Layouts;
+
+    impl CommandState for Layouts {
+        fn enabled(&self, _: &CommandId) -> Result<(), String> {
+            Ok(())
+        }
+        fn checked(&self, _: &CommandId) -> bool {
+            false
+        }
+        fn choices(&self, id: &CommandId) -> Vec<(String, String, bool)> {
+            if id.base() == "ui.mixer.orientation" {
+                vec![
+                    ("Automatic".into(), "auto".into(), true),
+                    ("Rows".into(), "rows".into(), false),
+                    ("Columns".into(), "columns".into(), false),
+                ]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    fn layout_submenu(items: &[MenuItem]) -> Option<Vec<(&str, bool)>> {
+        items.iter().find_map(|i| match i {
+            MenuItem::Choices { title, choices, .. } if title == "Mixer layout" => {
+                Some(choices.iter().map(|(t, _, on)| (t.as_str(), *on)).collect())
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_mixer_menus_offer_the_layout_as_a_submenu() {
+        let want = vec![("Automatic", true), ("Rows", false), ("Columns", false)];
+        assert_eq!(
+            layout_submenu(&context_menu(Context::Mixer, &[], &Layouts)),
+            Some(want.clone())
+        );
+        assert_eq!(
+            layout_submenu(&context_menu(
+                Context::MixerSource,
+                &[("source".into(), "1".into())],
+                &Layouts,
+            )),
+            Some(want.clone())
+        );
+        assert_eq!(
+            layout_submenu(&context_menu(
+                Context::Panel,
+                &[("id".into(), "rbs.mixer".into())],
+                &Layouts,
+            )),
+            Some(want)
+        );
+        // Another panel's menu does not grow a Mixer layout.
+        assert_eq!(
+            layout_submenu(&context_menu(
+                Context::Panel,
+                &[("id".into(), "rbs.sources".into())],
+                &Layouts,
+            )),
+            None
+        );
+        let MenuItem::Choices { choices, .. } = &context_menu(Context::Mixer, &[], &Layouts)[0]
+        else {
+            panic!("layout submenu");
+        };
+        assert_eq!(
+            choices[0].1.to_string(),
+            "ui.mixer.orientation?orientation=auto"
+        );
     }
 
     #[test]

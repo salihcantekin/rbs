@@ -85,7 +85,8 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         })
     });
     on!(on_set_follow_system, |app, page, _file, on: bool| {
-        choose(app, page, |ui, _now| ui.set_follow_system(on))
+        let shown = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
+        choose(app, page, |ui, _now| ui.set_follow_system(on, shown))
     });
     on!(on_set_compact, |app, page, _file, on: bool| {
         choose(app, page, |ui, now| ui.set_compact(on, now))
@@ -98,11 +99,13 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         let Some(i) = page.ui.selected else {
             return;
         };
-        let slot = match page.ui.choice.mode {
-            AppearanceMode::Fixed => 2,
-            _ => app.main.global::<Theme>().get_active() as usize,
-        };
-        choose(app, page, |ui, _now| ui.pick(slot, i))
+        choose(app, page, |ui, _now| {
+            let next = ui.use_theme(i);
+            if next.is_some() {
+                ui.selected = Some(i);
+            }
+            next
+        })
     });
     on!(on_edit, |app, page, file| {
         let built_in = page
@@ -395,6 +398,75 @@ pub fn opened(ctx: &Ctx, app: &mut App) {
             }
         }
     }
+    show(ctx, app);
+}
+
+/// At most this many themes in View › Theme (design-system, View menu).
+pub const THEME_MENU_MAX: usize = 10;
+
+/// The Theme picker's choices: built-ins first, then user themes by library name,
+/// capped at [`THEME_MENU_MAX`]. Checked while Appearance is Fixed and that theme
+/// is the one in use.
+pub fn theme_menu_choices(
+    user: &rbs_app::user_session::UserSession,
+) -> Vec<(String, String, bool)> {
+    use rbs_ui::tokens::Base;
+    use rbs_user_data::{AppearanceMode, ThemeId};
+    let (appearance, _) = user.data().appearance();
+    let current = (appearance.mode == AppearanceMode::Fixed).then(|| appearance.theme.clone());
+    let mut out: Vec<(String, String, bool)> = Base::ALL
+        .into_iter()
+        .map(|b| {
+            let id = ThemeId::BuiltIn(b);
+            let name = match b {
+                Base::Dark => "Dark",
+                Base::Light => "Light",
+                Base::HighContrast => "High contrast",
+            };
+            (
+                name.to_owned(),
+                id.to_string(),
+                current.as_ref() == Some(&id),
+            )
+        })
+        .collect();
+    for (id, name) in user.themes() {
+        let tid = ThemeId::User(id);
+        out.push((name, tid.to_string(), current.as_ref() == Some(&tid)));
+    }
+    out.truncate(THEME_MENU_MAX);
+    out
+}
+
+/// `ui.theme.select` (View › Theme): uses that theme in Fixed mode, as Settings ›
+/// Appearance › Use does.
+pub fn select_theme(ctx: &Ctx, app: &mut App, id: &str) {
+    let Some(theme_id) = ThemeId::parse(id) else {
+        return;
+    };
+    if look::dev_theme().is_some() {
+        return;
+    }
+    let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
+    let Some(file) = file else {
+        return;
+    };
+    {
+        let mut page = ctx.page.borrow_mut();
+        page.ui.refresh(app.studio.user.data(), &file);
+        let Some(index) = page.ui.index_of(&theme_id) else {
+            return;
+        };
+        let Some(next) = page.ui.use_theme(index) else {
+            return;
+        };
+        page.ui.selected = Some(index);
+        match app.studio.user.set_appearance(&next) {
+            Ok(()) => page.note.clear(),
+            Err(why) => page.note = why,
+        }
+    }
+    relook(ctx, app);
     show(ctx, app);
 }
 

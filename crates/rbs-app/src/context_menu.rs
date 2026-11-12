@@ -78,13 +78,14 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
             MenuItem::Choices {
                 title,
                 icon,
+                disabled,
                 choices,
             } => Item {
                 kind: Kind::Choices,
                 title,
                 icon: item_icon(icon, None),
                 id: String::new(),
-                enabled: !choices.is_empty(),
+                enabled: disabled.is_none() && !choices.is_empty(),
                 checkable: false,
                 checked: false,
                 choices: choices
@@ -121,7 +122,7 @@ pub fn slint_text(indent: &str) -> String {
             "{indent}for _ in {it}.kind == 2 ? 1 : 0: MenuSeparator {{ }}\n"
         ));
         out.push_str(&format!(
-            "{indent}for _ in {it}.kind == 3 ? 1 : 0: Menu {{ title: {it}.title; icon: {it}.icon; enabled: {it}.enabled; for c in {it}.choices: MenuItem {{ title: c.title; checkable: true; checked: c.checked; activated => {{ ContextMenus.run(c.id); }} }} }}\n"
+            "{indent}for _ in {it}.kind == 3 ? 1 : 0: Menu {{ title: {it}.title; icon: {it}.icon; enabled: {it}.enabled; for c in {it}.choices: MenuItem {{ title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => {{ ContextMenus.run(c.id); }} }} }}\n"
         ));
     }
     out

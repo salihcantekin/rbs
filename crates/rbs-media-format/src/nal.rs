@@ -225,6 +225,23 @@ pub mod h264 {
     pub const AUD: u8 = 9;
 }
 
+/// The HEVC NAL unit type (6 bits, `ISO/IEC 23008-2`).
+pub fn hevc_type(unit: &[u8]) -> Option<u8> {
+    unit.first().map(|b| (b >> 1) & 0x3f)
+}
+
+/// HEVC NAL unit types used by muxers.
+pub mod hevc {
+    /// Video parameter set.
+    pub const VPS: u8 = 32;
+    /// Sequence parameter set.
+    pub const SPS: u8 = 33;
+    /// Picture parameter set.
+    pub const PPS: u8 = 34;
+    /// Access unit delimiter.
+    pub const AUD: u8 = 35;
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {

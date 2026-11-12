@@ -240,10 +240,92 @@ pub struct Source {
     /// Volume and mute of its sound in the canvas mixers (ADR-0059). One value for the
     /// source wherever it is placed; changing it never makes a new source node.
     pub audio: SourceAudio,
+    /// Optional slide override on a program-scene change (ADR-0100). `None` uses the
+    /// collection glide. Fade-ins never use this.
+    pub glide: Option<SourceGlide>,
     /// What the source was pointed at, as the user saw it (`target_app`, `target_title`):
     /// hints for finding it again, not settings (ADR-0077). The binder never compares
     /// them, so changing them never makes a new source node.
     pub hints: BTreeMap<String, String>,
+}
+
+/// Most milliseconds a glide may last (ADR-0100).
+pub const MAX_GLIDE_MS: u32 = 5_000;
+
+/// How a slide maps unit time `0..=1` (ADR-0100). Fade-ins stay linear in the compositor.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlideEasing {
+    /// Straight lerp.
+    Linear,
+    /// Smoothstep ease in and out (today's slide).
+    #[default]
+    EaseInOut,
+}
+
+impl GlideEasing {
+    /// The document and control-API name: `"linear"` or `"ease-in-out"`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::EaseInOut => "ease-in-out",
+        }
+    }
+
+    /// Parse a document or API string.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "linear" => Some(Self::Linear),
+            "ease-in-out" => Some(Self::EaseInOut),
+            _ => None,
+        }
+    }
+}
+
+/// Collection-wide morph on a program-scene change (ADR-0100).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectionGlide {
+    /// Milliseconds in `0..=MAX_GLIDE_MS`. `0` jumps.
+    pub duration_ms: u32,
+    /// Slide easing; fade-ins use the duration only (linear in the compositor).
+    pub easing: GlideEasing,
+}
+
+impl Default for CollectionGlide {
+    fn default() -> Self {
+        Self {
+            duration_ms: 400,
+            easing: GlideEasing::EaseInOut,
+        }
+    }
+}
+
+impl CollectionGlide {
+    /// True when every field is in range.
+    pub fn is_valid(self) -> bool {
+        self.duration_ms <= MAX_GLIDE_MS
+    }
+
+    /// True for the shipped default (400 ms, ease-in-out).
+    pub fn is_default(self) -> bool {
+        self == Self::default()
+    }
+}
+
+/// Per-source slide override (ADR-0100). Same bounds as [`CollectionGlide`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceGlide {
+    /// Milliseconds in `0..=MAX_GLIDE_MS`.
+    pub duration_ms: u32,
+    /// Slide easing for this source.
+    pub easing: GlideEasing,
+}
+
+impl SourceGlide {
+    /// True when every field is in range.
+    pub fn is_valid(self) -> bool {
+        self.duration_ms <= MAX_GLIDE_MS
+    }
 }
 
 /// The hint key that marks an audio source as the companion of a picture source
@@ -403,6 +485,7 @@ impl Source {
             settings,
             filters: Vec::new(),
             audio: SourceAudio::default(),
+            glide: None,
             hints: BTreeMap::new(),
         }
     }

@@ -178,11 +178,25 @@ impl SurfaceExporter {
         surfaces: usize,
         color: ColorSpace,
     ) -> Result<Self, GpuError> {
+        Self::with_tone(ctx, format, width, height, surfaces, color, false)
+    }
+
+    /// [`Self::with_color`] with the open-shadows grade. The surfaces stay the range of
+    /// `color` (limited `'420v'` / `'x420'` for Rec. 709).
+    pub fn with_tone(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        surfaces: usize,
+        color: ColorSpace,
+        open_shadows: bool,
+    ) -> Result<Self, GpuError> {
         if !(2..=MAX_EXPORT_SURFACES).contains(&surfaces) {
             return Err(GpuError::Unsupported("export ring size outside 2..=32"));
         }
         // Checks the size, the colour, the P010 capability and builds the pipelines.
-        let converter = YuvConverter::with_color(ctx, format, width, height, color)?;
+        let converter = YuvConverter::with_tone(ctx, format, width, height, color, open_shadows)?;
         let layout = Layout::new(ctx, format, width, height, color)?;
         let mut ring = Vec::with_capacity(surfaces);
         let mut planes = Vec::with_capacity(surfaces);

@@ -62,6 +62,8 @@ pub enum EditKind {
     Filter,
     /// A look from the Library was applied (ADR-0075).
     Look,
+    /// The collection glide or a source's slide override changed (ADR-0100).
+    Glide,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

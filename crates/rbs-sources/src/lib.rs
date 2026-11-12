@@ -26,7 +26,7 @@ pub mod still;
 pub mod types;
 
 pub use filters::{filter_settings, filter_values, filter_values_lenient};
-pub use layers::node_layers;
+pub use layers::{GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layers, resolve_slide};
 pub use registry::{
     AudioSource, InstanceContext, MonitorDevice, NodeTypeTable, SourceError, SourceInstance,
     SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, VideoSource,

@@ -40,34 +40,42 @@ fn show() {
 }
 
 /// `applicationShouldHandleReopen:hasVisibleWindows:`: shows the main window while it is
-/// hidden; otherwise AppKit does what it always does.
+/// hidden; otherwise AppKit does what it always does. A panic returns `YES` so AppKit
+/// keeps its own answer.
 extern "C" fn should_reopen(
     _this: *mut AnyObject,
     _cmd: Sel,
     _app: *mut AnyObject,
     _visible: Bool,
 ) -> Bool {
-    if HIDDEN.load(Ordering::Relaxed) {
-        show();
-        return Bool::NO;
-    }
-    Bool::YES
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if HIDDEN.load(Ordering::Relaxed) {
+            show();
+            return Bool::NO;
+        }
+        Bool::YES
+    }))
+    .unwrap_or(Bool::YES)
 }
 
 /// `NSApplicationDidResignActiveNotification`.
 extern "C" fn did_resign(_this: *mut AnyObject, _cmd: Sel, _note: *mut AnyObject) {
-    if HIDDEN.load(Ordering::Relaxed) {
-        LEFT.store(true, Ordering::Relaxed);
-    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if HIDDEN.load(Ordering::Relaxed) {
+            LEFT.store(true, Ordering::Relaxed);
+        }
+    }));
 }
 
 /// `NSApplicationDidBecomeActiveNotification`: only the first activation after RBS was
 /// left while hidden shows the window, so a system dialog or a notification click does
 /// not bring back a window the user just hid.
 extern "C" fn did_become_active(_this: *mut AnyObject, _cmd: Sel, _note: *mut AnyObject) {
-    if HIDDEN.load(Ordering::Relaxed) && LEFT.swap(false, Ordering::Relaxed) {
-        show();
-    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if HIDDEN.load(Ordering::Relaxed) && LEFT.swap(false, Ordering::Relaxed) {
+            show();
+        }
+    }));
 }
 
 /// The shared `NSApplication`, or null.
@@ -129,8 +137,8 @@ pub fn route_show(show: fn()) -> bool {
     // SAFETY: each function has exactly the signature of its type encoding: the reopen
     // method returns BOOL and takes self, the selector, the application and a BOOL; the
     // notification methods return void and take self, the selector and the
-    // notification. None of them unwinds: they only touch atomics and run the show path
-    // under `contain`.
+    // notification. None of them unwinds: each body is inside `catch_unwind`, and the
+    // show path also runs under `contain`.
     let added = unsafe {
         let reopen = std::mem::transmute::<
             extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, Bool) -> Bool,
@@ -279,4 +287,25 @@ pub fn request_attention() {
     // and returns a request id (NSInteger), on the non-null shared application on the
     // main thread.
     let _: isize = unsafe { msg_send![app, requestUserAttention: INFORMATIONAL_REQUEST as usize] };
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2::sel;
+
+    use super::*;
+
+    #[test]
+    fn should_reopen_returns_when_show_panics() {
+        assert!(SHOW.set(|| panic!("show")).is_ok());
+        set_hidden(true);
+        let answer = should_reopen(
+            std::ptr::null_mut(),
+            sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+            std::ptr::null_mut(),
+            Bool::NO,
+        );
+        assert_eq!(answer, Bool::NO);
+        set_hidden(false);
+    }
 }

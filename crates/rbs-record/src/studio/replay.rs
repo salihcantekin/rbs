@@ -106,7 +106,13 @@ impl Studio {
 
         // Adapters first: nothing is in the graph if none can serve.
         let (width, height) = self.size;
-        let export = VideoExportNode::new(settings.video.format, width, height);
+        let export = VideoExportNode::with_tone(
+            settings.video.format,
+            width,
+            height,
+            settings.video.color,
+            settings.video.open_shadows,
+        );
         let config = video_encoder_config(&settings.video, export.frame_format(), self.fps);
         let (encoder, video_chosen) = select::video_encoder(&adapters.video_encoders, &config)?;
         let mut streams = vec![encoder.stream().clone()];

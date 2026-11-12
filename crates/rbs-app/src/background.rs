@@ -58,8 +58,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub swap_after_transition: bool,
     /// Leave the RBS windows out of a screen capture (Windows
-    /// `WDA_EXCLUDEFROMCAPTURE`). On when the key is absent: a screen recording does
-    /// not include RBS. Other systems ignore it.
+    /// `WDA_EXCLUDEFROMCAPTURE`, macOS `NSWindowSharingNone`). On when the key is
+    /// absent: a screen recording does not include RBS. Linux ignores it.
     #[serde(default = "yes")]
     pub exclude_own_window: bool,
 }

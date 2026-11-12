@@ -1,7 +1,7 @@
 //! Platform-neutral arithmetic of the preview layers (ADR-0034, ADR-0036), kept apart so
 //! it is tested on every platform.
 
-use std::time::Duration;
+pub(crate) use super::ring_needed;
 
 /// Where an image of `image` pixels goes when it is fitted into `rect` (x, y, width,
 /// height) keeping its aspect ratio and centred: `(x, y, scale)`, in `rect`'s units.
@@ -22,19 +22,10 @@ pub(crate) fn fit(rect: (f64, f64, f64, f64), image: (u32, u32)) -> (f64, f64, f
     )
 }
 
-/// Surfaces an engine ring needs so that it always finds a free one while a layer shows
-/// frames `frame_interval` apart and holds each replaced frame up to `hold`: the shown
-/// frame, the replaced ones within `hold`, one being written and one in flight.
-pub(crate) fn ring_needed(frame_interval: Duration, hold: Duration) -> usize {
-    let interval = frame_interval.as_nanos().max(1);
-    let retiring = hold.as_nanos().div_ceil(interval);
-    usize::try_from(retiring)
-        .unwrap_or(usize::MAX)
-        .saturating_add(3)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -68,6 +59,31 @@ mod tests {
         assert_eq!(ring_needed(f60, Duration::ZERO), 3);
         // A zero interval does not divide by zero.
         assert!(ring_needed(Duration::ZERO, Duration::from_millis(1)) > 3);
+    }
+
+    #[test]
+    fn ring_of_three_starves_at_30_and_60_fps() {
+        // The same intervals `FrameRate::frame_duration` gives the studio: integer
+        // nanoseconds, rounded down (`1e9/30`, `1e9/60`).
+        let f30 = rbs_core::timing::FrameRate::FPS_30.frame_duration();
+        let f60 = rbs_core::timing::FrameRate::FPS_60.frame_duration();
+        assert_eq!(f30, Duration::from_nanos(33_333_333));
+        assert_eq!(f60, Duration::from_nanos(16_666_666));
+        // Ring = ceil(hold / interval) retiring frames + shown + written + in flight.
+        // macOS retire time is 34 ms (ADR-0034). A ring of 3 is the hold-nothing case
+        // (shown + written + in flight), so both rates drop frames.
+        let macos = |interval: Duration| ring_needed(interval, Duration::from_millis(34));
+        // ceil(34_000_000 / 33_333_333) = 2 retiring -> 5.
+        assert_eq!(macos(f30), 5);
+        // ceil(34_000_000 / 16_666_666) = 3 retiring -> 6.
+        assert_eq!(macos(f60), 6);
+        assert!(macos(f30) > 3 && macos(f60) > 3);
+        // Windows holds one frame plus the 4 ms poll (ADR-0036): still more than 3.
+        let windows =
+            |interval: Duration| ring_needed(interval, interval + Duration::from_millis(4));
+        assert_eq!(windows(f30), 5);
+        assert_eq!(windows(f60), 5);
+        assert!(windows(f30) > 3 && windows(f60) > 3);
     }
 }
 

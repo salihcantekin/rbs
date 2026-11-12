@@ -173,6 +173,13 @@ impl Document for Appearance {
         let id = |s: &str, what: &str| {
             ThemeId::parse(s).ok_or_else(|| format!("{what} {s:?} is not a theme id"))
         };
+        // System mode is the built-in pair. A theme the user chose is Fixed mode, so a
+        // saved custom dark or light slot is not applied.
+        let (dark, light) = if mode == AppearanceMode::System {
+            (ThemeId::BuiltIn(Base::Dark), ThemeId::BuiltIn(Base::Light))
+        } else {
+            (id(&f.dark, "dark")?, id(&f.light, "light")?)
+        };
         let density = match f.density.as_str() {
             "regular" => rbs_ui::tokens::Density::Regular,
             "compact" => rbs_ui::tokens::Density::Compact,
@@ -180,8 +187,8 @@ impl Document for Appearance {
         };
         Ok(Appearance {
             mode,
-            dark: id(&f.dark, "dark")?,
-            light: id(&f.light, "light")?,
+            dark,
+            light,
             theme: id(&f.theme, "theme")?,
             density,
         })

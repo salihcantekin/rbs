@@ -218,17 +218,17 @@ fn sources_change_layer_order_and_box_through_the_host() {
     // Already the top layer: nothing to do, so no update; the down move answers.
     host.send(Command::MoveSource {
         id: camera,
-        up: true,
+        direction: rbs_api::request::LayerDirection::Up,
     });
     host.send(Command::MoveSource {
         id: camera,
-        up: false,
+        direction: rbs_api::request::LayerDirection::Down,
     });
     let rows = rows_where(&rx, |r| r.len() == 2 && r[0].id == screen);
     assert_eq!(rows[1].id, camera);
     host.send(Command::MoveSource {
         id: camera,
-        up: true,
+        direction: rbs_api::request::LayerDirection::Up,
     });
     rows_where(&rx, |r| r.len() == 2 && r[0].id == camera);
 
@@ -275,7 +275,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
     rows_where(&rx, |r| r.len() == 3);
     host.send(Command::MoveSource {
         id: camera,
-        up: false,
+        direction: rbs_api::request::LayerDirection::Down,
     });
     let rows = rows_where(&rx, |r| r.len() == 3 && r[2].id == camera);
     assert_eq!(rows[1].id, screen, "{rows:?}");
@@ -354,7 +354,7 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     });
     host.send(Command::MoveSource {
         id: camera,
-        up: false,
+        direction: rbs_api::request::LayerDirection::Down,
     });
     rows_where(&rx, |r| r[0].id == screen);
 

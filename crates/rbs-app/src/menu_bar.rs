@@ -53,11 +53,12 @@ pub fn values(state: &dyn CommandState) -> Values {
                 MenuItem::Choices {
                     title,
                     icon,
+                    disabled,
                     choices,
                 } => {
                     v.titles.push(title);
                     v.icons.push(item_icon(icon, None));
-                    v.enabled.push(!choices.is_empty());
+                    v.enabled.push(disabled.is_none() && !choices.is_empty());
                     v.checked.push(false);
                     v.choices.push(
                         choices
@@ -159,7 +160,7 @@ pub fn slint_text(indent: &str) -> String {
                     line(
                         3,
                         &format!(
-                            "for c in Menus.choices[{picker}]: MenuItem {{ title: c.title; checkable: true; checked: c.checked; activated => {{ Menus.run(c.id); }} }}"
+                            "for c in Menus.choices[{picker}]: MenuItem {{ title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => {{ Menus.run(c.id); }} }}"
                         ),
                     );
                     line(2, "}");
@@ -216,6 +217,8 @@ pub struct Shown<'a> {
     pub studio: &'a StudioUi,
     /// The panels the Window menu lists: `(title, id, open)`.
     pub panels: Vec<(String, String, bool)>,
+    /// View › Theme: `(name, id, current)`, at most ten.
+    pub themes: Vec<(String, String, bool)>,
     /// The maximized panel (ADR-0049 decision 2).
     pub maximized: Option<&'a PanelId>,
     /// The virtual camera, for `vcam.toggle`.
@@ -430,7 +433,7 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.has_vertical()
             }
-            "scene.rename" => {
+            "scene.duplicate" | "scene.rename" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
             }
@@ -450,11 +453,15 @@ impl CommandState for Shown<'_> {
                     .scene_ends(scene)
                     .ok_or_else(|| "The scene is gone.".to_owned())?;
                 match id.param("direction") {
-                    Some("up") if up => Ok(()),
-                    Some("down") if down => Ok(()),
-                    Some("up") => Err("This scene is already the first.".to_owned()),
-                    Some("down") => Err("This scene is already the last.".to_owned()),
-                    _ => Err("Choose up or down.".to_owned()),
+                    Some("up") | Some("front") if up => Ok(()),
+                    Some("down") | Some("back") if down => Ok(()),
+                    Some("up") | Some("front") => {
+                        Err("This scene is already the first.".to_owned())
+                    }
+                    Some("down") | Some("back") => {
+                        Err("This scene is already the last.".to_owned())
+                    }
+                    _ => Err("Choose which way to move the scene.".to_owned()),
                 }
             }
             "source.active.toggle" => {
@@ -471,12 +478,21 @@ impl CommandState for Shown<'_> {
                 if !f.picture {
                     return Err("This source has no layer.".to_owned());
                 }
+                if f.locked {
+                    return Err("Unlock the source to change its layer order.".to_owned());
+                }
                 match id.param("direction") {
                     Some("up") if f.can_up => Ok(()),
                     Some("down") if f.can_down => Ok(()),
-                    Some("up") => Err("This source is already the top layer.".to_owned()),
-                    Some("down") => Err("This source is already the bottom layer.".to_owned()),
-                    _ => Err("Say whether to move the source up or down.".to_owned()),
+                    Some("front") if f.can_up => Ok(()),
+                    Some("back") if f.can_down => Ok(()),
+                    Some("up") | Some("front") => {
+                        Err("This source is already the top layer.".to_owned())
+                    }
+                    Some("down") | Some("back") => {
+                        Err("This source is already the bottom layer.".to_owned())
+                    }
+                    _ => Err("Say whether to move the source forward or back.".to_owned()),
                 }
             }
             "filter.add" => {
@@ -500,6 +516,29 @@ impl CommandState for Shown<'_> {
                     Ok(())
                 } else {
                     Err("This source has nothing to open again.".to_owned())
+                }
+            }
+            "source.settings" => {
+                self.running()?;
+                if self.source(id)?.has_settings {
+                    Ok(())
+                } else {
+                    Err("This source has no settings window.".to_owned())
+                }
+            }
+            "ui.properties.show" => {
+                self.running()?;
+                let f = self.source(id)?;
+                match id.param("tab") {
+                    Some("filters") if f.picture => Ok(()),
+                    Some("filters") => Err("This source has no picture filters.".to_owned()),
+                    Some("source") if f.reloadable => Ok(()),
+                    Some("source") => Err("This source has no target to change.".to_owned()),
+                    Some("audio") if f.audio => Ok(()),
+                    Some("audio") => Err("This source has no sound.".to_owned()),
+                    Some("transform") if f.picture => Ok(()),
+                    Some("transform") => Err("This source has no picture.".to_owned()),
+                    _ => Err("Say which Properties tab to open.".to_owned()),
                 }
             }
             "item.flip" | "item.rotate" | "item.align" | "item.fit" | "item.reset_transform" => {
@@ -808,7 +847,7 @@ impl CommandState for Shown<'_> {
             "ui.mixer.orientation" => {
                 let now = self.workspace.mixer_orientation();
                 [
-                    (MixerOrientation::Auto, "Auto"),
+                    (MixerOrientation::Auto, "Automatic"),
                     (MixerOrientation::Rows, "Rows"),
                     (MixerOrientation::Columns, "Columns"),
                 ]
@@ -818,11 +857,11 @@ impl CommandState for Shown<'_> {
             }
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
+            "ui.theme.select" => self.themes.clone(),
             "scene.select" => self.studio.scene_choices(),
             "item.rotate" => vec![
                 ("Rotate 90° clockwise".into(), "90".into(), false),
                 ("Rotate 90° counter-clockwise".into(), "-90".into(), false),
-                ("Rotate 180°".into(), "180".into(), false),
             ],
             "item.fit" => vec![
                 ("Fit to canvas".into(), "fit".into(), false),
@@ -943,6 +982,9 @@ impl CommandState for Shown<'_> {
     }
 
     fn applies(&self, id: &CommandId) -> bool {
+        // Type-specific commands leave the menu when the selected source cannot use
+        // them (a mic has no Transform). With no source selected they still apply so
+        // the menu bar can show the entry disabled ("No source is selected.").
         match id.base() {
             "item.locked.toggle"
             | "item.flip"
@@ -950,11 +992,32 @@ impl CommandState for Shown<'_> {
             | "item.fit"
             | "item.align"
             | "item.reset_transform"
-            | "item.move" => self.source(id).is_ok_and(|f| f.picture),
+            | "item.move" => match self.source(id) {
+                Ok(f) => f.picture,
+                Err(_) => true,
+            },
+            "source.settings" => match self.source(id) {
+                Ok(f) => f.has_settings,
+                Err(_) => true,
+            },
+            "source.reload" => match self.source(id) {
+                Ok(f) => f.reloadable,
+                Err(_) => true,
+            },
+            "ui.properties.show" => match (id.param("tab"), self.source(id)) {
+                (Some("filters") | Some("transform"), Ok(f)) => f.picture,
+                (Some("source"), Ok(f)) => f.reloadable,
+                (Some("audio"), Ok(f)) => f.audio,
+                (Some("filters" | "transform" | "source" | "audio"), Err(_)) => true,
+                _ => false,
+            },
             "source.muted.toggle"
             | "source.mixer_hidden.toggle"
             | "source.monitor"
-            | "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.audio),
+            | "source.monitor_solo.toggle" => match self.source(id) {
+                Ok(f) => f.audio,
+                Err(_) => true,
+            },
             // A vertical canvas's outputs, while it exists (or one of them still runs).
             "stream.vertical.toggle" | "record.vertical.toggle" => {
                 self.studio.vertical.is_some()
@@ -1277,6 +1340,8 @@ pub enum Run {
     Entry(EntryKind, EntryOp, Option<String>),
     /// Read the token, appearance and theme files again (`ui.theme.reload`).
     ReloadThemes,
+    /// Use this theme id in Fixed mode (`ui.theme.select`).
+    SelectTheme(String),
     /// Show the Settings window, at this section (`SettingsWindow.section`) when
     /// given (`ui.settings.open`).
     OpenSettings(Option<i32>),
@@ -1318,6 +1383,8 @@ pub enum Run {
     Transition,
     /// Add a scene.
     AddScene,
+    /// Copy a scene with the same sources and layouts.
+    DuplicateScene(i32),
     /// Open the Add vertical output dialog (ADR-0093 decision 8).
     AddVertical,
     /// Rename the scene with this id; without a name, ask for one in its row.
@@ -1328,13 +1395,20 @@ pub enum Run {
     RenameSource(i32, Option<String>),
     /// Open a source again (ADR-0077).
     ReloadSource(i32),
+    /// Open the Source settings window (ADR-0077 / ADR-0084).
+    OpenSourceSettings(i32),
+    /// Open Properties on a tab: 0 Transform, 1 Filters, 2 Audio, 3 Source.
+    ShowProperties {
+        source: i32,
+        tab: i32,
+    },
     /// Delete the source with this id.
     DeleteSource(i32),
     RemoveFromScene(i32),
-    /// Move the source with this id over (`true`) or under the next source with a picture.
-    MoveSource(i32, bool),
-    /// Move a scene one place up (`true`) or down in the scene list.
-    MoveScene(i32, bool),
+    /// Move the source with this id in the layer order (ADR-0084 Arrange).
+    MoveSource(i32, rbs_api::request::LayerDirection),
+    /// Move a scene in the scene list.
+    MoveScene(i32, rbs_api::request::LayerDirection),
     /// Keep a source's device open (`true`) or release it.
     SetSourceActive(i32, bool),
     /// Show (`true`) or hide the source with this id in the scene.
@@ -1404,6 +1478,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "ui.mixer.orientation" => Run::MixerOrientation(MixerOrientation::parse(&value)?),
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
+            "ui.theme.select" => Run::SelectTheme(value),
             "scene.select" => Run::Scene(value.parse().ok()?),
             "item.rotate" => Run::Transform(
                 state.source(&id).ok()?.id,
@@ -1488,6 +1563,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "scene.next" => Run::Scene(state.studio.scene_step(1)?),
         "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),
         "scene.add" => Run::AddScene,
+        "scene.duplicate" => Run::DuplicateScene(state.scene(&id).ok()?),
         "scene.rename" => {
             Run::RenameScene(state.scene(&id).ok()?, id.param("name").map(str::to_owned))
         }
@@ -1497,23 +1573,43 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             id.param("name").map(str::to_owned),
         ),
         "source.reload" => Run::ReloadSource(state.source(&id).ok()?.id),
+        "source.settings" => Run::OpenSourceSettings(state.source(&id).ok()?.id),
+        "ui.properties.show" => {
+            let tab = match id.param("tab")? {
+                "transform" => 0,
+                "filters" => 1,
+                "audio" => 2,
+                "source" => 3,
+                _ => return None,
+            };
+            Run::ShowProperties {
+                source: state.source(&id).ok()?.id,
+                tab,
+            }
+        }
         "source.delete" => Run::DeleteSource(state.source(&id).ok()?.id),
         "item.remove" => Run::RemoveFromScene(state.source(&id).ok()?.id),
         "item.move" => {
-            let up = match id.param("direction")? {
-                "up" => true,
-                "down" => false,
+            use rbs_api::request::LayerDirection::*;
+            let direction = match id.param("direction")? {
+                "up" => Up,
+                "down" => Down,
+                "front" => Front,
+                "back" => Back,
                 _ => return None,
             };
-            Run::MoveSource(state.source(&id).ok()?.id, up)
+            Run::MoveSource(state.source(&id).ok()?.id, direction)
         }
         "scene.move" => {
-            let up = match id.param("direction")? {
-                "up" => true,
-                "down" => false,
+            use rbs_api::request::LayerDirection::*;
+            let direction = match id.param("direction")? {
+                "up" => Up,
+                "down" => Down,
+                "front" => Front,
+                "back" => Back,
                 _ => return None,
             };
-            Run::MoveScene(state.scene(&id).ok()?, up)
+            Run::MoveScene(state.scene(&id).ok()?, direction)
         }
         "source.active.toggle" => Run::SetSourceActive(state.source(&id).ok()?.id, !on),
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
@@ -1571,8 +1667,8 @@ mod tests {
             "the menu bar in ui/app.slint is out of date: run \
              `RBS_UPDATE_MENU_BAR=1 cargo test -p rbs-app --bin rbs menu_bar`"
         );
-        // Both windows with a menu bar have it.
-        assert_eq!(text.matches(BEGIN).count(), 2);
+        // Main, floating and Settings windows each declare the menu bar (macOS).
+        assert_eq!(text.matches(BEGIN).count(), 3);
     }
 
     #[test]

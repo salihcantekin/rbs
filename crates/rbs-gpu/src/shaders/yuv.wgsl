@@ -92,6 +92,69 @@ fn fs_chroma_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32>
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
 
+// Open shadows, a grade on the Video path only. Linear light below middle grey
+// (0.18) is raised by a power of 0.7 about that knee; black, middle grey and
+// everything above are unchanged. The BT.709 OETF and limited-range codes then
+// run as on the default path, so the file stays Rec. 709. These entry points are
+// built only when the grade is on. The entries above do not call this.
+const SHADOW_KNEE: f32 = 0.18;
+const SHADOW_GAMMA: f32 = 0.7;
+
+fn open_shadows(l: vec3<f32>) -> vec3<f32> {
+    let c = clamp(l, vec3<f32>(0.0), vec3<f32>(1.0));
+    let lifted = SHADOW_KNEE * pow(c / SHADOW_KNEE, vec3<f32>(SHADOW_GAMMA));
+    // `select` evaluates both sides. Zero stays zero without a negative power.
+    return select(c, lifted, (c > vec3<f32>(0.0)) & (c < vec3<f32>(SHADOW_KNEE)));
+}
+
+fn load_open(x: i32, y: i32) -> vec3<f32> {
+    return oetf_709(open_shadows(textureLoad(canvas, vec2<i32>(x, y), 0).rgb));
+}
+
+@fragment
+fn fs_luma_open(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    let p = load_open(i32(pos.x), i32(pos.y));
+    return round(y_black + y_range * luma(p)) * code_scale;
+}
+
+@fragment
+fn fs_chroma_open(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let x = i32(pos.x) * 2;
+    let y = i32(pos.y) * 2;
+    let p = (load_open(x, y) + load_open(x + 1, y) + load_open(x, y + 1) + load_open(x + 1, y + 1))
+        * 0.25;
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
+}
+
+fn sample_open(p: vec2<f32>) -> vec3<f32> {
+    let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return vec3<f32>(0.0);
+    }
+    return oetf_709(open_shadows(textureSampleLevel(canvas, unused_sampler, uv, 0.0).rgb));
+}
+
+@fragment
+fn fs_luma_open_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    let p = sample_open(pos.xy);
+    return round(y_black + y_range * luma(p)) * code_scale;
+}
+
+@fragment
+fn fs_chroma_open_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    let c = floor(pos.xy) * 2.0;
+    let p = (sample_open(c + vec2<f32>(0.5, 0.5)) + sample_open(c + vec2<f32>(1.5, 0.5))
+        + sample_open(c + vec2<f32>(0.5, 1.5)) + sample_open(c + vec2<f32>(1.5, 1.5)))
+        * 0.25;
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
+}
+
 // Screen delivery (ColorSpace::SRGB_VIDEO): sRGB OETF, full range. A separate entry point
 // from the BT.709 limited path above, so that path does not branch on this mode.
 // `code_max` is the largest legal code (255 or 1023). Full-range chroma can round one

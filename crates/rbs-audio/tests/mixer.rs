@@ -309,6 +309,13 @@ fn meters_get_post_fader_peaks_per_channel() {
     let m = master_meter.take();
     assert!(close(m.peak(0), 1.0) && close(m.peak(1), 1.0));
     assert_eq!(strip_meter.take().peak(0), 0.0);
+    // The first block fades in from silence, so RMS is measured on a later, steady block.
+    r.run(1);
+    let l = strip_meter.take();
+    assert!(close(l.rms(0), 0.25) && close(l.rms(1), 0.25));
+    let m = master_meter.take();
+    assert!(close(m.rms(0), 1.0) && close(m.rms(1), 1.0));
+    assert_eq!(strip_meter.take().peak(0), 0.0);
     let _ = r.mixer;
 }
 

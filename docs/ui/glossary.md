@@ -16,7 +16,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Record | Save the program to a file. "Capture" is used only in source type names (Screen capture, Window capture) | Save, Capture (as a verb for recording) | Recording output |
 | Preview / Program | What you are preparing / what viewers see (studio mode) | - | - |
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
-| Rows, Columns | The two Mixer layouts: sources stacked top to bottom, or side by side | Horizontal, Vertical | Orientation (in UI text) |
+| Automatic, Rows, Columns | Mixer layouts: follow the panel's shape, sources stacked top to bottom, or side by side | Horizontal, Vertical, Auto | Orientation (in UI text) |
 | Workspace | A saved arrangement of panels, floating windows and projectors. It never holds scenes, sources or output settings | Profile, layout, scene collection | UI workspace file |
 | Scene collection | A set of scenes and sources saved together. It holds no panel layout and no output settings | Project, workspace | Scene document |
 | Global source | A source shown and heard in every scene of a canvas, kept in Settings › Global sources | Global audio device, shared source | Item of the canvas's global scene (ADR-0065) |

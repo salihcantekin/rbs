@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 
 use rbs_app::background::{self, Action, OnClose, Request};
 use rbs_app::studio_host;
+use rbs_ui::command::{CommandId, CommandState};
 use rbs_ui::frame::{DropPlace, DropTarget, drop_target};
 use rbs_ui::layout::{Axis, Edge, Rect};
 use rbs_ui::session::CommandError;
@@ -166,9 +167,13 @@ struct App {
     error: Option<UiError>,
     /// `ui.theme.reload` ran; the next sync reads the theme files again.
     reload_themes: bool,
+    /// `ui.theme.select` ran; the next sync applies this theme id.
+    select_theme: Option<String>,
     /// `ui.settings.open` ran; the next sync shows Settings, at this section when
     /// given.
     open_settings: Option<Option<i32>>,
+    /// `source.settings` ran; the next sync opens the Source settings window.
+    open_source_settings: Option<i32>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
     /// The Add vertical output dialog is asked for (`canvas.add_vertical`).
@@ -271,10 +276,17 @@ impl MenuModels {
                 .map(|list| {
                     let items: Vec<MenuChoice> = list
                         .iter()
-                        .map(|(title, id, checked)| MenuChoice {
-                            title: title.as_str().into(),
-                            id: id.as_str().into(),
-                            checked: *checked,
+                        .map(|(title, id, checked)| {
+                            let icon = CommandId::parse(id)
+                                .ok()
+                                .and_then(|cid| rbs_ui::command::choice_icon(&cid, *checked))
+                                .unwrap_or("");
+                            MenuChoice {
+                                title: title.as_str().into(),
+                                id: id.as_str().into(),
+                                checked: *checked,
+                                icon: icons::menu_image(icon),
+                            }
                         })
                         .collect();
                     ModelRc::from(Rc::new(VecModel::from(items)))
@@ -446,6 +458,7 @@ impl App {
             workspace: self.session.workspace(),
             workspaces: &self.workspaces,
             studio: &self.studio,
+            themes: appearance_page::theme_menu_choices(&self.studio.user),
             maximized: self.maximized.as_ref(),
             camera: self.vcam.shown(),
             replay: menu_bar::ReplayShown {
@@ -471,7 +484,16 @@ impl App {
     /// (`ui.command.run`, a global shortcut): ending the stream does not ask.
     fn run_command_as(&mut self, id: &str, confirm: bool) {
         use menu_bar::Run;
-        let Some(run) = menu_bar::run(id, &self.shown()) else {
+        let shown = self.shown();
+        // Submenu choices (and a stale menu) can fire while the entry is disabled
+        // (locked source, wrong type): refuse instead of a silent no-op.
+        if let Ok(cid) = rbs_ui::command::CommandId::parse(id)
+            && let Err(reason) = shown.enabled(&cid)
+        {
+            self.error = Some(UiError::Other(reason));
+            return;
+        }
+        let Some(run) = menu_bar::run(id, &shown) else {
             return;
         };
         self.dismiss_flyout = true;
@@ -534,20 +556,31 @@ impl App {
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
             Run::AddScene => self.studio.add_scene(),
+            Run::DuplicateScene(id) => self.studio.duplicate_scene(id),
             Run::AddVertical => self.open_vertical = true,
             Run::RenameScene(id, Some(name)) => self.studio.rename_scene(id, &name),
             // Asking for a name needs someone at the window: not from a control
             // surface or a global shortcut (`ui.command.run` answers `invalid_params`).
             Run::RenameScene(_, None) | Run::RenameSource(_, None) if !confirm => {}
             Run::RenameScene(id, None) => self.ask_rename(id, true),
+            // A menu or a shortcut asks in the row first. A control surface
+            // (`confirm` false) removes at once, as the control API does.
+            Run::RemoveScene(id) if confirm => self.ask_remove_scene(id),
             Run::RemoveScene(id) => self.studio.remove_scene(id),
             Run::RenameSource(id, Some(name)) => self.studio.rename_source(id, &name),
             Run::RenameSource(id, None) => self.ask_rename(id, false),
             Run::ReloadSource(id) => self.studio.reload_source(id),
+            Run::OpenSourceSettings(id) => {
+                self.studio.selected = id;
+                self.open_source_settings = Some(id);
+            }
+            Run::ShowProperties { source, tab } => self.show_source_properties(source, tab),
+            Run::DeleteSource(id) if confirm => self.ask_remove_source(id, true),
             Run::DeleteSource(id) => self.studio.delete_source(id),
+            Run::RemoveFromScene(id) if confirm => self.ask_remove_source(id, false),
             Run::RemoveFromScene(id) => self.studio.remove_from_scene(id),
-            Run::MoveSource(id, up) => self.studio.move_source(id, up),
-            Run::MoveScene(id, up) => self.studio.move_scene(id, up),
+            Run::MoveSource(id, direction) => self.studio.move_source(id, direction),
+            Run::MoveScene(id, direction) => self.studio.move_scene(id, direction),
             Run::SetSourceActive(id, active) => self.studio.set_source_active(id, active),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
@@ -590,6 +623,7 @@ impl App {
             Run::SaveReplay => replay_page::save(self),
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
+            Run::SelectTheme(id) => self.select_theme = Some(id),
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section) => self.open_settings = Some(section),
             Run::OpenAppMenu => self.open_app_menu = true,
@@ -744,6 +778,59 @@ impl App {
                 g.set_renaming_source(id);
                 g.set_rename_source_asked(g.get_rename_source_asked() + 1);
             }
+        };
+        ask(self.main.global::<Studio>());
+        for f in &self.floats {
+            ask(f.window.global::<Studio>());
+        }
+    }
+
+    /// Shows the scene row's confirm before Remove scene from a menu or a shortcut.
+    /// The Scenes panel opens so the row is there.
+    fn ask_remove_scene(&mut self, id: i32) {
+        if let Some(p) = panel("rbs.scenes") {
+            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+        }
+        let ask = |g: Studio<'_>| {
+            g.set_confirming_scene(id);
+            g.set_confirm_scene_asked(g.get_confirm_scene_asked() + 1);
+        };
+        ask(self.main.global::<Studio>());
+        for f in &self.floats {
+            ask(f.window.global::<Studio>());
+        }
+    }
+
+    /// Selects `source`, opens Properties, and shows `tab` (0 Transform, 1 Filters,
+    /// 2 Audio, 3 Source; ADR-0084).
+    fn show_source_properties(&mut self, source: i32, tab: i32) {
+        if let Some(p) = panel("rbs.properties") {
+            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+        }
+        self.studio.selected = source;
+        let apply = |g: Studio<'_>| {
+            g.set_selected_source(source);
+            g.set_properties_tab(tab);
+        };
+        apply(self.main.global::<Studio>());
+        for f in &self.floats {
+            apply(f.window.global::<Studio>());
+        }
+    }
+
+    /// Shows the source row's confirm before Remove from scene (`delete` false) or
+    /// Delete source (`delete` true). The Sources panel opens, and the source is
+    /// selected so a folded global row is in the list.
+    fn ask_remove_source(&mut self, id: i32, delete: bool) {
+        if let Some(p) = panel("rbs.sources") {
+            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+        }
+        self.studio.selected = id;
+        let ask = |g: Studio<'_>| {
+            g.set_selected_source(id);
+            g.set_confirm_source_kind(if delete { 2 } else { 1 });
+            g.set_confirming_source(id);
+            g.set_confirm_source_asked(g.get_confirm_source_asked() + 1);
         };
         ask(self.main.global::<Studio>());
         for f in &self.floats {
@@ -1050,13 +1137,9 @@ struct Ctx {
 }
 
 /// Shows the Settings window. The only place that does, so every way to open Settings
-/// (toolbar gear, RBS menu, shortcut, control API) lands centred on the main window.
-/// A window that is already on screen stays where the user put it.
+/// (toolbar gear, RBS menu, shortcut, control API) lands centred on the main window,
+/// including a window that was closed somewhere else and opened again.
 fn present_settings(w: &SettingsWindow, app: &App) {
-    if w.window().is_visible() {
-        let _ = w.show();
-        return;
-    }
     let t = w.global::<Tokens>();
     let size = slint::LogicalSize::new(t.get_size_settings_w(), t.get_size_settings_h());
     let _ = window_place::show_centred(w, &app.main, size, app.hidden);
@@ -1360,6 +1443,10 @@ impl Ctx {
                 &w.global::<Tokens>(),
                 ctx.look.borrow().as_ref(),
             );
+            install_menus(&w.global::<Menus>(), &ctx);
+            // Last sync's values: the next sync refreshes them. Needed before show so
+            // the macOS menu bar is not empty while Settings is key.
+            app.menus.push(&w.global::<Menus>());
             install_studio(&w.global::<Studio>(), &ctx);
             install_sections(&w.global::<Sections>(), &ctx);
             // `install_studio` cannot borrow the app here (this runs inside an update):
@@ -1507,15 +1594,22 @@ impl Ctx {
             rbs_ui::MixerOrientation::Rows => 1,
             rbs_ui::MixerOrientation::Columns => 2,
         };
+        let scene_share = app.session.workspace().mixer_scene_share();
         app.main.global::<Sections>().set_rev(rev);
         app.main
             .global::<Sections>()
             .set_mixer_orientation(orientation);
+        app.main
+            .global::<Sections>()
+            .set_mixer_scene_share(scene_share);
         for f in &app.floats {
             f.window.global::<Sections>().set_rev(rev);
             f.window
                 .global::<Sections>()
                 .set_mixer_orientation(orientation);
+            f.window
+                .global::<Sections>()
+                .set_mixer_scene_share(scene_share);
         }
         if let Some(w) = &app.settings {
             w.global::<Sections>().set_rev(rev);
@@ -1873,9 +1967,10 @@ impl Ctx {
 
     /// Leaves the RBS windows out of a screen capture, or puts them back.
     /// `false` when the main window has no handle yet, so the next sync tries again.
-    /// Windows only; other systems keep the windows in the capture.
+    /// Windows (`WDA_EXCLUDEFROMCAPTURE`) and macOS (`NSWindow.sharingType`). Linux
+    /// keeps the windows in the capture.
     fn apply_capture_exclusion(app: &App) -> bool {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             let exclude = app.bg.exclude_own_window;
@@ -1895,16 +1990,30 @@ impl Ctx {
                 let Ok(handle) = window_handle.window_handle() else {
                     continue;
                 };
-                if let RawWindowHandle::Win32(win) = handle.as_raw() {
-                    rbs_app::win::exclude_from_capture(win.hwnd, exclude);
-                    if i == 0 {
-                        main_ok = true;
+                let applied = match handle.as_raw() {
+                    #[cfg(windows)]
+                    RawWindowHandle::Win32(win) => {
+                        rbs_app::win::exclude_from_capture(win.hwnd, exclude);
+                        true
                     }
+                    #[cfg(target_os = "macos")]
+                    RawWindowHandle::AppKit(view) => {
+                        // SAFETY: the handle is the live NSView of this window, on the
+                        // UI thread that owns it.
+                        let Some(view) = std::ptr::NonNull::new(view.ns_view.as_ptr()) else {
+                            continue;
+                        };
+                        rbs_app::native::exclude_from_capture(view, exclude)
+                    }
+                    _ => false,
+                };
+                if i == 0 && applied {
+                    main_ok = true;
                 }
             }
             main_ok
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = app;
             true
@@ -1958,6 +2067,9 @@ impl Ctx {
         if std::mem::take(&mut app.reload_themes) {
             appearance_page::reload(self, &mut app);
         }
+        if let Some(id) = app.select_theme.take() {
+            appearance_page::select_theme(self, &mut app, &id);
+        }
         if std::mem::take(&mut app.open_app_menu) {
             // Out of the background first (ADR-0056), so the window is current.
             self.show_all(&mut app);
@@ -1978,6 +2090,10 @@ impl Ctx {
                 .or_else(|| app.settings.as_ref().map(|w| w.get_section()))
                 .unwrap_or(SECTION_GENERAL);
             self.open_settings(section);
+        }
+        if let Some(id) = app.open_source_settings.take() {
+            self.show_all(&mut app);
+            open_source_settings(self, &mut app, id);
         }
         vcam_page::sync_host(&mut app);
         self.sync_live(&mut app);
@@ -2141,6 +2257,9 @@ impl Ctx {
         for f in &app.floats {
             push(f.window.global::<Shell>());
             app.menus.push(&f.window.global::<Menus>());
+        }
+        if let Some(w) = &app.settings {
+            app.menus.push(&w.global::<Menus>());
         }
 
         if app.toast.is_some() {
@@ -2333,9 +2452,10 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     }
     g.on_panel_data(|id| entry::guard_or(slint::DataTransfer::default, || text_data(id)));
     g.on_is_panel(|data| {
-        entry::guard_or(|| false, || {
-            data.plain_text().ok().and_then(|t| panel(&t)).is_some()
-        })
+        entry::guard_or(
+            || false,
+            || data.plain_text().ok().and_then(|t| panel(&t)).is_some(),
+        )
     });
     on!(on_drag_over, |app,
                        window: i32,
@@ -2699,10 +2819,17 @@ fn context_row(i: context_menu::Item) -> ContextItem {
     let choices: Vec<ContextChoice> = i
         .choices
         .into_iter()
-        .map(|(title, id, checked)| ContextChoice {
-            title: title.into(),
-            id: id.into(),
-            checked,
+        .map(|(title, id, checked)| {
+            let icon = CommandId::parse(&id)
+                .ok()
+                .and_then(|cid| rbs_ui::command::choice_icon(&cid, checked))
+                .unwrap_or("");
+            ContextChoice {
+                title: title.into(),
+                id: id.into(),
+                checked,
+                icon: icons::menu_image(icon),
+            }
         })
         .collect();
     ContextItem {
@@ -2933,6 +3060,13 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
             }
         });
     });
+    let c = ctx.clone();
+    g.on_set_mixer_scene_share(move |share| {
+        c.update(move |app: &mut App| {
+            app.session.set_mixer_scene_share(share);
+            app.changed();
+        });
+    });
 }
 
 /// Opens the Source settings window for a source (centred on the main window; one at a
@@ -2940,7 +3074,9 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
 fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
     app.studio.request_source_settings(id);
     if let Some(w) = &app.source_settings {
-        w.show().ok();
+        let t = w.global::<Tokens>();
+        let size = slint::LogicalSize::new(t.get_size_floating_w(), t.get_size_floating_h());
+        let _ = window_place::show_centred(w, &app.main, size, app.hidden);
         return;
     }
     let Ok(w) = SourceSettingsWindow::new() else {
@@ -3114,6 +3250,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_end_monitor_solo, |app| {
         app.studio.end_monitor_solo();
     });
+    on!(on_preview_monitor_volume, |app, position: f32| {
+        app.studio.preview_monitor_volume(position);
+    });
     on!(on_set_monitor_volume, |app, position: f32| {
         app.studio.set_monitor_volume(position);
     });
@@ -3210,6 +3349,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.rename_source(id, &name);
         }
     );
+    on!(on_set_glide, |app, duration_ms: i32, easing: i32| {
+        app.studio.set_glide(duration_ms, easing);
+    });
+    on!(
+        on_set_source_glide,
+        |app, id: i32, custom: bool, duration_ms: i32, easing: i32| {
+            app.studio.set_source_glide(id, custom, duration_ms, easing);
+        }
+    );
     on!(on_switch_scene, |app, id: i32| {
         app.studio.switch_scene(id);
     });
@@ -3232,10 +3380,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         }
     );
     on!(on_move_source, |app, id: i32, up: bool| {
-        app.studio.move_source(id, up);
+        use rbs_api::request::LayerDirection::*;
+        app.studio.move_source(id, if up { Up } else { Down });
     });
     on!(on_move_scene, |app, id: i32, up: bool| {
-        app.studio.move_scene(id, up);
+        use rbs_api::request::LayerDirection::*;
+        app.studio.move_scene(id, if up { Up } else { Down });
     });
     on!(on_move_scene_to, |app, id: i32, to: i32| {
         app.studio.move_scene_to(id, to);
@@ -3251,9 +3401,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         })
     });
     g.on_is_panel(|data| {
-        entry::guard_or(|| false, || {
-            data.plain_text().ok().and_then(|t| panel(&t)).is_some()
-        })
+        entry::guard_or(
+            || false,
+            || data.plain_text().ok().and_then(|t| panel(&t)).is_some(),
+        )
     });
     on!(on_move_source_to, |app, id: i32, to: i32| {
         app.studio.move_source_to(id, to);
@@ -3725,7 +3876,9 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toast_serial: 0,
             error,
             reload_themes: false,
+            select_theme: None,
             open_settings: None,
+            open_source_settings: None,
             open_app_menu: false,
             open_vertical: false,
             ask_name: None,

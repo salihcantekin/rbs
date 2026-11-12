@@ -13,7 +13,9 @@ use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
-use rbs_app::record_profile::{AUDIO_KBPS, Encoding, Format, RateMode, RecordProfile, VIDEO_KBPS};
+use rbs_app::record_profile::{
+    AUDIO_KBPS, Delivery, Encoding, Format, RateMode, RecordProfile, VIDEO_KBPS, VideoCodec,
+};
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
@@ -86,6 +88,12 @@ pub mod enc_field {
     pub const PRESET: i32 = 8;
     pub const PROFILE: i32 = 9;
     pub const B_FRAMES: i32 = 10;
+    /// The video codec (H.264 or HEVC).
+    pub const VIDEO_CODEC: i32 = 11;
+    /// Colour delivery: 0 Video, 1 Screen.
+    pub const DELIVERY: i32 = 12;
+    /// Open shadows: 0 off, 1 on. Applies while Colour is Video.
+    pub const OPEN_SHADOWS: i32 = 13;
 }
 
 /// The vertical canvas's picture panel (ADR-0093 decision 7).
@@ -232,6 +240,8 @@ pub struct StudioUi {
     pub preview_ready: bool,
     /// Studio mode (ADR-0061): the canvas has a preview scene.
     pub studio_mode: bool,
+    /// Collection glide defaults (ADR-0100).
+    glide: rbs_scene::CollectionGlide,
     /// The preview scene's picture layer exists (studio mode).
     pub scene_preview_ready: bool,
     /// The preview scene's picture layer could not be made in this session.
@@ -465,6 +475,7 @@ impl StudioUi {
             preview_failed: false,
             preview_ready: false,
             studio_mode: false,
+            glide: rbs_scene::CollectionGlide::default(),
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
@@ -581,6 +592,12 @@ impl StudioUi {
     pub fn push(&self, g: &Studio<'_>, states: PictureStates, picture_panel: &str) {
         let preview_state = states.program;
         g.set_studio_mode(self.studio_mode);
+        g.set_glide_duration(self.glide.duration_ms as i32);
+        g.set_glide_easing(if self.glide.easing == rbs_scene::GlideEasing::Linear {
+            0
+        } else {
+            1
+        });
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -1677,6 +1694,24 @@ impl StudioUi {
         });
     }
 
+    /// Collection glide defaults (ADR-0100).
+    pub fn set_glide(&mut self, duration_ms: i32, easing: i32) {
+        self.send(Command::SetGlide {
+            duration_ms: duration_ms.clamp(0, 5_000) as u32,
+            easing: if easing == 0 { 0 } else { 1 },
+        });
+    }
+
+    /// Per-source slide override (ADR-0100). `custom` false clears it.
+    pub fn set_source_glide(&mut self, id: i32, custom: bool, duration_ms: i32, easing: i32) {
+        self.send(Command::SetSourceGlide {
+            id: SourceId::from_raw(id as u32),
+            custom,
+            duration_ms: duration_ms.clamp(0, 5_000) as u32,
+            easing: if easing == 0 { 0 } else { 1 },
+        });
+    }
+
     /// Places a source of another scene into the scene on air (Add source, Existing
     /// source); it is selected once it is there.
     pub fn add_existing_source(&mut self, id: i32) {
@@ -1795,6 +1830,12 @@ impl StudioUi {
         self.send(Command::AddScene(None));
     }
 
+    /// Copies a scene; it does not go on air.
+    pub fn duplicate_scene(&mut self, id: i32) {
+        self.deleted.clear();
+        self.send(Command::DuplicateScene(SceneId::from_raw(id as u32)));
+    }
+
     pub fn remove_scene(&mut self, id: i32) {
         self.deleted.clear();
         self.send(Command::RemoveScene(SceneId::from_raw(id as u32)));
@@ -1832,11 +1873,11 @@ impl StudioUi {
         });
     }
 
-    pub fn move_scene(&mut self, id: i32, up: bool) {
+    pub fn move_scene(&mut self, id: i32, direction: rbs_api::request::LayerDirection) {
         self.deleted.clear();
         self.send(Command::MoveScene {
             id: SceneId::from_raw(id as u32),
-            up,
+            direction,
         });
     }
 
@@ -1859,11 +1900,11 @@ impl StudioUi {
         });
     }
 
-    pub fn move_source(&mut self, id: i32, up: bool) {
+    pub fn move_source(&mut self, id: i32, direction: rbs_api::request::LayerDirection) {
         self.deleted.clear();
         self.send(Command::MoveSource {
             id: SourceId::from_raw(id as u32),
-            up,
+            direction,
         });
     }
 
@@ -2273,7 +2314,22 @@ impl StudioUi {
         let (presets, preset) = choices(&form.presets);
         let (profiles, profile) = choices(&form.profiles);
         let (b_frames, b_frame) = choices(&form.b_frames);
+        let codecs: Vec<VideoCodec> = if out == output::STREAM {
+            vec![VideoCodec::H264]
+        } else {
+            let mut list = vec![VideoCodec::H264];
+            if self.options(&e).codecs.iter().any(|c| c == "hevc") {
+                list.push(VideoCodec::Hevc);
+            }
+            if e.video_codec == VideoCodec::Hevc && !list.contains(&VideoCodec::Hevc) {
+                list.push(VideoCodec::Hevc);
+            }
+            list
+        };
+        let codec_index = codecs.iter().position(|c| *c == e.video_codec).unwrap_or(0);
         EncoderData {
+            codecs: strings(codecs.iter().map(|c| c.label().to_owned())),
+            codec: codec_index as i32,
             encoders: strings(encoders),
             encoder: self.encoder_index(&e) as i32,
             video_rates: strings(video.iter().map(|k| kbps(*k))),
@@ -2306,6 +2362,11 @@ impl StudioUi {
             b_frames,
             b_frame,
             b_frames_note: form.b_frames_note.unwrap_or_default().into(),
+            delivery: match e.delivery {
+                Delivery::Video => 0,
+                Delivery::Screen => 1,
+            },
+            open_shadows: e.open_shadows,
         }
     }
 
@@ -2360,6 +2421,44 @@ impl StudioUi {
             enc_field::PRESET => form.presets.get(value).map(|p| e.preset = p).is_some(),
             enc_field::PROFILE => form.profiles.get(value).map(|p| e.profile = p).is_some(),
             enc_field::B_FRAMES => form.b_frames.get(value).map(|n| e.b_frames = n).is_some(),
+            enc_field::DELIVERY => match value {
+                0 => {
+                    e.delivery = Delivery::Video;
+                    true
+                }
+                1 => {
+                    e.delivery = Delivery::Screen;
+                    true
+                }
+                _ => false,
+            },
+            enc_field::OPEN_SHADOWS => {
+                e.open_shadows = value != 0;
+                true
+            }
+            enc_field::VIDEO_CODEC => {
+                let codecs: Vec<VideoCodec> = if out == output::STREAM {
+                    vec![VideoCodec::H264]
+                } else {
+                    let mut list = vec![VideoCodec::H264];
+                    if self.options(&e).codecs.iter().any(|c| c == "hevc") {
+                        list.push(VideoCodec::Hevc);
+                    }
+                    list
+                };
+                match codecs.get(value as usize).copied() {
+                    Some(codec) => {
+                        e.video_codec = codec;
+                        if codec == VideoCodec::Hevc
+                            && matches!(e.profile.as_deref(), Some("high" | "baseline"))
+                        {
+                            e.profile = None;
+                        }
+                        true
+                    }
+                    None => false,
+                }
+            }
             _ => false,
         };
         if !changed {
@@ -3187,6 +3286,7 @@ impl StudioUi {
                             picture: false,
                             audio: true,
                             reloadable: true,
+                            has_settings: false,
                             sized: false,
                             flip: rbs_scene::FlipState::default(),
                             can_up: false,
@@ -3218,6 +3318,10 @@ impl StudioUi {
             picture: row.layout.is_some(),
             audio: row.kind.is_some_and(SourceKind::is_audio),
             reloadable: row.kind.is_some(),
+            has_settings: matches!(
+                row.kind,
+                Some(SourceKind::Screen | SourceKind::Window | SourceKind::Camera)
+            ),
             sized: row.picture.is_some(),
             flip: row.layout.map(|l| l.flip_state()).unwrap_or_default(),
             can_up,
@@ -3565,8 +3669,10 @@ impl StudioUi {
             .map(|(p, since)| (since.elapsed(), file_name(p)))
     }
 
-    pub fn reset_clip(&mut self, i: i32) {
-        if let Some(s) = self.slots.get_mut(i as usize) {
+    /// Clears one source's clip latch. `id` is the source id: the Mixer list also holds
+    /// audio sources that are not running, and those have no meter slot.
+    pub fn reset_clip(&mut self, id: i32) {
+        if let Some(s) = self.slots.iter_mut().find(|s| s.source.get() as i32 == id) {
             s.ballistics.reset_clip();
         }
     }
@@ -3721,6 +3827,7 @@ impl StudioUi {
                     self.master_audio = list.master;
                     self.show_master();
                 }
+                self.glide = list.glide;
                 let data: Vec<SceneData> = list
                     .scenes
                     .iter()
@@ -4075,6 +4182,15 @@ impl StudioUi {
                     in_globals: r.in_globals,
                     places: (1 + r.also_in.len() + usize::from(r.in_globals)) as i32,
                     companion: rows.iter().any(|c| c.companion_of == Some(r.id)),
+                    custom_glide: r.glide.is_some(),
+                    glide_duration: r.glide.map(|g| g.duration_ms as i32).unwrap_or(400),
+                    glide_easing: r.glide.map_or(1, |g| {
+                        if g.easing == rbs_scene::GlideEasing::Linear {
+                            0
+                        } else {
+                            1
+                        }
+                    }),
                 }
             })
             .collect();
@@ -4115,7 +4231,7 @@ impl StudioUi {
             .map(|r| (r.id.get(), r.name.as_str().to_owned()))
             .collect();
         let mut old: Vec<MeterSlot> = std::mem::take(&mut self.slots);
-        for r in rows.iter().filter(|r| !r.audio.mixer_hidden) {
+        for r in rows.iter().filter(|r| r.visible && !r.audio.mixer_hidden) {
             let Some(level) = &r.meter else { continue };
             let slot = match old.iter().position(|s| s.source == r.id) {
                 Some(i) if Arc::ptr_eq(&old[i].level, level) => old.swap_remove(i),
@@ -4129,26 +4245,34 @@ impl StudioUi {
         }
         let meters: Vec<MeterRow> = rows
             .iter()
-            .filter(|r| r.meter.is_some() && !r.audio.mixer_hidden)
-            .map(|r| MeterRow {
-                id: r.id.get() as i32,
-                muted: r.audio.muted,
-                volume: fader::position_of(r.audio.volume),
-                volume_text: fader::volume_text(r.audio.volume).into(),
-                name: r.name.as_str().into(),
-                icon: source_icon(r.kind).into(),
-                value: "silent".into(),
-                global: r.global,
-                monitor: monitor::mode_code(r.audio.monitor),
-                solo: self.is_soloed(r.id.get()),
-                ..MeterRow::default()
+            .filter(|r| !r.audio.mixer_hidden && mixer_source(r))
+            .map(|r| {
+                let live = r.meter.is_some();
+                MeterRow {
+                    id: r.id.get() as i32,
+                    muted: r.audio.muted,
+                    volume: fader::position_of(r.audio.volume),
+                    volume_text: if live {
+                        fader::volume_text(r.audio.volume).into()
+                    } else {
+                        "Not running".into()
+                    },
+                    name: r.name.as_str().into(),
+                    icon: source_icon(r.kind).into(),
+                    value: "silent".into(),
+                    global: r.global,
+                    monitor: monitor::mode_code(r.audio.monitor),
+                    solo: self.is_soloed(r.id.get()),
+                    live,
+                    ..MeterRow::default()
+                }
             })
             .collect();
         set_rows(&self.meters, meters);
         // Hidden sources are heard but not metered: names only (ADR-0080).
         let hidden: Vec<MeterRow> = rows
             .iter()
-            .filter(|r| r.meter.is_some() && r.audio.mixer_hidden)
+            .filter(|r| r.audio.mixer_hidden && mixer_source(r))
             .map(|r| MeterRow {
                 id: r.id.get() as i32,
                 muted: r.audio.muted,
@@ -4179,6 +4303,7 @@ impl StudioUi {
         row.volume = fader::position_of(m.volume);
         row.volume_text = fader::volume_text(m.volume).into();
         row.icon = "speaker".into();
+        row.live = true;
         if self.master_meter.row_count() == 0 {
             self.master_meter.set_vec(vec![row]);
         } else {
@@ -4215,21 +4340,30 @@ impl StudioUi {
         let now = self.meter_start.elapsed();
         self.meter_ticks = self.meter_ticks.wrapping_add(1);
         let report = self.meter_ticks.is_multiple_of(REPORT_EVERY);
-        for (i, s) in self.slots.iter_mut().enumerate() {
+        for s in self.slots.iter_mut() {
             let levels = s.level.take();
             let db = (0..levels.channels())
                 .map(|ch| levels.peak_db(ch))
                 .fold(f32::NEG_INFINITY, f32::max);
             s.ballistics.update(db, now);
             let view = s.ballistics.view(now);
-            let Some(mut row) = self.meters.row_data(i) else {
-                continue;
-            };
-            paint(&mut row, &view);
-            if report {
-                row.value = s.ballistics.take_report().english().into();
+            let id = s.source.get() as i32;
+            let value = report.then(|| s.ballistics.take_report().english());
+            let count = self.meters.row_count();
+            for i in 0..count {
+                let Some(mut row) = self.meters.row_data(i) else {
+                    continue;
+                };
+                if row.id != id {
+                    continue;
+                }
+                paint(&mut row, &view);
+                if let Some(text) = &value {
+                    row.value = text.as_str().into();
+                }
+                self.meters.set_row_data(i, row);
+                break;
             }
-            self.meters.set_row_data(i, row);
         }
         if let Some((level, ballistics)) = &mut self.master_slot {
             let levels = level.take();
@@ -4247,6 +4381,14 @@ impl StudioUi {
             }
         }
     }
+}
+
+/// A Mixer row: a shown audio source, including one whose device is not running yet.
+/// Picture sources stay in the Sources list only. A source hidden with Show/Hide in
+/// Sources is left out until it is shown again; that is the scene item, not
+/// `mixer_hidden` (ADR-0080), which still lists the source under Hidden.
+fn mixer_source(r: &SourceRow) -> bool {
+    r.visible && (r.meter.is_some() || r.kind.is_some_and(SourceKind::is_audio))
 }
 
 /// Copies one meter view into a row: the zones, the peak hold and its zone, the clip.
@@ -4371,6 +4513,8 @@ pub struct SourceFacts {
     /// It captures something that can be opened again (a screen, window, camera or
     /// audio endpoint), so it can be reloaded (ADR-0077).
     pub reloadable: bool,
+    /// It has a Source settings window (screen, window or camera; ADR-0077).
+    pub has_settings: bool,
     /// Its picture size is known, so it can be fitted or reset (ADR-0084).
     pub sized: bool,
     /// Its picture is mirrored left to right or top to bottom as seen on the canvas.
@@ -4619,7 +4763,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
 /// filters changed, 14 removed from one scene, 15 made global or moved back into a
 /// scene, 16 look applied, 17 source pointed at another target, 18 source settings
-/// changed, 19 flipped, turned, fitted or centred.
+/// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -4644,6 +4788,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Retarget => 17,
                 EditKind::SourceSettings => 18,
                 EditKind::Transform => 19,
+                EditKind::Glide => 20,
             },
             s.name.as_str(),
         ),
@@ -5246,6 +5391,7 @@ mod tests {
             workspaces: &[],
             studio: &ui,
             panels: Vec::new(),
+            themes: Vec::new(),
             maximized: None,
             camera: Default::default(),
             replay: Default::default(),
@@ -5354,6 +5500,7 @@ mod tests {
                     workspaces: &[],
                     studio: ui,
                     panels: Vec::new(),
+                    themes: Vec::new(),
                     maximized: None,
                     camera: Default::default(),
                     replay: Default::default(),
@@ -5422,6 +5569,7 @@ mod tests {
                 workspaces: &[],
                 studio: ui,
                 panels: Vec::new(),
+                themes: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
                 replay: Default::default(),
@@ -5451,6 +5599,7 @@ mod tests {
                 workspaces: &[],
                 studio: ui,
                 panels: Vec::new(),
+                themes: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
                 replay: Default::default(),
@@ -5482,6 +5631,7 @@ mod tests {
             workspaces: &[],
             studio: &ui,
             panels: Vec::new(),
+            themes: Vec::new(),
             maximized: None,
             camera: Default::default(),
             replay: Default::default(),
@@ -5540,6 +5690,7 @@ mod tests {
                 workspaces: &[],
                 studio: ui,
                 panels: Vec::new(),
+                themes: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
                 replay: Default::default(),
@@ -5590,6 +5741,7 @@ mod tests {
                 workspaces: &[],
                 studio: &ui,
                 panels: Vec::new(),
+                themes: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
                 replay: Default::default(),
@@ -5657,6 +5809,7 @@ mod tests {
                 workspaces: &[],
                 studio,
                 panels: Vec::new(),
+                themes: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
                 replay: Default::default(),

@@ -4,7 +4,7 @@
 // callbacks; the texts it pushes come from `rbs_app::vcam_settings::Page::view`.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, Select, SegmentedControl, Toggle } from "components.slint";
-import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsCallout } from "settings.slint";
+import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsCallout, RevealOnShow } from "settings.slint";
 
 export global VirtualCamera {
     // The camera can be added on this computer.
@@ -65,6 +65,7 @@ export component VirtualCameraSettings inherits Rectangle {
             }
             if VirtualCamera.confirming: SettingBlock {
                 divider: false;
+                RevealOnShow { }
                 SettingsCallout {
                     label: @tr("Add the virtual camera");
                     Text {

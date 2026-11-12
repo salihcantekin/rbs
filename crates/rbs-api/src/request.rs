@@ -106,6 +106,27 @@ pub struct SetCompanionAudio {
     pub enabled: bool,
 }
 
+/// `collection.set_glide` (protocol 1.35, ADR-0100): collection morph defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetCollectionGlide {
+    /// Milliseconds in `0..=5000`. `0` jumps.
+    pub duration_ms: u32,
+    /// Slide easing (`"linear"` or `"ease-in-out"`).
+    pub easing: crate::types::GlideEasing,
+}
+
+/// `source.set_glide` (protocol 1.35, ADR-0100): per-source slide override, or `null`
+/// to clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceGlide {
+    /// The source's id.
+    pub source: u32,
+    /// Override, or `null` to use the collection defaults.
+    pub glide: Option<crate::types::Glide>,
+}
+
 /// `source.delete`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRef {
@@ -537,23 +558,29 @@ pub struct ItemRef {
     pub item: u32,
 }
 
-/// Which way `item.move` moves a source among the sources that have a picture.
+/// Which way `item.move` or `scene.move` steps in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LayerDirection {
-    /// Over the next source with a picture.
+    /// Over the next source with a picture (or one place up in the scene list).
     Up,
-    /// Under the next source with a picture.
+    /// Under the next source with a picture (or one place down in the scene list).
     Down,
+    /// To the top of the picture layers (or the start of the scene list). Protocol 1.36.
+    Front,
+    /// To the bottom of the picture layers (or the end of the scene list). Protocol 1.36.
+    Back,
 }
 
-/// `item.move` (protocol 1.32): one step in the layer order.
+/// `item.move` (protocol 1.32; `front` / `back` since 1.36): layer order among sources
+/// with a picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoveItem {
     /// The item's id.
     pub item: u32,
-    /// Over or under the next source with a picture. Sound-only sources are skipped.
+    /// Over, under, to the front or to the back among sources with a picture.
+    /// Sound-only sources are skipped.
     pub direction: LayerDirection,
 }
 
@@ -576,6 +603,97 @@ pub struct SetSourceActive {
     pub source: u32,
     /// Open while a scene that places it is on air or in preview.
     pub active: bool,
+}
+
+/// How the Library groups a built-in look (protocol 1.34, ADR-0075).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LookGroup {
+    /// Colour grading.
+    Color,
+    /// Blur, sharpen, keying.
+    Effect,
+    /// The shape and border of the picture.
+    Shape,
+    /// A group this decoder does not know. A client treats it like any other group
+    /// it cannot name.
+    #[serde(other)]
+    Other,
+}
+
+/// One built-in look, as `look.list` returns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LookInfo {
+    /// Stable id, `builtin:<slug>`.
+    pub id: String,
+    /// Name for lists.
+    pub name: String,
+    /// Its group.
+    pub group: LookGroup,
+}
+
+/// `look.list`'s answer (protocol 1.34): the built-in looks, in Library order.
+/// There are no user-saved looks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LookList {
+    /// One row per built-in look.
+    pub looks: Vec<LookInfo>,
+}
+
+/// `look.apply` (protocol 1.34, ADR-0075): copy a built-in look onto a source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyLook {
+    /// The source's id.
+    pub source: u32,
+    /// The look's id (`look.list`).
+    pub look: String,
+}
+
+/// `source.add_sample` (protocol 1.34, ADR-0075): a built-in sample picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddSample {
+    /// The sample's id.
+    pub sample: String,
+}
+
+/// `item.set_box` (protocol 1.34): the picture's box on the canvas the studio shows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemBox {
+    /// The source's id. The box is the one on the scene being edited.
+    pub source: u32,
+    /// Top-left corner, in canvas pixels.
+    pub position: [f32; 2],
+    /// Width and height, in canvas pixels. Zero, or a value that is not finite, is
+    /// refused.
+    pub size: [f32; 2],
+    /// Boxes with the same number other than 0 that follow each other are one undo
+    /// step (one drag). 0, the default, is a step of its own.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
+    /// The caller's number for this request, echoed in the answer. 0 when the caller
+    /// does not track one.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub seq: u64,
+}
+
+/// `item.set_box`'s answer: the request's `seq`, and that the box is the source's now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoxPlaced {
+    /// The request's `seq`.
+    pub seq: u64,
+    /// The box was taken (changed, or it was already that box).
+    pub ok: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 /// `global.add` (protocol 1.10, ADR-0065).
@@ -830,6 +948,14 @@ pub enum Command {
     SceneMove(MoveScene),
     /// `source.set_active` (protocol 1.33).
     SourceSetActive(SetSourceActive),
+    /// `look.list` (protocol 1.34).
+    LookList,
+    /// `look.apply` (protocol 1.34).
+    LookApply(ApplyLook),
+    /// `source.add_sample` (protocol 1.34).
+    SourceAddSample(AddSample),
+    /// `item.set_box` (protocol 1.34).
+    ItemSetBox(SetItemBox),
     /// `global.list` (protocol 1.10).
     GlobalList,
     /// `global.add` (protocol 1.10).
@@ -894,6 +1020,10 @@ pub enum Command {
     CollectionList,
     /// `collection.switch` (protocol 1.4).
     CollectionSwitch(EntryRef),
+    /// `collection.set_glide` (protocol 1.35, ADR-0100).
+    CollectionSetGlide(SetCollectionGlide),
+    /// `source.set_glide` (protocol 1.35, ADR-0100).
+    SourceSetGlide(SetSourceGlide),
     /// `events.subscribe`: answered on the control thread with the `seq` of the topics'
     /// state keys, read after the subscriber mask was set. The target never sees it.
     EventsSubscribe(Subscribe),
@@ -956,6 +1086,10 @@ impl Command {
             Command::ItemMove(_) => "item.move",
             Command::SceneMove(_) => "scene.move",
             Command::SourceSetActive(_) => "source.set_active",
+            Command::LookList => "look.list",
+            Command::LookApply(_) => "look.apply",
+            Command::SourceAddSample(_) => "source.add_sample",
+            Command::ItemSetBox(_) => "item.set_box",
             Command::GlobalList => "global.list",
             Command::GlobalAdd(_) => "global.add",
             Command::GlobalRemove(_) => "global.remove",
@@ -990,6 +1124,8 @@ impl Command {
             Command::ProfileSwitch(_) => "profile.switch",
             Command::CollectionList => "collection.list",
             Command::CollectionSwitch(_) => "collection.switch",
+            Command::CollectionSetGlide(_) => "collection.set_glide",
+            Command::SourceSetGlide(_) => "source.set_glide",
             Command::EventsSubscribe(_) => "events.subscribe",
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
@@ -1095,6 +1231,10 @@ pub const METHODS: &[MethodInfo] = &[
     m("item.move", Some(Scope::Control)),
     m("scene.move", Some(Scope::Control)),
     m("source.set_active", Some(Scope::Control)),
+    m("look.list", Some(Scope::Read)),
+    m("look.apply", Some(Scope::Control)),
+    m("source.add_sample", Some(Scope::Control)),
+    m("item.set_box", Some(Scope::Control)),
     m("global.list", Some(Scope::Read)),
     m("global.add", Some(Scope::Control)),
     m("global.remove", Some(Scope::Control)),
@@ -1127,6 +1267,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("profile.switch", Some(Scope::Admin)),
     m("collection.list", Some(Scope::Read)),
     m("collection.switch", Some(Scope::Control)),
+    m("collection.set_glide", Some(Scope::Control)),
+    m("source.set_glide", Some(Scope::Control)),
     m("events.subscribe", Some(Scope::Read)),
     m("events.unsubscribe", Some(Scope::Read)),
     m("tokens.list", Some(Scope::Tokens)),
@@ -1183,6 +1325,8 @@ pub const UI_METHODS: &[&str] = &[
     "ui.toolbar.reset",
     "ui.theme.reload",
     "ui.settings.open",
+    "ui.source.settings",
+    "ui.properties.show",
     "ui.app_menu.open",
     "ui.command.list",
     "ui.command.run",
@@ -1315,6 +1459,14 @@ enum WireRequest {
     SceneMove(MoveScene),
     #[serde(rename = "source.set_active")]
     SourceSetActive(SetSourceActive),
+    #[serde(rename = "look.list")]
+    LookList(Empty),
+    #[serde(rename = "look.apply")]
+    LookApply(ApplyLook),
+    #[serde(rename = "source.add_sample")]
+    SourceAddSample(AddSample),
+    #[serde(rename = "item.set_box")]
+    ItemSetBox(SetItemBox),
     #[serde(rename = "global.list")]
     GlobalList(Empty),
     #[serde(rename = "global.add")]
@@ -1379,6 +1531,10 @@ enum WireRequest {
     CollectionList(Empty),
     #[serde(rename = "collection.switch")]
     CollectionSwitch(EntryRef),
+    #[serde(rename = "collection.set_glide")]
+    CollectionSetGlide(SetCollectionGlide),
+    #[serde(rename = "source.set_glide")]
+    SourceSetGlide(SetSourceGlide),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(Subscribe),
     #[serde(rename = "events.unsubscribe")]
@@ -1450,6 +1606,10 @@ impl From<WireRequest> for Request {
             WireRequest::ItemMove(p) => Request::Command(C::ItemMove(p)),
             WireRequest::SceneMove(p) => Request::Command(C::SceneMove(p)),
             WireRequest::SourceSetActive(p) => Request::Command(C::SourceSetActive(p)),
+            WireRequest::LookList(_) => Request::Command(C::LookList),
+            WireRequest::LookApply(p) => Request::Command(C::LookApply(p)),
+            WireRequest::SourceAddSample(p) => Request::Command(C::SourceAddSample(p)),
+            WireRequest::ItemSetBox(p) => Request::Command(C::ItemSetBox(p)),
             WireRequest::GlobalList(_) => Request::Command(C::GlobalList),
             WireRequest::GlobalAdd(p) => Request::Command(C::GlobalAdd(p)),
             WireRequest::GlobalRemove(p) => Request::Command(C::GlobalRemove(p)),
@@ -1484,6 +1644,8 @@ impl From<WireRequest> for Request {
             WireRequest::ProfileSwitch(p) => Request::Command(C::ProfileSwitch(p)),
             WireRequest::CollectionList(_) => Request::Command(C::CollectionList),
             WireRequest::CollectionSwitch(p) => Request::Command(C::CollectionSwitch(p)),
+            WireRequest::CollectionSetGlide(p) => Request::Command(C::CollectionSetGlide(p)),
+            WireRequest::SourceSetGlide(p) => Request::Command(C::SourceSetGlide(p)),
             WireRequest::EventsSubscribe(p) => Request::Command(C::EventsSubscribe(p)),
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
@@ -1548,6 +1710,10 @@ impl From<Request> for WireRequest {
                 C::ItemMove(p) => WireRequest::ItemMove(p),
                 C::SceneMove(p) => WireRequest::SceneMove(p),
                 C::SourceSetActive(p) => WireRequest::SourceSetActive(p),
+                C::LookList => WireRequest::LookList(Empty {}),
+                C::LookApply(p) => WireRequest::LookApply(p),
+                C::SourceAddSample(p) => WireRequest::SourceAddSample(p),
+                C::ItemSetBox(p) => WireRequest::ItemSetBox(p),
                 C::GlobalList => WireRequest::GlobalList(Empty {}),
                 C::GlobalAdd(p) => WireRequest::GlobalAdd(p),
                 C::GlobalRemove(p) => WireRequest::GlobalRemove(p),
@@ -1582,6 +1748,8 @@ impl From<Request> for WireRequest {
                 C::ProfileSwitch(p) => WireRequest::ProfileSwitch(p),
                 C::CollectionList => WireRequest::CollectionList(Empty {}),
                 C::CollectionSwitch(p) => WireRequest::CollectionSwitch(p),
+                C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
+                C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
                 C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
@@ -1799,6 +1967,10 @@ pub enum Response {
     GlobalSources(GlobalSourceList),
     /// `source.get_settings` (protocol 1.17).
     SourceSettings(SourceSettingsInfo),
+    /// `look.list` (protocol 1.34).
+    Looks(LookList),
+    /// `item.set_box` (protocol 1.34).
+    BoxPlaced(BoxPlaced),
     /// `item.remove`, `global.remove` (protocol 1.10).
     ItemRemoved(ItemRemoved),
     /// `output.profiles`.

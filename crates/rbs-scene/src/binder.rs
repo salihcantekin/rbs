@@ -887,16 +887,17 @@ impl State {
                     });
                 }
             }
-            // Producers come from visibility, not from the drawn layers, so a source
-            // faded to opacity 0 stays linked and scheduled.
+            // Producers keep wanted sources on this canvas scheduled (linked), including
+            // hidden and off-scene ones, so devices stay open. Drawn layers still come
+            // only from flatten; a faded (opacity 0) source is wanted and linked too.
             let mut producers: Vec<BoundNode> = Vec::new();
-            let visible = collection
-                .visible_sources(canvas, scene)
-                .map_err(BindError::Scene)?;
-            let ordered = layers
-                .iter()
-                .map(|l| l.source)
-                .chain(visible.iter().copied());
+            let warm = match role {
+                Role::Program => collection.warm_sources(canvas),
+                Role::Preview => collection
+                    .visible_sources(canvas, scene)
+                    .map_err(BindError::Scene)?,
+            };
+            let ordered = layers.iter().map(|l| l.source).chain(warm.iter().copied());
             for source in ordered {
                 if let Some(bound) = self
                     .sources

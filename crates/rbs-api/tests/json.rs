@@ -33,6 +33,7 @@ fn canvas() -> Canvas {
 fn encoding() -> Encoding {
     Encoding {
         encoder: None,
+        video_codec: VideoCodec::H264,
         rate_control: RateMode::Cbr,
         video_kbps: 6_000,
         max_video_kbps: None,
@@ -43,6 +44,8 @@ fn encoding() -> Encoding {
         b_frames: 0,
         cbr_padding: true,
         audio_kbps: 160,
+        delivery: Delivery::Video,
+        open_shadows: false,
     }
 }
 
@@ -64,6 +67,7 @@ fn profile() -> RecordingProfile {
         folder: "/home/user/Videos".into(),
         container: Container::Mkv,
         encoder: Some("nvenc".into()),
+        video_codec: VideoCodec::H264,
         rate_control: RateMode::Vbr,
         video_kbps: 12_000,
         max_video_kbps: Some(18_000),
@@ -74,6 +78,8 @@ fn profile() -> RecordingProfile {
         b_frames: 2,
         cbr_padding: false,
         audio_kbps: 160,
+        delivery: Delivery::Video,
+        open_shadows: false,
     }
 }
 
@@ -114,6 +120,7 @@ fn source() -> SourceInfo {
             .collect(),
         }],
         sync_offset_ms: -40,
+        glide: None,
     }
 }
 
@@ -135,11 +142,13 @@ fn scenes() -> SceneList {
             volume: 0.5,
             muted: true,
         },
+        glide: Glide::default(),
         sources: vec![SourceEntry {
             id: 3,
             name: "Camera".into(),
             kind: Some(SourceKind::Camera),
             global: true,
+            glide: None,
         }],
     }
 }
@@ -273,6 +282,21 @@ fn every_request() -> Vec<Request> {
             source: 3,
             active: false,
         })),
+        c(Command::LookList),
+        c(Command::LookApply(ApplyLook {
+            source: 3,
+            look: "builtin:warm".into(),
+        })),
+        c(Command::SourceAddSample(AddSample {
+            sample: "aurora".into(),
+        })),
+        c(Command::ItemSetBox(SetItemBox {
+            source: 3,
+            position: [10.0, 20.0],
+            size: [640.0, 360.0],
+            gesture: 5,
+            seq: 2,
+        })),
         c(Command::GlobalList),
         c(Command::GlobalAdd(AddGlobal { source: 3 })),
         c(Command::GlobalRemove(RemoveGlobal {
@@ -339,6 +363,17 @@ fn every_request() -> Vec<Request> {
         c(Command::CollectionList),
         c(Command::CollectionSwitch(EntryRef {
             id: "talk-show".into(),
+        })),
+        c(Command::CollectionSetGlide(SetCollectionGlide {
+            duration_ms: 400,
+            easing: GlideEasing::EaseInOut,
+        })),
+        c(Command::SourceSetGlide(SetSourceGlide {
+            source: 3,
+            glide: Some(Glide {
+                duration_ms: 200,
+                easing: GlideEasing::Linear,
+            }),
         })),
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
@@ -526,6 +561,22 @@ fn every_result_and_event_type_round_trips() {
         ],
     });
     round_trip(&FilterAdded { filter: 4 });
+    round_trip(&LookList {
+        looks: vec![LookInfo {
+            id: "builtin:warm".into(),
+            name: "Warm".into(),
+            group: LookGroup::Color,
+        }],
+    });
+    round_trip(&BoxPlaced { seq: 2, ok: true });
+    assert_eq!(
+        serde_json::to_value(SourceKind::Image).unwrap(),
+        json!("image")
+    );
+    assert_eq!(
+        serde_json::to_value(SourceKind::Color).unwrap(),
+        json!("color")
+    );
     round_trip(&HelloResult {
         protocol: "1.0".into(),
         instance: "ab".into(),
@@ -1202,6 +1253,7 @@ fn global_sources_and_item_remove_have_a_stable_wire_form() {
         name: "Mic".into(),
         kind: Some(SourceKind::AudioInput),
         global: false,
+        glide: None,
     };
     assert_eq!(
         serde_json::to_value(&entry).unwrap(),
@@ -1213,6 +1265,115 @@ fn global_sources_and_item_remove_have_a_stable_wire_form() {
     round_trip(&GlobalSourceList {
         sources: vec![source()],
     });
+}
+
+#[test]
+fn looks_samples_and_boxes_decode_as_protocol_1_34() {
+    let list: Request =
+        serde_json::from_value(json!({"method": "look.list", "params": {}})).unwrap();
+    assert_eq!(list, Request::Command(Command::LookList));
+    assert_eq!(list.scope(), Some(Scope::Read));
+    let apply: Request = serde_json::from_value(json!({
+        "method": "look.apply",
+        "params": {"source": 4, "look": "builtin:circle"}
+    }))
+    .unwrap();
+    assert_eq!(apply.scope(), Some(Scope::Control));
+    assert!(
+        serde_json::from_value::<ApplyLook>(json!({"source": 1, "look": "x", "extra": 1})).is_err()
+    );
+    let sample: Request = serde_json::from_value(json!({
+        "method": "source.add_sample",
+        "params": {"sample": "aurora"}
+    }))
+    .unwrap();
+    assert_eq!(
+        sample,
+        Request::Command(Command::SourceAddSample(AddSample {
+            sample: "aurora".into()
+        }))
+    );
+    // gesture and seq default to 0, each call its own undo step.
+    let bare: SetItemBox = serde_json::from_value(json!({
+        "source": 3,
+        "position": [0.0, 0.0],
+        "size": [100.0, 50.0]
+    }))
+    .unwrap();
+    assert_eq!(bare.gesture, 0);
+    assert_eq!(bare.seq, 0);
+    assert_eq!(
+        serde_json::to_value(bare).unwrap(),
+        json!({"source": 3, "position": [0.0, 0.0], "size": [100.0, 50.0]})
+    );
+    let placed: BoxPlaced = serde_json::from_value(json!({"seq": 0, "ok": true})).unwrap();
+    assert!(placed.ok);
+    let unknown: LookInfo = serde_json::from_value(json!({
+        "id": "builtin:later",
+        "name": "Later",
+        "group": "grade"
+    }))
+    .unwrap();
+    assert_eq!(unknown.group, LookGroup::Other);
+}
+
+#[test]
+fn glide_commands_decode_as_protocol_1_35() {
+    let set: Request = serde_json::from_value(json!({
+        "method": "collection.set_glide",
+        "params": {"duration_ms": 250, "easing": "linear"}
+    }))
+    .unwrap();
+    assert_eq!(
+        set,
+        Request::Command(Command::CollectionSetGlide(SetCollectionGlide {
+            duration_ms: 250,
+            easing: GlideEasing::Linear,
+        }))
+    );
+    assert_eq!(set.scope(), Some(Scope::Control));
+    let clear: Request = serde_json::from_value(json!({
+        "method": "source.set_glide",
+        "params": {"source": 3, "glide": null}
+    }))
+    .unwrap();
+    assert_eq!(
+        clear,
+        Request::Command(Command::SourceSetGlide(SetSourceGlide {
+            source: 3,
+            glide: None,
+        }))
+    );
+    let override_: Request = serde_json::from_value(json!({
+        "method": "source.set_glide",
+        "params": {"source": 3, "glide": {"duration_ms": 100, "easing": "ease-in-out"}}
+    }))
+    .unwrap();
+    assert_eq!(
+        override_,
+        Request::Command(Command::SourceSetGlide(SetSourceGlide {
+            source: 3,
+            glide: Some(Glide {
+                duration_ms: 100,
+                easing: GlideEasing::EaseInOut,
+            }),
+        }))
+    );
+    // Default collection glide is left out of scene.list.
+    let mut list = scenes();
+    list.master = Master::default();
+    list.glide = Glide::default();
+    let json = serde_json::to_string(&list).unwrap();
+    assert!(!json.contains("glide"), "{json}");
+    let with = Glide {
+        duration_ms: 0,
+        easing: GlideEasing::Linear,
+    };
+    list.glide = with;
+    assert_eq!(
+        serde_json::to_value(&list).unwrap()["glide"],
+        json!({"duration_ms": 0, "easing": "linear"})
+    );
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rbs_codec::{EncoderPreset, KeyframeInterval, RateControl};
-use rbs_core::media::ContainerId;
+use rbs_core::media::{CodecId, ColorSpace, ContainerId};
 use rbs_record::VideoSettings;
 use serde::{Deserialize, Serialize};
 
@@ -150,6 +150,82 @@ impl Format {
     }
 }
 
+/// The video codec a recording asks for. H.264 is the default and is omitted from
+/// saved files. HEVC is offered only where an encoder lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    /// H.264.
+    #[default]
+    H264,
+    /// HEVC (H.265), 8-bit.
+    Hevc,
+}
+
+impl VideoCodec {
+    /// Both, in the order the UI lists them.
+    pub const ALL: [VideoCodec; 2] = [VideoCodec::H264, VideoCodec::Hevc];
+
+    /// True for [`VideoCodec::H264`], so a saved file can omit the field.
+    pub fn is_h264(self) -> bool {
+        self == Self::H264
+    }
+
+    /// The name in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "H.264",
+            VideoCodec::Hevc => "HEVC",
+        }
+    }
+
+    /// The codec id the encoder and the muxer take.
+    pub fn id(self) -> CodecId {
+        match self {
+            VideoCodec::H264 => CodecId::H264,
+            VideoCodec::Hevc => CodecId::Hevc,
+        }
+    }
+}
+
+/// How an output encodes colour. Absent in a saved profile means [`Delivery::Video`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delivery {
+    /// Rec. 709 camera encoding, limited range. YouTube, TV and streams.
+    #[default]
+    Video,
+    /// sRGB transfer, full range. Matches a desktop display.
+    Screen,
+}
+
+impl Delivery {
+    /// True for [`Delivery::Video`], so a saved profile can omit the field.
+    pub fn is_video(self) -> bool {
+        self == Self::Video
+    }
+
+    /// The colour description the export and the encoder signal.
+    pub fn color_space(self) -> ColorSpace {
+        match self {
+            Self::Video => ColorSpace::BT709_LIMITED,
+            Self::Screen => ColorSpace::SRGB_VIDEO,
+        }
+    }
+}
+
+fn is_video(delivery: &Delivery) -> bool {
+    delivery.is_video()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_h264(codec: &VideoCodec) -> bool {
+    codec.is_h264()
+}
+
 /// The encoder settings of one output, a recording or a stream: the encoder and every
 /// setting that changes the output's quality. `stream.toml` keeps them as its
 /// `[encoding]` table; `recording.toml` keeps the same fields at its top level.
@@ -159,6 +235,9 @@ pub struct Encoding {
     /// The video encoder's adapter id, or `None` for the best one this system has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
+    /// H.264, or HEVC where an encoder lists it. Omitted when H.264.
+    #[serde(default, skip_serializing_if = "is_h264")]
+    pub video_codec: VideoCodec,
     /// How the encoder spends bits.
     #[serde(default)]
     pub rate_control: RateMode,
@@ -187,6 +266,13 @@ pub struct Encoding {
     pub cbr_padding: bool,
     /// Audio bitrate in kbit/s, one of [`AUDIO_KBPS`].
     pub audio_kbps: u32,
+    /// Colour encoding. Omitted when [`Delivery::Video`].
+    #[serde(default, skip_serializing_if = "is_video")]
+    pub delivery: Delivery,
+    /// Lifts only the darkest tones on a Video encode. Omitted when off. Has no
+    /// effect while [`Delivery::Screen`] is selected; the choice is kept.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_shadows: bool,
 }
 
 impl Encoding {
@@ -195,6 +281,7 @@ impl Encoding {
     pub fn new(video_kbps: u32) -> Self {
         Self {
             encoder: None,
+            video_codec: VideoCodec::H264,
             rate_control: RateMode::Cbr,
             video_kbps,
             max_video_kbps: None,
@@ -205,6 +292,8 @@ impl Encoding {
             b_frames: 0,
             cbr_padding: false,
             audio_kbps: 160,
+            delivery: Delivery::Video,
+            open_shadows: false,
         }
     }
 
@@ -218,6 +307,7 @@ impl Encoding {
     /// stays saved while another mode is picked and does nothing there.
     pub fn video_settings(&self) -> VideoSettings {
         let mut v = VideoSettings::default();
+        v.codec = self.video_codec.id();
         let bps = |kbps: u32| u64::from(kbps) * 1000;
         v.rate_control = match self.rate_control {
             RateMode::Cbr if self.cbr_padding => RateControl::CbrPadded {
@@ -239,6 +329,8 @@ impl Encoding {
         v.max_b_frames = self.b_frames;
         v.profile = self.profile.clone();
         v.preset = self.preset.encoder();
+        v.color = self.delivery.color_space();
+        v.open_shadows = self.delivery.is_video() && self.open_shadows;
         v
     }
 
@@ -320,6 +412,9 @@ pub struct RecordProfile {
     /// The video encoder's adapter id, or `None` for the best one this system has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
+    /// H.264, or HEVC where an encoder lists it. Omitted when H.264.
+    #[serde(default, skip_serializing_if = "is_h264")]
+    pub video_codec: VideoCodec,
     /// How the encoder spends bits. Fields below that a file from an earlier version
     /// lacks take their defaults.
     #[serde(default)]
@@ -349,6 +444,12 @@ pub struct RecordProfile {
     pub cbr_padding: bool,
     /// Audio bitrate in kbit/s, one of [`AUDIO_KBPS`].
     pub audio_kbps: u32,
+    /// Colour encoding. Omitted when [`Delivery::Video`].
+    #[serde(default, skip_serializing_if = "is_video")]
+    pub delivery: Delivery,
+    /// Lifts only the darkest tones on a Video encode. Omitted when off.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_shadows: bool,
 }
 
 impl RecordProfile {
@@ -361,6 +462,7 @@ impl RecordProfile {
             folder: default_folder(),
             format: Format::Mkv,
             encoder: None,
+            video_codec: VideoCodec::H264,
             rate_control: RateMode::Cbr,
             video_kbps: 0,
             max_video_kbps: None,
@@ -371,6 +473,8 @@ impl RecordProfile {
             b_frames: 0,
             cbr_padding: false,
             audio_kbps: 0,
+            delivery: Delivery::Video,
+            open_shadows: false,
         };
         p.set_encoding(Encoding::new(12_000));
         p
@@ -380,6 +484,7 @@ impl RecordProfile {
     pub fn encoding(&self) -> Encoding {
         Encoding {
             encoder: self.encoder.clone(),
+            video_codec: self.video_codec,
             rate_control: self.rate_control,
             video_kbps: self.video_kbps,
             max_video_kbps: self.max_video_kbps,
@@ -390,6 +495,8 @@ impl RecordProfile {
             b_frames: self.b_frames,
             cbr_padding: self.cbr_padding,
             audio_kbps: self.audio_kbps,
+            delivery: self.delivery,
+            open_shadows: self.open_shadows,
         }
     }
 
@@ -397,6 +504,7 @@ impl RecordProfile {
     pub fn set_encoding(&mut self, e: Encoding) {
         let Encoding {
             encoder,
+            video_codec,
             rate_control,
             video_kbps,
             max_video_kbps,
@@ -407,8 +515,11 @@ impl RecordProfile {
             b_frames,
             cbr_padding,
             audio_kbps,
+            delivery,
+            open_shadows,
         } = e;
         self.encoder = encoder;
+        self.video_codec = video_codec;
         self.rate_control = rate_control;
         self.video_kbps = video_kbps;
         self.max_video_kbps = max_video_kbps;
@@ -419,6 +530,8 @@ impl RecordProfile {
         self.b_frames = b_frames;
         self.cbr_padding = cbr_padding;
         self.audio_kbps = audio_kbps;
+        self.delivery = delivery;
+        self.open_shadows = open_shadows;
     }
 
     /// The VBR peak in kbit/s: the saved one, or 1.5 times the target.
@@ -482,6 +595,10 @@ impl RecordProfile {
                 Format::Mp4 => api::Container::Mp4,
             },
             encoder: self.encoder.clone(),
+            video_codec: match self.video_codec {
+                VideoCodec::H264 => api::VideoCodec::H264,
+                VideoCodec::Hevc => api::VideoCodec::Hevc,
+            },
             rate_control: match self.rate_control {
                 RateMode::Cbr => api::RateMode::Cbr,
                 RateMode::Vbr => api::RateMode::Vbr,
@@ -500,6 +617,11 @@ impl RecordProfile {
             b_frames: self.b_frames,
             cbr_padding: self.cbr_padding,
             audio_kbps: self.audio_kbps,
+            delivery: match self.delivery {
+                Delivery::Video => api::Delivery::Video,
+                Delivery::Screen => api::Delivery::Screen,
+            },
+            open_shadows: self.open_shadows,
         }
     }
 
@@ -529,6 +651,10 @@ impl RecordProfile {
                 api::Container::Mp4 => Format::Mp4,
             },
             encoder: p.encoder.clone(),
+            video_codec: match p.video_codec {
+                api::VideoCodec::H264 => VideoCodec::H264,
+                api::VideoCodec::Hevc => VideoCodec::Hevc,
+            },
             rate_control: match p.rate_control {
                 api::RateMode::Cbr => RateMode::Cbr,
                 api::RateMode::Vbr => RateMode::Vbr,
@@ -547,6 +673,11 @@ impl RecordProfile {
             b_frames: p.b_frames,
             cbr_padding: p.cbr_padding,
             audio_kbps: p.audio_kbps,
+            delivery: match p.delivery {
+                api::Delivery::Video => Delivery::Video,
+                api::Delivery::Screen => Delivery::Screen,
+            },
+            open_shadows: p.open_shadows,
         }
     }
 }
@@ -563,6 +694,10 @@ impl Encoding {
         use rbs_api::types as api;
         api::Encoding {
             encoder: self.encoder.clone(),
+            video_codec: match self.video_codec {
+                VideoCodec::H264 => api::VideoCodec::H264,
+                VideoCodec::Hevc => api::VideoCodec::Hevc,
+            },
             rate_control: match self.rate_control {
                 RateMode::Cbr => api::RateMode::Cbr,
                 RateMode::Vbr => api::RateMode::Vbr,
@@ -581,6 +716,11 @@ impl Encoding {
             b_frames: self.b_frames,
             cbr_padding: self.cbr_padding,
             audio_kbps: self.audio_kbps,
+            delivery: match self.delivery {
+                Delivery::Video => api::Delivery::Video,
+                Delivery::Screen => api::Delivery::Screen,
+            },
+            open_shadows: self.open_shadows,
         }
     }
 
@@ -590,6 +730,10 @@ impl Encoding {
         use rbs_api::types as api;
         Self {
             encoder: e.encoder.clone(),
+            video_codec: match e.video_codec {
+                api::VideoCodec::H264 => VideoCodec::H264,
+                api::VideoCodec::Hevc => VideoCodec::Hevc,
+            },
             rate_control: match e.rate_control {
                 api::RateMode::Cbr => RateMode::Cbr,
                 api::RateMode::Vbr => RateMode::Vbr,
@@ -608,6 +752,11 @@ impl Encoding {
             b_frames: e.b_frames,
             cbr_padding: e.cbr_padding,
             audio_kbps: e.audio_kbps,
+            delivery: match e.delivery {
+                api::Delivery::Video => Delivery::Video,
+                api::Delivery::Screen => Delivery::Screen,
+            },
+            open_shadows: e.open_shadows,
         }
     }
 }
@@ -678,6 +827,7 @@ pub fn save(config: &Path, profile: &RecordProfile) -> std::io::Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+    use rbs_core::media::ColorSpace;
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rbs-app-{name}-{}", std::process::id()));
@@ -776,6 +926,65 @@ mod tests {
         want.video_kbps = 8_000;
         want.audio_kbps = 128;
         assert_eq!(p, want);
+        assert_eq!(p.delivery, Delivery::Video);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn screen_delivery_is_saved_and_video_is_omitted() {
+        let d = dir("delivery");
+        let mut p = RecordProfile::new();
+        p.folder = d.join("rec");
+        p.delivery = Delivery::Screen;
+        save(&d, &p).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(text.contains("delivery = \"screen\""));
+        assert_eq!(load(&d).0.delivery, Delivery::Screen);
+        assert_eq!(p.video_settings().color, Delivery::Screen.color_space());
+        p.delivery = Delivery::Video;
+        save(&d, &p).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(
+            !text.contains("delivery ="),
+            "Video is the default and is left out of the file: {text}"
+        );
+        assert_eq!(load(&d).0.delivery, Delivery::Video);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn open_shadows_is_saved_when_on_and_applies_only_to_video() {
+        let d = dir("open-shadows");
+        let mut p = RecordProfile::new();
+        p.folder = d.join("rec");
+        assert!(!p.video_settings().open_shadows);
+        p.open_shadows = true;
+        save(&d, &p).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(text.contains("open_shadows = true"));
+        assert!(load(&d).0.open_shadows);
+        let v = p.video_settings();
+        assert!(v.open_shadows);
+        assert_eq!(v.color, ColorSpace::BT709_LIMITED);
+        p.delivery = Delivery::Screen;
+        assert!(
+            !p.video_settings().open_shadows,
+            "Screen already matches the display, so the grade stays off"
+        );
+        save(&d, &p).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(
+            text.contains("open_shadows = true"),
+            "the switch is kept while Screen is selected: {text}"
+        );
+        p.open_shadows = false;
+        p.delivery = Delivery::Video;
+        save(&d, &p).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(
+            !text.contains("open_shadows"),
+            "off is the default and is left out of the file: {text}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -795,6 +1004,9 @@ mod tests {
         );
         assert_eq!(v.preset, EncoderPreset::Balanced);
         assert_eq!((v.max_b_frames, v.profile.as_deref()), (0, None));
+        assert_eq!(v.color, ColorSpace::BT709_LIMITED);
+        assert!(!v.open_shadows);
+        assert_eq!(p.delivery, Delivery::Video);
 
         p.cbr_padding = true;
         p.keyframe_seconds = 5;
@@ -840,6 +1052,8 @@ mod tests {
             p.video_settings().rate_control,
             RateControl::ConstantQuality { level: 18 }
         );
+        p.video_codec = VideoCodec::Hevc;
+        assert_eq!(p.video_settings().codec, CodecId::Hevc);
     }
 
     #[test]

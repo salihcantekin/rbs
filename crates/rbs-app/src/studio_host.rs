@@ -20,9 +20,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_api::request::{
-    AlignAxis, Axis, Empty, FitKind, GlobalSourceList, ItemAdded, ItemRemoved, ProfileList,
-    RecordStarted, SceneAdded, SceneSourceList, SourceAdded, SourceSettingsInfo, StreamStarted,
-    TargetList,
+    AlignAxis, Axis, BoxPlaced, Empty, FitKind, GlobalSourceList, ItemAdded, ItemRemoved, LookInfo,
+    LookList, ProfileList, RecordStarted, SceneAdded, SceneSourceList, SourceAdded,
+    SourceSettingsInfo, StreamStarted, TargetList,
 };
 use rbs_api::types as api;
 use rbs_api::{
@@ -40,7 +40,7 @@ use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::FrameRate;
 use rbs_engine::Engine;
 use rbs_gpu::GpuContext;
-use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
+use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_needed};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, ExtraCanvas, Link, OutputId, OutputSettings, Progress, RecordAdapters,
@@ -310,6 +310,8 @@ pub struct SourceRow {
     /// The target id stored in its settings (`target`), empty when it has none: the
     /// Source tab marks it in the list (ADR-0077).
     pub target: String,
+    /// Per-source slide override (ADR-0100); `None` uses the collection defaults.
+    pub glide: Option<rbs_scene::SourceGlide>,
 }
 
 impl PartialEq for SourceRow {
@@ -331,6 +333,7 @@ impl PartialEq for SourceRow {
             && self.also_in == other.also_in
             && self.in_globals == other.in_globals
             && self.target == other.target
+            && self.glide == other.glide
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -476,20 +479,20 @@ pub enum Command {
     Undo,
     /// Redo the edit undone last.
     Redo,
-    /// Move a source one layer up (`up`, towards the top of the list, drawn over the
-    /// one above) or down in the program scene. Nothing happens at the end of the list.
+    /// Move a source among the sources with a picture in the program scene
+    /// (`up` / `down` one step, `front` / `back` to an end). Nothing happens at that end.
     MoveSource {
         /// The source.
         id: SourceId,
-        /// Up, else down.
-        up: bool,
+        /// Which way (ADR-0084 Arrange).
+        direction: rbs_api::request::LayerDirection,
     },
-    /// Move a scene one place up or down in the canvas's scene list.
+    /// Move a scene one place or to an end in the canvas's scene list.
     MoveScene {
         /// The scene.
         id: SceneId,
-        /// Toward the top of the list, else toward the bottom.
-        up: bool,
+        /// Which way.
+        direction: rbs_api::request::LayerDirection,
     },
     /// Move a scene to where scene `to` is in the scene list (a row dragged onto
     /// another); one undo step.
@@ -686,12 +689,33 @@ pub enum Command {
         /// The new name.
         name: String,
     },
+    /// Collection glide defaults (ADR-0100). One undo step.
+    SetGlide {
+        /// Duration in milliseconds (`0..=5000`).
+        duration_ms: u32,
+        /// `0` linear, `1` ease-in-out.
+        easing: u8,
+    },
+    /// Per-source slide override (ADR-0100). `custom` false clears it. One undo step.
+    SetSourceGlide {
+        /// The source.
+        id: SourceId,
+        /// When false, clear the override.
+        custom: bool,
+        /// Duration in milliseconds when `custom`.
+        duration_ms: u32,
+        /// `0` linear, `1` ease-in-out when `custom`.
+        easing: u8,
+    },
     /// Place a source the collection already has into the program scene, on top (one
     /// undo step); it runs as one instance in every scene that places it.
     AddExistingSource(SourceId),
     /// Add an empty scene the canvas may show (one undo step); `None` names it
     /// "Scene", "Scene 2", ... It does not go on air.
     AddScene(Option<String>),
+    /// Copy a scene with the same sources and layouts (one undo step). It does not go
+    /// on air.
+    DuplicateScene(SceneId),
     /// Remove a scene (one undo step). Refused for the last scene the canvas may show;
     /// the scene on air is first switched away from (not undone with the removal).
     RemoveScene(SceneId),
@@ -938,6 +962,8 @@ pub struct EncoderOptions {
     pub b_frames_max: u32,
     /// `cbr_padded` is listed: CBR can be padded with filler data.
     pub cbr_padding: bool,
+    /// `codec.video.encode` values (`h264`, `hevc`). Empty when the probe said nothing.
+    pub codecs: Vec<String>,
 }
 
 impl EncoderOptions {
@@ -960,6 +986,7 @@ impl EncoderOptions {
             cbr_padding: set(&codec_caps::VIDEO_RATE_CONTROL)
                 .iter()
                 .any(|r| r == "cbr_padded"),
+            codecs: set(&codec_caps::VIDEO_ENCODE),
         }
     }
 
@@ -979,6 +1006,11 @@ impl EncoderOptions {
             }
             u.b_frames_max = u.b_frames_max.max(o.b_frames_max);
             u.cbr_padding |= o.cbr_padding;
+            for c in &o.codecs {
+                if !u.codecs.contains(c) {
+                    u.codecs.push(c.clone());
+                }
+            }
         }
         u
     }
@@ -1204,6 +1236,8 @@ pub struct SourceEntry {
     pub kind: Option<SourceKind>,
     /// A global source of the studio's canvas (ADR-0065).
     pub global: bool,
+    /// Per-source slide override (ADR-0100).
+    pub glide: Option<rbs_scene::SourceGlide>,
 }
 
 /// The scenes and sources of the collection, as the Scenes panel and the source
@@ -1218,6 +1252,8 @@ pub struct SceneList {
     pub preview: Option<SceneId>,
     /// The canvas's master volume and mute (ADR-0081).
     pub master: MasterAudio,
+    /// Collection morph defaults (ADR-0100).
+    pub glide: rbs_scene::CollectionGlide,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -1592,7 +1628,9 @@ pub struct HostConfig {
     pub size: Size,
     /// Canvas rate.
     pub fps: FrameRate,
-    /// The preview's size and ring, or `None` for no preview.
+    /// The preview's size, or `None` for no preview. The studio sets the ring
+    /// (`surfaces`) from the canvas frame rate when it starts and whenever the
+    /// canvas changes (ADR-0034, ADR-0036); a count stored here is replaced.
     pub preview: Option<PreviewDesc>,
     /// Where the stream key is kept: read when a stream starts, written when it is
     /// saved, on the control thread only. Memory by default.
@@ -1635,8 +1673,7 @@ impl HostConfig {
     /// A canvas of `size` at `fps`, with a preview of its aspect ratio where the
     /// platform has one (macOS, Windows).
     pub fn canvas(size: Size, fps: FrameRate) -> Self {
-        let preview =
-            cfg!(any(target_os = "macos", windows)).then(|| preview_desc(size, PREVIEW_SURFACES));
+        let preview = cfg!(any(target_os = "macos", windows)).then(|| preview_desc(size, fps));
         Self {
             size,
             fps,
@@ -1684,17 +1721,42 @@ macro_rules! inject {
     };
 }
 
-/// Surfaces in the preview's ring.
-const PREVIEW_SURFACES: usize = 3;
+// How long the platform's preview layer holds a replaced frame: the `hold`
+// `PreviewLayer::surfaces_needed` uses at its default retire setting. The layer is
+// created later, in the UI, so the studio applies that default here.
+#[cfg(windows)]
+fn preview_hold(frame_interval: Duration) -> Duration {
+    frame_interval.saturating_add(rbs_gpu::share::DEFAULT_RETIRE_POLL)
+}
 
-/// The preview's surfaces for a canvas of `size`: its aspect ratio, the longer side
-/// 1280 pixels (or the canvas's, if smaller), even sides.
-fn preview_desc(size: Size, surfaces: usize) -> PreviewDesc {
+#[cfg(target_os = "macos")]
+fn preview_hold(_frame_interval: Duration) -> Duration {
+    rbs_gpu::share::DEFAULT_RETIRE_AFTER
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn preview_hold(_frame_interval: Duration) -> Duration {
+    // No layer on this platform (the host publishes no preview). The macOS default,
+    // so the ring arithmetic still has one answer in tests.
+    Duration::from_millis(34)
+}
+
+/// Surfaces in the preview ring for a canvas at `fps`, capped at
+/// [`MAX_PREVIEW_SURFACES`]. Same count as `PreviewLayer::surfaces_needed` with the
+/// platform's default hold ([`ring_needed`], ADR-0034, ADR-0036).
+fn preview_surfaces(fps: FrameRate) -> usize {
+    let interval = fps.frame_duration();
+    ring_needed(interval, preview_hold(interval)).min(MAX_PREVIEW_SURFACES)
+}
+
+/// The preview for a canvas of `size` at `fps`: its aspect ratio, the longer side
+/// 1280 pixels (or the canvas's, if smaller), even sides, and [`preview_surfaces`].
+fn preview_desc(size: Size, fps: FrameRate) -> PreviewDesc {
     let (width, height) = crate::canvas_profile::preview_size(size.width, size.height);
     PreviewDesc {
         width,
         height,
-        surfaces,
+        surfaces: preview_surfaces(fps),
     }
 }
 
@@ -1971,7 +2033,9 @@ struct Host {
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
     gpu: Arc<GpuContext>,
-    /// The preview's ring size, when there is a preview.
+    /// The preview's ring size from the canvas rate at the last start, when this
+    /// platform publishes a preview. Restarts size the ring again from the canvas
+    /// that is about to run.
     preview_surfaces: Option<usize>,
     /// Why the studio could not start again after a canvas change.
     dead: Option<String>,
@@ -2310,7 +2374,12 @@ fn start(
         .canvas(canvas)
         .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
     let mut settings = StudioSettings::new(canvas);
-    settings.preview = config.preview;
+    // Width and height stay as configured. The ring follows the canvas that runs:
+    // a saved collection can use another rate than the one the descriptor was built with.
+    settings.preview = config.preview.map(|preview| PreviewDesc {
+        surfaces: preview_surfaces(run_fps),
+        ..preview
+    });
     settings.scene_preview = SCENE_PICTURE;
     settings.audio_offsets = filters::audio_offsets(&collection);
     let held = held_copy(&collection, canvas);
@@ -2421,7 +2490,7 @@ fn start(
             key_account: config.key_account,
             engine: Box::new(engine),
             gpu,
-            preview_surfaces: config.preview.map(|p| p.surfaces),
+            preview_surfaces: settings.preview.map(|p| p.surfaces),
             dead: None,
             restarting: false,
             caught: false,
@@ -2461,14 +2530,18 @@ fn start(
 impl Host {
     /// Runs a control API command for a window action that already has a method.
     /// The window and a remote client then share one implementation.
-    fn run_ui_api(&mut self, command: rbs_api::Command, notify: &dyn Fn(Update)) {
+    fn run_ui_api(&mut self, command: rbs_api::Command, notify: &dyn Fn(Update)) -> bool {
         let result = rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command));
         match result {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => notify(Update::Error(e.message)),
+            Ok(Ok(_)) => true,
+            Ok(Err(e)) => {
+                notify(Update::Error(e.message));
+                false
+            }
             Err(_) => {
                 self.caught = true;
                 notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+                false
             }
         }
     }
@@ -2552,7 +2625,7 @@ impl Host {
             }
             Command::Undo => self.step(true, notify),
             Command::Redo => self.step(false, notify),
-            Command::MoveSource { id, up } => match self.move_source(id, up) {
+            Command::MoveSource { id, direction } => match self.move_source(id, direction) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
@@ -2562,7 +2635,7 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
             },
-            Command::MoveScene { id, up } => match self.move_scene(id, up) {
+            Command::MoveScene { id, direction } => match self.move_scene(id, direction) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
@@ -2585,27 +2658,35 @@ impl Host {
                     .and_then(|item| self.set_item_locked(item, locked));
                 self.answer(done, notify);
             }
-            Command::SetSourceVolume { id, volume } => self.run_ui_api(
-                rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
-                    source: id.get(),
-                    volume,
-                }),
-                notify,
-            ),
-            Command::SetSourceMuted { id, muted } => self.run_ui_api(
-                rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
-                    source: id.get(),
-                    muted,
-                }),
-                notify,
-            ),
-            Command::SetSourceMixerHidden { id, hidden } => self.run_ui_api(
-                rbs_api::Command::SourceSetMixerHidden(rbs_api::request::SetSourceMixerHidden {
-                    source: id.get(),
-                    hidden,
-                }),
-                notify,
-            ),
+            Command::SetSourceVolume { id, volume } => {
+                self.run_ui_api(
+                    rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
+                        source: id.get(),
+                        volume,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetSourceMuted { id, muted } => {
+                self.run_ui_api(
+                    rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
+                        source: id.get(),
+                        muted,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetSourceMixerHidden { id, hidden } => {
+                self.run_ui_api(
+                    rbs_api::Command::SourceSetMixerHidden(
+                        rbs_api::request::SetSourceMixerHidden {
+                            source: id.get(),
+                            hidden,
+                        },
+                    ),
+                    notify,
+                );
+            }
             Command::AddVerticalCanvas(spec) => {
                 let done = self.add_vertical(spec);
                 self.answer_live(done, notify);
@@ -2614,16 +2695,22 @@ impl Host {
                 let done = self.remove_vertical();
                 self.answer_live(done, notify);
             }
-            Command::SetMasterVolume { volume } => self.run_ui_api(
-                rbs_api::Command::CanvasSetMasterVolume(rbs_api::request::SetMasterVolume {
-                    volume,
-                }),
-                notify,
-            ),
-            Command::SetMasterMuted { muted } => self.run_ui_api(
-                rbs_api::Command::CanvasSetMasterMuted(rbs_api::request::SetMasterMuted { muted }),
-                notify,
-            ),
+            Command::SetMasterVolume { volume } => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasSetMasterVolume(rbs_api::request::SetMasterVolume {
+                        volume,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetMasterMuted { muted } => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasSetMasterMuted(rbs_api::request::SetMasterMuted {
+                        muted,
+                    }),
+                    notify,
+                );
+            }
             Command::SetSourceMonitor { id, monitor } => {
                 let done = self.set_source_monitor(id, monitor);
                 self.answer_live(done, notify);
@@ -2654,12 +2741,19 @@ impl Host {
                 self.answer(done, notify);
             }
             Command::AddSample { sample } => {
-                let done = self.add_sample(&sample).map(|_| true);
-                self.answer(done, notify);
+                self.run_ui_api(
+                    rbs_api::Command::SourceAddSample(rbs_api::request::AddSample { sample }),
+                    notify,
+                );
             }
             Command::ApplyLook { source, look } => {
-                let done = self.apply_look(source, &look);
-                self.answer(done, notify);
+                self.run_ui_api(
+                    rbs_api::Command::LookApply(rbs_api::request::ApplyLook {
+                        source: source.get(),
+                        look,
+                    }),
+                    notify,
+                );
             }
             Command::RemoveFilter(filter) => {
                 let done = self.remove_filter(filter).map(|()| true);
@@ -2728,12 +2822,32 @@ impl Host {
                 let done = self.rename_source(id, &name);
                 self.answer(done, notify);
             }
+            Command::SetGlide {
+                duration_ms,
+                easing,
+            } => {
+                let done = self.set_glide(duration_ms, easing);
+                self.answer(done, notify);
+            }
+            Command::SetSourceGlide {
+                id,
+                custom,
+                duration_ms,
+                easing,
+            } => {
+                let done = self.set_source_glide(id, custom, duration_ms, easing);
+                self.answer(done, notify);
+            }
             Command::AddExistingSource(id) => {
                 let done = self.add_existing(id).map(|_| true);
                 self.answer(done, notify);
             }
             Command::AddScene(name) => {
                 let done = self.add_scene(name.as_deref()).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::DuplicateScene(id) => {
+                let done = self.duplicate_scene(id).map(|_| true);
                 self.answer(done, notify);
             }
             Command::RemoveScene(id) => {
@@ -2775,17 +2889,18 @@ impl Host {
                 position,
                 size,
             } => {
-                let ok = match self.set_source_box(id, position, size, gesture) {
-                    Ok(true) => {
-                        self.apply(notify);
-                        true
-                    }
-                    Ok(false) => true,
-                    Err(e) => {
-                        notify(Update::Error(e));
-                        false
-                    }
-                };
+                // The same handler a remote `item.set_box` runs. The window still
+                // matches the answer by `seq`, including a refusal.
+                let ok = self.run_ui_api(
+                    rbs_api::Command::ItemSetBox(rbs_api::request::SetItemBox {
+                        source: id.get(),
+                        position,
+                        size,
+                        gesture,
+                        seq,
+                    }),
+                    notify,
+                );
                 notify(Update::BoxPlaced { seq, ok });
             }
             Command::SetSourceCrop {
@@ -3543,7 +3658,11 @@ impl Host {
             .canvas(self.canvas)
             .ok_or("the canvas is gone")?;
         let mut settings = StudioSettings::new(self.canvas);
-        settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
+        let preview = self
+            .preview_surfaces
+            .map(|_| preview_desc(canvas.size, canvas.frame_rate));
+        self.preview_surfaces = preview.map(|desc| desc.surfaces);
+        settings.preview = preview;
         settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
         if let Some(v) = self
@@ -4970,12 +5089,20 @@ impl Host {
         Ok(true)
     }
 
-    /// One place up or down in the canvas's scene list. `Ok(false)` at that end.
-    fn move_scene(&mut self, id: SceneId, up: bool) -> Result<bool, String> {
-        let undo = self
-            .collection
-            .move_scene(self.canvas, id, up)
-            .map_err(|e| edit_error(&e))?;
+    /// One place or to an end in the canvas's scene list. `Ok(false)` at that end.
+    fn move_scene(
+        &mut self,
+        id: SceneId,
+        direction: rbs_api::request::LayerDirection,
+    ) -> Result<bool, String> {
+        use rbs_api::request::LayerDirection::*;
+        let undo = match direction {
+            Up => self.collection.move_scene(self.canvas, id, true),
+            Down => self.collection.move_scene(self.canvas, id, false),
+            Front => self.collection.move_scene_to_end(self.canvas, id, true),
+            Back => self.collection.move_scene_to_end(self.canvas, id, false),
+        }
+        .map_err(|e| edit_error(&e))?;
         let Some(undo) = undo else {
             return Ok(false);
         };
@@ -5033,22 +5160,32 @@ impl Host {
         Ok(true)
     }
 
-    fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
+    fn move_source(
+        &mut self,
+        id: SourceId,
+        direction: rbs_api::request::LayerDirection,
+    ) -> Result<bool, String> {
+        use rbs_api::request::LayerDirection::*;
         let (index, item) = self.item_of(id)?;
         let item = item.id;
         let Some(scene) = self.scene_of(item).and_then(|s| self.collection.scene(s)) else {
             return Ok(false);
         };
-        let mut others = scene
+        let pictures: Vec<usize> = scene
             .items
             .iter()
             .enumerate()
-            .filter(|(i, it)| *i != index && self.has_picture(it))
-            .map(|(i, _)| i);
-        let to = if up {
-            others.find(|i| *i > index)
-        } else {
-            others.rfind(|i| *i < index)
+            .filter(|(_, it)| self.has_picture(it))
+            .map(|(i, _)| i)
+            .collect();
+        if !pictures.contains(&index) {
+            return Ok(false);
+        }
+        let to = match direction {
+            Up => pictures.iter().copied().find(|i| *i > index),
+            Down => pictures.iter().copied().rfind(|i| *i < index),
+            Front => pictures.last().copied().filter(|i| *i != index),
+            Back => pictures.first().copied().filter(|i| *i != index),
         };
         let Some(to) = to else { return Ok(false) };
         let undo = self
@@ -5284,9 +5421,11 @@ impl Host {
     /// shows (ADR-0093 decision 7).
     fn vertical_extra(&self, canvas: CanvasId) -> ExtraCanvas {
         let extra = ExtraCanvas::new(canvas);
-        let size = self.collection.canvas(canvas).map(|c| c.size);
-        match (self.vertical_picture, self.preview_surfaces, size) {
-            (true, Some(n), Some(size)) => extra.with_preview(preview_desc(size, n)),
+        let picture = self.collection.canvas(canvas);
+        match (self.vertical_picture, self.preview_surfaces, picture) {
+            (true, Some(_), Some(info)) => {
+                extra.with_preview(preview_desc(info.size, info.frame_rate))
+            }
             _ => extra,
         }
     }
@@ -5610,6 +5749,55 @@ impl Host {
         Ok(true)
     }
 
+    fn set_glide(&mut self, duration_ms: u32, easing: u8) -> Result<bool, Refusal> {
+        let glide = rbs_scene::CollectionGlide {
+            duration_ms,
+            easing: match easing {
+                0 => rbs_scene::GlideEasing::Linear,
+                _ => rbs_scene::GlideEasing::EaseInOut,
+            },
+        };
+        if self.collection.glide() == glide {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_glide(glide)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Glide, "", 0, vec![undo]);
+        Ok(true)
+    }
+
+    fn set_source_glide(
+        &mut self,
+        id: SourceId,
+        custom: bool,
+        duration_ms: u32,
+        easing: u8,
+    ) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let name = source.name.clone();
+        let glide = custom.then_some(rbs_scene::SourceGlide {
+            duration_ms,
+            easing: match easing {
+                0 => rbs_scene::GlideEasing::Linear,
+                _ => rbs_scene::GlideEasing::EaseInOut,
+            },
+        });
+        if source.glide == glide {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_source_glide(id, glide)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Glide, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     /// Places a source the collection has on top of the program scene (one step).
     fn add_existing(&mut self, id: SourceId) -> Result<ItemId, Refusal> {
         let source = self
@@ -5670,6 +5858,25 @@ impl Host {
         self.history
             .record(EditKind::AddScene, &name, 0, vec![undo]);
         Ok(id)
+    }
+
+    /// Copies a scene (one undo step); it does not go on air.
+    fn duplicate_scene(&mut self, id: SceneId) -> Result<SceneId, Refusal> {
+        let base = self
+            .collection
+            .scene(id)
+            .filter(|_| self.listed(id))
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))?
+            .name
+            .clone();
+        let name = unique_scene_name(&self.collection, &base);
+        let (new_id, undo) = self
+            .collection
+            .duplicate_scene(id, &name)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::AddScene, &name, 0, vec![undo]);
+        Ok(new_id)
     }
 
     /// Removes a scene (one undo step). The last scene the canvas may show stays; the
@@ -5921,6 +6128,7 @@ impl Host {
                 name: s.name.clone(),
                 kind: SourceKind::of(&s.type_id),
                 global: self.global_item(s.id).is_some(),
+                glide: s.glide,
             })
             .collect();
         sources.sort_by_key(|s| s.name.to_lowercase());
@@ -5941,6 +6149,7 @@ impl Host {
                 .canvas(self.canvas)
                 .map(|c| c.master)
                 .unwrap_or_default(),
+            glide: self.collection.glide(),
             sources,
         }
     }
@@ -5959,13 +6168,15 @@ impl Host {
         position: [f32; 2],
         size: [f32; 2],
         gesture: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         let valid = position.iter().chain(size.iter()).all(|v| v.is_finite())
             && size.iter().all(|v| *v != 0.0);
         if !valid {
-            return Err("Position and size must be numbers, and the size cannot be 0.".into());
+            return Err(Refusal::Invalid(
+                "Position and size must be numbers, and the size cannot be 0.".into(),
+            ));
         }
-        let (_, item) = self.item_of(id)?;
+        let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
         // The layout the canvas shows: its own if the item has one, else the default.
         let mut layout = *item.layout_on(self.canvas);
         let own = item
@@ -5981,7 +6192,7 @@ impl Host {
         let undo = self
             .collection
             .set_item_layout(item, own, layout)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
         self.history
             .record(EditKind::Place, &name, gesture, vec![undo]);
@@ -6392,7 +6603,9 @@ impl Host {
             })
             .map(|(s, item)| {
                 let kind = SourceKind::of(&s.type_id);
-                let state = states.iter().find(|st| st.name == s.name);
+                // Match by id: a rename must not make a running source look Idle and
+                // drop it from the Mixer.
+                let state = states.iter().find(|st| st.source == s.id);
                 let status = match state {
                     None => SourceStatus::Idle,
                     Some(st) => match (&st.failed, st.fault) {
@@ -6445,6 +6658,7 @@ impl Host {
                                 .iter()
                                 .any(|(sc, _)| *sc == g)
                         }),
+                    glide: s.glide,
                 }
             })
             .collect()
@@ -7060,19 +7274,14 @@ impl ApiTarget<'_> {
                     source_deleted: deleted,
                 }))
             }
-            C::SceneMove(p) => {
-                match host.move_scene(
-                    SceneId::from_raw(p.scene),
-                    p.direction == rbs_api::request::LayerDirection::Up,
-                ) {
-                    Ok(true) => {
-                        host.apply(notify);
-                        Ok(Response::Done(Empty {}))
-                    }
-                    Ok(false) => Ok(Response::Done(Empty {})),
-                    Err(e) => Err(ApiError::new(ErrorKind::Conflict, e)),
+            C::SceneMove(p) => match host.move_scene(SceneId::from_raw(p.scene), p.direction) {
+                Ok(true) => {
+                    host.apply(notify);
+                    Ok(Response::Done(Empty {}))
                 }
-            }
+                Ok(false) => Ok(Response::Done(Empty {})),
+                Err(e) => Err(ApiError::new(ErrorKind::Conflict, e)),
+            },
             C::SourceSetActive(p) => {
                 match host.set_source_active(SourceId::from_raw(p.source), p.active) {
                     Ok(true) => {
@@ -7082,6 +7291,42 @@ impl ApiTarget<'_> {
                     Ok(false) => Ok(Response::Done(Empty {})),
                     Err(e) => Err(ApiError::new(ErrorKind::NotFound, e)),
                 }
+            }
+            C::LookList => Ok(Response::Looks(LookList {
+                looks: rbs_scene::look::built_in()
+                    .into_iter()
+                    .map(|l| LookInfo {
+                        id: l.id.to_owned(),
+                        name: l.name.to_owned(),
+                        group: api_look_group(l.group),
+                    })
+                    .collect(),
+            })),
+            C::LookApply(p) => {
+                let changed = host
+                    .apply_look(SourceId::from_raw(p.source), &p.look)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceAddSample(p) => {
+                let id = host.add_sample(&p.sample).map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
+            }
+            C::ItemSetBox(p) => {
+                let changed = host
+                    .set_source_box(SourceId::from_raw(p.source), p.position, p.size, p.gesture)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::BoxPlaced(BoxPlaced {
+                    seq: p.seq,
+                    ok: true,
+                }))
             }
             C::ItemMove(p) => {
                 let source = host
@@ -7097,8 +7342,7 @@ impl ApiTarget<'_> {
                             "This source is not in the scene any more.",
                         )
                     })?;
-                match host.move_source(source, p.direction == rbs_api::request::LayerDirection::Up)
-                {
+                match host.move_source(source, p.direction) {
                     Ok(true) => {
                         host.apply(notify);
                         Ok(Response::Done(Empty {}))
@@ -7550,6 +7794,39 @@ impl ApiTarget<'_> {
             C::CollectionList => host.library_list(true),
             C::ProfileSwitch(r) => host.library_switch(false, r.id, notify),
             C::CollectionSwitch(r) => host.library_switch(true, r.id, notify),
+            C::CollectionSetGlide(p) => {
+                let easing = match p.easing {
+                    api::GlideEasing::Linear => 0,
+                    api::GlideEasing::EaseInOut => 1,
+                };
+                let changed = host
+                    .set_glide(p.duration_ms, easing)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceSetGlide(p) => {
+                let (custom, duration_ms, easing) = match p.glide {
+                    None => (false, 0, 0),
+                    Some(g) => (
+                        true,
+                        g.duration_ms,
+                        match g.easing {
+                            api::GlideEasing::Linear => 0,
+                            api::GlideEasing::EaseInOut => 1,
+                        },
+                    ),
+                };
+                let changed = host
+                    .set_source_glide(SourceId::from_raw(p.source), custom, duration_ms, easing)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             // Answered by the endpoint; never reaches a target.
             // `tokens.*` are answered before (`WithTokens`) when the API was attached
             // with the settings.
@@ -7745,8 +8022,7 @@ impl ControlTarget for Refuse {
     }
 }
 
-/// The control API's name of a kind; `None` for the picture kinds, which the API does
-/// not name yet (ADR-0074).
+/// The control API's name of a kind (protocol 1.34 names the picture kinds too).
 fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
     Some(match k {
         SourceKind::Screen => api::SourceKind::Screen,
@@ -7755,7 +8031,8 @@ fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
         SourceKind::AudioInput => api::SourceKind::AudioInput,
         SourceKind::SystemAudio => api::SourceKind::SystemAudio,
         SourceKind::ApplicationAudio => api::SourceKind::ApplicationAudio,
-        SourceKind::Image | SourceKind::Color => return None,
+        SourceKind::Image => api::SourceKind::Image,
+        SourceKind::Color => api::SourceKind::Color,
     })
 }
 
@@ -7767,6 +8044,18 @@ fn app_kind(k: api::SourceKind) -> SourceKind {
         api::SourceKind::AudioInput => SourceKind::AudioInput,
         api::SourceKind::SystemAudio => SourceKind::SystemAudio,
         api::SourceKind::ApplicationAudio => SourceKind::ApplicationAudio,
+        api::SourceKind::Image => SourceKind::Image,
+        api::SourceKind::Color => SourceKind::Color,
+    }
+}
+
+/// The control API's name of a look group. A group added after protocol 1.34 is `other`.
+fn api_look_group(group: rbs_scene::look::LookGroup) -> rbs_api::request::LookGroup {
+    match group {
+        rbs_scene::look::LookGroup::Color => rbs_api::request::LookGroup::Color,
+        rbs_scene::look::LookGroup::Effect => rbs_api::request::LookGroup::Effect,
+        rbs_scene::look::LookGroup::Shape => rbs_api::request::LookGroup::Shape,
+        _ => rbs_api::request::LookGroup::Other,
     }
 }
 
@@ -7843,6 +8132,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         companion_of: row.companion_of.map(|c| c.get()),
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
+        glide: row.glide.map(api_glide_source),
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),
@@ -7858,6 +8148,28 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
                 detail: detail.clone(),
             },
         },
+    }
+}
+
+fn api_glide(g: rbs_scene::CollectionGlide) -> api::Glide {
+    api::Glide {
+        duration_ms: g.duration_ms,
+        easing: api_easing(g.easing),
+    }
+}
+
+fn api_glide_source(g: rbs_scene::SourceGlide) -> api::Glide {
+    api::Glide {
+        duration_ms: g.duration_ms,
+        easing: api_easing(g.easing),
+    }
+}
+
+fn api_easing(e: rbs_scene::GlideEasing) -> api::GlideEasing {
+    match e {
+        rbs_scene::GlideEasing::Linear => api::GlideEasing::Linear,
+        // New variants map to today's default so an older app still talks.
+        _ => api::GlideEasing::EaseInOut,
     }
 }
 
@@ -7889,6 +8201,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             volume: list.master.volume,
             muted: list.master.muted,
         },
+        glide: api_glide(list.glide),
         sources: list
             .sources
             .iter()
@@ -7897,6 +8210,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
                 name: s.name.clone(),
                 kind: s.kind.and_then(api_kind),
                 global: s.global,
+                glide: s.glide.map(api_glide_source),
             })
             .collect(),
     }
@@ -8447,7 +8761,58 @@ mod tests {
 
     #[test]
     fn previews_keep_the_canvas_aspect() {
-        let d = preview_desc(Size::new(3440, 1440), 3);
-        assert_eq!((d.width, d.height, d.surfaces), (1280, 534, 3));
+        let d = preview_desc(Size::new(3440, 1440), FrameRate::FPS_30);
+        assert_eq!((d.width, d.height), (1280, 534));
+    }
+
+    #[test]
+    fn preview_ring_covers_the_layer_hold_at_30_and_60_fps() {
+        let surfaces = |fps| preview_desc(Size::new(1920, 1080), fps).surfaces;
+        let n30 = surfaces(FrameRate::FPS_30);
+        let n60 = surfaces(FrameRate::FPS_60);
+        // A ring of 3 is shown + written + in flight, with nothing held after a
+        // replace. The layer's default hold needs more than that at both rates
+        // (geometry::ring_needed; ADR-0034, ADR-0036), so 3 drops frames.
+        assert!(n30 > 3, "30 fps needs {n30}");
+        assert!(n60 > 3, "60 fps needs {n60}");
+        assert!(n30 <= MAX_PREVIEW_SURFACES && n60 <= MAX_PREVIEW_SURFACES);
+        assert_eq!(n30, preview_surfaces(FrameRate::FPS_30));
+        assert_eq!(n60, preview_surfaces(FrameRate::FPS_60));
+        // macOS: 34 ms → 5 at 30 fps, 6 at 60 fps. Windows: one frame + 4 ms → 5 and 5.
+        // Linux uses the macOS hold; it does not publish a preview.
+        #[cfg(not(windows))]
+        {
+            assert_eq!((n30, n60), (5, 6));
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!((n30, n60), (5, 5));
+        }
+        // Far above the cap: 2000 fps still stays within MAX_PREVIEW_SURFACES.
+        let fast = match FrameRate::new(2_000, 1) {
+            Some(rate) => rate,
+            None => FrameRate::FPS_60,
+        };
+        assert_eq!(surfaces(fast), MAX_PREVIEW_SURFACES);
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn host_preview_desc_follows_the_canvas_rate() {
+        let at = |fps| {
+            HostConfig::canvas(Size::new(1920, 1080), fps)
+                .preview
+                .map(|p| p.surfaces)
+        };
+        assert_eq!(
+            at(FrameRate::FPS_30),
+            Some(preview_surfaces(FrameRate::FPS_30))
+        );
+        assert_eq!(
+            at(FrameRate::FPS_60),
+            Some(preview_surfaces(FrameRate::FPS_60))
+        );
+        let desktop = HostConfig::desktop().preview.map(|p| p.surfaces);
+        assert_eq!(desktop, Some(preview_surfaces(FrameRate::FPS_30)));
     }
 }

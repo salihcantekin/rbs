@@ -3,8 +3,11 @@
 //! AppKit, each `unsafe` block with its invariant.
 
 mod background;
+mod capture;
 mod meter_layer;
 mod quit;
+
+pub use capture::{exclude_from_capture, forget_saved_frame};
 
 pub use background::{
     request_attention, route_show, set_app_name, set_badge, set_hidden, set_icon,

@@ -416,6 +416,11 @@ impl LayoutSession {
         self.workspace.set_mixer_orientation(orientation);
     }
 
+    /// Set the Mixer columns This scene pane share (ADR-0101). Not layout history.
+    pub fn set_mixer_scene_share(&mut self, share: f32) {
+        self.workspace.set_mixer_scene_share(share);
+    }
+
     /// End the current undo group (for example when a splitter drag ends).
     pub fn end_group(&mut self) {
         self.history.seal();

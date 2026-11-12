@@ -3,7 +3,7 @@
 // global and handles its callbacks; every text it pushes comes from
 // `rbs_app::replay_settings` and the host's state.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, IconName, Select, Slider, TextField, Toggle } from "components.slint";
+import { Button, IconButton, IconName, Select, Slider, TextField, Toggle, ValueReadout } from "components.slint";
 import { SettingsCard, SettingRow, SettingsStatus } from "settings.slint";
 
 export global ReplayBuffer {
@@ -47,6 +47,9 @@ export global ReplayBuffer {
 }
 
 export component ReplaySettings inherits Rectangle {
+    // The pointer's position while a drag runs. The knob follows it; the stored
+    // length is the stepped value, applied when the pointer is released.
+    property <float> drag: -1;
     form := VerticalLayout {
         alignment: start;
         SettingsCard {
@@ -74,19 +77,15 @@ export component ReplaySettings inherits Rectangle {
                 label: @tr("Length");
                 help: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
                 Slider {
+                    horizontal-stretch: 1;
                     label: @tr("Length");
-                    value: ReplayBuffer.length;
+                    value: root.drag >= 0 ? root.drag : ReplayBuffer.length;
                     value-text: ReplayBuffer.length-text;
-                    moved(v) => { ReplayBuffer.length-moved(v); }
-                    released => { ReplayBuffer.length-released(); }
+                    moved(v) => { root.drag = v; ReplayBuffer.length-moved(v); }
+                    released => { ReplayBuffer.length-released(); root.drag = -1; }
+                    cancelled => { root.drag = -1; }
                 }
-                Text {
-                    horizontal-stretch: 0;
-                    text: ReplayBuffer.length-text;
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-body-size;
-                    vertical-alignment: center;
-                }
+                ValueReadout { text: ReplayBuffer.length-text; }
             }
             SettingRow {
                 label: @tr("Memory limit");

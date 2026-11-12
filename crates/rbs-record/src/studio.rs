@@ -38,12 +38,15 @@ use rbs_nodes::{
     VirtualCameraNode, VirtualCameraNodeStats,
 };
 use rbs_scene::SceneCollection;
-use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
+use rbs_scene::binder::{
+    BindProblem, BindReport, BoundCompositor, BoundLayer, BoundMixer, Role, SceneBinder,
+};
 use rbs_scene::model::{
     CanvasId, FilterId, MasterAudio, SceneId, SourceAudio, SourceId, SourceMonitor,
 };
 use rbs_sources::{
-    InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, node_layers,
+    InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, glide_layers,
+    glide_max_duration, node_layers,
 };
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 use rbs_vcam::{CameraFormat, VcamError, VirtualCameraConfig, VirtualCameraFactory};
@@ -485,7 +488,13 @@ impl Prepared {
     ) -> Result<Self, RecordError> {
         // System memory: the export reads the canvas back (the P4 exception of
         // ADR-0038); native export will take the memory kind from the encoder.
-        let export = VideoExportNode::new(out.video.format, width, height);
+        let export = VideoExportNode::with_tone(
+            out.video.format,
+            width,
+            height,
+            out.video.color,
+            out.video.open_shadows,
+        );
         let video_config = video_encoder_config(&out.video, export.frame_format(), fps);
         let shared_video = running.video.iter().position(|c| {
             c.as_ref().is_some_and(|c| {
@@ -673,6 +682,52 @@ struct Mixer {
     master: Arc<LevelMeter>,
 }
 
+/// Boxes to glide from when a canvas's program scene changes.
+struct Glide {
+    /// Master-clock time the scene changed.
+    start: Timestamp,
+    /// The program layers each canvas was drawing.
+    from: BTreeMap<CanvasId, Vec<BoundLayer>>,
+    /// Longest morph still running (ADR-0100).
+    max_duration: std::time::Duration,
+    /// Collection glide used to build the morph.
+    collection: rbs_scene::CollectionGlide,
+    /// Per-source slide overrides snapshot at the scene change.
+    source_glide: BTreeMap<rbs_scene::model::SourceId, rbs_scene::SourceGlide>,
+}
+
+fn program_scene(collection: &SceneCollection, canvas: CanvasId) -> Option<SceneId> {
+    collection.canvas(canvas).and_then(|canvas| canvas.program)
+}
+
+fn paint_layers(
+    bound: &BoundCompositor,
+    plan: &rbs_graph::description::SchedulePlan,
+    glide: Option<&Glide>,
+    now: Timestamp,
+    canvas: CanvasId,
+) -> Vec<rbs_gpu::node::NodeLayer> {
+    let layers = node_layers(bound, plan);
+    let Some(glide) = glide else {
+        return layers;
+    };
+    if now.saturating_since(glide.start) >= glide.max_duration {
+        return layers;
+    }
+    let Some(from) = glide.from.get(&canvas) else {
+        return layers;
+    };
+    let overrides = &glide.source_glide;
+    glide_layers(
+        layers,
+        &bound.layers,
+        from,
+        glide.start,
+        glide.collection,
+        |id| overrides.get(&id).copied(),
+    )
+}
+
 /// The program scene of one canvas, running.
 ///
 /// [`Studio::start`] binds the collection, builds the canvas's compositor and mixer and,
@@ -706,6 +761,9 @@ pub struct Studio {
     scene_preview: Option<ScenePreview>,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
+    /// Boxes on screen before the latest program-scene change, so a source that is in
+    /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
+    glide: Option<Glide>,
     /// The scene each following canvas showed last (the `KeepLast` fallback).
     last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
@@ -1003,6 +1061,7 @@ impl Studio {
             preview,
             scene_preview: None,
             extras,
+            glide: None,
             last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
@@ -1246,6 +1305,117 @@ impl Studio {
         Ok(())
     }
 
+    fn layer_snapshot(&self) -> BTreeMap<CanvasId, Vec<BoundLayer>> {
+        let mut layers = BTreeMap::new();
+        layers.insert(self.settings.canvas, self.bound.layers.clone());
+        for extra in &self.extras {
+            layers.insert(extra.canvas, extra.view.bound.layers.clone());
+        }
+        layers
+    }
+
+    /// Starts a glide on each canvas whose program scene changed. A scene that was
+    /// empty does not glide, so the first picture does not fade in from nothing.
+    fn note_scene_change(
+        &mut self,
+        collection: &SceneCollection,
+        old_main: Option<SceneId>,
+        old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
+        old_layers: BTreeMap<CanvasId, Vec<BoundLayer>>,
+    ) {
+        let mut from = BTreeMap::new();
+        let new_main = program_scene(collection, self.settings.canvas);
+        if old_main.is_some() && old_main != new_main {
+            if let Some(layers) = old_layers.get(&self.settings.canvas) {
+                from.insert(self.settings.canvas, layers.clone());
+            }
+        }
+        for extra in &self.extras {
+            let previous = old_extra.get(&extra.canvas).copied().flatten();
+            let next = program_scene(collection, extra.canvas);
+            if previous.is_some() && previous != next {
+                if let Some(layers) = old_layers.get(&extra.canvas) {
+                    from.insert(extra.canvas, layers.clone());
+                }
+            }
+        }
+        if from.is_empty() {
+            return;
+        }
+        let collection_glide = collection.glide();
+        let source_glide: BTreeMap<_, _> = collection
+            .sources()
+            .filter_map(|s| s.glide.map(|g| (s.id, g)))
+            .collect();
+        let mut max_duration =
+            std::time::Duration::from_millis(u64::from(collection_glide.duration_ms));
+        // Current layers after the bind that triggered this note.
+        let current_main = &self.bound.layers;
+        if let Some(old) = from.get(&self.settings.canvas) {
+            max_duration = max_duration.max(glide_max_duration(
+                current_main,
+                old,
+                collection_glide,
+                |id| source_glide.get(&id).copied(),
+            ));
+        }
+        for extra in &self.extras {
+            if let Some(old) = from.get(&extra.canvas) {
+                max_duration = max_duration.max(glide_max_duration(
+                    &extra.view.bound.layers,
+                    old,
+                    collection_glide,
+                    |id| source_glide.get(&id).copied(),
+                ));
+            }
+        }
+        self.glide = Some(Glide {
+            start: self.engine.clock().now(),
+            from,
+            max_duration,
+            collection: collection_glide,
+            source_glide,
+        });
+    }
+
+    /// Sends each program compositor's layers, gliding a scene change that is still
+    /// moving. The preview picture is not glided.
+    fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {
+        let now = self.engine.clock().now();
+        let main = paint_layers(
+            &self.bound,
+            plan,
+            self.glide.as_ref(),
+            now,
+            self.settings.canvas,
+        );
+        let extras: Vec<_> = self
+            .extras
+            .iter()
+            .map(|extra| {
+                (
+                    extra.canvas,
+                    paint_layers(
+                        &extra.view.bound,
+                        plan,
+                        self.glide.as_ref(),
+                        now,
+                        extra.canvas,
+                    ),
+                )
+            })
+            .collect();
+        let _ = self.layers.send(main);
+        if let Some(preview) = &mut self.scene_preview {
+            let _ = preview.layers.send(node_layers(&preview.bound, plan));
+        }
+        for (canvas, layers) in extras {
+            if let Some(extra) = self.extras.iter_mut().find(|extra| extra.canvas == canvas) {
+                let _ = extra.view.layers.send(layers);
+            }
+        }
+    }
+
     fn update_with(
         &mut self,
         collection: &SceneCollection,
@@ -1254,6 +1424,13 @@ impl Studio {
     ) -> Result<Updated, RecordError> {
         let followed = with_followers(collection, &mut self.last_follow);
         let collection = &followed;
+        let old_layers = self.layer_snapshot();
+        let old_main = program_scene(&self.collection, self.settings.canvas);
+        let old_extra: BTreeMap<CanvasId, Option<SceneId>> = self
+            .extras
+            .iter()
+            .map(|extra| (extra.canvas, program_scene(&self.collection, extra.canvas)))
+            .collect();
         self.check_collection(collection)?;
         let fps = self.fps;
         let new = match add {
@@ -1313,6 +1490,7 @@ impl Studio {
             }
         }
         self.collection = collection.clone();
+        self.note_scene_change(collection, old_main, &old_extra, old_layers);
         self.mix = mix_of(collection);
         self.master = master_of(collection, self.settings.canvas);
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
@@ -1419,6 +1597,7 @@ impl Studio {
                 self.entries.push(Entry {
                     source: *source_id,
                     state: SourceState {
+                        source: *source_id,
                         node: *node,
                         name: source.name.clone(),
                         adapter: rbs_core::registry::AdapterId::new(""),
@@ -1456,6 +1635,11 @@ impl Studio {
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph);
         for entry in &mut self.entries {
+            // A rename updates the collection without rebuilding the node: keep the
+            // name the UI and diagnostics show in step with it.
+            if let Some(source) = collection.source(entry.source) {
+                entry.state.name = source.name.clone();
+            }
             entry.scheduled = scheduled.contains(&entry.state.node);
             if !entry.scheduled || entry.instance.is_some() {
                 continue;
@@ -1609,16 +1793,7 @@ impl Studio {
         self.filter_problems = adjusted;
 
         // Layers in link order of the final plan, strips per mixer input.
-        let _ = self.layers.send(node_layers(&self.bound, &plan));
-        if let Some(sp) = &mut self.scene_preview {
-            let _ = sp.layers.send(node_layers(&sp.bound, &plan));
-        }
-        for extra in &mut self.extras {
-            let _ = extra
-                .view
-                .layers
-                .send(node_layers(&extra.view.bound, &plan));
-        }
+        self.send_program_layers(&plan);
         // Strips: until the swap, the old schedule may still feed inputs that leave, so
         // the strips sent before the apply cover the old and the new inputs; the ones of
         // inputs that left go after it.
@@ -2659,16 +2834,7 @@ impl Studio {
         for e in &mut self.entries {
             e.scheduled = scheduled.contains(&e.state.node);
         }
-        let _ = self.layers.send(node_layers(&self.bound, &plan));
-        if let Some(sp) = &mut self.scene_preview {
-            let _ = sp.layers.send(node_layers(&sp.bound, &plan));
-        }
-        for extra in &mut self.extras {
-            let _ = extra
-                .view
-                .layers
-                .send(node_layers(&extra.view.bound, &plan));
-        }
+        self.send_program_layers(&plan);
         (removed, errors)
     }
 

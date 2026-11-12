@@ -9,9 +9,9 @@ use rbs_graph::node::NodeTypeId;
 
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
-    AudioFrom, Canvas, CanvasId, Fallback, Filter, FilterId, ItemContent, ItemId, Layout,
-    MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
-    Source, SourceAudio, SourceId, SourceMonitor,
+    AudioFrom, Canvas, CanvasId, CollectionGlide, Fallback, Filter, FilterId, ItemContent, ItemId,
+    Layout, MAX_GLIDE_MS, MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope,
+    SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -79,6 +79,8 @@ pub enum SceneError {
     InvalidVolume,
     /// A source sync offset is outside `-200..=200` ms (ADR-0062).
     InvalidSyncOffset,
+    /// A glide duration is above [`MAX_GLIDE_MS`] (ADR-0100).
+    InvalidGlide,
     /// A global scene (ADR-0065) would be shown as program or preview, nested, nest a
     /// scene, or not be scoped to its own canvas.
     GlobalScene(SceneId),
@@ -153,6 +155,9 @@ impl fmt::Display for SceneError {
                 f,
                 "sync offset must be from -{MAX_SYNC_OFFSET_MS} to {MAX_SYNC_OFFSET_MS} ms"
             ),
+            SceneError::InvalidGlide => {
+                write!(f, "glide duration must be from 0 to {MAX_GLIDE_MS} ms")
+            }
         }
     }
 }
@@ -208,6 +213,17 @@ enum Op {
         source: SourceId,
         expected: SourceAudio,
         new: SourceAudio,
+    },
+    /// Replaces the collection glide (ADR-0100).
+    SetGlide {
+        expected: CollectionGlide,
+        new: CollectionGlide,
+    },
+    /// Replaces a source's optional glide override (ADR-0100).
+    SetSourceGlide {
+        source: SourceId,
+        expected: Option<SourceGlide>,
+        new: Option<SourceGlide>,
     },
     InsertScene {
         scene: Scene,
@@ -291,6 +307,8 @@ pub struct SceneCollection {
     canvases: BTreeMap<CanvasId, Canvas>,
     sources: BTreeMap<SourceId, Source>,
     scenes: BTreeMap<SceneId, Scene>,
+    /// Morph on a program-scene change (ADR-0100).
+    glide: CollectionGlide,
     next: NextIds,
 }
 
@@ -299,6 +317,7 @@ impl PartialEq for SceneCollection {
         self.canvases == other.canvases
             && self.sources == other.sources
             && self.scenes == other.scenes
+            && self.glide == other.glide
     }
 }
 
@@ -342,11 +361,47 @@ impl SceneCollection {
     /// spec, so a loaded collection is as valid as an edited one. A counter below an id
     /// in use is raised past the highest one, so a document with stale or missing
     /// counters never makes the collection reuse an id it holds.
+    /// Like [`from_parts`](Self::from_parts) with the shipped default glide.
     pub fn from_parts(
         canvases: Vec<Canvas>,
         sources: Vec<Source>,
         scenes: Vec<Scene>,
         counters: IdCounters,
+    ) -> Result<Self, SceneError> {
+        Self::from_parts_with_glide(
+            canvases,
+            sources,
+            scenes,
+            counters,
+            CollectionGlide::default(),
+        )
+    }
+
+    /// A collection from its parts and a collection glide (ADR-0100).
+    pub fn from_parts_with_glide(
+        canvases: Vec<Canvas>,
+        sources: Vec<Source>,
+        scenes: Vec<Scene>,
+        counters: IdCounters,
+        glide: CollectionGlide,
+    ) -> Result<Self, SceneError> {
+        if !glide.is_valid() {
+            return Err(SceneError::InvalidGlide);
+        }
+        for s in &sources {
+            if s.glide.is_some_and(|g| !g.is_valid()) {
+                return Err(SceneError::InvalidGlide);
+            }
+        }
+        Self::from_parts_inner(canvases, sources, scenes, counters, glide)
+    }
+
+    fn from_parts_inner(
+        canvases: Vec<Canvas>,
+        sources: Vec<Source>,
+        scenes: Vec<Scene>,
+        counters: IdCounters,
+        glide: CollectionGlide,
     ) -> Result<Self, SceneError> {
         fn above(counter: u32, id: u32) -> Result<u32, SceneError> {
             Ok(counter.max(id.checked_add(1).ok_or(SceneError::IdsExhausted)?))
@@ -394,6 +449,7 @@ impl SceneCollection {
             }
         }
         col.next = next;
+        col.glide = glide;
         col.validate()?;
         Ok(col)
     }
@@ -420,6 +476,11 @@ impl SceneCollection {
     /// Sources by id.
     pub fn sources(&self) -> impl Iterator<Item = &Source> {
         self.sources.values()
+    }
+
+    /// Collection glide defaults (ADR-0100).
+    pub fn glide(&self) -> CollectionGlide {
+        self.glide
     }
 
     /// Scenes by id.
@@ -730,6 +791,31 @@ impl SceneCollection {
         self.set_scene_order(canvas, ids).map(Some)
     }
 
+    /// Moves `scene` to the start (`front`) or end of the canvas's scene list.
+    /// `Ok(None)` when it is already there, or it is not in the list.
+    pub fn move_scene_to_end(
+        &mut self,
+        canvas: CanvasId,
+        scene: SceneId,
+        front: bool,
+    ) -> Result<Option<Undo>, SceneError> {
+        let mut ids = self.scene_order(canvas)?;
+        let Some(i) = ids.iter().position(|id| *id == scene) else {
+            return Ok(None);
+        };
+        let dest = if front {
+            0
+        } else {
+            ids.len().saturating_sub(1)
+        };
+        if i == dest {
+            return Ok(None);
+        }
+        let id = ids.remove(i);
+        ids.insert(dest, id);
+        self.set_scene_order(canvas, ids).map(Some)
+    }
+
     /// Moves `scene` to the place `to` has in the canvas's scene list (a row dragged
     /// onto another). `Ok(None)` when either scene is missing or they are the same.
     pub fn move_scene_to(
@@ -782,6 +868,7 @@ impl SceneCollection {
             settings,
             filters: Vec::new(),
             audio: SourceAudio::default(),
+            glide: None,
             hints: Default::default(),
         };
         let undo = self.apply_with(
@@ -930,6 +1017,36 @@ impl SceneCollection {
         })
     }
 
+    /// Replaces the collection glide (ADR-0100; `InvalidGlide` when out of range).
+    pub fn set_glide(&mut self, glide: CollectionGlide) -> Result<Undo, SceneError> {
+        if !glide.is_valid() {
+            return Err(SceneError::InvalidGlide);
+        }
+        let expected = self.glide;
+        self.apply(Op::SetGlide {
+            expected,
+            new: glide,
+        })
+    }
+
+    /// Sets or clears a source's slide override (ADR-0100; `InvalidGlide` when out of
+    /// range). `None` clears it so the collection glide applies.
+    pub fn set_source_glide(
+        &mut self,
+        id: SourceId,
+        glide: Option<SourceGlide>,
+    ) -> Result<Undo, SceneError> {
+        if glide.is_some_and(|g| !g.is_valid()) {
+            return Err(SceneError::InvalidGlide);
+        }
+        let expected = self.get_source(id)?.glide;
+        self.apply(Op::SetSourceGlide {
+            source: id,
+            expected,
+            new: glide,
+        })
+    }
+
     /// Replaces a filter's settings (ADR-0062). The model stores what it is given;
     /// callers check them against the filter type first.
     pub fn set_filter_settings(
@@ -1026,6 +1143,44 @@ impl SceneCollection {
             next,
         )?;
         Ok((id, undo))
+    }
+
+    /// Copies a scene: new scene id and item ids, the same sources and nested scenes,
+    /// same layouts. Does not put it on air. Refused for a canvas's global scene
+    /// (ADR-0065).
+    pub fn duplicate_scene(
+        &mut self,
+        id: SceneId,
+        name: &str,
+    ) -> Result<(SceneId, Undo), SceneError> {
+        if self.canvases.values().any(|c| c.globals == Some(id)) {
+            return Err(SceneError::GlobalScene(id));
+        }
+        let source = self.get_scene(id)?.clone();
+        let mut next = self.next.clone();
+        let new_id = SceneId(issue(&mut next.scene)?);
+        let mut items = Vec::with_capacity(source.items.len());
+        for item in &source.items {
+            let mut copy = item.clone();
+            copy.id = ItemId(issue(&mut next.item)?);
+            items.push(copy);
+        }
+        let scene = Scene {
+            id: new_id,
+            name: name.trim().to_owned(),
+            scope: source.scope,
+            items,
+        };
+        let undo = self.apply_with(
+            Op::InsertScene {
+                scene,
+                placements: Vec::new(),
+                shown: Vec::new(),
+                globals: Vec::new(),
+            },
+            next,
+        )?;
+        Ok((new_id, undo))
     }
 
     /// Removes a scene. Items that nest it in other scenes are removed, and canvases
@@ -1454,6 +1609,35 @@ impl SceneCollection {
                     new: expected,
                 })
             }
+            Op::SetGlide { expected, new } => {
+                if self.glide != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                self.glide = new;
+                Ok(Op::SetGlide {
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::SetSourceGlide {
+                source,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .sources
+                    .get_mut(&source)
+                    .ok_or(SceneError::UnknownSource(source))?;
+                if slot.glide != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.glide = new;
+                Ok(Op::SetSourceGlide {
+                    source,
+                    expected: new,
+                    new: expected,
+                })
+            }
             Op::ReplaceSource {
                 mut expected,
                 mut new,
@@ -1630,6 +1814,9 @@ impl SceneCollection {
 
     /// Checks every invariant of the scene model spec.
     fn validate(&self) -> Result<(), SceneError> {
+        if !self.glide.is_valid() {
+            return Err(SceneError::InvalidGlide);
+        }
         let mut names = BTreeSet::new();
         for c in self.canvases.values() {
             check_name(&c.name)?;
@@ -1686,6 +1873,9 @@ impl SceneCollection {
             }
             if !s.audio.sync_offset_is_valid() {
                 return Err(SceneError::InvalidSyncOffset);
+            }
+            if s.glide.is_some_and(|g| !g.is_valid()) {
+                return Err(SceneError::InvalidGlide);
             }
             for f in &s.filters {
                 if !filters.insert(f.id) {

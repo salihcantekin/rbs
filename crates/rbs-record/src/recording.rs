@@ -11,7 +11,7 @@ use rbs_codec::{
     AudioEncoderFactory, EncoderPreset, KeyframeInterval, RateControl, VideoEncoderFactory,
 };
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{CodecId, ContainerId};
+use rbs_core::media::{CodecId, ColorSpace, ContainerId};
 use rbs_core::registry::{AdapterId, Registry};
 use rbs_engine::{Engine, EngineError, Serviced};
 use rbs_gpu::{GpuContext, YuvFormat};
@@ -166,6 +166,11 @@ pub struct VideoSettings {
     pub preset: EncoderPreset,
     /// The export's pixel format (NV12, or P010 for 10-bit).
     pub format: YuvFormat,
+    /// Colour encoding of the export. [`ColorSpace::BT709_LIMITED`] is the default.
+    pub color: ColorSpace,
+    /// Raises only the darkest tones before a Rec. 709 encode. The tag stays `color`.
+    /// Ignored unless `color` is [`ColorSpace::BT709_LIMITED`]. Off by default.
+    pub open_shadows: bool,
 }
 
 impl Default for VideoSettings {
@@ -182,6 +187,8 @@ impl Default for VideoSettings {
             profile: None,
             preset: EncoderPreset::Balanced,
             format: YuvFormat::Nv12,
+            color: ColorSpace::BT709_LIMITED,
+            open_shadows: false,
         }
     }
 }
@@ -529,6 +536,8 @@ impl From<EngineError> for RecordError {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceState {
+    /// The collection source this node belongs to.
+    pub source: SourceId,
     /// Its node in the graph.
     pub node: NodeId,
     /// The source's name.

@@ -139,23 +139,28 @@ fn rows_of(
         if let Some(AppRow::Item(MenuItem::Choices {
             title,
             icon,
+            disabled,
             choices,
         })) = menu.into_iter().nth(at)
         {
             let mut out = vec![Row::plain(Kind::Back, &title)];
+            let open = disabled.is_none();
             out.extend(choices.into_iter().map(|(t, id, current)| {
+                let row_icon = rbs_ui::command::choice_icon(&id, current)
+                    .or(icon)
+                    .unwrap_or("");
                 let id = id.to_string();
                 Row {
                     kind: Kind::Command,
                     title: t,
-                    icon: icon.unwrap_or(""),
+                    icon: row_icon,
                     shortcut: shortcut(&id).unwrap_or_default(),
                     value: String::new(),
                     id,
-                    enabled: true,
+                    enabled: open,
                     checkable: true,
                     checked: current,
-                    reason: String::new(),
+                    reason: disabled.clone().unwrap_or_default(),
                     up: None,
                     down: None,
                 }
@@ -172,6 +177,7 @@ fn rows_of(
             AppRow::Item(MenuItem::Choices {
                 title,
                 icon,
+                disabled,
                 choices,
             }) => Some(Row {
                 kind: Kind::Picker,
@@ -180,7 +186,8 @@ fn rows_of(
                     .find(|c| c.2)
                     .map(|c| c.0.clone())
                     .unwrap_or_default(),
-                enabled: !choices.is_empty(),
+                enabled: disabled.is_none() && !choices.is_empty(),
+                reason: disabled.unwrap_or_default(),
                 icon: icon.unwrap_or(""),
                 id: at.to_string(),
                 ..Row::plain(Kind::Picker, &title)
@@ -250,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_has_headings_pickers_and_commands() {
+    fn a_menu_has_pickers_groups_and_commands() {
         let view = categories(&State)
             .iter()
             .position(|c| *c == "View")
@@ -258,29 +265,33 @@ mod tests {
         let r = rows(&State, view, "", "", &|id| {
             (id == "ui.area.hide_all").then(|| "Ctrl+Alt+0".to_owned())
         });
-        assert_eq!((r[0].kind, r[0].title.as_str()), (Kind::Heading, "Layout"));
-        assert_eq!(r[1].kind, Kind::Picker);
+        assert_eq!(r[0].kind, Kind::Picker);
         assert_eq!(
-            (r[1].title.as_str(), r[1].value.as_str()),
+            (r[0].title.as_str(), r[0].value.as_str()),
             ("Workspace", "Edit")
         );
-        assert_eq!(r[1].icon, "layout");
-        let left = r
+        assert_eq!(r[0].icon, "layout");
+        let areas = r.iter().find(|x| x.title == "Areas").unwrap();
+        assert_eq!(areas.kind, Kind::Picker);
+        let area_rows = rows(&State, view, &areas.id, "", &|id| {
+            (id == "ui.area.hide_all").then(|| "Ctrl+Alt+0".to_owned())
+        });
+        assert_eq!(area_rows[0].kind, Kind::Back);
+        let left = area_rows
             .iter()
             .find(|x| x.id == "ui.area.toggle?area=left")
             .unwrap();
         assert!(left.checkable && left.checked);
-        let hide = r.iter().find(|x| x.id == "ui.area.hide_all").unwrap();
+        let hide = area_rows
+            .iter()
+            .find(|x| x.id == "ui.area.hide_all")
+            .unwrap();
         assert_eq!(hide.shortcut, "Ctrl+Alt+0");
-        assert!(
-            r.iter()
-                .any(|x| x.kind == Kind::Heading && x.title == "Display")
-        );
+        assert!(r.iter().any(|x| x.title == "Display"));
 
-        assert_eq!((r[0].up, r[0].down), (None, Some(1)));
-        assert_eq!(r[1].down, Some(3), "the separator is skipped");
-        assert_eq!(r[3].up, Some(1));
-        let choices = rows(&State, view, &r[1].id, "", &none);
+        assert_eq!((r[0].up, r[0].down), (None, Some(2)));
+        assert_eq!(r[2].up, Some(0), "the separator is skipped");
+        let choices = rows(&State, view, &r[0].id, "", &none);
         assert_eq!(choices[0].kind, Kind::Back);
         assert_eq!(choices[1].id, "ui.workspace.select?name=Edit");
         assert!(choices[1].checked && !choices[2].checked);

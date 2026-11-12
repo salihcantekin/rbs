@@ -187,16 +187,18 @@ fn hidden_and_unused_sources_are_standby_and_ids_stay_stable() {
     s.col.set_item_visible(item, false).unwrap();
     let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
     assert_eq!(s.binder.source_node(s.cam), Some(cam));
-    // Hiding keeps the device open, so showing the layer again does not wait.
+    // Hiding keeps the device open (and linked), so showing again does not wait.
     assert_eq!(state(&s, cam), Lifecycle::Active);
-    // Its compositor link is gone, its layer too.
     let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    attach_output(&mut s.graph, comp);
     assert!(
-        !s.graph
+        s.graph
             .links()
             .iter()
             .any(|l| l.from.node == cam && l.to.node == comp)
     );
+    assert!(s.graph.plan().order.contains(&cam));
+    // The layer list omits it; only the link keeps it scheduled.
     assert_eq!(report.compositors[&(s.wide, Role::Program)].layers.len(), 1);
 
     s.col.set_item_visible(item, true).unwrap();
@@ -329,6 +331,39 @@ fn the_plan_schedules_exactly_what_the_program_needs() {
     expected.sort();
     assert_eq!(order, expected);
     assert!(!plan.order.contains(&s.binder.source_node(idle).unwrap()));
+}
+
+#[test]
+fn an_off_air_placed_source_stays_linked_and_scheduled() {
+    let mut s = setup();
+    let (next, _) = s.col.add_scene("Next", SceneScope::Shared).unwrap();
+    let (logo, _) = s
+        .col
+        .add_source("Logo", ty("org.rbs.source.camera"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(next, ItemContent::Source(logo), full(), None)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    attach_output(&mut s.graph, comp);
+    let logo_node = s.binder.source_node(logo).unwrap();
+    assert_eq!(state(&s, logo_node), Lifecycle::Active);
+    assert!(
+        s.graph
+            .links()
+            .iter()
+            .any(|l| l.from.node == logo_node && l.to.node == comp)
+    );
+    assert!(s.graph.plan().order.contains(&logo_node));
+    // Not drawn on the program scene.
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        report.compositors[&(s.wide, Role::Program)]
+            .layers
+            .iter()
+            .all(|l| l.source != logo)
+    );
 }
 
 #[test]
@@ -595,10 +630,10 @@ fn audio_sources_feed_the_mixer_from_program_scenes_only() {
     assert!(!report.created_sources.iter().any(|(id, _)| *id == mic));
     assert_eq!(s.binder.source_node(mic), Some(mic_node));
 
-    // Hidden or unused: Standby and unlinked.
+    // Still placed in Rehearsal: the device stays open, and it is not heard.
     s.col.set_preview(s.wide, None).unwrap();
     s.binder.sync(&s.col, &mut s.graph).unwrap();
-    assert_eq!(state(&s, mic_node), Lifecycle::Standby);
+    assert_eq!(state(&s, mic_node), Lifecycle::Active);
     assert!(links_into(&s, mixer).is_empty());
 }
 
@@ -1206,13 +1241,15 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
             let comp = comp.unwrap();
             accounted.insert(comp);
             assert!(report.compositors.contains_key(&(canvas.id, role)));
-            let mut expected: Vec<NodeId> = s
-                .col
-                .visible_sources(canvas.id, scene)
-                .unwrap()
-                .into_iter()
-                .filter_map(tail_of)
-                .collect();
+            // Program keeps every warm source linked; preview only the visible ones.
+            let mut expected: Vec<NodeId> = match role {
+                Role::Program => s.col.warm_sources(canvas.id),
+                Role::Preview => s.col.visible_sources(canvas.id, scene).unwrap(),
+                _ => s.col.visible_sources(canvas.id, scene).unwrap(),
+            }
+            .into_iter()
+            .filter_map(tail_of)
+            .collect();
             // Global sources (ADR-0065) are on every compositor of their canvas,
             // checked from the global scene's items directly.
             for src in direct_globals(s, canvas.id) {

@@ -1,6 +1,6 @@
-//! Lock-free level meters: the engine records peaks, the UI takes them at its own rate.
+//! Lock-free level meters: the engine records peaks and RMS, the UI takes them at its own rate.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use rbs_core::media::MAX_CHANNELS;
 
@@ -21,6 +21,12 @@ pub struct LevelMeter {
     /// UI does not steal a subscriber's. One extra atomic per channel per block, with
     /// no branch for "is anyone listening" (P13).
     shared: [AtomicU32; MAX_CHANNELS],
+    /// Sum of squares and sample count since [`take`](Self::take).
+    energy: [AtomicU64; MAX_CHANNELS],
+    energy_n: [AtomicU32; MAX_CHANNELS],
+    /// The same, since [`observe`](Self::observe). Independent of the UI bank.
+    shared_energy: [AtomicU64; MAX_CHANNELS],
+    shared_energy_n: [AtomicU32; MAX_CHANNELS],
     channels: usize,
 }
 
@@ -30,6 +36,10 @@ impl LevelMeter {
         Self {
             peaks: Default::default(),
             shared: Default::default(),
+            energy: Default::default(),
+            energy_n: Default::default(),
+            shared_energy: Default::default(),
+            shared_energy_n: Default::default(),
             channels: channels.clamp(1, MAX_CHANNELS),
         }
     }
@@ -52,9 +62,45 @@ impl LevelMeter {
         self.shared[channel].fetch_max(bits, Ordering::Relaxed);
     }
 
+    /// Records one block: its absolute `peak`, and `sum_sq` over `frames` samples
+    /// (the square of each sample, already scaled as the peak is). Real-time safe:
+    /// one max and one add per bank, no allocation. A torn add against a reader
+    /// loses at most this block.
+    #[inline]
+    pub fn record_block(&self, channel: usize, peak: f32, sum_sq: f32, frames: u32) {
+        self.record(channel, peak);
+        if channel >= self.channels || frames == 0 || sum_sq.is_nan() || sum_sq < 0.0 {
+            return;
+        }
+        Self::add(
+            &self.energy[channel],
+            &self.energy_n[channel],
+            sum_sq,
+            frames,
+        );
+        Self::add(
+            &self.shared_energy[channel],
+            &self.shared_energy_n[channel],
+            sum_sq,
+            frames,
+        );
+    }
+
+    fn add(sum: &AtomicU64, count: &AtomicU32, sum_sq: f32, frames: u32) {
+        let mut cur = sum.load(Ordering::Relaxed);
+        loop {
+            let next = (f64::from_bits(cur) + f64::from(sum_sq)).to_bits();
+            match sum.compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(seen) => cur = seen,
+            }
+        }
+        count.fetch_add(frames, Ordering::Relaxed);
+    }
+
     /// The peaks recorded since the last take, and resets them to 0.
     pub fn take(&self) -> Levels {
-        Self::swap(&self.peaks, self.channels)
+        Self::swap(&self.peaks, &self.energy, &self.energy_n, self.channels)
     }
 
     /// The peaks recorded since the last observe, and resets them to 0.
@@ -63,15 +109,35 @@ impl LevelMeter {
     /// Independent of [`take`](Self::take): each keeps the highest peak since its own
     /// last read.
     pub fn observe(&self) -> Levels {
-        Self::swap(&self.shared, self.channels)
+        Self::swap(
+            &self.shared,
+            &self.shared_energy,
+            &self.shared_energy_n,
+            self.channels,
+        )
     }
 
-    fn swap(slots: &[AtomicU32; MAX_CHANNELS], channels: usize) -> Levels {
+    fn swap(
+        slots: &[AtomicU32; MAX_CHANNELS],
+        energy: &[AtomicU64; MAX_CHANNELS],
+        energy_n: &[AtomicU32; MAX_CHANNELS],
+        channels: usize,
+    ) -> Levels {
         let mut peaks = [0.0; MAX_CHANNELS];
-        for (out, slot) in peaks.iter_mut().zip(slots).take(channels) {
-            *out = f32::from_bits(slot.swap(0, Ordering::Relaxed));
+        let mut rms = [0.0; MAX_CHANNELS];
+        for i in 0..channels {
+            peaks[i] = f32::from_bits(slots[i].swap(0, Ordering::Relaxed));
+            let sum = f64::from_bits(energy[i].swap(0, Ordering::Relaxed));
+            let n = energy_n[i].swap(0, Ordering::Relaxed);
+            if n > 0 && sum > 0.0 {
+                rms[i] = (sum / f64::from(n)).sqrt() as f32;
+            }
         }
-        Levels { peaks, channels }
+        Levels {
+            peaks,
+            rms,
+            channels,
+        }
     }
 }
 
@@ -79,6 +145,8 @@ impl LevelMeter {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Levels {
     peaks: [f32; MAX_CHANNELS],
+    /// Root mean square since the last read, linear amplitude.
+    rms: [f32; MAX_CHANNELS],
     channels: usize,
 }
 
@@ -97,11 +165,28 @@ impl Levels {
         }
     }
 
+    /// The RMS of `channel` (0 when out of range, or when no block was recorded).
+    pub fn rms(&self, channel: usize) -> f32 {
+        if channel < self.channels {
+            self.rms[channel]
+        } else {
+            0.0
+        }
+    }
+
     /// The peak of `channel` in dBFS; negative infinity for silence.
     pub fn peak_db(&self, channel: usize) -> f32 {
-        let p = self.peak(channel);
-        if p > 0.0 {
-            20.0 * p.log10()
+        Self::db(self.peak(channel))
+    }
+
+    /// The RMS of `channel` in dBFS; negative infinity for silence.
+    pub fn rms_db(&self, channel: usize) -> f32 {
+        Self::db(self.rms(channel))
+    }
+
+    fn db(amplitude: f32) -> f32 {
+        if amplitude > 0.0 {
+            20.0 * amplitude.log10()
         } else {
             f32::NEG_INFINITY
         }
@@ -179,11 +264,27 @@ mod tests {
     }
 
     #[test]
+    fn a_block_rms_is_the_root_mean_square_and_stays_below_the_peak() {
+        let m = LevelMeter::new(1);
+        // Two samples: 0 and 1. Peak 1, RMS sqrt(0.5).
+        m.record_block(0, 1.0, 1.0, 2);
+        let api = m.observe();
+        assert_eq!(api.peak(0), 1.0);
+        assert!((api.rms(0) - 0.5f32.sqrt()).abs() < 1e-5);
+        assert!(api.rms(0) < api.peak(0));
+        // The UI bank saw the same block and does not clear the API's next one.
+        assert!((m.take().rms(0) - 0.5f32.sqrt()).abs() < 1e-5);
+        m.record_block(0, 0.5, 0.25, 1);
+        assert!((m.observe().rms(0) - 0.5).abs() < 1e-5);
+        assert_eq!(m.observe().rms(0), 0.0);
+    }
+
+    #[test]
     fn record_and_take_do_not_allocate() {
         let m = LevelMeter::new(2);
         let c = allocation_counter::measure(|| {
             for i in 0..1000 {
-                m.record(i % 2, i as f32);
+                m.record_block(i % 2, i as f32, (i as f32) * (i as f32), 8);
                 let _ = m.take();
                 let _ = m.observe();
             }

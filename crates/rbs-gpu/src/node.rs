@@ -76,7 +76,29 @@ pub struct PixelCrop {
     pub bottom: u32,
 }
 
-/// A linear opacity animation, evaluated by the node against tick time (ADR-0023,
+/// How unit time `0..=1` is mapped for a slide or fade (ADR-0100).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Easing {
+    /// Straight lerp.
+    Linear,
+    /// Smoothstep `u²(3−2u)`.
+    #[default]
+    EaseInOut,
+}
+
+impl Easing {
+    /// Maps unit time `u` in `0..=1` to the interpolation weight.
+    pub fn map(self, u: f64) -> f32 {
+        let u = u.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => u as f32,
+            Self::EaseInOut => (u * u * (3.0 - 2.0 * u)) as f32,
+        }
+    }
+}
+
+/// An opacity animation, evaluated by the node against tick time (ADR-0023,
 /// decision 7): `from` before `start`, the layer's `opacity` after `start + duration`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fade {
@@ -86,6 +108,8 @@ pub struct Fade {
     pub start: Timestamp,
     /// Length of the fade; zero jumps to the end value at `start`.
     pub duration: Duration,
+    /// How unit time is mapped (scene-change fade-ins stay [`Easing::Linear`], ADR-0100).
+    pub easing: Easing,
 }
 
 impl Fade {
@@ -95,11 +119,42 @@ impl Fade {
             return self.from;
         }
         let elapsed = now.saturating_since(self.start);
+        if elapsed >= self.duration || self.duration.is_zero() {
+            return to;
+        }
+        let u = elapsed.as_secs_f64() / self.duration.as_secs_f64();
+        let t = self.easing.map(u);
+        self.from + (to - self.from) * t
+    }
+}
+
+/// A move of a layer's box, evaluated against tick time the way [`Fade`] is.
+/// `from` at and before `start`, the layer's `transform` after `start + duration`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Slide {
+    /// The box at and before `start`.
+    pub from: Affine2,
+    /// Engine time the move starts.
+    pub start: Timestamp,
+    /// Length of the move; zero jumps to the end box at `start`.
+    pub duration: Duration,
+    /// How unit time is mapped (ADR-0100).
+    pub easing: Easing,
+}
+
+impl Slide {
+    /// The box at `now` for a move ending at `to`.
+    pub fn at(&self, to: Affine2, now: Timestamp) -> Affine2 {
+        if now <= self.start || self.duration.is_zero() {
+            return if now <= self.start { self.from } else { to };
+        }
+        let elapsed = now.saturating_since(self.start);
         if elapsed >= self.duration {
             return to;
         }
-        let t = elapsed.as_secs_f64() / self.duration.as_secs_f64();
-        self.from + (to - self.from) * t as f32
+        let u = elapsed.as_secs_f64() / self.duration.as_secs_f64();
+        let t = self.easing.map(u);
+        self.from.lerp(to, t)
     }
 }
 
@@ -119,6 +174,8 @@ pub struct NodeLayer {
     pub opacity: f32,
     /// Animates the opacity.
     pub fade: Option<Fade>,
+    /// Animates the box from another place. Absent when the box is already `transform`.
+    pub slide: Option<Slide>,
     /// Ignore the source's alpha (XRGB sources).
     pub opaque: bool,
     /// Shape and border (ADR-0053).
@@ -136,6 +193,7 @@ impl NodeLayer {
             crop: PixelCrop::default(),
             opacity: 1.0,
             fade: None,
+            slide: None,
             opaque: false,
             style: LayerStyle::default(),
         }
@@ -272,7 +330,10 @@ impl Node<GpuRuntime> for CompositorNode {
             // allocate.
             self.scratch.push(Layer {
                 texture: id,
-                transform: spec.transform,
+                transform: match &spec.slide {
+                    Some(slide) => slide.at(spec.transform, tick.time),
+                    None => spec.transform,
+                },
                 crop: uv(spec.crop, d.width, d.height),
                 opacity: match &spec.fade {
                     Some(fade) => fade.at(spec.opacity, tick.time),
@@ -321,6 +382,7 @@ mod tests {
             from: 0.2,
             start: ms(100),
             duration: Duration::from_millis(200),
+            easing: Easing::Linear,
         };
         assert_eq!(fade.at(1.0, ms(0)), 0.2);
         assert_eq!(fade.at(1.0, ms(100)), 0.2);
@@ -330,11 +392,43 @@ mod tests {
     }
 
     #[test]
+    fn a_slide_is_halfway_at_half_time_and_done_after() {
+        let slide = Slide {
+            from: Affine2::rect(0.0, 0.0, 100.0, 100.0),
+            start: ms(0),
+            duration: Duration::from_millis(400),
+            easing: Easing::EaseInOut,
+        };
+        let to = Affine2::rect(200.0, 0.0, 100.0, 100.0);
+        assert_eq!(slide.at(to, ms(0)).tx, 0.0);
+        // Smoothstep is still halfway at mid-time (symmetric ease).
+        assert!((slide.at(to, ms(200)).tx - 100.0).abs() < 1e-3);
+        // Early on it is behind linear; late it is ahead of linear's mid pace.
+        assert!(slide.at(to, ms(100)).tx < 50.0);
+        assert!(slide.at(to, ms(300)).tx > 150.0);
+        assert_eq!(slide.at(to, ms(400)).tx, 200.0);
+    }
+
+    #[test]
+    fn a_linear_slide_is_halfway_at_half_time() {
+        let slide = Slide {
+            from: Affine2::rect(0.0, 0.0, 100.0, 100.0),
+            start: ms(0),
+            duration: Duration::from_millis(400),
+            easing: Easing::Linear,
+        };
+        let to = Affine2::rect(200.0, 0.0, 100.0, 100.0);
+        assert!((slide.at(to, ms(200)).tx - 100.0).abs() < 1e-3);
+        assert!((slide.at(to, ms(100)).tx - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn zero_length_fade_jumps_at_start() {
         let fade = Fade {
             from: 1.0,
             start: ms(50),
             duration: Duration::ZERO,
+            easing: Easing::Linear,
         };
         assert_eq!(fade.at(0.0, ms(50)), 1.0);
         assert_eq!(fade.at(0.0, ms(51)), 0.0);

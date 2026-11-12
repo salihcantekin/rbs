@@ -3,7 +3,7 @@
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, Select, TextField, Toggle } from "components.slint";
-import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout } from "settings.slint";
+import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
 // `surface`, `text`, `accent`: its swatch. `usable`: it passes every rule; else
@@ -797,11 +797,11 @@ export component AppearanceSettings inherits Rectangle {
             id: "settings.appearance.theme-in-use";
             SettingRow {
                 divider: false;
-                label: @tr("Follow the system's light or dark setting");
-                help: @tr("Uses one theme while the system is dark and another while it is light.");
+                label: @tr("Use the system appearance");
+                help: @tr("Dark while the system is dark, Light while it is light. Choosing a theme below keeps that theme instead.");
                 fill: false;
                 Toggle {
-                    label: @tr("Follow the system's light or dark setting");
+                    label: @tr("Use the system appearance");
                     checked: Appearance.follow-system;
                     toggled(on) => { Appearance.set-follow-system(on); }
                 }
@@ -815,33 +815,6 @@ export component AppearanceSettings inherits Rectangle {
                     label: @tr("Compact spacing");
                     checked: Appearance.compact;
                     toggled(on) => { Appearance.set-compact(on); }
-                }
-            }
-            if Appearance.follow-system: SettingRow {
-                label: @tr("When the system is dark");
-                Select {
-                    label: @tr("When the system is dark");
-                    options: Appearance.usable-names;
-                    index: Appearance.dark-index;
-                    selected(i) => { Appearance.pick(0, i); }
-                }
-            }
-            if Appearance.follow-system: SettingRow {
-                label: @tr("When the system is light");
-                Select {
-                    label: @tr("When the system is light");
-                    options: Appearance.usable-names;
-                    index: Appearance.light-index;
-                    selected(i) => { Appearance.pick(1, i); }
-                }
-            }
-            if !Appearance.follow-system: SettingRow {
-                label: @tr("Theme");
-                Select {
-                    label: @tr("Theme");
-                    options: Appearance.usable-names;
-                    index: Appearance.theme-index;
-                    selected(i) => { Appearance.pick(2, i); }
                 }
             }
         }
@@ -925,6 +898,7 @@ export component AppearanceSettings inherits Rectangle {
                         }
                     }
                     if !Appearance.editing && root.confirm-delete >= 0: SettingBlock {
+                        RevealOnShow { }
                         SettingsCallout {
                             label: @tr("Delete {}?", Appearance.themes[root.confirm-delete].name);
                             Text {

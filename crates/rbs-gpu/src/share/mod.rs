@@ -42,6 +42,7 @@ mod win;
 
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 
 #[cfg(all(any(windows, target_os = "macos"), feature = "preview-layer"))]
 pub use geometry::{MAX_MARKS, Mark};
@@ -77,9 +78,34 @@ pub struct PreviewDesc {
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
-    /// Surfaces in the ring, 2 to [`MAX_PREVIEW_SURFACES`]. Three is enough for a UI that
-    /// shows the latest frame: one shown, one in flight, one being written.
+    /// Surfaces in the ring, 2 to [`MAX_PREVIEW_SURFACES`].
+    ///
+    /// Three covers a UI that releases a frame before the next one is shown: one shown,
+    /// one in flight, one being written. A native layer also holds frames it has
+    /// replaced (ADR-0034, ADR-0036). [`ring_needed`] counts those in. With the macOS
+    /// retire time of 34 ms that is 5 surfaces at 30 fps and 6 at 60 fps; a ring of 3
+    /// drops frames at both rates (`ExportBusy`), and never deadlocks.
     pub surfaces: usize,
+}
+
+/// Surfaces a preview ring needs so the engine always finds a free one while frames
+/// arrive `frame_interval` apart and each replaced frame stays held for `hold`.
+///
+/// The count is the frame on screen, the frames still inside `hold`
+/// (`ceil(hold / frame_interval)`), one being written and one in flight. This is the
+/// arithmetic of `PreviewLayer::surfaces_needed` (ADR-0034, ADR-0036): the layer
+/// passes its retire time as `hold`. A hold of zero is 3. The macOS default of 34 ms
+/// is 5 at 30 fps and 6 at 60 fps; Windows holds one frame plus its poll, which is 5
+/// at both. Callers cap the result at [`MAX_PREVIEW_SURFACES`].
+///
+/// The studio sizes its ring with this before a layer exists. `PreviewLayer` is the
+/// UI side and is built only after the publisher is already sharing surfaces.
+pub fn ring_needed(frame_interval: Duration, hold: Duration) -> usize {
+    let interval = frame_interval.as_nanos().max(1);
+    let retiring = hold.as_nanos().div_ceil(interval);
+    usize::try_from(retiring)
+        .unwrap_or(usize::MAX)
+        .saturating_add(3)
 }
 
 /// What a UI needs to connect to a publisher: the service name (a Mach service on macOS,

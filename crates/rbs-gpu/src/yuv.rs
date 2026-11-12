@@ -276,6 +276,28 @@ impl YuvConverter {
         Self::scaled_color(ctx, format, width, height, width, height, color)
     }
 
+    /// [`Self::with_color`] with the open-shadows grade. It applies only to
+    /// [`ColorSpace::BT709_LIMITED`]; the frames stay tagged with that colour.
+    pub fn with_tone(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+        open_shadows: bool,
+    ) -> Result<Self, GpuError> {
+        Self::scaled_tone(
+            ctx,
+            format,
+            width,
+            height,
+            width,
+            height,
+            color,
+            open_shadows,
+        )
+    }
+
     /// Creates a converter from `src_width x src_height` canvases to `width x height`
     /// planes. With equal sizes it is [`YuvConverter::new`] (pixel for pixel). Otherwise
     /// the canvas is fitted into the output with its aspect ratio kept and bilinear
@@ -310,6 +332,25 @@ impl YuvConverter {
         height: u32,
         color: ColorSpace,
     ) -> Result<Self, GpuError> {
+        Self::scaled_tone(
+            ctx, format, src_width, src_height, width, height, color, false,
+        )
+    }
+
+    /// [`Self::scaled_color`] with the open-shadows grade. `open_shadows` applies only
+    /// to [`ColorSpace::BT709_LIMITED`] and builds that grade's entry points; the default
+    /// path is unchanged when it is false.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scaled_tone(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+        open_shadows: bool,
+    ) -> Result<Self, GpuError> {
         if format == YuvFormat::P010 && !ctx.has(&CAP_P010) {
             return Err(GpuError::Unsupported(
                 "P010 needs 16-bit normalized render targets (gpu.p010)",
@@ -338,6 +379,11 @@ impl YuvConverter {
             });
         }
         let screen = color == ColorSpace::SRGB_VIDEO;
+        if open_shadows && color != ColorSpace::BT709_LIMITED {
+            return Err(GpuError::Unsupported(
+                "open shadows applies only to Rec. 709 limited range",
+            ));
+        }
         if color != ColorSpace::BT709_LIMITED && !screen {
             return Err(GpuError::Unsupported(
                 "encoder colour (BT.709 limited or sRGB full range)",
@@ -403,11 +449,23 @@ impl YuvConverter {
             YuvFormat::P010 => &CAP_P010_SURFACE,
         };
         // Chosen once, at creation. The default entries and constants are the BT.709 path.
-        let (luma_entry, chroma_entry) = match (one_to_one, screen) {
-            (true, false) => ("fs_luma", "fs_chroma"),
-            (false, false) => ("fs_luma_scaled", "fs_chroma_scaled"),
-            (true, true) => ("fs_luma_srgb", "fs_chroma_srgb"),
-            (false, true) => ("fs_luma_srgb_scaled", "fs_chroma_srgb_scaled"),
+        // Open shadows is its own entry point, so the default path does not test the grade.
+        let (luma_entry, chroma_entry) = if screen {
+            if one_to_one {
+                ("fs_luma_srgb", "fs_chroma_srgb")
+            } else {
+                ("fs_luma_srgb_scaled", "fs_chroma_srgb_scaled")
+            }
+        } else if open_shadows {
+            if one_to_one {
+                ("fs_luma_open", "fs_chroma_open")
+            } else {
+                ("fs_luma_open_scaled", "fs_chroma_open_scaled")
+            }
+        } else if one_to_one {
+            ("fs_luma", "fs_chroma")
+        } else {
+            ("fs_luma_scaled", "fs_chroma_scaled")
         };
         Ok(Self {
             format,

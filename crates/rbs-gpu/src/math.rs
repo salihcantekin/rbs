@@ -68,6 +68,19 @@ impl Affine2 {
         }
     }
 
+    /// The transform `t` of the way from `self` to `to` (`t` is 0 at `self`, 1 at `to`).
+    pub fn lerp(self, to: Self, t: f32) -> Self {
+        let m = |a: f32, b: f32| a + (b - a) * t;
+        Self {
+            a: m(self.a, to.a),
+            b: m(self.b, to.b),
+            c: m(self.c, to.c),
+            d: m(self.d, to.d),
+            tx: m(self.tx, to.tx),
+            ty: m(self.ty, to.ty),
+        }
+    }
+
     /// Returns the transform that applies `self` first, then `next`.
     pub fn then(&self, next: &Self) -> Self {
         Self {

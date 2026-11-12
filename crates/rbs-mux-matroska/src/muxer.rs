@@ -9,7 +9,8 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 use rbs_media_format::aac::AudioSpecificConfig;
 use rbs_media_format::avc::AvcConfig;
-use rbs_media_format::nal::{self, h264};
+use rbs_media_format::hvcc::Hvcc;
+use rbs_media_format::nal::{self, h264, hevc};
 use rbs_mux::{CreateError, MuxError, Muxer, MuxerConfig};
 
 use crate::ebml;
@@ -163,19 +164,34 @@ fn nanos(t: Timestamp) -> i128 {
 
 /// Whether an Annex B unit goes into a block: parameter sets live in the codec
 /// private data and access unit delimiters are not needed.
-fn keep_unit(unit: &[u8]) -> bool {
-    !unit.is_empty() && !is_parameter_set(unit) && nal::h264_type(unit) != Some(h264::AUD)
+fn keep_unit(codec: CodecId, unit: &[u8]) -> bool {
+    !unit.is_empty() && !is_parameter_set(codec, unit) && !is_aud(codec, unit)
 }
 
-fn is_parameter_set(unit: &[u8]) -> bool {
-    matches!(nal::h264_type(unit), Some(h264::SPS | h264::PPS))
+fn is_aud(codec: CodecId, unit: &[u8]) -> bool {
+    match codec {
+        CodecId::Hevc => nal::hevc_type(unit) == Some(hevc::AUD),
+        _ => nal::h264_type(unit) == Some(h264::AUD),
+    }
 }
 
-/// Refuses an in-band SPS or PPS that differs from the codec private data's.
+fn is_parameter_set(codec: CodecId, unit: &[u8]) -> bool {
+    match codec {
+        CodecId::Hevc => {
+            matches!(
+                nal::hevc_type(unit),
+                Some(hevc::VPS | hevc::SPS | hevc::PPS)
+            )
+        }
+        _ => matches!(nal::h264_type(unit), Some(h264::SPS | h264::PPS)),
+    }
+}
+
+/// Refuses an in-band parameter set that differs from the codec private data's.
 fn check_parameter_set(track: &Track, unit: &[u8]) -> Result<(), MuxError> {
-    if is_parameter_set(unit) && !track.parameter_sets.iter().any(|p| p == unit) {
+    if is_parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
         return Err(MuxError::InvalidPacket(
-            "H.264 parameter sets changed; Matroska needs a new output".into(),
+            "parameter sets changed; Matroska needs a new output".into(),
         ));
     }
     Ok(())
@@ -216,6 +232,31 @@ fn avcc_for(stream: &StreamDescriptor) -> Result<(Vec<u8>, Option<u8>), CreateEr
         other => Err(CreateError::InvalidConfig(format!(
             "H.264 in {other:?} framing"
         ))),
+    }
+}
+
+/// Length-prefixed HEVC whose extradata is an hvcC record. Annex B waits until a
+/// muxer builds hvcC from VPS, SPS and PPS.
+fn hvcc_for(stream: &StreamDescriptor) -> Result<(Vec<u8>, Option<u8>), CreateError> {
+    let invalid = |e| CreateError::InvalidConfig(format!("HEVC extradata: {e}"));
+    match stream.bitstream {
+        BitstreamFormat::LengthPrefixed { length_size } => {
+            if !matches!(length_size, 1 | 2 | 4) {
+                return Err(CreateError::InvalidConfig(format!(
+                    "NAL length size {length_size}"
+                )));
+            }
+            let hvcc = Hvcc::parse(stream.extradata.as_ref()).map_err(invalid)?;
+            if hvcc.length_size != length_size {
+                return Err(CreateError::InvalidConfig(
+                    "hvcC must match the packets' NAL length size".into(),
+                ));
+            }
+            Ok((stream.extradata.to_vec(), Some(length_size)))
+        }
+        other => Err(CreateError::Unsupported {
+            what: format!("HEVC in {other:?} framing"),
+        }),
     }
 }
 
@@ -267,7 +308,7 @@ impl MatroskaMuxer {
             ebml::bytes(&mut header, LANGUAGE, b"und");
             match (stream.codec, stream.params) {
                 (
-                    CodecId::H264,
+                    codec @ (CodecId::H264 | CodecId::Hevc),
                     StreamParams::Video {
                         format, frame_rate, ..
                     },
@@ -282,13 +323,27 @@ impl MatroskaMuxer {
                             what: "more than one video stream in Matroska".into(),
                         });
                     }
-                    let (avcc, length_size) = avcc_for(stream)?;
-                    let parameter_sets = AvcConfig::parse(&avcc)
-                        .map(|c| c.sps.iter().chain(&c.pps).map(|p| p.to_vec()).collect())
-                        .map_err(|e| CreateError::InvalidConfig(format!("H.264 extradata: {e}")))?;
+                    let (private, length_size, parameter_sets, codec_id) = if codec == CodecId::Hevc
+                    {
+                        let (hvcc, length_size) = hvcc_for(stream)?;
+                        let parameter_sets = Hvcc::parse(&hvcc)
+                            .map(|c| c.parameter_sets.iter().map(|p| p.to_vec()).collect())
+                            .map_err(|e| {
+                                CreateError::InvalidConfig(format!("HEVC extradata: {e}"))
+                            })?;
+                        (hvcc, length_size, parameter_sets, &b"V_MPEGH/ISO/HEVC"[..])
+                    } else {
+                        let (avcc, length_size) = avcc_for(stream)?;
+                        let parameter_sets = AvcConfig::parse(&avcc)
+                            .map(|c| c.sps.iter().chain(&c.pps).map(|p| p.to_vec()).collect())
+                            .map_err(|e| {
+                                CreateError::InvalidConfig(format!("H.264 extradata: {e}"))
+                            })?;
+                        (avcc, length_size, parameter_sets, &b"V_MPEG4/ISO/AVC"[..])
+                    };
                     ebml::uint(&mut header, TRACK_TYPE, 1);
-                    ebml::bytes(&mut header, CODEC_ID, b"V_MPEG4/ISO/AVC");
-                    ebml::bytes(&mut header, CODEC_PRIVATE, &avcc);
+                    ebml::bytes(&mut header, CODEC_ID, codec_id);
+                    ebml::bytes(&mut header, CODEC_PRIVATE, &private);
                     let interval =
                         u64::try_from(frame_rate.frame_duration().as_nanos()).unwrap_or(u64::MAX);
                     // 0 is not allowed (RFC 9559); leave it out for absurd frame rates.
@@ -300,7 +355,7 @@ impl MatroskaMuxer {
                     ebml::uint(&mut header, PIXEL_HEIGHT, u64::from(format.size.height));
                     ebml::close(&mut header, video);
                     tracks.push(Track {
-                        codec: CodecId::H264,
+                        codec,
                         bitstream: stream.bitstream,
                         kind: Kind::Video { length_size },
                         parameter_sets,
@@ -347,7 +402,7 @@ impl MatroskaMuxer {
                         ),
                     });
                 }
-                (CodecId::H264 | CodecId::Aac, _) => {
+                (CodecId::H264 | CodecId::Hevc | CodecId::Aac, _) => {
                     return Err(CreateError::InvalidConfig(format!(
                         "{} stream with {:?} parameters",
                         stream.codec, stream.params
@@ -578,7 +633,7 @@ impl Muxer for MatroskaMuxer {
                         MuxError::InvalidPacket("truncated length-prefixed NAL unit".into())
                     })?;
                     check_parameter_set(track, unit)?;
-                    media |= keep_unit(unit);
+                    media |= keep_unit(track.codec, unit);
                 }
                 if !media {
                     return Err(MuxError::InvalidPacket("packet without media".into()));
@@ -592,7 +647,7 @@ impl Muxer for MatroskaMuxer {
                         result = Err(e);
                         break;
                     }
-                    if keep_unit(unit) {
+                    if keep_unit(track.codec, unit) {
                         self.staging
                             .extend_from_slice(&(unit.len() as u32).to_be_bytes());
                         self.staging.extend_from_slice(unit);

@@ -10,8 +10,8 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    Border, Crop, Fallback, ItemContent, ItemStyle, Layout, SceneScope, SettingValue, Settings,
-    Shadow, Shape, SourceMonitor,
+    Border, CollectionGlide, Crop, Fallback, GlideEasing, ItemContent, ItemStyle, Layout,
+    SceneScope, SettingValue, Settings, Shadow, Shape, SourceGlide, SourceMonitor,
 };
 use rbs_user_data::document;
 use rbs_user_data::{DataError, UserData};
@@ -269,6 +269,46 @@ fn a_monitor_in_a_format_before_10_is_refused() {
 fn an_order_in_a_format_before_11_is_refused() {
     let why = invalid(&format!("{CANVAS}order = [0]\n"));
     assert!(why.contains("order"), "{why}");
+}
+
+#[test]
+fn a_glide_in_a_format_before_12_is_refused() {
+    let why = invalid("glide = { duration_ms = 200, easing = \"linear\" }\n");
+    assert!(why.contains("glide"), "{why}");
+    let why = invalid(&format!(
+        "{SOURCE}glide = {{ duration_ms = 200, easing = \"linear\" }}\n"
+    ));
+    assert!(why.contains("glide"), "{why}");
+}
+
+#[test]
+fn format_11_loads_as_default_glide_and_format_12_round_trips() {
+    let text = format!("format = 11\nkind = \"scene-collection\"\n{CANVAS}{SOURCE}");
+    let col = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(col.glide(), CollectionGlide::default());
+    assert!(col.sources().all(|s| s.glide.is_none()));
+
+    let mut show = show();
+    show.set_glide(CollectionGlide {
+        duration_ms: 0,
+        easing: GlideEasing::Linear,
+    })
+    .unwrap();
+    let cam = show.sources().find(|s| s.name == "Camera").unwrap().id;
+    show.set_source_glide(
+        cam,
+        Some(SourceGlide {
+            duration_ms: 900,
+            easing: GlideEasing::Linear,
+        }),
+    )
+    .unwrap();
+    let text = document::render(&show, Some("Show")).unwrap();
+    assert!(text.contains("format = 12"), "{text}");
+    assert!(text.contains("duration_ms = 0"), "{text}");
+    assert!(text.contains("easing = \"linear\""), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back, show);
 }
 
 #[test]

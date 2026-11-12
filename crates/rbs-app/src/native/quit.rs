@@ -81,3 +81,21 @@ pub fn route_quit(quit: fn()) -> bool {
     };
     added.as_bool()
 }
+
+#[cfg(test)]
+mod tests {
+    use objc2::sel;
+
+    use super::*;
+
+    #[test]
+    fn should_terminate_returns_now_when_the_quit_path_panics() {
+        assert!(QUIT.set(|| panic!("quit path")).is_ok());
+        let reply = should_terminate(
+            std::ptr::null_mut(),
+            sel!(applicationShouldTerminate:),
+            std::ptr::null_mut(),
+        );
+        assert_eq!(reply, TERMINATE_NOW);
+    }
+}

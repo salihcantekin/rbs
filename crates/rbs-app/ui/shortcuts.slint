@@ -4,7 +4,7 @@
 // handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, Checkbox, Icon, IconButton, IconName, KeyboardShortcutHint, Select, TextField } from "components.slint";
-import { SettingsCard, SettingsCallout, SettingsNotice } from "settings.slint";
+import { SettingsCard, SettingsCallout, SettingsNotice, RevealOnShow } from "settings.slint";
 
 // One shortcut of a row: its label ("⇧⌘Z"), canonical text, and scope.
 export struct ShortcutChip {
@@ -106,6 +106,7 @@ component Recorder inherits Rectangle {
         VerticalLayout {
             padding: Tokens.space-2;
             spacing: Tokens.space-2;
+            RevealOnShow { }
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 alignment: start;
@@ -284,7 +285,9 @@ export component ShortcutsSettings inherits VerticalLayout {
             clicked => { Shortcuts.ask-reset-all(); }
         }
     }
-    if Shortcuts.confirm-reset-all: SettingsCallout {
+    if Shortcuts.confirm-reset-all: VerticalLayout {
+        RevealOnShow { }
+        SettingsCallout {
         label: @tr("Reset every shortcut to its default?");
         HorizontalLayout {
             spacing: Tokens.space-2;
@@ -304,6 +307,7 @@ export component ShortcutsSettings inherits VerticalLayout {
                 text: @tr("Cancel");
                 clicked => { Shortcuts.answer-reset-all(false); }
             }
+        }
         }
     }
     SettingsCard {

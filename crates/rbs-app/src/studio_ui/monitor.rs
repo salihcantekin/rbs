@@ -44,6 +44,8 @@ pub struct MonitorUi {
     listing: bool,
     /// The Audio settings page is shown.
     page_shown: bool,
+    /// The level in words while a fader drag has not yet been confirmed by the host.
+    drag_text: Option<String>,
 }
 
 /// The monitor as the Mixer row and the Settings card show it.
@@ -165,6 +167,10 @@ impl StudioUi {
                 let became_wanted =
                     s.wanted && !self.monitor.status.as_ref().is_some_and(|o| o.wanted);
                 let solo_changed = self.monitor.status.as_ref().map(|o| &o.solo) != Some(&s.solo);
+                let host_text = fader::volume_text(s.volume);
+                if self.monitor.drag_text.as_deref() == Some(host_text.as_str()) {
+                    self.monitor.drag_text = None;
+                }
                 self.monitor.status = Some(s.clone());
                 if solo_changed {
                     self.mark_solo();
@@ -197,8 +203,9 @@ impl StudioUi {
         g.set_monitor_tone(v.tone);
         g.set_monitor_status(v.status.into());
         g.set_monitor_latency(v.latency.into());
+        let text = self.monitor.drag_text.clone().unwrap_or(v.volume_text);
         g.set_monitor_volume(v.volume);
-        g.set_monitor_volume_text(v.volume_text.into());
+        g.set_monitor_volume_text(text.into());
         g.set_monitor_devices(strings(v.devices));
         g.set_monitor_device(v.device);
         g.set_monitor_device_name(v.device_name.into());
@@ -254,8 +261,14 @@ impl StudioUi {
         self.send(Command::SetMonitorSolo(Vec::new()));
     }
 
+    /// The words for a fader position while it is dragged, before the host confirms it.
+    pub fn preview_monitor_volume(&mut self, position: f32) {
+        self.monitor.drag_text = Some(fader::volume_text(fader::volume_at(position)));
+    }
+
     /// The monitor volume from a fader position (sent when a drag ends).
     pub fn set_monitor_volume(&mut self, position: f32) {
+        self.monitor.drag_text = Some(fader::volume_text(fader::volume_at(position)));
         self.send(Command::SetMonitorVolume(fader::volume_at(position)));
     }
 

@@ -89,6 +89,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// Runs `body` where AVFoundation called back in. A panic stays in this process.
+fn catch_callback(body: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+}
+
+/// Test-only: the next disconnect block panics once, inside its `catch_unwind`.
+#[cfg(test)]
+static OBSERVER_PANIC: AtomicBool = AtomicBool::new(false);
+
 /// Moves an Objective-C or CoreFoundation object to another thread.
 ///
 /// The wrapped objects are AVFoundation capture objects, which Apple documents as
@@ -527,7 +536,11 @@ impl CaptureFactory for AvfCaptureFactory {
         };
         let (tx, rx) = mpsc::sync_channel::<bool>(1);
         let block = RcBlock::new(move |granted: Bool| {
-            let _ = tx.try_send(granted.as_bool());
+            // A panic must not unwind into AVFoundation. No answer: the wait below
+            // reads the permission the system has now.
+            catch_callback(|| {
+                let _ = tx.try_send(granted.as_bool());
+            });
         });
         // SAFETY: the block matches the documented handler signature; AVFoundation
         // retains it until it is called. The process needs `NSCameraUsageDescription`
@@ -853,8 +866,11 @@ define_class!(
             sample: &CMSampleBuffer,
             _connection: &AVCaptureConnection,
         ) {
-            // GCD queues do not always drain an autorelease pool per work item.
-            autoreleasepool(|_| lock(&self.ivars().producer).on_sample(sample));
+            // A panic must not unwind into AVFoundation. The frame is dropped.
+            catch_callback(|| {
+                // GCD queues do not always drain an autorelease pool per work item.
+                autoreleasepool(|_| lock(&self.ivars().producer).on_sample(sample));
+            });
         }
 
         #[unsafe(method(captureOutput:didDropSampleBuffer:fromConnection:))]
@@ -864,7 +880,9 @@ define_class!(
             _sample: &CMSampleBuffer,
             _connection: &AVCaptureConnection,
         ) {
-            lock(&self.ivars().producer).on_drop();
+            // A panic must not unwind into AVFoundation. The drop is not counted.
+            let producer = &self.ivars().producer;
+            catch_callback(|| lock(producer).on_drop());
         }
     }
 );
@@ -921,16 +939,26 @@ struct AvfSession {
     base: CaptureStats,
 }
 
+/// Block for [`observe`]. A panic leaves `lost` unchanged.
+fn lost_block(lost: Arc<AtomicBool>) -> RcBlock<dyn Fn(NonNull<NSNotification>)> {
+    RcBlock::new(move |_note: NonNull<NSNotification>| {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if OBSERVER_PANIC.swap(false, Ordering::Relaxed) {
+                panic!("observer");
+            }
+            lost.store(true, Ordering::Release);
+        }));
+    })
+}
+
 /// Observes `name` (from `object`) and sets `lost` when it is posted.
 fn observe(
     name: &NSString,
     object: &AnyObject,
     lost: &Arc<AtomicBool>,
 ) -> Sendable<Retained<ProtocolObject<dyn NSObjectProtocol>>> {
-    let lost = Arc::clone(lost);
-    let block = RcBlock::new(move |_: NonNull<NSNotification>| {
-        lost.store(true, Ordering::Release);
-    });
+    let block = lost_block(Arc::clone(lost));
     let center = NSNotificationCenter::defaultCenter();
     // SAFETY: the block only stores to an atomic it owns, so it may run on any thread
     // (no queue: it runs on the posting thread); the center copies it.
@@ -1222,5 +1250,17 @@ mod tests {
             ..t
         };
         assert_eq!(duration_rate(invalid), None);
+    }
+
+    #[test]
+    fn disconnect_block_contains_a_panic() {
+        let lost = Arc::new(AtomicBool::new(false));
+        let block = lost_block(Arc::clone(&lost));
+        OBSERVER_PANIC.store(true, Ordering::Relaxed);
+        block.call((NonNull::dangling(),));
+        assert!(!lost.load(Ordering::Relaxed));
+        assert!(!OBSERVER_PANIC.load(Ordering::Relaxed));
+        block.call((NonNull::dangling(),));
+        assert!(lost.load(Ordering::Relaxed));
     }
 }

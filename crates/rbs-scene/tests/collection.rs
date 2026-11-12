@@ -8,9 +8,9 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MAX_SOURCE_VOLUME,
-    MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape,
-    SourceAudio, SourceId, SourceMonitor,
+    Border, CanvasId, CollectionGlide, Crop, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle,
+    Layout, MAX_GLIDE_MS, MAX_SOURCE_VOLUME, MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope,
+    SettingValue, Settings, Shadow, Shape, SourceAudio, SourceGlide, SourceId, SourceMonitor,
 };
 use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -381,7 +381,7 @@ fn invalid_edits_are_refused() {
 }
 
 #[test]
-fn wanted_sources_are_those_visible_on_program_or_preview() {
+fn placed_sources_stay_wanted_off_air_until_deactivated() {
     let mut s = studio();
     let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
     let (next, _) = s.col.add_scene("Next", SceneScope::Shared).unwrap();
@@ -404,7 +404,12 @@ fn wanted_sources_are_those_visible_on_program_or_preview() {
     s.col
         .add_item(idle, ItemContent::Source(src3), full(1.0, 1.0), None)
         .unwrap();
-    assert!(s.col.wanted_sources().is_empty());
+    // Placed sources stay open before any scene is on air. Deactivating is the
+    // only way to release one.
+    assert_eq!(
+        s.col.wanted_sources(),
+        BTreeSet::from([s.cam, s.screen, src3])
+    );
     s.col.set_program(s.wide, Some(live)).unwrap();
     s.col.set_preview(s.wide, Some(next)).unwrap();
     // The hidden logo stays wanted: hiding does not close the source.
@@ -1224,8 +1229,11 @@ fn a_global_scene_is_drawn_above_every_scene_and_wanted_with_it() {
         .unwrap();
     s.col.set_program(s.wide, Some(live)).unwrap();
     s.col.set_preview(s.wide, Some(next)).unwrap();
-    // No global scene yet: only the shown scenes.
-    assert_eq!(s.col.wanted_sources(), BTreeSet::from([s.screen]));
+    // Placed already, even before this scene is the canvas's global scene.
+    assert_eq!(
+        s.col.wanted_sources(),
+        BTreeSet::from([s.screen, s.cam, mic])
+    );
     let before = s.col.flatten(s.wide, live).unwrap();
 
     s.col.set_globals(s.wide, Some(globals)).unwrap();
@@ -1353,6 +1361,53 @@ fn removing_a_global_scene_clears_it_and_undo_restores_it() {
     col.undo(clear).unwrap();
     assert_eq!(col, before);
     drop(set);
+}
+
+#[test]
+fn duplicate_scene_copies_items_and_shares_sources() {
+    let mut s = studio();
+    let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
+    let (item, _) = s
+        .col
+        .add_item(
+            live,
+            ItemContent::Source(s.cam),
+            Layout::new([100.0, 200.0], [320.0, 320.0]),
+            None,
+        )
+        .unwrap();
+    s.col
+        .add_item(
+            live,
+            ItemContent::Source(s.screen),
+            full(1920.0, 1080.0),
+            None,
+        )
+        .unwrap();
+    let before = s.col.clone();
+    let (copy, undo) = s.col.duplicate_scene(live, "Live 2").unwrap();
+    assert_ne!(copy, live);
+    let original = s.col.scene(live).unwrap();
+    let cloned = s.col.scene(copy).unwrap();
+    assert_eq!(cloned.name, "Live 2");
+    assert_eq!(cloned.items.len(), original.items.len());
+    for (a, b) in original.items.iter().zip(cloned.items.iter()) {
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.content, b.content);
+        assert_eq!(a.visible, b.visible);
+        assert_eq!(a.layout, b.layout);
+    }
+    assert_eq!(
+        s.col.placements_of(s.cam).len(),
+        before.placements_of(s.cam).len() + 1
+    );
+    assert_eq!(s.col.item(item).unwrap().1.layout.size, [320.0, 320.0]);
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+    assert_eq!(
+        s.col.duplicate_scene(live, "Live"),
+        Err(SceneError::DuplicateName("Live".into()))
+    );
 }
 
 #[test]
@@ -1643,4 +1698,67 @@ fn auto_layout_gives_each_item_a_layout_for_the_canvas_in_one_undo_step() {
     assert_eq!((fill.position, fill.size), ([0.0, 0.0], [1080.0, 1920.0]));
     assert_eq!(fill.crop.left, 0);
     assert!(fill.crop.right > 1000);
+}
+
+#[test]
+fn collection_and_source_glide_undo_and_refuse_out_of_range() {
+    let mut s = studio();
+    assert_eq!(s.col.glide(), CollectionGlide::default());
+    let before = s.col.clone();
+    let undo = s
+        .col
+        .set_glide(CollectionGlide {
+            duration_ms: 250,
+            easing: GlideEasing::Linear,
+        })
+        .unwrap();
+    assert_eq!(s.col.glide().duration_ms, 250);
+    assert_eq!(s.col.glide().easing, GlideEasing::Linear);
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+
+    assert_eq!(
+        s.col.set_glide(CollectionGlide {
+            duration_ms: MAX_GLIDE_MS + 1,
+            easing: GlideEasing::Linear,
+        }),
+        Err(SceneError::InvalidGlide)
+    );
+
+    let undo = s
+        .col
+        .set_source_glide(
+            s.cam,
+            Some(SourceGlide {
+                duration_ms: 800,
+                easing: GlideEasing::Linear,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        s.col.source(s.cam).unwrap().glide,
+        Some(SourceGlide {
+            duration_ms: 800,
+            easing: GlideEasing::Linear,
+        })
+    );
+    s.col.undo(undo).unwrap();
+    assert!(s.col.source(s.cam).unwrap().glide.is_none());
+
+    let set = s
+        .col
+        .set_source_glide(
+            s.cam,
+            Some(SourceGlide {
+                duration_ms: 100,
+                easing: GlideEasing::EaseInOut,
+            }),
+        )
+        .unwrap();
+    let clear = s.col.set_source_glide(s.cam, None).unwrap();
+    assert!(s.col.source(s.cam).unwrap().glide.is_none());
+    s.col.undo(clear).unwrap();
+    assert!(s.col.source(s.cam).unwrap().glide.is_some());
+    s.col.undo(set).unwrap();
+    assert!(s.col.source(s.cam).unwrap().glide.is_none());
 }

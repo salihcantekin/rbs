@@ -3,8 +3,8 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, TextField, Toggle, InfoHint, FeatureSection } from "components.slint";
-import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
+import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection } from "components.slint";
+import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
 
@@ -23,7 +23,7 @@ export struct FilterFieldData { label: string, help: string, log: bool, options:
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterLevels { input: float, reduction: float }
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int }
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
 // by name; `in-globals`: it is a global source too; `places`: how many items place it.
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
@@ -66,11 +66,14 @@ export struct MeterRow {
     // and soloed on the monitor.
     monitor: int,
     solo: bool,
+    // False while an audio source is not running: the strip stays, the fader does not move.
+    live: bool,
 }
 export struct ScaleMark { label: string, at: float }
 // The encoder fields of one output (a recording or a stream): the options offered and
 // the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
 export struct EncoderData {
+    codecs: [string], codec: int,
     encoders: [string], encoder: int,
     video-rates: [string], video-rate: int,
     audio-rates: [string], audio-rate: int,
@@ -82,6 +85,10 @@ export struct EncoderData {
     presets: [string], preset: int,
     profiles: [string], profile: int,
     b-frames: [string], b-frame: int, b-frames-note: string,
+    // 0 Video (Rec. 709 limited), 1 Screen (sRGB full range).
+    delivery: int,
+    // Lifts only the darkest tones. Shown while Colour is Video.
+    open-shadows: bool,
 }
 // One access token in the Remote control section: its name and what it allows.
 export struct TokenRow { name: string, access: string }
@@ -209,6 +216,9 @@ export global Studio {
     callback end-monitor-solo();
     // The volume as a fader position (sent when a drag ends) and the device by its
     // index in `monitor-devices` (0: System default).
+    // The words for a position while a drag runs (`-1` clears them). The host is told
+    // only from `set-monitor-volume`, when the pointer is released.
+    callback preview-monitor-volume(float);
     callback set-monitor-volume(float);
     callback set-monitor-device(int);
     // A device picker is shown: list the playback devices (only then, ADR-0097).
@@ -231,6 +241,12 @@ export global Studio {
     in property <string> monitor-solo;
     callback set-source-volume(int /* id */, float /* position */);
     callback rename-source(int /* id */, string /* name */);
+    // Collection glide defaults (ADR-0100): duration ms and easing 0 linear / 1 ease-in-out.
+    in property <int> glide-duration: 400;
+    in property <int> glide-easing: 1;
+    callback set-glide(int /* duration_ms */, int /* easing */);
+    // Per-source slide override (ADR-0100). `custom` false clears it.
+    callback set-source-glide(int /* id */, bool /* custom */, int /* duration_ms */, int /* easing */);
     // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
     callback set-source-sync-offset(int /* id */, int /* ms */);
     // The Library panel (ADR-0075): the built-in looks and sample pictures. The samples'
@@ -274,6 +290,14 @@ export global Studio {
     // Counts the asks, so asking for the same row again is a change too.
     in-out property <int> rename-scene-asked;
     in-out property <int> rename-source-asked;
+    // A menu or a shortcut asked to confirm before removing. The row shows its
+    // confirm and sets the id back to -1. `confirm-source-kind` 1 removes the source
+    // from this scene; 2 deletes it from every scene.
+    in-out property <int> confirming-scene: -1;
+    in-out property <int> confirm-scene-asked;
+    in-out property <int> confirming-source: -1;
+    in-out property <int> confirm-source-kind: 0;
+    in-out property <int> confirm-source-asked;
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
@@ -282,7 +306,8 @@ export global Studio {
     callback set-source-crop(int /* id */, int /* left */, int /* top */, int /* right */, int /* bottom */);
     // 0 full picture, 1 canvas size centred, 2 left half, 3 right half.
     callback set-source-region(int /* id */, int /* region */);
-    // 0 flip horizontally, 1 flip vertically, 2 turn 90 clockwise, 3 turn 90 counter-clockwise, 4 turn 180, 5 fit, 6 fill, 7 stretch, 8 centre, 9 reset (ADR-0084).
+    // 0 flip horizontally, 1 flip vertically, 2 turn 90 clockwise, 3 turn 90 counter-clockwise,
+    // 4 reserved (was 180°; use two 90° turns), 5 fit, 6 fill, 7 stretch, 8 centre, 9 reset (ADR-0084).
     callback transform-source(int /* id */, int /* op */);
     callback set-source-style(int /* id */, int /* shape */, float /* radius */, bool /* border */, float /* width */, string /* colour */);
     // The selection drawn by the toolkit where no preview layer shows the picture (the
@@ -312,7 +337,7 @@ export global Studio {
     in property <string> redo-name;
     // Undo (true) or redo (false) the newest scene edit.
     callback undo-edit(bool /* back */);
-    callback reset-clip(int /* meter */);
+    callback reset-clip(int /* source id */);
     callback reset-master-clip();
     // The master's fader position (0 to 1, the strips' fader law) and its mute (ADR-0081).
     callback set-master-volume(float);
@@ -668,7 +693,18 @@ component SourceRowView inherits Rectangle {
     property <bool> selected: Studio.selected-source == data.id;
     property <color> ink: data.visible ? Theme.text-primary : Theme.text-disabled;
     // Delete or Backspace asks first; a second Delete, Return or Remove confirms.
+    // `delete-all`: the confirm removes the source from every scene (Delete source).
     property <bool> confirm;
+    property <bool> delete-all;
+    property <int> confirm-asked: Studio.confirm-source-asked;
+    changed confirm-asked => { root.take-confirm(); }
+    function take-confirm() {
+        if Studio.confirming-source == data.id {
+            root.delete-all = Studio.confirm-source-kind == 2;
+            root.confirm = true;
+            Studio.confirming-source = -1;
+        }
+    }
     // Another source row is dragged over this one: it would take this row's place.
     property <bool> drop-here: drop.has-drag && Studio.dragging-source >= 0 && Studio.dragging-source != data.id;
     height: data.ok ? Tokens.size-control-md : Tokens.size-control-md + Tokens.type-caption-line;
@@ -689,7 +725,7 @@ component SourceRowView inherits Rectangle {
     in-out property <bool> editing;
     property <int> rename-asked: Studio.rename-source-asked;
     changed rename-asked => { root.take-rename(); }
-    init => { root.take-rename(); }
+    init => { root.take-confirm(); root.take-rename(); }
     function take-rename() {
         if Studio.renaming-source == data.id { root.editing = true; Studio.renaming-source = -1; }
     }
@@ -702,7 +738,9 @@ component SourceRowView inherits Rectangle {
         key-pressed(e) => {
             if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
             if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
-                root.leaving(); Studio.remove-from-scene(data.id); return accept;
+                root.leaving();
+                if root.delete-all { Studio.delete-source(data.id); } else { Studio.remove-from-scene(data.id); }
+                return accept;
             }
             if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
@@ -717,6 +755,7 @@ component SourceRowView inherits Rectangle {
                 root.leaving(); Studio.move-source(data.id, false); return accept;
             }
             if e.text == Key.Delete || e.text == Key.Backspace {
+                root.delete-all = false;
                 root.confirm = true;
                 return accept;
             }
@@ -852,7 +891,9 @@ component SourceRowView inherits Rectangle {
             padding-right: Tokens.space-1;
             spacing: Tokens.space-1;
             Text {
-                text: data.global ? @tr("Remove {} from global sources?", data.name) : @tr("Remove {} from this scene?", data.name);
+                text: root.delete-all ? @tr("Delete {} from every scene?", data.name)
+                    : data.global ? @tr("Remove {} from global sources?", data.name)
+                    : @tr("Remove {} from this scene?", data.name);
                 color: Theme.text-primary;
                 font-size: Tokens.type-caption-size;
                 vertical-alignment: center;
@@ -860,10 +901,13 @@ component SourceRowView inherits Rectangle {
                 overflow: elide;
             }
             Button {
-                text: @tr("Remove");
+                text: root.delete-all ? @tr("Delete") : @tr("Remove");
                 kind: "danger";
                 dense: true;
-                clicked => { root.leaving(); Studio.remove-from-scene(data.id); }
+                clicked => {
+                    root.leaving();
+                    if root.delete-all { Studio.delete-source(data.id); } else { Studio.remove-from-scene(data.id); }
+                }
             }
             Button {
                 text: @tr("Cancel");
@@ -892,6 +936,14 @@ component SceneRowView inherits Rectangle {
     callback leaving();
     property <bool> tools: touch.has-hover || editing;
     property <bool> confirm;
+    property <int> confirm-asked: Studio.confirm-scene-asked;
+    changed confirm-asked => { root.take-scene-confirm(); }
+    function take-scene-confirm() {
+        if Studio.confirming-scene == data.id {
+            root.confirm = true;
+            Studio.confirming-scene = -1;
+        }
+    }
     in-out property <bool> editing;
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
@@ -920,7 +972,7 @@ component SceneRowView inherits Rectangle {
     accessible-action-default => { Studio.switch-scene(data.id); }
     property <int> rename-asked: Studio.rename-scene-asked;
     changed rename-asked => { root.take-rename(); }
-    init => { root.take-rename(); }
+    init => { root.take-scene-confirm(); root.take-rename(); }
     function take-rename() {
         if Studio.renaming-scene == data.id { root.editing = true; Studio.renaming-scene = -1; }
     }
@@ -1313,7 +1365,12 @@ component MonitorButton inherits Rectangle {
         alt-click: true;
         clicked => { Studio.set-source-monitor(data.id, data.monitor == 0 ? 1 : 0); }
         alt-clicked => { Studio.set-source-solo(data.id, !data.solo); }
-        context-requested(x, y) => { menu.show({ x: x, y: y }); }
+        context-requested(x, y) => {
+            menu.open({
+                x: x - menu.absolute-position.x,
+                y: y - menu.absolute-position.y,
+            });
+        }
     }
     if data.monitor == 2: Rectangle {
         x: root.width - self.width;
@@ -1333,35 +1390,9 @@ component MonitorButton inherits Rectangle {
         font-weight: Tokens.type-label-weight;
         accessible-role: none;
     }
-    menu := ContextMenuArea {
-        enabled: false;
-        Menu {
-            MenuItem {
-                title: @tr("Monitor off");
-                checkable: true;
-                checked: data.monitor == 0;
-                activated => { Studio.set-source-monitor(data.id, 0); }
-            }
-            MenuItem {
-                title: @tr("Monitor and output");
-                checkable: true;
-                checked: data.monitor == 1;
-                activated => { Studio.set-source-monitor(data.id, 1); }
-            }
-            MenuItem {
-                title: @tr("Monitor only");
-                checkable: true;
-                checked: data.monitor == 2;
-                activated => { Studio.set-source-monitor(data.id, 2); }
-            }
-            MenuSeparator { }
-            MenuItem {
-                title: @tr("Solo in monitor");
-                checkable: true;
-                checked: data.solo;
-                activated => { Studio.set-source-solo(data.id, !data.solo); }
-            }
-        }
+    menu := CommandMenu {
+        context: "mixer-monitor";
+        target: "source=" + data.id;
     }
 }
 
@@ -1370,8 +1401,15 @@ component MonitorButton inherits Rectangle {
 // monitor volume (sent when a drag ends), the device, the latency or the problem in
 // words; the solo chip that ends solo goes on its own line below.
 component MonitorRow inherits VerticalLayout {
-    // The fader position while a drag runs; -1 otherwise.
+    // The fader position while a drag runs; -1 otherwise. Cleared once the host
+    // reports that position, so the knob does not jump back before the answer.
     property <float> drag: -1;
+    property <float> shown-volume: Studio.monitor-volume;
+    changed shown-volume => {
+        if root.drag >= 0 && Math.abs(root.shown-volume - root.drag) < 0.02 {
+            root.drag = -1;
+        }
+    }
     spacing: Tokens.space-1;
     HorizontalLayout {
         height: Tokens.size-control-md;
@@ -1400,13 +1438,10 @@ component MonitorRow inherits VerticalLayout {
                 label: @tr("Monitor volume");
                 value: root.drag >= 0 ? root.drag : Studio.monitor-volume;
                 value-text: Studio.monitor-volume-text;
-                moved(v) => { root.drag = v; }
-                released => {
-                    if root.drag >= 0 { Studio.set-monitor-volume(root.drag); }
-                    root.drag = -1;
-                }
-                cancelled => { root.drag = -1; }
-                reset => { Studio.set-monitor-volume(1); }
+                moved(v) => { root.drag = v; Studio.preview-monitor-volume(v); }
+                released => { if root.drag >= 0 { Studio.set-monitor-volume(root.drag); } }
+                cancelled => { root.drag = -1; Studio.preview-monitor-volume(-1); }
+                reset => { root.drag = -1; Studio.set-monitor-volume(1); }
             }
         }
         VerticalLayout {
@@ -1454,8 +1489,15 @@ component MonitorRow inherits VerticalLayout {
 // The monitor in the Mixer's wide layout (ADR-0097): the same controls as
 // MonitorRow, stacked in a column after the master.
 component MonitorBox inherits VerticalLayout {
-    // The fader position while a drag runs; -1 otherwise.
+    // The fader position while a drag runs; -1 otherwise. Cleared once the host
+    // reports that position, so the knob does not jump back before the answer.
     property <float> drag: -1;
+    property <float> shown-volume: Studio.monitor-volume;
+    changed shown-volume => {
+        if root.drag >= 0 && Math.abs(root.shown-volume - root.drag) < 0.02 {
+            root.drag = -1;
+        }
+    }
     spacing: Tokens.space-2;
     alignment: start;
     HorizontalLayout {
@@ -1494,19 +1536,20 @@ component MonitorBox inherits VerticalLayout {
             label: @tr("Monitor volume");
             value: root.drag >= 0 ? root.drag : Studio.monitor-volume;
             value-text: Studio.monitor-volume-text;
-            moved(v) => { root.drag = v; }
-            released => {
-                if root.drag >= 0 { Studio.set-monitor-volume(root.drag); }
-                root.drag = -1;
-            }
-            cancelled => { root.drag = -1; }
-            reset => { Studio.set-monitor-volume(1); }
+            moved(v) => { root.drag = v; Studio.preview-monitor-volume(v); }
+            released => { if root.drag >= 0 { Studio.set-monitor-volume(root.drag); } }
+            cancelled => { root.drag = -1; Studio.preview-monitor-volume(-1); }
+            reset => { root.drag = -1; Studio.set-monitor-volume(1); }
         }
         Text {
+            width: Tokens.size-control-lg * 4;
+            horizontal-stretch: 0;
             text: Studio.monitor-volume-text;
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
+            horizontal-alignment: right;
             vertical-alignment: center;
+            overflow: elide;
             accessible-role: none;
         }
     }
@@ -1523,29 +1566,151 @@ component MonitorBox inherits VerticalLayout {
     }
 }
 
-// One horizontal meter (AudioMeter, U16): bar with three zones, peak-hold line, clip
-// box (outlined, filled once clipped), labelled scale under the strip.
+// The mixer's level in words ("0 dB", "−6.0 dB", "Silent"). A fixed width, so a longer
+// reading does not resize the fader. Not a field: the fader is the only control.
+// The accessible name includes the level.
+component LevelReadout inherits Rectangle {
+    in property <string> text;
+    in property <string> title;
+    in property <bool> muted;
+    // Rows: fixed `size.meter.readout` so a longer reading does not resize the fader.
+    // Columns control column: `compact` — caption size in `size.mixer.controls`.
+    in property <bool> fixed: true;
+    in property <bool> compact: false;
+    width: root.compact ? Tokens.size-mixer-controls : Tokens.size-meter-readout;
+    horizontal-stretch: 0;
+    accessible-role: AccessibleRole.text;
+    accessible-label: @tr("Volume of {}, {}", title, text);
+    if !root.compact: HorizontalLayout {
+        width: parent.width;
+        ValueReadout {
+            text: root.text;
+            color: root.muted ? Theme.text-disabled : Theme.text-secondary;
+        }
+    }
+    if root.compact: Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: root.muted ? Theme.text-disabled : Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+// Name, level, clip box and icon buttons, in one order for a row and a column.
+// A control the strip does not have (the master's monitor and more) is left out,
+// so it takes no space and does not leave a hole.
+component StripControls inherits HorizontalLayout {
+    in property <MeterRow> data;
+    in property <bool> master;
+    in property <string> title;
+    // Columns: the readout shrinks with the strip. Rows keep it fixed.
+    in property <bool> fixed-readout: true;
+    // Columns put the name above the fader, so this row is only the readout and buttons.
+    in property <bool> show-name: true;
+    callback reset();
+    callback toggle-muted();
+    // The "more" button (sources only): its lower left, in window coordinates.
+    callback open-menu(length, length);
+    spacing: Tokens.space-1;
+    width: 100%;
+    min-width: 0px;
+    // Name (and icon) on the left, readout and buttons on the right — never centred
+    // in a wide panel.
+    alignment: stretch;
+    if root.show-name: VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: data.muted ? Theme.text-disabled : Theme.text-secondary; }
+    }
+    if root.show-name: VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 1;
+        min-width: 0px;
+        Text {
+            text: root.title;
+            color: data.muted ? Theme.text-disabled : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            overflow: elide;
+        }
+    }
+    // Columns put the name above: a spacer keeps the readout and buttons on the right.
+    if !root.show-name: Rectangle {
+        horizontal-stretch: 1;
+        min-width: 0px;
+    }
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        min-width: 0px;
+        LevelReadout { text: data.volume-text; title: root.title; muted: data.muted; fixed: root.fixed-readout; }
+    }
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        Rectangle {
+            width: Tokens.size-icon-box;
+            height: Tokens.size-icon-box;
+            border-width: Tokens.size-border;
+            border-color: Theme.border-strong;
+            border-radius: Tokens.radius-sm;
+            background: data.clipped ? Theme.meter-clip : transparent;
+            accessible-role: button;
+            accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", root.title) : @tr("Not clipped: {}", root.title);
+            accessible-action-default => { root.reset(); }
+            TouchArea { clicked => { root.reset(); } }
+        }
+    }
+    if !root.master: VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        MonitorButton { data: data; title: root.title; }
+    }
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        IconButton {
+            icon: data.muted ? IconName.speaker-off : IconName.speaker;
+            name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
+            checked: data.muted;
+            framed: true;
+            clicked => { root.toggle-muted(); }
+        }
+    }
+    if !root.master: VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        IconButton {
+            icon: IconName.more;
+            name: @tr("More options for {}", root.title);
+            clicked => { root.open-menu(self.absolute-position.x, self.absolute-position.y + self.height); }
+        }
+    }
+}
+
+// One horizontal meter (AudioMeter, U16) in the rows arrangement. Two lines, so the
+// fader can be as long as the row and the row stays inside the panel: the icon, name,
+// level, clip box and icon buttons on the first line, then the bar and the fader.
 component MeterView inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
-    // The name column: the kind's icon and the name, as wide as a third of a menu
-    // at most (the scale under the bars lines up with it).
-    in property <length> name-width;
     // The master strip (ADR-0081): its own callbacks, no menu, no "more" button.
     in property <bool> master;
     property <string> title: root.master ? @tr("Master") : data.name;
     function set-volume(v: float) {
         if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
     }
-    function enter-level(t: string) -> bool {
-        if Studio.level-position(t) < 0 { return false; }
-        root.set-volume(Studio.level-position(t));
-        return true;
-    }
     function toggle-muted() {
         if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
-    height: Tokens.size-control-md;
     accessible-role: progress-indicator;
     accessible-label: root.title;
     accessible-value: data.value;
@@ -1561,109 +1726,110 @@ component MeterView inherits Rectangle {
             }
         }
     }
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        HorizontalLayout {
-            width: root.name-width;
+    VerticalLayout {
+        width: 100%;
+        spacing: Tokens.space-1;
+        // First line, and it does not wrap: icon, name, level, clip box, then the
+        // icon buttons the strip actually has. Full width so the name stays left and
+        // the buttons stay right in a wide Mixer.
+        StripControls {
+            height: Tokens.size-control-md;
             spacing: Tokens.space-2;
-            VerticalLayout {
-                alignment: center;
-                Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: data.muted ? Theme.text-disabled : Theme.text-secondary; }
-            }
-            Text {
-                text: root.title;
-                color: data.muted ? Theme.text-disabled : Theme.text-primary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-                overflow: elide;
+            data: data;
+            master: root.master;
+            title: root.title;
+            reset => { root.reset(); }
+            toggle-muted => { root.toggle-muted(); }
+            open-menu(x, y) => {
+                menu.open({
+                    x: x - menu.absolute-position.x,
+                    y: y - menu.absolute-position.y,
+                });
             }
         }
+        // Second line: the meter and the fader, both as long as the row. The fader's
+        // own minimum would force the row wider than a narrow panel.
         VerticalLayout {
-            alignment: center;
+            width: 100%;
             spacing: 0px;
             bar := Rectangle {
-            height: Tokens.space-1;
-            background: Theme.surface-sunken;
-            border-width: Tokens.size-border;
-            border-color: Theme.border-subtle;
-            border-radius: Tokens.radius-sm;
-            clip: true;
-            Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-            Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-            Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-            if data.peak > 0: Rectangle {
-                x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
-                width: Tokens.size-meter-peak;
-                background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+                height: Tokens.size-meter-bar;
+                background: Theme.surface-sunken;
+                border-width: Tokens.size-border;
+                border-color: Theme.border-subtle;
+                border-radius: Tokens.radius-sm;
+                clip: true;
+                Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+                Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+                Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+                if data.peak > 0: Rectangle {
+                    x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
+                    width: Tokens.size-meter-peak;
+                    background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+                }
             }
-            }
-            // The fader under the bar, same width (ADR-0059 fader law, -60 to 0 dB).
+            // The fader under the bar, the same width (ADR-0059 fader law, -60 to 0 dB).
             Slider {
+                min-width: 0px;
                 label: @tr("Volume of {}", root.title);
                 value: data.volume;
                 value-text: data.volume-text;
-                enabled: !data.muted;
+                enabled: data.live && !data.muted;
                 moved(v) => { root.set-volume(v); }
                 reset => { root.set-volume(1); }
             }
         }
-        LevelText {
-            width: Tokens.size-control-lg * 2;
-            text: data.volume-text;
-            label: @tr("Volume of {}", root.title);
-            muted: data.muted;
-            entered(t) => { return root.enter-level(t); }
-        }
-        clip-box := Rectangle {
-            width: Tokens.size-icon-box;
-            height: Tokens.size-icon-box;
-            y: (root.height - self.height) / 2;
-            border-width: Tokens.size-border;
-            border-color: Theme.border-strong;
-            border-radius: Tokens.radius-sm;
-            background: data.clipped ? Theme.meter-clip : transparent;
-            accessible-role: button;
-            accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", root.title) : @tr("Not clipped: {}", root.title);
-            accessible-action-default => { root.reset(); }
-            TouchArea { clicked => { root.reset(); } }
-        }
-        // The monitor (ADR-0097); the master has none (the monitor is before it), so a
-        // space keeps the bars aligned.
-        if !root.master: VerticalLayout {
-            alignment: center;
-            MonitorButton { data: data; title: root.title; }
-        }
-        if root.master: Rectangle { width: Tokens.size-control-sm; }
-        // Mute (ADR-0059): the icon and the accessible state both say it (U7).
-        VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: data.muted ? IconName.speaker-off : IconName.speaker;
-                name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
-                checked: data.muted;
-                framed: true;
-                clicked => { root.toggle-muted(); }
-            }
-        }
-        if !root.master: VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.more;
-                name: @tr("More options for {}", root.title);
-                clicked => {
-                    menu.open({
-                        x: self.absolute-position.x - menu.absolute-position.x,
-                        y: self.absolute-position.y - menu.absolute-position.y + self.height,
-                    });
-                }
-            }
-        }
-        // The master has no menu; the space keeps the scale and the bars aligned.
-        if root.master: Rectangle { width: Tokens.size-control-sm; }
     }
 }
 
-// A hidden source (ADR-0080): its name and a button that shows it in the Mixer again.
+// A hidden source in the columns arrangement: the same width as a strip, name on top,
+// the Show button at the bottom. No meter and no fader (ADR-0080: it is still heard).
+component HiddenStrip inherits Rectangle {
+    in property <MeterRow> data;
+    width: Tokens.size-mixer-strip;
+    horizontal-stretch: 0;
+    clip: true;
+    property <length> pad: Tokens.space-1;
+    property <length> name-h: Tokens.size-control-sm;
+    menu := CommandMenu {
+        context: "mixer-source";
+        target: "source=" + data.id;
+    }
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                menu.open({ x: self.mouse-x, y: self.mouse-y });
+            }
+        }
+    }
+    HorizontalLayout {
+        x: root.pad;
+        y: root.pad;
+        width: root.width - 2 * root.pad;
+        height: root.name-h;
+        spacing: root.pad;
+        Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: Theme.text-secondary; }
+        Text {
+            text: data.name;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            overflow: elide;
+        }
+    }
+    IconButton {
+        x: (root.width - self.width) / 2;
+        y: root.height - root.pad - self.height;
+        icon: IconName.eye;
+        name: @tr("Show {} in the Mixer", data.name);
+        clicked => { Studio.set-source-mixer-hidden(data.id, false); }
+    }
+}
+
+// A hidden source in the rows arrangement (ADR-0080): its name and a button that shows
+// it in the Mixer again.
 component HiddenRow inherits Rectangle {
     in property <MeterRow> data;
     height: Tokens.size-control-md;
@@ -1703,8 +1869,10 @@ component HiddenRow inherits Rectangle {
     }
 }
 
-// One vertical meter strip for a wide, low Mixer (ADR-0078 decision 5): the name, a bar
-// with the same three zones, peak line and clip box as MeterView, and the mute button.
+// One vertical strip. The panel assigns the box (width `size.mixer.strip`, height the
+// row). Positions are explicit, so a stretch pass cannot collapse the fader or float
+// the buttons. The five control slots share one height; Master leaves monitor and more
+// empty so "0 dB" lines up.
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
@@ -1714,20 +1882,30 @@ component MeterStrip inherits Rectangle {
     function set-volume(v: float) {
         if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
     }
-    function enter-level(t: string) -> bool {
-        if Studio.level-position(t) < 0 { return false; }
-        root.set-volume(Studio.level-position(t));
-        return true;
-    }
     function toggle-muted() {
         if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
-    width: Tokens.size-menu-sm * 0.4;
-    background: Theme.surface-sunken;
-    border-radius: Tokens.radius-md;
+    // The panel sets the height. Width stays the token, so a long name cannot widen the column.
+    // VSlider centres its track in its own width, so that width stays `size.control.sm`.
+    width: Tokens.size-mixer-strip;
+    horizontal-stretch: 0;
+    clip: true;
+    property <bool> quiet: data.muted || (!root.master && !data.live);
+    property <length> pad: Tokens.space-1;
+    property <length> gap: Tokens.space-1;
+    property <length> name-h: Tokens.size-control-sm;
+    property <length> slot: Tokens.size-control-sm;
+    property <length> controls-w: Tokens.size-mixer-controls;
+    // Five slots and the four gaps between them. Master keeps the empty ones.
+    property <length> controls-h: 5 * root.slot + 4 * root.gap;
+    property <length> body-y: root.pad + root.name-h + root.gap;
+    property <length> body-h: max(0px, root.height - root.body-y - root.pad);
+    property <length> controls-y: max(root.body-y, root.height - root.pad - root.controls-h);
+    property <length> controls-x: root.width - root.pad - root.controls-w;
+    property <length> step: root.slot + root.gap;
     accessible-role: progress-indicator;
     accessible-label: root.title;
-    accessible-value: data.value;
+    accessible-value: data.live ? data.value : data.volume-text;
     menu := CommandMenu {
         context: "mixer-source";
         target: "source=" + data.id;
@@ -1739,112 +1917,252 @@ component MeterStrip inherits Rectangle {
             }
         }
     }
-    VerticalLayout {
-        padding: Tokens.space-1;
-        spacing: Tokens.space-1;
+    HorizontalLayout {
+        x: root.pad;
+        y: root.pad;
+        width: root.width - 2 * root.pad;
+        height: root.name-h;
+        spacing: root.gap;
+        alignment: stretch;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Icon {
+                name: data.muted ? IconName.speaker-off : Icons.named(data.icon);
+                ink: root.quiet ? Theme.text-disabled : Theme.text-secondary;
+            }
+        }
         Text {
             text: root.title;
-            color: data.muted ? Theme.text-disabled : Theme.text-primary;
-            font-size: Tokens.type-caption-size;
-            horizontal-alignment: center;
+            color: root.quiet ? Theme.text-disabled : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            horizontal-stretch: 1;
+            min-width: 0px;
             overflow: elide;
-            accessible-role: none;
         }
-        HorizontalLayout {
-            vertical-stretch: 1;
-            alignment: center;
-            spacing: Tokens.space-1;
-            bar := Rectangle {
-                width: Tokens.space-3;
-                background: Theme.surface-sunken;
-                border-width: Tokens.size-border;
-                border-color: Theme.border-subtle;
-                border-radius: Tokens.radius-sm;
-                clip: true;
-                Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-                Rectangle { y: parent.height * (1 - data.mi-to); height: parent.height * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-                Rectangle { y: parent.height * (1 - data.hi-to); height: parent.height * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-                if data.peak > 0: Rectangle {
-                    y: min(parent.height - Tokens.size-meter-peak, parent.height * (1 - data.peak));
-                    height: Tokens.size-meter-peak;
-                    background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
-                }
-            }
-            // The fader beside the bar (ADR-0059 fader law, -60 to 0 dB).
-            VSlider {
-                label: @tr("Volume of {}", root.title);
-                value: data.volume;
-                value-text: data.volume-text;
-                enabled: !data.muted;
-                moved(v) => { root.set-volume(v); }
-                reset => { root.set-volume(1); }
-            }
+    }
+    bar := Rectangle {
+        x: root.pad;
+        y: root.body-y;
+        width: Tokens.size-meter-bar;
+        height: root.body-h;
+        background: Theme.surface-sunken;
+        border-width: Tokens.size-border;
+        border-color: Theme.border-subtle;
+        border-radius: Tokens.radius-sm;
+        clip: true;
+        Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+        Rectangle { y: parent.height * (1 - data.mi-to); height: parent.height * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+        Rectangle { y: parent.height * (1 - data.hi-to); height: parent.height * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+        if data.peak > 0: Rectangle {
+            y: min(parent.height - Tokens.size-meter-peak, parent.height * (1 - data.peak));
+            height: Tokens.size-meter-peak;
+            background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
         }
-        // The clip box and the level in words share one row, so the bar keeps its height.
-        HorizontalLayout {
-            alignment: center;
-            spacing: Tokens.space-1;
-            Rectangle {
-                width: Tokens.size-icon-box;
-                height: Tokens.size-icon-box;
-                border-width: Tokens.size-border;
-                border-color: Theme.border-strong;
-                border-radius: Tokens.radius-sm;
-                background: data.clipped ? Theme.meter-clip : transparent;
-                accessible-role: button;
-                accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", root.title) : @tr("Not clipped: {}", root.title);
-                accessible-action-default => { root.reset(); }
-                TouchArea { clicked => { root.reset(); } }
-            }
-            LevelText {
-                width: Tokens.size-control-lg * 2;
-                text: data.volume-text;
-                label: @tr("Volume of {}", root.title);
-                muted: data.muted;
-                entered(t) => { return root.enter-level(t); }
-            }
+    }
+    VSlider {
+        x: root.pad + Tokens.size-meter-bar + root.gap;
+        y: root.body-y;
+        width: Tokens.size-control-sm;
+        height: root.body-h;
+        horizontal-stretch: 0;
+        label: @tr("Volume of {}", root.title);
+        value: data.volume;
+        value-text: data.volume-text;
+        enabled: (root.master || data.live) && !data.muted;
+        moved(v) => { root.set-volume(v); }
+        reset => { root.set-volume(1); }
+    }
+    // Five slots, anchored to the bottom. Missing widgets leave their slot empty, so
+    // Master (no monitor, no more) keeps the same readout position as a source.
+    LevelReadout {
+        x: root.controls-x;
+        y: root.controls-y;
+        height: root.slot;
+        text: data.volume-text;
+        title: root.title;
+        muted: root.quiet;
+        compact: true;
+    }
+    Rectangle {
+        x: root.controls-x + (root.controls-w - root.slot) / 2;
+        y: root.controls-y + root.step;
+        width: root.slot;
+        height: root.slot;
+        border-width: Tokens.size-border;
+        border-color: Theme.border-strong;
+        border-radius: Tokens.radius-sm;
+        background: data.clipped ? Theme.meter-clip : transparent;
+        accessible-role: button;
+        accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", root.title) : @tr("Not clipped: {}", root.title);
+        accessible-action-default => { root.reset(); }
+        TouchArea { clicked => { root.reset(); } }
+    }
+    if !root.master: MonitorButton {
+        x: root.controls-x + (root.controls-w - self.width) / 2;
+        y: root.controls-y + 2 * root.step;
+        data: data;
+        title: root.title;
+    }
+    IconButton {
+        x: root.controls-x + (root.controls-w - self.width) / 2;
+        y: root.controls-y + 3 * root.step;
+        icon: data.muted ? IconName.speaker-off : IconName.speaker;
+        name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
+        checked: data.muted;
+        framed: true;
+        clicked => { root.toggle-muted(); }
+    }
+    if !root.master: IconButton {
+        x: root.controls-x + (root.controls-w - self.width) / 2;
+        y: root.controls-y + 4 * root.step;
+        icon: IconName.more;
+        name: @tr("More options for {}", root.title);
+        clicked => {
+            menu.open({
+                x: self.absolute-position.x - menu.absolute-position.x,
+                y: self.absolute-position.y + self.height - menu.absolute-position.y,
+            });
         }
-        // The mute button and the "more" button share the last row; the clip box has
-        // its own row above the bar, so the strip stays as narrow as it was.
-        HorizontalLayout {
-            alignment: center;
-            // Three buttons fit the strip with the small gap.
-            spacing: root.master ? Tokens.space-2 : Tokens.space-1;
-            IconButton {
-                icon: data.muted ? IconName.speaker-off : IconName.speaker;
-                name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
-                checked: data.muted;
-                framed: true;
-                clicked => { root.toggle-muted(); }
-            }
-            if !root.master: MonitorButton { data: data; title: root.title; }
-            if !root.master: more := IconButton {
-                icon: IconName.more;
-                name: @tr("More options for {}", root.title);
-                clicked => {
-                    menu.open({
-                        x: self.absolute-position.x - menu.absolute-position.x,
-                        y: self.absolute-position.y - menu.absolute-position.y + self.height,
-                    });
-                }
+    }
+}
+
+// Compact group caption for columns: uppercase, elides to the pane width, never sets
+// the pane's preferred width (This scene / Global stay open in columns).
+component MixerCaption inherits Rectangle {
+    in property <string> title;
+    height: Tokens.size-control-sm;
+    min-width: 0px;
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.title.to-uppercase();
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        font-weight: Tokens.type-label-weight;
+        letter-spacing: Tokens.size-tracking-caps;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+// One columns group. Width is the strip count times the strip width: the caption elides
+// inside that and never widens the group. Height is the row's inner height, passed in,
+// so every strip (including Master) gets the same box.
+component MixerGroupCluster inherits Rectangle {
+    in property <string> title;
+    // 0 = This scene, 1 = Global, 2 = Master.
+    in property <int> kind;
+    in property <length> col-h;
+    property <int> count: root.kind == 2 ? Studio.master-meter.length : root.kind == 0 ? Studio.meter-scenes : Studio.meter-globals;
+    property <length> strip-w: Tokens.size-mixer-strip + Tokens.size-field-gap;
+    property <length> body-y: Tokens.size-control-sm + Tokens.size-field-gap;
+    width: root.count > 0 ? (root.kind == 2 ? Tokens.size-mixer-strip : root.count * root.strip-w) : 0px;
+    height: root.col-h;
+    horizontal-stretch: 0;
+    clip: true;
+    MixerCaption {
+        y: 0;
+        width: parent.width;
+        title: root.title;
+    }
+    if root.kind == 2 && Studio.master-meter.length > 0: MeterStrip {
+        x: 0;
+        y: root.body-y;
+        height: root.height - root.body-y;
+        master: true;
+        data: Studio.master-meter[0];
+        reset => { Studio.reset-master-clip(); }
+    }
+    if root.kind != 2: HorizontalLayout {
+        x: 0;
+        y: root.body-y;
+        width: parent.width;
+        height: root.height - root.body-y;
+        spacing: 0px;
+        alignment: start;
+        for m in Studio.meters: Rectangle {
+            property <bool> show: (root.kind == 0 && !m.global) || (root.kind == 1 && m.global);
+            // A source in the other group keeps a zero-wide cell, so it cannot open a hole
+            // or push this group's strips apart.
+            width: show ? root.strip-w : 0px;
+            height: parent.height;
+            horizontal-stretch: 0;
+            clip: true;
+            MeterStrip {
+                x: 0;
+                y: 0;
+                height: parent.height;
+                data: m;
+                reset => { Studio.reset-clip(m.id); }
             }
         }
     }
 }
 
-// The Mixer (ADR-0078 decision 5): the panel's shape picks the layout. A wide, low panel
-// draws vertical strips side by side, a cluster per group with its header above; a tall,
-// narrow one draws horizontal rows under full-width headers. The groups are the program
-// scene's own sources and the global ones; both headers fold and are saved by id.
+// A group closed in the columns arrangement (Hidden only): a vertical strip as wide as
+// a collapsed stack. The title runs along the strip; the chevron points right.
+component MixerGroupStrip inherits Rectangle {
+    in property <string> title;
+    callback open();
+    width: Tokens.size-control-lg;
+    horizontal-stretch: 0;
+    vertical-stretch: 1;
+    border-radius: Tokens.radius-sm;
+    background: touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: button;
+    accessible-label: title;
+    accessible-expanded: false;
+    accessible-action-default => { root.open(); }
+    forward-focus: focus;
+    property <length> label-room: max(0px, root.height - Tokens.size-icon-box - 3 * Tokens.space-1);
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: Tokens.space-1;
+        name: IconName.chevron-right;
+        ink: Theme.text-secondary;
+    }
+    label := Text {
+        width: min(self.preferred-width, root.label-room);
+        height: self.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: Tokens.size-icon-box + 2 * Tokens.space-1 + (self.width - self.height) / 2;
+        transform-rotation: 90deg;
+        text: root.title.to-uppercase();
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        font-weight: Tokens.type-label-weight;
+        letter-spacing: Tokens.size-tracking-caps;
+        overflow: elide;
+        accessible-role: none;
+    }
+    focus := RingFocus {
+        focus-on-click: false;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.open(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        clicked => { focus.focus-pointer(); root.open(); }
+    }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-sm; }
+}
+
+// The Mixer (ADR-0078 / ADR-0083 / ADR-0101): wide = fixed strips side by side with
+// horizontal scroll; tall = rows under foldable headers.
 export component MixerPanel inherits Rectangle {
     background: Theme.surface-raised;
     // ADR-0083: a fixed layout never reflows by size; auto follows the panel's shape.
     property <bool> wide: Sections.mixer-orientation == 2 || (Sections.mixer-orientation == 0 && self.width > self.height * 1.5);
+    property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);
+    // Rows still fold This scene / Global; columns keep them open.
     property <bool> scene-closed: Sections.closed("mixer.scene", Sections.rev);
     property <bool> global-closed: Sections.closed("mixer.global", Sections.rev);
-    property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);
     property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
-    property <length> name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
     if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -1853,18 +2171,18 @@ export component MixerPanel inherits Rectangle {
         action: Studio.state == 1 ? @tr("Add source") : "";
         act => { add-menu.open({ x: self.x + self.width / 2, y: self.y + self.height / 2 }); }
     }
-    // Wide: strips in clusters, scrolling sideways when they do not fit.
-    if root.any && root.wide: Flickable {
+    // Columns: a clipped panel with one absolutely positioned row at its preferred
+    // width. Flickable/layout children otherwise fill the panel and stretch Master away
+    // from the sources (x/y take the row out of that fill behaviour).
+    if root.any && root.wide: Rectangle {
         width: parent.width;
         height: parent.height;
-        content-width: max(clusters.preferred-width, self.width);
-        content-height: root.height;
+        clip: true;
         TouchArea {
-            width: max(clusters.preferred-width, root.width);
-            height: root.height;
+            width: parent.width;
+            height: parent.height;
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    // Relative to the panel, where the menu is, whatever the scroll.
                     mixer-menu.open({
                         x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
                         y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
@@ -1872,99 +2190,119 @@ export component MixerPanel inherits Rectangle {
                 }
             }
         }
-        clusters := HorizontalLayout {
-            height: root.height;
-            padding: Tokens.size-panel-pad;
-            spacing: Tokens.size-section-gap;
-            alignment: start;
-            if Studio.meter-scenes > 0: VerticalLayout {
+        flick := Flickable {
+            width: parent.width;
+            height: parent.height;
+            content-width: row.preferred-width;
+            // Taller than the viewport only when the viewport is shorter than a strip
+            // plus its caption: then the row scrolls so the buttons can be reached.
+            content-height: row.height;
+            mouse-drag-pan-enabled: false;
+            // x/y: do not fill the Flickable viewport (that was spreading the strips).
+            row := HorizontalLayout {
+                // Caption, the gap under it, the strip's own minimum, and the panel padding.
+                property <length> col-min: Tokens.size-control-sm + Tokens.size-field-gap + Tokens.size-mixer-min-h + 2 * Tokens.size-panel-pad;
+                property <length> col-h: self.height - 2 * Tokens.size-panel-pad;
+                x: 0;
+                y: 0;
+                height: max(flick.height, self.col-min);
+                width: self.preferred-width;
+                padding: Tokens.size-panel-pad;
                 spacing: Tokens.size-field-gap;
-                SectionHeader {
+                alignment: start;
+                if Studio.meter-scenes > 0: MixerGroupCluster {
                     title: @tr("This scene");
-                    collapsible: true;
-                    open: !root.scene-closed;
-                    toggled(o) => { Sections.set-closed("mixer.scene", !o); }
+                    kind: 0;
+                    col-h: row.col-h;
                 }
-                if !root.scene-closed: HorizontalLayout {
-                    // The height under the header, so the strips fill the panel.
-                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
-                    spacing: 0px;
-                    for m[i] in Studio.meters: VerticalLayout {
-                        padding-right: m.global ? 0px : Tokens.size-field-gap;
-                        if !m.global: MeterStrip { data: m; reset => { Studio.reset-clip(i); } }
-                    }
-                }
-            }
-            if Studio.meter-globals > 0: VerticalLayout {
-                spacing: Tokens.size-field-gap;
-                SectionHeader {
+                if Studio.meter-globals > 0: MixerGroupCluster {
                     title: @tr("Global ({})", Studio.meter-globals);
-                    collapsible: true;
-                    open: !root.global-closed;
-                    toggled(o) => { Sections.set-closed("mixer.global", !o); }
+                    kind: 1;
+                    col-h: row.col-h;
                 }
-                if !root.global-closed: HorizontalLayout {
-                    // The height under the header, so the strips fill the panel.
-                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
-                    spacing: 0px;
-                    for m[i] in Studio.meters: VerticalLayout {
-                        padding-right: !m.global ? 0px : Tokens.size-field-gap;
-                        if m.global: MeterStrip { data: m; reset => { Studio.reset-clip(i); } }
-                    }
+                if Studio.master-meter.length > 0: Rectangle {
+                    width: Tokens.size-border;
+                    height: row.col-h;
+                    horizontal-stretch: 0;
+                    background: Theme.border-subtle;
                 }
-            }
-            // The master strip (ADR-0081): after a divider, at the end of the strips.
-            if Studio.master-meter.length > 0: Rectangle {
-                width: Tokens.size-border;
-                background: Theme.border-subtle;
-            }
-            if Studio.master-meter.length > 0: VerticalLayout {
-                spacing: Tokens.size-field-gap;
-                SectionHeader { title: @tr("Master"); }
-                HorizontalLayout {
-                    // The height under the header, so the strip fills the panel.
-                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
-                    MeterStrip {
-                        master: true;
-                        data: Studio.master-meter[0];
-                        reset => { Studio.reset-master-clip(); }
-                    }
+                if Studio.master-meter.length > 0: MixerGroupCluster {
+                    title: @tr("Master");
+                    kind: 2;
+                    col-h: row.col-h;
                 }
-            }
-            // The monitor (ADR-0097), after the master while it is wanted.
-            if Studio.monitor-wanted: Rectangle {
-                width: Tokens.size-border;
-                background: Theme.border-subtle;
-            }
-            if Studio.monitor-wanted: VerticalLayout {
-                width: Tokens.size-menu-sm;
-                spacing: Tokens.size-field-gap;
-                SectionHeader { title: @tr("Monitor"); }
-                MonitorBox { }
-            }
-            if Studio.hidden-meters.length > 0: VerticalLayout {
-                width: Tokens.size-menu-sm;
-                spacing: Tokens.size-field-gap;
-                SectionHeader {
+                if Studio.monitor-wanted: Rectangle {
+                    width: Tokens.size-border;
+                    height: row.col-h;
+                    horizontal-stretch: 0;
+                    background: Theme.border-subtle;
+                }
+                if Studio.monitor-wanted: VerticalLayout {
+                    width: Tokens.size-menu-sm;
+                    height: row.col-h;
+                    horizontal-stretch: 0;
+                    spacing: Tokens.size-field-gap;
+                    MixerCaption { title: @tr("Monitor"); }
+                    MonitorBox { }
+                }
+                if Studio.hidden-meters.length > 0 && root.hidden-closed: MixerGroupStrip {
+                    height: row.col-h;
                     title: @tr("Hidden ({})", Studio.hidden-meters.length);
-                    collapsible: true;
-                    open: !root.hidden-closed;
-                    toggled(o) => { Sections.set-closed("mixer.hidden", !o); }
+                    open => { Sections.set-closed("mixer.hidden", false); }
                 }
-                if !root.hidden-closed: Flickable {
-                    content-height: hidden-rows.preferred-height;
-                    hidden-rows := VerticalLayout {
-                        for m in Studio.hidden-meters: HiddenRow { data: m; }
+                if Studio.hidden-meters.length > 0 && !root.hidden-closed: Rectangle {
+                    property <length> strip-w: Tokens.size-mixer-strip + Tokens.size-field-gap;
+                    property <length> body-y: Tokens.size-control-sm + Tokens.size-field-gap;
+                    width: Studio.hidden-meters.length * strip-w;
+                    height: row.col-h;
+                    horizontal-stretch: 0;
+                    clip: true;
+                    HorizontalLayout {
+                        y: 0;
+                        width: parent.width;
+                        height: Tokens.size-control-sm;
+                        spacing: Tokens.space-1;
+                        IconButton {
+                            icon: IconName.chevron-down;
+                            name: @tr("Hide the Hidden section");
+                            clicked => { Sections.set-closed("mixer.hidden", true); }
+                        }
+                        Text {
+                            text: @tr("Hidden ({})", Studio.hidden-meters.length);
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                            font-weight: Tokens.type-label-weight;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            overflow: elide;
+                        }
+                    }
+                    HorizontalLayout {
+                        x: 0;
+                        y: body-y;
+                        width: parent.width;
+                        height: parent.height - body-y;
+                        spacing: 0px;
+                        alignment: start;
+                        for m in Studio.hidden-meters: HiddenStrip {
+                            height: parent.height;
+                            data: m;
+                        }
                     }
                 }
             }
         }
     }
-    // Narrow: rows under full-width headers, then the labelled scale (dBFS).
+    // Narrow: rows under full-width headers, then the labelled scale (dBFS). The
+    // content is exactly as wide as the panel, so a narrow panel never scrolls
+    // sideways; a long list still scrolls down. A drag on a fader does not pan this.
     if root.any && !root.wide: Flickable {
         width: parent.width;
         height: parent.height;
-        content-height: strips.preferred-height;
+        content-width: self.width;
+        content-height: max(strips.preferred-height, self.height);
+        mouse-drag-pan-enabled: false;
         TouchArea {
             width: root.width;
             height: max(strips.preferred-height, root.height);
@@ -1979,8 +2317,10 @@ export component MixerPanel inherits Rectangle {
             }
         }
         strips := VerticalLayout {
+            width: parent.width;
             padding: Tokens.size-panel-pad;
-            // Each entry spaces itself, so a folded group takes no room.
+            // Each entry spaces itself, so a folded group takes no room: it closes
+            // upward to its title row.
             spacing: 0px;
             alignment: start;
             if Studio.meter-scenes > 0: SectionHeader {
@@ -1989,12 +2329,11 @@ export component MixerPanel inherits Rectangle {
                 open: !root.scene-closed;
                 toggled(o) => { Sections.set-closed("mixer.scene", !o); }
             }
-            for m[i] in Studio.meters: VerticalLayout {
+            for m in Studio.meters: VerticalLayout {
                 padding-bottom: m.global || root.scene-closed ? 0px : Tokens.space-1;
                 if !m.global && !root.scene-closed: MeterView {
-                    name-width: root.name-width;
                     data: m;
-                    reset => { Studio.reset-clip(i); }
+                    reset => { Studio.reset-clip(m.id); }
                 }
             }
             if Studio.meter-globals > 0: VerticalLayout {
@@ -2006,12 +2345,11 @@ export component MixerPanel inherits Rectangle {
                     toggled(o) => { Sections.set-closed("mixer.global", !o); }
                 }
             }
-            for m[i] in Studio.meters: VerticalLayout {
+            for m in Studio.meters: VerticalLayout {
                 padding-bottom: !m.global || root.global-closed ? 0px : Tokens.space-1;
                 if m.global && !root.global-closed: MeterView {
-                    name-width: root.name-width;
                     data: m;
-                    reset => { Studio.reset-clip(i); }
+                    reset => { Studio.reset-clip(m.id); }
                 }
             }
             // The master (ADR-0081): after the groups, under a divider, so the scale
@@ -2025,32 +2363,24 @@ export component MixerPanel inherits Rectangle {
                 }
                 MeterView {
                     master: true;
-                    name-width: root.name-width;
                     data: Studio.master-meter[0];
                     reset => { Studio.reset-master-clip(); }
                 }
             }
-            // The labelled scale (dBFS) under the bars, aligned with them.
-            HorizontalLayout {
-                spacing: Tokens.space-2;
-                height: Tokens.type-caption-line;
-                Rectangle { width: root.name-width; }
-                scale-row := Rectangle {
-                    // A narrow panel shows every second or third label, so none overlap.
-                    property <int> step: self.width >= Tokens.size-menu-sm ? 1 : self.width >= Tokens.size-menu-sm / 2 ? 2 : 3;
-                    for mark[i] in Studio.scale: Text {
-                        visible: Math.mod(i, scale-row.step) == 0;
-                        x: parent.width * mark.at - self.width / 2;
-                        text: mark.label;
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                    }
+            // The labelled scale (dBFS) under the faders, which are as wide as the row.
+            scale-row := Rectangle {
+                height: Tokens.size-meter-scale-line;
+                // A narrow panel shows every second or third label, so none overlap.
+                property <int> step: self.width >= Tokens.size-menu-sm ? 1 : self.width >= Tokens.size-menu-sm / 2 ? 2 : 3;
+                for mark[i] in Studio.scale: Text {
+                    visible: Math.mod(i, scale-row.step) == 0;
+                    x: parent.width * mark.at - self.width / 2;
+                    height: parent.height;
+                    text: mark.label;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.size-meter-scale;
+                    vertical-alignment: center;
                 }
-                Rectangle { width: Tokens.size-control-md * 1.5; }
-                Rectangle { width: Tokens.size-icon-box; }
-                Rectangle { width: Tokens.size-control-sm; }
-                Rectangle { width: Tokens.size-control-sm; }
-                Rectangle { width: Tokens.size-control-sm; }
             }
             // The monitor (ADR-0097), under the scale while it is wanted.
             if Studio.monitor-wanted: VerticalLayout {
@@ -2083,7 +2413,8 @@ export component MixerPanel inherits Rectangle {
 // The transition rail or panel (ADR-0061, UI spec Studio mode): the transition's name
 // ("Cut", the only one for now) and, in studio mode, the Transition button that puts
 // the preview scene on air. Narrower than 40 px it is only the button, floating over
-// the bottom edge of the two views.
+// the bottom edge of the two views. Collection glide is Settings › General; a
+// per-source override is Properties (ADR-0100) — not on this panel.
 export component TransitionPanel inherits Rectangle {
     background: Theme.surface-raised;
     property <bool> narrow: root.width < Tokens.size-transition-narrow;
@@ -2325,11 +2656,14 @@ component Section inherits VerticalLayout {
         }
     }
     // Slint cannot put @children in an `if`, so a closed section is hidden and takes
-    // no room (like Shown): it draws and handles no input.
+    // no room (like Shown): it draws and handles no input. Width follows the section
+    // so a stretched slider (volume) fills the panel instead of staying at preferred width.
     Rectangle {
         visible: !root.closed;
+        width: 100%;
         height: root.closed ? 0px : inner.preferred-height;
         inner := VerticalLayout {
+            width: 100%;
             spacing: Tokens.size-field-gap;
             @children
         }
@@ -2354,7 +2688,8 @@ component Field inherits VerticalLayout {
 // output's quality. `set(field, value)` reports a pick; field codes (rbs-app
 // `studio_ui::enc_field`): 0 encoder, 1 video bitrate, 2 audio bitrate, 3 rate
 // control, 4 maximum bitrate, 5 quality level, 6 padding (value 0 or 1), 7 keyframe
-// interval, 8 preset, 9 profile, 10 B-frames.
+// interval, 8 preset, 9 profile, 10 B-frames, 11 video codec, 12 colour,
+// 13 open shadows.
 component EncoderFields inherits VerticalLayout {
     in property <EncoderData> data;
     // Not while the output runs.
@@ -2366,6 +2701,52 @@ component EncoderFields inherits VerticalLayout {
     property <bool> advanced: false;
     SettingRow {
         divider: false;
+        label: @tr("Video codec");
+        help: root.stream
+            ? @tr("A stream uses H.264. RTMP does not carry HEVC yet.")
+            : @tr("H.264 plays everywhere. HEVC makes a smaller file and needs a newer player.");
+        enabled: root.idle && root.data.codecs.length > 1;
+        codec := Select {
+            label: @tr("Video codec");
+            options: root.data.codecs;
+            index: root.data.codec;
+            enabled: root.idle && root.data.codecs.length > 1;
+            selected(i) => { root.set(11, i); }
+        }
+    }
+    SettingRow {
+        label: @tr("Colour");
+        help: root.data.delivery == 0
+            ? @tr("Rec. 709 limited range, for YouTube, TV and streams.")
+            : @tr("sRGB full range. Matches the app on screen; a poor choice for YouTube.");
+        enabled: root.idle;
+        colour := Select {
+            label: @tr("Colour");
+            options: [@tr("Video"), @tr("Screen")];
+            index: root.data.delivery;
+            enabled: root.idle;
+            selected(i) => { root.set(12, i); }
+        }
+    }
+    Shown {
+        shown: root.data.delivery == 0;
+        gap: 0;
+        SettingRow {
+            label: @tr("Open shadows");
+            help: root.stream
+                ? @tr("Lifts only the darkest tones so they stay visible on YouTube and TV. The stream stays Rec. 709. Off by default.")
+                : @tr("Lifts only the darkest tones so they stay visible on YouTube and TV. The file stays Rec. 709. Off by default.");
+            enabled: root.idle;
+            fill: false;
+            Toggle {
+                label: @tr("Open shadows");
+                checked: root.data.open-shadows;
+                enabled: root.idle && root.data.delivery == 0;
+                toggled(on) => { root.set(13, on ? 1 : 0); }
+            }
+        }
+    }
+    SettingRow {
         label: @tr("Video encoder");
         help: @tr("Automatic picks the best one this computer has.");
         enabled: root.idle;
@@ -2554,12 +2935,14 @@ component StyleFields inherits Section {
     changed colour-text => { colour.text = colour-text; }
     title: @tr("Shape and border");
     id: "properties.shape";
+    hint: data.locked ? @tr("Unlock the source to change its shape and border.") : "";
     Field {
         label: @tr("Shape");
         SegmentedControl {
             label: @tr("Shape of {}", data.name);
             options: [@tr("Rectangle"), @tr("Circle"), @tr("Ellipse")];
             index: data.shape;
+            enabled: !data.locked;
             selected(i) => {
                 Studio.set-source-style(data.id, i, i == 0 ? data.radius : 0, data.border, data.border-width, data.border-color);
             }
@@ -2572,6 +2955,7 @@ component StyleFields inherits Section {
             NumberField {
                 label: @tr("Corner radius of {}", data.name);
                 value: data.radius;
+                enabled: !data.locked;
                 edited(v) => {
                     Studio.set-source-style(data.id, 0, max(v, 0), data.border, data.border-width, data.border-color);
                 }
@@ -2587,6 +2971,7 @@ component StyleFields inherits Section {
     Checkbox {
         text: @tr("Border");
         checked: data.border;
+        enabled: !data.locked;
         toggled(on) => {
             Studio.set-source-style(data.id, data.shape, data.radius, on, data.border-width, data.border-color);
         }
@@ -2602,6 +2987,7 @@ component StyleFields inherits Section {
                 NumberField {
                     label: @tr("Border width of {}", data.name);
                     value: data.border-width;
+                    enabled: !data.locked;
                     edited(v) => {
                         if v > 0 {
                             Studio.set-source-style(data.id, data.shape, data.radius, true, v, data.border-color);
@@ -2620,6 +3006,7 @@ component StyleFields inherits Section {
                     picker := ColorPicker {
                         label: @tr("Choose the border colour of {}", data.name);
                         value: data.border-swatch;
+                        enabled: !data.locked;
                         picked(c) => {
                             if c != data.border-color {
                                 Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, c);
@@ -2629,6 +3016,7 @@ component StyleFields inherits Section {
                     colour := TextField {
                         label: @tr("Border colour of {}", data.name);
                         text: data.border-color;
+                        enabled: !data.locked;
                         accepted(t) => {
                             if t != data.border-color {
                                 Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, t);
@@ -2656,9 +3044,9 @@ component ArrangeFields inherits Section {
     id: "properties.arrange";
     hint: data.locked
         ? @tr("Unlock the source to change its transform.")
-        : @tr("Flip, rotate 90°, center; fit, fill, stretch, reset.");
-    // Icon-only buttons keep the section to two short rows however many commands
-    // join it; each is named for screen readers.
+        : @tr("Flip, rotate, center; fit, fill, stretch, reset.");
+    // Icon-only buttons: two short rows (ADR-0084). Center H/V stay in the menus so
+    // this section does not grow.
     HorizontalLayout {
         spacing: Tokens.size-field-gap;
         alignment: start;
@@ -2731,9 +3119,12 @@ component ArrangeFields inherits Section {
 component CropFields inherits Section {
     in property <SourceData> data;
     property <bool> known: data.pic-w > 0;
+    property <bool> can-edit: known && !data.locked;
     title: @tr("Crop");
     id: "properties.crop";
-    hint: known
+    hint: data.locked
+        ? @tr("Unlock the source to change its crop.")
+        : known
         ? @tr("In pixels of the {}x{} picture. The box changes so the picture keeps its scale. Alt-drag a handle on the picture panel to crop there.", data.pic-w, data.pic-h)
         : @tr("Available once the source shows a picture.");
     HorizontalLayout {
@@ -2744,7 +3135,7 @@ component CropFields inherits Section {
             prefix: @tr("Left");
             label: @tr("Crop left of {}", data.name);
             value: data.crop-l;
-            enabled: known;
+            enabled: can-edit;
             edited(v) => { Studio.set-source-crop(data.id, max(v, 0), data.crop-t, data.crop-r, data.crop-b); }
         }
         NumberField {
@@ -2753,7 +3144,7 @@ component CropFields inherits Section {
             prefix: @tr("Right");
             label: @tr("Crop right of {}", data.name);
             value: data.crop-r;
-            enabled: known;
+            enabled: can-edit;
             edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, max(v, 0), data.crop-b); }
         }
     }
@@ -2765,7 +3156,7 @@ component CropFields inherits Section {
             prefix: @tr("Top");
             label: @tr("Crop top of {}", data.name);
             value: data.crop-t;
-            enabled: known;
+            enabled: can-edit;
             edited(v) => { Studio.set-source-crop(data.id, data.crop-l, max(v, 0), data.crop-r, data.crop-b); }
         }
         NumberField {
@@ -2774,7 +3165,7 @@ component CropFields inherits Section {
             prefix: @tr("Bottom");
             label: @tr("Crop bottom of {}", data.name);
             value: data.crop-b;
-            enabled: known;
+            enabled: can-edit;
             edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, data.crop-r, max(v, 0)); }
         }
     }
@@ -2790,7 +3181,7 @@ component CropFields inherits Section {
             horizontal-stretch: 1;
             text: @tr("Canvas size");
             kind: "secondary";
-            enabled: known;
+            enabled: can-edit;
             accessible-name: @tr("Show the centre of {} at canvas size", data.name);
             clicked => { Studio.set-source-region(data.id, 1); }
         }
@@ -2798,7 +3189,7 @@ component CropFields inherits Section {
             horizontal-stretch: 1;
             text: @tr("Whole picture");
             kind: "secondary";
-            enabled: known;
+            enabled: can-edit;
             accessible-name: @tr("Show all of {}, fitted to the canvas", data.name);
             clicked => { Studio.set-source-region(data.id, 0); }
         }
@@ -2809,7 +3200,7 @@ component CropFields inherits Section {
             horizontal-stretch: 1;
             text: @tr("Left half");
             kind: "secondary";
-            enabled: known;
+            enabled: can-edit;
             accessible-name: @tr("Show the left half of {}", data.name);
             clicked => { Studio.set-source-region(data.id, 2); }
         }
@@ -2817,7 +3208,7 @@ component CropFields inherits Section {
             horizontal-stretch: 1;
             text: @tr("Right half");
             kind: "secondary";
-            enabled: known;
+            enabled: can-edit;
             accessible-name: @tr("Show the right half of {}", data.name);
             clicked => { Studio.set-source-region(data.id, 3); }
         }
@@ -2832,7 +3223,9 @@ component TransformFields inherits VerticalLayout {
     if data.picture: Section {
         title: @tr("Position and size");
         id: "properties.position";
-        hint: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
+        hint: data.locked
+            ? @tr("Unlock the source to change its position and size.")
+            : @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             // Equal columns, whatever the values' lengths.
@@ -2842,6 +3235,7 @@ component TransformFields inherits VerticalLayout {
                 prefix: @tr("X");
                 label: @tr("Position X of {}", data.name);
                 value: data.x;
+                enabled: !data.locked;
                 edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h); }
             }
             NumberField {
@@ -2850,6 +3244,7 @@ component TransformFields inherits VerticalLayout {
                 prefix: @tr("Y");
                 label: @tr("Position Y of {}", data.name);
                 value: data.y;
+                enabled: !data.locked;
                 edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h); }
             }
         }
@@ -2861,6 +3256,7 @@ component TransformFields inherits VerticalLayout {
                 prefix: @tr("W");
                 label: @tr("Width of {}", data.name);
                 value: data.w;
+                enabled: !data.locked;
                 edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h); }
             }
             NumberField {
@@ -2869,6 +3265,7 @@ component TransformFields inherits VerticalLayout {
                 prefix: @tr("H");
                 label: @tr("Height of {}", data.name);
                 value: data.h;
+                enabled: !data.locked;
                 edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
             }
         }
@@ -2949,7 +3346,55 @@ component FilterRowView inherits Rectangle {
             IconButton {
                 icon: IconName.close;
                 name: @tr("Remove {}", data.name);
+                clicked => { root.confirm = true; }
+            }
+        }
+    }
+    // Remove asks first, in the row (the same Remove and Cancel as a source row).
+    property <bool> confirm;
+    changed confirm => { if root.confirm { confirm-focus.focus(); } }
+    confirm-focus := RingFocus {
+        enabled: root.confirm;
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.confirm = false; return accept; }
+            if e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace {
+                Studio.remove-filter(data.id);
+                return accept;
+            }
+            reject
+        }
+    }
+    if root.confirm: Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.surface-overlay;
+        border-radius: Tokens.radius-sm;
+        border-width: Tokens.size-border;
+        border-color: Theme.accent;
+        TouchArea { width: parent.width; height: parent.height; }
+        HorizontalLayout {
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.space-1;
+            Text {
+                text: @tr("Remove {}?", data.name);
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Button {
+                text: @tr("Remove");
+                kind: "danger";
+                dense: true;
                 clicked => { Studio.remove-filter(data.id); }
+            }
+            Button {
+                text: @tr("Cancel");
+                kind: "ghost";
+                dense: true;
+                clicked => { root.confirm = false; }
             }
         }
     }
@@ -3008,7 +3453,8 @@ component FilterFieldView inherits VerticalLayout {
             }
         }
         Text {
-            min-width: Tokens.size-control-md * 1.5;
+            width: Tokens.size-control-lg * 3;
+            horizontal-stretch: 0;
             text: dragging ? root.text-at(dragged) : data.value-text;
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
@@ -3201,24 +3647,28 @@ component AudioFields inherits VerticalLayout {
         id: "properties.sound";
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
-            Slider {
+            alignment: stretch;
+            // Slot takes every leftover pixel; the readout stays a fixed token width on the right.
+            Rectangle {
                 horizontal-stretch: 1;
-                label: @tr("Volume of {}", data.name);
-                value: data.volume;
-                value-text: data.volume-text;
-                enabled: !data.muted;
-                moved(v) => { Studio.set-source-volume(data.id, v); }
-            }
-            LevelText {
-                min-width: Tokens.size-control-md * 1.5;
-                text: data.volume-text;
-                label: @tr("Volume of {}", data.name);
-                muted: data.muted;
-                entered(t) => {
-                    if Studio.level-position(t) < 0 { return false; }
-                    Studio.set-source-volume(data.id, Studio.level-position(t));
-                    return true;
+                min-width: 0px;
+                preferred-width: 0px;
+                height: Tokens.size-control-sm;
+                Slider {
+                    width: parent.width;
+                    height: parent.height;
+                    label: @tr("Volume of {}", data.name);
+                    value: data.volume;
+                    value-text: data.volume-text;
+                    enabled: !data.muted;
+                    moved(v) => { Studio.set-source-volume(data.id, v); }
                 }
+            }
+            ValueReadout {
+                horizontal-stretch: 0;
+                text: data.volume-text;
+                color: data.muted ? Theme.text-disabled : Theme.text-secondary;
+                accessible-label: @tr("Volume of {}, {}", data.name, data.volume-text);
             }
         }
         Checkbox {
@@ -3421,6 +3871,38 @@ component SourceProperties inherits VerticalLayout {
                 font-size: Tokens.type-caption-size;
                 vertical-alignment: center;
             }
+            IconButton {
+                name: @tr("Delete {}", data.name);
+                kind: "danger";
+                clicked => { root.confirm = true; }
+            }
+        }
+        if root.confirm: SettingsCallout {
+            label: @tr("Delete {} from every scene?", data.name);
+            Text {
+                text: data.global || data.in-globals
+                    ? (data.places > 2 ? @tr("{} is in every scene and {} more. Delete it from all of them?", data.name, data.places - 1) : data.places == 2 ? @tr("{} is in every scene and 1 more. Delete it from all of them?", data.name) : @tr("{} is in every scene. Delete it?", data.name))
+                    : data.places > 1 ? @tr("{} is in {} scenes. Delete it from all of them?", data.name, data.places)
+                    : @tr("Delete {}? It is only in this scene.", data.name);
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                alignment: start;
+                Button {
+                    text: @tr("Delete source");
+                    kind: "danger";
+                    dense: true;
+                    clicked => { root.confirm = false; Studio.delete-source(data.id); }
+                }
+                Button {
+                    text: @tr("Cancel");
+                    dense: true;
+                    clicked => { root.confirm = false; }
+                }
+            }
         }
         TextField {
             label: @tr("Name of {}", data.name);
@@ -3474,6 +3956,7 @@ component SourceProperties inherits VerticalLayout {
     if tab == 1: FiltersFields { data: data; }
     if tab == 2: AudioFields { data: data; }
     // Global sources (ADR-0065): on, the source is shown and heard in every scene.
+    // Custom glide (ADR-0100): only for a picture source with more than one place.
     Section {
         title: @tr("Scenes");
         id: "properties.scenes";
@@ -3486,46 +3969,39 @@ component SourceProperties inherits VerticalLayout {
             checked: data.global;
             toggled(on) => { Studio.set-global(data.id, on); }
         }
-    }
-    // Delete source: every scene. With more than one placement it asks first.
-    Section {
-        title: @tr("Remove");
-        id: "properties.remove";
-        if !confirm: HorizontalLayout {
-            alignment: start;
-            Button {
-                text: @tr("Delete source");
-                accessible-name: @tr("Delete source {}", data.name);
-                kind: "danger";
-                dense: true;
-                clicked => {
-                    if data.places > 1 { confirm = true; } else { Studio.delete-source(data.id); }
+        if data.picture && data.places > 1: VerticalLayout {
+            spacing: Tokens.size-field-gap;
+            Toggle {
+                text: @tr("Custom glide");
+                label: @tr("Custom glide for {}", data.name);
+                checked: data.custom-glide;
+                toggled(on) => {
+                    Studio.set-source-glide(
+                        data.id,
+                        on,
+                        on ? (data.custom-glide ? data.glide-duration : Studio.glide-duration) : 0,
+                        on ? (data.custom-glide ? data.glide-easing : Studio.glide-easing) : 0
+                    );
                 }
             }
-        }
-        if confirm: SettingsCallout {
-            label: @tr("Delete {} from every scene?", data.name);
-            Text {
-                text: data.global || data.in-globals
-                    ? (data.places > 2 ? @tr("{} is in every scene and {} more. Delete it from all of them?", data.name, data.places - 1) : data.places == 2 ? @tr("{} is in every scene and 1 more. Delete it from all of them?", data.name) : @tr("{} is in every scene. Delete it?", data.name))
-                    : @tr("{} is in {} scenes. Delete it from all of them?", data.name, data.places);
-                color: Theme.text-primary;
-                font-size: Tokens.type-body-size;
-                wrap: word-wrap;
-            }
-            HorizontalLayout {
-                spacing: Tokens.size-field-gap;
-                alignment: start;
-                Button {
-                    text: @tr("Delete source");
-                    kind: "danger";
-                    dense: true;
-                    clicked => { confirm = false; Studio.delete-source(data.id); }
+            if data.custom-glide: Field {
+                label: @tr("Duration");
+                NumberField {
+                    label: @tr("Glide duration of {} in milliseconds", data.name);
+                    prefix: @tr("ms");
+                    value: data.glide-duration;
+                    edited(v) => {
+                        Studio.set-source-glide(data.id, true, max(0, min(5000, round(v))), data.glide-easing);
+                    }
                 }
-                Button {
-                    text: @tr("Cancel");
-                    dense: true;
-                    clicked => { confirm = false; }
+            }
+            if data.custom-glide: Field {
+                label: @tr("Easing");
+                SegmentedControl {
+                    label: @tr("Glide easing of {}", data.name);
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: data.glide-easing;
+                    selected(i) => { Studio.set-source-glide(data.id, true, data.glide-duration, i); }
                 }
             }
         }
@@ -3848,8 +4324,8 @@ export component VideoSettings inherits Rectangle {
     min-height: form.min-height;
 }
 
-// Settings, General (ADR-0056, ADR-0098): what closing the main window does, and what
-// a transition does to the preview scene.
+// Settings, General (ADR-0056, ADR-0098, ADR-0100): what closing the main window does,
+// screen capture, studio mode swap, and collection glide (also outside studio mode).
 export component GeneralSettings inherits Rectangle {
     form := VerticalLayout {
         spacing: Tokens.space-4;
@@ -3881,14 +4357,15 @@ export component GeneralSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Leave RBS out of screen recordings");
-                help: Studio.platform == 1 ? @tr("Windows skips the RBS windows when a screen or a window is captured, including a recording RBS makes of the display. Turn this off to record the RBS window itself.")
-                    : @tr("Not available on this system yet. A screen recording can include the RBS windows.");
-                enabled: Studio.platform == 1;
+                help: Studio.platform == 2 ? @tr("Not available on this system yet. A screen recording can include the RBS windows.")
+                    : Studio.platform == 0 ? @tr("macOS leaves the RBS windows out of screen recordings and screen sharing. Turn this off to record the RBS window itself.")
+                    : @tr("Windows skips the RBS windows when a screen or a window is captured, including a recording RBS makes of the display. Turn this off to record the RBS window itself.");
+                enabled: Studio.platform != 2;
                 fill: false;
                 Toggle {
                     label: @tr("Leave RBS out of screen recordings");
-                    checked: Studio.platform == 1 && Studio.exclude-own-window;
-                    enabled: Studio.platform == 1;
+                    checked: Studio.platform != 2 && Studio.exclude-own-window;
+                    enabled: Studio.platform != 2;
                     toggled(on) => { Studio.set-exclude-own-window(on); }
                 }
             }
@@ -3908,6 +4385,51 @@ export component GeneralSettings inherits Rectangle {
                 }
             }
         }
+        SettingsCard {
+            title: @tr("Scene changes");
+            id: "settings.general.glide";
+            description: @tr("How shared sources move when the program scene changes, including outside studio mode.");
+            SettingRow {
+                label: @tr("Glide");
+                help: @tr("Shared sources slide to their new place; new sources fade in. Off: every scene change is instant.");
+                fill: false;
+                Toggle {
+                    label: @tr("Glide");
+                    checked: Studio.glide-duration > 0;
+                    toggled(on) => {
+                        Studio.set-glide(on ? (Studio.glide-duration > 0 ? Studio.glide-duration : 400) : 0, Studio.glide-easing);
+                    }
+                }
+            }
+            SettingRow {
+                label: @tr("Duration");
+                help: @tr("Milliseconds. 0 is the same as turning Glide off.");
+                enabled: Studio.glide-duration > 0;
+                NumberField {
+                    label: @tr("Glide duration in milliseconds");
+                    prefix: @tr("ms");
+                    value: Studio.glide-duration;
+                    enabled: Studio.glide-duration > 0;
+                    edited(v) => {
+                        Studio.set-glide(max(0, min(5000, round(v))), Studio.glide-easing);
+                    }
+                }
+            }
+            SettingRow {
+                divider: false;
+                label: @tr("Easing");
+                help: @tr("How a slide eases. Fade-ins stay linear.");
+                enabled: Studio.glide-duration > 0;
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Glide easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: Studio.glide-easing;
+                    enabled: Studio.glide-duration > 0;
+                    selected(i) => { Studio.set-glide(Studio.glide-duration, i); }
+                }
+            }
+        }
     }
     height: form.preferred-height;
 }
@@ -3921,6 +4443,8 @@ export component GeneralSettings inherits Rectangle {
 export component GlobalSourcesSettings inherits Rectangle {
     property <bool> running: Studio.state == 1;
     property <bool> existing-picked: Studio.global-option >= Studio.global-devices;
+    // Remove asks first. -1 while it does not.
+    property <int> confirm-id: -1;
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
@@ -3951,7 +4475,33 @@ export component GlobalSourcesSettings inherits Rectangle {
                         text: @tr("Remove");
                         accessible-name: @tr("Remove {} from global sources", s.name);
                         dense: true;
-                        clicked => { Studio.remove-global(s.id); }
+                        clicked => { root.confirm-id = s.id; }
+                    }
+                }
+                if s.global && root.confirm-id == s.id: SettingsCallout {
+                    label: @tr("Remove {} from global sources?", s.name);
+                    Text {
+                        text: s.places <= 1
+                            ? @tr("Remove {} from global sources? No scene has it, so it is deleted.", s.name)
+                            : @tr("Remove {} from global sources? It stays in the scenes that have it.", s.name);
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: Tokens.size-field-gap;
+                        alignment: start;
+                        Button {
+                            text: @tr("Remove");
+                            kind: "danger";
+                            dense: true;
+                            clicked => { root.confirm-id = -1; Studio.remove-global(s.id); }
+                        }
+                        Button {
+                            text: @tr("Cancel");
+                            dense: true;
+                            clicked => { root.confirm-id = -1; }
+                        }
                     }
                 }
             }
@@ -4228,6 +4778,7 @@ export component RemoteControlSettings inherits Rectangle {
                 }
             }
             if Studio.rc-network && root.cert-source == 0 && root.confirming: SettingBlock {
+                RevealOnShow { }
                 SettingsCallout {
                     label: @tr("Make a new key");
                     Text {

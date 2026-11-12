@@ -70,7 +70,7 @@ impl AdapterFactory for Fmp4MuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Mp4Fragmented.as_str()]))
-            .with(caps::CODECS, set(&["h264", "aac"]))
+            .with(caps::CODECS, set(&["h264", "hevc", "aac"]))
             .with(caps::LIVE, CapabilityValue::Flag(true)))
     }
 }

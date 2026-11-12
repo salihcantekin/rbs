@@ -719,7 +719,11 @@ impl AudioBackend for CoreAudioBackend {
         };
         let (tx, rx) = mpsc::sync_channel::<bool>(1);
         let block = RcBlock::new(move |granted: Bool| {
-            let _ = tx.try_send(granted.as_bool());
+            // A panic must not unwind into AVFoundation. No answer: the wait below
+            // reports whatever permission the system has now.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = tx.try_send(granted.as_bool());
+            }));
         });
         // SAFETY: a valid media type and a completion block that only sends on a
         // channel.
@@ -937,6 +941,10 @@ fn on_property(watch: &Watch, addresses: &[AudioObjectPropertyAddress]) {
 
 type ListenerBlock = RcBlock<dyn Fn(u32, NonNull<AudioObjectPropertyAddress>)>;
 
+/// Test-only: the property-listener block panics once, inside its `catch_unwind`.
+#[cfg(test)]
+static LISTENER_PANIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Everything an Active stream holds in the HAL, released in reverse on drop.
 #[derive(Default)]
 struct Session {
@@ -961,10 +969,17 @@ impl Session {
         let queue = DispatchQueue::new("org.rbs.audio-io.coreaudio.listener", None);
         let block = RcBlock::new(
             move |count: u32, addresses: NonNull<AudioObjectPropertyAddress>| {
-                // SAFETY: the HAL passes `count` addresses, valid for this call.
-                let addresses =
-                    unsafe { std::slice::from_raw_parts(addresses.as_ptr(), count as usize) };
-                on_property(&watch, addresses);
+                // A panic must not unwind into the HAL. This queue is not the IO thread.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    #[cfg(test)]
+                    if LISTENER_PANIC.swap(false, Ordering::Relaxed) {
+                        panic!("property listener");
+                    }
+                    // SAFETY: the HAL passes `count` addresses, valid for this call.
+                    let addresses =
+                        unsafe { std::slice::from_raw_parts(addresses.as_ptr(), count as usize) };
+                    on_property(&watch, addresses);
+                }));
             },
         );
         self.listener = Some((queue, block));
@@ -1558,5 +1573,30 @@ impl AudioOutput for CoreAudioOutput {
 impl Drop for CoreAudioOutput {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn property_listener_contains_a_panic_without_a_device() {
+        let mut session = Session::default();
+        session.watch(Watch {
+            status: Arc::new(Status::default()),
+            device: 0,
+            rate: SampleRate::HZ_48000,
+            process: None,
+        });
+        let Some(listener) = session.listener.as_ref() else {
+            panic!("listener block was not installed");
+        };
+        let block = &listener.1;
+        LISTENER_PANIC.store(true, Ordering::Relaxed);
+        // Count 0: the slice is empty, so the HAL is not queried.
+        block.call((0, NonNull::dangling()));
+        assert!(!LISTENER_PANIC.load(Ordering::Relaxed));
+        block.call((0, NonNull::dangling()));
     }
 }

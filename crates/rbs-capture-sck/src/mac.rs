@@ -97,6 +97,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// Runs `body` where ScreenCaptureKit called back in. A panic stays in this process.
+fn catch_callback(body: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+}
+
+/// Test-only: the next completion block panics once, inside [`catch_callback`].
+#[cfg(test)]
+static COMPLETION_PANIC: AtomicBool = AtomicBool::new(false);
+
 /// Moves an Objective-C or CoreFoundation object to another thread.
 ///
 /// The wrapped objects are immutable data objects (shareable content, windows,
@@ -129,19 +138,32 @@ fn timed_out() -> CaptureError {
     }
 }
 
+/// Completion block for [`wait_completion`]. A panic sends nothing (the wait times out).
+fn completion_block(
+    tx: mpsc::SyncSender<Result<(), CaptureError>>,
+) -> RcBlock<dyn Fn(*mut NSError)> {
+    RcBlock::new(move |error: *mut NSError| {
+        catch_callback(|| {
+            #[cfg(test)]
+            if COMPLETION_PANIC.swap(false, Ordering::Relaxed) {
+                panic!("completion");
+            }
+            // SAFETY: ScreenCaptureKit passes null or a valid `NSError` for the call.
+            let result = match unsafe { error.as_ref() } {
+                Some(error) => Err(ns_error(error)),
+                None => Ok(()),
+            };
+            let _ = tx.try_send(result);
+        });
+    })
+}
+
 /// Runs an API with a completion handler and waits for the handler on this thread.
 fn wait_completion(
     call: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>),
 ) -> Result<(), CaptureError> {
     let (tx, rx) = mpsc::sync_channel::<Result<(), CaptureError>>(1);
-    let block = RcBlock::new(move |error: *mut NSError| {
-        // SAFETY: ScreenCaptureKit passes null or a valid `NSError` for the call.
-        let result = match unsafe { error.as_ref() } {
-            Some(error) => Err(ns_error(error)),
-            None => Ok(()),
-        };
-        let _ = tx.try_send(result);
-    });
+    let block = completion_block(tx);
     call(&block);
     rx.recv_timeout(COMPLETION_TIMEOUT)
         .unwrap_or_else(|_| Err(timed_out()))
@@ -161,16 +183,18 @@ fn shareable_content_within(
     let (tx, rx) = mpsc::sync_channel::<Answer>(1);
     let block = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
-            // SAFETY: ScreenCaptureKit passes null or valid objects for the call; the
-            // content is retained before the handler returns.
-            let result = match (unsafe { Retained::retain(content) }, unsafe {
-                error.as_ref()
-            }) {
-                (Some(content), _) => Ok(Sendable(content)),
-                (None, Some(error)) => Err(ns_error(error)),
-                (None, None) => Err(timed_out()),
-            };
-            let _ = tx.try_send(result);
+            catch_callback(|| {
+                // SAFETY: ScreenCaptureKit passes null or valid objects for the call; the
+                // content is retained before the handler returns.
+                let result = match (unsafe { Retained::retain(content) }, unsafe {
+                    error.as_ref()
+                }) {
+                    (Some(content), _) => Ok(Sendable(content)),
+                    (None, Some(error)) => Err(ns_error(error)),
+                    (None, None) => Err(timed_out()),
+                };
+                let _ = tx.try_send(result);
+            });
         },
     );
     // SAFETY: the block matches the documented handler signature and is retained by
@@ -427,19 +451,21 @@ fn grab_thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, CaptureErro
         let (tx, rx) = mpsc::sync_channel::<Answer>(1);
         let block = RcBlock::new(
             move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
-                let result = match NonNull::new(image) {
-                    // SAFETY: ScreenCaptureKit passes a valid image for the call; it
-                    // is retained before the handler returns.
-                    Some(image) => Ok(Sendable(unsafe { CFRetained::retain(image) })),
-                    // SAFETY: null or a valid `NSError` for the call.
-                    None => Err(match unsafe { error.as_ref() } {
-                        Some(error) if error.code() == SCStreamErrorCode::UserDeclined.0 => {
-                            CaptureError::PermissionDenied
-                        }
-                        _ => grab_failed(),
-                    }),
-                };
-                let _ = tx.try_send(result);
+                catch_callback(|| {
+                    let result = match NonNull::new(image) {
+                        // SAFETY: ScreenCaptureKit passes a valid image for the call; it
+                        // is retained before the handler returns.
+                        Some(image) => Ok(Sendable(unsafe { CFRetained::retain(image) })),
+                        // SAFETY: null or a valid `NSError` for the call.
+                        None => Err(match unsafe { error.as_ref() } {
+                            Some(error) if error.code() == SCStreamErrorCode::UserDeclined.0 => {
+                                CaptureError::PermissionDenied
+                            }
+                            _ => grab_failed(),
+                        }),
+                    };
+                    let _ = tx.try_send(result);
+                });
             },
         );
         // SAFETY: the block matches the documented handler signature and is retained
@@ -1025,17 +1051,29 @@ define_class!(
             sample: &CMSampleBuffer,
             kind: SCStreamOutputType,
         ) {
-            if kind == SCStreamOutputType::Screen {
-                // GCD queues do not always drain an autorelease pool per work item.
-                autoreleasepool(|_| lock(&self.ivars().producer).on_sample(sample));
-            }
+            // A panic must not unwind into ScreenCaptureKit. The frame is dropped.
+            catch_callback(|| {
+                if kind == SCStreamOutputType::Screen {
+                    // GCD queues do not always drain an autorelease pool per work item.
+                    autoreleasepool(|_| lock(&self.ivars().producer).on_sample(sample));
+                }
+            });
         }
     }
 
     unsafe impl SCStreamDelegate for Output {
         #[unsafe(method(stream:didStopWithError:))]
         fn stream_did_stop(&self, _stream: &SCStream, _error: &NSError) {
-            self.ivars().lost.store(true, Ordering::Release);
+            let lost = &self.ivars().lost;
+            // A panic must not unwind into ScreenCaptureKit. The stream still counts
+            // as stopped: that is the error status for this callback.
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                lost.store(true, Ordering::Release);
+            }))
+            .is_err()
+            {
+                lost.store(true, Ordering::Release);
+            }
         }
     }
 );
@@ -1545,5 +1583,22 @@ mod thumbnail_tests {
             }
             std::fs::write(std::path::Path::new(&dir).join("display.ppm"), ppm).expect("write");
         }
+    }
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+
+    #[test]
+    fn completion_block_contains_a_panic() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let block = completion_block(tx);
+        COMPLETION_PANIC.store(true, Ordering::Relaxed);
+        block.call((std::ptr::null_mut(),));
+        assert!(rx.try_recv().is_err());
+        assert!(!COMPLETION_PANIC.load(Ordering::Relaxed));
+        block.call((std::ptr::null_mut(),));
+        assert!(matches!(rx.try_recv(), Ok(Ok(()))));
     }
 }

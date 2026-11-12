@@ -125,6 +125,28 @@ impl YuvDownload {
         )
     }
 
+    /// [`Self::with_color`] with the open-shadows grade. Frames stay tagged with `color`.
+    pub fn with_tone(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+        color: ColorSpace,
+        open_shadows: bool,
+    ) -> Result<Self, GpuError> {
+        Self::scaled_tone(
+            ctx,
+            format,
+            width,
+            height,
+            width,
+            height,
+            DOWNLOAD_BUFFERS,
+            color,
+            open_shadows,
+        )
+    }
+
     /// A download of `src_width x src_height` canvases to `width x height` frames
     /// (fitted with the aspect ratio kept, [`YuvConverter::scaled`]) with `buffers` frame
     /// buffers (at least 2): enough for every frame the consumers may hold at once plus
@@ -162,13 +184,40 @@ impl YuvDownload {
         buffers: usize,
         color: ColorSpace,
     ) -> Result<Self, GpuError> {
+        Self::scaled_tone(
+            ctx, format, src_width, src_height, width, height, buffers, color, false,
+        )
+    }
+
+    /// [`Self::scaled_color`] with the open-shadows grade. The delivered frames stay
+    /// tagged with `color`. The grade applies only to Rec. 709 limited range.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scaled_tone(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        buffers: usize,
+        color: ColorSpace,
+        open_shadows: bool,
+    ) -> Result<Self, GpuError> {
         if buffers < 2 {
             return Err(GpuError::Unsupported(
                 "a download needs at least 2 frame buffers",
             ));
         }
-        let converter =
-            YuvConverter::scaled_color(ctx, format, src_width, src_height, width, height, color)?;
+        let converter = YuvConverter::scaled_tone(
+            ctx,
+            format,
+            src_width,
+            src_height,
+            width,
+            height,
+            color,
+            open_shadows,
+        )?;
         let sample = match format {
             YuvFormat::Nv12 => 1,
             YuvFormat::P010 => 2,
