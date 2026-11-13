@@ -2,6 +2,8 @@
 //! registry entry runs control API methods only: methods `api.describe` lists, or the
 //! client-scoped `ui.*` methods of the control API spec.
 
+#![allow(clippy::unwrap_used)] // Tests fail by panicking.
+
 use rbs_api::request::{METHODS, UI_METHODS};
 use rbs_api::types::OutputKind;
 use rbs_app::vertical_outputs::{VerticalFlags, toggle_params};
