@@ -16,7 +16,7 @@ use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
 use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 
-use crate::studio_host::TransformOp;
+use crate::studio_host::{OutputCanvas, TransformOp};
 use crate::studio_ui::filters::filter_types;
 use crate::studio_ui::{SourceFacts, StudioUi, VerticalOut, rec_state, st_state};
 
@@ -327,6 +327,16 @@ impl Shown<'_> {
         PanelId::parse(crate::studio_ui::VERTICAL_PANEL).is_ok_and(|p| self.workspace.is_open(&p))
     }
 
+    /// Whether an item edit with `canvas=vertical` can run: the vertical canvas exists
+    /// and shows the scene being edited (not in studio mode, ADR-0093 decision 7).
+    fn vertical_edited(&self) -> Result<(), String> {
+        self.has_vertical()?;
+        if self.studio.studio_mode {
+            return Err("In studio mode the vertical canvas shows the scene on air.".to_owned());
+        }
+        Ok(())
+    }
+
     fn has_vertical(&self) -> Result<(), String> {
         match self.studio.vertical {
             Some(_) => Ok(()),
@@ -533,6 +543,9 @@ impl CommandState for Shown<'_> {
             }
             "item.flip" | "item.rotate" | "item.align" | "item.fit" | "item.reset_transform" => {
                 self.running()?;
+                if id.param("canvas") == Some("vertical") {
+                    self.vertical_edited()?;
+                }
                 let f = self.source(id)?;
                 if !f.picture {
                     return Err("The source has no picture.".to_owned());
@@ -708,6 +721,21 @@ impl CommandState for Shown<'_> {
                 Ok(())
             }
             "replay.toggle" => self.running(),
+            "canvas.auto_layout" => {
+                self.running()?;
+                self.has_vertical()
+            }
+            "canvas.vertical_size" => {
+                self.running()?;
+                self.has_vertical()?;
+                if size_of(id).is_none() {
+                    return Err("Say the width and height in pixels.".to_owned());
+                }
+                if s.vertical_st.busy() || s.vertical_rec.busy() {
+                    return Err("Stop the vertical outputs first.".to_owned());
+                }
+                Ok(())
+            }
             "canvas.remove_vertical" => {
                 self.running()?;
                 self.has_vertical()?;
@@ -776,6 +804,10 @@ impl CommandState for Shown<'_> {
             }
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
             "canvas.vertical_preview.toggle" => self.vertical_panel_open(),
+            "canvas.vertical_size" => match (self.studio.vertical, size_of(id)) {
+                (Some(v), Some((w, h))) => v.size.width == w && v.size.height == h,
+                _ => false,
+            },
             "item.flip" => self.source(id).is_ok_and(|f| match id.param("axis") {
                 Some("horizontal") => f.flip.horizontal,
                 Some("vertical") => f.flip.vertical,
@@ -877,6 +909,11 @@ impl CommandState for Shown<'_> {
                 ]
             }
             "scene.select" => self.studio.scene_choices(),
+            "canvas.auto_layout" => vec![
+                ("Fit each source".into(), "fit".into(), false),
+                ("Fill with each source".into(), "fill".into(), false),
+                ("Stack top to bottom".into(), "stack".into(), false),
+            ],
             "item.rotate" => vec![
                 ("Rotate 90° clockwise".into(), "90".into(), false),
                 ("Rotate 90° counter-clockwise".into(), "-90".into(), false),
@@ -919,6 +956,11 @@ impl CommandState for Shown<'_> {
     }
 
     fn title(&self, id: &CommandId) -> Option<String> {
+        if id.base() == "canvas.vertical_size"
+            && let Some((w, h)) = size_of(id)
+        {
+            return Some(format!("{w} x {h}"));
+        }
         if id.base() == "ui.layout.lock" {
             return Some(
                 if self.workspace.locked {
@@ -1059,7 +1101,9 @@ impl CommandState for Shown<'_> {
                     || self.studio.vertical_st.busy()
                     || self.studio.vertical_rec.busy()
             }
-            "canvas.remove_vertical" => self.studio.vertical.is_some(),
+            "canvas.remove_vertical" | "canvas.auto_layout" | "canvas.vertical_size" => {
+                self.studio.vertical.is_some()
+            }
             // Stream settings in the ▾ menu (the only layout that names this id), while
             // a vertical canvas exists.
             "ui.settings.open" if id.param("section") == Some("stream") => {
@@ -1456,8 +1500,13 @@ pub enum Run {
     SourceVisible(i32, bool),
     /// Lock (`true`) or unlock the source with this id.
     SourceLocked(i32, bool),
-    /// Flip, turn, fit or centre the source with this id (ADR-0084).
-    Transform(i32, TransformOp),
+    /// Flip, turn, fit or centre the source with this id (ADR-0084), on this canvas
+    /// (`canvas`, protocol 1.44), or without one on the canvas Properties edits.
+    Transform(i32, TransformOp, Option<OutputCanvas>),
+    /// Arrange the scene the vertical canvas shows (`canvas.auto_layout`).
+    AutoLayoutVertical(rbs_api::request::VerticalLayout),
+    /// The vertical canvas's size in pixels (`canvas.vertical_size`).
+    VerticalSize(u32, u32),
     /// Mute (`true`) or unmute the source with this id.
     SourceMuted(i32, bool),
     /// Hide (`true`) or show the source with this id in the Mixer (ADR-0080).
@@ -1545,9 +1594,19 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
                 },
             ),
             "scene.select" => Run::Scene(value.parse().ok()?),
+            "canvas.auto_layout" => {
+                use rbs_api::request::VerticalLayout as V;
+                Run::AutoLayoutVertical(match value.as_str() {
+                    "fit" => V::Fit,
+                    "fill" => V::Fill,
+                    "stack" => V::Stack,
+                    _ => return None,
+                })
+            }
             "item.rotate" => Run::Transform(
                 state.source(&id).ok()?.id,
                 TransformOp::Turn(value.parse::<i32>().ok()? as f32),
+                canvas_of(&id)?,
             ),
             "item.fit" => Run::Transform(
                 state.source(&id).ok()?.id,
@@ -1557,6 +1616,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
                     "stretch" => FitMode::Stretch,
                     _ => return None,
                 }),
+                canvas_of(&id)?,
             ),
             "item.align" => Run::Transform(
                 state.source(&id).ok()?.id,
@@ -1566,6 +1626,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
                     "vertical" => CenterAxis::Vertical,
                     _ => return None,
                 }),
+                canvas_of(&id)?,
             ),
             _ => return None,
         });
@@ -1686,8 +1747,13 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
                 "vertical" => TransformOp::FlipVertical,
                 _ => return None,
             },
+            canvas_of(&id)?,
         ),
-        "item.reset_transform" => Run::Transform(state.source(&id).ok()?.id, TransformOp::Reset),
+        "item.reset_transform" => Run::Transform(
+            state.source(&id).ok()?.id,
+            TransformOp::Reset,
+            canvas_of(&id)?,
+        ),
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
         "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
         "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
@@ -1721,8 +1787,31 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "replay.toggle" => Run::Replay(!on),
         "replay.save" => Run::SaveReplay,
         "canvas.add_vertical" => Run::AddVertical,
+        "canvas.vertical_size" => {
+            let (w, h) = size_of(&id)?;
+            Run::VerticalSize(w, h)
+        }
         _ => return None,
     })
+}
+
+/// The canvas an item edit names (`canvas`, protocol 1.44): `Some(None)` without one
+/// (the canvas Properties edits), `None` for an unknown value.
+fn canvas_of(id: &CommandId) -> Option<Option<OutputCanvas>> {
+    match id.param("canvas") {
+        None => Some(None),
+        Some("main") => Some(Some(OutputCanvas::Main)),
+        Some("vertical") => Some(Some(OutputCanvas::Vertical)),
+        Some(_) => None,
+    }
+}
+
+/// `canvas.vertical_size`'s width and height, when both are numbers.
+fn size_of(id: &CommandId) -> Option<(u32, u32)> {
+    Some((
+        id.param("width")?.parse().ok()?,
+        id.param("height")?.parse().ok()?,
+    ))
 }
 
 #[cfg(test)]

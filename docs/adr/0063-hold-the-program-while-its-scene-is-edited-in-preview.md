@@ -48,3 +48,4 @@ Independent review per ADR-0014, 2026-11-07, by a fresh AI session given only th
 Re-check by the same session: nothing blocking remains. Left open: a loaded file with item ids from `0x1000_0000` up gets no hold (decision 2); no test switches collections or resizes the canvas while held.
 
 Follow-up, 2026-11-10: ADR-0098 supersedes decision 1 in part: a hold also starts at a transition that keeps the preview scene, and it lasts while its scene is on air, whatever is previewed after; it ends when another scene goes on air or studio mode ends.
+- 2026-11-13: decision 1 (the "rescaled like the scene's" clause) and consequence 3 are superseded by [ADR-0110](0110-canvas-layout-space.md): a held copy keeps its stored boxes and is placed by the layout-space fit.

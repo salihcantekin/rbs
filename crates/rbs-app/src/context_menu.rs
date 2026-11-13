@@ -44,12 +44,24 @@ pub struct Item {
 }
 
 /// The parameters in `target` (`key=value&...`, percent-encoded as in command ids);
-/// `None` when it does not parse.
+/// `None` when it does not parse. A `?` or `=` inside a value is read as itself, so a
+/// panel id with a parameter (`id=rbs.program?canvas=vertical`) needs no encoding in
+/// Slint.
 pub fn target(text: &str) -> Option<Vec<(String, String)>> {
     if text.is_empty() {
         return Some(Vec::new());
     }
-    let id = CommandId::parse(&format!("context.target?{text}")).ok()?;
+    let mut query = String::with_capacity(text.len());
+    for (i, pair) in text.split('&').enumerate() {
+        if i > 0 {
+            query.push('&');
+        }
+        let (k, v) = pair.split_once('=')?;
+        query.push_str(k);
+        query.push('=');
+        query.push_str(&v.replace('?', "%3F").replace('=', "%3D"));
+    }
+    let id = CommandId::parse(&format!("context.target?{query}")).ok()?;
     Some(id.params().to_vec())
 }
 
@@ -157,6 +169,22 @@ mod tests {
     use super::*;
 
     const SLINT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/context_menu.slint");
+
+    /// A panel id with a parameter is read whole, without encoding in Slint.
+    #[test]
+    fn a_target_keeps_a_panel_id_with_a_parameter() {
+        let t = target("h=10&id=rbs.program?canvas=vertical&w=5").expect("parses");
+        assert_eq!(
+            t,
+            [
+                ("h".to_owned(), "10".to_owned()),
+                ("id".to_owned(), "rbs.program?canvas=vertical".to_owned()),
+                ("w".to_owned(), "5".to_owned()),
+            ]
+        );
+        assert_eq!(target("id=rbs.mixer").expect("parses")[0].1, "rbs.mixer");
+        assert!(target("novalue").is_none());
+    }
 
     #[test]
     fn context_menu_slint_has_the_current_slots() {

@@ -229,6 +229,24 @@ const fn target(name: &'static str) -> Param {
 /// collection is in use (as `scene.select`'s, ADR-0060).
 const COLLECTION: Param = target("collection");
 
+/// The canvas an item edit changes (protocol 1.44): `vertical` edits the item's own
+/// layout on the vertical canvas. Without it the menu bar's entries edit the canvas
+/// Properties shows; the vertical picture's right-click menu sets it.
+const CANVAS: Param = Param {
+    name: "canvas",
+    ty: ParamType::OneOf(&["main", "vertical"]),
+    required: false,
+};
+
+/// A vertical canvas side in pixels (`canvas.vertical_size`).
+const fn side(name: &'static str) -> Param {
+    Param {
+        name,
+        ty: ParamType::Text,
+        required: true,
+    }
+}
+
 /// The mirror axis of `item.flip`.
 const FLIP_AXIS: Param = Param {
     name: "axis",
@@ -1071,7 +1089,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::Source,
         kind: action("item.flip"),
-        params: &[target("item"), COLLECTION, FLIP_AXIS],
+        params: &[target("item"), COLLECTION, FLIP_AXIS, CANVAS],
         checkable: true,
         fixed: &[],
     },
@@ -1086,7 +1104,7 @@ pub const ENTRIES: &[Entry] = &[
             method: "item.rotate",
             param: "degrees",
         },
-        params: &[target("item"), COLLECTION, choice("degrees")],
+        params: &[target("item"), COLLECTION, choice("degrees"), CANVAS],
         checkable: false,
         fixed: &[],
     },
@@ -1101,7 +1119,7 @@ pub const ENTRIES: &[Entry] = &[
             method: "item.fit",
             param: "mode",
         },
-        params: &[target("item"), COLLECTION, choice("mode")],
+        params: &[target("item"), COLLECTION, choice("mode"), CANVAS],
         checkable: false,
         fixed: &[],
     },
@@ -1116,7 +1134,7 @@ pub const ENTRIES: &[Entry] = &[
             method: "item.align",
             param: "axis",
         },
-        params: &[target("item"), COLLECTION, choice("axis")],
+        params: &[target("item"), COLLECTION, choice("axis"), CANVAS],
         checkable: false,
         fixed: &[],
     },
@@ -1128,7 +1146,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::Source,
         kind: action("item.reset_transform"),
-        params: &[target("item"), COLLECTION],
+        params: &[target("item"), COLLECTION, CANVAS],
         checkable: false,
         fixed: &[],
     },
@@ -1518,6 +1536,35 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("canvas.remove_vertical"),
         params: &[],
         checkable: false,
+        fixed: &[],
+    },
+    // The vertical canvas's layouts and size (protocol 1.44, ADR-0093 decisions 4 and
+    // 8): in the vertical picture's panel menu and its right-click menu.
+    Entry {
+        id: "canvas.auto_layout",
+        title: "Auto layout",
+        tooltip: "Arrange the vertical canvas's sources again: fit, fill or stack them",
+        icon: Some("layout"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Picker {
+            method: "canvas.auto_layout",
+            param: "mode",
+        },
+        params: &[choice("mode")],
+        checkable: false,
+        fixed: &[("canvas", "vertical")],
+    },
+    Entry {
+        id: "canvas.vertical_size",
+        title: "Vertical size",
+        tooltip: "Change the vertical canvas's size; its outputs must be stopped first",
+        icon: Some("canvas-vertical"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: action("canvas.set_vertical_size"),
+        params: &[side("width"), side("height")],
+        checkable: true,
         fixed: &[],
     },
     Entry {
@@ -1995,6 +2042,11 @@ pub const NOT_IN_MENU: &[&str] = &[
     // shortcut or the control API. They are not on the menu bar (ADR-0105).
     "item.show",
     "item.set_show_for",
+    // The vertical canvas's Auto layout and Size run from the vertical picture's panel
+    // menu and right-click menu (they act on that picture), the palette and the
+    // control API.
+    "canvas.auto_layout",
+    "canvas.vertical_size",
 ];
 
 /// The icon an id shows, from the design system's icon set: the entry's, or for an
@@ -2526,6 +2578,21 @@ impl Context {
     }
 }
 
+/// The vertical canvas's picture panel (ADR-0093 decision 7).
+pub const VERTICAL_PANEL: &str = "rbs.program?canvas=vertical";
+
+/// What the vertical picture's panel menu and a right-click on it outside any source
+/// add first (protocol 1.44): Auto layout and the size presets.
+const VERTICAL_EXTRAS: &[&str] = &[
+    "canvas.auto_layout",
+    "{Size:canvas-vertical",
+    "canvas.vertical_size?height=1920&width=1080",
+    "canvas.vertical_size?height=1280&width=720",
+    "canvas.vertical_size?height=2560&width=1440",
+    "}",
+    "|",
+];
+
 /// Most items a context menu holds, separators and submenus included (the shell
 /// declares this many slots).
 pub const MAX_CONTEXT_ITEMS: usize = 16;
@@ -2718,10 +2785,15 @@ pub fn context_menu(
     // The Mixer's "..." is the panel menu (context `panel`, target `id=rbs.mixer`).
     // The layout picker is a submenu there, as it is on a right-click and on a
     // strip's "..." (ADR-0083). The same command, not a second one.
-    let mut ids: Vec<&str> = Vec::with_capacity(layout.len() + 2);
+    let mut ids: Vec<&str> = Vec::with_capacity(layout.len() + VERTICAL_EXTRAS.len());
     if context == Context::Panel && target.iter().any(|(k, v)| k == "id" && v == "rbs.mixer") {
         ids.push("ui.mixer.orientation");
         ids.push("|");
+    }
+    if matches!(context, Context::Panel | Context::Preview)
+        && target.iter().any(|(k, v)| k == "id" && v == VERTICAL_PANEL)
+    {
+        ids.extend_from_slice(VERTICAL_EXTRAS);
     }
     ids.extend_from_slice(layout);
     let mut items: Vec<MenuItem> = Vec::new();

@@ -204,29 +204,47 @@ fn every_request() -> Vec<Request> {
         c(Command::ItemSetStyle(SetItemStyle {
             item: 7,
             style: style(),
+            canvas: OutputCanvas::Main,
         })),
         c(Command::ItemSetCrop(SetItemCrop {
             item: 7,
             crop: [760, 180, 760, 180],
             keep_scale: false,
+            canvas: OutputCanvas::Vertical,
         })),
         c(Command::ItemFlip(FlipItem {
             item: 7,
             axis: Axis::Vertical,
+            canvas: OutputCanvas::Main,
         })),
         c(Command::ItemRotate(RotateItem {
             item: 7,
             degrees: -90,
+            canvas: OutputCanvas::Vertical,
         })),
         c(Command::ItemFit(FitItem {
             item: 7,
             mode: FitKind::Fill,
+            canvas: OutputCanvas::Vertical,
         })),
         c(Command::ItemAlign(AlignItem {
             item: 7,
             axis: Some(AlignAxis::Horizontal),
+            canvas: OutputCanvas::Main,
         })),
-        c(Command::ItemResetTransform(ResetItemTransform { item: 7 })),
+        c(Command::ItemResetTransform(ResetItemTransform {
+            item: 7,
+            canvas: OutputCanvas::Vertical,
+        })),
+        c(Command::CanvasAutoLayout(CanvasAutoLayout {
+            canvas: OutputCanvas::Vertical,
+            mode: VerticalLayout::Stack,
+            scene: Some(2),
+        })),
+        c(Command::CanvasSetVerticalSize(SetVerticalSize {
+            width: 1440,
+            height: 2560,
+        })),
         c(Command::SceneList),
         c(Command::SceneAdd(AddScene { name: None })),
         c(Command::SceneRemove(SceneRef { scene: 2 })),
@@ -299,6 +317,7 @@ fn every_request() -> Vec<Request> {
             size: [640.0, 360.0],
             gesture: 5,
             seq: 2,
+            canvas: OutputCanvas::Vertical,
         })),
         c(Command::GlobalList),
         c(Command::GlobalAdd(AddGlobal { source: 3 })),

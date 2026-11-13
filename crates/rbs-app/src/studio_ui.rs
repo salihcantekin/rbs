@@ -106,7 +106,7 @@ pub mod enc_field {
 }
 
 /// The vertical canvas's picture panel (ADR-0093 decision 7).
-pub const VERTICAL_PANEL: &str = "rbs.program?canvas=vertical";
+pub const VERTICAL_PANEL: &str = rbs_ui::command::VERTICAL_PANEL;
 
 /// Marks the box requests of the vertical picture, so the studio's answers reach its
 /// editing state and not the main picture's (both number from 1).
@@ -1760,14 +1760,15 @@ impl StudioUi {
         });
     }
 
-    /// Flip, turn, fit or centre a source's picture (ADR-0084).
-    pub fn transform_source(&mut self, id: i32, op: TransformOp) {
+    /// Flip, turn, fit or centre a source's picture (ADR-0084), on `canvas`, or
+    /// without one on the canvas Properties edits.
+    pub fn transform_source(&mut self, id: i32, op: TransformOp, canvas: Option<OutputCanvas>) {
         self.deleted.clear();
         self.send(Command::TransformSource {
             id: SourceId::from_raw(id as u32),
             op,
             gesture: 0,
-            canvas: self.props_target(id),
+            canvas: canvas.unwrap_or_else(|| self.props_target(id)),
         });
     }
 
@@ -2488,6 +2489,20 @@ impl StudioUi {
         let e = self.vedit.press(at, canvas, &placed, self.selected, keys);
         self.pick_props(OutputCanvas::Vertical);
         self.run_vertical(e);
+    }
+
+    /// The source whose picture is under `at` on the vertical picture of size `size`,
+    /// locked ones included, as [`Self::preview_source_at`]; it becomes the selection
+    /// and Properties then edits the vertical canvas.
+    pub fn vertical_source_at(&mut self, at: [f32; 2], size: [f32; 2]) -> Option<i32> {
+        let canvas = self.vertical_px()?;
+        self.vedit.set_panel(size[0], size[1]);
+        let placed = self.placed_vertical(true);
+        let hit = self.vedit.source_at(at, canvas, &placed);
+        self.selected = hit.unwrap_or(-1);
+        self.pick_props(OutputCanvas::Vertical);
+        self.refresh_marks();
+        hit
     }
 
     pub fn vertical_drag(&mut self, at: [f32; 2]) {
