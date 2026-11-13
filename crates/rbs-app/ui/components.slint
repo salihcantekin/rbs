@@ -539,11 +539,14 @@ export component SplitButton inherits Rectangle {
     callback open-menu(length);
     out property <color> ink: !enabled ? Theme.text-disabled : part-ink;
     // The ▾ part stays usable while the command is disabled: its own ink and fill.
-    property <color> part-ink: kind == "primary" ? Theme.text-inverse : Theme.text-primary;
-    property <color> rest: kind == "primary" ? Theme.accent
+    property <color> part-ink: kind == "primary" && enabled ? Theme.text-inverse : Theme.text-primary;
+    // A disabled primary loses its accent fill (as a disabled Button), so a dimmed
+    // Go live does not keep a bright ▾ half.
+    property <color> rest: kind == "primary" && !enabled ? Theme.surface-raised
+        : kind == "primary" ? Theme.accent
         : checked && enabled ? Theme.accent-subtle
         : Theme.surface-raised;
-    property <color> hover: kind == "primary" ? Theme.accent-hover : Theme.surface-overlay;
+    property <color> hover: kind == "primary" && enabled ? Theme.accent-hover : Theme.surface-overlay;
     property <int> tip-owner;
     height: Tokens.size-control-md;
     min-width: shape.min-width;
@@ -554,7 +557,7 @@ export component SplitButton inherits Rectangle {
     border-radius: Tokens.radius-sm;
     clip: true;
     background: root.rest;
-    border-width: root.kind == "primary" ? 0px : Tokens.size-border;
+    border-width: root.kind == "primary" && root.enabled ? 0px : Tokens.size-border;
     border-color: Theme.border-subtle;
     HorizontalLayout {
         main := Rectangle {
@@ -599,7 +602,7 @@ export component SplitButton inherits Rectangle {
         }
         Rectangle {
             width: Tokens.size-border;
-            background: kind == "primary" ? Theme.accent-hover : Theme.border-subtle;
+            background: kind == "primary" && enabled ? Theme.accent-hover : Theme.border-subtle;
         }
         part := Rectangle {
             min-width: part-row.preferred-width + 2 * Tokens.space-1;

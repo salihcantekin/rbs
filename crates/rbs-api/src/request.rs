@@ -11,9 +11,10 @@ use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
     Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, FilterTypeList, Library,
-    MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputProfile, RecordState,
-    RecordingProfile, ReplayStatus, SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind,
-    StreamSettingsPatch, StreamState, StudioInfo, VcamStatus,
+    MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputKind, OutputProfile,
+    OutputTarget, OutputsResult, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap,
+    Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
+    VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -849,13 +850,41 @@ pub struct ShowItem {
 pub struct RecordStart {
     /// A recording profile's id (`output.profiles`). The file goes into its folder.
     pub profile: String,
-    /// The canvas to record; the main one when absent or `null` (protocol 1.29).
+    /// The canvas to record; the main one when absent or `null` (protocol 1.29);
+    /// `all` records every canvas, main first (protocol 1.42).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canvas: Option<OutputCanvas>,
+    pub canvas: Option<OutputTarget>,
 }
 
-/// `record.stop`, `record.status`, `stream.start`, `stream.stop` and `stream.status`:
-/// the canvas they act on (protocol 1.29). Unknown fields are ignored.
+/// `record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every
+/// canvas the studio runs, main first (`all`, protocol 1.42). Unknown fields are
+/// ignored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnCanvases {
+    /// The canvases; the main one when absent or `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputTarget>,
+}
+
+impl OnCanvases {
+    /// The canvases asked for, the main one by default.
+    pub fn target(self) -> OutputTarget {
+        self.canvas.unwrap_or_default()
+    }
+}
+
+/// `output.set_with_vertical` (protocol 1.42, ADR-0111 decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetWithVertical {
+    /// Recording or stream.
+    pub kind: OutputKind,
+    /// Record or Go live also act on the vertical output.
+    pub on: bool,
+}
+
+/// `record.status` and `stream.status`: the canvas they report (protocol 1.29). Unknown
+/// fields are ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OnCanvas {
     /// The canvas; the main one when absent or `null`.
@@ -1076,15 +1105,17 @@ pub enum Command {
     /// `record.start_to_file`.
     RecordStartToFile(RecordStartToFile),
     /// `record.stop`.
-    RecordStop(OnCanvas),
+    RecordStop(OnCanvases),
     /// `record.status`.
     RecordStatus(OnCanvas),
     /// `stream.start`.
-    StreamStart(OnCanvas),
+    StreamStart(OnCanvases),
     /// `stream.stop`.
-    StreamStop(OnCanvas),
+    StreamStop(OnCanvases),
     /// `stream.status`.
     StreamStatus(OnCanvas),
+    /// `output.set_with_vertical` (protocol 1.42).
+    OutputSetWithVertical(SetWithVertical),
     /// `replay.status` (protocol 1.27).
     ReplayStatus,
     /// `source.set_monitor` (protocol 1.30).
@@ -1222,6 +1253,7 @@ impl Command {
             Command::RecordStatus(_) => "record.status",
             Command::StreamStart(_) => "stream.start",
             Command::StreamStop(_) => "stream.stop",
+            Command::OutputSetWithVertical(_) => "output.set_with_vertical",
             Command::StreamStatus(_) => "stream.status",
             Command::ReplayStatus => "replay.status",
             Command::SourceSetMonitor(_) => "source.set_monitor",
@@ -1374,6 +1406,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("stream.start", Some(Scope::Control)),
     m("stream.stop", Some(Scope::Control)),
     m("stream.status", Some(Scope::Read)),
+    m("output.set_with_vertical", Some(Scope::Control)),
     m("replay.status", Some(Scope::Read)),
     m("source.set_monitor", Some(Scope::Control)),
     m("monitor.status", Some(Scope::Read)),
@@ -1620,15 +1653,17 @@ enum WireRequest {
     #[serde(rename = "record.start_to_file")]
     RecordStartToFile(RecordStartToFile),
     #[serde(rename = "record.stop")]
-    RecordStop(OnCanvas),
+    RecordStop(OnCanvases),
     #[serde(rename = "record.status")]
     RecordStatus(OnCanvas),
     #[serde(rename = "stream.start")]
-    StreamStart(OnCanvas),
+    StreamStart(OnCanvases),
     #[serde(rename = "stream.stop")]
-    StreamStop(OnCanvas),
+    StreamStop(OnCanvases),
     #[serde(rename = "stream.status")]
     StreamStatus(OnCanvas),
+    #[serde(rename = "output.set_with_vertical")]
+    OutputSetWithVertical(SetWithVertical),
     #[serde(rename = "replay.status")]
     ReplayStatus(Empty),
     #[serde(rename = "source.set_monitor")]
@@ -1775,6 +1810,7 @@ impl From<WireRequest> for Request {
             WireRequest::StreamStart(p) => Request::Command(C::StreamStart(p)),
             WireRequest::StreamStop(p) => Request::Command(C::StreamStop(p)),
             WireRequest::StreamStatus(p) => Request::Command(C::StreamStatus(p)),
+            WireRequest::OutputSetWithVertical(p) => Request::Command(C::OutputSetWithVertical(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
             WireRequest::SourceSetMonitor(p) => Request::Command(C::SourceSetMonitor(p)),
             WireRequest::MonitorStatus(_) => Request::Command(C::MonitorStatus),
@@ -1887,6 +1923,7 @@ impl From<Request> for WireRequest {
                 C::StreamStart(p) => WireRequest::StreamStart(p),
                 C::StreamStop(p) => WireRequest::StreamStop(p),
                 C::StreamStatus(p) => WireRequest::StreamStatus(p),
+                C::OutputSetWithVertical(p) => WireRequest::OutputSetWithVertical(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
                 C::SourceSetMonitor(p) => WireRequest::SourceSetMonitor(p),
                 C::MonitorStatus => WireRequest::MonitorStatus(Empty {}),
@@ -2145,6 +2182,9 @@ pub enum Response {
     Profiles(ProfileList),
     /// `record.start`, `record.start_to_file`.
     RecordStarted(RecordStarted),
+    /// `record.start`, `record.stop`, `stream.start` and `stream.stop` with
+    /// `canvas: "all"` (protocol 1.42).
+    Outputs(OutputsResult),
     /// `record.status` for a canvas other than the main one (protocol 1.29).
     RecordCanvasStatus(Snapshot<CanvasRecordState>),
     /// `record.status`.

@@ -458,6 +458,9 @@ export global Studio {
 
     // The virtual camera in Live controls (ADR-0066 decision 12): shown where this
     // platform has one; `vcam-can` while it is added (or sends) and the studio runs.
+    // End stream ends the vertical stream too ("Main + vertical", ADR-0111): the
+    // question names both.
+    in property <bool> st-end-both;
     in property <bool> vcam-shown;
     in property <bool> vcam-can;
     in property <bool> vcam-on;
@@ -2643,7 +2646,7 @@ export component LiveControlsPanel inherits Rectangle {
                 padding: Tokens.space-2;
                 spacing: Tokens.space-2;
                 Text {
-                    text: @tr("End the stream? Viewers see it end.");
+                    text: Studio.st-end-both ? @tr("End both streams, main and vertical? Viewers see them end.") : @tr("End the stream? Viewers see it end.");
                     color: Theme.text-primary;
                     font-size: Tokens.type-body-size;
                     wrap: word-wrap;
@@ -2654,7 +2657,7 @@ export component LiveControlsPanel inherits Rectangle {
                     // Its own name, so assistive technology never confuses it with
                     // the (disabled) End stream button above.
                     Button {
-                        text: @tr("Yes, end the stream");
+                        text: Studio.st-end-both ? @tr("Yes, end both streams") : @tr("Yes, end the stream");
                         kind: "live";
                         clicked => {
                             confirming = false;

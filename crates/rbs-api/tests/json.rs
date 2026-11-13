@@ -327,18 +327,25 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::RecordStart(RecordStart {
             profile: "default".into(),
-            canvas: Some(OutputCanvas::Vertical),
+            canvas: Some(OutputTarget::Vertical),
         })),
         c(Command::RecordStartToFile(RecordStartToFile {
             profile: "default".into(),
             path: "/videos/a.mkv".into(),
             canvas: None,
         })),
-        c(Command::RecordStop(OnCanvas::default())),
+        c(Command::RecordStop(OnCanvases::default())),
         c(Command::RecordStatus(OnCanvas::default())),
-        c(Command::StreamStart(OnCanvas::default())),
-        c(Command::StreamStop(OnCanvas {
-            canvas: Some(OutputCanvas::Vertical),
+        c(Command::StreamStart(OnCanvases::default())),
+        c(Command::StreamStop(OnCanvases {
+            canvas: Some(OutputTarget::Vertical),
+        })),
+        c(Command::RecordStop(OnCanvases {
+            canvas: Some(OutputTarget::All),
+        })),
+        c(Command::OutputSetWithVertical(SetWithVertical {
+            kind: OutputKind::Stream,
+            on: false,
         })),
         c(Command::StreamStatus(OnCanvas::default())),
         c(Command::ReplayStatus),
@@ -697,6 +704,7 @@ fn every_result_and_event_type_round_trips() {
             profiles: vec![profile()],
             canvas: canvas(),
             stream: Some(stream_settings()),
+            vertical: None,
         },
     });
     round_trip(&StreamStarted {
@@ -738,6 +746,7 @@ fn every_result_and_event_type_round_trips() {
             profiles: vec![],
             canvas: canvas(),
             stream: None,
+            vertical: None,
         }),
         EventPayload::AudioLevels(vec![SourceLevels {
             source: 2,
@@ -949,14 +958,16 @@ fn output_methods_take_an_optional_canvas() {
         Err(e) => Err(e.error.kind),
     };
     let on = |canvas| OnCanvas { canvas };
+    let many = |canvas| OnCanvases { canvas };
     assert_eq!(
         decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.stop"}"#),
-        Ok(Command::StreamStop(on(None)))
+        Ok(Command::StreamStop(many(None)))
     );
     assert_eq!(
         decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.stop","params":{"canvas":null}}"#),
-        Ok(Command::StreamStop(on(None)))
+        Ok(Command::StreamStop(many(None)))
     );
+    assert_eq!(many(None).target(), OutputTarget::Main);
     assert_eq!(on(None).canvas(), OutputCanvas::Main);
     assert_eq!(
         decode(
@@ -970,17 +981,73 @@ fn output_methods_take_an_optional_canvas() {
         ),
         Ok(Command::RecordStart(RecordStart {
             profile: "default".into(),
-            canvas: Some(OutputCanvas::Vertical),
+            canvas: Some(OutputTarget::Vertical),
         }))
+    );
+    // `all` (protocol 1.42) on the four start and stop methods only.
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.start","params":{"canvas":"all"}}"#),
+        Ok(Command::StreamStart(many(Some(OutputTarget::All))))
+    );
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"record.status","params":{"canvas":"all"}}"#),
+        Err(ErrorKind::InvalidParams)
+    );
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"record.start_to_file","params":{"profile":"default","path":"/a.mkv","canvas":"all"}}"#
+        ),
+        Err(ErrorKind::InvalidParams)
+    );
+    assert_eq!(OutputTarget::All.single(), None);
+    assert_eq!(
+        OutputTarget::Vertical.single(),
+        Some(OutputCanvas::Vertical)
     );
     // Unknown fields are still ignored, an unknown canvas is not.
     assert_eq!(
         decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.start","params":{"later":1}}"#),
-        Ok(Command::StreamStart(on(None)))
+        Ok(Command::StreamStart(many(None)))
     );
     assert_eq!(
         decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.start","params":{"canvas":"square"}}"#),
         Err(ErrorKind::InvalidParams)
+    );
+}
+
+#[test]
+fn an_all_answer_lists_each_canvas_main_first() {
+    let refused = ApiError::new(
+        ErrorKind::Failed,
+        "no server is saved for the vertical stream",
+    );
+    let answer = Response::Outputs(OutputsResult {
+        outputs: vec![
+            OutputEntry {
+                canvas: OutputCanvas::Main,
+                outcome: OutputOutcome::Started,
+                video_encoder: Some("NVENC".into()),
+                audio_encoder: None,
+                error: None,
+            },
+            OutputEntry {
+                canvas: OutputCanvas::Vertical,
+                outcome: OutputOutcome::Refused,
+                video_encoder: None,
+                audio_encoder: None,
+                error: Some(OutputError::from(&refused)),
+            },
+        ],
+    });
+    assert_eq!(
+        serde_json::to_value(&answer).unwrap(),
+        json!({"outputs": [
+            {"canvas": "main", "outcome": "started", "video_encoder": "NVENC"},
+            {"canvas": "vertical", "outcome": "refused", "error": {
+                "code": -32040,
+                "message": "no server is saved for the vertical stream",
+                "data": {"kind": "failed"}}}
+        ]})
     );
 }
 
@@ -1118,6 +1185,7 @@ fn stream_settings_are_a_minor_addition() {
         profiles: vec![],
         canvas: canvas(),
         stream: None,
+        vertical: None,
     })
     .unwrap();
     assert!(text.get("stream").is_none(), "{text}");

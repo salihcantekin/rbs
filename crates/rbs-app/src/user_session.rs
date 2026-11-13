@@ -969,6 +969,21 @@ mod tests {
         assert!(s.section::<RecordProfile>(RECORDING).unwrap().is_none());
     }
 
+    /// ADR-0111: the with-main choice is kept in the output profile across a restart.
+    #[test]
+    fn the_vertical_output_choice_is_saved_with_the_profile() {
+        use crate::vertical_outputs::{SECTION, VerticalFlags};
+        use rbs_api::types::OutputKind;
+        let d = Dir::new("vertical-flags");
+        let (mut s, _) = open(&d.0, quiet());
+        let off = VerticalFlags::default().set(OutputKind::Record, false);
+        s.set_section(SECTION, &off).unwrap();
+        s.flush();
+        drop(s);
+        let (s, _) = open(&d.0, quiet());
+        assert_eq!(VerticalFlags::from_section(s.section(SECTION)), off);
+    }
+
     #[test]
     fn changes_are_saved_and_a_second_app_is_read_only() {
         let d = Dir::new("save");
