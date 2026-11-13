@@ -96,7 +96,7 @@ impl ScriptFrame {
         for (index, pixel) in bytes.chunks_exact_mut(4).enumerate() {
             let x = index % width_usize;
             let y = index / width_usize;
-            let light = ((x.saturating_add(shift)) / 32 + y / 32) % 2 == 0;
+            let light = ((x.saturating_add(shift)) / 32 + y / 32).is_multiple_of(2);
             if light {
                 pixel[0] = 40;
                 pixel[1] = 180;

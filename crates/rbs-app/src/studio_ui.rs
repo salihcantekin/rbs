@@ -258,6 +258,9 @@ pub struct StudioUi {
     pub scene_preview_failed: bool,
     /// The vertical canvas the host runs, if any (ADR-0093).
     pub vertical: Option<rbs_app::studio_host::VerticalState>,
+    /// The host has said once whether a vertical canvas runs. Its first word is the
+    /// state at start (a saved canvas that runs again), not an Add, so it opens no panel.
+    vertical_known: bool,
     /// The vertical canvas's picture layer exists (ADR-0093).
     pub vertical_preview_ready: bool,
     /// The vertical canvas's picture layer could not be made in this session.
@@ -494,6 +497,7 @@ impl StudioUi {
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
+            vertical_known: false,
             vertical_preview_ready: false,
             vertical_preview_failed: false,
             vertical_picture_failed: false,
@@ -2052,6 +2056,7 @@ impl StudioUi {
     }
 
     /// Display chrome (ADR-0104). `on` false turns chrome off.
+    #[allow(clippy::too_many_arguments)] // One argument per field of the chrome form.
     pub fn set_display_chrome(
         &mut self,
         id: i32,
@@ -4102,12 +4107,11 @@ impl StudioUi {
                 if told.is_none()
                     && s.prefer_default_name
                     && !self.user.collection_name.eq_ignore_ascii_case(DEFAULT_NAME)
+                    && let Err(e) = self.user.rename_collection(DEFAULT_NAME)
                 {
-                    if let Err(e) = self.user.rename_collection(DEFAULT_NAME) {
-                        told = Some(format!(
-                            "The new scene collection could not be named {DEFAULT_NAME}: {e}"
-                        ));
-                    }
+                    told = Some(format!(
+                        "The new scene collection could not be named {DEFAULT_NAME}: {e}"
+                    ));
                 }
                 told
             }
@@ -4361,10 +4365,11 @@ impl StudioUi {
                     self.server_serial += 1;
                     self.vertical_preview_ready = false;
                     self.vertical_preview_failed = false;
-                } else if self.vertical.is_none() {
+                } else if self.vertical.is_none() && self.vertical_known {
                     out.vertical_added = true;
                 }
                 self.vertical = v;
+                self.vertical_known = true;
             }
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
@@ -5105,7 +5110,7 @@ fn free_collection_name(user: &UserSession, wanted: &str) -> String {
     }
     (2..u32::MAX)
         .map(|n| format!("{wanted} {n}"))
-        .find(|n| free(&n))
+        .find(|n| free(n))
         .unwrap_or_else(|| format!("{wanted} new"))
 }
 
@@ -5167,14 +5172,12 @@ impl StudioUi {
         });
         let mut index = -1;
         let mut value = format!("{} × {}", current.0, current.1);
-        let mut next = 0;
-        for band in bands.iter_mut().chain(extras.iter_mut()) {
+        for (next, band) in (0..).zip(bands.iter_mut().chain(extras.iter_mut())) {
             band.index = next;
             if (band.picture_w, band.picture_h) == (current.0 as i32, current.1 as i32) {
                 index = next;
                 value = format!("{} · {}", band.title, band.detail);
             }
-            next += 1;
         }
         SizeNestModel {
             bands,
@@ -6478,6 +6481,24 @@ mod tests {
     }
 
     #[test]
+    fn a_vertical_canvas_running_at_start_opens_no_panel_but_a_later_add_does() {
+        let (mut ui, d) = ui("vertical-at-start");
+        let vertical = rbs_app::studio_host::VerticalState {
+            canvas: rbs_scene::model::CanvasId::from_raw(2),
+            size: rbs_core::media::video::Size::new(1080, 1920),
+            follow: true,
+        };
+        // The saved canvas runs again: the panel keeps the place the workspace saved.
+        let out = ui.apply(Update::Vertical(Some(vertical)));
+        assert!(!out.vertical_added);
+        assert_eq!(ui.vertical, Some(vertical));
+        // Removed, then added again by the user: its panel opens.
+        assert!(!ui.apply(Update::Vertical(None)).vertical_added);
+        assert!(ui.apply(Update::Vertical(Some(vertical))).vertical_added);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     #[allow(clippy::unwrap_used)] // Tests fail by panicking.
     fn the_vertical_preview_toggle_opens_and_closes_its_panel_while_the_canvas_exists() {
         use crate::menu_bar::{Run, Shown, run};
@@ -6512,6 +6533,8 @@ mod tests {
         let mut ws = rbs_ui::builtin::edit();
         // No vertical canvas: the toggle is not offered.
         assert_eq!(shown(&ui, &ws), (false, false, false, None));
+        // The host's first word is the state at start.
+        assert!(!ui.apply(Update::Vertical(None)).vertical_added);
         // Adding one asks for its panel to open.
         let out = ui.apply(Update::Vertical(Some(
             rbs_app::studio_host::VerticalState {
@@ -6557,6 +6580,8 @@ mod tests {
         use rbs_ui::command::{Context, MenuItem, context_menu};
         let (mut ui, d) = ui("add-source-picker");
         ui.state = 1;
+        // The kinds the host reported at start; a kind's code is its place here.
+        ui.kind_list = vec![SourceKind::Screen, SourceKind::Camera];
         let ws = rbs_ui::builtin::edit();
         let run_of = |ui: &StudioUi, text: &str| {
             let s = Shown {

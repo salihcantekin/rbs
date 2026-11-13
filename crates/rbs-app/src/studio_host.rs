@@ -358,17 +358,26 @@ pub struct SourceRow {
     pub filled: bool,
     /// Capture region in full-picture pixels (ADR-0103); absent when `cap_has` is false.
     pub cap_has: bool,
+    /// Left edge of the capture region.
     pub cap_l: u32,
+    /// Top edge of the capture region.
     pub cap_t: u32,
+    /// Right edge of the capture region.
     pub cap_r: u32,
+    /// Bottom edge of the capture region.
     pub cap_b: u32,
     /// Display chrome (ADR-0104); off when `chrome_on` is false. `chrome_fill`: 0 cover,
     /// 1 fit.
     pub chrome_on: bool,
+    /// Top chrome inset.
     pub chrome_t: u32,
+    /// Right chrome inset.
     pub chrome_r: u32,
+    /// Bottom chrome inset.
     pub chrome_b: u32,
+    /// Left chrome inset.
     pub chrome_l: u32,
+    /// Chrome fill: 0 cover, 1 fit.
     pub chrome_fill: u8,
     /// The listed display reported a work area for Reset chrome.
     pub has_work_rect: bool,
@@ -2109,20 +2118,31 @@ pub struct SourceSettingsView {
     pub cursor: bool,
     /// Capture region (ADR-0103).
     pub cap_has: bool,
+    /// Left edge of the capture region.
     pub cap_l: u32,
+    /// Top edge of the capture region.
     pub cap_t: u32,
+    /// Right edge of the capture region.
     pub cap_r: u32,
+    /// Bottom edge of the capture region.
     pub cap_b: u32,
     /// Display chrome (ADR-0104); screen capture only.
     pub chrome_on: bool,
+    /// Top chrome inset.
     pub chrome_t: u32,
+    /// Right chrome inset.
     pub chrome_r: u32,
+    /// Bottom chrome inset.
     pub chrome_b: u32,
+    /// Left chrome inset.
     pub chrome_l: u32,
+    /// Chrome fill: 0 cover, 1 fit.
     pub chrome_fill: u8,
+    /// The display reported a work area for Reset chrome.
     pub has_work_rect: bool,
     /// Delivered picture size when known (for region drag scale).
     pub pic_w: u32,
+    /// Delivered picture height when known.
     pub pic_h: u32,
 }
 
@@ -2212,6 +2232,8 @@ struct Host {
     scenes_shown: Option<SceneList>,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
     vertical: Option<VerticalState>,
+    /// The saved vertical canvas could not start again; told once at the next publish.
+    vertical_restore_error: Option<String>,
     /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
     vertical_shared: Vec<SceneId>,
     vertical_sent: Option<Option<VerticalState>>,
@@ -2693,82 +2715,115 @@ fn start(
         fps: run_fps,
         display,
     };
-    Ok((
-        Host {
-            studio,
-            adapters,
-            collection,
-            canvas,
-            scene,
-            rows: Vec::new(),
-            heard: Vec::new(),
-            globals_shown: Vec::new(),
-            into: None,
-            held,
-            scene_preview_sent: None,
-            vertical_picture: false,
-            vertical_preview_sent: None,
-            scenes_shown: None,
-            vertical: None,
-            vertical_shared: Vec::new(),
-            vertical_sent: None,
-            master_sent: None,
-            sizes: BTreeMap::new(),
-            history: History::new(),
-            history_shown: (None, None),
-            waiting: false,
-            outs: [CanvasOutputs::default(), CanvasOutputs::default()],
-            stats_due: None,
-            clock,
-            camera_factory: config.virtual_camera.map(|f| f.0),
-            camera: None,
-            camera_due: None,
-            monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
-            camera_setup: None,
-            camera_published: None,
-            replay: replay::ReplayHost::new(),
-            keys,
-            key_account: config.key_account,
-            engine: Box::new(engine),
-            gpu,
-            browser_tree,
-            preview_surfaces: settings.preview.map(|p| p.surfaces),
-            dead: None,
-            restarting: false,
-            caught: false,
-            unanswered: None,
-            #[cfg(feature = "fault-injection")]
-            fault: config_fault,
-            autosave: config.autosave,
-            recent: config
-                .recent_dir
-                .as_deref()
-                .map(|d| crate::recent_targets::load(d).0)
-                .unwrap_or_default(),
-            recent_dir: config.recent_dir,
-            swap_after_transition: config.swap_after_transition,
-            thumbs: Arc::new(AtomicU64::new(0)),
-            region_grabs: Arc::new(AtomicU64::new(0)),
-            // A collection that had to be completed is saved at the first publish.
-            saved: loaded,
-            events: EventPublisher::new(),
-            api: None,
-            profile: RecordProfile::new(),
-            kinds,
-            encoders,
-            cannot_record,
-            stream_profile: None,
-            vertical_profile: None,
-            vertical_stream_profile: None,
-            library: None,
-            switch_pending: None,
-            switch_seq: 0,
-            inbox: Weak::new(),
-            levels,
-        },
-        update,
-    ))
+    let mut host = Host {
+        studio,
+        adapters,
+        collection,
+        canvas,
+        scene,
+        rows: Vec::new(),
+        heard: Vec::new(),
+        globals_shown: Vec::new(),
+        into: None,
+        held,
+        scene_preview_sent: None,
+        vertical_picture: false,
+        vertical_preview_sent: None,
+        scenes_shown: None,
+        vertical: None,
+        vertical_restore_error: None,
+        vertical_shared: Vec::new(),
+        vertical_sent: None,
+        master_sent: None,
+        sizes: BTreeMap::new(),
+        history: History::new(),
+        history_shown: (None, None),
+        waiting: false,
+        outs: [CanvasOutputs::default(), CanvasOutputs::default()],
+        stats_due: None,
+        clock,
+        camera_factory: config.virtual_camera.map(|f| f.0),
+        camera: None,
+        camera_due: None,
+        monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
+        camera_setup: None,
+        camera_published: None,
+        replay: replay::ReplayHost::new(),
+        keys,
+        key_account: config.key_account,
+        engine: Box::new(engine),
+        gpu,
+        browser_tree,
+        preview_surfaces: settings.preview.map(|p| p.surfaces),
+        dead: None,
+        restarting: false,
+        caught: false,
+        unanswered: None,
+        #[cfg(feature = "fault-injection")]
+        fault: config_fault,
+        autosave: config.autosave,
+        recent: config
+            .recent_dir
+            .as_deref()
+            .map(|d| crate::recent_targets::load(d).0)
+            .unwrap_or_default(),
+        recent_dir: config.recent_dir,
+        swap_after_transition: config.swap_after_transition,
+        thumbs: Arc::new(AtomicU64::new(0)),
+        region_grabs: Arc::new(AtomicU64::new(0)),
+        // A collection that had to be completed is saved at the first publish.
+        saved: loaded,
+        events: EventPublisher::new(),
+        api: None,
+        profile: RecordProfile::new(),
+        kinds,
+        encoders,
+        cannot_record,
+        stream_profile: None,
+        vertical_profile: None,
+        vertical_stream_profile: None,
+        library: None,
+        switch_pending: None,
+        switch_seq: 0,
+        inbox: Weak::new(),
+        levels,
+    };
+    // A vertical canvas saved with the collection runs again (ADR-0093 decision 9).
+    host.restore_vertical();
+    Ok((host, update))
 }
+
+/// The vertical canvas a saved collection holds: the first canvas besides `main`
+/// (a studio runs at most two, and only `canvas.add_vertical` adds the second).
+fn saved_vertical(collection: &SceneCollection, main: CanvasId) -> Option<VerticalState> {
+    collection
+        .canvases()
+        .find(|c| c.id != main)
+        .map(|c| VerticalState {
+            canvas: c.id,
+            size: c.size,
+            follow: c.follow == Some(main),
+        })
+}
+
+/// Capture region (has, l, t, r, b), chrome (on, t, r, b, l, fill), work area, and
+/// timed show (ms, remaining) for a sources list row.
+type RowExtra = (
+    bool,
+    u32,
+    u32,
+    u32,
+    u32,
+    bool,
+    u32,
+    u32,
+    u32,
+    u32,
+    u8,
+    bool,
+    u32,
+    u32,
+);
 
 impl Host {
     /// Runs a control API command for a window action that already has a method.
@@ -4066,6 +4121,9 @@ impl Host {
             self.camera_due = Some(self.clock.now());
         }
         self.camera_changed();
+        // A collection opened with a saved vertical canvas runs it again (ADR-0093
+        // decision 9).
+        self.restore_vertical();
         // The replay buffer keeps its place: it is armed again in the new studio.
         self.rearm_replay(&|_| {});
         Ok(())
@@ -6159,6 +6217,36 @@ impl Host {
 
     /// The vertical canvas as the studio runs it: with its picture while its panel
     /// shows (ADR-0093 decision 7).
+    /// Runs the vertical canvas the collection saved, when none runs yet: the canvas
+    /// stays in the document across a restart of RBS or a collection switch, and
+    /// without this its outputs, panel picture and Remove would be gone while a new
+    /// Add made a second one (ADR-0093 decision 9). A canvas that cannot start is told
+    /// once and stays in the document.
+    fn restore_vertical(&mut self) {
+        if self.vertical.is_some() {
+            return;
+        }
+        let Some(state) = saved_vertical(&self.collection, self.canvas) else {
+            return;
+        };
+        let extra = self.vertical_extra(state.canvas);
+        let run = self.run_collection();
+        let running = run.as_ref().unwrap_or(&self.collection);
+        match self
+            .studio
+            .activate_canvas(running, &self.adapters.sources, extra)
+        {
+            Ok(_) => {
+                self.vertical = Some(state);
+                self.waiting = self.studio.waiting();
+            }
+            Err(e) => {
+                self.vertical_restore_error =
+                    Some(format!("The vertical canvas did not start: {e}"));
+            }
+        }
+    }
+
     fn vertical_extra(&self, canvas: CanvasId) -> ExtraCanvas {
         let extra = ExtraCanvas::new(canvas);
         let picture = self.collection.canvas(canvas);
@@ -6372,26 +6460,7 @@ impl Host {
     }
 
     /// Capture, chrome and timed-show fields for a sources list row.
-    fn source_row_extra(
-        &self,
-        source: &Source,
-        item: ItemId,
-    ) -> (
-        bool,
-        u32,
-        u32,
-        u32,
-        u32,
-        bool,
-        u32,
-        u32,
-        u32,
-        u32,
-        u8,
-        bool,
-        u32,
-        u32,
-    ) {
+    fn source_row_extra(&self, source: &Source, item: ItemId) -> RowExtra {
         let (cap_has, cap_l, cap_t, cap_r, cap_b) = match source.region {
             Some(r) => (true, r.left, r.top, r.right, r.bottom),
             None => (false, 0, 0, 0, 0),
@@ -7551,6 +7620,9 @@ impl Host {
         if self.vertical_sent != Some(self.vertical) {
             self.vertical_sent = Some(self.vertical);
             notify(Update::Vertical(self.vertical));
+        }
+        if let Some(why) = self.vertical_restore_error.take() {
+            notify(Update::Error(why));
         }
         let master = self.studio.master_meter().cloned();
         let same = match (&self.master_sent, &master) {

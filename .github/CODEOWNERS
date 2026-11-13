@@ -21,3 +21,20 @@
 /crates/rbs-media-format/   @salihcantekin
 /crates/rbs-transport*/      @salihcantekin
 /crates/rbs-plugin-host/     @salihcantekin
+
+# UI rules and what enforces them (ADR-0115)
+/crates/rbs-app/ui/         @salihcantekin
+/crates/rbs-app-ui/         @salihcantekin
+/crates/rbs-app/src/look.rs @salihcantekin
+/crates/rbs-app/src/look/   @salihcantekin
+/crates/rbs-app/tests/ui_patterns.rs @salihcantekin
+/crates/rbs-ui/tokens.toml  @salihcantekin
+/crates/rbs-ui/src/tokens.rs @salihcantekin
+/crates/rbs-ui/src/tokens/  @salihcantekin
+/docs/ui/                   @salihcantekin
+/CLAUDE.md                  @salihcantekin
+/AGENTS.md                  @salihcantekin
+/.claude/                   @salihcantekin
+/.cursor/                   @salihcantekin
+/.github/                   @salihcantekin
+/xtask/                     @salihcantekin

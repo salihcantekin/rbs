@@ -1,0 +1,77 @@
+// Design study: three visual directions, each in a dark and a light theme.
+// Every value here would become a token value in crates/rbs-ui/tokens.toml; nothing in
+// kit.slint or the screens uses a literal of its own.
+//
+// direction 0 = A "Console": the present look refined. Bordered panels, tight rows.
+// direction 1 = B "Calm": floating cards without borders, filled fields, softer type.
+// direction 2 = C "Stage": one flat surface with hairlines, large picture, large controls.
+// direction 3 = B revised after the independent review of ADR-0112: today's blue accent,
+//               a hairline on fields, button outlines that meet 3:1.
+
+export global Look {
+    in-out property <int> direction: 0;
+    in-out property <bool> dark: true;
+
+    out property <int> base: direction == 3 ? 1 : direction;
+    property <bool> revised: direction == 3;
+    pure function c(ad: color, al: color, bd: color, bl: color, cd: color, cl: color) -> color {
+        return base == 0 ? (dark ? ad : al) : base == 1 ? (dark ? bd : bl) : (dark ? cd : cl);
+    }
+    pure function l(a: length, b: length, c: length) -> length {
+        return base == 0 ? a : base == 1 ? b : c;
+    }
+
+    // Surfaces
+    out property <color> window: c(#0c0d10, #dfe2e7, #0b0b0d, #ececf0, #26282d, #d9dade);
+    out property <color> panel: c(#16181c, #f5f6f8, #17181b, #ffffff, #111214, #f8f8f9);
+    out property <color> raised: c(#1f2227, #ffffff, #222327, #ffffff, #1b1c20, #ffffff);
+    out property <color> sunken: c(#0d0e11, #e9ebef, #0f1012, #f1f1f4, #08090a, #ececef);
+    out property <color> hover: c(#22252b, #e8eaee, #232428, #f1f1f4, #1c1d21, #ededf0);
+    out property <color> border: c(#2a2d34, #cdd2d9, #26272b, #e3e3e8, #26282d, #d9dade);
+    out property <color> border-strong: revised ? (dark ? #6e7683 : #7a808a) : c(#3b3f48, #b4bac3, #34353a, #d0d0d7, #3a3c42, #c3c4ca);
+    // The switch track when off: a control boundary, so it follows border-strong when revised.
+    out property <color> track: revised ? (dark ? #6e7683 : #7a808a) : c(#3b3f48, #b4bac3, #34353a, #d0d0d7, #3a3c42, #c3c4ca);
+    // Page behind cards (Settings, dialogs) and the cards on it
+    out property <color> page: c(#0c0d10, #e6e9ed, #0b0b0d, #ececf0, #111214, #f8f8f9);
+    out property <color> card: c(#16181c, #f8f9fb, #17181b, #ffffff, #1b1c20, #ffffff);
+    out property <length> r-card: l(6px, 12px, 10px);
+    out property <bool> card-border: base != 1;
+    // Text
+    out property <color> text: c(#eceef2, #14171b, #ededef, #17171a, #f2f2f3, #101012);
+    out property <color> text2: c(#a3aab6, #505864, #a1a4ac, #5d6068, #a9abb1, #55575d);
+    out property <color> text3: c(#69707b, #8a919b, #6a6d75, #92959d, #6e7076, #8f9197);
+    // Accent
+    out property <color> accent: revised ? (dark ? #5b9cff : #1f6feb) : c(#5b9cff, #1f6feb, #7b83ff, #5456d6, #36b8e6, #0b7fb8);
+    out property <color> accent-ink: revised ? (dark ? #08111f : #ffffff) : c(#08111f, #ffffff, #0b0c1f, #ffffff, #04131a, #ffffff);
+    out property <color> accent-subtle: revised ? (dark ? #1b2a45 : #dbe8fd) : c(#1b2a45, #dbe8fd, #24264a, #e6e6fb, #11303c, #d6eef8);
+    // Reserved meanings (unchanged from today's themes)
+    out property <color> live: #c4262e;
+    out property <color> healthy: dark ? #3fb950 : #1a7f37;
+    out property <color> warning: dark ? #e3b341 : #9a6700;
+    out property <color> danger: dark ? #c38bf0 : #8e3fb5;
+    out property <color> shadow: dark ? #00000080 : #1b1f2433;
+
+    // Shape and space
+    out property <length> r-control: l(4px, 7px, 8px);
+    out property <length> r-panel: l(6px, 12px, 0px);
+    out property <length> r-picture: l(2px, 8px, 12px);
+    out property <length> panel-gap: l(4px, 8px, 1px);
+    out property <length> window-pad: l(4px, 8px, 0px);
+    out property <length> panel-pad: l(10px, 14px, 16px);
+    out property <length> control-h: l(26px, 28px, 32px);
+    out property <length> row-h: l(28px, 32px, 36px);
+    out property <length> field-gap: l(6px, 8px, 10px);
+    out property <length> section-gap: l(12px, 16px, 20px);
+    out property <length> icon: 16px;
+    // Type
+    out property <length> t-caption: l(11px, 12px, 12px);
+    out property <length> t-body: l(12.5px, 13px, 14px);
+    out property <length> t-title: l(13px, 14px, 16px);
+    out property <length> t-heading: l(18px, 20px, 22px);
+    // Structure choices that differ per direction
+    out property <bool> panel-border: base == 0;
+    out property <bool> field-border: direction != 1;
+    out property <bool> caps-headers: base == 0;
+    out property <bool> pill-tabs: base != 0;
+    out property <bool> panel-shadow: base == 1 && !dark;
+}

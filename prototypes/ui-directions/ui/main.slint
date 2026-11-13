@@ -1,0 +1,648 @@
+// Design study screens. screen 0 = main window (Edit), 1 = Settings > Stream,
+// 2 = first run, 3 = component sheet.
+import { Look } from "look.slint";
+import { Ico, Label, Caption, Btn, IcoBtn, Toggle, Seg, Sel, Field, Sld, Hint, Row, SecHead, ListRow, Chip, TabBar, StatusLine, Panel } from "kit.slint";
+
+component Picture inherits Rectangle {
+    // Stand-in for the program picture: content, not chrome.
+    border-radius: Look.r-picture;
+    clip: true;
+    background: @linear-gradient(180deg, #1a3558 0%, #53295f 100%);
+    drop-shadow-blur: Look.base == 2 ? 24px : 0px;
+    drop-shadow-color: Look.base == 2 ? Look.shadow : transparent;
+    drop-shadow-offset-y: 6px;
+    Rectangle {
+        x: parent.width * 6%;
+        y: parent.height * 8%;
+        width: parent.width * 62%;
+        height: parent.height * 66%;
+        border-radius: 6px;
+        background: #0e1626;
+        Rectangle { y: 0px; height: 7%; background: #1b2740; }
+        Rectangle { x: parent.width * 5%; y: parent.height * 16%; width: 44%; height: 5%; border-radius: 2px; background: #5b9cff; }
+        Rectangle { x: parent.width * 5%; y: parent.height * 27%; width: 70%; height: 4%; border-radius: 2px; background: #2c3b5c; }
+        Rectangle { x: parent.width * 5%; y: parent.height * 35%; width: 58%; height: 4%; border-radius: 2px; background: #2c3b5c; }
+        Rectangle { x: parent.width * 5%; y: parent.height * 43%; width: 64%; height: 4%; border-radius: 2px; background: #2c3b5c; }
+        Rectangle { x: parent.width * 5%; y: parent.height * 58%; width: 30%; height: 4%; border-radius: 2px; background: #3fb950; }
+    }
+    Rectangle {
+        x: parent.width * 6%;
+        y: parent.height * 80%;
+        width: parent.width * 46%;
+        height: parent.height * 11%;
+        border-radius: 4px;
+        background: #000000a0;
+        Text {
+            x: parent.width * 4%;
+            text: "Tonight: building a streaming app in Rust";
+            color: #ffffff;
+            font-size: parent.height * 0.36;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    cam := Rectangle {
+        x: parent.width * 71%;
+        y: parent.height * 56%;
+        width: parent.width * 25%;
+        height: parent.height * 38%;
+        border-radius: 8px;
+        background: @linear-gradient(180deg, #d98b5f 0%, #7a3f52 100%);
+        Rectangle {
+            x: parent.width * 34%;
+            y: parent.height * 16%;
+            width: 32%;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: #f0c8a8;
+        }
+        Rectangle {
+            x: parent.width * 18%;
+            y: parent.height * 62%;
+            width: 64%;
+            height: 60%;
+            border-radius: 20px;
+            background: #24304a;
+        }
+    }
+    // Selection of the camera: accent outline and handles.
+    Rectangle {
+        x: cam.x - 1px;
+        y: cam.y - 1px;
+        width: cam.width + 2px;
+        height: cam.height + 2px;
+        border-width: 2px;
+        border-color: Look.accent;
+        border-radius: 2px;
+    }
+    for h in [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }, { x: 0.5, y: 0 }, { x: 0.5, y: 1 }, { x: 0, y: 0.5 }, { x: 1, y: 0.5 }]: Rectangle {
+        x: cam.x + cam.width * h.x - 4px;
+        y: cam.y + cam.height * h.y - 4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: #ffffff;
+        border-width: 1.5px;
+        border-color: Look.accent;
+    }
+}
+
+component Strip inherits Rectangle {
+    in property <string> name;
+    in property <float> level: 0.6;
+    in property <float> fader: 0.75;
+    in property <string> db: "0.0";
+    in property <bool> muted;
+    in property <bool> monitor;
+    width: 92px;
+    VerticalLayout {
+        spacing: 6px;
+        Label { text: root.name; font-weight: 500; horizontal-alignment: center; height: 18px; color: root.muted ? Look.text3 : Look.text; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+            vertical-stretch: 1;
+            // Meter, two channels
+            for ch in [1.0, 0.86]: Rectangle {
+                width: 6px;
+                border-radius: 3px;
+                background: Look.sunken;
+                clip: true;
+                Rectangle {
+                    y: parent.height * (1 - root.level * ch);
+                    height: parent.height * root.level * ch;
+                    background: root.muted ? Look.border-strong : Look.healthy;
+                }
+                if root.level * ch > 0.78 && !root.muted: Rectangle {
+                    y: parent.height * (1 - root.level * ch);
+                    height: parent.height * (root.level * ch - 0.78);
+                    background: Look.warning;
+                }
+            }
+            // Fader
+            Rectangle {
+                width: 20px;
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    width: 4px;
+                    border-radius: 2px;
+                    background: Look.border-strong;
+                }
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height * (1 - root.fader);
+                    width: 4px;
+                    height: parent.height * root.fader;
+                    border-radius: 2px;
+                    background: root.muted ? Look.text3 : Look.accent;
+                }
+                Rectangle {
+                    x: 0px;
+                    y: parent.height * (1 - root.fader) - 5px;
+                    width: 20px;
+                    height: 10px;
+                    border-radius: 3px;
+                    background: Look.text;
+                    drop-shadow-blur: 3px;
+                    drop-shadow-color: Look.shadow;
+                }
+            }
+        }
+        Caption { text: root.db + " dB"; horizontal-alignment: center; height: 14px; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 0px;
+            IcoBtn { icon: root.muted ? "speaker-off" : "speaker"; checked: root.muted; ink: root.muted ? Look.danger : Look.text2; }
+            IcoBtn { icon: "headphones"; checked: root.monitor; }
+            IcoBtn { icon: "more"; }
+        }
+    }
+}
+
+component FrameBar inherits Rectangle {
+    height: 44px;
+    background: Look.base == 2 ? Look.panel : Look.window;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 6px;
+                background: #8a63ff;
+                Ico { name: "broadcast"; ink: #ffffff; size: 14px; }
+            }
+        }
+        Text { text: "RBS"; color: Look.text; font-size: Look.t-title; font-weight: 700; vertical-alignment: center; }
+        Rectangle { width: 6px; }
+        VerticalLayout {
+            alignment: center;
+            width: 210px;
+            TabBar { tabs: ["Edit", "Live", "Audio"]; current: 0; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            Field { width: 340px; lead: "search"; placeholder: "Search settings and commands"; unit: "Ctrl K"; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 2px;
+                IcoBtn { icon: "panel-left"; checked: true; }
+                IcoBtn { icon: "panel-bottom"; checked: true; }
+                IcoBtn { icon: "panel-right"; checked: true; }
+                Rectangle { width: 6px; }
+                IcoBtn { icon: "gear"; }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Btn { text: "Record"; lead: "ring"; }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Btn { text: "Go live"; kind: "primary"; lead: "bolt"; }
+        }
+    }
+}
+
+component StatusBar inherits Rectangle {
+    height: 26px;
+    background: Look.base == 2 ? Look.panel : Look.window;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 16px;
+        HorizontalLayout {
+            spacing: 6px;
+            VerticalLayout { alignment: center; Ico { name: "ring"; ink: Look.text3; size: 12px; } }
+            Caption { text: "Not live · not recording"; color: Look.text; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Caption { text: "CPU 6 %"; }
+        Caption { text: "GPU 14 %"; }
+        Caption { text: "Dropped frames 0"; }
+        Caption { text: "Output profile  Twitch 1080p60"; }
+        Caption { text: "1920 × 1080 · 60 fps"; }
+    }
+}
+
+component PropertiesBody inherits VerticalLayout {
+    spacing: Look.field-gap;
+    HorizontalLayout {
+        spacing: 8px;
+        height: Look.row-h;
+        VerticalLayout { alignment: center; Ico { name: "camera"; ink: Look.accent; } }
+        Label { text: "Camera"; font-weight: 600; }
+        Caption { text: "Video capture device"; color: Look.text3; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    TabBar { tabs: ["Layout", "Filters", "Audio", "Source"]; current: 0; }
+    Rectangle { height: 2px; }
+    SecHead { title: "Transform"; changed: true; }
+    HorizontalLayout {
+        spacing: Look.field-gap;
+        Field { prefix: "X"; value: "1360"; horizontal-stretch: 1; }
+        Field { prefix: "Y"; value: "744"; horizontal-stretch: 1; }
+    }
+    HorizontalLayout {
+        spacing: Look.field-gap;
+        Field { prefix: "W"; value: "512"; horizontal-stretch: 1; }
+        Field { prefix: "H"; value: "288"; horizontal-stretch: 1; }
+    }
+    Row { label: "Rotation"; Field { value: "0"; unit: "°"; number: true; width: 72px; } }
+    Row {
+        label: "Arrange";
+        control-w: Look.control-h * 5;
+        HorizontalLayout {
+            spacing: 0px;
+            IcoBtn { icon: "flip-h"; }
+            IcoBtn { icon: "flip-v"; }
+            IcoBtn { icon: "rotate-cw"; }
+            IcoBtn { icon: "fit"; }
+            IcoBtn { icon: "center"; }
+        }
+    }
+    Rectangle { height: Look.section-gap - Look.field-gap * 2; }
+    SecHead { title: "Crop"; open: false; }
+    SecHead { title: "Border"; feature: true; on: true; hint: true; }
+    Row { label: "Width"; Field { value: "4"; unit: "px"; number: true; width: 72px; } }
+    Row {
+        label: "Colour";
+        VerticalLayout { alignment: center; Rectangle { width: 18px; height: 18px; border-radius: 4px; background: #ffffff; border-width: 1px; border-color: Look.border-strong; } }
+        Field { value: "#FFFFFF"; width: 92px; }
+    }
+    Row { label: "Corner radius"; hint: true; Sld { value: 0.3; width: 76px; } Label { text: "12 px"; color: Look.text2; width: 48px; horizontal-alignment: right; } }
+    SecHead { title: "Shadow"; feature: true; on: false; open: false; }
+    Rectangle { height: Look.section-gap - Look.field-gap * 2; }
+    SecHead { title: "Blend"; }
+    Row { label: "Opacity"; Sld { value: 1.0; width: 76px; } Label { text: "100 %"; color: Look.text2; width: 48px; horizontal-alignment: right; } }
+    Row { label: "Blend mode"; Sel { value: "Normal"; width: 148px; } }
+    Rectangle { vertical-stretch: 1; }
+}
+
+component MainScreen inherits Rectangle {
+    background: Look.window;
+    VerticalLayout {
+        FrameBar { }
+        if Look.base == 2: Rectangle { height: 1px; background: Look.border; }
+        VerticalLayout {
+            padding: Look.window-pad;
+            padding-top: 0px;
+            spacing: Look.panel-gap;
+            HorizontalLayout {
+                spacing: Look.panel-gap;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    width: 276px;
+                    spacing: Look.panel-gap;
+                    Panel {
+                        title: "Scenes";
+                        add: true;
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px;
+                            ListRow { badge: "1"; title: "Starting soon"; }
+                            ListRow { badge: "2"; title: "Gameplay + camera"; selected: true; IcoBtn { icon: "more"; } }
+                            ListRow { badge: "3"; title: "Just chatting"; hovered: true; }
+                            ListRow { badge: "4"; title: "Be right back"; }
+                            ListRow { badge: "5"; title: "Ending"; }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                    }
+                    Panel {
+                        title: "Sources";
+                        add: true;
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px;
+                            ListRow { icon: "camera"; title: "Camera"; selected: true; IcoBtn { icon: "lock"; ink: Look.text3; } IcoBtn { icon: "eye"; } }
+                            ListRow { icon: "pencil"; title: "Lower third"; IcoBtn { icon: "eye"; } }
+                            ListRow { icon: "globe"; title: "Alerts"; note: "Browser"; IcoBtn { icon: "eye"; } }
+                            ListRow { icon: "window"; title: "Editor window"; IcoBtn { icon: "eye"; } }
+                            ListRow { icon: "mic"; title: "Microphone"; IcoBtn { icon: "eye"; } }
+                            ListRow { icon: "image"; title: "Background"; dim: true; IcoBtn { icon: "eye-off"; ink: Look.text3; } }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                    }
+                }
+                Panel {
+                    bare: true;
+                    title: "Preview";
+                    count: "1920 × 1080";
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: Look.base == 2 ? transparent : Look.sunken;
+                        border-radius: Look.r-panel;
+                        property <length> pad: Look.base == 2 ? 28px : 16px;
+                        property <length> pw: min(self.width - pad * 2, (self.height - pad * 2) * 16 / 9);
+                        Picture {
+                            width: parent.pw;
+                            height: parent.pw * 9 / 16;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+                Panel {
+                    title: "Properties";
+                    width: 316px;
+                    // Scrolls in the app; the study shows the top of the list.
+                    Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
+                        PropertiesBody { y: 0px; width: parent.width; }
+                    }
+                }
+            }
+            Panel {
+                title: "Mixer";
+                height: Look.base == 2 ? 236px : 216px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    Strip { name: "Microphone"; level: 0.72; fader: 0.78; db: "-3.5"; monitor: true; }
+                    Strip { name: "Desktop"; level: 0.55; fader: 0.62; db: "-9.0"; }
+                    Strip { name: "Camera mic"; level: 0.3; fader: 0.7; db: "-6.0"; muted: true; }
+                    Strip { name: "Music"; level: 0.84; fader: 0.45; db: "-16.0"; }
+                    Rectangle { width: 12px; Rectangle { x: 6px; width: 1px; background: Look.border; } }
+                    Strip { name: "Master"; level: 0.8; fader: 0.8; db: "0.0"; }
+                }
+            }
+        }
+        if Look.base == 2: Rectangle { height: 1px; background: Look.border; }
+        StatusBar { }
+    }
+}
+
+component Card inherits Rectangle {
+    background: Look.card;
+    border-radius: Look.r-card;
+    border-width: Look.card-border ? 1px : 0px;
+    border-color: Look.border;
+    drop-shadow-blur: Look.panel-shadow ? 10px : 0px;
+    drop-shadow-color: Look.panel-shadow ? Look.shadow : transparent;
+    drop-shadow-offset-y: 2px;
+    VerticalLayout {
+        padding: Look.panel-pad;
+        padding-top: Look.panel-pad - 4px;
+        padding-bottom: Look.panel-pad - 4px;
+        spacing: 2px;
+        @children
+    }
+}
+
+component NavItem inherits ListRow {
+}
+
+component NavGroup inherits Text {
+    color: Look.text3;
+    font-size: Look.t-caption;
+    font-weight: 600;
+    letter-spacing: Look.caps-headers ? 0.5px : 0px;
+    height: 26px;
+    vertical-alignment: bottom;
+}
+
+component SettingsScreen inherits Rectangle {
+    background: Look.page;
+    HorizontalLayout {
+        Rectangle {
+            width: 216px;
+            background: Look.base == 1 ? Look.page : Look.panel;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 2px;
+                Text { text: "Settings"; color: Look.text; font-size: Look.t-title; font-weight: 600; height: 30px; vertical-alignment: center; }
+                Field { lead: "search"; placeholder: "Search settings"; }
+                NavGroup { text: Look.caps-headers ? "APP" : "App"; }
+                NavItem { icon: "sliders"; title: "General"; }
+                NavItem { icon: "palette"; title: "Appearance"; }
+                NavItem { icon: "keyboard"; title: "Shortcuts"; }
+                NavGroup { text: Look.caps-headers ? "OUTPUT" : "Output"; }
+                NavItem { icon: "monitor"; title: "Video"; }
+                NavItem { icon: "speaker"; title: "Audio"; }
+                NavItem { icon: "ring"; title: "Recording"; }
+                NavItem { icon: "broadcast"; title: "Stream"; selected: true; }
+                NavItem { icon: "camera"; title: "Virtual camera"; }
+                NavGroup { text: Look.caps-headers ? "CONTROL" : "Control"; }
+                NavItem { icon: "link"; title: "Remote control"; }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+        if Look.base != 1: Rectangle { width: 1px; background: Look.border; }
+        VerticalLayout {
+            padding: 24px;
+            padding-top: 18px;
+            spacing: Look.section-gap - 4px;
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    spacing: 2px;
+                    Text { text: "Stream"; color: Look.text; font-size: Look.t-heading; font-weight: 600; }
+                    Caption { text: "Where RBS sends your stream, and in what quality."; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout { alignment: center; Seg { width: 190px; options: ["Simple", "Advanced"]; current: 0; } }
+            }
+            Card {
+                SecHead { title: "Destination"; }
+                Row { label: "Service"; control-w: 280px; Sel { value: "Twitch"; width: 280px; } }
+                Row { label: "Server"; control-w: 280px; Sel { value: "Automatic (recommended)"; width: 280px; } }
+                Row { label: "Stream key"; hint: true; control-w: 280px; Field { value: "••••••••••••••••••••"; width: 246px; } IcoBtn { icon: "eye"; } }
+            }
+            StatusLine { kind: "warning"; text: "Your upload speed (5.2 Mbit/s) is lower than the bitrate."; action: "Lower the bitrate"; }
+            Card {
+                SecHead { title: "Quality"; changed: true; }
+                Row { label: "Video bitrate"; hint: true; control-w: 280px; Field { value: "6000"; unit: "kbit/s"; number: true; width: 132px; } }
+                Row { label: "Encoder"; control-w: 280px; Sel { value: "Best available (NVENC H.264)"; width: 280px; } }
+                Row { label: "Output size"; hint: true; control-w: 280px; Seg { width: 280px; options: ["Same as canvas", "Custom"]; current: 0; } }
+            }
+            Card {
+                SecHead { title: "Record when the stream starts"; feature: true; on: true; hint: true; }
+                Row { label: "Stop recording with the stream"; control-w: 280px; Toggle { on: true; } }
+            }
+            Card {
+                SecHead { title: "Reconnect when the connection drops"; feature: true; on: false; open: false; }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+component ChoiceCard inherits Rectangle {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> text;
+    in property <string> list;
+    in property <bool> selected;
+    background: Look.card;
+    border-radius: Look.r-card;
+    border-width: selected ? 2px : Look.card-border ? 1px : 0px;
+    border-color: selected ? Look.accent : Look.border;
+    VerticalLayout {
+        padding: 18px;
+        spacing: 8px;
+        HorizontalLayout {
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                border-radius: Look.r-control + 2px;
+                background: root.selected ? Look.accent-subtle : Look.sunken;
+                Ico { name: root.icon; ink: root.selected ? Look.accent : Look.text2; size: 18px; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.selected: VerticalLayout {
+                alignment: start;
+                Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 9px;
+                    background: Look.accent;
+                    Ico { name: "check"; ink: Look.accent-ink; size: 12px; }
+                }
+            }
+        }
+        Text { text: root.title; color: Look.text; font-size: Look.t-title + 1px; font-weight: 600; }
+        Text { text: root.text; color: Look.text2; font-size: Look.t-body; wrap: word-wrap; }
+        Rectangle { height: 1px; background: Look.border; }
+        Text { text: root.list; color: Look.text2; font-size: Look.t-caption; wrap: word-wrap; }
+        Rectangle { vertical-stretch: 1; }
+    }
+}
+
+component FirstRunScreen inherits Rectangle {
+    background: Look.page;
+    VerticalLayout {
+        padding: 40px;
+        padding-top: 44px;
+        spacing: 20px;
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: "How do you want to use RBS?"; color: Look.text; font-size: Look.t-heading + 4px; font-weight: 600; horizontal-alignment: center; }
+            Text { text: "This sets the first layout and how many options you see. You can change it any time."; color: Look.text2; font-size: Look.t-body; horizontal-alignment: center; }
+        }
+        HorizontalLayout {
+            spacing: 14px;
+            height: 250px;
+            ChoiceCard { icon: "bolt"; title: "Simple"; text: "I want to go live quickly. Show me only what I need."; list: "Scenes, sources, preview, Go live and Record. Advanced options stay folded."; }
+            ChoiceCard { icon: "layout"; title: "Standard"; selected: true; text: "I have used OBS or a similar app before."; list: "Adds the mixer, properties, transitions and all common settings."; }
+            ChoiceCard { icon: "sliders"; title: "Pro"; text: "I run complex shows and want every control."; list: "Adds studio mode, several outputs, audio routing and expert settings."; }
+        }
+        Card {
+            Row { label: "Bring my scenes and settings from OBS Studio"; control-w: 220px; Btn { text: "Import from OBS"; lead: "import"; } }
+            Row { label: "Theme"; control-w: 220px; Seg { width: 220px; options: ["System", "Dark", "Light"]; current: 0; } }
+            Row { label: "Set up my stream for me"; hint: true; control-w: 220px; Toggle { on: true; } }
+        }
+        Rectangle { vertical-stretch: 1; }
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            Btn { text: "Skip"; kind: "ghost"; }
+            Btn { text: "Continue"; kind: "primary"; trail: "arrow-right"; }
+        }
+    }
+}
+
+component SheetBlock inherits VerticalLayout {
+    in property <string> title;
+    spacing: 8px;
+    Caption { text: root.title; color: Look.text3; font-weight: 600; height: 16px; }
+    @children
+}
+
+component SheetScreen inherits Rectangle {
+    background: Look.page;
+    HorizontalLayout {
+        padding: 24px;
+        spacing: 24px;
+        VerticalLayout {
+            spacing: 18px;
+            horizontal-stretch: 1;
+            SheetBlock {
+                title: "Buttons: one primary per window, actions only";
+                HorizontalLayout { spacing: 8px; alignment: start; Btn { text: "Go live"; kind: "primary"; } Btn { text: "Add source"; lead: "plus"; } Btn { text: "Cancel"; kind: "ghost"; } Btn { text: "Delete"; kind: "danger"; lead: "trash"; } Btn { text: "End stream"; kind: "live"; } Btn { text: "Disabled"; enabled: false; } }
+                HorizontalLayout { spacing: 2px; alignment: start; IcoBtn { icon: "flip-h"; } IcoBtn { icon: "flip-v"; hovered: true; } IcoBtn { icon: "rotate-cw"; } IcoBtn { icon: "lock"; checked: true; } IcoBtn { icon: "more"; } }
+            }
+            SheetBlock {
+                title: "Choice: on/off, 2 to 4 options, 5 or more";
+                HorizontalLayout { spacing: 16px; alignment: start; VerticalLayout { alignment: center; Toggle { on: true; } } VerticalLayout { alignment: center; Toggle { on: false; } } Seg { width: 200px; options: ["CBR", "VBR", "CQ"]; current: 1; } Sel { value: "Best available"; width: 170px; } }
+            }
+            SheetBlock {
+                title: "Fields: text, number with unit, dense pair, focus, search";
+                HorizontalLayout { spacing: 8px; alignment: start; Field { value: "My stream"; width: 120px; } Field { value: "6000"; unit: "kbit/s"; number: true; width: 110px; } Field { prefix: "X"; value: "1360"; width: 80px; } Field { value: "512"; prefix: "W"; focused: true; width: 80px; } }
+                HorizontalLayout { spacing: 8px; alignment: start; Field { lead: "search"; placeholder: "Search"; width: 200px; } Sld { value: 0.6; width: 160px; } Label { text: "60 %"; color: Look.text2; } }
+            }
+            SheetBlock {
+                title: "Row: label, hint, control, unit. Same on every screen";
+                Card {
+                    Row { label: "Video bitrate"; hint: true; Field { value: "6000"; unit: "kbit/s"; number: true; width: 132px; } }
+                    Row { label: "Rate control"; Seg { width: 148px; options: ["CBR", "VBR"]; current: 0; } }
+                    Row { label: "Keep the picture sharp"; Toggle { on: true; } }
+                }
+            }
+            SheetBlock {
+                title: "Status: one line, one action";
+                StatusLine { kind: "info"; text: "A change opens the source again."; }
+                StatusLine { kind: "warning"; text: "Upload speed is lower than the bitrate."; action: "Fix"; }
+                StatusLine { kind: "error"; text: "The camera is in use by another app."; action: "Retry"; }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+        VerticalLayout {
+            spacing: 18px;
+            width: 300px;
+            SheetBlock {
+                title: "Sections: plain, changed, feature on, feature off";
+                Card {
+                    SecHead { title: "Transform"; }
+                    SecHead { title: "Quality"; changed: true; }
+                    SecHead { title: "Border"; feature: true; on: true; hint: true; }
+                    SecHead { title: "Shadow"; feature: true; on: false; open: false; }
+                }
+            }
+            SheetBlock {
+                title: "List rows: rest, hover, selected, hidden";
+                Card {
+                    ListRow { icon: "camera"; title: "Camera"; IcoBtn { icon: "eye"; } }
+                    ListRow { icon: "window"; title: "Editor window"; hovered: true; IcoBtn { icon: "eye"; } }
+                    ListRow { icon: "mic"; title: "Microphone"; selected: true; IcoBtn { icon: "lock"; } IcoBtn { icon: "eye"; } }
+                    ListRow { icon: "image"; title: "Background"; dim: true; IcoBtn { icon: "eye-off"; ink: Look.text3; } }
+                }
+            }
+            SheetBlock {
+                title: "Tabs and dialog actions";
+                TabBar { tabs: ["Layout", "Filters", "Audio"]; current: 1; }
+                HorizontalLayout { spacing: 8px; Rectangle { horizontal-stretch: 1; } Btn { text: "Cancel"; kind: "ghost"; } Btn { text: "Add source"; kind: "primary"; } }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+export component App inherits Window {
+    in property <int> direction: 0;
+    in property <bool> dark: true;
+    in property <int> screen: 0;
+    title: "RBS design study";
+    default-font-family: "Inter";
+    width: screen == 0 ? 1440px : 920px;
+    height: screen == 0 ? 900px : 680px;
+    background: Look.page;
+    init => {
+        Look.direction = self.direction;
+        Look.dark = self.dark;
+    }
+    if root.screen == 0: MainScreen { }
+    if root.screen == 1: SettingsScreen { }
+    if root.screen == 2: FirstRunScreen { }
+    if root.screen == 3: SheetScreen { }
+}

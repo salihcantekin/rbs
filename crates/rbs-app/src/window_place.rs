@@ -144,6 +144,8 @@ pub fn show_centred<C: ComponentHandle + 'static, P: ComponentHandle + 'static>(
 /// moving it. Restores it when minimised. No-op when the OS handle is not ready yet
 /// (Linux today has no extra call: `show` alone does not raise an obscured window).
 pub fn raise(window: &slint::Window) {
+    // `RawWindowHandle` names only the Windows and macOS arms below.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_imports))]
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     // `window_handle()` returns a guard; keep it for the borrow of the raw handle.
     let binding = window.window_handle();
