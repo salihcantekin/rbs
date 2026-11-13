@@ -1225,60 +1225,73 @@ export component SizeNest inherits Rectangle {
     callback selected(int, int, int);
     property <string> hot-line;
     horizontal-stretch: 1;
-    HorizontalLayout {
-        alignment: start;
-        spacing: Tokens.space-4;
-        if root.bands.length > 0: frame := Rectangle {
-            width: root.portrait ? Tokens.size-menu-sm * 9 / 16 : Tokens.size-menu-sm;
-            height: root.portrait ? Tokens.size-menu-sm : Tokens.size-menu-sm * 9 / 16;
-            background: Theme.surface-sunken;
-            border-radius: Tokens.radius-sm;
-            accessible-role: groupbox;
-            accessible-label: root.label;
-            for band in root.bands: NestBand {
-                x: 0px;
-                y: 0px;
-                width: frame.width * band.scale;
-                height: frame.height * band.scale;
-                title: band.title;
-                detail: band.detail;
-                checked: band.index == root.index;
-                enabled: root.enabled;
-                clicked => { root.selected(band.index, band.picture-w, band.picture-h); }
-                pointed(on) => {
-                    if on { root.hot-line = @tr("{} · {}", band.title, band.detail); }
-                    else if root.hot-line == @tr("{} · {}", band.title, band.detail) { root.hot-line = ""; }
-                }
+    property <bool> has-frame: root.bands.length > 0;
+    property <length> frame-w: !root.has-frame ? 0px : root.portrait ? Tokens.size-menu-sm * 9 / 16 : Tokens.size-menu-sm;
+    property <length> frame-h: !root.has-frame ? 0px : root.portrait ? Tokens.size-menu-sm : Tokens.size-menu-sm * 9 / 16;
+    property <length> gap: root.has-frame ? Tokens.space-4 : 0px;
+    // The picture and the column beside it do not fit: the column goes under the
+    // picture, so nothing leaves a narrow card. Placed by geometry because
+    // `@children` cannot sit under an `if`.
+    out property <bool> stacked: root.has-frame && root.width < root.frame-w + root.gap + side.min-width;
+    min-width: max(root.frame-w, side.min-width);
+    preferred-width: root.frame-w + root.gap + side.preferred-width;
+    min-height: root.stacked ? root.frame-h + root.gap + side.preferred-height : max(root.frame-h, side.preferred-height);
+    preferred-height: self.min-height;
+    if root.has-frame: frame := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.frame-w;
+        height: root.frame-h;
+        background: Theme.surface-sunken;
+        border-radius: Tokens.radius-sm;
+        accessible-role: groupbox;
+        accessible-label: root.label;
+        for band in root.bands: NestBand {
+            x: 0px;
+            y: 0px;
+            width: frame.width * band.scale;
+            height: frame.height * band.scale;
+            title: band.title;
+            detail: band.detail;
+            checked: band.index == root.index;
+            enabled: root.enabled;
+            clicked => { root.selected(band.index, band.picture-w, band.picture-h); }
+            pointed(on) => {
+                if on { root.hot-line = @tr("{} · {}", band.title, band.detail); }
+                else if root.hot-line == @tr("{} · {}", band.title, band.detail) { root.hot-line = ""; }
             }
         }
-        VerticalLayout {
-            horizontal-stretch: 1;
+    }
+    side := VerticalLayout {
+        x: root.stacked ? 0px : root.frame-w + root.gap;
+        y: root.stacked ? root.frame-h + root.gap : 0px;
+        width: root.width - self.x;
+        height: self.preferred-height;
+        alignment: start;
+        spacing: Tokens.space-2;
+        Text {
+            text: root.hot-line != "" ? root.hot-line : root.value;
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        if root.extras.length > 0: HorizontalLayout {
             alignment: start;
             spacing: Tokens.space-2;
-            Text {
-                text: root.hot-line != "" ? root.hot-line : root.value;
-                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-                font-size: Tokens.type-caption-size;
-                wrap: word-wrap;
-                accessible-role: none;
-            }
-            if root.extras.length > 0: HorizontalLayout {
-                alignment: start;
-                spacing: Tokens.space-2;
-                for extra in root.extras: NestExtra {
-                    title: extra.title;
-                    detail: extra.detail;
-                    checked: extra.index == root.index;
-                    enabled: root.enabled;
-                    clicked => { root.selected(extra.index, extra.picture-w, extra.picture-h); }
-                    pointed(on) => {
-                        if on { root.hot-line = @tr("{} · {}", extra.title, extra.detail); }
-                        else if root.hot-line == @tr("{} · {}", extra.title, extra.detail) { root.hot-line = ""; }
-                    }
+            for extra in root.extras: NestExtra {
+                title: extra.title;
+                detail: extra.detail;
+                checked: extra.index == root.index;
+                enabled: root.enabled;
+                clicked => { root.selected(extra.index, extra.picture-w, extra.picture-h); }
+                pointed(on) => {
+                    if on { root.hot-line = @tr("{} · {}", extra.title, extra.detail); }
+                    else if root.hot-line == @tr("{} · {}", extra.title, extra.detail) { root.hot-line = ""; }
                 }
             }
-            @children
         }
+        @children
     }
 }
 
