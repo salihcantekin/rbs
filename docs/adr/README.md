@@ -123,3 +123,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0113](0113-experience-level-and-first-run.md) | An experience level and the first-run choice | Accepted |
 | [0114](0114-screen-grammar.md) | One screen grammar: row, list row, section marks, held edits, one home | Accepted |
 | [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Accepted |
+| [0116](0116-audio-only-recording.md) | Audio recording, an output that writes the mix without a picture | Accepted |

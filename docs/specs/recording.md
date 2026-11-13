@@ -300,6 +300,19 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 - **Running.** The node is not essential: its failure is kept in `MonitorState::failure` (cleared when it runs again), never in `failure()` or an output's failure. `MonitorState::latency` is the graph latency plus the ring target plus the device's latency. `set_monitor_volume` ramps (`OUTPUT_VOLUME_RAMP`), clamped to `0..=MAX_OUTPUT_VOLUME`.
 - **Stop.** `stop_monitor` removes the node with a plain apply and takes it back, through the pending takes if the audio partition still runs it; the device is stopped and dropped on the control thread. `shutdown` stops the monitor.
 
+### Audio recording (ADR-0116, Accepted: not built yet)
+
+Planned contract; the code above still requires `video`. An audio recording is an output with a sound stream and no picture.
+
+- `OutputSettings::video` and `RecordSettings::video` become `Option<VideoSettings>`; `new` and `packets` keep `Some(VideoSettings::default())`. `StartReport::video_encoder` becomes `Option<Chosen>`. The studio's per-output record holds its video slot and its export and encoder stats as options; failure attribution, counters and the tail read them only when present. Output pins are assigned in order: video (when present) `s0`, audio next. Video counters in `Progress` are 0 without video.
+- `start_output` with `video: None` adds no export and no video encoder and schedules no video source for it: the audio encoder (shared under "Several outputs" when the `AudioSettings` match) on a free slot's audio encoder partition, and the output node with one stream `s0` on its output partition. The output node's aligned start passes every packet of an output without video (I/O nodes spec, rule 7). Without a preview or another output the render worker stays off.
+- Refusals before anything is chosen: `RecordError::NoStreams` when `video` and `audio` are both `None`; `RecordError::SizeWithoutVideo` when `size` is `Some` without video; `NotBound("mixer")` for a studio without audio.
+- Limits (amends ADR-0047 and ADR-0093 decision 6): it counts toward `MAX_OUTPUTS`, not toward `MAX_OUTPUTS_PER_CANVAS`, which counts outputs with a picture. Slots go first come, first served.
+- Tail: `end_output` records the end. With an unshared audio encoder `output_tail_done` is true at once and `stop_output` flushes it; with a shared one it is true once that encoder emitted a packet with pts at or after the end, or `END_TAIL_LIMIT` after the end.
+- `Recording::start` with `video: None` still needs the program scene (the mix is its audio), instantiates only audio sources, starts no render worker, and its strict mode checks only the sources it records. `rbs-cli record` gains `--no-video` (refused together with `--no-audio`).
+- Containers: AAC in Matroska (`.mka`) and in fragmented MP4 (`.m4a`, major brand `M4A `, compatible `iso6`, `isom`, `mp41`; written once in `begin`). Further formats come with ADR-0085.
+- Tests (planned): `audio_only_output_has_one_stream_and_no_video_nodes`, `audio_only_output_keeps_the_render_worker_off_without_a_preview`, `audio_only_output_shares_a_running_audio_encoder`, `audio_only_output_with_a_shared_encoder_keeps_its_tail`, `no_streams_and_size_without_video_leave_the_studio_unchanged`, `audio_only_output_is_not_blamed_for_a_video_encoder_failure`, `audio_only_output_counts_toward_max_outputs_but_not_the_canvas_limit`, `audio_only_fmp4_has_the_m4a_brand`.
+
 ### Invariants
 
 1. Engine code names no adapter: `rbs-record` depends on ports, node crates, the scene and the engine only (P1), and selects by capability (P3).

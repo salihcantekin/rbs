@@ -15,6 +15,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Output | A destination: a streaming service, a recording, a virtual camera | Target | Output node |
 | Go live / End stream | Start / stop streaming to the selected outputs | Start stream, Stop live | - |
 | Record | Save the program to a file. "Capture" is used only in source type names (Screen capture, Window capture) | Save, Capture (as a verb for recording) | Recording output |
+| Audio recording | A recording of the mix with no picture, an output of its own beside the recording; the verb is "Record audio" (ADR-0116) | Audio-only mode, sound recording, podcast mode | Audio-only output |
 | Preview / Program | What you are preparing / what viewers see (studio mode) | - | - |
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
 | Automatic, Rows, Columns | Mixer layouts: follow the panel's shape, sources stacked top to bottom, or side by side | Horizontal, Vertical, Auto | Orientation (in UI text) |
