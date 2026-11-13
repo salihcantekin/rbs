@@ -64,7 +64,10 @@ fn a_frame_is_copied_then_exit_is_unavailable() {
     assert_eq!(child.frame[0], 40);
     assert_eq!(child.frame[1], 180);
     assert_eq!(child.frame[2], 255);
-    assert_eq!(child.frame[3], 255, "helper paints opaque; seal_alpha keeps it");
+    assert_eq!(
+        child.frame[3], 255,
+        "helper paints opaque; seal_alpha keeps it"
+    );
     assert!(child.unavailable);
     assert!(!child.process_alive());
 }

@@ -100,8 +100,7 @@ impl ShowCues {
         let left = if now >= deadline {
             0
         } else {
-            u32::try_from(deadline.saturating_since(now).as_millis())
-                .unwrap_or(u32::MAX)
+            u32::try_from(deadline.saturating_since(now).as_millis()).unwrap_or(u32::MAX)
         };
         Some(left)
     }

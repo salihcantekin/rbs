@@ -332,7 +332,7 @@ fn check_side(width: u32, height: u32) -> Result<(), (&'static str, &'static str
     if width > MAX_SIDE || height > MAX_SIDE {
         return Err((keys::WIDTH, "at most 8192 pixels on a side"));
     }
-    if width % 2 != 0 || height % 2 != 0 {
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
         return Err((keys::WIDTH, "an even width and height"));
     }
     Ok(())
@@ -682,11 +682,7 @@ impl Node<GpuRuntime> for BrowserSourceNode {
     }
 
     fn warm(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let generation = self
-            .control
-            .sink()
-            .generation()
-            .load(Ordering::Acquire);
+        let generation = self.control.sink().generation().load(Ordering::Acquire);
         if generation == 0 || generation == self.uploaded_generation {
             return Ok(());
         }

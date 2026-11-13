@@ -2052,6 +2052,7 @@ impl StudioUi {
     }
 
     /// Display chrome (ADR-0104). `on` false turns chrome off.
+    #[allow(clippy::too_many_arguments)] // One argument per field of the chrome form.
     pub fn set_display_chrome(
         &mut self,
         id: i32,
@@ -4102,12 +4103,11 @@ impl StudioUi {
                 if told.is_none()
                     && s.prefer_default_name
                     && !self.user.collection_name.eq_ignore_ascii_case(DEFAULT_NAME)
+                    && let Err(e) = self.user.rename_collection(DEFAULT_NAME)
                 {
-                    if let Err(e) = self.user.rename_collection(DEFAULT_NAME) {
-                        told = Some(format!(
-                            "The new scene collection could not be named {DEFAULT_NAME}: {e}"
-                        ));
-                    }
+                    told = Some(format!(
+                        "The new scene collection could not be named {DEFAULT_NAME}: {e}"
+                    ));
                 }
                 told
             }
@@ -5105,7 +5105,7 @@ fn free_collection_name(user: &UserSession, wanted: &str) -> String {
     }
     (2..u32::MAX)
         .map(|n| format!("{wanted} {n}"))
-        .find(|n| free(&n))
+        .find(|n| free(n))
         .unwrap_or_else(|| format!("{wanted} new"))
 }
 
@@ -5167,14 +5167,12 @@ impl StudioUi {
         });
         let mut index = -1;
         let mut value = format!("{} × {}", current.0, current.1);
-        let mut next = 0;
-        for band in bands.iter_mut().chain(extras.iter_mut()) {
+        for (next, band) in (0..).zip(bands.iter_mut().chain(extras.iter_mut())) {
             band.index = next;
             if (band.picture_w, band.picture_h) == (current.0 as i32, current.1 as i32) {
                 index = next;
                 value = format!("{} · {}", band.title, band.detail);
             }
-            next += 1;
         }
         SizeNestModel {
             bands,

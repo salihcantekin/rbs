@@ -358,17 +358,26 @@ pub struct SourceRow {
     pub filled: bool,
     /// Capture region in full-picture pixels (ADR-0103); absent when `cap_has` is false.
     pub cap_has: bool,
+    /// Left edge of the capture region.
     pub cap_l: u32,
+    /// Top edge of the capture region.
     pub cap_t: u32,
+    /// Right edge of the capture region.
     pub cap_r: u32,
+    /// Bottom edge of the capture region.
     pub cap_b: u32,
     /// Display chrome (ADR-0104); off when `chrome_on` is false. `chrome_fill`: 0 cover,
     /// 1 fit.
     pub chrome_on: bool,
+    /// Top chrome inset.
     pub chrome_t: u32,
+    /// Right chrome inset.
     pub chrome_r: u32,
+    /// Bottom chrome inset.
     pub chrome_b: u32,
+    /// Left chrome inset.
     pub chrome_l: u32,
+    /// Chrome fill: 0 cover, 1 fit.
     pub chrome_fill: u8,
     /// The listed display reported a work area for Reset chrome.
     pub has_work_rect: bool,
@@ -2109,20 +2118,31 @@ pub struct SourceSettingsView {
     pub cursor: bool,
     /// Capture region (ADR-0103).
     pub cap_has: bool,
+    /// Left edge of the capture region.
     pub cap_l: u32,
+    /// Top edge of the capture region.
     pub cap_t: u32,
+    /// Right edge of the capture region.
     pub cap_r: u32,
+    /// Bottom edge of the capture region.
     pub cap_b: u32,
     /// Display chrome (ADR-0104); screen capture only.
     pub chrome_on: bool,
+    /// Top chrome inset.
     pub chrome_t: u32,
+    /// Right chrome inset.
     pub chrome_r: u32,
+    /// Bottom chrome inset.
     pub chrome_b: u32,
+    /// Left chrome inset.
     pub chrome_l: u32,
+    /// Chrome fill: 0 cover, 1 fit.
     pub chrome_fill: u8,
+    /// The display reported a work area for Reset chrome.
     pub has_work_rect: bool,
     /// Delivered picture size when known (for region drag scale).
     pub pic_w: u32,
+    /// Delivered picture height when known.
     pub pic_h: u32,
 }
 
@@ -2769,6 +2789,25 @@ fn start(
         update,
     ))
 }
+
+/// Capture region (has, l, t, r, b), chrome (on, t, r, b, l, fill), work area, and
+/// timed show (ms, remaining) for a sources list row.
+type RowExtra = (
+    bool,
+    u32,
+    u32,
+    u32,
+    u32,
+    bool,
+    u32,
+    u32,
+    u32,
+    u32,
+    u8,
+    bool,
+    u32,
+    u32,
+);
 
 impl Host {
     /// Runs a control API command for a window action that already has a method.
@@ -6372,26 +6411,7 @@ impl Host {
     }
 
     /// Capture, chrome and timed-show fields for a sources list row.
-    fn source_row_extra(
-        &self,
-        source: &Source,
-        item: ItemId,
-    ) -> (
-        bool,
-        u32,
-        u32,
-        u32,
-        u32,
-        bool,
-        u32,
-        u32,
-        u32,
-        u32,
-        u8,
-        bool,
-        u32,
-        u32,
-    ) {
+    fn source_row_extra(&self, source: &Source, item: ItemId) -> RowExtra {
         let (cap_has, cap_l, cap_t, cap_r, cap_b) = match source.region {
             Some(r) => (true, r.left, r.top, r.right, r.bottom),
             None => (false, 0, 0, 0, 0),
