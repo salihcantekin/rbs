@@ -1,0 +1,2 @@
+# Approved UI exceptions (ADR-0115). Do not edit by hand.
+# An entry is added with `cargo xtask check-ui --except` after the owner approves in writing.

@@ -24,8 +24,13 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 14. **Tests are fast and deterministic.** No flaky or hanging test: one that fails without a code change blocks all other work until its root cause is fixed; never retry, ignore or re-run to get green. Time-dependent logic uses an injected clock (`TestClock`), tests never sleep for timing, wait for conditions or tick indices instead of durations, and bound real time only as hang guards. Unit tests run in milliseconds; slow ones are `#[ignore = "slow: ..."]` and named `slow_*`. Run the tests of the crates you touch, not the whole suite each time ([ADR-0032](docs/adr/0032-fast-deterministic-tests.md), `test-reliability` skill).
 
 15. **No hard-coded visual values in UI.** Every size, spacing, padding, margin, radius, line width, font size, font weight, duration and colour in new or edited UI comes from a design token (rule U6, [design system](docs/specs/ui-design-system.md#tokens), user themes in [ADR-0057](docs/adr/0057-user-themes-and-appearance-settings.md) and the [themes spec](docs/specs/themes.md)). In `.slint` files use `Tokens.*` and `Theme.*`; in Rust, read the resolved theme (`rbs-app` `look`), never a literal `px` value or `#rrggbb`. If no token fits, add one in the same change (how: `ui-review` skill, "Adding a token"); do not reuse an unrelated token because its value happens to match. The only literals allowed are listed in the `ui-review` skill.
-16. **Visual UI changes are approved before merge.** Any change a user can see (layout, sizes, colours, icons, text placement, new or restyled windows) follows three steps: first propose what will change and how to the owner, then implement it and share screenshots in dark, light and high-contrast (or ask the owner to test locally), and start CI and merge only after the owner approves the result. Docs-only and non-visual changes skip this.
+16. **Visual UI changes are approved before merge.** Any change a user can see (layout, sizes, colours, icons, text placement, new or restyled windows) follows three steps: first propose what will change and how to the owner, then implement it and share screenshots in dark and light (also high-contrast when the change touches a surface or border token, an outline, or a branch on the high-contrast theme; [ADR-0115](docs/adr/0115-ui-stop-rule-for-agents.md)), or ask the owner to test locally, and start CI and merge only after the owner approves the result. Docs-only and non-visual changes skip this.
 17. **Lean and beyond parity.** RBS must be easy on memory, CPU and GPU, and should exceed the features of OBS and similar tools, not only match them. Do not copy a reference tool's design by default: find what it cannot do or does badly because of its technology, and design for that when technically possible. Hot-path changes that serve this are welcome when done very well and measured (rules 10 and 12). Details: [vision](docs/vision.md#product-expectations-owner-2026-11-08).
+18. **UI stop rule.** An AI agent whose change would break a rule of `docs/ui/principles.md`, the design system spec (`docs/specs/ui-design-system.md`) or an accepted UI ADR must stop and ask the owner in writing before making the change. It must not add an exception, raise a count or mark a literal to get past a check. ([ADR-0115](docs/adr/0115-ui-stop-rule-for-agents.md))
+    - `cargo xtask check-ui` counts three things in `crates/rbs-app/ui` (raw `TouchArea` outside the library, component names declared in more than one file, `help:` texts over 90 characters). Each count must equal `docs/ui/baseline.toml` plus `docs/ui/exceptions.toml`. It runs in `cargo test --workspace`.
+    - Never edit those two files by hand. When your change lowers a count, run `cargo xtask check-ui --lower`. When a count would rise, stop and ask the owner; only after written approval run `cargo xtask check-ui --except <check> <count> <file> <reason> <owner's approval> <date>`.
+    - The checks see only what they count. Every other rule (tokens, library components, row anatomy, `Toggle` for a setting, `DialogActions` for window buttons, glossary terms) is checked with the UI review checklist.
+    - Screenshots for the owner's approval of a visual change are dark and light; add high contrast when the change touches a surface or border token, an outline, or a branch on the high-contrast theme.
 
 ## Workspace layout
 
@@ -49,9 +54,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # or: cargo nextest run --workspace (CI uses nextest)
 cargo doc --workspace --no-deps
+cargo xtask check-ui              # after any change under crates/rbs-app/ui (rule 18)
 ```
 
-A task is done when all four pass, the acceptance criteria are met, and specs are in sync. Saying it works is not evidence; show the command output.
+A task is done when all of them pass, the acceptance criteria are met, and specs are in sync. Saying it works is not evidence; show the command output.
 
 ## Skills
 

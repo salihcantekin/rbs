@@ -1,0 +1,489 @@
+// Design study component kit. One implementation per job; the three directions differ
+// only through Look. Names follow the library in crates/rbs-app/ui/components.slint.
+import { Look } from "look.slint";
+import { IconPaths } from "icons.slint";
+
+export component Ico inherits Rectangle {
+    in property <string> name;
+    in property <color> ink: Look.text2;
+    in property <length> size: Look.icon;
+    width: size;
+    height: size;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        commands: IconPaths.path(root.name);
+        viewbox-width: 16;
+        viewbox-height: 16;
+        stroke: IconPaths.filled(root.name) ? transparent : root.ink;
+        fill: IconPaths.filled(root.name) ? root.ink : transparent;
+        stroke-width: 1.5px;
+        stroke-line-cap: round;
+    }
+}
+
+export component Label inherits Text {
+    color: Look.text;
+    font-size: Look.t-body;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+export component Caption inherits Text {
+    color: Look.text2;
+    font-size: Look.t-caption;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+// kind: "primary" | "secondary" | "ghost" | "danger" | "live"
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "secondary";
+    in property <string> lead;
+    in property <string> trail;
+    in property <bool> enabled: true;
+    property <color> ink: !enabled ? Look.text3
+        : kind == "primary" ? Look.accent-ink
+        : kind == "live" ? #ffffff
+        : kind == "danger" ? Look.danger
+        : Look.text;
+    height: Look.control-h;
+    horizontal-stretch: 0;
+    border-radius: Look.r-control;
+    background: kind == "primary" ? Look.accent
+        : kind == "live" ? Look.live
+        : kind == "ghost" ? transparent
+        : Look.raised;
+    border-width: (kind == "secondary" || kind == "danger") && Look.field-border ? 1px : 0px;
+    border-color: kind == "danger" ? Look.danger : Look.border-strong;
+    HorizontalLayout {
+        padding-left: Look.field-gap + 4px;
+        padding-right: Look.field-gap + 4px;
+        spacing: 6px;
+        alignment: center;
+        if root.lead != "": VerticalLayout {
+            alignment: center;
+            Ico { name: root.lead; ink: root.ink; }
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: root.ink;
+            font-size: Look.t-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+        if root.trail != "": VerticalLayout {
+            alignment: center;
+            Ico { name: root.trail; ink: root.ink; }
+        }
+    }
+}
+
+export component IcoBtn inherits Rectangle {
+    in property <string> icon;
+    in property <bool> checked;
+    in property <bool> hovered;
+    in property <color> ink: checked ? Look.accent : Look.text2;
+    width: Look.control-h;
+    height: Look.control-h;
+    border-radius: Look.r-control;
+    background: checked ? Look.accent-subtle : hovered ? Look.hover : transparent;
+    Ico { name: root.icon; ink: root.ink; }
+}
+
+export component Toggle inherits Rectangle {
+    in property <bool> on;
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    background: on ? Look.accent : Look.track;
+    Rectangle {
+        x: root.on ? 16px : 2px;
+        y: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: root.on ? Look.accent-ink : Look.panel;
+    }
+}
+
+export component Seg inherits Rectangle {
+    in property <[string]> options;
+    in property <int> current;
+    height: Look.control-h;
+    border-radius: Look.r-control;
+    background: Look.sunken;
+    border-width: Look.field-border ? 1px : 0px;
+    border-color: Look.border;
+    HorizontalLayout {
+        padding: 2px;
+        for o[i] in root.options: Rectangle {
+            horizontal-stretch: 1;
+            border-radius: Look.r-control - 2px;
+            background: i == root.current ? Look.raised : transparent;
+            drop-shadow-blur: i == root.current ? 3px : 0px;
+            drop-shadow-color: i == root.current ? Look.shadow : transparent;
+            drop-shadow-offset-y: 1px;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: o;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    color: i == root.current ? Look.text : Look.text2;
+                    font-size: Look.t-body;
+                    font-weight: i == root.current ? 500 : 400;
+                }
+            }
+        }
+    }
+}
+
+component FieldBox inherits Rectangle {
+    in property <bool> focused;
+    height: Look.control-h;
+    border-radius: Look.r-control;
+    background: Look.sunken;
+    border-width: focused ? 1.5px : Look.field-border ? 1px : 0px;
+    border-color: focused ? Look.accent : Look.border;
+}
+
+export component Sel inherits FieldBox {
+    in property <string> value;
+    min-width: 96px;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 6px;
+        spacing: 4px;
+        Label { text: root.value; horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            Ico { name: "chevron-down"; }
+        }
+    }
+}
+
+// A text or number field. `prefix` is the short in-field name used in dense pairs
+// (X, Y, W, H); `unit` is drawn after the value.
+export component Field inherits FieldBox {
+    in property <string> value;
+    in property <string> prefix;
+    in property <string> unit;
+    in property <string> placeholder;
+    in property <string> lead;
+    in property <bool> number;
+    min-width: 64px;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+        if root.lead != "": VerticalLayout {
+            alignment: center;
+            Ico { name: root.lead; ink: Look.text3; }
+        }
+        if root.prefix != "": Text {
+            text: root.prefix;
+            color: Look.text3;
+            font-size: Look.t-caption;
+            vertical-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.value != "" ? root.value : root.placeholder;
+            color: root.value != "" ? Look.text : Look.text3;
+            font-size: Look.t-body;
+            vertical-alignment: center;
+            horizontal-alignment: root.number && root.prefix == "" ? right : left;
+            overflow: elide;
+        }
+        if root.unit != "": Text {
+            text: root.unit;
+            color: Look.text3;
+            font-size: Look.t-caption;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component Sld inherits Rectangle {
+    in property <float> value: 0.5;
+    height: Look.control-h;
+    min-width: 80px;
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Look.border-strong;
+        Rectangle {
+            x: 0px;
+            width: parent.width * root.value;
+            border-radius: 2px;
+            background: Look.accent;
+        }
+    }
+    Rectangle {
+        x: (parent.width - self.width) * root.value;
+        y: (parent.height - self.height) / 2;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: Look.text;
+        drop-shadow-blur: 3px;
+        drop-shadow-color: Look.shadow;
+    }
+}
+
+export component Hint inherits Rectangle {
+    width: Look.icon;
+    height: Look.icon;
+    Ico { name: "info"; ink: Look.text3; }
+}
+
+// The one row anatomy (ADR-0094 C2): [label] [hint] ...... [control] [unit].
+export component Row inherits Rectangle {
+    in property <string> label;
+    in property <bool> hint;
+    in property <length> control-w: 148px;
+    min-height: Look.row-h;
+    HorizontalLayout {
+        spacing: Look.field-gap;
+        Label { text: root.label; color: Look.text2; }
+        if root.hint: VerticalLayout {
+            alignment: center;
+            Hint { }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            width: root.control-w;
+            HorizontalLayout {
+                alignment: end;
+                spacing: Look.field-gap;
+                @children
+            }
+        }
+    }
+}
+
+// The one section header. `feature` adds the on/off switch of a FeatureSection.
+export component SecHead inherits Rectangle {
+    in property <string> title;
+    in property <bool> open: true;
+    in property <bool> feature;
+    in property <bool> on;
+    in property <bool> hint;
+    in property <bool> changed;
+    height: Look.row-h;
+    HorizontalLayout {
+        spacing: 6px;
+        VerticalLayout {
+            alignment: center;
+            Ico { name: root.open ? "chevron-down" : "chevron-right"; ink: Look.text3; }
+        }
+        Text {
+            text: Look.caps-headers ? root.title.to-uppercase() : root.title;
+            color: Look.caps-headers ? Look.text2 : Look.text;
+            font-size: Look.caps-headers ? Look.t-caption : Look.t-body;
+            font-weight: 600;
+            letter-spacing: Look.caps-headers ? 0.5px : 0px;
+            vertical-alignment: center;
+        }
+        if root.changed: VerticalLayout {
+            alignment: center;
+            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Look.accent; }
+        }
+        if Look.caps-headers: VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Rectangle { height: 1px; background: Look.border; }
+        }
+        if !Look.caps-headers: Rectangle { horizontal-stretch: 1; }
+        if root.hint: VerticalLayout {
+            alignment: center;
+            Hint { }
+        }
+        if root.changed: VerticalLayout {
+            alignment: center;
+            Ico { name: "reset"; ink: Look.text3; }
+        }
+        if root.feature: VerticalLayout {
+            alignment: center;
+            Toggle { on: root.on; }
+        }
+    }
+}
+
+// The one list row: [icon] title (note) ...... [trailing actions].
+export component ListRow inherits Rectangle {
+    in property <string> icon;
+    in property <string> badge;
+    in property <string> title;
+    in property <string> note;
+    in property <bool> selected;
+    in property <bool> hovered;
+    in property <bool> dim;
+    height: Look.row-h;
+    border-radius: Look.r-control;
+    background: selected ? Look.accent-subtle : hovered ? Look.hover : transparent;
+    if root.selected: Rectangle {
+        x: 0px;
+        y: 6px;
+        width: 3px;
+        height: parent.height - 12px;
+        border-radius: 1.5px;
+        background: Look.accent;
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 4px;
+        spacing: 8px;
+        if root.badge != "": VerticalLayout {
+            alignment: center;
+            Text {
+                width: 14px;
+                text: root.badge;
+                color: Look.text3;
+                font-size: Look.t-caption;
+                horizontal-alignment: center;
+            }
+        }
+        if root.icon != "": VerticalLayout {
+            alignment: center;
+            Ico { name: root.icon; ink: root.dim ? Look.text3 : root.selected ? Look.accent : Look.text2; }
+        }
+        Label {
+            text: root.title;
+            color: root.dim ? Look.text3 : Look.text;
+            font-weight: root.selected ? 500 : 400;
+        }
+        if root.note != "": Caption { text: root.note; color: Look.text3; }
+        Rectangle { horizontal-stretch: 1; }
+        HorizontalLayout {
+            spacing: 0px;
+            @children
+        }
+    }
+}
+
+export component Chip inherits Rectangle {
+    in property <string> text;
+    in property <color> ink: Look.text2;
+    in property <color> fill: Look.sunken;
+    height: 18px;
+    border-radius: 9px;
+    background: fill;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: Look.t-caption;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component TabBar inherits Rectangle {
+    in property <[string]> tabs;
+    in property <int> current;
+    height: Look.control-h + 4px;
+    if Look.pill-tabs: Seg {
+        y: 2px;
+        width: parent.width;
+        options: root.tabs;
+        current: root.current;
+    }
+    if !Look.pill-tabs: HorizontalLayout {
+        for t[i] in root.tabs: Rectangle {
+            horizontal-stretch: 1;
+            Text {
+                text: t;
+                color: i == root.current ? Look.text : Look.text2;
+                font-size: Look.t-body;
+                font-weight: i == root.current ? 600 : 400;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                y: parent.height - self.height;
+                height: i == root.current ? 2px : 1px;
+                background: i == root.current ? Look.accent : Look.border;
+            }
+        }
+    }
+}
+
+// kind: "info" | "success" | "warning" | "error"
+export component StatusLine inherits Rectangle {
+    in property <string> kind: "info";
+    in property <string> text;
+    in property <string> action;
+    property <color> ink: kind == "warning" ? Look.warning : kind == "error" ? Look.danger : kind == "success" ? Look.healthy : Look.accent;
+    min-height: Look.row-h + 4px;
+    border-radius: Look.r-control;
+    background: Look.sunken;
+    Rectangle {
+        x: 0px;
+        width: 3px;
+        border-radius: 1.5px;
+        background: root.ink;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 6px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            Ico { name: root.kind == "info" ? "info" : root.kind == "success" ? "check" : "warning"; ink: root.ink; }
+        }
+        Label { text: root.text; horizontal-stretch: 1; }
+        if root.action != "": VerticalLayout {
+            alignment: center;
+            Btn { text: root.action; kind: "ghost"; }
+        }
+    }
+}
+
+// A docked panel: header with title and panel actions, then content.
+export component Panel inherits Rectangle {
+    in property <string> title;
+    in property <string> count;
+    in property <bool> add: false;
+    in property <bool> bare;
+    background: Look.panel;
+    border-radius: Look.r-panel;
+    border-width: Look.panel-border ? 1px : 0px;
+    border-color: Look.border;
+    drop-shadow-blur: Look.panel-shadow ? 12px : 0px;
+    drop-shadow-color: Look.panel-shadow ? Look.shadow : transparent;
+    drop-shadow-offset-y: 2px;
+    clip: false;
+    VerticalLayout {
+        padding: root.bare ? 0px : Look.panel-pad;
+        padding-top: root.bare ? 0px : Look.panel-pad - 4px;
+        spacing: Look.field-gap;
+        HorizontalLayout {
+            padding-left: root.bare ? Look.panel-pad : 0px;
+            padding-right: root.bare ? Look.panel-pad : 0px;
+            padding-top: root.bare ? Look.panel-pad - 4px : 0px;
+            height: Look.control-h + (root.bare ? Look.panel-pad - 4px : 0px);
+            spacing: 6px;
+            Text {
+                text: root.title;
+                color: Look.text;
+                font-size: Look.t-title;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            if root.count != "": Caption { text: root.count; color: Look.text3; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.add: IcoBtn { icon: "plus"; }
+            IcoBtn { icon: "more"; }
+        }
+        @children
+    }
+}

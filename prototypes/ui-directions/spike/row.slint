@@ -1,0 +1,23 @@
+// Spike for ADR-0114 rule 1: one row component, two shapes, no `if` around @children.
+component Row inherits Rectangle {
+    in property <string> label;
+    out property <bool> stacked: self.width < 280px;
+    property <length> ctl-w: min(160px, self.width / 2);
+    height: stacked ? 52px : 28px;
+    Text { x: 0; y: 0; height: stacked ? 20px : parent.height; text: label; vertical-alignment: center; color: white; }
+    Rectangle {
+        x: stacked ? 0 : parent.width - ctl-w; y: stacked ? 24px : 0;
+        width: stacked ? parent.width : ctl-w; height: 28px;
+        @children
+    }
+}
+component Fld inherits Rectangle { background: #333; border-radius: 4px; border-width: 1px; border-color: #777; Text { text: "value"; color: white; } }
+export component App inherits Window {
+    in property <length> w: 360px;
+    width: w; height: 200px; background: #17181b;
+    VerticalLayout { padding: 12px; spacing: 8px; alignment: start;
+        Row { label: "Bitrate"; Fld {} }
+        Row { label: "Keyframe interval"; Fld {} }
+        Row { label: "Encoder"; Fld {} }
+    }
+}
