@@ -6,6 +6,6 @@
 library = ["components.slint"]
 
 [baseline]
-touch = 39
+touch = 36
 duplicate = 7
 help = 22
