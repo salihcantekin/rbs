@@ -8,6 +8,7 @@
 //! and checked states, a picker's choices) comes from [`Values`], indexed in the same
 //! order, through the `Menus` global.
 
+use rbs_api::types::OutputKind;
 use rbs_scene::model::SourceMonitor;
 use rbs_scene::{CenterAxis, FitMode};
 use rbs_ui::command::{CommandId, CommandState, Kind, MenuItem, menus};
@@ -681,7 +682,7 @@ impl CommandState for Shown<'_> {
                 Some(_) => Ok(()),
                 None => Err("The toolbar already has its default items.".to_owned()),
             },
-            "stream.toggle" => match s.st_state {
+            "stream.toggle" | "stream.main.toggle" => match s.st_state {
                 st_state::LIVE | st_state::STARTING => Ok(()),
                 st_state::ENDING => Err("The stream is ending.".to_owned()),
                 _ => {
@@ -707,6 +708,14 @@ impl CommandState for Shown<'_> {
                 Ok(())
             }
             "replay.toggle" => self.running(),
+            "canvas.remove_vertical" => {
+                self.running()?;
+                self.has_vertical()?;
+                if s.vertical_st.busy() || s.vertical_rec.busy() {
+                    return Err("Stop the vertical outputs first.".to_owned());
+                }
+                Ok(())
+            }
             "replay.save" => {
                 self.running()?;
                 if self.replay.can_save {
@@ -736,7 +745,7 @@ impl CommandState for Shown<'_> {
                     s.cannot_record.clone().map_or(Ok(()), Err)
                 }
             },
-            "record.toggle" => match s.rec_state {
+            "record.toggle" | "record.main.toggle" => match s.rec_state {
                 rec_state::RECORDING => Ok(()),
                 rec_state::STARTING => Err("The recording is starting.".to_owned()),
                 rec_state::STOPPING => Err("The recording is stopping.".to_owned()),
@@ -778,12 +787,15 @@ impl CommandState for Shown<'_> {
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
             "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.soloed),
-            "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
+            // The resolved toggles show the main canvas's state (ADR-0111 decision 5).
+            "stream.toggle" | "stream.main.toggle" => {
+                matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING)
+            }
             "vcam.toggle" => self.camera.sending,
             "replay.toggle" => self.replay.armed,
             "stream.vertical.toggle" => self.studio.vertical_st.on(),
             "record.vertical.toggle" => self.studio.vertical_rec.on(),
-            "record.toggle" => matches!(
+            "record.toggle" | "record.main.toggle" => matches!(
                 self.studio.rec_state,
                 rec_state::RECORDING | rec_state::STARTING
             ),
@@ -847,6 +859,23 @@ impl CommandState for Shown<'_> {
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
             "ui.theme.select" => self.themes.clone(),
+            "output.with_vertical" => {
+                let Some(kind) = output_kind(id) else {
+                    return Vec::new();
+                };
+                let on = self.studio.vertical_flags.with_main(kind);
+                // The hint of ADR-0111 decision 6: Go live skips a vertical stream that
+                // has no server.
+                let both = if kind == OutputKind::Stream && !self.studio.vertical_stream_set_up() {
+                    "Main + vertical (vertical stream not set up)"
+                } else {
+                    "Main + vertical"
+                };
+                vec![
+                    (both.to_owned(), "on".to_owned(), on),
+                    ("Main only".to_owned(), "off".to_owned(), !on),
+                ]
+            }
             "scene.select" => self.studio.scene_choices(),
             "item.rotate" => vec![
                 ("Rotate 90° clockwise".into(), "90".into(), false),
@@ -939,6 +968,22 @@ impl CommandState for Shown<'_> {
             _ => {}
         }
         match id.base() {
+            "canvas.add_vertical" if self.studio.vertical.is_some() => {
+                return Some("Vertical output settings...".to_owned());
+            }
+            // In the ▾ menu: where the vertical stream is set up.
+            "ui.settings.open"
+                if id.param("section") == Some("stream") && self.studio.vertical.is_some() =>
+            {
+                return Some(
+                    if self.studio.vertical_stream_set_up() {
+                        "Stream settings..."
+                    } else {
+                        "Set up vertical stream..."
+                    }
+                    .to_owned(),
+                );
+            }
             "stream.vertical.toggle" if self.studio.vertical_st.on() => {
                 return Some("End vertical stream".to_owned());
             }
@@ -1005,10 +1050,20 @@ impl CommandState for Shown<'_> {
                 Err(_) => true,
             },
             // A vertical canvas's outputs, while it exists (or one of them still runs).
-            "stream.vertical.toggle" | "record.vertical.toggle" => {
+            "stream.vertical.toggle"
+            | "record.vertical.toggle"
+            | "stream.main.toggle"
+            | "record.main.toggle"
+            | "output.with_vertical" => {
                 self.studio.vertical.is_some()
                     || self.studio.vertical_st.busy()
                     || self.studio.vertical_rec.busy()
+            }
+            "canvas.remove_vertical" => self.studio.vertical.is_some(),
+            // Stream settings in the ▾ menu (the only layout that names this id), while
+            // a vertical canvas exists.
+            "ui.settings.open" if id.param("section") == Some("stream") => {
+                self.studio.vertical.is_some()
             }
             // The vertical picture's toggle, while a vertical canvas exists (or its panel
             // is still open).
@@ -1415,11 +1470,18 @@ pub enum Run {
     MixerBulk(MixerBulk),
     /// The Mixer's layout (ADR-0083); view state, not layout history.
     MixerOrientation(MixerOrientation),
-    GoLive,
-    /// Ask first, then end the stream (U4).
-    AskEndStream,
-    Record,
-    StopRecording,
+    /// Go live; `true`: also the vertical stream (ADR-0111, resolved at the press).
+    GoLive(bool),
+    /// Ask first, then end the stream (U4); `true`: also the vertical one.
+    AskEndStream(bool),
+    /// Record; `true`: also the vertical recording.
+    Record(bool),
+    /// Stop recording; `true`: also the vertical recording.
+    StopRecording(bool),
+    /// Whether Record (or Go live) also acts on the vertical canvas (ADR-0111).
+    WithVertical(OutputKind, bool),
+    /// Remove the vertical canvas.
+    RemoveVertical,
     /// Stream the vertical canvas (ADR-0093 decision 6).
     GoLiveVertical,
     /// Ask first, then end the vertical stream (U4).
@@ -1432,6 +1494,15 @@ pub enum Run {
     Replay(bool),
     /// Save the replay buffer's past as a clip.
     SaveReplay,
+}
+
+/// The output kind an `output.with_vertical` id names.
+fn output_kind(id: &CommandId) -> Option<OutputKind> {
+    match id.param("kind")? {
+        "record" => Some(OutputKind::Record),
+        "stream" => Some(OutputKind::Stream),
+        _ => None,
+    }
 }
 
 /// What `text` runs in this state; `None` for ids that cannot run (unknown, bad
@@ -1465,6 +1536,14 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
             "ui.theme.select" => Run::SelectTheme(value),
+            "output.with_vertical" => Run::WithVertical(
+                output_kind(&id)?,
+                match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => return None,
+                },
+            ),
             "scene.select" => Run::Scene(value.parse().ok()?),
             "item.rotate" => Run::Transform(
                 state.source(&id).ok()?.id,
@@ -1615,10 +1694,25 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "mixer.hide_all" => Run::MixerBulk(MixerBulk::HideAll),
         "mixer.hide_muted" => Run::MixerBulk(MixerBulk::HideMuted),
         "mixer.unhide_all" => Run::MixerBulk(MixerBulk::ShowAll),
-        "stream.toggle" if on => Run::AskEndStream,
-        "stream.toggle" => Run::GoLive,
-        "record.toggle" if on => Run::StopRecording,
-        "record.toggle" => Run::Record,
+        "stream.toggle" | "stream.main.toggle" => {
+            let all =
+                id.base() == "stream.toggle" && state.studio.with_vertical(OutputKind::Stream);
+            if on {
+                Run::AskEndStream(all)
+            } else {
+                Run::GoLive(all)
+            }
+        }
+        "record.toggle" | "record.main.toggle" => {
+            let all =
+                id.base() == "record.toggle" && state.studio.with_vertical(OutputKind::Record);
+            if on {
+                Run::StopRecording(all)
+            } else {
+                Run::Record(all)
+            }
+        }
+        "canvas.remove_vertical" => Run::RemoveVertical,
         "stream.vertical.toggle" if on => Run::AskEndVerticalStream,
         "stream.vertical.toggle" => Run::GoLiveVertical,
         "record.vertical.toggle" if on => Run::StopVerticalRecording,

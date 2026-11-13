@@ -1551,3 +1551,145 @@ fn the_vertical_canvas_records_and_streams_beside_the_main_one() {
     drop(host);
     drop(api);
 }
+
+/// ADR-0111: `canvas: "all"` starts and stops the main output, then the vertical one,
+/// with one entry per canvas; an unconfigured vertical stream is skipped, and the
+/// with-main flags are read through `settings.get` and set by `output.set_with_vertical`.
+#[test]
+fn all_canvases_start_and_stop_together_and_report_each_output() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("main_key"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    let (api, mut c) = api_client(&host);
+    let mut main = StreamProfile::new();
+    main.server = URL.into();
+    main.reconnect = false;
+    host.send(Command::SetStreamProfile(main));
+    host.send(Command::SetProfile(record_profile("all")));
+    add_display(&host, &rx);
+    let all = serde_json::json!({"profile": "default", "canvas": "all"});
+    let outcomes = |r: &serde_json::Value| -> Vec<(String, String)> {
+        r["result"]["outputs"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{r}"))
+            .iter()
+            .map(|o| {
+                (
+                    o["canvas"].as_str().unwrap().to_owned(),
+                    o["outcome"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let pair = |c: &str, o: &str| (c.to_owned(), o.to_owned());
+
+    // The flags read as on by default, also with no vertical canvas.
+    let settings = c.call("settings.get", serde_json::json!({}));
+    assert_eq!(
+        settings["result"]["data"]["vertical"],
+        serde_json::json!({"record_with_main": true, "stream_with_main": true}),
+        "{settings}"
+    );
+    // "all" is not a value of the methods that act on one canvas.
+    for method in ["record.status", "stream.status"] {
+        let r = c.call(method, serde_json::json!({"canvas": "all"}));
+        assert_eq!(
+            r["error"]["data"]["kind"], "invalid_params",
+            "{method}: {r}"
+        );
+    }
+    let to_file = c.call(
+        "record.start_to_file",
+        serde_json::json!({"profile": "default", "path": "/tmp/x.mkv", "canvas": "all"}),
+    );
+    assert_eq!(
+        to_file["error"]["data"]["kind"], "invalid_params",
+        "{to_file}"
+    );
+
+    // Without a vertical canvas, "all" is the main canvas alone. (A stream, since
+    // recording file names count seconds and the clock stands still.)
+    let all_stream = serde_json::json!({"canvas": "all"});
+    let live = c.call("stream.start", all_stream.clone());
+    assert_eq!(outcomes(&live), [pair("main", "started")], "{live}");
+    assert!(
+        live["result"]["outputs"][0]["video_encoder"].is_string(),
+        "{live}"
+    );
+    let again = c.call("stream.start", all_stream.clone());
+    assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
+    let ended = c.call("stream.stop", all_stream);
+    assert_eq!(outcomes(&ended), [pair("main", "stopped")], "{ended}");
+
+    let added = c.call(
+        "canvas.add_vertical",
+        serde_json::json!({"width": 720, "height": 1280}),
+    );
+    assert!(added["result"].is_object(), "{added}");
+    next(&rx, |u| {
+        matches!(u, Update::Vertical(Some(_))).then_some(())
+    });
+
+    // Both recordings start, main first; a second start finds both running.
+    let rec = c.call("record.start", all.clone());
+    assert_eq!(
+        outcomes(&rec),
+        [pair("main", "started"), pair("vertical", "started")],
+        "{rec}"
+    );
+    let again = c.call("record.start", all.clone());
+    assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
+    let status = c.call("record.status", serde_json::json!({"canvas": "vertical"}));
+    assert_eq!(status["result"]["data"]["state"], "recording", "{status}");
+
+    // No vertical server is saved: the vertical stream is skipped, not an error.
+    let live = c.call("stream.start", serde_json::json!({"canvas": "all"}));
+    assert_eq!(
+        outcomes(&live),
+        [pair("main", "started"), pair("vertical", "not_configured")],
+        "{live}"
+    );
+    let ended = c.call("stream.stop", serde_json::json!({"canvas": "all"}));
+    assert_eq!(
+        outcomes(&ended),
+        [pair("main", "stopped"), pair("vertical", "not_running")],
+        "{ended}"
+    );
+    let none = c.call("stream.stop", serde_json::json!({"canvas": "all"}));
+    assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
+
+    let stop = c.call("record.stop", serde_json::json!({"canvas": "all"}));
+    assert_eq!(
+        outcomes(&stop),
+        [pair("main", "stopped"), pair("vertical", "stopped")],
+        "{stop}"
+    );
+
+    // The flag is a control setting, and settings.get shows it.
+    let set = c.call(
+        "output.set_with_vertical",
+        serde_json::json!({"kind": "record", "on": false}),
+    );
+    assert!(set["result"].is_object(), "{set}");
+    next(&rx, |u| match u {
+        Update::VerticalFlags(f) => (!f.record_with_main).then_some(()),
+        _ => None,
+    });
+    let settings = c.call("settings.get", serde_json::json!({}));
+    assert_eq!(
+        settings["result"]["data"]["vertical"],
+        serde_json::json!({"record_with_main": false, "stream_with_main": true}),
+        "{settings}"
+    );
+    let bad = c.call(
+        "output.set_with_vertical",
+        serde_json::json!({"kind": "replay", "on": false}),
+    );
+    assert_eq!(bad["error"]["data"]["kind"], "invalid_params", "{bad}");
+    drop(host);
+    drop(api);
+}
