@@ -496,7 +496,7 @@ impl Host {
     ) -> Result<(), Refusal> {
         if let Some(style) = look.style {
             let (_, item) = self.item_of(source).map_err(Refusal::NotFound)?;
-            let (item_id, mut layout) = (item.id, *item.layout_on(self.canvas));
+            let (item_id, mut layout) = (item.id, self.shown_layout(item));
             let own = item
                 .overrides
                 .contains_key(&self.canvas)
@@ -504,8 +504,7 @@ impl Host {
             if layout.style != style {
                 layout.style = style;
                 let undo = self
-                    .collection
-                    .set_item_layout(item_id, own, layout)
+                    .save_live_layout(item_id, own, layout)
                     .map_err(|e| Refusal::of(&e))?;
                 records.push(undo);
             }

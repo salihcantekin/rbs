@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, Select, TextField, Toggle } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, Select, Slider, TextField, Toggle, ValueReadout } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -47,8 +47,10 @@ export global Appearance {
     // Usable themes only, for the pickers, and their list positions.
     in property <[string]> usable-names;
     in property <bool> follow-system: true;
-    // Compact spacing: the next smaller space and control-size token.
+    // Compact spacing: spacing, control height and panel gaps step down for every theme.
     in property <bool> compact: false;
+    // Stops 1, 2 and 3. Kept while compact is off.
+    in property <int> compact-steps: 1;
     // Positions in `usable-names`.
     in property <int> dark-index;
     in property <int> light-index;
@@ -121,6 +123,7 @@ export global Appearance {
     callback pick(int, int);
     callback set-follow-system(bool);
     callback set-compact(bool);
+    callback set-compact-steps(int);
     callback select(int);
     callback use-selected();
     callback edit();
@@ -784,6 +787,18 @@ export component AppearanceSettings inherits Rectangle {
     property <int> confirm-delete: -1;
     property <ThemeOption> current: Appearance.selected >= 0 ? Appearance.themes[Appearance.selected] : { name: "" };
     property <bool> has-selection: Appearance.selected >= 0;
+    // The amount slider while a drag is in progress (0 to 1); -1 when it is not.
+    property <float> compact-drag: -1;
+    function compact-stop(v: float) -> int {
+        if v < 0.25 { return 1; }
+        if v < 0.75 { return 2; }
+        return 3;
+    }
+    function compact-text(n: int) -> string {
+        if n <= 1 { return "1"; }
+        if n == 2 { return "2"; }
+        return "3";
+    }
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
@@ -809,13 +824,45 @@ export component AppearanceSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Compact spacing");
-                help: @tr("Uses the next smaller spacing and control size. Regular uses the theme as it is.");
+                help: @tr("Packs spacing, control height and panel gaps for every theme. Off uses each theme as it is saved.");
                 fill: false;
                 Toggle {
                     label: @tr("Compact spacing");
                     checked: Appearance.compact;
                     toggled(on) => { Appearance.set-compact(on); }
                 }
+            }
+            if Appearance.compact: SettingRow {
+                label: @tr("Amount");
+                help: @tr("1 is the next smaller step. 3 is as tight as these tokens can go.");
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Slider {
+                        horizontal-stretch: 1;
+                        label: @tr("Compact spacing amount");
+                        value: root.compact-drag >= 0 ? root.compact-drag : (Appearance.compact-steps - 1) * 0.5;
+                        value-text: root.compact-text(root.compact-drag >= 0 ? root.compact-stop(root.compact-drag) : Appearance.compact-steps);
+                        step: 0.5;
+                        moved(v) => { root.compact-drag = v; }
+                        released => {
+                            if root.compact-drag >= 0 {
+                                Appearance.set-compact-steps(root.compact-stop(root.compact-drag));
+                                root.compact-drag = -1;
+                            }
+                        }
+                        cancelled => { root.compact-drag = -1; }
+                        reset => {
+                            root.compact-drag = -1;
+                            Appearance.set-compact-steps(1);
+                        }
+                    }
+                    ValueReadout {
+                        text: root.compact-text(root.compact-drag >= 0 ? root.compact-stop(root.compact-drag) : Appearance.compact-steps);
+                    }
+                }
+            }
+            if Appearance.compact: SettingsNotice {
+                text: @tr("This tightens spacing for every theme. Theme files are not changed. Turn this off to use each theme's own spacing.");
             }
         }
         // The theme list on the left, the editor on the right (owner's choice, ADR-0057

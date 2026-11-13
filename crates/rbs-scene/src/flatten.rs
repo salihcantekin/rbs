@@ -149,6 +149,8 @@ impl SceneCollection {
         if !allowed_on(s.scope, canvas) {
             return Err(SceneError::ScopeViolation(scene));
         }
+        let space = (c.layout_size.width, c.layout_size.height);
+        let current = (c.size.width, c.size.height);
         let size = (c.size.width as f32, c.size.height as f32);
         let mut out = Vec::new();
         let mut path = Vec::new();
@@ -157,6 +159,8 @@ impl SceneCollection {
         self.flatten_into(
             canvas,
             scene,
+            space,
+            current,
             size,
             Affine2::IDENTITY,
             1.0,
@@ -169,6 +173,8 @@ impl SceneCollection {
             self.flatten_into(
                 canvas,
                 globals,
+                space,
+                current,
                 size,
                 Affine2::IDENTITY,
                 1.0,
@@ -185,6 +191,8 @@ impl SceneCollection {
         &self,
         canvas: CanvasId,
         scene: SceneId,
+        space: (u32, u32),
+        current: (u32, u32),
         size: (f32, f32),
         outer: Affine2,
         opacity: f32,
@@ -197,12 +205,12 @@ impl SceneCollection {
             return;
         };
         for item in s.items.iter().filter(|i| item_drawn(i, cued)) {
-            let layout = item.layout_on(canvas);
+            let layout = item.layout_on(canvas).placed_in(space, current);
             let alpha = opacity * layout.opacity;
             if alpha <= 0.0 {
                 continue;
             }
-            let placed = Affine2::of_layout(layout).then(&outer);
+            let placed = Affine2::of_layout(&layout).then(&outer);
             path.push(item.id);
             match item.content {
                 ItemContent::Source(source) => {
@@ -228,7 +236,9 @@ impl SceneCollection {
                 }
                 ItemContent::Scene(nested) => {
                     let inner = Affine2::scale(1.0 / size.0, 1.0 / size.1).then(&placed);
-                    self.flatten_into(canvas, nested, size, inner, alpha, cued, path, out);
+                    self.flatten_into(
+                        canvas, nested, space, current, size, inner, alpha, cued, path, out,
+                    );
                 }
             }
             path.pop();

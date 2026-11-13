@@ -168,7 +168,7 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 14",
+        "format = 15",
         "monitor = \"only\"",
         "monitor = \"also\"",
         "follow = 0",
@@ -305,7 +305,7 @@ fn format_11_loads_as_default_glide_and_format_12_round_trips() {
     )
     .unwrap();
     let text = document::render(&show, Some("Show")).unwrap();
-    assert!(text.contains("format = 14"), "{text}");
+    assert!(text.contains("format = 15"), "{text}");
     assert!(text.contains("duration_ms = 0"), "{text}");
     assert!(text.contains("easing = \"linear\""), "{text}");
     let back = document::parse::<SceneCollection>(&text).unwrap().document;
@@ -319,7 +319,7 @@ fn show_for_ms_round_trips_and_an_older_format_refuses_it() {
     show.set_item_show_for(item, Some(4_000)).unwrap();
     let text = document::render(&show, Some("Show")).unwrap();
     assert!(text.contains("show_for_ms = 4000"), "{text}");
-    assert!(text.contains("format = 14"), "{text}");
+    assert!(text.contains("format = 15"), "{text}");
     let back = document::parse::<SceneCollection>(&text).unwrap().document;
     assert_eq!(back.item(item).unwrap().1.show_for_ms, Some(4_000));
     assert_eq!(back, show);
@@ -697,7 +697,7 @@ fn a_region_and_display_chrome_round_trip_and_an_older_file_refuses_them() {
     col.set_source_region(display, Some(SourceRegion::new(0, 24, 0, 48)))
         .unwrap();
     let text = document::render(&col, Some("Show")).unwrap();
-    assert!(text.contains("format = 14"), "{text}");
+    assert!(text.contains("format = 15"), "{text}");
     assert!(text.contains("region = [0, 24, 0, 48]"), "{text}");
     assert!(text.contains("fill = \"fit\""), "{text}");
     let back = document::parse::<SceneCollection>(&text).unwrap().document;
@@ -712,4 +712,28 @@ fn a_region_and_display_chrome_round_trip_and_an_older_file_refuses_them() {
         "format = 13\nkind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"S\"\ntype = \"org.rbs.source.display\"\nregion = [1, 0, 0, 0]\n"
     );
     assert!(document::parse::<SceneCollection>(&old).is_err());
+}
+
+#[test]
+fn a_changed_canvas_keeps_its_layout_space_in_the_file() {
+    let mut col = SceneCollection::new();
+    let (canvas, _) = col
+        .add_canvas("Main", Size::new(1920, 1080), FrameRate::FPS_30)
+        .unwrap();
+    col.set_canvas_format(canvas, Size::new(1080, 1920), FrameRate::FPS_30)
+        .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 15"), "{text}");
+    assert!(text.contains("layout_width = 1920"), "{text}");
+    assert!(text.contains("layout_height = 1080"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    let c = back.canvas(canvas).unwrap();
+    assert_eq!((c.size.width, c.size.height), (1080, 1920));
+    assert_eq!((c.layout_size.width, c.layout_size.height), (1920, 1080));
+
+    let older = "format = 14\nkind = \"scene-collection\"\n[[canvases]]\nid = 0\nname = \"M\"\nwidth = 1080\nheight = 1920\nlayout_width = 1920\nlayout_height = 1080\nframe_rate = [30, 1]\n";
+    match document::parse::<SceneCollection>(older) {
+        Err(DataError::Invalid(why)) => assert!(why.contains("layout_width"), "{why}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
 }

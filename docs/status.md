@@ -21,7 +21,7 @@ ADR status is the file header, not only the index. Where those two disagree, bot
 | Crash isolation | Partial, ADR Accepted | `catch_unwind` around `Node::process`, `rbs-crash`. ADR-0055 Accepted 2026-11-10. Fault injection covers recording, stream start and end, and a canvas restart. A separate studio process is still follow-up work |
 | Plugin SDK | Started | `rbs-plugin-sdk` parses the manifest. `rbs-plugin-host` reads installed manifests and loads nothing. No native, WASM or process loader |
 | MCP | Started | `rbs-mcp` answers stdio while RBS is unreachable: the only tool is `studio_summary`. No IPC session yet |
-| Compact spacing | Running | Appearance format 2, `density` `regular` or `compact`. Compact steps `space.*` and `size.control.*` down one token |
+| Compact spacing | Running | Appearance format 3, `density` `regular` or `compact`, `compact_steps` 1 to 3. Compact steps `space.*`, `size.control.*` and the panel gaps; floors hold |
 | Performance budgets in CI | Not enforced | ADR-0009 Accepted. CI does not run `cargo bench`. Idle-cost rows in the performance-budgets spec have no workflow |
 | Browser source, ISO, markers, loudness, OBS importer, NDI | Partial | Browser type and node are in the tree (ADR-0109 Proposed); the studio adopts the node and does not link CEF. Media-file type and node are in the tree (ADR-0108 Proposed); the studio adopts the node and does not link FFmpeg. ISO, markers, loudness, the OBS importer, and NDI stay later roadmap and Proposed ADRs 0086–0092 |
 | Configurable glide (duration / easing) | Done | ADR-0100 Accepted. Collection defaults (Settings › General) and per-source override (Properties); scene format 12; protocol 1.35. Not on the Transition rail or panel |

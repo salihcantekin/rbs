@@ -24,6 +24,49 @@ pub const AUDIO_KBPS: [u32; 4] = [96, 128, 160, 192];
 /// Video bitrates offered, in kbit/s.
 pub const VIDEO_KBPS: [u32; 8] = [2_500, 4_000, 6_000, 8_000, 12_000, 20_000, 40_000, 80_000];
 
+/// H.264 video bitrate recommended at 30 fps and below, by pixel count
+/// (width times height). The next step starts above that count. See
+/// [`recommended_video_kbps`].
+const RECOMMENDED_H264_30: [(u64, u32); 4] = [
+    (1_280 * 720, 2_500),
+    (1_920 * 1_080, 6_000),
+    (2_560 * 1_440, 9_000),
+    (u64::MAX, 20_000),
+];
+
+/// The video bitrate (kbit/s) recommended for an encoded picture of `width` by
+/// `height` at `fps`, for `codec`. This is the warning under Video bitrate
+/// (design system, Settings, Recording): it does not change the saved rate.
+/// `None` when a side or the frame rate is zero.
+///
+/// H.264 at 30 fps and below uses [`RECOMMENDED_H264_30`]. Above 30 fps the
+/// figure is that value times `(30 + fps) / 60`, and 60 fps and above stay at
+/// 1.5 times (the fps used in the scale is capped at 60). HEVC is two thirds
+/// of the H.264 figure and AV1 is half, rounded down.
+pub fn recommended_video_kbps(width: u32, height: u32, fps: u32, codec: VideoCodec) -> Option<u32> {
+    if width == 0 || height == 0 || fps == 0 {
+        return None;
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    let base = RECOMMENDED_H264_30
+        .iter()
+        .find(|(limit, _)| pixels <= *limit)
+        .map(|(_, kbps)| *kbps)
+        .unwrap_or(20_000);
+    let scaled = if fps <= 30 {
+        u64::from(base)
+    } else {
+        let fps = u64::from(fps.min(60));
+        u64::from(base) * (30 + fps) / 60
+    };
+    let (num, den) = match codec {
+        VideoCodec::H264 => (1, 1),
+        VideoCodec::Hevc => (2, 3),
+        VideoCodec::Av1 => (1, 2),
+    };
+    u32::try_from(scaled * num / den).ok()
+}
+
 /// Constant-quality levels offered (0 best ..= 51).
 pub const QUALITY_LEVELS: [u8; 10] = [14, 16, 18, 20, 22, 23, 25, 28, 32, 36];
 
@@ -1060,6 +1103,32 @@ mod tests {
             assert_eq!(listing.video_kbps, p.video_kbps);
             assert_eq!(listing.encoder, p.encoder);
         }
+    }
+
+    #[test]
+    fn the_recommended_bitrate_follows_the_output_picture() {
+        let h264 = VideoCodec::H264;
+        assert_eq!(recommended_video_kbps(1920, 1080, 30, h264), Some(6_000));
+        assert_eq!(recommended_video_kbps(2560, 1440, 30, h264), Some(9_000));
+        assert_eq!(recommended_video_kbps(1920, 1080, 60, h264), Some(9_000));
+        assert_eq!(recommended_video_kbps(3840, 2160, 30, h264), Some(20_000));
+        assert_eq!(recommended_video_kbps(1280, 720, 30, h264), Some(2_500));
+        // 24 fps stays on the 30 fps figure. 50 fps is (30 + 50) / 60.
+        assert_eq!(recommended_video_kbps(1920, 1080, 24, h264), Some(6_000));
+        assert_eq!(recommended_video_kbps(1920, 1080, 50, h264), Some(8_000));
+        // A vertical 1080p picture has the same pixel count as 1920 x 1080.
+        assert_eq!(recommended_video_kbps(1080, 1920, 30, h264), Some(6_000));
+        assert_eq!(
+            recommended_video_kbps(2560, 1440, 30, VideoCodec::Hevc),
+            Some(6_000)
+        );
+        assert_eq!(
+            recommended_video_kbps(2560, 1440, 30, VideoCodec::Av1),
+            Some(4_500)
+        );
+        assert_eq!(recommended_video_kbps(2560, 1440, 60, h264), Some(13_500));
+        assert_eq!(recommended_video_kbps(0, 1080, 30, h264), None);
+        assert_eq!(recommended_video_kbps(1920, 1080, 0, h264), None);
     }
 
     #[test]

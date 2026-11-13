@@ -185,6 +185,9 @@ export component SettingRow inherits Rectangle {
     in property <string> help;
     // The help is a problem (error colour), not an explanation.
     in property <bool> help-is-problem;
+    // The help is a warning (warning colour). The words say so; colour is not
+    // the only signal (U7). A problem takes the error colour.
+    in property <bool> help-is-warning;
     in property <bool> divider: true;
     // Off: the label shows in the disabled colour (the control is disabled too).
     in property <bool> enabled: true;
@@ -218,7 +221,7 @@ export component SettingRow inherits Rectangle {
             }
             if root.help != "": Text {
                 text: root.help;
-                color: root.help-is-problem ? Theme.state-error : Theme.text-secondary;
+                color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
                 wrap: word-wrap;
             }

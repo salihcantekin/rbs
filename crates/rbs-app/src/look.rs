@@ -175,9 +175,7 @@ pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Opti
         resolve(&file, data, dark, Base::Dark, &mut notes),
         resolve(&file, data, light, Base::Light, &mut notes),
     ];
-    for theme in &mut themes {
-        rbs_ui::tokens::apply_density(&mut theme.length, appearance.density);
-    }
+    pack(&mut themes, &appearance);
     let fonts = [
         choose_font(&themes[0].font_family, fonts, SAMPLE_TEXT),
         choose_font(&themes[1].font_family, fonts, SAMPLE_TEXT),
@@ -261,6 +259,18 @@ pub fn dev_theme() -> Option<Base> {
     std::env::var("RBS_THEME")
         .ok()
         .and_then(|n| Base::from_name(&n))
+}
+
+/// Steps spacing on a freshly resolved pair. Compact reads those lengths and steps
+/// them; a second call on the result would step again, so resolve first.
+pub fn pack(themes: &mut [ResolvedTheme; 2], appearance: &Appearance) {
+    for theme in themes {
+        rbs_ui::tokens::apply_density(
+            &mut theme.length,
+            appearance.density,
+            appearance.compact_steps,
+        );
+    }
 }
 
 /// Gives a window the look in use.
@@ -664,5 +674,34 @@ mod tests {
         let themes = super::load(&data, &mut fonts).0.unwrap().themes;
         assert_eq!(themes[0], themes[1]);
         assert_eq!(themes[0].length["radius.md"], 9.0);
+    }
+
+    /// Compact spacing steps an open window, and loading the same choice again matches.
+    #[test]
+    fn compact_spacing_steps_an_open_window_and_a_second_load_matches() {
+        let d = TempDir::new("compact");
+        let data = UserData::new(&d.0);
+        let lock = data.try_lock().unwrap().unwrap();
+        let mut choice = Appearance::new(
+            AppearanceMode::Fixed,
+            ThemeId::BuiltIn(Base::Dark),
+            ThemeId::BuiltIn(Base::Light),
+            ThemeId::BuiltIn(Base::Dark),
+        );
+        choice.density = rbs_ui::tokens::Density::Compact;
+        choice.compact_steps = 2;
+        data.set_appearance(&lock, &choice).unwrap();
+        let mut fonts = Fake(&[]);
+        let look = super::load(&data, &mut fonts).0.expect("look");
+        assert_eq!(look.themes[0].length["space.4"], 8.0);
+        assert_eq!(look.themes[0].length["radius.md"], 6.0);
+        let again = super::load(&data, &mut fonts).0.expect("look");
+        assert_eq!(look.themes[0].length, again.themes[0].length);
+
+        let w = window();
+        let (theme, tokens) = (w.global::<Theme>(), w.global::<Tokens>());
+        super::apply(&theme, &tokens, Some(&look));
+        assert_eq!(tokens.get_space_4(), 8.0);
+        assert_eq!(tokens.get_radius_md(), 6.0);
     }
 }

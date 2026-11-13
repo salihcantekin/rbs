@@ -15,7 +15,7 @@ use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{
     AUDIO_KBPS, Delivery, Encoding, Format, OutputSize, RateMode, RecordProfile, VIDEO_KBPS,
-    VideoCodec, output_size_options, vertical_recording_from_main,
+    VideoCodec, output_size_options, recommended_video_kbps, vertical_recording_from_main,
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
@@ -2481,6 +2481,35 @@ impl StudioUi {
         list
     }
 
+    /// The encoded picture of an [`output`]: its stored output size, or this
+    /// settings canvas when the size is the same as the canvas.
+    fn resolved_output_size(&self, out: i32) -> (u32, u32) {
+        let canvas = self.settings_canvas_size();
+        let saved = if out == output::STREAM {
+            self.stream_form().output_size
+        } else {
+            self.recording_output_size()
+        };
+        saved.map(OutputSize::pair).unwrap_or(canvas)
+    }
+
+    /// The recommended video bitrate when the chosen CBR rate or VBR target is
+    /// below it, otherwise 0 (no warning, including constant quality).
+    fn bitrate_warning_kbps(&self, out: i32, e: &Encoding) -> i32 {
+        if e.rate_control == RateMode::ConstantQuality {
+            return 0;
+        }
+        let (w, h) = self.resolved_output_size(out);
+        let Some(recommended) = recommended_video_kbps(w, h, self.canvas.fps, e.video_codec) else {
+            return 0;
+        };
+        if e.video_kbps < recommended {
+            i32::try_from(recommended).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
     /// What the `EncoderFields` of an [`output`] show.
     fn encoder_data(&self, out: i32) -> EncoderData {
         let e = self.encoding_of(out);
@@ -2497,6 +2526,7 @@ impl StudioUi {
         let (b_frames, b_frame) = choices(&form.b_frames);
         let codecs = self.video_codecs(out, &e);
         let codec_index = codecs.iter().position(|c| *c == e.video_codec).unwrap_or(0);
+        let (out_w, out_h) = self.resolved_output_size(out);
         EncoderData {
             codecs: strings(codecs.iter().map(|c| c.label().to_owned())),
             codec: codec_index as i32,
@@ -2532,6 +2562,11 @@ impl StudioUi {
             b_frames,
             b_frame,
             b_frames_note: form.b_frames_note.unwrap_or_default().into(),
+            video_kbps: i32::try_from(e.video_kbps).unwrap_or(0),
+            recommended_kbps: self.bitrate_warning_kbps(out, &e),
+            out_width: i32::try_from(out_w).unwrap_or(0),
+            out_height: i32::try_from(out_h).unwrap_or(0),
+            out_fps: i32::try_from(self.canvas.fps).unwrap_or(0),
             delivery: match e.delivery {
                 Delivery::Video => 0,
                 Delivery::Screen => 1,
@@ -4268,10 +4303,7 @@ impl StudioUi {
                 {
                     self.picker_dirty = true;
                 }
-                let picked = self
-                    .kind_list
-                    .get(self.global_kind as usize)
-                    .copied();
+                let picked = self.kind_list.get(self.global_kind as usize).copied();
                 if picked == Some(kind) {
                     self.global_targets = list.clone();
                     self.refresh_global_existing();
@@ -5785,6 +5817,43 @@ mod tests {
         // As after `Update::Started`: Go live is possible.
         ui.cannot_record = None;
         (ui, d)
+    }
+
+    #[test]
+    fn a_bitrate_below_the_output_recommendation_is_warned() {
+        let (mut ui, _d) = ui("bitrate-warn");
+        ui.canvas.width = 2560;
+        ui.canvas.height = 1440;
+        ui.canvas.fps = 30;
+        let stream = ui.encoder_data(output::STREAM);
+        assert_eq!(
+            (
+                stream.video_kbps,
+                stream.recommended_kbps,
+                stream.out_width,
+                stream.out_height,
+                stream.out_fps
+            ),
+            (6_000, 9_000, 2560, 1440, 30)
+        );
+        // The warning follows the encoded picture, not the canvas.
+        ui.stream.output_size = Some(OutputSize {
+            width: 1920,
+            height: 1080,
+        });
+        let down = ui.encoder_data(output::STREAM);
+        assert_eq!(down.recommended_kbps, 0);
+        assert_eq!((down.out_width, down.out_height), (1920, 1080));
+
+        ui.stream.output_size = None;
+        ui.canvas.width = 3840;
+        ui.canvas.height = 2160;
+        assert_eq!(ui.encoder_data(output::STREAM).recommended_kbps, 20_000);
+
+        let mut encoding = ui.profile.encoding();
+        encoding.rate_control = RateMode::ConstantQuality;
+        ui.profile.set_encoding(encoding);
+        assert_eq!(ui.encoder_data(output::RECORDING).recommended_kbps, 0);
     }
 
     #[test]

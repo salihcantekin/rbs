@@ -562,23 +562,90 @@ pub enum Density {
     /// The lengths in the token file.
     #[default]
     Regular,
-    /// Each spacing and control-size step uses the next smaller token's length.
-    /// The smallest step is unchanged. No new pixel value is introduced.
+    /// Spacing, control size and the panel gaps step down. The smallest step is
+    /// unchanged. No new pixel value is introduced except a token's floor.
     Compact,
 }
+
+/// The tightest compact stop. Stop 1 is the next smaller step.
+pub const COMPACT_STEPS_MAX: u8 = 3;
 
 const SPACE_STEPS: &[&str] = &[
     "space.1", "space.2", "space.3", "space.4", "space.6", "space.8",
 ];
 const CONTROL_STEPS: &[&str] = &["size.control.sm", "size.control.md", "size.control.lg"];
+const PANEL_STEPS: &[&str] = &["size.panel.pad", "size.section.gap", "size.field.gap"];
 
-/// Applies `density` to spacing and control sizes. Call it once on a freshly resolved
-/// length map. Compact reads the current values and steps them down; calling it again
-/// steps them down again.
-pub fn apply_density(length: &mut std::collections::BTreeMap<String, f32>, density: Density) {
-    if density == Density::Compact {
+/// Applies `density` to a freshly resolved length map. `steps` is 1, 2 or 3 while
+/// compact (other values are clamped). Compact reads that map and steps it down;
+/// calling it again on the result steps it down again, so the caller resolves first.
+pub fn apply_density(
+    length: &mut std::collections::BTreeMap<String, f32>,
+    density: Density,
+    steps: u8,
+) {
+    if density != Density::Compact {
+        return;
+    }
+    let steps = steps.clamp(1, COMPACT_STEPS_MAX);
+    let original = length.clone();
+    for _ in 0..steps {
         step_down(length, SPACE_STEPS);
         step_down(length, CONTROL_STEPS);
+    }
+    for key in PANEL_STEPS {
+        let Some(floor) = floor_of(key) else {
+            continue;
+        };
+        let Some(value) = original.get(*key).copied() else {
+            continue;
+        };
+        length.insert(
+            (*key).to_owned(),
+            nth_smaller_space(&original, value, floor, steps),
+        );
+    }
+    if let (Some(field), Some(section)) = (
+        length.get("size.field.gap").copied(),
+        length.get("size.section.gap").copied(),
+    ) && field > section
+    {
+        length.insert("size.field.gap".to_owned(), section);
+    }
+}
+
+fn floor_of(name: &str) -> Option<f32> {
+    MINIMUMS
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, floor, _)| *floor)
+}
+
+/// The `steps`th smaller original `space.*` value that is still at or above `floor`.
+/// The tightest such value when fewer remain. The floor when none remain and it is
+/// below `value`.
+fn nth_smaller_space(
+    original: &std::collections::BTreeMap<String, f32>,
+    value: f32,
+    floor: f32,
+    steps: u8,
+) -> f32 {
+    let mut smaller: Vec<f32> = SPACE_STEPS
+        .iter()
+        .filter_map(|key| original.get(*key).copied())
+        .filter(|step| *step < value && *step >= floor)
+        .collect();
+    smaller.sort_by(|a, b| b.total_cmp(a));
+    smaller.dedup_by(|a, b| a.total_cmp(b).is_eq());
+    if let Some(found) = smaller
+        .get(usize::from(steps) - 1)
+        .or_else(|| smaller.last())
+    {
+        *found
+    } else if floor < value {
+        floor
+    } else {
+        value
     }
 }
 
@@ -604,13 +671,47 @@ mod tests {
         let smaller_control = file.length["size.control.md"];
         let smallest = file.length["space.1"];
         let mut length = file.length.clone();
-        apply_density(&mut length, Density::Regular);
+        apply_density(&mut length, Density::Regular, 3);
         assert_eq!(length["space.4"], regular_space);
-        apply_density(&mut length, Density::Compact);
+        apply_density(&mut length, Density::Compact, 1);
         assert_eq!(length["space.4"], smaller_space);
         assert_eq!(length["space.1"], smallest);
         assert_eq!(length["size.control.lg"], smaller_control);
         assert_eq!(length["size.control.sm"], file.length["size.control.sm"]);
+        assert_eq!(length["size.panel.pad"], file.length["space.2"]);
+        assert_eq!(length["size.section.gap"], file.length["space.3"]);
+        assert_eq!(length["size.field.gap"], 6.0);
+        assert_eq!(length["radius.md"], file.length["radius.md"]);
+
+        let mut stop3 = file.length.clone();
+        apply_density(&mut stop3, Density::Compact, 3);
+        assert_eq!(stop3["space.4"], file.length["space.1"]);
+        assert_eq!(stop3["space.6"], file.length["space.2"]);
+        assert_eq!(stop3["space.8"], file.length["space.3"]);
+        assert_eq!(stop3["size.control.lg"], file.length["size.control.sm"]);
+        assert_eq!(stop3["size.control.md"], file.length["size.control.sm"]);
+        assert_eq!(stop3["size.panel.pad"], 8.0);
+        assert_eq!(stop3["size.section.gap"], 12.0);
+        assert!(stop3["size.field.gap"] <= stop3["size.section.gap"]);
+
+        let mut again = file.length.clone();
+        apply_density(&mut again, Density::Compact, 2);
+        let mut matched = file.length.clone();
+        apply_density(&mut matched, Density::Compact, 2);
+        assert_eq!(again["space.4"], matched["space.4"]);
+        assert_eq!(again["space.4"], file.length["space.2"]);
+    }
+
+    #[test]
+    fn compact_keeps_field_gap_at_or_below_section_gap() {
+        let file = Tokens::built_in().expect("built-in tokens");
+        let mut length = file.length.clone();
+        length.insert("size.field.gap".into(), 18.0);
+        length.insert("size.section.gap".into(), 16.0);
+        apply_density(&mut length, Density::Compact, 1);
+        assert!(length["size.field.gap"] <= length["size.section.gap"]);
+        assert_eq!(length["size.section.gap"], 12.0);
+        assert_eq!(length["size.field.gap"], 12.0);
     }
 
     #[test]

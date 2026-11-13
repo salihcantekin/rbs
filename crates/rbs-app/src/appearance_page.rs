@@ -91,6 +91,10 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
     on!(on_set_compact, |app, page, _file, on: bool| {
         choose(app, page, |ui, now| ui.set_compact(on, now))
     });
+    on!(on_set_compact_steps, |app, page, _file, steps: i32| {
+        let steps = u8::try_from(steps).unwrap_or(1);
+        choose(app, page, |ui, now| ui.set_compact_steps(steps, now))
+    });
     on!(on_select, |_app, page, _file, index: i32| {
         page.ui.selected = usize::try_from(index).ok();
         Change::Page
@@ -536,9 +540,11 @@ fn relook(ctx: &Ctx, app: &mut App) {
             return;
         };
         let mut notes = Vec::new();
-        let themes = page
+        let mut themes = page
             .ui
             .slots(app.studio.user.data(), &look.file, &mut notes);
+        // Resolve is fresh here. Packing the slots already stored would step again.
+        look::pack(&mut themes, &page.ui.choice);
         look.fonts = [0, 1]
             .map(|i| look::choose_font(&themes[i].font_family, &mut page.fonts, look::SAMPLE_TEXT));
         look.themes = themes;
@@ -684,6 +690,7 @@ fn show(ctx: &Ctx, app: &App) {
     });
     g.set_follow_system(ui.choice.mode == AppearanceMode::System);
     g.set_compact(ui.choice.density == rbs_ui::tokens::Density::Compact);
+    g.set_compact_steps(i32::from(ui.choice.compact_steps));
     g.set_dark_index(pos(&ui.choice.dark, Base::Dark));
     g.set_light_index(pos(&ui.choice.light, Base::Light));
     g.set_theme_index(pos(&ui.choice.theme, Base::Dark));

@@ -542,6 +542,31 @@ impl SceneCollection {
         })
     }
 
+    /// `layout`, stored in `canvas`'s layout space, as drawn at the canvas's current
+    /// size (ADR-0110). The layout itself when the canvas is missing or the sizes match.
+    pub fn placed_layout(&self, canvas: CanvasId, layout: &Layout) -> Layout {
+        match self.canvas(canvas) {
+            Some(c) => layout.placed_in(
+                (c.layout_size.width, c.layout_size.height),
+                (c.size.width, c.size.height),
+            ),
+            None => *layout,
+        }
+    }
+
+    /// The layout to store so `canvas` draws `live` (ADR-0110). `live` is in the
+    /// canvas's current pixels. The layout itself when the canvas is missing or the
+    /// sizes match.
+    pub fn stored_layout(&self, canvas: CanvasId, live: &Layout) -> Layout {
+        match self.canvas(canvas) {
+            Some(c) => live.stored_in(
+                (c.layout_size.width, c.layout_size.height),
+                (c.size.width, c.size.height),
+            ),
+            None => *live,
+        }
+    }
+
     /// Items (scene, item) that place source `id`.
     pub fn placements_of(&self, id: SourceId) -> Vec<(SceneId, ItemId)> {
         self.items_where(|c| c == ItemContent::Source(id))
@@ -574,6 +599,7 @@ impl SceneCollection {
             id,
             name: name.trim().to_owned(),
             size,
+            layout_size: size,
             frame_rate,
             program: None,
             preview: None,
@@ -608,7 +634,8 @@ impl SceneCollection {
         self.replace_canvas(canvas)
     }
 
-    /// Changes a canvas's size and frame rate.
+    /// Changes a canvas's size and frame rate. The layout space stays, and item
+    /// layouts are not rewritten (ADR-0110): flattening fits them into the new size.
     pub fn set_canvas_format(
         &mut self,
         id: CanvasId,
@@ -1384,6 +1411,7 @@ impl SceneCollection {
         focus: &BTreeMap<ItemId, f32>,
     ) -> Result<Undo, SceneError> {
         let target = self.get_canvas(canvas)?;
+        let space = (target.layout_size.width, target.layout_size.height);
         let size = (target.size.width, target.size.height);
         let s = self.get_scene(scene)?;
         let mut chosen: Vec<(&SceneItem, (u32, u32))> = Vec::new();
@@ -1397,7 +1425,12 @@ impl SceneCollection {
         let inputs: Vec<AutoItem> = chosen
             .iter()
             .map(|(item, p)| AutoItem {
-                layout: item.overrides.get(&canvas).copied().unwrap_or(item.layout),
+                layout: item
+                    .overrides
+                    .get(&canvas)
+                    .copied()
+                    .unwrap_or(item.layout)
+                    .placed_in(space, size),
                 picture: *p,
                 focus: focus.get(&item.id).copied().unwrap_or(0.5),
             })
@@ -1407,7 +1440,7 @@ impl SceneCollection {
         for ((item, _), layout) in chosen.iter().zip(layouts) {
             let Some(layout) = layout else { continue };
             let mut new = (*item).clone();
-            new.overrides.insert(canvas, layout);
+            new.overrides.insert(canvas, layout.stored_in(space, size));
             pairs.push(((*item).clone(), new));
         }
         self.apply(Op::ReplaceItems(pairs))
@@ -1969,10 +2002,18 @@ impl SceneCollection {
                     return Err(SceneError::InvalidFollow(c.id));
                 }
             }
-            if c.size.width == 0 || c.size.height == 0 {
+            if c.size.width == 0
+                || c.size.height == 0
+                || c.layout_size.width == 0
+                || c.layout_size.height == 0
+            {
                 return Err(SceneError::EmptyCanvas);
             }
-            if c.size.width > MAX_CANVAS_SIDE || c.size.height > MAX_CANVAS_SIDE {
+            if c.size.width > MAX_CANVAS_SIDE
+                || c.size.height > MAX_CANVAS_SIDE
+                || c.layout_size.width > MAX_CANVAS_SIDE
+                || c.layout_size.height > MAX_CANVAS_SIDE
+            {
                 return Err(SceneError::CanvasTooLarge);
             }
             let rate = c.frame_rate.per_second();

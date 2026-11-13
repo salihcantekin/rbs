@@ -146,6 +146,17 @@ export component SourceSettingsWindow inherits Window {
             }
         }
     }
+    function region-cancel-drag() {
+        if root.region-dragging {
+            root.cap-l = root.region-start-l;
+            root.cap-t = root.region-start-t;
+            root.cap-r = root.region-start-r;
+            root.cap-b = root.region-start-b;
+        }
+        root.region-pointer-down = false;
+        root.region-dragging = false;
+        root.region-grip = -1;
+    }
     function region-apply-grip(mx: float, my: float) {
         if d.pic-w <= 0 || d.pic-h <= 0 || root.preview-scale() <= 0 { return; }
         let sc = root.preview-scale();
@@ -296,10 +307,15 @@ export component SourceSettingsWindow inherits Window {
                 font-size: Tokens.type-body-size;
             }
             // Body scrolls; Cancel / Apply / OK stay visible below.
-            // interactive off while cropping so vertical drags do not scroll the page.
+            // A Flickable pans on a mouse drag and, within 500 ms of the press, steals
+            // the pointer from a child once the drag moves 8 px. The crop handles are
+            // that size, so a crop drag was taken as a page scroll as soon as it left
+            // the preview. While a region is being edited, mouse drags do not pan;
+            // wheel and trackpad scrolling stay. Touch panning stays except during the drag.
             if d.id >= 0: Flickable {
                 vertical-stretch: 1;
                 interactive: !root.region-pointer-down;
+                mouse-drag-pan-enabled: !root.cap-has;
                 viewport-width: self.width;
                 viewport-height: body.preferred-height;
                 body := VerticalLayout {
@@ -493,9 +509,13 @@ export component SourceSettingsWindow inherits Window {
                                         }
                                     }
                                     if e.kind == PointerEventKind.cancel {
-                                        root.region-pointer-down = false;
-                                        root.region-dragging = false;
-                                        root.region-grip = -1;
+                                        root.region-cancel-drag();
+                                    }
+                                }
+                                // The grab continues after the pointer leaves this box.
+                                moved => {
+                                    if root.region-dragging {
+                                        root.region-apply-grip(self.mouse-x / 1px, self.mouse-y / 1px);
                                     }
                                 }
                             }

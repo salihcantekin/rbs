@@ -46,7 +46,6 @@ use rbs_record::{
     AudioSettings, ExtraCanvas, Link, OutputId, OutputSettings, Progress, RecordAdapters,
     RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
-use rbs_sources::BrowserTree;
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
     MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape,
@@ -57,6 +56,7 @@ use rbs_scene::{
     visible_size,
 };
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
+use rbs_sources::BrowserTree;
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
@@ -2653,9 +2653,7 @@ fn start(
             .into_iter()
             .filter(|k| installed.contains(&k.type_id())),
         )
-        .filter(|k| {
-            *k != SourceKind::Browser || browser_tree.is_some()
-        })
+        .filter(|k| *k != SourceKind::Browser || browser_tree.is_some())
         .collect();
     let encoders: Vec<EncoderInfo> = adapters
         .video_encoders
@@ -3230,13 +3228,11 @@ impl Host {
                     Err(e) => notify(Update::Error(e.text().into())),
                 }
             }
-            Command::SetDisplayChrome { id, chrome } => {
-                match self.set_display_chrome(id, chrome) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
+            Command::SetDisplayChrome { id, chrome } => match self.set_display_chrome(id, chrome) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
+            },
             Command::FitDisplayChrome(id) => match self.fit_display_chrome(id) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
@@ -3524,11 +3520,7 @@ impl Host {
         };
         let type_id = kind.type_id();
         let adapter_id = rbs_core::registry::AdapterId::new(adapter);
-        let Some(factory) = self
-            .adapters
-            .sources
-            .capture_factory(&type_id, &adapter_id)
-        else {
+        let Some(factory) = self.adapters.sources.capture_factory(&type_id, &adapter_id) else {
             return;
         };
         let generation = self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel) + 1;
@@ -3859,9 +3851,33 @@ impl Host {
         served
     }
 
-    /// Restarts the studio with the canvas at `size` and `fps`, the program scene's
-    /// items placed again for it. When the new canvas does not start, the old one
-    /// starts again and the error says why; when that fails too, `dead` says why.
+    /// `item`'s box as the studio's canvas draws it now (ADR-0110).
+    fn shown_layout(&self, item: &SceneItem) -> Layout {
+        self.collection
+            .placed_layout(self.canvas, item.layout_on(self.canvas))
+    }
+
+    /// `live`, which is in the studio canvas's current pixels, in the layout space
+    /// the document stores (ADR-0110).
+    fn stored_layout(&self, live: &Layout) -> Layout {
+        self.collection.stored_layout(self.canvas, live)
+    }
+
+    /// Stores `live` (current canvas pixels) as the item's layout. One undo record.
+    fn save_live_layout(
+        &mut self,
+        id: ItemId,
+        canvas: Option<CanvasId>,
+        live: Layout,
+    ) -> Result<Undo, SceneError> {
+        self.collection
+            .set_item_layout(id, canvas, self.stored_layout(&live))
+    }
+
+    /// Restarts the studio with the canvas at `size` and `fps`. Stored item boxes stay
+    /// in the canvas's layout space and are fitted when drawn (ADR-0110). When the new
+    /// canvas does not start, the old one starts again and the error says why; when
+    /// that fails too, `dead` says why.
     fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), String> {
         if self.any_recording() {
             return Err("Stop the recording before changing the canvas.".into());
@@ -3881,29 +3897,8 @@ impl Host {
         self.collection
             .set_canvas_format(self.canvas, size, fps)
             .map_err(|e| format!("canvas: {e:?}"))?;
-        let items: Vec<_> = self
-            .collection
-            .scenes_for(self.canvas)
-            .flat_map(|s| s.items.iter().map(|i| (i.id, i.layout)))
-            .collect();
-        for (id, layout) in items {
-            let moved = rescale_layout(
-                &layout,
-                (old_size.width, old_size.height),
-                (size.width, size.height),
-            );
-            let _ = self.collection.set_item_layout(id, None, moved);
-        }
-        let held_before = self.held.clone();
-        if let Some(held) = &mut self.held {
-            for item in &mut held.scene.items {
-                item.layout = rescale_layout(
-                    &item.layout,
-                    (old_size.width, old_size.height),
-                    (size.width, size.height),
-                );
-            }
-        }
+        // Layouts stay in the canvas's layout space (ADR-0110). Flattening fits them
+        // into `size`; returning to the layout size shows the stored boxes again.
         self.restarting = true;
         let _ = self.studio.shutdown();
         let restarted = self.restart();
@@ -3912,14 +3907,14 @@ impl Host {
         self.restarting = false;
         match restarted {
             Ok(()) => {
-                // Old layouts would come back with an undo. (When the restart fails
-                // the collection goes back as it was, and so the history stays.)
+                // A canvas change is not an undo step (control API). The layout space is
+                // unchanged, so earlier box edits stay valid; they are dropped with the
+                // restart so undo cannot cross it.
                 self.history.clear();
                 Ok(())
             }
             Err(why) => {
                 self.collection = before;
-                self.held = held_before;
                 self.restarting = true;
                 let again = self.restart();
                 self.restarting = false;
@@ -5017,7 +5012,7 @@ impl Host {
             .find(|(s, _)| *s == edited)
             .or_else(|| leaving.first())
             .and_then(|(_, item)| self.collection.item(*item))
-            .map(|(_, i)| *i.layout_on(self.canvas))
+            .map(|(_, i)| self.shown_layout(i))
             .unwrap_or_else(|| self.default_layout(kind));
         let mut records = Vec::new();
         let done = (|| {
@@ -5031,7 +5026,12 @@ impl Host {
             }
             let (item, undo) = self
                 .collection
-                .add_item(g, ItemContent::Source(id), layout, None)
+                .add_item(
+                    g,
+                    ItemContent::Source(id),
+                    self.stored_layout(&layout),
+                    None,
+                )
                 .map_err(|e| Refusal::of(&e))?;
             records.push(undo);
             Ok(item)
@@ -5067,7 +5067,7 @@ impl Host {
         let layout = self
             .collection
             .item(item)
-            .map(|(_, i)| *i.layout_on(self.canvas))
+            .map(|(_, i)| self.shown_layout(i))
             .unwrap_or_else(|| self.default_layout(None));
         let mut records = Vec::new();
         let done = (|| {
@@ -5078,7 +5078,12 @@ impl Host {
             records.push(undo);
             let (new, undo) = self
                 .collection
-                .add_item(self.edited(), ItemContent::Source(id), layout, None)
+                .add_item(
+                    self.edited(),
+                    ItemContent::Source(id),
+                    self.stored_layout(&layout),
+                    None,
+                )
                 .map_err(|e| Refusal::of(&e))?;
             records.push(undo);
             Ok(new)
@@ -5110,7 +5115,12 @@ impl Host {
             records.push(undo);
             let (_, undo) = self
                 .collection
-                .add_item(g, ItemContent::Source(id), layout, None)
+                .add_item(
+                    g,
+                    ItemContent::Source(id),
+                    self.stored_layout(&layout),
+                    None,
+                )
                 .map_err(|e| Refusal::of(&e))?;
             records.push(undo);
             Ok(id)
@@ -5146,10 +5156,12 @@ impl Host {
             .collection
             .add_source(name, kind.type_id(), settings)
             .map_err(|e| format!("{e:?}"))?;
-        match self
-            .collection
-            .add_item(self.edited(), ItemContent::Source(id), layout, None)
-        {
+        match self.collection.add_item(
+            self.edited(),
+            ItemContent::Source(id),
+            self.stored_layout(&layout),
+            None,
+        ) {
             Ok((_, item)) => {
                 self.history
                     .record(EditKind::Add, name, 0, vec![source, item]);
@@ -5261,7 +5273,12 @@ impl Host {
             .set_source_settings_and_hints(id, settings, hints);
         let placed = hinted.and_then(|undo_hints| {
             self.collection
-                .add_item(scene, ItemContent::Source(id), layout, None)
+                .add_item(
+                    scene,
+                    ItemContent::Source(id),
+                    self.stored_layout(&layout),
+                    None,
+                )
                 .map(|(_, undo_item)| (undo_hints, undo_item))
         });
         match placed {
@@ -5337,10 +5354,12 @@ impl Host {
             .add_source(&name, type_id, settings)
             .map_err(|e| Refusal::of(&e))?;
         let index = (sample.kind == rbs_sources::still::SampleKind::Background).then_some(0);
-        match self
-            .collection
-            .add_item(self.edited(), ItemContent::Source(source), layout, index)
-        {
+        match self.collection.add_item(
+            self.edited(),
+            ItemContent::Source(source),
+            self.stored_layout(&layout),
+            index,
+        ) {
             Ok((_, undo_item)) => {
                 self.history
                     .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
@@ -5484,10 +5503,12 @@ impl Host {
             .collection
             .add_source(&name, SourceKind::Media.type_id(), settings)
             .map_err(|e| Refusal::of(&e))?;
-        match self
-            .collection
-            .add_item(self.edited(), ItemContent::Source(source), layout, None)
-        {
+        match self.collection.add_item(
+            self.edited(),
+            ItemContent::Source(source),
+            self.stored_layout(&layout),
+            None,
+        ) {
             Ok((_, undo_item)) => {
                 self.history
                     .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
@@ -5514,10 +5535,12 @@ impl Host {
             .collection
             .add_source(&name, kind.type_id(), settings)
             .map_err(|e| Refusal::of(&e))?;
-        match self
-            .collection
-            .add_item(self.edited(), ItemContent::Source(source), layout, index)
-        {
+        match self.collection.add_item(
+            self.edited(),
+            ItemContent::Source(source),
+            self.stored_layout(&layout),
+            index,
+        ) {
             Ok((_, undo_item)) => {
                 self.history
                     .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
@@ -5581,7 +5604,7 @@ impl Host {
             None
         } else {
             self.item_of(id).ok().map(|(_, item)| {
-                let layout = *item.layout_on(self.canvas);
+                let layout = self.shown_layout(item);
                 let own = item
                     .overrides
                     .contains_key(&self.canvas)
@@ -5605,7 +5628,7 @@ impl Host {
                     "The outline could not be turned on.".into(),
                 ));
             }
-            match self.collection.set_item_layout(item, own, layout) {
+            match self.save_live_layout(item, own, layout) {
                 Ok(undo) => {
                     records.push(undo);
                     kind = EditKind::Style;
@@ -6319,8 +6342,7 @@ impl Host {
             ),
             None => (false, 0, 0, 0, 0, 0),
         };
-        let has_work_rect =
-            kind == SourceKind::Screen && self.display_work(id).is_some();
+        let has_work_rect = kind == SourceKind::Screen && self.display_work(id).is_some();
         Ok(SourceSettingsView {
             id,
             name: source.name.clone(),
@@ -6374,8 +6396,7 @@ impl Host {
             Some(r) => (true, r.left, r.top, r.right, r.bottom),
             None => (false, 0, 0, 0, 0),
         };
-        let (chrome_on, chrome_t, chrome_r, chrome_b, chrome_l, chrome_fill) = match source.chrome
-        {
+        let (chrome_on, chrome_t, chrome_r, chrome_b, chrome_l, chrome_fill) = match source.chrome {
             Some(c) => (
                 true,
                 c.top,
@@ -6674,9 +6695,8 @@ impl Host {
         let picture = self.sizes.get(&id).copied().ok_or_else(|| {
             Refusal::Invalid("This source has no picture yet, so its size is not known.".into())
         })?;
-        let visible = visible_size(picture, source.region, Crop::default()).ok_or_else(|| {
-            Refusal::Invalid("The region leaves no picture.".into())
-        })?;
+        let visible = visible_size(picture, source.region, Crop::default())
+            .ok_or_else(|| Refusal::Invalid("The region leaves no picture.".into()))?;
         let item = self.item_of(id).map_err(Refusal::NotFound)?.1.id;
         let (_, old, own) = self.crop_target(item).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
@@ -6695,8 +6715,7 @@ impl Host {
             return Ok(None);
         }
         let undo = self
-            .collection
-            .set_item_layout(item, own, layout)
+            .save_live_layout(item, own, layout)
             .map_err(|e| Refusal::of(&e))?;
         Ok(Some(undo))
     }
@@ -6772,8 +6791,7 @@ impl Host {
             return Ok(false);
         }
         let undo = self
-            .collection
-            .set_item_layout(item, own, layout)
+            .save_live_layout(item, own, layout)
             .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::Transform, &name, 0, vec![undo]);
@@ -6859,7 +6877,7 @@ impl Host {
             .placements_of(id)
             .first()
             .and_then(|(_, item)| self.collection.item(*item))
-            .map(|(_, i)| *i.layout_on(self.canvas))
+            .map(|(_, i)| self.shown_layout(i))
             .unwrap_or_else(|| {
                 let c = self.collection.canvas(self.canvas);
                 let (w, h) = c.map_or((1.0, 1.0), |c| (c.size.width as f32, c.size.height as f32));
@@ -6871,7 +6889,12 @@ impl Host {
             });
         let (item, undo) = self
             .collection
-            .add_item(self.edited(), ItemContent::Source(id), layout, None)
+            .add_item(
+                self.edited(),
+                ItemContent::Source(id),
+                self.stored_layout(&layout),
+                None,
+            )
             .map_err(|e| Refusal::of(&e))?;
         self.history.record(EditKind::Add, &name, 0, vec![undo]);
         Ok(item)
@@ -7220,7 +7243,7 @@ impl Host {
         }
         let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
         // The layout the canvas shows: its own if the item has one, else the default.
-        let mut layout = *item.layout_on(self.canvas);
+        let mut layout = self.shown_layout(item);
         let own = item
             .overrides
             .contains_key(&self.canvas)
@@ -7232,8 +7255,7 @@ impl Host {
         layout.size = size;
         let item = item.id;
         let undo = self
-            .collection
-            .set_item_layout(item, own, layout)
+            .save_live_layout(item, own, layout)
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
         self.history
@@ -7258,7 +7280,7 @@ impl Host {
             .scenes()
             .find_map(|s| s.items.iter().find(|i| i.id == item).cloned());
         let found = found.ok_or_else(gone)?;
-        let mut layout = *found.layout_on(self.canvas);
+        let mut layout = self.shown_layout(&found);
         if layout.style == style {
             return Ok(false);
         }
@@ -7268,8 +7290,7 @@ impl Host {
             .then_some(self.canvas);
         layout.style = style;
         let undo = self
-            .collection
-            .set_item_layout(item, own, layout)
+            .save_live_layout(item, own, layout)
             .map_err(|e| edit_error(&e))?;
         let name = match found.content {
             ItemContent::Source(id) => self.name_of(id),
@@ -7300,7 +7321,7 @@ impl Host {
             .overrides
             .contains_key(&self.canvas)
             .then_some(self.canvas);
-        Ok((source, *found.layout_on(self.canvas), own))
+        Ok((source, self.shown_layout(found), own))
     }
 
     /// Writes `layout` as one undo step of `kind`; `Ok(false)` when it is unchanged.
@@ -7317,8 +7338,7 @@ impl Host {
             return Ok(false);
         }
         let undo = self
-            .collection
-            .set_item_layout(item, own, layout)
+            .save_live_layout(item, own, layout)
             .map_err(|e| CropRefusal::Failed(edit_error(&e)))?;
         let name = self.name_of(source);
         self.history
@@ -7421,8 +7441,7 @@ impl Host {
             return Ok(false);
         }
         let undo = self
-            .collection
-            .set_item_layout(item, own, layout)
+            .save_live_layout(item, own, layout)
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(source);
         self.history
@@ -7686,7 +7705,7 @@ impl Host {
                     kind,
                     layout: kind
                         .is_some_and(|k| !k.is_audio())
-                        .then(|| *item.layout_on(self.canvas)),
+                        .then(|| self.shown_layout(item)),
                     meter: matches!(status, SourceStatus::Running)
                         .then(|| self.studio.meter(s.id).cloned())
                         .flatten(),
@@ -9526,72 +9545,6 @@ pub fn camera_layout(width: u32, height: u32) -> Layout {
     )
 }
 
-/// `layout` on a canvas of `from` placed again on a canvas of `to`. A picture that
-/// fills the canvas's width or height, centred (as a screen is added), is fitted to the
-/// new canvas with its own aspect ratio. Anything else keeps its size relative to the
-/// canvas (the smaller of the two scale factors, so its shape stays) and its margin to
-/// the nearest edges: a camera in a corner stays in that corner.
-pub fn rescale_layout(layout: &Layout, from: (u32, u32), to: (u32, u32)) -> Layout {
-    let (fw, fh) = (from.0.max(1) as f32, from.1.max(1) as f32);
-    let (tw, th) = (to.0 as f32, to.1 as f32);
-    let [x, y] = layout.position;
-    let [w, h] = layout.size;
-    let near = |a: f32, b: f32| (a - b).abs() < 1.0;
-    let centred = near(x + w / 2.0, fw / 2.0) && near(y + h / 2.0, fh / 2.0);
-    let mut out = *layout;
-    if centred && (near(w.abs(), fw) || near(h.abs(), fh)) && w != 0.0 && h != 0.0 {
-        // Fit: the limiting side takes the canvas's size.
-        let (nw, nh) = if w.abs() * th >= h.abs() * tw {
-            (tw, tw * h.abs() / w.abs())
-        } else {
-            (th * w.abs() / h.abs(), th)
-        };
-        out.size = [nw * w.signum(), nh * h.signum()];
-        out.position = [(tw - nw) / 2.0, (th - nh) / 2.0];
-        out.style = scale_style(&layout.style, nw / w.abs());
-        return out;
-    }
-    let s = (tw / fw).min(th / fh);
-    let axis = |pos: f32, len: f32, old: f32, new: f32| {
-        let size = len * s;
-        let centre = pos + len / 2.0;
-        let pos = if near(centre, old / 2.0) {
-            (new - size) / 2.0
-        } else if centre < old / 2.0 {
-            pos * s
-        } else {
-            new - (old - pos - len) * s - size
-        };
-        (pos, size)
-    };
-    let (nx, nw) = axis(x, w, fw, tw);
-    let (ny, nh) = axis(y, h, fh, th);
-    out.position = [nx, ny];
-    out.size = [nw, nh];
-    out.style = scale_style(&layout.style, s);
-    out
-}
-
-/// `style` with its lengths multiplied by `factor`, the factor its box was scaled by
-/// (ADR-0053 decision 12). A factor that is not finite and positive leaves it as it is.
-fn scale_style(style: &ItemStyle, factor: f32) -> ItemStyle {
-    if !(factor.is_finite() && factor > 0.0) {
-        return *style;
-    }
-    let mut out = *style;
-    if let Shape::Rectangle { radius } = &mut out.shape {
-        *radius *= factor;
-    }
-    if let Some(b) = &mut out.border {
-        b.width *= factor;
-    }
-    if let Some(sh) = &mut out.shadow {
-        sh.offset = sh.offset.map(|v| v * factor);
-        sh.blur *= factor;
-    }
-    out
-}
-
 /// The canvas the studio runs (the collection's first, or a new one of `size` at
 /// `fps`) and the scene it shows (that canvas's program, else the first scene it may
 /// show, else a new shared scene), set on air.
@@ -9929,59 +9882,6 @@ mod tests {
         col.set_preview(canvas, Some(other)).unwrap();
         let next = next_held(Some(held), &col, canvas).unwrap();
         assert_eq!(next.from, other);
-    }
-
-    #[test]
-    fn a_fitted_screen_is_fitted_again() {
-        let l = Layout::fit(1920, 1080, 3440, 1440);
-        let got = rescale_layout(&l, (1920, 1080), (3440, 1440));
-        assert_eq!(got, Layout::new([0.0, 0.0], [3440.0, 1440.0]));
-        let full = Layout::new([0.0, 0.0], [1920.0, 1080.0]);
-        let got = rescale_layout(&full, (1920, 1080), (3440, 1440));
-        assert_eq!(got, Layout::fit(3440, 1440, 1920, 1080));
-        let got = rescale_layout(&full, (1920, 1080), (1280, 720));
-        assert_eq!(got, Layout::new([0.0, 0.0], [1280.0, 720.0]));
-    }
-
-    #[test]
-    fn a_camera_stays_in_its_corner() {
-        let got = rescale_layout(&camera_layout(1920, 1080), (1920, 1080), (3840, 2160));
-        assert_eq!(got, camera_layout(3840, 2160));
-        let got = rescale_layout(&camera_layout(1920, 1080), (1920, 1080), (3440, 1440));
-        let s = 1440.0 / 1080.0;
-        let cam = camera_layout(1920, 1080);
-        let right = 1920.0 - cam.position[0] - cam.size[0];
-        assert!((got.size[0] - cam.size[0] * s).abs() < 0.01);
-        assert!((3440.0 - got.position[0] - got.size[0] - right * s).abs() < 0.01);
-        assert!((1440.0 - got.position[1] - got.size[1] - right * s).abs() < 0.01);
-    }
-
-    #[test]
-    fn style_lengths_scale_with_the_box_in_both_branches() {
-        let style = ItemStyle::new(Shape::Rectangle { radius: 20.0 })
-            .with_border(Some(Border::new(4.0, [255; 4])))
-            .with_shadow(Some(Shadow::new([2.0, 3.0], 10.0, [0, 0, 0, 255])));
-        // Fitted: 1920 wide to 1280 wide.
-        let full = Layout::new([0.0, 0.0], [1920.0, 1080.0]).with_style(style);
-        let got = rescale_layout(&full, (1920, 1080), (1280, 720)).style;
-        let f = 1280.0 / 1920.0;
-        assert_eq!(got.shape, Shape::Rectangle { radius: 20.0 * f });
-        assert_eq!(got.border.map(|b| b.width), Some(4.0 * f));
-        assert_eq!(
-            got.shadow.map(|sh| (sh.offset, sh.blur)),
-            Some(([2.0 * f, 3.0 * f], 10.0 * f))
-        );
-        // In a corner: by the box's own factor.
-        let cam = camera_layout(1920, 1080).with_style(style);
-        let got = rescale_layout(&cam, (1920, 1080), (3440, 1440));
-        let s = got.size[0] / cam.size[0];
-        assert!((s - 1440.0 / 1080.0).abs() < 1e-4);
-        assert_eq!(got.style.border.map(|b| b.width), Some(4.0 * s));
-        // Circles have no length to scale.
-        let circle =
-            Layout::new([0.0, 0.0], [1920.0, 1080.0]).with_style(ItemStyle::new(Shape::Circle));
-        let got = rescale_layout(&circle, (1920, 1080), (1280, 720));
-        assert_eq!(got.style, ItemStyle::new(Shape::Circle));
     }
 
     #[test]

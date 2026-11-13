@@ -81,8 +81,10 @@ pub struct Appearance {
     pub light: ThemeId,
     /// Used in `Fixed` mode.
     pub theme: ThemeId,
-    /// Compact uses the next smaller spacing and control size (format 2).
+    /// Compact steps spacing down; regular uses the theme's own lengths.
     pub density: rbs_ui::tokens::Density,
+    /// How many compact stops (1, 2 or 3). Kept while `density` is regular.
+    pub compact_steps: u8,
 }
 
 impl Default for Appearance {
@@ -93,6 +95,7 @@ impl Default for Appearance {
             light: ThemeId::BuiltIn(Base::Light),
             theme: ThemeId::BuiltIn(Base::Dark),
             density: rbs_ui::tokens::Density::Regular,
+            compact_steps: 1,
         }
     }
 }
@@ -106,6 +109,7 @@ impl Appearance {
             light,
             theme,
             density: rbs_ui::tokens::Density::Regular,
+            compact_steps: 1,
         }
     }
 
@@ -132,10 +136,16 @@ struct AppearanceFile {
     theme: String,
     #[serde(default = "regular")]
     density: String,
+    #[serde(default = "one_step")]
+    compact_steps: i64,
 }
 
 fn regular() -> String {
     "regular".into()
+}
+
+fn one_step() -> i64 {
+    1
 }
 
 fn system() -> String {
@@ -150,13 +160,18 @@ fn light() -> String {
 
 impl Document for Appearance {
     const KIND: &'static str = "appearance";
-    const FORMAT: u32 = 2;
+    const FORMAT: u32 = 3;
 
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
             1 => {
                 body.entry("density")
                     .or_insert(toml::Value::String("regular".into()));
+                Ok(())
+            }
+            2 => {
+                body.entry("compact_steps")
+                    .or_insert(toml::Value::Integer(1));
                 Ok(())
             }
             other => Err(format!("format {other} cannot be read")),
@@ -185,12 +200,22 @@ impl Document for Appearance {
             "compact" => rbs_ui::tokens::Density::Compact,
             d => return Err(format!("density {d:?} is not regular or compact")),
         };
+        let Some(compact_steps) = u8::try_from(f.compact_steps)
+            .ok()
+            .filter(|n| (1..=3).contains(n))
+        else {
+            return Err(format!(
+                "compact_steps {} is not 1, 2 or 3",
+                f.compact_steps
+            ));
+        };
         Ok(Appearance {
             mode,
             dark,
             light,
             theme: id(&f.theme, "theme")?,
             density,
+            compact_steps,
         })
     }
 
@@ -209,6 +234,7 @@ impl Document for Appearance {
                 rbs_ui::tokens::Density::Compact => "compact",
             }
             .into(),
+            compact_steps: i64::from(self.compact_steps),
         })
     }
 }
@@ -257,6 +283,7 @@ theme = \"builtin:light\"
         let read = document::parse::<Appearance>(text).unwrap();
         assert_eq!(read.format, 1);
         assert_eq!(read.document.density, rbs_ui::tokens::Density::Regular);
-        assert_eq!(Appearance::FORMAT, 2);
+        assert_eq!(read.document.compact_steps, 1);
+        assert_eq!(Appearance::FORMAT, 3);
     }
 }

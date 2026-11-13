@@ -85,6 +85,11 @@ export struct EncoderData {
     presets: [string], preset: int,
     profiles: [string], profile: int,
     b-frames: [string], b-frame: int, b-frames-note: string,
+    // The chosen video bitrate, and the recommendation when it is below that
+    // figure (0 when it is not, or when there is no bitrate). The picture is the
+    // resolved output size at the canvas frame rate.
+    video-kbps: int, recommended-kbps: int,
+    out-width: int, out-height: int, out-fps: int,
     // 0 Video (Rec. 709 limited), 1 Screen (sRGB full range).
     delivery: int,
     // Lifts only the darkest tones. Shown while Colour is Video.
@@ -2875,11 +2880,16 @@ component EncoderFields inherits VerticalLayout {
         gap: 0;
         SettingRow {
             label: root.data.bitrate-label;
-            help: root.stream ? @tr("Most of the picture's quality. Use what your streaming service recommends.")
+            help: root.data.recommended-kbps > 0
+                ? @tr("{} kbit/s is below the {} kbit/s recommended for this output size ({} x {} at {} fps).", root.data.video-kbps, root.data.recommended-kbps, root.data.out-width, root.data.out-height, root.data.out-fps)
+                : root.stream ? @tr("Most of the picture's quality. Use what your streaming service recommends.")
                 : @tr("Most of the picture's quality; larger values make larger files.");
+            help-is-warning: root.data.recommended-kbps > 0;
             enabled: root.idle;
             video := Select {
-                label: root.data.bitrate-label;
+                label: root.data.recommended-kbps > 0
+                    ? @tr("{}, warning: {} kbit/s is below the {} kbit/s recommended for this output size ({} x {} at {} fps).", root.data.bitrate-label, root.data.video-kbps, root.data.recommended-kbps, root.data.out-width, root.data.out-height, root.data.out-fps)
+                    : root.data.bitrate-label;
                 options: root.data.video-rates;
                 index: root.data.video-rate;
                 enabled: root.idle && root.data.rate-kind != 2;

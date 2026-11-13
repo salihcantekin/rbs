@@ -337,6 +337,7 @@ impl AppearanceUi {
     }
 
     /// Compact spacing or the theme's own spacing. The choice stays, as a theme pick does.
+    /// The step is kept while compact is off.
     pub fn set_compact(&mut self, compact: bool, _now: Instant) -> Option<Appearance> {
         let mut next = self.choice.clone();
         next.density = if compact {
@@ -344,6 +345,13 @@ impl AppearanceUi {
         } else {
             rbs_ui::tokens::Density::Regular
         };
+        self.commit(next)
+    }
+
+    /// How many compact stops (1, 2 or 3). The choice stays.
+    pub fn set_compact_steps(&mut self, steps: u8, _now: Instant) -> Option<Appearance> {
+        let mut next = self.choice.clone();
+        next.compact_steps = steps.clamp(1, rbs_ui::tokens::COMPACT_STEPS_MAX);
         self.commit(next)
     }
 

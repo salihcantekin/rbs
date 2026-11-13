@@ -3075,7 +3075,9 @@ mod file_dialog {
             .set_title(title)
             .add_filter(
                 "Media",
-                &["mp4", "mkv", "webm", "mov", "m4v", "mp3", "wav", "flac", "aac"],
+                &[
+                    "mp4", "mkv", "webm", "mov", "m4v", "mp3", "wav", "flac", "aac",
+                ],
             )
             .add_filter("All files", &["*"])
             .pick_file()
@@ -3674,8 +3676,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(
         on_set_source_capture_region,
         |app, id: i32, clear: bool, l: i32, t: i32, r: i32, b: i32| {
-            app.studio
-                .set_source_capture_region(id, clear, l, t, r, b);
+            app.studio.set_source_capture_region(id, clear, l, t, r, b);
         }
     );
     on!(

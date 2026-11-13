@@ -46,8 +46,9 @@ use objc2_screen_capture_kit::{
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, Permission, SyncKind,
-    THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail, caps, choose_framebuffer,
+    CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, Permission,
+    REGION_GRAB_LONG, RegionGrab, SyncKind, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail, caps,
+    choose_framebuffer,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -410,17 +411,39 @@ fn image_to_rgba(
 /// No stream is started and nothing outlives the call; the screenshot API shows no
 /// capture border or indicator.
 fn grab_thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
-    let started = Instant::now();
-    let parsed = parse(target).ok_or(CaptureError::TargetNotFound)?;
     let max = Size::new(
         max.width.min(THUMBNAIL_MAX.width),
         max.height.min(THUMBNAIL_MAX.height),
     );
+    let (width, height, rgba) = grab_rgba(target, max, "thumbnail needs macOS 14")?;
+    Thumbnail::new(width, height, rgba).ok_or_else(grab_failed)
+}
+
+/// Region-section grab (ADR-0103): the same screenshot as a thumbnail, long side ≤ 960.
+fn grab_region(target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError> {
+    if max_long == 0 {
+        return Err(CaptureError::FormatUnsupported);
+    }
+    let side = max_long.min(REGION_GRAB_LONG);
+    let (width, height, rgba) =
+        grab_rgba(target, Size::new(side, side), "region_grab needs macOS 14")?;
+    RegionGrab::new(width, height, rgba).ok_or_else(grab_failed)
+}
+
+/// One screenshot scaled to fit in `max`. `unsupported` is the message when the
+/// screenshot API is missing (macOS older than 14).
+fn grab_rgba(
+    target: &TargetId,
+    max: Size,
+    unsupported: &'static str,
+) -> Result<(u32, u32, Vec<u8>), CaptureError> {
+    let started = Instant::now();
+    let parsed = parse(target).ok_or(CaptureError::TargetNotFound)?;
     if max.width == 0 || max.height == 0 {
         return Err(CaptureError::FormatUnsupported);
     }
     if !screenshots_available() {
-        return Err(CaptureError::Unsupported("thumbnail needs macOS 14"));
+        return Err(CaptureError::Unsupported(unsupported));
     }
     if !permission_granted() {
         return Err(CaptureError::PermissionNotDetermined);
@@ -490,7 +513,7 @@ fn grab_thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, CaptureErro
         let left = THUMBNAIL_TIMEOUT.saturating_sub(started.elapsed());
         let image = rx.recv_timeout(left).map_err(|_| grab_failed())??.0;
         let rgba = image_to_rgba(&image, width, height)?;
-        Thumbnail::new(width, height, rgba).ok_or_else(grab_failed)
+        Ok((width, height, rgba))
     })
 }
 
@@ -688,6 +711,10 @@ impl CaptureFactory for SckCaptureFactory {
 
     fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
         grab_thumbnail(target, max)
+    }
+
+    fn region_grab(&self, target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError> {
+        grab_region(target, max_long)
     }
 
     fn permission(&self, kind: TargetKind) -> Permission {
@@ -1559,6 +1586,8 @@ mod thumbnail_tests {
         assert_eq!(fit_size(10_000, 10, max), Some((192, 1)));
         assert_eq!(fit_size(0, 10, max), None);
         assert_eq!(fit_size(10, 10, Size::new(0, 5)), None);
+        assert_eq!(fit_size(3840, 2160, Size::new(960, 960)), Some((960, 540)));
+        assert_eq!(fit_size(800, 600, Size::new(960, 960)), Some((800, 600)));
     }
 
     #[test]
@@ -1578,6 +1607,14 @@ mod thumbnail_tests {
         ));
         assert!(matches!(
             factory.thumbnail(&TargetId::new(format!("{DISPLAY_PREFIX}1")), nothing),
+            Err(CaptureError::FormatUnsupported)
+        ));
+        assert!(matches!(
+            factory.region_grab(&TargetId::new("nope"), REGION_GRAB_LONG),
+            Err(CaptureError::TargetNotFound)
+        ));
+        assert!(matches!(
+            factory.region_grab(&TargetId::new(format!("{DISPLAY_PREFIX}1")), 0),
             Err(CaptureError::FormatUnsupported)
         ));
     }
@@ -1606,6 +1643,28 @@ mod thumbnail_tests {
             }
             std::fs::write(std::path::Path::new(&dir).join("display.ppm"), ppm).expect("write");
         }
+    }
+
+    /// With screen recording permission: the region grab is larger than a thumbnail
+    /// and stops at the 960 long side. Same skip as `main_display_thumbnail`.
+    #[test]
+    fn main_display_region_grab() {
+        if !permission_granted() || !screenshots_available() {
+            eprintln!("skipped: needs screen recording permission and macOS 14");
+            return;
+        }
+        let factory = SckCaptureFactory::new();
+        let id = TargetId::new(format!("{DISPLAY_PREFIX}{}", CGMainDisplayID()));
+        let grab = factory
+            .region_grab(&id, REGION_GRAB_LONG)
+            .expect("region grab");
+        let long = grab.width().max(grab.height());
+        assert!(long <= REGION_GRAB_LONG);
+        assert!(long > THUMBNAIL_MAX.width.max(THUMBNAIL_MAX.height));
+        assert!(
+            grab.rgba().chunks_exact(4).any(|p| p[..3] != [0, 0, 0]),
+            "all black"
+        );
     }
 }
 

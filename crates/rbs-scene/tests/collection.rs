@@ -13,7 +13,7 @@ use rbs_scene::model::{
     MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape,
     SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
 };
-use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
+use rbs_scene::{Affine2, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
 fn ty(name: &str) -> NodeTypeId {
     NodeTypeId::new(format!("org.rbs.source.{name}"))
@@ -2046,4 +2046,57 @@ fn chrome_is_only_for_a_display_and_one_undo_restores_the_region() {
     col.undo(set).unwrap();
     assert!(col.source(display).unwrap().chrome.is_none());
     assert!(col.source(display).unwrap().region.is_none());
+}
+
+#[test]
+fn a_canvas_size_change_keeps_the_stored_box_and_fits_it_on_the_way_back() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    let stored = Layout::new([100.0, 40.0], [640.0, 360.0]).with_style(
+        ItemStyle::new(Shape::Rectangle { radius: 20.0 })
+            .with_border(Some(Border::new(4.0, [0; 4]))),
+    );
+    let (item, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(s.cam), stored, None)
+        .unwrap();
+    s.col.set_program(s.wide, Some(scene)).unwrap();
+    s.col.set_program(s.tall, Some(scene)).unwrap();
+    let wide_before = s.col.flatten(s.wide, scene).unwrap();
+    let tall_before = s.col.flatten(s.tall, scene).unwrap();
+
+    s.col
+        .set_canvas_format(s.wide, Size::new(1080, 1920), FrameRate::FPS_60)
+        .unwrap();
+    assert_eq!(s.col.item(item).unwrap().1.layout, stored);
+    let canvas = s.col.canvas(s.wide).unwrap();
+    assert_eq!(
+        (canvas.layout_size.width, canvas.layout_size.height),
+        (1920, 1080)
+    );
+    let placed = stored.placed_in((1920, 1080), (1080, 1920));
+    let wide = s.col.flatten(s.wide, scene).unwrap();
+    assert_eq!(wide[0].transform, Affine2::of_layout(&placed));
+    assert_eq!(wide[0].box_size, [placed.size[0], placed.size[1]]);
+    assert_eq!(wide[0].style.shape, placed.style.shape);
+    // The other canvas still draws the stored box in its own pixels.
+    assert_eq!(s.col.flatten(s.tall, scene).unwrap(), tall_before);
+
+    s.col
+        .set_canvas_format(s.wide, Size::new(1920, 1080), FrameRate::FPS_60)
+        .unwrap();
+    assert_eq!(s.col.item(item).unwrap().1.layout, stored);
+    assert_eq!(s.col.flatten(s.wide, scene).unwrap(), wide_before);
+
+    // An edit made in the current pixels is stored in the layout space and draws
+    // back where it was put.
+    s.col
+        .set_canvas_format(s.wide, Size::new(1080, 1920), FrameRate::FPS_60)
+        .unwrap();
+    let live = Layout::new([0.0, 656.25], [90.0, 45.0]);
+    s.col
+        .set_item_layout(item, None, live.stored_in((1920, 1080), (1080, 1920)))
+        .unwrap();
+    let drawn = s.col.flatten(s.wide, scene).unwrap();
+    assert_eq!(drawn[0].transform, Affine2::of_layout(&live));
 }

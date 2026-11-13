@@ -264,7 +264,6 @@ pub enum AddWhat {
 /// API's `source.add` has no such kind).
 const EXISTING: &str = "existing";
 
-
 fn panel_of(id: &CommandId) -> Option<PanelId> {
     PanelId::parse(id.param("id")?).ok()
 }

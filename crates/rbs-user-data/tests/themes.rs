@@ -5,7 +5,7 @@
 mod common;
 
 use common::TempDir;
-use rbs_ui::tokens::{Base, Color, MAX_THEME_FILE, ThemeBody, Tokens};
+use rbs_ui::tokens::{Base, Color, Density, MAX_THEME_FILE, ThemeBody, Tokens};
 use rbs_user_data::document::{self, Document};
 use rbs_user_data::theme::read_base;
 use rbs_user_data::{
@@ -202,6 +202,42 @@ fn appearance_defaults_round_trip_and_unreadable_file() {
     assert_eq!(
         std::fs::read_to_string(d.path().join(APPEARANCE_FILE)).unwrap(),
         broken
+    );
+}
+
+#[test]
+fn appearance_compact_steps_upgrade_and_round_trip() {
+    let d = TempDir::new("compact-steps");
+    let data = UserData::new(d.path());
+    std::fs::write(
+        d.path().join(APPEARANCE_FILE),
+        "format = 2\nkind = \"appearance\"\nmode = \"fixed\"\ndensity = \"compact\"\n",
+    )
+    .unwrap();
+    let (a, err) = data.appearance();
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(a.density, Density::Compact);
+    assert_eq!(a.compact_steps, 1);
+
+    let lock = data.try_lock().unwrap().unwrap();
+    let mut chosen = a;
+    chosen.compact_steps = 3;
+    data.set_appearance(&lock, &chosen).unwrap();
+    let text = std::fs::read_to_string(d.path().join(APPEARANCE_FILE)).unwrap();
+    assert!(text.contains("format = 3"), "{text}");
+    assert!(text.contains("compact_steps = 3"), "{text}");
+    let (read, err) = data.appearance();
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(read, chosen);
+
+    let refused = "format = 3\nkind = \"appearance\"\nmode = \"system\"\ndensity = \"compact\"\ncompact_steps = 4\n";
+    std::fs::write(d.path().join(APPEARANCE_FILE), refused).unwrap();
+    let (a, err) = data.appearance();
+    assert_eq!(a, Appearance::default());
+    assert!(matches!(err, Some(DataError::Invalid(_))));
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(APPEARANCE_FILE)).unwrap(),
+        refused
     );
 }
 

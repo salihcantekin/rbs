@@ -23,6 +23,7 @@
 //! - `thumbnail` grabs one frame with `SCScreenshotManager` (macOS 14, else
 //!   `Unsupported`), scaled by ScreenCaptureKit to fit and converted to sRGB RGBA8. It
 //!   starts no stream, shows no capture indicator and never prompts for permission.
+//!   `region_grab` is that same grab with a long side of at most 960.
 //!
 //! The importer side is `docs/specs/gpu-compositor.md`, "Native import" (Metal).
 //!

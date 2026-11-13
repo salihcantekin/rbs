@@ -88,6 +88,9 @@ pub struct Canvas {
     pub name: String,
     /// Picture size in pixels.
     pub size: Size,
+    /// Pixel space stored layouts are written in (ADR-0110). Equal to [`Self::size`]
+    /// until the canvas size changes; a size change does not rewrite it or the layouts.
+    pub layout_size: Size,
     /// Frame rate of the canvas tick.
     pub frame_rate: FrameRate,
     /// Scene on air on this canvas.
@@ -183,6 +186,7 @@ impl Canvas {
             id,
             name: name.to_owned(),
             size,
+            layout_size: size,
             frame_rate,
             program: None,
             preview: None,
@@ -871,6 +875,26 @@ impl ItemStyle {
         *self == Self::default()
     }
 
+    /// Lengths multiplied by `factor` (ADR-0110). A factor of 1, or one that is not
+    /// finite and positive, leaves the style unchanged.
+    pub fn scaled(self, factor: f32) -> Self {
+        if !(factor.is_finite() && factor > 0.0) || factor == 1.0 {
+            return self;
+        }
+        let mut out = self;
+        if let Shape::Rectangle { radius } = &mut out.shape {
+            *radius *= factor;
+        }
+        if let Some(b) = &mut out.border {
+            b.width *= factor;
+        }
+        if let Some(sh) = &mut out.shadow {
+            sh.offset = sh.offset.map(|v| v * factor);
+            sh.blur *= factor;
+        }
+        out
+    }
+
     /// True if every length is finite, radius and blur are not negative, and a border is
     /// wider than 0.
     pub fn is_valid(&self) -> bool {
@@ -971,6 +995,50 @@ impl Layout {
             && (0.0..=1.0).contains(&self.opacity)
             && self.style.is_valid()
     }
+
+    /// This box, written in a canvas of `from`, as it is drawn on a canvas of `to`
+    /// (ADR-0110). The whole `from` rectangle is fitted, centred, into `to` with one
+    /// scale (the smaller side ratio) and the box moves with it. Equal sizes return
+    /// `self` unchanged. Sides of 0 leave it unchanged.
+    pub fn placed_in(&self, from: (u32, u32), to: (u32, u32)) -> Self {
+        let Some((scale, ox, oy)) = layout_fit(from, to) else {
+            return *self;
+        };
+        let mut out = *self;
+        out.position = [self.position[0] * scale + ox, self.position[1] * scale + oy];
+        out.size = [self.size[0] * scale, self.size[1] * scale];
+        out.style = self.style.scaled(scale);
+        out
+    }
+
+    /// The box to store so [`Self::placed_in`] draws `self` (ADR-0110). `self` is in
+    /// `to` pixels; the result is in `from` pixels. Inverse of [`Self::placed_in`].
+    pub fn stored_in(&self, from: (u32, u32), to: (u32, u32)) -> Self {
+        let Some((scale, ox, oy)) = layout_fit(from, to) else {
+            return *self;
+        };
+        let inv = 1.0 / scale;
+        let mut out = *self;
+        out.position = [(self.position[0] - ox) * inv, (self.position[1] - oy) * inv];
+        out.size = [self.size[0] * inv, self.size[1] * inv];
+        out.style = self.style.scaled(inv);
+        out
+    }
+}
+
+/// Scale and top-left of `from` fitted, centred, into `to`. `None` when the sizes are
+/// equal or a side is 0: the caller keeps the layout as it is.
+fn layout_fit(from: (u32, u32), to: (u32, u32)) -> Option<(f32, f32, f32)> {
+    if from == to || from.0 == 0 || from.1 == 0 || to.0 == 0 || to.1 == 0 {
+        return None;
+    }
+    let (fw, fh) = (from.0 as f32, from.1 as f32);
+    let (tw, th) = (to.0 as f32, to.1 as f32);
+    let scale = (tw / fw).min(th / fh);
+    if !(scale.is_finite() && scale > 0.0) {
+        return None;
+    }
+    Some((scale, (tw - fw * scale) / 2.0, (th - fh * scale) / 2.0))
 }
 
 /// Longest timed show, in milliseconds (ADR-0105). Absent means no duration.

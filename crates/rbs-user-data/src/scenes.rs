@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 14
+//! format = 15
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -227,6 +227,12 @@ struct CanvasDoc {
     /// Scene list order (format 11). Absent: id order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     order: Vec<u32>,
+    /// Layout space width (format 15, ADR-0110). Absent: `width`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout_width: Option<u32>,
+    /// Layout space height (format 15, ADR-0110). Absent: `height`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout_height: Option<u32>,
 }
 
 /// A follower's fallback: `"keep_last"` or `{ scene = id }`.
@@ -676,7 +682,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 14;
+    const FORMAT: u32 = 15;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -695,10 +701,12 @@ impl Document for SceneCollection {
     /// is a format 12 body without them. Format 13 adds the optional item
     /// `show_for_ms` (ADR-0105); a format 12 body is a format 13 body without it.
     /// Format 14 adds the optional source `region` and `chrome` (ADR-0103, ADR-0104);
-    /// a format 13 body is a format 14 body without them.
+    /// a format 13 body is a format 14 body without them. Format 15 adds the optional
+    /// canvas `layout_width` and `layout_height` (ADR-0110); a format 14 body is a
+    /// format 15 body without them, and the layout space is then the canvas size.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=13 => {
+            1..=14 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -772,6 +780,18 @@ impl Document for SceneCollection {
                         "format {from} has no source `region` or `chrome` (format 14)"
                     ));
                 }
+                let layout_space = body
+                    .get("canvases")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|c| c.contains_key("layout_width") || c.contains_key("layout_height"));
+                if from < 15 && layout_space {
+                    return Err(format!(
+                        "format {from} has no canvas `layout_width` or `layout_height` (format 15)"
+                    ));
+                }
                 Ok(())
             }
             _ => Err(format!("format {from} cannot be read")),
@@ -806,6 +826,8 @@ impl Document for SceneCollection {
                         _ => None,
                     },
                     order: c.order.iter().map(|id| id.get()).collect(),
+                    layout_width: (c.layout_size != c.size).then_some(c.layout_size.width),
+                    layout_height: (c.layout_size != c.size).then_some(c.layout_size.height),
                 }
             })
             .collect();
@@ -932,6 +954,16 @@ impl Document for SceneCollection {
                     _ => Fallback::KeepLast,
                 };
                 canvas.order = c.order.into_iter().map(SceneId::from_raw).collect();
+                canvas.layout_size = match (c.layout_width, c.layout_height) {
+                    (None, None) => canvas.size,
+                    (Some(w), Some(h)) => Size::new(w, h),
+                    _ => {
+                        return Err(format!(
+                            "canvas {:?}: layout_width and layout_height are set together",
+                            c.name
+                        ));
+                    }
+                };
                 Ok(canvas)
             })
             .collect::<Result<Vec<_>, String>>()?;
