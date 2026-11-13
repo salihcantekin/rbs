@@ -8,4 +8,4 @@ library = ["components.slint"]
 [baseline]
 touch = 39
 duplicate = 7
-help = 23
+help = 22

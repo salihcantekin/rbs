@@ -423,9 +423,11 @@ component StackView inherits Rectangle {
     property <string> active-title: has-tabs ? data.tabs[data.active].title : "";
     property <string> menu-panel;
     background: Theme.surface-raised;
+    // The outline shows only where the panel colour does not separate it from the
+    // window ground (ADR-0112 decision 3).
     border-color: Theme.border-subtle;
-    border-width: Tokens.size-border;
-    border-radius: Tokens.radius-sm;
+    border-width: Theme.panel-outline ? Tokens.size-border : 0px;
+    border-radius: Tokens.radius-lg;
     clip: true;
     if !strip: Rectangle {
         x: Tokens.size-border;
@@ -1400,7 +1402,9 @@ component FrameBar inherits Rectangle {
         height: Tokens.size-border;
         background: Theme.border-subtle;
     }
-    HorizontalLayout {
+    // The width the row wants with every item at full size (ADR-0112 decision 12).
+    out property <length> wanted-width: row.preferred-width;
+    row := HorizontalLayout {
         height: parent.height - Tokens.size-border;
         y: 0;
         padding-left: Tokens.space-2;
@@ -1607,7 +1611,8 @@ component StatusBar inherits Rectangle {
         : @tr("{} · virtual camera on", state-text);
     property <bool> on: Shell.live-state != 0 || Shell.live-camera;
     height: Tokens.size-control-sm + 2 * Tokens.size-border;
-    background: Theme.surface-sunken;
+    // The window ground (ADR-0112 decision 1).
+    background: Theme.surface-base;
     Rectangle {
         y: 0;
         height: Tokens.size-border;
@@ -1849,7 +1854,11 @@ export component MainWindow inherits Window {
     preferred-height: Tokens.size-window-h;
     min-width: Tokens.size-window-min-w;
     min-height: Tokens.size-window-min-h;
-    background: Theme.surface-sunken;
+    // The width the frame row wants for every item at full size; a test holds it inside the window's
+    // minimum width in every density (ADR-0112 decision 12, U11).
+    out property <length> frame-row-width: frame.wanted-width;
+    // The window ground (ADR-0112 decision 1).
+    background: Theme.surface-base;
     default-font-size: Tokens.type-body-size;
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
@@ -2378,7 +2387,8 @@ export component FloatWindow inherits Window {
     // END generated menu bar
     preferred-width: Tokens.size-floating-w;
     preferred-height: Tokens.size-floating-h;
-    background: Theme.surface-sunken;
+    // The window ground (ADR-0112 decision 1).
+    background: Theme.surface-base;
     default-font-size: Tokens.type-body-size;
     // Shortcuts (ADR-0060), as in the main window.
     edit-keys := FocusScope {

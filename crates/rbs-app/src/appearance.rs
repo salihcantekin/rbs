@@ -336,15 +336,15 @@ impl AppearanceUi {
         self.commit(next)
     }
 
-    /// Compact spacing or the theme's own spacing. The choice stays, as a theme pick does.
-    /// The step is kept while compact is off.
-    pub fn set_compact(&mut self, compact: bool, _now: Instant) -> Option<Appearance> {
+    /// Regular, compact or roomy spacing (ADR-0112). The choice stays, as a theme pick
+    /// does. The compact step is kept while another density is chosen.
+    pub fn set_density(
+        &mut self,
+        density: rbs_ui::tokens::Density,
+        _now: Instant,
+    ) -> Option<Appearance> {
         let mut next = self.choice.clone();
-        next.density = if compact {
-            rbs_ui::tokens::Density::Compact
-        } else {
-            rbs_ui::tokens::Density::Regular
-        };
+        next.density = density;
         self.commit(next)
     }
 
