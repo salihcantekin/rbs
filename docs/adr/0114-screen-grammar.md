@@ -3,7 +3,7 @@
 - Status: Proposed
 - Date: 2026-11-13
 - Deciders: Salih (owner)
-- Amends: [ADR-0094](0094-ui-interaction-patterns-and-tabler-icon-set.md) rule C2 (two named row variants), rule A3 (two optional header parts) and its Migration steps 2, 3 and 5 (replaced by the list in Consequences); [ADR-0076](0076-component-standards-and-panel-spacing.md) decision 1 (the row's name is `SettingRow`; `PropertyRow` was never built and the name is retired) and decision 3 (the same two header parts)
+- Amends: [ADR-0094](0094-ui-interaction-patterns-and-tabler-icon-set.md) rule C1 (`Field` is not moved to the library; the stacked `SettingRow` replaces it), rule C2 (two named row variants), rule A3 (two optional header parts) and its Migration steps 2 and 3 (replaced by the list in Consequences; step 5 and the Enforcement checks stand); [ADR-0076](0076-component-standards-and-panel-spacing.md) decision 1 (the row's name is `SettingRow`; `PropertyRow` was never built and the name is retired) and decision 3 (the same two header parts)
 - Spec: [ui-design-system](../specs/ui-design-system.md#component-standards)
 
 ## Context
@@ -22,7 +22,7 @@ The owner wants a user who learns one screen to know every screen (2026-11-13). 
 ADR-0076, 0078 and 0094 stand. Their unfinished migrations are finished as part of this one. Added:
 
 1. **The row is `SettingRow`**, moved to `components.slint` as ADR-0094 ordered, used in Settings, Properties, Source settings and the Mixer filters. Its anatomy is ADR-0094 C2. Two variants are added to C2 and are the only other row shapes:
-   - **Stacked** (label above the control). The row stacks itself when it is narrower than a new length token `size.row.stack-below` (280); the author never chooses. In the side-label shape the control column is the smaller of its preferred width and half the row, so a 320 px Properties panel keeps side labels. Slint cannot put `@children` under an `if`, so the row is one component that places its one control box by geometry; the spike `prototypes/ui-directions/spike/row.slint` renders both shapes this way in Slint 1.18 with no binding loop.
+   - **Stacked** (label above the control). The row stacks itself when it is narrower than a new length token `size.row.stack-below` (280); the author never chooses. In the side-label shape the control column is the smaller of its preferred width and half the row, but never below the control's minimum width (C2, U11); a row whose control would not fit stacks. A 320 px Properties panel so keeps side labels for ordinary controls. Slint cannot put `@children` under an `if`, so the row is one component that places its one control box by geometry; the spike `prototypes/ui-directions/spike/row.slint` renders both shapes this way in Slint 1.18 with no binding loop.
    - **`PairRow`**, two number fields side by side with the name inside each field (X and Y, W and H).
 
    The private `Field` components are removed.
@@ -42,7 +42,7 @@ Find is not decided here. The RBS menu search (ADR-0069) and the page filter of 
 ## Consequences
 
 - New library components: `ListRow`, `DialogActions`, `PairRow`; `SettingRow` moves and gains the stacked shape; one new length token. Each component gets the spec's contract (states, keyboard, accessible names).
-- Migration is one screen per pull request with the screenshots rule 16 asks for: the components, Settings, Properties, Sources and Scenes, Mixer, Source settings, the remaining windows. These steps replace steps 2, 3 and 5 of ADR-0094's Migration. `studio.slint` (5,982 lines) is where feature work also lands, so each step stays small.
+- Migration is one screen per pull request with the screenshots rule 16 asks for: the components, Settings, Properties, Sources and Scenes, Mixer, Source settings, the remaining windows. These steps replace steps 2 and 3 of ADR-0094's Migration. Its step 5 and its Enforcement checks (the `ui_patterns` test for long text in a `Text` and icon-only buttons without a tooltip) stand as planned. `studio.slint` (5,982 lines) is where feature work also lands, so each step stays small.
 - Checking: all eight rules are review rules in the `ui-review` skill. Where ADR-0115 is accepted, its `touch` and `duplicate` counts also guard rules 1 and 2, and its `help` count guards ADR-0094's inline help. Rule 8 can later become a registry test. This ADR does not depend on ADR-0115.
 - Reversal: the components can stay even if a rule is withdrawn.
 
@@ -60,3 +60,5 @@ Find is not decided here. The RBS menu search (ADR-0069) and the page filter of 
 Independent review per ADR-0014. Round 1 (2026-11-13, independent AI session, changes requested) reviewed a larger text; its concerns 1 (a to d), 10 (components), 12 (D4 against D5) and 13 are answered here. The full round 1 record is in ADR-0115.
 
 Round 2 (2026-11-13, independent AI session, changes requested on all four texts). The full record is in ADR-0115. Concerns 14, 15 and 16 and the rest of round 1 concern 10 are answered here: the Amends header names A3, ADR-0076 decisions 1 and 3 and the Migration steps, and the frame search is withdrawn (14); the stacked row has a value, a control-column rule and a Slint spike, and `ListRow` uses one `@children` (15); confirmations are a third named kind drawn by `DialogActions`, and the `cancel` count is gone (16); `PropertyRow` is retired in favour of `SettingRow` (round 1, 10).
+
+Round 3 (2026-11-13, independent AI session; this text: approve, with two non-blocking concerns). The full record is in ADR-0115. Both are fixed here: C1 is named in the Amends header and ADR-0094's step 5 and Enforcement checks stand (7); the control column never goes below the control's minimum width (8).
