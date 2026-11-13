@@ -170,6 +170,22 @@ mod tests {
 
     const SLINT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/context_menu.slint");
 
+    /// A panel id with a parameter is read whole, without encoding in Slint.
+    #[test]
+    fn a_target_keeps_a_panel_id_with_a_parameter() {
+        let t = target("h=10&id=rbs.program?canvas=vertical&w=5").expect("parses");
+        assert_eq!(
+            t,
+            [
+                ("h".to_owned(), "10".to_owned()),
+                ("id".to_owned(), "rbs.program?canvas=vertical".to_owned()),
+                ("w".to_owned(), "5".to_owned()),
+            ]
+        );
+        assert_eq!(target("id=rbs.mixer").expect("parses")[0].1, "rbs.mixer");
+        assert!(target("novalue").is_none());
+    }
+
     #[test]
     fn context_menu_slint_has_the_current_slots() {
         let text = std::fs::read_to_string(SLINT).expect("ui/context_menu.slint is readable");
