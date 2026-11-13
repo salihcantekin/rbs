@@ -5342,84 +5342,28 @@ component AppliedShape inherits Rectangle {
     }
 }
 
-// One sample in the Add grid. The picture stays at most the library thumb size and
-// never wider than the column, so two columns fit a narrow panel.
-component LibraryCell inherits Rectangle {
-    in property <string> title;
-    in property <image> thumb;
-    callback act();
-    border-radius: Tokens.radius-sm;
-    background: touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: button;
-    accessible-label: @tr("Add {}", title);
-    accessible-action-default => { root.act(); }
-    VerticalLayout {
-        padding: Tokens.space-1;
-        spacing: Tokens.space-1;
-        alignment: start;
-        well := Rectangle {
-            // A fixed height, not a ratio of the width: the column's width depends on
-            // the grid's height, so a height taken from the width would loop.
-            width: 100%;
-            max-width: Tokens.size-library-thumb-w;
-            height: Tokens.size-library-thumb-h;
-            x: (parent.width - self.width) / 2;
-            border-radius: Tokens.radius-sm;
-            border-width: Tokens.size-border;
-            border-color: Theme.border-subtle;
-            background: Theme.surface-sunken;
-            clip: true;
-            Image {
-                source: root.thumb;
-                width: 100%;
-                height: 100%;
-                image-fit: contain;
-                accessible-role: none;
-            }
-        }
-        Text {
-            text: root.title;
-            color: Theme.text-primary;
-            font-size: Tokens.type-caption-size;
-            overflow: elide;
-            horizontal-alignment: center;
-        }
-    }
-    touch := TouchArea { clicked => { root.act(); } }
-}
-
-// Two columns of one kind of sample. A hidden kind adds no row.
-component SampleGrid inherits HorizontalLayout {
+// One kind of sample as a list: a ListRow per sample with its picture at the start
+// (owner decision 2026-11-13, medium picture). A hidden kind adds no row.
+component SampleGrid inherits VerticalLayout {
     in property <bool> frames;
-    spacing: Tokens.size-field-gap;
     // Spacing stays 0: a sample of the other kind is an empty layout and must not
-    // open a gap. A shown cell pads itself.
-    VerticalLayout {
-        horizontal-stretch: 1;
-        spacing: 0px;
-        alignment: start;
-        for s in Studio.library-samples: VerticalLayout {
-            if s.frame == root.frames && s.id != "lower-third" && Math.mod(s.slot, 2) == 0: VerticalLayout {
-                padding-bottom: Tokens.space-1;
-                LibraryCell {
-                    title: s.name;
-                    thumb: s.thumb;
-                    act => { Studio.add-sample(s.id); }
-                }
-            }
-        }
-    }
-    VerticalLayout {
-        horizontal-stretch: 1;
-        spacing: 0px;
-        alignment: start;
-        for s in Studio.library-samples: VerticalLayout {
-            if s.frame == root.frames && s.id != "lower-third" && Math.mod(s.slot, 2) == 1: VerticalLayout {
-                padding-bottom: Tokens.space-1;
-                LibraryCell {
-                    title: s.name;
-                    thumb: s.thumb;
-                    act => { Studio.add-sample(s.id); }
+    // open a gap.
+    spacing: 0px;
+    alignment: start;
+    for s in Studio.library-samples: VerticalLayout {
+        if s.frame == root.frames && s.id != "lower-third": ListRow {
+            name: s.name;
+            picture: s.thumb;
+            picture-height: Tokens.size-row-picture-md;
+            selectable: false;
+            accessible-name: @tr("Add {}", s.name);
+            activated => { Studio.add-sample(s.id); }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: IconName.plus;
+                    name: @tr("Add {}", s.name);
+                    clicked => { Studio.add-sample(s.id); }
                 }
             }
         }

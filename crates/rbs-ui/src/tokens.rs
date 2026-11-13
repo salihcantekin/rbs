@@ -139,8 +139,6 @@ pub const LENGTHS: &[&str] = &[
     "size.transition.type-min",
     "size.transition.duration",
     "size.transition.compact",
-    "size.library.thumb-w",
-    "size.library.thumb-h",
     "size.target.thumb-w",
     "size.target.thumb-h",
     "size.toast.border",
