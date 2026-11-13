@@ -35,7 +35,7 @@ Today the window ground is `color.surface.base` and a docked panel or Settings c
    | --- | --- | --- | --- | --- |
    | Field line on panel | 1.24 | 1.30 | 1.32 | 1.32 |
    | Field line on overlay (in a popup) | 1.08 | 1.13 | 1.11 | 1.01 |
-   | Field fill against overlay (in a popup) | 1.37 | 1.29 | 1.01 | 1.16 |
+   | Field fill against overlay (in a popup) | 1.33 | 1.29 | 1.00 | 1.16 |
    | Field fill against panel | 1.16 | 1.13 | 1.19 | 1.13 |
    | Hover plate on panel | 1.15 | 1.14 | 1.20 | 1.30 |
    | Hover plate on the window ground | 1.27 | 1.34 | 1.11 | 1.11 |
