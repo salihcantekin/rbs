@@ -75,6 +75,7 @@ use crate::remote_control::ApiTokens;
 use crate::stream_key::{self, KeyStore, MemoryKeyStore};
 use crate::stream_profile::{Protocol, StreamProfile, parse_server};
 use crate::user_session::CollectionSaver;
+use crate::vertical_outputs::VerticalFlags;
 
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
@@ -999,6 +1000,9 @@ pub enum Command {
     /// The vertical canvas's stream settings as saved (`None`: none saved). Sent at
     /// start and after each change.
     SetVerticalStreamProfile(Option<StreamProfile>),
+    /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
+    /// output profile saved them. Sent at start and after each change.
+    SetVerticalFlags(VerticalFlags),
     /// The vertical canvas's panel shows (`true`) or not (ADR-0093 decision 7): its
     /// picture runs only while it shows, so a closed panel costs nothing. Kept while
     /// there is no vertical canvas, for the next one.
@@ -1644,6 +1648,9 @@ pub enum Update {
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
+    /// The control API changed whether Record and Go live also act on the vertical
+    /// outputs (`output.set_with_vertical`, ADR-0111); the UI saves them in the profile.
+    VerticalFlags(VerticalFlags),
     /// A control API client changed the stream settings (not the server or the key);
     /// the UI shows and saves them.
     StreamProfile(StreamProfile),
@@ -2234,6 +2241,9 @@ struct Host {
     vertical: Option<VerticalState>,
     /// The saved vertical canvas could not start again; told once at the next publish.
     vertical_restore_error: Option<String>,
+    /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
+    /// UI last sent them.
+    vertical_flags: VerticalFlags,
     /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
     vertical_shared: Vec<SceneId>,
     vertical_sent: Option<Option<VerticalState>>,
@@ -2732,6 +2742,7 @@ fn start(
         scenes_shown: None,
         vertical: None,
         vertical_restore_error: None,
+        vertical_flags: VerticalFlags::default(),
         vertical_shared: Vec::new(),
         vertical_sent: None,
         master_sent: None,
@@ -3335,6 +3346,12 @@ impl Host {
             }
             Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
             Command::SetVerticalStreamProfile(profile) => self.vertical_stream_profile = profile,
+            Command::SetVerticalFlags(flags) => {
+                if flags != self.vertical_flags {
+                    self.vertical_flags = flags;
+                    self.settings_changed();
+                }
+            }
             Command::SetVerticalPicture(on) => {
                 // Turning the picture off cannot leave anything to report: the node
                 // goes with the next update at the latest.
@@ -3845,7 +3862,18 @@ impl Host {
             profiles: vec![self.profile.to_api()],
             canvas: self.api_canvas(),
             stream: self.stream_profile.as_ref().map(StreamProfile::to_api),
+            vertical: Some(self.vertical_flags.to_api()),
         }
+    }
+
+    /// The canvases a start or stop with `canvas: "all"` acts on, main first
+    /// (ADR-0111 decision 3).
+    fn output_canvases(&self) -> Vec<OutputCanvas> {
+        let mut all = vec![OutputCanvas::Main];
+        if self.vertical.is_some() {
+            all.push(OutputCanvas::Vertical);
+        }
+        all
     }
 
     fn settings_changed(&mut self) {
@@ -8692,14 +8720,28 @@ impl ApiTarget<'_> {
                 })?;
                 Ok(Response::Done(Empty {}))
             }
+            C::OutputSetWithVertical(p) => {
+                let flags = host.vertical_flags.set(p.kind, p.on);
+                if flags != host.vertical_flags {
+                    host.vertical_flags = flags;
+                    notify(Update::VerticalFlags(flags));
+                    host.settings_changed();
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::OutputProfiles => Ok(Response::Profiles(ProfileList {
                 profiles: vec![host.profile.to_api_listing()],
             })),
             C::RecordStart(p) => {
                 check_profile(&p.profile)?;
-                let c = host.api_canvas_of(p.canvas)?;
-                let path = host.recording_file(c);
-                self.record(c, path, false)
+                match p.canvas.unwrap_or_default().single() {
+                    Some(one) => {
+                        let c = host.api_canvas_of(Some(one))?;
+                        let path = host.recording_file(c);
+                        self.record(c, path, false)
+                    }
+                    None => self.start_all(api::OutputKind::Record),
+                }
             }
             C::RecordStartToFile(p) => {
                 check_profile(&p.profile)?;
@@ -8714,7 +8756,10 @@ impl ApiTarget<'_> {
                 self.record(c, path, true)
             }
             C::RecordStop(p) => {
-                let c = host.api_canvas_of(p.canvas)?;
+                let Some(one) = p.target().single() else {
+                    return self.stop_all(api::OutputKind::Record);
+                };
+                let c = host.api_canvas_of(Some(one))?;
                 if host.outs[slot(c)].recording.is_none() {
                     return Err(ApiError::new(ErrorKind::Conflict, "nothing records"));
                 }
@@ -8740,11 +8785,17 @@ impl ApiTarget<'_> {
                 })
             }
             C::StreamStart(p) => {
-                let c = host.api_canvas_of(p.canvas)?;
+                let Some(one) = p.target().single() else {
+                    return self.start_all(api::OutputKind::Stream);
+                };
+                let c = host.api_canvas_of(Some(one))?;
                 self.stream(c)
             }
             C::StreamStop(p) => {
-                let c = host.api_canvas_of(p.canvas)?;
+                let Some(one) = p.target().single() else {
+                    return self.stop_all(api::OutputKind::Stream);
+                };
+                let c = host.api_canvas_of(Some(one))?;
                 if host.outs[slot(c)].streaming.is_none() {
                     return Err(ApiError::new(ErrorKind::Conflict, "nothing streams"));
                 }
@@ -9181,6 +9232,135 @@ impl ApiTarget<'_> {
 }
 
 impl ApiTarget<'_> {
+    /// `record.start` or `stream.start` with `canvas: "all"` (ADR-0111 decision 3): the
+    /// main canvas first, whose refusal fails the call; then the vertical one, whose
+    /// refusal is only its entry. One step on the control thread.
+    fn start_all(&mut self, kind: api::OutputKind) -> Result<Response, ApiError> {
+        let mut outputs = Vec::new();
+        for c in self.host.output_canvases() {
+            let out = &self.host.outs[slot(c)];
+            let (running, ending) = match kind {
+                api::OutputKind::Record => (out.recording.is_some(), out.ending),
+                api::OutputKind::Stream => (out.streaming.is_some(), false),
+            };
+            let entry = |outcome| api::OutputEntry {
+                canvas: c,
+                outcome,
+                video_encoder: None,
+                audio_encoder: None,
+                error: None,
+            };
+            if ending {
+                let e = ApiError::new(ErrorKind::Conflict, "the recording is still ending");
+                if c == OutputCanvas::Main {
+                    return Err(e);
+                }
+                outputs.push(api::OutputEntry {
+                    error: Some(api::OutputError::from(&e)),
+                    ..entry(api::OutputOutcome::Refused)
+                });
+                continue;
+            }
+            if running {
+                outputs.push(entry(api::OutputOutcome::Running));
+                continue;
+            }
+            if kind == api::OutputKind::Stream
+                && c != OutputCanvas::Main
+                && self
+                    .host
+                    .stream_profile_of(c)
+                    .is_none_or(|p| p.server.is_empty())
+            {
+                outputs.push(entry(api::OutputOutcome::NotConfigured));
+                continue;
+            }
+            let started = match kind {
+                api::OutputKind::Record => {
+                    let path = self.host.recording_file(c);
+                    self.record(c, path, false)
+                }
+                api::OutputKind::Stream => self.stream(c),
+            };
+            match started {
+                Ok(Response::RecordStarted(r)) => outputs.push(api::OutputEntry {
+                    video_encoder: Some(r.video_encoder),
+                    audio_encoder: r.audio_encoder,
+                    ..entry(api::OutputOutcome::Started)
+                }),
+                Ok(Response::StreamStarted(r)) => outputs.push(api::OutputEntry {
+                    video_encoder: Some(r.video_encoder),
+                    audio_encoder: r.audio_encoder,
+                    ..entry(api::OutputOutcome::Started)
+                }),
+                Ok(_) => outputs.push(entry(api::OutputOutcome::Started)),
+                Err(e) if c == OutputCanvas::Main => return Err(e),
+                Err(e) => outputs.push(api::OutputEntry {
+                    error: Some(api::OutputError::from(&e)),
+                    ..entry(api::OutputOutcome::Refused)
+                }),
+            }
+        }
+        if !outputs
+            .iter()
+            .any(|o| o.outcome == api::OutputOutcome::Started)
+        {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                match kind {
+                    api::OutputKind::Record => "a recording is already running",
+                    api::OutputKind::Stream => "a stream is already running",
+                },
+            ));
+        }
+        Ok(Response::Outputs(api::OutputsResult { outputs }))
+    }
+
+    /// `record.stop` or `stream.stop` with `canvas: "all"`: stops every running output
+    /// of that kind; `conflict` only when none ran.
+    fn stop_all(&mut self, kind: api::OutputKind) -> Result<Response, ApiError> {
+        let notify = self.notify;
+        let host = &mut *self.host;
+        let mut outputs = Vec::new();
+        for c in host.output_canvases() {
+            let out = &host.outs[slot(c)];
+            let running = match kind {
+                api::OutputKind::Record => out.recording.is_some() && !out.ending,
+                api::OutputKind::Stream => out.streaming.is_some(),
+            };
+            let outcome = if running {
+                match kind {
+                    api::OutputKind::Record => host.stop_recording(c, None, notify),
+                    api::OutputKind::Stream => host.end_stream_asked(c, notify),
+                }
+                api::OutputOutcome::Stopped
+            } else {
+                api::OutputOutcome::NotRunning
+            };
+            outputs.push(api::OutputEntry {
+                canvas: c,
+                outcome,
+                video_encoder: None,
+                audio_encoder: None,
+                error: None,
+            });
+        }
+        if !outputs
+            .iter()
+            .any(|o| o.outcome == api::OutputOutcome::Stopped)
+        {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                match kind {
+                    api::OutputKind::Record => "nothing records",
+                    api::OutputKind::Stream => "nothing streams",
+                },
+            ));
+        }
+        host.publish(notify);
+        Ok(Response::Outputs(api::OutputsResult { outputs }))
+    }
+
     /// Goes live on canvas `c` with its saved stream settings and the key in the key
     /// store.
     fn stream(&mut self, c: OutputCanvas) -> Result<Response, ApiError> {

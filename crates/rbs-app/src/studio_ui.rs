@@ -29,6 +29,7 @@ use rbs_app::studio_host::{
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
 };
+use rbs_app::vertical_outputs::{self, VerticalFlags};
 use rbs_audio::LevelMeter;
 use rbs_core::fault::SourceFault;
 use rbs_record::Link;
@@ -362,6 +363,8 @@ pub struct StudioUi {
     /// The vertical canvas's stream settings as saved (`stream-vertical`); `None`:
     /// none saved, so the vertical stream has no server.
     vertical_stream: Option<StreamProfile>,
+    /// Whether Record and Go live also act on the vertical outputs (ADR-0111).
+    pub vertical_flags: VerticalFlags,
     /// What the Stream section shows for a vertical stream not saved yet.
     no_stream: StreamProfile,
     /// The running stream's server host and when it went live.
@@ -557,6 +560,7 @@ impl StudioUi {
             settings_canvas: OutputCanvas::Main,
             vertical_profile: None,
             vertical_stream: None,
+            vertical_flags: VerticalFlags::default(),
             no_stream: StreamProfile::new(),
             st_live: None,
             st_link: Link::default(),
@@ -3917,6 +3921,10 @@ impl StudioUi {
             .section::<RecordProfile>(RECORDING_VERTICAL)
             .ok()
             .flatten();
+        self.vertical_flags = VerticalFlags::from_section(
+            self.user
+                .section::<VerticalFlags>(vertical_outputs::SECTION),
+        );
         self.vertical_stream = self
             .user
             .section::<StreamProfile>(STREAM_VERTICAL)
@@ -3949,7 +3957,18 @@ impl StudioUi {
     /// Hands the vertical canvas's saved recording and stream settings to the studio
     /// (ADR-0093 decision 6). A section that does not load counts as not saved; one
     /// that loads with a problem is sent as it is, so a start says it cannot be used.
+    /// Keeps and saves whether Record and Go live also act on the vertical outputs
+    /// (ADR-0111), and tells the host.
+    pub fn set_vertical_flags(&mut self, flags: VerticalFlags) {
+        self.vertical_flags = flags;
+        if let Err(why) = self.user.set_section(vertical_outputs::SECTION, &flags) {
+            self.profile_note = format!("The output choice was not saved: {why}");
+        }
+        self.send(Command::SetVerticalFlags(flags));
+    }
+
     fn send_vertical_profiles(&self) {
+        self.send(Command::SetVerticalFlags(self.vertical_flags));
         self.send(Command::SetVerticalProfile(self.vertical_profile.clone()));
         self.send(Command::SetVerticalStreamProfile(
             self.vertical_stream.clone(),
@@ -4552,6 +4571,10 @@ impl StudioUi {
                 }
                 Err(why) => self.stream_note = why,
             },
+            Update::VerticalFlags(flags) => {
+                // A control API client changed the choice: show and save it.
+                self.set_vertical_flags(flags);
+            }
             Update::Profile(p) => {
                 // A control API client changed the settings: show and save them.
                 self.profile = p;

@@ -865,6 +865,10 @@ pub struct Settings {
     /// from servers that do not stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<StreamSettings>,
+    /// Whether Record and Go live also act on the vertical outputs (protocol 1.42;
+    /// read only here, set with `output.set_with_vertical`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical: Option<VerticalWithMain>,
 }
 
 /// What a recording is doing.
@@ -910,6 +914,134 @@ impl OutputCanvas {
             OutputCanvas::Vertical => 1,
         }
     }
+}
+
+/// The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:
+/// one canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,
+/// ADR-0111 decision 3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputTarget {
+    /// The studio's main canvas.
+    #[default]
+    Main,
+    /// The vertical canvas.
+    Vertical,
+    /// Every canvas the studio runs, main first (protocol 1.42).
+    All,
+}
+
+impl OutputTarget {
+    /// The one canvas asked for; `None` for [`OutputTarget::All`].
+    pub const fn single(self) -> Option<OutputCanvas> {
+        match self {
+            OutputTarget::Main => Some(OutputCanvas::Main),
+            OutputTarget::Vertical => Some(OutputCanvas::Vertical),
+            OutputTarget::All => None,
+        }
+    }
+}
+
+impl From<OutputCanvas> for OutputTarget {
+    fn from(c: OutputCanvas) -> Self {
+        match c {
+            OutputCanvas::Main => OutputTarget::Main,
+            OutputCanvas::Vertical => OutputTarget::Vertical,
+        }
+    }
+}
+
+/// What a call with `canvas: "all"` did with one canvas's output (protocol 1.42).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputOutcome {
+    /// Start: it started now.
+    Started,
+    /// Start: it was already starting or running.
+    Running,
+    /// Stop: it was stopped now.
+    Stopped,
+    /// Stop: it was not running (idle, or still ending).
+    NotRunning,
+    /// Start of a vertical stream with no server saved: skipped, not an error.
+    NotConfigured,
+    /// Start: refused; `error` says why.
+    Refused,
+}
+
+/// The error object of a refused entry: the same `code`, `message` and `data.kind` a
+/// single-canvas call would answer with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputError {
+    /// The JSON-RPC error code.
+    pub code: i32,
+    /// What went wrong, in words.
+    pub message: String,
+    /// `{ "kind": ... }`.
+    pub data: OutputErrorData,
+}
+
+/// `data` of an [`OutputError`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputErrorData {
+    /// The machine-readable error.
+    pub kind: crate::error::ErrorKind,
+}
+
+impl From<&crate::error::ApiError> for OutputError {
+    fn from(e: &crate::error::ApiError) -> Self {
+        Self {
+            code: e.kind.code(),
+            message: e.message.clone(),
+            data: OutputErrorData { kind: e.kind },
+        }
+    }
+}
+
+/// One canvas's entry in an `all` answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputEntry {
+    /// The canvas.
+    pub canvas: OutputCanvas,
+    /// What happened.
+    pub outcome: OutputOutcome,
+    /// On `started`: the video encoder's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_encoder: Option<String>,
+    /// On `started`: the audio encoder's name, absent when no audio is encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_encoder: Option<String>,
+    /// On `refused`: why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<OutputError>,
+}
+
+/// The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with
+/// `canvas: "all"` (protocol 1.42): one entry per canvas, main first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputsResult {
+    /// The entries.
+    pub outputs: Vec<OutputEntry>,
+}
+
+/// Which output kind `output.set_with_vertical` changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputKind {
+    /// Recording.
+    Record,
+    /// Stream.
+    Stream,
+}
+
+/// Whether Record and Go live also start and stop the vertical output (protocol 1.42,
+/// ADR-0111 decision 4). A server older than 1.42 has none: main only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerticalWithMain {
+    /// Record also starts and stops the vertical recording.
+    pub record_with_main: bool,
+    /// Go live also starts and stops the vertical stream.
+    pub stream_with_main: bool,
 }
 
 /// A recording state of a canvas other than the main one (`record.canvas_state`,
