@@ -734,6 +734,29 @@ impl ResolvedTheme {
     pub fn high_contrast(&self) -> bool {
         self.base == Base::HighContrast
     }
+
+    /// True when docked panels and Settings cards draw their outline: the panel colour
+    /// (`color.surface.raised`) is closer than [`PANEL_OUTLINE_BELOW`] to the window ground
+    /// (`color.surface.base`), so colour alone would not separate them (ADR-0112
+    /// decision 3). Also true when either colour is missing.
+    pub fn panel_outline(&self) -> bool {
+        match (
+            self.colors.get("color.surface.raised"),
+            self.colors.get("color.surface.base"),
+        ) {
+            (Some(panel), Some(ground)) => panel_outline(*panel, *ground),
+            _ => true,
+        }
+    }
+}
+
+/// Below this contrast between a panel and the window ground, the panel keeps its outline
+/// (ADR-0112 decision 3). The built-in Dark and Light themes are above it.
+pub const PANEL_OUTLINE_BELOW: f64 = 1.15;
+
+/// Whether a panel of colour `panel` on a ground of colour `ground` needs its outline.
+pub fn panel_outline(panel: Color, ground: Color) -> bool {
+    panel.contrast(ground) < PANEL_OUTLINE_BELOW
 }
 
 impl Tokens {

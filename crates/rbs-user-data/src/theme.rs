@@ -160,7 +160,7 @@ fn light() -> String {
 
 impl Document for Appearance {
     const KIND: &'static str = "appearance";
-    const FORMAT: u32 = 3;
+    const FORMAT: u32 = 4;
 
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
@@ -174,6 +174,8 @@ impl Document for Appearance {
                     .or_insert(toml::Value::Integer(1));
                 Ok(())
             }
+            // Format 4 adds the density "roomy" (ADR-0112); a format 3 file reads as is.
+            3 => Ok(()),
             other => Err(format!("format {other} cannot be read")),
         }
     }
@@ -198,7 +200,8 @@ impl Document for Appearance {
         let density = match f.density.as_str() {
             "regular" => rbs_ui::tokens::Density::Regular,
             "compact" => rbs_ui::tokens::Density::Compact,
-            d => return Err(format!("density {d:?} is not regular or compact")),
+            "roomy" => rbs_ui::tokens::Density::Roomy,
+            d => return Err(format!("density {d:?} is not regular, compact or roomy")),
         };
         let Some(compact_steps) = u8::try_from(f.compact_steps)
             .ok()
@@ -232,6 +235,7 @@ impl Document for Appearance {
             density: match self.density {
                 rbs_ui::tokens::Density::Regular => "regular",
                 rbs_ui::tokens::Density::Compact => "compact",
+                rbs_ui::tokens::Density::Roomy => "roomy",
             }
             .into(),
             compact_steps: i64::from(self.compact_steps),
@@ -284,6 +288,27 @@ theme = \"builtin:light\"
         assert_eq!(read.format, 1);
         assert_eq!(read.document.density, rbs_ui::tokens::Density::Regular);
         assert_eq!(read.document.compact_steps, 1);
-        assert_eq!(Appearance::FORMAT, 3);
+        assert_eq!(Appearance::FORMAT, 4);
+    }
+
+    #[test]
+    fn roomy_spacing_round_trips_and_a_format_3_file_still_reads() {
+        let a = Appearance {
+            density: rbs_ui::tokens::Density::Roomy,
+            ..Appearance::default()
+        };
+        let body = a.to_body().unwrap();
+        assert_eq!(body["density"].as_str(), Some("roomy"));
+        assert_eq!(Appearance::from_body(body).unwrap(), a);
+
+        let text = "\
+format = 3
+kind = \"appearance\"
+density = \"compact\"
+compact_steps = 2
+";
+        let read = document::parse::<Appearance>(text).unwrap();
+        assert_eq!(read.document.density, rbs_ui::tokens::Density::Compact);
+        assert_eq!(read.document.compact_steps, 2);
     }
 }

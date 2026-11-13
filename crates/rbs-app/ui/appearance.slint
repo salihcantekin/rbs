@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, Select, Slider, TextField, Toggle, ValueReadout } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, SegmentedControl, Select, Slider, TextField, Toggle, ValueReadout } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -47,8 +47,9 @@ export global Appearance {
     // Usable themes only, for the pickers, and their list positions.
     in property <[string]> usable-names;
     in property <bool> follow-system: true;
-    // Compact spacing: spacing, control height and panel gaps step down for every theme.
-    in property <bool> compact: false;
+    // Spacing for every theme (ADR-0112): 0 regular, 1 compact (spacing, control height
+    // and panel gaps step down), 2 roomy (default control and panel gaps step up).
+    in property <int> density: 0;
     // Stops 1, 2 and 3. Kept while compact is off.
     in property <int> compact-steps: 1;
     // Positions in `usable-names`.
@@ -122,7 +123,7 @@ export global Appearance {
     // 0 dark, 1 light, 2 the one theme.
     callback pick(int, int);
     callback set-follow-system(bool);
-    callback set-compact(bool);
+    callback set-density(int);
     callback set-compact-steps(int);
     callback select(int);
     callback use-selected();
@@ -823,16 +824,16 @@ export component AppearanceSettings inherits Rectangle {
             }
             SettingRow {
                 divider: false;
-                label: @tr("Compact spacing");
-                help: @tr("Packs spacing, control height and panel gaps for every theme. Off uses each theme as it is saved.");
-                fill: false;
-                Toggle {
-                    label: @tr("Compact spacing");
-                    checked: Appearance.compact;
-                    toggled(on) => { Appearance.set-compact(on); }
+                label: @tr("Spacing");
+                help: @tr("Compact packs more in; roomy gives larger controls. Applies to every theme.");
+                SegmentedControl {
+                    label: @tr("Spacing");
+                    options: [@tr("Regular"), @tr("Compact"), @tr("Roomy")];
+                    index: Appearance.density;
+                    selected(i) => { Appearance.set-density(i); }
                 }
             }
-            if Appearance.compact: SettingRow {
+            if Appearance.density == 1: SettingRow {
                 label: @tr("Amount");
                 help: @tr("1 is the next smaller step. 3 is as tight as these tokens can go.");
                 HorizontalLayout {
@@ -861,8 +862,8 @@ export component AppearanceSettings inherits Rectangle {
                     }
                 }
             }
-            if Appearance.compact: SettingsNotice {
-                text: @tr("This tightens spacing for every theme. Theme files are not changed. Turn this off to use each theme's own spacing.");
+            if Appearance.density != 0: SettingsNotice {
+                text: @tr("This changes spacing for every theme. Theme files are not changed. Choose Regular to use each theme's own spacing.");
             }
         }
         // The theme list on the left, the editor on the right (owner's choice, ADR-0057

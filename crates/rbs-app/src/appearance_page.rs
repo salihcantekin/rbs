@@ -88,8 +88,9 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         let shown = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
         choose(app, page, |ui, _now| ui.set_follow_system(on, shown))
     });
-    on!(on_set_compact, |app, page, _file, on: bool| {
-        choose(app, page, |ui, now| ui.set_compact(on, now))
+    on!(on_set_density, |app, page, _file, index: i32| {
+        let density = density_of(index);
+        choose(app, page, |ui, now| ui.set_density(density, now))
     });
     on!(on_set_compact_steps, |app, page, _file, steps: i32| {
         let steps = u8::try_from(steps).unwrap_or(1);
@@ -285,6 +286,23 @@ enum Change {
     Page,
     /// The look of every window too.
     Look,
+}
+
+/// The Spacing choice on the Appearance page, in its order: Regular, Compact, Roomy.
+fn density_of(index: i32) -> rbs_ui::tokens::Density {
+    match index {
+        1 => rbs_ui::tokens::Density::Compact,
+        2 => rbs_ui::tokens::Density::Roomy,
+        _ => rbs_ui::tokens::Density::Regular,
+    }
+}
+
+fn density_index(density: rbs_ui::tokens::Density) -> i32 {
+    match density {
+        rbs_ui::tokens::Density::Regular => 0,
+        rbs_ui::tokens::Density::Compact => 1,
+        rbs_ui::tokens::Density::Roomy => 2,
+    }
 }
 
 fn edited(changed: bool) -> Change {
@@ -689,7 +707,7 @@ fn show(ctx: &Ctx, app: &App) {
         g.set_usable_names(m)
     });
     g.set_follow_system(ui.choice.mode == AppearanceMode::System);
-    g.set_compact(ui.choice.density == rbs_ui::tokens::Density::Compact);
+    g.set_density(density_index(ui.choice.density));
     g.set_compact_steps(i32::from(ui.choice.compact_steps));
     g.set_dark_index(pos(&ui.choice.dark, Base::Dark));
     g.set_light_index(pos(&ui.choice.light, Base::Light));

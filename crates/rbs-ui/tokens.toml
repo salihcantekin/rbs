@@ -13,10 +13,10 @@ format = 2
 "color.caption.close-text" = "#ffffff"
 
 [themes.dark]
-"color.surface.base" = "#121417"
-"color.surface.raised" = "#1b1e23"
-"color.surface.overlay" = "#252931"
-"color.surface.sunken" = "#0c0e10"
+"color.surface.base" = "#0b0b0d"
+"color.surface.raised" = "#1c1d21"
+"color.surface.overlay" = "#27282d"
+"color.surface.sunken" = "#0f1012"
 # Notice card: a blue fill and a light edge, so it does not blend into the grey panels.
 "color.toast.surface" = "#1a2030"
 "color.toast.edge" = "#d6e4ff"
@@ -24,7 +24,7 @@ format = 2
 "color.text.secondary" = "#a8afbb"
 "color.text.disabled" = "#6b717c"
 "color.text.inverse" = "#0c0e10"
-"color.border.subtle" = "#2a2f37"
+"color.border.subtle" = "#303136"
 "color.border.strong" = "#6e7683"
 "color.border.focus" = "#6ea8ff"
 "color.accent" = "#5b9cff"
@@ -41,17 +41,17 @@ format = 2
 "color.meter.clip" = "#c38bf0"
 
 [themes.light]
-"color.surface.base" = "#f5f6f8"
+"color.surface.base" = "#ececf0"
 "color.surface.raised" = "#ffffff"
-"color.surface.overlay" = "#e8ebf0"
-"color.surface.sunken" = "#e9ebef"
+"color.surface.overlay" = "#e0e1e7"
+"color.surface.sunken" = "#f1f1f4"
 "color.toast.surface" = "#ffffff"
 "color.toast.edge" = "#0a4db8"
 "color.text.primary" = "#15171a"
 "color.text.secondary" = "#4f555e"
 "color.text.disabled" = "#9aa0a8"
 "color.text.inverse" = "#ffffff"
-"color.border.subtle" = "#dde0e5"
+"color.border.subtle" = "#d0d3da"
 "color.border.strong" = "#7a808a"
 "color.border.focus" = "#1f6feb"
 "color.accent" = "#1f6feb"
@@ -118,7 +118,7 @@ format = 2
 "size.color.code" = 128
 "radius.sm" = 4
 "radius.md" = 6
-"radius.lg" = 10
+"radius.lg" = 12
 "size.border" = 1
 "size.focus-ring" = 2
 "size.icon.box" = 16

@@ -565,6 +565,10 @@ pub enum Density {
     /// Spacing, control size and the panel gaps step down. The smallest step is
     /// unchanged. No new pixel value is introduced except a token's floor.
     Compact,
+    /// The default control takes the large control height and the three panel gaps
+    /// take the next larger spacing step (ADR-0112 decision 9). `space.*`,
+    /// `size.control.sm` and `size.control.lg` are not touched.
+    Roomy,
 }
 
 /// The tightest compact stop. Stop 1 is the next smaller step.
@@ -584,6 +588,10 @@ pub fn apply_density(
     density: Density,
     steps: u8,
 ) {
+    if density == Density::Roomy {
+        apply_roomy(length);
+        return;
+    }
     if density != Density::Compact {
         return;
     }
@@ -611,6 +619,27 @@ pub fn apply_density(
     ) && field > section
     {
         length.insert("size.field.gap".to_owned(), section);
+    }
+}
+
+/// Roomy (ADR-0112 decision 9): `size.control.md` takes the resolved `size.control.lg`,
+/// and each panel gap takes the next larger resolved `space.*` value (unchanged when
+/// none is larger). Larger values keep every "must not be smaller than" rule.
+fn apply_roomy(length: &mut std::collections::BTreeMap<String, f32>) {
+    if let Some(lg) = length.get("size.control.lg").copied() {
+        length.insert("size.control.md".to_owned(), lg);
+    }
+    let mut spaces: Vec<f32> = SPACE_STEPS
+        .iter()
+        .filter_map(|key| length.get(*key).copied())
+        .collect();
+    spaces.sort_by(f32::total_cmp);
+    for key in PANEL_STEPS {
+        if let Some(value) = length.get(*key).copied()
+            && let Some(larger) = spaces.iter().find(|step| **step > value)
+        {
+            length.insert((*key).to_owned(), *larger);
+        }
     }
 }
 
@@ -662,6 +691,41 @@ fn step_down(length: &mut std::collections::BTreeMap<String, f32>, keys: &[&str]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn roomy_enlarges_the_default_control_and_the_panel_gaps_only() {
+        let file = Tokens::built_in().expect("built-in tokens");
+        let mut length = file.length.clone();
+        apply_density(&mut length, Density::Roomy, 1);
+        assert_eq!(length["size.control.md"], file.length["size.control.lg"]);
+        assert_eq!(length["size.panel.pad"], 16.0);
+        assert_eq!(length["size.section.gap"], 24.0);
+        assert_eq!(length["size.field.gap"], 12.0);
+        for key in SPACE_STEPS
+            .iter()
+            .chain(["size.control.sm", "size.control.lg"].iter())
+        {
+            assert_eq!(length[*key], file.length[*key], "{key} must not change");
+        }
+        let changed: Vec<&String> = length
+            .keys()
+            .filter(|k| length[*k] != file.length[*k])
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                "size.control.md",
+                "size.field.gap",
+                "size.panel.pad",
+                "size.section.gap"
+            ]
+        );
+        // A gap already at the largest step stays there.
+        let mut top = file.length.clone();
+        top.insert("size.panel.pad".to_owned(), 32.0);
+        apply_density(&mut top, Density::Roomy, 1);
+        assert_eq!(top["size.panel.pad"], 32.0);
+    }
 
     #[test]
     fn compact_uses_the_next_smaller_spacing_and_control_size() {
@@ -772,7 +836,7 @@ mod tests {
         let other_live = base.replacen("#c4262e", "#ff0000", 1);
         assert!(Tokens::parse(&other_live).unwrap_err().0.contains("fixed"));
 
-        let alpha = base.replacen("\"#121417\"", "\"#12141780\"", 1);
+        let alpha = base.replacen("\"#0b0b0d\"", "\"#0b0b0d80\"", 1);
         assert!(Tokens::parse(&alpha).unwrap_err().0.contains("#rrggbb"));
 
         let thin_ring = base.replacen("\"size.focus-ring\" = 2", "\"size.focus-ring\" = 0", 1);
