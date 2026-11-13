@@ -107,6 +107,10 @@ pub mod enc_field {
 /// The vertical canvas's picture panel (ADR-0093 decision 7).
 pub const VERTICAL_PANEL: &str = "rbs.program?canvas=vertical";
 
+/// Marks the box requests of the vertical picture, so the studio's answers reach its
+/// editing state and not the main picture's (both number from 1).
+const VERTICAL_SEQ: u64 = 1 << 62;
+
 /// Each picture panel's state, with the codes of [`preview_state`].
 #[derive(Clone, Copy)]
 pub struct PictureStates {
@@ -248,6 +252,13 @@ pub struct StudioUi {
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
     mark_buf: Vec<Mark>,
     marks: Rc<VecModel<MarkData>>,
+    /// The same on the vertical canvas's picture (ADR-0093 decision 4). Its requests
+    /// carry [`VERTICAL_SEQ`] so their answers find it.
+    vedit: PreviewEdit,
+    /// The vertical picture shows in the main window.
+    vertical_shown: bool,
+    vmark_buf: Vec<Mark>,
+    vertical_marks: Rc<VecModel<MarkData>>,
     kind_list: Vec<SourceKind>,
     kinds: Rc<VecModel<KindData>>,
     /// The Source tab's list (ADR-0077): what the selected source's kind can capture,
@@ -516,6 +527,10 @@ impl StudioUi {
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
+            vedit: PreviewEdit::default(),
+            vertical_shown: false,
+            vmark_buf: Vec::with_capacity(MAX_MARKS),
+            vertical_marks: Rc::new(VecModel::default()),
             kind_list: Vec::new(),
             kinds: Rc::new(VecModel::default()),
             source_targets: Rc::new(VecModel::default()),
@@ -636,6 +651,7 @@ impl StudioUi {
         g.set_library_look_names(ModelRc::new(VecModel::from(library_look_names())));
         g.set_library_samples(ModelRc::from(self.library_samples.clone()));
         g.set_marks(ModelRc::from(self.marks.clone()));
+        g.set_vertical_marks(ModelRc::from(self.vertical_marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_source_settings(ModelRc::from(self.source_settings.clone()));
@@ -2040,7 +2056,7 @@ impl StudioUi {
     /// the picture panel's drags go through [`PreviewEdit`], numbered).
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
         self.deleted.clear();
-        self.send_box(0, id, SourceBox::new([x, y], [w, h]), 0);
+        self.send_box(0, id, SourceBox::new([x, y], [w, h]), 0, OutputCanvas::Main);
     }
 
     /// Source pixels cut from each edge of a video source's picture (the Properties
@@ -2227,19 +2243,29 @@ impl StudioUi {
             .and_then(|r| r.layout.map(|l| l.style))
     }
 
-    fn send_box(&mut self, seq: u64, id: i32, b: SourceBox, gesture: u64) {
+    fn send_box(&mut self, seq: u64, id: i32, b: SourceBox, gesture: u64, canvas: OutputCanvas) {
         if self.host.is_none() {
             // Nothing will answer: forget what the picture panel has on its way.
             self.edit.reset();
+            self.vedit.reset();
             return;
         }
         let (position, size) = (b.position, b.size);
+        // The two pictures count requests and drags from 1 each: the vertical one's
+        // are marked, so answers find it and its drags never join a main one's undo
+        // step (gesture 0, a step of its own, stays 0).
+        let (seq, gesture) = match canvas {
+            OutputCanvas::Main => (seq, gesture),
+            OutputCanvas::Vertical if gesture == 0 => (seq | VERTICAL_SEQ, 0),
+            OutputCanvas::Vertical => (seq | VERTICAL_SEQ, gesture | VERTICAL_SEQ),
+        };
         self.send(Command::SetSourceBox {
             seq,
             gesture,
             id: SourceId::from_raw(id as u32),
             position,
             size,
+            canvas,
         });
     }
 
@@ -2287,7 +2313,7 @@ impl StudioUi {
             Effect::Select(id) => self.selected = id,
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
-                self.send_box(seq, id, b, gesture);
+                self.send_box(seq, id, b, gesture, OutputCanvas::Main);
             }
             Effect::SendCrop(seq, id, crop, gesture) => {
                 self.deleted.clear();
@@ -2305,6 +2331,108 @@ impl StudioUi {
             }
         }
         self.refresh_marks();
+    }
+
+    /// What an edit on the vertical picture asks of the studio. It has no crop.
+    fn run_vertical(&mut self, effect: Effect) {
+        match effect {
+            Effect::None | Effect::SendCrop(..) => {}
+            Effect::Select(id) => self.selected = id,
+            Effect::Send(seq, id, b, gesture) => {
+                self.deleted.clear();
+                self.send_box(seq, id, b, gesture, OutputCanvas::Vertical);
+            }
+        }
+        self.refresh_marks();
+    }
+
+    /// The vertical canvas's size in pixels, while it exists.
+    fn vertical_px(&self) -> Option<[f32; 2]> {
+        self.vertical
+            .map(|v| [v.size.width as f32, v.size.height as f32])
+    }
+
+    /// The video sources as the vertical picture places them, bottom first; locked
+    /// ones only with `locked`.
+    fn placed_vertical(&self, locked: bool) -> Vec<Placed> {
+        let mut v: Vec<Placed> = self
+            .rows
+            .iter()
+            .filter(|r| locked || !r.locked)
+            .filter_map(|r| {
+                let l = r.vertical_layout?;
+                Some(Placed {
+                    id: r.id.get() as i32,
+                    at: SourceBox::new(l.position, l.size),
+                    crop: [l.crop.left, l.crop.top, l.crop.right, l.crop.bottom],
+                    picture: r.picture,
+                })
+            })
+            .collect();
+        v.reverse();
+        v
+    }
+
+    /// A press on the vertical picture (its coordinates, its size `size`).
+    pub fn vertical_press(&mut self, at: [f32; 2], size: [f32; 2], shift: bool, no_snap: bool) {
+        let Some(canvas) = self.vertical_px() else {
+            return;
+        };
+        self.vedit.set_panel(size[0], size[1]);
+        let keys = DragKeys {
+            free: shift,
+            no_snap,
+            crop: false,
+        };
+        let placed = self.placed_vertical(false);
+        let e = self.vedit.press(at, canvas, &placed, self.selected, keys);
+        self.run_vertical(e);
+    }
+
+    pub fn vertical_drag(&mut self, at: [f32; 2]) {
+        let Some(canvas) = self.vertical_px() else {
+            return;
+        };
+        let e = self.vedit.drag_to(at, canvas);
+        self.run_vertical(e);
+    }
+
+    pub fn vertical_release(&mut self) {
+        self.vedit.release();
+        self.refresh_marks();
+    }
+
+    pub fn vertical_nudge(&mut self, dx: f32, dy: f32) {
+        let placed = self.placed_vertical(false);
+        let e = self.vedit.nudge(&placed, self.selected, dx, dy);
+        self.run_vertical(e);
+    }
+
+    /// The vertical picture's size in the main window, from the layout; `None` while
+    /// it does not show there (its marks are then not worked out, P13).
+    pub fn set_vertical_picture_size(&mut self, size: Option<[f32; 2]>) {
+        let shown = size.is_some();
+        let changed =
+            shown != self.vertical_shown || size.is_some_and(|[w, h]| self.vedit.panel() != [w, h]);
+        self.vertical_shown = shown;
+        if let Some([w, h]) = size {
+            self.vedit.set_panel(w, h);
+        }
+        if changed {
+            self.refresh_marks();
+        }
+    }
+
+    /// The selection as marks on the vertical picture.
+    #[cfg_attr(
+        not(any(target_os = "macos", windows)),
+        allow(
+            dead_code,
+            reason = "no preview layer here; the toolkit draws the marks"
+        )
+    )]
+    pub fn vertical_marks(&self) -> &[Mark] {
+        &self.vmark_buf
     }
 
     /// A press on the picture panel (panel coordinates, its size `size`).
@@ -2369,22 +2497,19 @@ impl StudioUi {
         let mut buf = std::mem::take(&mut self.mark_buf);
         self.edit
             .marks(self.canvas_px(), &placed, self.selected, &mut buf);
-        let data: Vec<MarkData> = buf
-            .iter()
-            .map(|m| MarkData {
-                x: m.rect.x,
-                y: m.rect.y,
-                w: m.rect.w,
-                h: m.rect.h,
-                kind: match m.kind {
-                    MarkKind::Outline => 0,
-                    MarkKind::HandleBorder => 1,
-                    MarkKind::HandleFill => 2,
-                },
-            })
-            .collect();
+        set_rows(&self.marks, mark_data(&buf));
         self.mark_buf = buf;
-        set_rows(&self.marks, data);
+        // The vertical picture shows the same selection.
+        let mut buf = std::mem::take(&mut self.vmark_buf);
+        match self.vertical_px().filter(|_| self.vertical_shown) {
+            Some(canvas) => {
+                let placed = self.placed_vertical(false);
+                self.vedit.marks(canvas, &placed, self.selected, &mut buf);
+            }
+            None => buf.clear(),
+        }
+        set_rows(&self.vertical_marks, mark_data(&buf));
+        self.vmark_buf = buf;
     }
 
     pub fn undo_delete(&mut self) {
@@ -4390,6 +4515,7 @@ impl StudioUi {
             Update::Started { .. } | Update::Failed(_) | Update::Canvas { .. }
         ) {
             self.edit.reset();
+            self.vedit.reset();
         }
         if self.monitor_update(&u) {
             return out;
@@ -4404,6 +4530,10 @@ impl StudioUi {
             } => self.source_picture(adapter, target, picture),
             #[cfg(feature = "fault-injection")]
             Update::Recovered { .. } => {}
+            Update::BoxPlaced { seq, ok } if seq & VERTICAL_SEQ != 0 => {
+                let next = self.vedit.answered(seq & !VERTICAL_SEQ, ok);
+                self.run_vertical(next);
+            }
             Update::BoxPlaced { seq, ok } => {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
@@ -4521,8 +4651,13 @@ impl StudioUi {
                 } else if self.vertical.is_none() && self.vertical_known {
                     out.vertical_added = true;
                 }
+                // A drag on the old canvas gets no answer it can use.
+                if self.vertical.map(|o| (o.canvas, o.size)) != v.map(|n| (n.canvas, n.size)) {
+                    self.vedit.reset();
+                }
                 self.vertical = v;
                 self.vertical_known = true;
+                self.refresh_marks();
             }
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
@@ -4551,8 +4686,10 @@ impl StudioUi {
                 if studio != self.studio_mode {
                     self.studio_mode = studio;
                     out.studio_mode_started = studio;
-                    // The picture handles move between the panels.
+                    // The picture handles move between the panels; the vertical
+                    // picture is not edited in studio mode.
                     self.selected = -1;
+                    self.vedit.reset();
                     self.refresh_marks();
                 }
                 self.scene_list = Some(list);
@@ -5517,6 +5654,24 @@ struct HeardFact {
 }
 
 /// Rows are replaced only where they changed, so unchanged rows keep their views.
+/// Marks as the toolkit draws them.
+fn mark_data(marks: &[Mark]) -> Vec<MarkData> {
+    marks
+        .iter()
+        .map(|m| MarkData {
+            x: m.rect.x,
+            y: m.rect.y,
+            w: m.rect.w,
+            h: m.rect.h,
+            kind: match m.kind {
+                MarkKind::Outline => 0,
+                MarkKind::HandleBorder => 1,
+                MarkKind::HandleFill => 2,
+            },
+        })
+        .collect()
+}
+
 fn set_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
     if model.row_count() != rows.len() {
         model.set_vec(rows);

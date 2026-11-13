@@ -81,6 +81,11 @@ impl PreviewEdit {
         self.panel = [w, h];
     }
 
+    /// The panel's size as last set.
+    pub fn panel(&self) -> [f32; 2] {
+        self.panel
+    }
+
     /// Forgets every drag and every box on its way (the studio stopped or started: no
     /// answer will come for what was sent).
     pub fn reset(&mut self) {

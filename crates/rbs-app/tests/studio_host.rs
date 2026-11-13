@@ -239,6 +239,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         id: camera,
         position: [10.0, 20.0],
         size: [640.0, 360.0],
+        canvas: rbs_app::studio_host::OutputCanvas::Main,
     });
     let rows = rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.position == [10.0, 20.0])
@@ -258,6 +259,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         id: camera,
         position: [10.0, 20.0],
         size: [640.0, 360.0],
+        canvas: rbs_app::studio_host::OutputCanvas::Main,
     });
     assert!(placed_answer(&rx, 2));
     let placed = rows[0].layout.unwrap();
@@ -288,6 +290,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         id: camera,
         position: [0.0, 0.0],
         size: [0.0, 360.0],
+        canvas: rbs_app::studio_host::OutputCanvas::Main,
     });
     next(&rx, |u| match u {
         Update::Error(_) => Some(()),
@@ -340,6 +343,7 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
             id: camera,
             position: [x, 0.0],
             size: start.size,
+            canvas: rbs_app::studio_host::OutputCanvas::Main,
         });
     }
     host.send(Command::SetSourceBox {
@@ -348,6 +352,7 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
         id: camera,
         position: [30.0, 0.0],
         size: [320.0, 180.0],
+        canvas: rbs_app::studio_host::OutputCanvas::Main,
     });
     rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.size == [320.0, 180.0])
