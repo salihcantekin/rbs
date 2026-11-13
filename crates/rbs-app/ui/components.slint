@@ -2455,6 +2455,259 @@ export component InfoHint inherits Rectangle {
 // Error keeps the outline so it reads without colour; the message wraps instead of
 // being cut. Use it for notes, validation and "why is this disabled" lines.
 
+// One item of a list (ADR-0114 decision 2): an icon or a short lead text (a scene's
+// number), the name, an optional note under it, and the row's own trailing content
+// (state icons, a `more` button) as its children. The row owns what every list row
+// shares: hover and selection plates, the focus ring, the context-menu key and right
+// click, rename in place, the remove question asked in place, and drag and drop
+// feedback. What an item does is its owner's: the row only reports it.
+export component ListRow inherits Rectangle {
+    // Leading part: `lead` text when set, otherwise `icon` when `has-icon`.
+    in property <string> lead;
+    in property <bool> has-icon;
+    in property <IconName> icon;
+    // A Checkbox before the name for the item's on/off state, where that state is
+    // what the list is about (a filter; owner decision 2026-11-13, ADR-0114 review).
+    in property <bool> has-check;
+    in property <bool> checked;
+    in property <string> check-label;
+    callback check-toggled(bool);
+    in property <string> name;
+    // A line under the name (why a source is not running); empty for one line.
+    in property <string> note;
+    // The note is a short word or two beside the name instead (a device's kind in a
+    // picker), so the row keeps one line.
+    in property <bool> note-beside;
+    // A warning mark before the name; the note says why (U7: never colour alone).
+    in property <bool> warning;
+    // The name and icon in the disabled colour (a hidden source).
+    in property <bool> dimmed;
+    // The item is the chosen one: a plate, an accent border and the title weight.
+    in property <bool> selected;
+    in property <string> accessible-name;
+    in property <string> accessible-hint;
+    // Rename in place: a text field replaces the name until Return or Escape.
+    in-out property <bool> editing;
+    in property <string> edit-label;
+    // Remove asked in place: the row shows the question, a danger button and Cancel.
+    // Return, Delete or the danger button confirm; Escape or Cancel go back.
+    in-out property <bool> confirm;
+    in property <string> confirm-question;
+    in property <string> confirm-name;
+    // Drag to reorder: the row can be dragged while `drag-data` is set and
+    // `allow-drag`; another row dragged over it shows a line along its top when
+    // `can-take` accepts the data.
+    in property <bool> allow-drag;
+    in property <data-transfer> drag-data;
+    in property <bool> drop-enabled;
+    out property <bool> hovered: touch.has-hover;
+    out property <bool> keyboard-focus: focus.ring;
+    callback activated();
+    callback double-clicked();
+    // Right click, the Menu key or Shift+F10: where the menu opens, in row coordinates.
+    callback menu-asked(Point);
+    callback renamed(string);
+    callback delete-asked();
+    callback confirmed();
+    callback dragging(bool);
+    pure callback can-take(data-transfer) -> bool;
+    callback took(data-transfer);
+    // Keys the owner handles (F2 and the confirm keys are the row's own).
+    callback key(KeyEvent) -> EventResult;
+    public function focus-row() { focus.focus(); }
+    public function focus-pointer() { focus.focus-pointer(); }
+    property <bool> drop-here: drop.has-drag && root.drop-enabled && root.taking;
+    property <bool> taking;
+    property <color> ink: root.dimmed ? Theme.text-disabled : Theme.text-primary;
+    changed confirm => { if root.confirm { focus.focus(); } }
+    height: root.note != "" && !root.note-beside ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    border-width: root.selected ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
+    background: root.selected || touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: list-item;
+    accessible-label: root.accessible-name != "" ? root.accessible-name : root.name;
+    accessible-description: root.accessible-hint;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.activated(); }
+    focus := RingFocus {
+        focus-on-click: false;
+        key-pressed(e) => {
+            if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
+            if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
+                root.confirmed();
+                return accept;
+            }
+            if root.confirm { return reject; }
+            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
+            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
+                root.menu-asked({ x: Tokens.space-2, y: root.height });
+                return accept;
+            }
+            if e.text == Key.F2 && root.edit-label != "" { root.editing = true; return accept; }
+            if e.text == Key.Delete || e.text == Key.Backspace { root.delete-asked(); return accept; }
+            root.key(e)
+        }
+    }
+    drop := DropArea {
+        // Off unless a row of this list is dragged, so a dragged panel reaches the dock.
+        enabled: root.drop-enabled;
+        can-drop(e) => {
+            root.taking = root.can-take(e.data);
+            return root.taking ? DragAction.move : DragAction.none;
+        }
+        dropped(e) => {
+            if !root.can-take(e.data) { return DragAction.none; }
+            root.took(e.data);
+            return DragAction.move;
+        }
+    }
+    DragArea {
+        allow-move: root.allow-drag && !root.confirm && !root.editing;
+        data: root.drag-data;
+        changed dragging => { root.dragging(self.dragging); }
+        touch := TouchArea {
+            enabled: !root.confirm;
+            clicked => { focus.focus-pointer(); root.activated(); }
+            double-clicked => { root.double-clicked(); }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    focus.focus-pointer();
+                    root.menu-asked({ x: self.mouse-x, y: self.mouse-y });
+                }
+            }
+            HorizontalLayout {
+                padding-left: Tokens.space-2;
+                padding-right: Tokens.space-1;
+                spacing: Tokens.space-2;
+                if root.lead != "": Text {
+                    min-width: Tokens.size-icon-box;
+                    text: root.lead;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                if root.lead == "" && root.has-icon: VerticalLayout {
+                    alignment: center;
+                    Icon { name: root.icon; ink: root.ink; }
+                }
+                if root.has-check: VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    Checkbox {
+                        width: Tokens.size-icon-box;
+                        checked: root.checked;
+                        accessible-label: root.check-label;
+                        toggled(on) => { root.check-toggled(on); }
+                    }
+                }
+                if root.editing: VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    TextField {
+                        label: root.edit-label;
+                        text: root.name;
+                        init => { self.focus(); }
+                        accepted(t) => {
+                            root.editing = false;
+                            if t != root.name { root.renamed(t); }
+                        }
+                    }
+                }
+                if !root.editing: VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        if root.warning: VerticalLayout {
+                            alignment: center;
+                            Icon { name: IconName.warning; ink: Theme.state-warning; }
+                        }
+                        Text {
+                            text: root.name;
+                            color: root.warning ? Theme.text-disabled : root.ink;
+                            font-size: Tokens.type-body-size;
+                            font-weight: root.selected ? Tokens.type-title-weight : Tokens.type-body-weight;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            accessible-role: none;
+                        }
+                        if root.note-beside && root.note != "": Text {
+                            text: root.note;
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                    }
+                    if !root.note-beside && root.note != "": Text {
+                        text: root.note;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        overflow: elide;
+                        accessible-role: none;
+                    }
+                }
+                trailing := HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    @children
+                }
+            }
+        }
+    }
+    if root.confirm: Rectangle {
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        clip: true;
+        background: Theme.surface-overlay;
+        border-radius: Tokens.radius-sm;
+        border-width: Tokens.size-border;
+        border-color: Theme.accent;
+        HorizontalLayout {
+            height: parent.height;
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.space-1;
+            Text {
+                text: root.confirm-question;
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    kind: "danger";
+                    name: root.confirm-name;
+                    clicked => { root.confirmed(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: IconName.close;
+                    name: @tr("Cancel");
+                    clicked => { root.confirm = false; }
+                }
+            }
+        }
+    }
+    // Where a dragged row would go: a line along this row's top.
+    if root.drop-here: Rectangle {
+        y: 0;
+        width: parent.width;
+        height: Tokens.size-focus-ring;
+        background: Theme.accent;
+    }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
+}
+
 // Draws the open overlays above everything else in the window. Put one as the last
 // child of every window's root, filling it. It takes no input while nothing is open.
 export component OverlayHost inherits Rectangle {
@@ -2875,9 +3128,9 @@ export component OverlayHost inherits Rectangle {
                     wrap: word-wrap;
                     accessible-role: text;
                 }
-                // The rows sit in a framed well with a line between them and a chevron
-                // at the end of each, so they read as a list to choose from, not as
-                // another field.
+                // The rows are list rows (ListRow, the same as the panel lists) in a
+                // framed well, with a chevron at the end of each, so they read as a list
+                // to choose from, not as another field.
                 Rectangle {
                     height: picker-list.height + 2 * Tokens.size-border;
                     border-width: Tokens.size-border;
@@ -2893,49 +3146,18 @@ export component OverlayHost inherits Rectangle {
                     content-height: Overlays.picker-rows.length * Tokens.size-control-md;
                     accessible-role: list;
                     accessible-label: Overlays.picker-title;
-                    for r[i] in Overlays.picker-rows: Rectangle {
+                    for r[i] in Overlays.picker-rows: ListRow {
                         y: i * Tokens.size-control-md;
-                        height: Tokens.size-control-md;
                         width: parent.width;
-                        background: i == Overlays.picker-current || row-touch.has-hover ? Theme.surface-overlay : transparent;
-                        accessible-role: button;
-                        accessible-label: r.name;
-                        accessible-action-default => { Overlays.picker-chosen(r.index); }
-                        HorizontalLayout {
-                            padding-left: Tokens.space-2;
-                            padding-right: Tokens.space-2;
-                            spacing: Tokens.space-2;
-                            Text {
-                                text: r.name;
-                                overflow: elide;
-                                color: Theme.text-primary;
-                                font-size: Tokens.type-body-size;
-                                font-weight: i == Overlays.picker-current ? Tokens.type-title-weight : Tokens.type-body-weight;
-                                vertical-alignment: center;
-                                accessible-role: none;
-                            }
-                            if r.note != "": Text {
-                                text: r.note;
-                                color: Theme.text-secondary;
-                                font-size: Tokens.type-caption-size;
-                                vertical-alignment: center;
-                                accessible-role: none;
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                            VerticalLayout {
-                                alignment: center;
-                                Icon {
-                                    name: IconName.chevron-right;
-                                    ink: i == Overlays.picker-current || row-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-                                }
-                            }
+                        name: r.name;
+                        note: r.note;
+                        note-beside: true;
+                        selected: i == Overlays.picker-current;
+                        activated => { Overlays.picker-chosen(r.index); }
+                        VerticalLayout {
+                            alignment: center;
+                            Icon { name: IconName.chevron-right; ink: Theme.text-secondary; }
                         }
-                        if i < Overlays.picker-rows.length - 1: Rectangle {
-                            y: parent.height - self.height;
-                            height: Tokens.size-border;
-                            background: Theme.border-subtle;
-                        }
-                        row-touch := TouchArea { clicked => { Overlays.picker-chosen(r.index); } }
                     }
                 }
                 }
@@ -3142,247 +3364,4 @@ export component SettingRow inherits Rectangle {
         spacing: Tokens.space-2;
         @children
     }
-}
-
-// One item of a list (ADR-0114 decision 2): an icon or a short lead text (a scene's
-// number), the name, an optional note under it, and the row's own trailing content
-// (state icons, a `more` button) as its children. The row owns what every list row
-// shares: hover and selection plates, the focus ring, the context-menu key and right
-// click, rename in place, the remove question asked in place, and drag and drop
-// feedback. What an item does is its owner's: the row only reports it.
-export component ListRow inherits Rectangle {
-    // Leading part: `lead` text when set, otherwise `icon` when `has-icon`.
-    in property <string> lead;
-    in property <bool> has-icon;
-    in property <IconName> icon;
-    // A Checkbox before the name for the item's on/off state, where that state is
-    // what the list is about (a filter; owner decision 2026-11-13, ADR-0114 review).
-    in property <bool> has-check;
-    in property <bool> checked;
-    in property <string> check-label;
-    callback check-toggled(bool);
-    in property <string> name;
-    // A line under the name (why a source is not running); empty for one line.
-    in property <string> note;
-    // A warning mark before the name; the note says why (U7: never colour alone).
-    in property <bool> warning;
-    // The name and icon in the disabled colour (a hidden source).
-    in property <bool> dimmed;
-    // The item is the chosen one: a plate, an accent border and the title weight.
-    in property <bool> selected;
-    in property <string> accessible-name;
-    in property <string> accessible-hint;
-    // Rename in place: a text field replaces the name until Return or Escape.
-    in-out property <bool> editing;
-    in property <string> edit-label;
-    // Remove asked in place: the row shows the question, a danger button and Cancel.
-    // Return, Delete or the danger button confirm; Escape or Cancel go back.
-    in-out property <bool> confirm;
-    in property <string> confirm-question;
-    in property <string> confirm-name;
-    // Drag to reorder: the row can be dragged while `drag-data` is set and
-    // `allow-drag`; another row dragged over it shows a line along its top when
-    // `can-take` accepts the data.
-    in property <bool> allow-drag;
-    in property <data-transfer> drag-data;
-    in property <bool> drop-enabled;
-    out property <bool> hovered: touch.has-hover;
-    out property <bool> keyboard-focus: focus.ring;
-    callback activated();
-    callback double-clicked();
-    // Right click, the Menu key or Shift+F10: where the menu opens, in row coordinates.
-    callback menu-asked(Point);
-    callback renamed(string);
-    callback delete-asked();
-    callback confirmed();
-    callback dragging(bool);
-    pure callback can-take(data-transfer) -> bool;
-    callback took(data-transfer);
-    // Keys the owner handles (F2 and the confirm keys are the row's own).
-    callback key(KeyEvent) -> EventResult;
-    public function focus-row() { focus.focus(); }
-    public function focus-pointer() { focus.focus-pointer(); }
-    property <bool> drop-here: drop.has-drag && root.drop-enabled && root.taking;
-    property <bool> taking;
-    property <color> ink: root.dimmed ? Theme.text-disabled : Theme.text-primary;
-    changed confirm => { if root.confirm { focus.focus(); } }
-    height: root.note != "" ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md;
-    border-radius: Tokens.radius-sm;
-    border-width: root.selected ? Tokens.size-border : 0px;
-    border-color: Theme.accent;
-    background: root.selected || touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: list-item;
-    accessible-label: root.accessible-name != "" ? root.accessible-name : root.name;
-    accessible-description: root.accessible-hint;
-    accessible-item-selectable: true;
-    accessible-item-selected: root.selected;
-    accessible-action-default => { root.activated(); }
-    focus := RingFocus {
-        focus-on-click: false;
-        key-pressed(e) => {
-            if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
-            if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
-                root.confirmed();
-                return accept;
-            }
-            if root.confirm { return reject; }
-            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
-            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
-                root.menu-asked({ x: Tokens.space-2, y: root.height });
-                return accept;
-            }
-            if e.text == Key.F2 && root.edit-label != "" { root.editing = true; return accept; }
-            if e.text == Key.Delete || e.text == Key.Backspace { root.delete-asked(); return accept; }
-            root.key(e)
-        }
-    }
-    drop := DropArea {
-        // Off unless a row of this list is dragged, so a dragged panel reaches the dock.
-        enabled: root.drop-enabled;
-        can-drop(e) => {
-            root.taking = root.can-take(e.data);
-            return root.taking ? DragAction.move : DragAction.none;
-        }
-        dropped(e) => {
-            if !root.can-take(e.data) { return DragAction.none; }
-            root.took(e.data);
-            return DragAction.move;
-        }
-    }
-    DragArea {
-        allow-move: root.allow-drag && !root.confirm && !root.editing;
-        data: root.drag-data;
-        changed dragging => { root.dragging(self.dragging); }
-        touch := TouchArea {
-            enabled: !root.confirm;
-            clicked => { focus.focus-pointer(); root.activated(); }
-            double-clicked => { root.double-clicked(); }
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    focus.focus-pointer();
-                    root.menu-asked({ x: self.mouse-x, y: self.mouse-y });
-                }
-            }
-            HorizontalLayout {
-                padding-left: Tokens.space-2;
-                padding-right: Tokens.space-1;
-                spacing: Tokens.space-2;
-                if root.lead != "": Text {
-                    min-width: Tokens.size-icon-box;
-                    text: root.lead;
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-caption-size;
-                    vertical-alignment: center;
-                    accessible-role: none;
-                }
-                if root.lead == "" && root.has-icon: VerticalLayout {
-                    alignment: center;
-                    Icon { name: root.icon; ink: root.ink; }
-                }
-                if root.has-check: VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 0;
-                    Checkbox {
-                        width: Tokens.size-icon-box;
-                        checked: root.checked;
-                        accessible-label: root.check-label;
-                        toggled(on) => { root.check-toggled(on); }
-                    }
-                }
-                if root.editing: VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 1;
-                    TextField {
-                        label: root.edit-label;
-                        text: root.name;
-                        init => { self.focus(); }
-                        accepted(t) => {
-                            root.editing = false;
-                            if t != root.name { root.renamed(t); }
-                        }
-                    }
-                }
-                if !root.editing: VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 1;
-                    HorizontalLayout {
-                        spacing: Tokens.space-1;
-                        if root.warning: VerticalLayout {
-                            alignment: center;
-                            Icon { name: IconName.warning; ink: Theme.state-warning; }
-                        }
-                        Text {
-                            text: root.name;
-                            color: root.warning ? Theme.text-disabled : root.ink;
-                            font-size: Tokens.type-body-size;
-                            font-weight: root.selected ? Tokens.type-title-weight : Tokens.type-body-weight;
-                            vertical-alignment: center;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                            accessible-role: none;
-                        }
-                    }
-                    if root.note != "": Text {
-                        text: root.note;
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        overflow: elide;
-                        accessible-role: none;
-                    }
-                }
-                trailing := HorizontalLayout {
-                    spacing: Tokens.space-1;
-                    @children
-                }
-            }
-        }
-    }
-    if root.confirm: Rectangle {
-        y: 0;
-        width: parent.width;
-        height: parent.height;
-        clip: true;
-        background: Theme.surface-overlay;
-        border-radius: Tokens.radius-sm;
-        border-width: Tokens.size-border;
-        border-color: Theme.accent;
-        HorizontalLayout {
-            height: parent.height;
-            padding-left: Tokens.space-2;
-            padding-right: Tokens.space-1;
-            spacing: Tokens.space-1;
-            Text {
-                text: root.confirm-question;
-                color: Theme.text-primary;
-                font-size: Tokens.type-caption-size;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
-            }
-            VerticalLayout {
-                alignment: center;
-                IconButton {
-                    kind: "danger";
-                    name: root.confirm-name;
-                    clicked => { root.confirmed(); }
-                }
-            }
-            VerticalLayout {
-                alignment: center;
-                IconButton {
-                    icon: IconName.close;
-                    name: @tr("Cancel");
-                    clicked => { root.confirm = false; }
-                }
-            }
-        }
-    }
-    // Where a dragged row would go: a line along this row's top.
-    if root.drop-here: Rectangle {
-        y: 0;
-        width: parent.width;
-        height: Tokens.size-focus-ring;
-        background: Theme.accent;
-    }
-    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
