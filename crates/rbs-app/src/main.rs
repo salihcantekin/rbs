@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use rbs_api::types::OutputKind;
 use rbs_app::background::{self, Action, OnClose, Request};
 use rbs_app::studio_host;
 use rbs_ui::command::{CommandId, CommandState};
@@ -236,6 +237,8 @@ struct App {
     toolbar_fixed_model: Rc<VecModel<ToolbarData>>,
     /// End stream was picked in the menu bar: the frame asks first (U4).
     confirm_end: bool,
+    /// The End stream question also ends the vertical stream (ADR-0111).
+    confirm_end_all: bool,
     /// The same for the vertical canvas's stream (ADR-0093 decision 6).
     confirm_end_vertical: bool,
     /// Settings › Virtual camera (ADR-0066).
@@ -620,11 +623,27 @@ impl App {
                 menu_bar::MixerBulk::HideMuted => self.studio.hide_in_mixer(true, true),
                 menu_bar::MixerBulk::ShowAll => self.studio.hide_in_mixer(false, false),
             },
-            Run::GoLive => self.studio.go_live(),
-            Run::AskEndStream if confirm => self.confirm_end = true,
-            Run::AskEndStream => self.studio.end_stream(),
-            Run::Record => self.studio.record(),
-            Run::StopRecording => self.studio.stop_recording(),
+            Run::GoLive(all) => {
+                if let Err(e) = self.studio.go_live_all(all) {
+                    self.show_error(UiError::Other(e));
+                }
+            }
+            Run::AskEndStream(all) if confirm => {
+                self.confirm_end = true;
+                self.confirm_end_all = all;
+            }
+            Run::AskEndStream(all) => self.studio.end_stream_all(all),
+            Run::Record(all) => {
+                if let Err(e) = self.studio.record_all(all) {
+                    self.show_error(UiError::Other(e));
+                }
+            }
+            Run::StopRecording(all) => self.studio.stop_recording_all(all),
+            Run::WithVertical(kind, on) => {
+                let flags = self.studio.vertical_flags.set(kind, on);
+                self.studio.set_vertical_flags(flags);
+            }
+            Run::RemoveVertical => self.studio.send(studio_host::Command::RemoveVerticalCanvas),
             Run::GoLiveVertical => {
                 if let Err(e) = self.studio.go_live_vertical() {
                     self.show_error(UiError::Other(e));
@@ -2654,7 +2673,7 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     on!(on_end_stream_answer, |app, end: bool| {
         app.confirm_end = false;
         if end {
-            app.studio.end_stream();
+            app.studio.end_stream_all(app.confirm_end_all);
         }
     });
     on!(on_end_vertical_answer, |app, end: bool| {
@@ -3732,11 +3751,17 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         let ctx = ctx.clone();
         g.on_open_stream_settings(move || entry::guard(|| ctx.open_settings(SECTION_STREAM)));
     }
+    // Record and Go live in the frame are `record.toggle` and `stream.toggle`: with
+    // "Main + vertical" they also act on the vertical canvas (ADR-0111).
     on!(on_record, |app| {
-        app.studio.record();
+        let all = app.studio.with_vertical(OutputKind::Record);
+        if let Err(e) = app.studio.record_all(all) {
+            app.show_error(UiError::Other(e));
+        }
     });
     on!(on_stop_recording, |app| {
-        app.studio.stop_recording();
+        let all = app.studio.with_vertical(OutputKind::Record);
+        app.studio.stop_recording_all(all);
     });
     on!(on_set_folder, |app, text: slint::SharedString| {
         app.studio.set_folder(&text);
@@ -3760,10 +3785,14 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.set_output_same(out, on);
     });
     on!(on_go_live, |app| {
-        app.studio.go_live();
+        let all = app.studio.with_vertical(OutputKind::Stream);
+        if let Err(e) = app.studio.go_live_all(all) {
+            app.show_error(UiError::Other(e));
+        }
     });
     on!(on_end_stream, |app| {
-        app.studio.end_stream();
+        let all = app.studio.with_vertical(OutputKind::Stream);
+        app.studio.end_stream_all(all);
     });
     on!(on_vcam_toggle, |app, on: bool| {
         vcam_page::send(app, on);
@@ -4177,6 +4206,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toolbar_end_model: Rc::new(VecModel::default()),
             toolbar_fixed_model: Rc::new(VecModel::default()),
             confirm_end: false,
+            confirm_end_all: false,
             confirm_end_vertical: false,
             vcam,
             replay,

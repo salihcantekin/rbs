@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rbs_api::types::{OutputKind, OutputTarget};
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
@@ -2924,6 +2925,58 @@ impl StudioUi {
             self.st_state = st_state::ENDING;
             self.send(Command::EndStream);
         }
+    }
+
+    /// Whether Record or Go live also acts on the vertical canvas now: its flag is on
+    /// and a vertical canvas exists (ADR-0111 decisions 2 and 5).
+    pub fn with_vertical(&self, kind: OutputKind) -> bool {
+        vertical_outputs::resolve_toggle(kind, self.vertical_flags, self.vertical.is_some())
+            == OutputTarget::All
+    }
+
+    /// Record, then the vertical recording when `with_vertical` (ADR-0111). A main
+    /// recording that does not start starts nothing else. `Err`: why the vertical
+    /// recording cannot start, for the error notice.
+    pub fn record_all(&mut self, with_vertical: bool) -> Result<(), String> {
+        self.record();
+        if !with_vertical || self.rec_state == rec_state::OFF {
+            return Ok(());
+        }
+        self.record_vertical()
+    }
+
+    /// Stop recording, and the vertical recording when `with_vertical`.
+    pub fn stop_recording_all(&mut self, with_vertical: bool) {
+        self.stop_recording();
+        if with_vertical {
+            self.stop_vertical_recording();
+        }
+    }
+
+    /// Go live, then the vertical stream when `with_vertical` (ADR-0111). A vertical
+    /// stream with no server saved is skipped without a notice (decision 2). `Err`: why
+    /// the vertical stream cannot start.
+    pub fn go_live_all(&mut self, with_vertical: bool) -> Result<(), String> {
+        self.go_live();
+        if !with_vertical || self.st_state == st_state::OFF || !self.vertical_stream_set_up() {
+            return Ok(());
+        }
+        self.go_live_vertical()
+    }
+
+    /// End the stream, and the vertical stream when `with_vertical`.
+    pub fn end_stream_all(&mut self, with_vertical: bool) {
+        self.end_stream();
+        if with_vertical {
+            self.end_vertical_stream();
+        }
+    }
+
+    /// A vertical server is saved ("Vertical stream not set up" otherwise).
+    pub fn vertical_stream_set_up(&self) -> bool {
+        self.vertical_stream
+            .as_ref()
+            .is_some_and(|p| !p.server.trim().is_empty())
     }
 
     /// "Record vertical": records the vertical canvas with its own recording settings
@@ -6794,13 +6847,63 @@ mod tests {
             size: rbs_core::media::video::Size::new(1080, 1920),
             follow: true,
         });
+        // The with-main choice comes first (ADR-0111 decision 6), then each output.
         assert_eq!(
             titles(&ui),
             [
-                ("Go live vertical".to_owned(), true, false),
+                ("When recording".to_owned(), true, false),
+                ("When going live".to_owned(), true, false),
+                (String::new(), true, false),
+                ("Record main only".to_owned(), true, false),
                 ("Record vertical".to_owned(), true, false),
+                ("Go live main only".to_owned(), true, false),
+                ("Go live vertical".to_owned(), true, false),
             ]
         );
+        // "Main + vertical" by default: Record and Go live act on both canvases, and
+        // their main-only twins on the main one.
+        {
+            let s = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: &ui,
+                panels: Vec::new(),
+                themes: Vec::new(),
+                maximized: None,
+                camera: Default::default(),
+                replay: Default::default(),
+                can_undo: false,
+                can_redo: false,
+            };
+            assert_eq!(run("record.toggle", &s), Some(Run::Record(true)));
+            assert_eq!(run("stream.toggle", &s), Some(Run::GoLive(true)));
+            assert_eq!(run("record.main.toggle", &s), Some(Run::Record(false)));
+            assert_eq!(run("stream.main.toggle", &s), Some(Run::GoLive(false)));
+            assert_eq!(
+                run("output.with_vertical?kind=record&on=off", &s),
+                Some(Run::WithVertical(OutputKind::Record, false))
+            );
+            assert_eq!(run("output.with_vertical?kind=record", &s), None);
+            assert_eq!(
+                s.title(&cmd("canvas.add_vertical")).as_deref(),
+                Some("Vertical output settings...")
+            );
+            assert_eq!(run("canvas.remove_vertical", &s), Some(Run::RemoveVertical));
+            let choices = s.choices(&cmd("output.with_vertical?kind=stream"));
+            assert_eq!(
+                choices,
+                [
+                    ("Main + vertical".to_owned(), "on".to_owned(), true),
+                    ("Main only".to_owned(), "off".to_owned(), false),
+                ]
+            );
+        }
+        ui.vertical_flags = ui.vertical_flags.set(OutputKind::Record, false);
+        assert!(!ui.with_vertical(OutputKind::Record));
+        assert!(ui.with_vertical(OutputKind::Stream));
+        // Go live with "Main + vertical" and no vertical server: the vertical stream is
+        // skipped without an error (ADR-0111 decision 2).
+        assert!(!ui.vertical_stream_set_up());
         // Without a vertical server Go live vertical says where to set it up.
         let why = ui.go_live_vertical().unwrap_err();
         assert_eq!(why, format!("Vertical canvas: {VERTICAL_SETUP}"));
@@ -6814,12 +6917,29 @@ mod tests {
         }));
         assert_eq!(ui.vertical_rec, VerticalOut::On);
         assert_eq!(
-            titles(&ui),
+            titles(&ui)[4..],
             [
-                ("End vertical stream".to_owned(), true, true),
                 ("Stop vertical recording".to_owned(), true, true),
+                ("Go live main only".to_owned(), true, false),
+                ("End vertical stream".to_owned(), true, true),
             ]
         );
+        // The vertical outputs run: the canvas cannot be removed yet.
+        {
+            let s = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: &ui,
+                panels: Vec::new(),
+                themes: Vec::new(),
+                maximized: None,
+                camera: Default::default(),
+                replay: Default::default(),
+                can_undo: false,
+                can_redo: false,
+            };
+            assert!(s.enabled(&cmd("canvas.remove_vertical")).is_err());
+        }
         {
             let s = Shown {
                 workspace: &ws,
@@ -6853,7 +6973,7 @@ mod tests {
         // Stopping: the item waits for the host.
         ui.stop_vertical_recording();
         assert_eq!(ui.vertical_rec, VerticalOut::Ending);
-        assert!(!titles(&ui)[1].1);
+        assert!(!titles(&ui)[4].1);
         ui.apply(Update::VerticalRecording(RecordingUpdate::Stopped {
             path: d.join("v.mkv"),
             failure: None,

@@ -121,6 +121,16 @@ pub enum Kind {
         /// The parameter the choice fills.
         param: &'static str,
     },
+    /// A toggle whose parameters depend on a profile setting (ADR-0111 decision 5):
+    /// the shell resolves them (`rbs-app` `vertical_outputs::toggle_params`), so this
+    /// crate needs no knowledge of profiles. On and off as for [`Kind::Toggle`]; the
+    /// off half runs with the same resolved parameters.
+    ResolvedToggle {
+        /// Runs when the toggle is off.
+        on: &'static str,
+        /// Runs when the toggle is on.
+        off: &'static str,
+    },
 }
 
 impl Kind {
@@ -128,7 +138,7 @@ impl Kind {
     pub fn methods(self) -> Vec<&'static str> {
         match self {
             Kind::Action { method } | Kind::Picker { method, .. } => vec![method],
-            Kind::Toggle { on, off } => vec![on, off],
+            Kind::Toggle { on, off } | Kind::ResolvedToggle { on, off } => vec![on, off],
         }
     }
 }
@@ -154,6 +164,10 @@ pub struct Entry {
     pub params: &'static [Param],
     /// Shows a checkmark: toggles, and actions with an on or off state (area toggles).
     pub checkable: bool,
+    /// String parameters merged into every method call the entry runs (ADR-0111
+    /// decision 5): `record.vertical.toggle` runs `record.start {canvas: "vertical"}`.
+    /// The id's own parameters keep mapping one to one.
+    pub fixed: &'static [(&'static str, &'static str)],
 }
 
 const PANEL_ID: Param = Param {
@@ -236,6 +250,13 @@ const PROPERTIES_TAB: Param = Param {
     required: true,
 };
 
+/// The output kind of `output.with_vertical` (ADR-0111).
+const OUTPUT_KIND: Param = Param {
+    name: "kind",
+    ty: ParamType::OneOf(&["record", "stream"]),
+    required: true,
+};
+
 const fn action(method: &'static str) -> Kind {
     Kind::Action { method }
 }
@@ -256,6 +277,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("id")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "collection.select",
@@ -270,6 +292,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("id")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.profile.new",
@@ -285,6 +308,7 @@ pub const ENTRIES: &[Entry] = &[
             required: false,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.profile.duplicate",
@@ -300,6 +324,7 @@ pub const ENTRIES: &[Entry] = &[
             required: false,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.profile.rename",
@@ -315,6 +340,7 @@ pub const ENTRIES: &[Entry] = &[
             required: false,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.profile.import",
@@ -326,6 +352,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.profile.import"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.profile.export",
@@ -337,6 +364,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.profile.export"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.profile.delete",
@@ -348,6 +376,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.profile.delete"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.collection.new",
@@ -363,6 +392,7 @@ pub const ENTRIES: &[Entry] = &[
             required: false,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.collection.duplicate",
@@ -378,6 +408,7 @@ pub const ENTRIES: &[Entry] = &[
             required: false,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.collection.rename",
@@ -393,6 +424,7 @@ pub const ENTRIES: &[Entry] = &[
             required: false,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.collection.import",
@@ -404,6 +436,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.collection.import"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.collection.export",
@@ -415,6 +448,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.collection.export"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.collection.delete",
@@ -426,6 +460,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.collection.delete"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "filter.add",
@@ -445,6 +480,7 @@ pub const ENTRIES: &[Entry] = &[
             choice("type"),
         ],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.settings.open",
@@ -456,6 +492,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.settings.open"),
         params: &[SECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "edit.undo",
@@ -467,6 +504,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("edit.undo"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "edit.redo",
@@ -478,6 +516,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("edit.redo"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.workspace.select",
@@ -492,6 +531,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("name")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.area.toggle",
@@ -503,6 +543,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.area.toggle"),
         params: &[AREA],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.area.hide_all",
@@ -514,6 +555,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.area.hide_all"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.area.show_all",
@@ -525,6 +567,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.area.show_all"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.layout.reset_sizes",
@@ -536,6 +579,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.layout.reset_sizes"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.workspace.save",
@@ -547,6 +591,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.workspace.save"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.workspace.save_as",
@@ -563,6 +608,7 @@ pub const ENTRIES: &[Entry] = &[
             required: false,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.layout.lock",
@@ -577,6 +623,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.layout.undo",
@@ -588,6 +635,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.layout.undo"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.layout.redo",
@@ -599,6 +647,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.layout.redo"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.workspace.reset",
@@ -610,6 +659,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.workspace.reset"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.layout.rail_size",
@@ -625,6 +675,7 @@ pub const ENTRIES: &[Entry] = &[
             required: true,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.layout.studio_rail",
@@ -640,6 +691,7 @@ pub const ENTRIES: &[Entry] = &[
             required: true,
         }],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.toolbar.reset",
@@ -651,6 +703,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.toolbar.reset"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.theme.select",
@@ -665,6 +718,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("id")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.theme.reload",
@@ -676,6 +730,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.theme.reload"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     // The vertical canvas's picture (ADR-0093 decision 7): one click shows or hides its
     // panel, beside the pictures; it applies while a vertical canvas exists.
@@ -692,6 +747,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.panel.select",
@@ -706,6 +762,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("id")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.panel.maximize",
@@ -724,6 +781,7 @@ pub const ENTRIES: &[Entry] = &[
             required: true,
         }],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.panel.collapse",
@@ -738,6 +796,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[PANEL_ID],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.panel.auto_hide",
@@ -749,6 +808,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.panel.auto_hide"),
         params: &[PANEL_ID],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.panel.move",
@@ -763,6 +823,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[PANEL_ID, choice("to")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.panel.float",
@@ -777,6 +838,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[PANEL_ID],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.panel.close",
@@ -788,6 +850,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.panel.close"),
         params: &[PANEL_ID],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.select",
@@ -811,6 +874,7 @@ pub const ENTRIES: &[Entry] = &[
             },
         ],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.position",
@@ -826,6 +890,7 @@ pub const ENTRIES: &[Entry] = &[
             required: true,
         }],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.next",
@@ -837,6 +902,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("scene.switch"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.previous",
@@ -848,6 +914,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("scene.switch"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.add",
@@ -859,6 +926,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("scene.add"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.duplicate",
@@ -870,6 +938,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("scene.duplicate"),
         params: &[target("scene"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.rename",
@@ -883,6 +952,7 @@ pub const ENTRIES: &[Entry] = &[
         // Without `name`: the UI asks for it (`ui.command.run` cannot run it).
         params: &[target("scene"), target("name"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.move",
@@ -894,6 +964,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("scene.move"),
         params: &[target("scene"), COLLECTION, MOVE_DIRECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "scene.remove",
@@ -905,6 +976,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("scene.remove"),
         params: &[target("scene"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.add",
@@ -919,6 +991,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("kind")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.active.toggle",
@@ -933,6 +1006,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("source"), COLLECTION],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "item.visible.toggle",
@@ -948,6 +1022,7 @@ pub const ENTRIES: &[Entry] = &[
         // Without `item`: the selected source's item in the scene.
         params: &[target("item"), COLLECTION],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "item.show",
@@ -959,6 +1034,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("item.show"),
         params: &[target("item"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "item.set_show_for",
@@ -970,6 +1046,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("item.set_show_for"),
         params: &[target("item"), COLLECTION, target("show_for_ms")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "item.locked.toggle",
@@ -984,6 +1061,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("item"), COLLECTION],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "item.flip",
@@ -995,6 +1073,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("item.flip"),
         params: &[target("item"), COLLECTION, FLIP_AXIS],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "item.rotate",
@@ -1009,6 +1088,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("item"), COLLECTION, choice("degrees")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "item.fit",
@@ -1023,6 +1103,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("item"), COLLECTION, choice("mode")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "item.align",
@@ -1037,6 +1118,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("item"), COLLECTION, choice("axis")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "item.reset_transform",
@@ -1048,6 +1130,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("item.reset_transform"),
         params: &[target("item"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.muted.toggle",
@@ -1062,6 +1145,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("source"), COLLECTION],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "source.mixer_hidden.toggle",
@@ -1076,6 +1160,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("source"), COLLECTION],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "source.monitor",
@@ -1090,6 +1175,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("source"), choice("monitor"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.monitor_solo.toggle",
@@ -1104,6 +1190,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("source"), COLLECTION],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "ui.mixer.orientation",
@@ -1118,6 +1205,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[choice("orientation")],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "mixer.hide_all",
@@ -1129,6 +1217,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("source.set_mixer_hidden"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "mixer.hide_muted",
@@ -1140,6 +1229,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("source.set_mixer_hidden"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "mixer.unhide_all",
@@ -1151,6 +1241,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("source.set_mixer_hidden"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.rename",
@@ -1163,6 +1254,7 @@ pub const ENTRIES: &[Entry] = &[
         // Without `source`: the selected source. Without `name`: the UI asks for it.
         params: &[target("source"), target("name"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.reload",
@@ -1174,6 +1266,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("source.reload"),
         params: &[target("source"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "item.move",
@@ -1185,6 +1278,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("item.move"),
         params: &[target("item"), COLLECTION, MOVE_DIRECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.settings",
@@ -1196,6 +1290,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.source.settings"),
         params: &[target("source"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.properties.show",
@@ -1207,6 +1302,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.properties.show"),
         params: &[target("source"), COLLECTION, PROPERTIES_TAB],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "item.remove",
@@ -1219,6 +1315,7 @@ pub const ENTRIES: &[Entry] = &[
         // Without `item`: the selected source's item in the scene (ADR-0065).
         params: &[target("item"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "source.delete",
@@ -1230,6 +1327,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("source.delete"),
         params: &[target("source"), COLLECTION],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "canvas.studio_mode.toggle",
@@ -1244,6 +1342,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "canvas.transition",
@@ -1255,34 +1354,37 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("canvas.transition"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "stream.toggle",
         title: "Go live",
-        tooltip: "Start or end the stream",
+        tooltip: "Start or end the stream; with \"Main + vertical\" also the vertical stream",
         icon: Some("bolt"),
         shortcut: None,
         menu: Menu::Output,
-        kind: Kind::Toggle {
+        kind: Kind::ResolvedToggle {
             on: "stream.start",
             off: "stream.stop",
         },
         params: &[],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "record.toggle",
         title: "Record",
-        tooltip: "Start or stop recording",
+        tooltip: "Start or stop recording; with \"Main + vertical\" also the vertical recording",
         icon: Some("dot"),
         shortcut: None,
         menu: Menu::Output,
-        kind: Kind::Toggle {
+        kind: Kind::ResolvedToggle {
             on: "record.start",
             off: "record.stop",
         },
         params: &[],
         checkable: true,
+        fixed: &[],
     },
     // The vertical canvas's outputs (ADR-0093 decision 6): the ▾ menus beside the
     // frame's Go live and Record, shown while a vertical canvas exists.
@@ -1299,6 +1401,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[],
         checkable: true,
+        fixed: &[("canvas", "vertical")],
     },
     Entry {
         id: "record.vertical.toggle",
@@ -1313,6 +1416,55 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[],
         checkable: true,
+        fixed: &[("canvas", "vertical")],
+    },
+    // Main only, whatever "with main" says (ADR-0111 decision 5).
+    Entry {
+        id: "stream.main.toggle",
+        title: "Go live main only",
+        tooltip: "Start or end the main canvas's stream alone",
+        icon: Some("bolt"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Toggle {
+            on: "stream.start",
+            off: "stream.stop",
+        },
+        params: &[],
+        checkable: true,
+        fixed: &[("canvas", "main")],
+    },
+    Entry {
+        id: "record.main.toggle",
+        title: "Record main only",
+        tooltip: "Start or stop recording the main canvas alone",
+        icon: Some("dot"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Toggle {
+            on: "record.start",
+            off: "record.stop",
+        },
+        params: &[],
+        checkable: true,
+        fixed: &[("canvas", "main")],
+    },
+    // Whether Record and Go live also act on the vertical canvas (ADR-0111): a radio
+    // pair per kind, "on" ("Main + vertical") or "off" ("Main only").
+    Entry {
+        id: "output.with_vertical",
+        title: "With the vertical output",
+        tooltip: "Whether Record or Go live also starts and stops the vertical output",
+        icon: Some("canvas-vertical"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Picker {
+            method: "output.set_with_vertical",
+            param: "on",
+        },
+        params: &[OUTPUT_KIND, choice("on")],
+        checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "vcam.toggle",
@@ -1327,6 +1479,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "replay.toggle",
@@ -1341,6 +1494,7 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[],
         checkable: true,
+        fixed: &[],
     },
     Entry {
         id: "canvas.add_vertical",
@@ -1352,6 +1506,19 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("canvas.add_vertical"),
         params: &[],
         checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "canvas.remove_vertical",
+        title: "Remove vertical output",
+        tooltip: "Remove the vertical canvas; its outputs must be stopped first",
+        icon: Some("trash"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: action("canvas.remove_vertical"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "replay.save",
@@ -1363,6 +1530,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("replay.save"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
     Entry {
         id: "ui.app_menu.open",
@@ -1374,6 +1542,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.app_menu.open"),
         params: &[],
         checkable: false,
+        fixed: &[],
     },
 ];
 
@@ -1768,9 +1937,16 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "stream.toggle",
             "record.toggle",
             "{Vertical:canvas-vertical",
+            "output.with_vertical?kind=record",
+            "output.with_vertical?kind=stream",
+            "|",
+            "stream.main.toggle",
+            "record.main.toggle",
             "stream.vertical.toggle",
             "record.vertical.toggle",
+            "|",
             "canvas.add_vertical",
+            "canvas.remove_vertical",
             "}",
             "|",
             "vcam.toggle",
@@ -1944,6 +2120,13 @@ pub fn title(id: &CommandId, e: &Entry) -> String {
     }
     if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
         return format!("Scene at position {n}");
+    }
+    if let ("output.with_vertical", Some(kind)) = (e.id, id.param("kind")) {
+        return match kind {
+            "record" => "When recording".to_owned(),
+            "stream" => "When going live".to_owned(),
+            _ => e.title.to_owned(),
+        };
     }
     match (e.id, id.param("at")) {
         ("ui.layout.studio_rail", Some("between")) => {
@@ -2412,7 +2595,15 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
     (Context::Sources, &["source.add"]),
     (
         Context::VerticalOutputs,
-        &["stream.vertical.toggle", "record.vertical.toggle"],
+        &[
+            "output.with_vertical?kind=record",
+            "output.with_vertical?kind=stream",
+            "|",
+            "record.main.toggle",
+            "record.vertical.toggle",
+            "stream.main.toggle",
+            "stream.vertical.toggle",
+        ],
     ),
     (
         Context::Preview,
@@ -2802,7 +2993,7 @@ mod tests {
             for m in e.kind.methods() {
                 CommandId::plain(m).unwrap();
             }
-            if matches!(e.kind, Kind::Toggle { .. }) {
+            if matches!(e.kind, Kind::Toggle { .. } | Kind::ResolvedToggle { .. }) {
                 assert!(e.checkable, "{}", e.id);
             }
             // Every entry is in its own menu exactly once (area toggles once per area).

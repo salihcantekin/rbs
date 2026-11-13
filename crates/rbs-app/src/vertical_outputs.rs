@@ -4,6 +4,7 @@
 //! counts as saving vertical encoding settings.
 
 use rbs_api::types::{OutputKind, OutputTarget, VerticalWithMain};
+use rbs_ui::command::{Entry, Kind};
 use serde::{Deserialize, Serialize};
 
 /// The output profile section that holds [`VerticalFlags`].
@@ -79,6 +80,33 @@ pub fn resolve_toggle(kind: OutputKind, flags: VerticalFlags, has_vertical: bool
     } else {
         OutputTarget::Main
     }
+}
+
+/// The string parameters every method call of `entry` gets besides the id's own
+/// (ADR-0111 decision 5): its `fixed` ones, and for a [`Kind::ResolvedToggle`] the
+/// `canvas` [`resolve_toggle`] gives (`"all"` or `"main"`), for on and off alike.
+pub fn toggle_params(
+    entry: &Entry,
+    flags: VerticalFlags,
+    has_vertical: bool,
+) -> Vec<(&'static str, &'static str)> {
+    let mut out = entry.fixed.to_vec();
+    if let Kind::ResolvedToggle { on, .. } = entry.kind {
+        let kind = if on.starts_with("record.") {
+            OutputKind::Record
+        } else {
+            OutputKind::Stream
+        };
+        out.push((
+            "canvas",
+            match resolve_toggle(kind, flags, has_vertical) {
+                OutputTarget::All => "all",
+                OutputTarget::Vertical => "vertical",
+                OutputTarget::Main => "main",
+            },
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
