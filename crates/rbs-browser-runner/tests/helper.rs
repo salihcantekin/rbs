@@ -13,7 +13,10 @@ fn program() -> std::path::PathBuf {
     if path.file_name().is_some_and(|name| name == "deps") {
         path.pop();
     }
-    path.push("rbs-browser-helper.exe");
+    path.push(format!(
+        "rbs-browser-helper{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     path
 }
 

@@ -6580,6 +6580,8 @@ mod tests {
         use rbs_ui::command::{Context, MenuItem, context_menu};
         let (mut ui, d) = ui("add-source-picker");
         ui.state = 1;
+        // The kinds the host reported at start; a kind's code is its place here.
+        ui.kind_list = vec![SourceKind::Screen, SourceKind::Camera];
         let ws = rbs_ui::builtin::edit();
         let run_of = |ui: &StudioUi, text: &str| {
             let s = Shown {
