@@ -9,13 +9,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
+use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{
     AUDIO_KBPS, Delivery, Encoding, Format, OutputSize, RateMode, RecordProfile, VIDEO_KBPS,
-    VideoCodec, output_size_options, recommended_video_kbps, vertical_recording_from_main,
+    VideoCodec, fit_output_size, output_choice_copy, output_size_options, recommended_video_kbps,
+    vertical_recording_from_main,
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
@@ -45,8 +46,8 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
     EncoderData, EntryRow, KindData, LookData, MarkData, MeterRow, ModeData, SampleData, ScaleMark,
-    SceneData, SourceData, SourceSettingsData, SourceTargetData, StackData, StatRow, Studio,
-    TokenRow,
+    SceneData, SizeBand, SourceData, SourceSettingsData, SourceTargetData, StackData, StatRow,
+    Studio, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -661,8 +662,14 @@ impl StudioUi {
         let canvas = self.settings_canvas_size();
         let rec_size = self.recording_output_size();
         let rec_sizes = output_size_options(canvas, rec_size);
-        g.set_out_sizes(strings(rec_sizes.iter().map(|o| o.label.clone())));
-        g.set_out_size(size_index(&rec_sizes, rec_size));
+        let rec_nest = output_nest(&rec_sizes, rec_size, canvas);
+        g.set_out_same(rec_nest.same);
+        g.set_out_portrait(canvas.1 > canvas.0);
+        g.set_out_bands(choice_model(&rec_nest.bands));
+        g.set_out_extras(choice_model(&rec_nest.extras));
+        g.set_out_choice(rec_nest.index);
+        g.set_out_value(rec_nest.value.into());
+        g.set_out_long(output_long_side(rec_size, canvas) as i32);
         g.set_out_note(self.profile_note.as_str().into());
         g.set_out_summary(
             format!(
@@ -684,14 +691,15 @@ impl StudioUi {
             g.set_out_folder(self.record_form().folder.display().to_string().into());
             g.set_out_folder_serial(self.folder_serial as i32);
         }
-        let sizes = self.canvas_sizes();
-        g.set_canvas_sizes(strings(sizes.iter().map(|(_, label)| label.clone())));
-        g.set_canvas_size(
-            sizes
-                .iter()
-                .position(|(s, _)| *s == (self.canvas.width, self.canvas.height))
-                .unwrap_or(0) as i32,
-        );
+        let canvas_nest = self.canvas_nest();
+        g.set_canvas_bands(choice_model(&canvas_nest.bands));
+        g.set_canvas_extras(choice_model(&canvas_nest.extras));
+        g.set_canvas_choice(canvas_nest.index);
+        g.set_canvas_value(canvas_nest.value.into());
+        g.set_canvas_width(self.canvas.width as i32);
+        g.set_canvas_height(self.canvas.height as i32);
+        g.set_canvas_portrait(self.canvas.height > self.canvas.width);
+        g.set_canvas_label(format!("{} × {}", self.canvas.width, self.canvas.height).into());
         g.set_canvas_rates(strings(RATES.iter().map(|r| format!("{r}"))));
         g.set_canvas_rate(
             RATES
@@ -2766,12 +2774,98 @@ impl StudioUi {
         if picked == current {
             return;
         }
+        self.store_output_size(out, picked);
+    }
+
+    /// A long side was typed. The short side is the canvas-aspect fit. The canvas's
+    /// own long side stores "Same as canvas".
+    pub fn set_output_long_side(&mut self, out: i32, long: f32) {
+        let canvas = self.settings_canvas_size();
+        let Some(long) = whole_side(long) else {
+            self.output_size_note(out, "Long side must be a whole number of pixels.".into());
+            return;
+        };
+        if !long.is_multiple_of(2) {
+            self.output_size_note(
+                out,
+                format!("Long side {long} must be even, from 2 to 7680."),
+            );
+            return;
+        }
+        let canvas_long = canvas.0.max(canvas.1);
+        let picked = if long == canvas_long {
+            None
+        } else {
+            match fit_output_size(long, canvas) {
+                Some(size) => Some(size),
+                None => {
+                    self.output_size_note(
+                        out,
+                        format!(
+                            "Long side {long} does not fit this canvas: both sides must be from 2 to 7680."
+                        ),
+                    );
+                    return;
+                }
+            }
+        };
+        let current = if out == output::STREAM {
+            self.stream_form().output_size
+        } else {
+            self.recording_output_size()
+        };
+        if picked == current {
+            self.output_size_note(out, String::new());
+            return;
+        }
+        self.store_output_size(out, picked);
+    }
+
+    /// Same as canvas stores no size. Turning it off picks 1080p when that differs
+    /// from the canvas, otherwise the next prepared size that does.
+    pub fn set_output_same(&mut self, out: i32, on: bool) {
+        let canvas = self.settings_canvas_size();
+        let current = if out == output::STREAM {
+            self.stream_form().output_size
+        } else {
+            self.recording_output_size()
+        };
+        if on {
+            if current.is_none() {
+                return;
+            }
+            self.store_output_size(out, None);
+            return;
+        }
+        if current.is_some() {
+            return;
+        }
+        for long in [1920, 1280, 3840, 2560] {
+            if let Some(size) = fit_output_size(long, canvas)
+                && size.pair() != canvas
+            {
+                self.store_output_size(out, Some(size));
+                return;
+            }
+        }
+        self.output_size_note(out, "This canvas has no other prepared size.".into());
+    }
+
+    fn store_output_size(&mut self, out: i32, picked: Option<OutputSize>) {
         if out == output::STREAM {
             self.stream_form_mut().output_size = picked;
             self.save_stream_form();
         } else {
             self.record_form_mut().output_size = picked;
             self.save_profile_form();
+        }
+    }
+
+    fn output_size_note(&mut self, out: i32, text: String) {
+        if out == output::STREAM {
+            self.stream_note = text;
+        } else {
+            self.profile_note = text;
         }
     }
 
@@ -3128,9 +3222,15 @@ impl StudioUi {
                 .unwrap_or(0) as i32,
         );
         g.set_st_enc(self.encoder_data(output::STREAM));
-        let st_sizes = output_size_options(self.settings_canvas_size(), st.output_size);
-        g.set_st_sizes(strings(st_sizes.iter().map(|o| o.label.clone())));
-        g.set_st_size(size_index(&st_sizes, st.output_size));
+        let st_canvas = self.settings_canvas_size();
+        let st_sizes = output_size_options(st_canvas, st.output_size);
+        let st_nest = output_nest(&st_sizes, st.output_size, st_canvas);
+        g.set_st_same(st_nest.same);
+        g.set_st_bands(choice_model(&st_nest.bands));
+        g.set_st_extras(choice_model(&st_nest.extras));
+        g.set_st_choice(st_nest.index);
+        g.set_st_value(st_nest.value.into());
+        g.set_st_long(output_long_side(st.output_size, st_canvas) as i32);
         g.set_st_note(self.stream_note.as_str().into());
         let summary = match &parsed {
             None => "No server yet".to_owned(),
@@ -3293,51 +3393,87 @@ impl StudioUi {
         self.send(Command::SetProfile(self.profile.clone()));
     }
 
-    /// The canvas sizes offered, with their labels: the presets, the main display's
-    /// size, and the saved size if it is none of them.
-    fn canvas_sizes(&self) -> Vec<((u32, u32), String)> {
-        let label = |(w, h): (u32, u32)| {
-            if h > w {
-                format!("{w} x {h} (vertical)")
-            } else {
-                format!("{w} x {h}")
-            }
-        };
-        let mut v: Vec<_> = SIZES.iter().map(|s| (*s, label(*s))).collect();
-        if let Some(main) = self.display
-            && let Some(d) = canvas_profile::canvas_for_display(main.size.0, main.size.1)
-        {
-            // The fitted size stays in pixels. The scale is only the row's label.
-            let text = rbs_capture::choose_framebuffer(rbs_capture::DisplayReading {
+    /// The canvas tiles for the current orientation: the broadcast sizes, and the
+    /// main display when it is not already one of them. A custom size is only the
+    /// fields, so it is absent here.
+    fn canvas_tiles(&self) -> Vec<CanvasTile> {
+        let portrait = self.canvas.height > self.canvas.width;
+        let display = self.display.and_then(|main| {
+            let size = canvas_profile::canvas_for_display(main.size.0, main.size.1)?;
+            let percent = rbs_capture::choose_framebuffer(rbs_capture::DisplayReading {
                 monitor: None,
-                mode: Some(d),
+                mode: Some(size),
                 scale: main.scale,
             })
-            .map(|c| c.label())
-            .unwrap_or_else(|| format!("{} (main display)", label(d)));
-            match v.iter_mut().find(|(s, _)| *s == d) {
-                Some(entry) => entry.1 = text,
-                None => v.push((d, text)),
-            }
+            .and_then(|c| c.percent);
+            Some((size, percent))
+        });
+        let mut tiles: Vec<_> = canvas_profile::SIZES
+            .iter()
+            .map(|&(w, h)| {
+                let (width, height) = if portrait { (h, w) } else { (w, h) };
+                let title = canvas_profile::broadcast_name(width, height).unwrap_or("Custom");
+                let detail = match display {
+                    Some((size, percent)) if size == (width, height) => match percent {
+                        Some(percent) => {
+                            format!("{width} × {height} · this display, {percent}%")
+                        }
+                        None => format!("{width} × {height} · this display"),
+                    },
+                    _ => format!("{width} × {height}"),
+                };
+                CanvasTile {
+                    title,
+                    detail,
+                    width,
+                    height,
+                }
+            })
+            .collect();
+        if let Some(((width, height), percent)) = display
+            && !tiles.iter().any(|t| (t.width, t.height) == (width, height))
+        {
+            let detail = match percent {
+                Some(percent) => format!("{width} × {height} · {percent}%"),
+                None => format!("{width} × {height}"),
+            };
+            tiles.push(CanvasTile {
+                title: "This display",
+                detail,
+                width,
+                height,
+            });
         }
-        let saved = (self.canvas.width, self.canvas.height);
-        if !v.iter().any(|(s, _)| *s == saved) {
-            v.push((saved, label(saved)));
-        }
-        v
+        tiles
     }
 
-    /// A canvas size was picked. `close_preview` runs before the studio restarts:
-    /// the old studio's preview ends with it.
-    pub fn set_canvas_size(&mut self, i: i32, close_preview: impl FnOnce()) {
-        if let Some(((w, h), _)) = self.canvas_sizes().get(i as usize) {
-            let next = CanvasProfile {
-                width: *w,
-                height: *h,
-                ..self.canvas
-            };
-            self.change_canvas(next, close_preview);
+    /// Width and height were typed or a tile was picked. `close_preview` runs before
+    /// the studio restarts: the old studio's preview ends with it.
+    pub fn set_canvas_sides(&mut self, width: f32, height: f32, close_preview: impl FnOnce()) {
+        let Some(width) = whole_side(width) else {
+            self.canvas_note = "Canvas width must be a whole number of pixels.".into();
+            return;
+        };
+        let Some(height) = whole_side(height) else {
+            self.canvas_note = "Canvas height must be a whole number of pixels.".into();
+            return;
+        };
+        let next = CanvasProfile {
+            width,
+            height,
+            ..self.canvas
+        };
+        self.change_canvas(next, close_preview);
+    }
+
+    /// Portrait swaps the sides. Turning it on while the canvas is already portrait,
+    /// or off while it is landscape, changes nothing.
+    pub fn set_canvas_portrait(&mut self, on: bool, close_preview: impl FnOnce()) {
+        let (width, height) = (self.canvas.width, self.canvas.height);
+        if on == (height > width) {
+            return;
         }
+        self.set_canvas_sides(height as f32, width as f32, close_preview);
     }
 
     /// A frame rate was picked.
@@ -4973,6 +5109,177 @@ fn free_collection_name(user: &UserSession, wanted: &str) -> String {
         .unwrap_or_else(|| format!("{wanted} new"))
 }
 
+/// One canvas tile. `title` is a broadcast name or "This display".
+struct CanvasTile {
+    title: &'static str,
+    detail: String,
+    width: u32,
+    height: u32,
+}
+
+struct SizeNestModel {
+    bands: Vec<SizeBand>,
+    extras: Vec<SizeBand>,
+    index: i32,
+    value: String,
+    same: bool,
+}
+
+impl StudioUi {
+    fn canvas_nest(&self) -> SizeNestModel {
+        let mut tiles: Vec<(String, String, u32, u32, Option<f32>)> = self
+            .canvas_tiles()
+            .into_iter()
+            .map(|tile| {
+                (
+                    tile.title.to_owned(),
+                    tile.detail,
+                    tile.width,
+                    tile.height,
+                    canvas_profile::broadcast_scale(tile.width, tile.height),
+                )
+            })
+            .collect();
+        let current = (self.canvas.width, self.canvas.height);
+        if !tiles.iter().any(|tile| (tile.2, tile.3) == current) {
+            tiles.push((
+                "Custom".to_owned(),
+                format!("{} × {}", current.0, current.1),
+                current.0,
+                current.1,
+                None,
+            ));
+        }
+        let mut bands = Vec::new();
+        let mut extras = Vec::new();
+        for (title, detail, width, height, scale) in tiles {
+            let band = size_band(&title, &detail, width, height, 0, scale.unwrap_or(0.0));
+            if scale.is_some() {
+                bands.push(band);
+            } else {
+                extras.push(band);
+            }
+        }
+        bands.sort_by(|a, b| {
+            b.scale
+                .partial_cmp(&a.scale)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut index = -1;
+        let mut value = format!("{} × {}", current.0, current.1);
+        let mut next = 0;
+        for band in bands.iter_mut().chain(extras.iter_mut()) {
+            band.index = next;
+            if (band.picture_w, band.picture_h) == (current.0 as i32, current.1 as i32) {
+                index = next;
+                value = format!("{} · {}", band.title, band.detail);
+            }
+            next += 1;
+        }
+        SizeNestModel {
+            bands,
+            extras,
+            index,
+            value,
+            same: false,
+        }
+    }
+}
+
+fn output_nest(
+    options: &[rbs_app::record_profile::OutputSizeOption],
+    saved: Option<OutputSize>,
+    canvas: (u32, u32),
+) -> SizeNestModel {
+    let mut named = Vec::new();
+    let mut extras = Vec::new();
+    for (index, option) in options.iter().enumerate() {
+        let Some(size) = option.size else {
+            continue;
+        };
+        let (title, detail) = output_choice_copy(size, canvas);
+        let scale = canvas_profile::broadcast_scale(size.width, size.height);
+        let band = size_band(
+            &title,
+            &detail,
+            size.width,
+            size.height,
+            index as i32,
+            scale.unwrap_or(0.0),
+        );
+        if scale.is_some() {
+            named.push(band);
+        } else {
+            extras.push(band);
+        }
+    }
+    named.sort_by(|a, b| {
+        b.scale
+            .partial_cmp(&a.scale)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let same = saved.is_none();
+    let index = if same { -1 } else { size_index(options, saved) };
+    let value = if same {
+        match canvas_profile::broadcast_name(canvas.0, canvas.1) {
+            Some(name) => format!("{name} · {} × {}", canvas.0, canvas.1),
+            None => format!("{} × {}", canvas.0, canvas.1),
+        }
+    } else {
+        options
+            .iter()
+            .find_map(|option| {
+                let size = option.size?;
+                (size == saved?).then(|| {
+                    let (title, detail) = output_choice_copy(size, canvas);
+                    format!("{title} · {detail}")
+                })
+            })
+            .unwrap_or_else(|| format!("{} × {}", canvas.0, canvas.1))
+    };
+    SizeNestModel {
+        bands: named,
+        extras,
+        index,
+        value,
+        same,
+    }
+}
+
+fn size_band(
+    title: &str,
+    detail: &str,
+    width: u32,
+    height: u32,
+    index: i32,
+    scale: f32,
+) -> SizeBand {
+    SizeBand {
+        title: title.into(),
+        detail: detail.into(),
+        picture_w: width as i32,
+        picture_h: height as i32,
+        index,
+        scale,
+    }
+}
+
+fn output_long_side(size: Option<OutputSize>, canvas: (u32, u32)) -> u32 {
+    size.map(|s| s.width.max(s.height))
+        .unwrap_or(canvas.0.max(canvas.1))
+}
+
+fn whole_side(value: f32) -> Option<u32> {
+    if !value.is_finite() || value < 0.0 || value > u32::MAX as f32 {
+        return None;
+    }
+    Some(value.round() as u32)
+}
+
+fn choice_model(items: &[SizeBand]) -> ModelRc<SizeBand> {
+    ModelRc::from(Rc::new(VecModel::from(items.to_vec())))
+}
+
 fn size_index(
     options: &[rbs_app::record_profile::OutputSizeOption],
     saved: Option<OutputSize>,
@@ -5863,32 +6170,77 @@ mod tests {
             size: (3840, 2160),
             scale: rbs_capture::DisplayScale::from_pixels_per_point(2, 1),
         });
-        let sizes = ui.canvas_sizes();
-        let row = sizes.iter().find(|(s, _)| *s == (3840, 2160)).unwrap();
-        assert_eq!(row.1, "3840 x 2160 (main display, 200%)");
+        let tiles = ui.canvas_tiles();
+        let four_k = tiles.iter().find(|t| t.title == "4K").unwrap();
+        assert_eq!((four_k.width, four_k.height), (3840, 2160));
+        assert_eq!(four_k.detail, "3840 × 2160 · this display, 200%");
+        assert!(tiles.iter().all(|t| t.title != "This display"));
         assert_eq!(
-            sizes.iter().find(|(s, _)| *s == (1920, 1080)).unwrap().1,
-            "1920 x 1080"
+            tiles.iter().find(|t| t.title == "1080p").unwrap().detail,
+            "1920 × 1080"
         );
-        assert!(sizes.iter().all(|(s, _)| *s != (7680, 4320)));
+        assert!(tiles.iter().all(|t| (t.width, t.height) != (7680, 4320)));
 
         ui.display = Some(MainDisplay {
             size: (3440, 1440),
             scale: rbs_capture::DisplayScale::from_dpi(144),
         });
-        let sizes = ui.canvas_sizes();
-        let row = sizes.iter().find(|(s, _)| *s == (3440, 1440)).unwrap();
-        assert_eq!(row.1, "3440 x 1440 (main display, 150%)");
+        let tiles = ui.canvas_tiles();
+        let row = tiles.iter().find(|t| t.title == "This display").unwrap();
+        assert_eq!((row.width, row.height), (3440, 1440));
+        assert_eq!(row.detail, "3440 × 1440 · 150%");
 
         ui.display = Some(MainDisplay {
             size: (2560, 1440),
             scale: None,
         });
-        let sizes = ui.canvas_sizes();
+        let tiles = ui.canvas_tiles();
+        assert!(tiles.iter().all(|t| t.title != "This display"));
         assert_eq!(
-            sizes.iter().find(|(s, _)| *s == (2560, 1440)).unwrap().1,
-            "2560 x 1440 (main display)"
+            tiles.iter().find(|t| t.title == "1440p").unwrap().detail,
+            "2560 × 1440 · this display"
         );
+
+        ui.canvas.width = 1080;
+        ui.canvas.height = 1920;
+        ui.display = Some(MainDisplay {
+            size: (3840, 2160),
+            scale: rbs_capture::DisplayScale::from_pixels_per_point(2, 1),
+        });
+        let tiles = ui.canvas_tiles();
+        let portrait = tiles.iter().find(|t| t.title == "1080p").unwrap();
+        assert_eq!((portrait.width, portrait.height), (1080, 1920));
+        let display = tiles.iter().find(|t| t.title == "This display").unwrap();
+        assert_eq!((display.width, display.height), (3840, 2160));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_typed_long_side_fits_the_canvas_and_an_odd_one_is_refused() {
+        let (mut ui, d) = ui("long-side");
+        ui.canvas.width = 1920;
+        ui.canvas.height = 1080;
+        ui.set_output_long_side(output::RECORDING, 1600.0);
+        assert_eq!(
+            ui.profile.output_size.map(|s| (s.width, s.height)),
+            Some((1600, 900))
+        );
+        assert!(ui.profile_note.is_empty(), "{}", ui.profile_note);
+        ui.set_output_long_side(output::RECORDING, 1920.0);
+        assert_eq!(ui.profile.output_size, None);
+        ui.set_output_long_side(output::RECORDING, 1921.0);
+        assert!(ui.profile_note.contains("even"), "{}", ui.profile_note);
+        assert_eq!(ui.profile.output_size, None);
+        ui.canvas.width = 2560;
+        ui.canvas.height = 1440;
+        ui.profile.output_size = None;
+        ui.set_output_same(output::RECORDING, false);
+        assert_eq!(
+            ui.profile.output_size.map(|s| (s.width, s.height)),
+            Some((1920, 1080))
+        );
+        ui.set_output_same(output::RECORDING, true);
+        assert_eq!(ui.profile.output_size, None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

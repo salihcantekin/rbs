@@ -131,10 +131,12 @@ export component SettingsCard inherits Rectangle {
     border-color: Theme.border-subtle;
     accessible-role: groupbox;
     accessible-label: title;
+    horizontal-stretch: 1;
     min-height: body.min-height;
     preferred-height: body.preferred-height;
     body := VerticalLayout {
         alignment: start;
+        horizontal-stretch: 1;
         padding-left: Tokens.size-panel-pad;
         padding-right: Tokens.size-panel-pad;
         padding-top: Tokens.size-panel-pad;
@@ -157,9 +159,11 @@ export component SettingsCard inherits Rectangle {
         // takes no room for them.
         Rectangle {
             visible: !root.closed;
+            horizontal-stretch: 1;
             height: root.closed ? 0px : inner.preferred-height;
             inner := VerticalLayout {
                 alignment: start;
+                horizontal-stretch: 1;
                 spacing: Tokens.size-field-gap;
                 padding-top: root.title != "" || root.description != "" ? Tokens.size-field-gap : 0;
                 if root.description != "": Text {
@@ -245,6 +249,7 @@ export component SettingBlock inherits Rectangle {
     in property <string> label;
     in property <string> help;
     in property <bool> divider: true;
+    horizontal-stretch: 1;
     min-height: lay.min-height;
     preferred-height: lay.preferred-height;
     if root.divider: Rectangle {

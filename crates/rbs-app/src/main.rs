@@ -3752,6 +3752,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_output_size, |app, out: i32, index: i32| {
         app.studio.set_output_size(out, index);
     });
+    on!(on_set_output_long_side, |app, out: i32, long: f32| {
+        app.studio.set_output_long_side(out, long);
+    });
+    on!(on_set_output_same, |app, out: i32, on: bool| {
+        app.studio.set_output_same(out, on);
+    });
     on!(on_go_live, |app| {
         app.studio.go_live();
     });
@@ -3782,8 +3788,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_latency, |app, i: i32| {
         app.studio.set_latency(i);
     });
-    on!(on_set_canvas_size, |app, i: i32| {
-        app.studio.set_canvas_size(i, close_preview);
+    on!(on_set_canvas_sides, |app, width: f32, height: f32| {
+        app.studio.set_canvas_sides(width, height, close_preview);
+    });
+    on!(on_set_canvas_portrait, |app, on: bool| {
+        app.studio.set_canvas_portrait(on, close_preview);
     });
     on!(on_set_canvas_rate, |app, i: i32| {
         app.studio.set_canvas_rate(i, close_preview);

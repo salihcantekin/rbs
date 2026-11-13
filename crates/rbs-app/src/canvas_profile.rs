@@ -13,14 +13,39 @@ use serde::{Deserialize, Serialize};
 /// The file format version this build writes and reads.
 const FORMAT: u32 = 1;
 
-/// Canvas sizes offered, besides the main display's own.
-pub const SIZES: [(u32, u32); 5] = [
-    (1280, 720),
-    (1920, 1080),
-    (2560, 1440),
-    (3840, 2160),
-    (1080, 1920),
-];
+/// Landscape broadcast sizes. Portrait is each pair with the sides swapped.
+/// The main display is offered beside these.
+pub const SIZES: [(u32, u32); 4] = [(1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)];
+
+/// The broadcast name of a landscape size or the same pair turned portrait.
+pub fn broadcast_name(width: u32, height: u32) -> Option<&'static str> {
+    let pair = if width >= height {
+        (width, height)
+    } else {
+        (height, width)
+    };
+    match pair {
+        (1280, 720) => Some("720p"),
+        (1920, 1080) => Some("1080p"),
+        (2560, 1440) => Some("1440p"),
+        (3840, 2160) => Some("4K"),
+        _ => None,
+    }
+}
+
+/// How far a broadcast size fills the 4K frame. 4K is 1, 1080p is 1/2, 720p is 1/3.
+/// Portrait uses the same fraction. `None` when the pair is not one of those sizes.
+pub fn broadcast_scale(width: u32, height: u32) -> Option<f32> {
+    let long = width.max(height);
+    let short = width.min(height);
+    match (long, short) {
+        (1280, 720) => Some(1.0 / 3.0),
+        (1920, 1080) => Some(0.5),
+        (2560, 1440) => Some(2.0 / 3.0),
+        (3840, 2160) => Some(1.0),
+        _ => None,
+    }
+}
 
 /// Frame rates offered (whole frames per second).
 pub const RATES: [u32; 5] = [24, 25, 30, 50, 60];
@@ -180,17 +205,24 @@ mod tests {
     fn defaults_and_presets_are_valid() {
         assert_eq!(CanvasProfile::new().problem(), None);
         for (w, h) in SIZES {
-            for fps in RATES {
-                let p = CanvasProfile {
-                    width: w,
-                    height: h,
-                    fps,
-                    ..CanvasProfile::new()
-                };
-                assert_eq!(p.problem(), None, "{p:?}");
-                assert_eq!(p.frame_rate().per_second().num(), fps);
+            for (w, h) in [(w, h), (h, w)] {
+                assert!(broadcast_name(w, h).is_some(), "{w}x{h}");
+                for fps in RATES {
+                    let p = CanvasProfile {
+                        width: w,
+                        height: h,
+                        fps,
+                        ..CanvasProfile::new()
+                    };
+                    assert_eq!(p.problem(), None, "{p:?}");
+                    assert_eq!(p.frame_rate().per_second().num(), fps);
+                }
             }
         }
+        assert_eq!(broadcast_name(1600, 900), None);
+        assert_eq!(broadcast_scale(1920, 1080), Some(0.5));
+        assert_eq!(broadcast_scale(1080, 1920), Some(0.5));
+        assert_eq!(broadcast_scale(1600, 900), None);
     }
 
     #[test]

@@ -1574,11 +1574,11 @@ component StatusBar inherits Rectangle {
             value: Studio.collection-name;
             clicked => { collection-menu.open({ x: collection-button.x, y: collection-button.y }); }
         }
-        if Studio.canvas-sizes.length > Studio.canvas-size && Studio.canvas-size >= 0: Text {
+        if Studio.canvas-label != "": Text {
             horizontal-stretch: 0;
             text: Studio.canvas-rates.length > Studio.canvas-rate && Studio.canvas-rate >= 0
-                ? @tr("{} · {} fps", Studio.canvas-sizes[Studio.canvas-size], Studio.canvas-rates[Studio.canvas-rate])
-                : Studio.canvas-sizes[Studio.canvas-size];
+                ? @tr("{} · {} fps", Studio.canvas-label, Studio.canvas-rates[Studio.canvas-rate])
+                : Studio.canvas-label;
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             vertical-alignment: center;
@@ -2612,6 +2612,7 @@ export component SettingsWindow inherits Window {
                 }
             }
             flick := Flickable {
+                horizontal-stretch: 1;
                 content-height: page.preferred-height;
                 content-width: self.width;
                 page := VerticalLayout {

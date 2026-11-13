@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection } from "components.slint";
+import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -414,17 +414,27 @@ export global Studio {
     in-out property <int> out-folder-serial;
     in property <[string]> out-formats;
     in property <int> out-format;
-    // Output size of the next recording (ADR-0102): "Same as canvas", then fitted presets.
-    in property <[string]> out-sizes;
-    in property <int> out-size;
+    // Output size of the next recording (ADR-0102): a switch, then nested frames.
+    in property <bool> out-same;
+    in property <bool> out-portrait;
+    in property <[SizeBand]> out-bands;
+    in property <[SizeBand]> out-extras;
+    in property <int> out-choice;
+    in property <string> out-value;
+    // The long side the field shows: the stored size, or the canvas when it is the same.
+    in property <int> out-long;
     // The recording's encoder fields.
     in property <EncoderData> out-enc;
     // A problem with the settings or their file; empty when none.
     in property <string> out-note;
     callback set-folder(string);
     callback set-format(int);
-    // An Output size row of an output (0 recording, 1 stream) was picked.
+    // An Output size chip of an output (0 recording, 1 stream) was picked.
     callback set-output-size(int /* output */, int /* index */);
+    // A long side was typed for that output. The short side follows the canvas.
+    callback set-output-long-side(int /* output */, float);
+    // Same as canvas was turned on or off for that output.
+    callback set-output-same(int /* output */, bool);
     // An encoder field of an output (0 recording, 1 stream) was picked: `field` is an
     // `EncoderFields` code, `value` the picked index (padding: 0 off, 1 on).
     callback set-encoding(int /* output */, int /* field */, int /* value */);
@@ -474,9 +484,13 @@ export global Studio {
     in property <[string]> st-latencies;
     in property <int> st-latency;
     in property <EncoderData> st-enc;
-    // Output size of the next stream (ADR-0102): "Same as canvas", then fitted presets.
-    in property <[string]> st-sizes;
-    in property <int> st-size;
+    // Output size of the next stream (ADR-0102): a switch, then nested frames.
+    in property <bool> st-same;
+    in property <[SizeBand]> st-bands;
+    in property <[SizeBand]> st-extras;
+    in property <int> st-choice;
+    in property <string> st-value;
+    in property <int> st-long;
     // A problem with the stream settings, the key or their file; empty when none.
     in property <string> st-note;
     // One line: protocol, server, encoder and bitrates of the next stream.
@@ -502,16 +516,24 @@ export global Studio {
     callback set-auto-record(bool);
     callback set-latency(int);
 
-    // The canvas (Settings, Video): sizes and rates offered, the ones in use.
-    in property <[string]> canvas-sizes;
-    in property <int> canvas-size;
+    // The canvas (Settings, Video): tiles for the current orientation, the one in
+    // use (-1 when the size matches none), the fields, and "W × H" for the status bar.
+    in property <[SizeBand]> canvas-bands;
+    in property <[SizeBand]> canvas-extras;
+    in property <int> canvas-choice;
+    in property <string> canvas-value;
+    in property <int> canvas-width;
+    in property <int> canvas-height;
+    in property <bool> canvas-portrait;
+    in property <string> canvas-label;
     in property <[string]> canvas-rates;
     in property <int> canvas-rate;
     // The studio restarts with a new canvas; true until it runs again.
     in property <bool> canvas-restarting;
     // A problem with the canvas or its file; empty when none.
     in property <string> canvas-note;
-    callback set-canvas-size(int);
+    callback set-canvas-sides(float, float);
+    callback set-canvas-portrait(bool);
     callback set-canvas-rate(int);
 
     // General (Settings, General): leave the RBS windows out of a screen recording.
@@ -4473,17 +4495,56 @@ export component RecordingSettings inherits Rectangle {
         SettingsCard {
             title: @tr("Encoding");
             id: "settings.recording.encoding";
-            SettingRow {
+            SettingBlock {
                 divider: false;
                 label: @tr("Output size");
-                help: @tr("The encoded picture size. It applies to the next recording or stream.");
-                enabled: idle;
-                Select {
+                help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next recording.");
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Tokens.space-3;
+                    Toggle {
+                        label: @tr("Same as canvas");
+                        text: @tr("Same as canvas");
+                        checked: Studio.out-same;
+                        enabled: idle;
+                        toggled(on) => { Studio.set-output-same(0, on); }
+                    }
+                    if Studio.out-same: Text {
+                        text: Studio.out-value;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-caption-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+                if !Studio.out-same: SizeNest {
                     label: @tr("Output size");
-                    options: Studio.out-sizes;
-                    index: Studio.out-size;
+                    bands: Studio.out-bands;
+                    extras: Studio.out-extras;
+                    index: Studio.out-choice;
+                    portrait: Studio.out-portrait;
+                    value: Studio.out-value;
                     enabled: idle;
-                    selected(i) => { Studio.set-output-size(0, i); }
+                    selected(i, w, h) => { Studio.set-output-size(0, i); }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Tokens.space-2;
+                        Text {
+                            text: @tr("Long side");
+                            color: idle ? Theme.text-secondary : Theme.text-disabled;
+                            font-size: Tokens.type-caption-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        NumberField {
+                            label: @tr("Long side");
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.out-long;
+                            step: 2;
+                            enabled: idle;
+                            edited(v) => { Studio.set-output-long-side(0, v); }
+                        }
+                    }
                 }
             }
             fields := EncoderFields {
@@ -4625,17 +4686,56 @@ export component StreamSettings inherits Rectangle {
         SettingsCard {
             title: @tr("Encoding");
             id: "settings.stream.encoding";
-            SettingRow {
+            SettingBlock {
                 divider: false;
                 label: @tr("Output size");
-                help: @tr("The encoded picture size. It applies to the next recording or stream.");
-                enabled: idle;
-                Select {
+                help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next stream.");
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Tokens.space-3;
+                    Toggle {
+                        label: @tr("Same as canvas");
+                        text: @tr("Same as canvas");
+                        checked: Studio.st-same;
+                        enabled: idle;
+                        toggled(on) => { Studio.set-output-same(1, on); }
+                    }
+                    if Studio.st-same: Text {
+                        text: Studio.st-value;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-caption-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+                if !Studio.st-same: SizeNest {
                     label: @tr("Output size");
-                    options: Studio.st-sizes;
-                    index: Studio.st-size;
+                    bands: Studio.st-bands;
+                    extras: Studio.st-extras;
+                    index: Studio.st-choice;
+                    portrait: Studio.out-portrait;
+                    value: Studio.st-value;
                     enabled: idle;
-                    selected(i) => { Studio.set-output-size(1, i); }
+                    selected(i, w, h) => { Studio.set-output-size(1, i); }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Tokens.space-2;
+                        Text {
+                            text: @tr("Long side");
+                            color: idle ? Theme.text-secondary : Theme.text-disabled;
+                            font-size: Tokens.type-caption-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        NumberField {
+                            label: @tr("Long side");
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.st-long;
+                            step: 2;
+                            enabled: idle;
+                            edited(v) => { Studio.set-output-long-side(1, v); }
+                        }
+                    }
                 }
             }
             fields := EncoderFields {
@@ -4676,17 +4776,47 @@ export component VideoSettings inherits Rectangle {
         SettingsCard {
             title: @tr("Canvas");
             id: "settings.video.canvas";
-            SettingRow {
+            SettingBlock {
                 divider: false;
                 label: @tr("Canvas size");
-                help: @tr("The size the studio draws every scene at, in pixels.");
-                enabled: can-change;
-                Select {
+                help: @tr("720p, 1080p, 1440p and 4K share one corner. Or type a size. Portrait swaps the sides.");
+                SizeNest {
                     label: @tr("Canvas size");
-                    options: Studio.canvas-sizes;
-                    index: Studio.canvas-size;
+                    bands: Studio.canvas-bands;
+                    extras: Studio.canvas-extras;
+                    index: Studio.canvas-choice;
+                    portrait: Studio.canvas-portrait;
+                    value: Studio.canvas-value;
                     enabled: can-change;
-                    selected(i) => { Studio.set-canvas-size(i); }
+                    selected(i, w, h) => { Studio.set-canvas-sides(w, h); }
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        NumberField {
+                            label: @tr("Canvas width");
+                            prefix: "W";
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.canvas-width;
+                            step: 2;
+                            enabled: can-change;
+                            edited(v) => { Studio.set-canvas-sides(v, Studio.canvas-height); }
+                        }
+                        NumberField {
+                            label: @tr("Canvas height");
+                            prefix: "H";
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.canvas-height;
+                            step: 2;
+                            enabled: can-change;
+                            edited(v) => { Studio.set-canvas-sides(Studio.canvas-width, v); }
+                        }
+                    }
+                    Toggle {
+                        label: @tr("Portrait canvas");
+                        text: @tr("Portrait");
+                        checked: Studio.canvas-portrait;
+                        enabled: can-change;
+                        toggled(on) => { Studio.set-canvas-portrait(on); }
+                    }
                 }
             }
             SettingRow {

@@ -219,6 +219,36 @@ pub fn output_size_options(canvas: (u32, u32), saved: Option<OutputSize>) -> Vec
     options
 }
 
+/// The chip's title and detail for an explicit output size. A preset long side
+/// that keeps the canvas shape is 720p, 1080p, 1440p or 4K; any other size is
+/// named by its pixels. The detail carries the pixels and downscale or upscale.
+pub fn output_choice_copy(size: OutputSize, canvas: (u32, u32)) -> (String, String) {
+    let long = size.width.max(size.height);
+    let named = output_size_matches(size.pair(), canvas).then(|| match long {
+        1280 => Some("720p"),
+        1920 => Some("1080p"),
+        2560 => Some("1440p"),
+        3840 => Some("4K"),
+        _ => None,
+    });
+    let pixels = format!("{} × {}", size.width, size.height);
+    let canvas_pixels = u64::from(canvas.0) * u64::from(canvas.1);
+    let area = u64::from(size.width) * u64::from(size.height);
+    let scale = if area < canvas_pixels {
+        "downscale"
+    } else if area > canvas_pixels {
+        "upscale"
+    } else {
+        ""
+    };
+    match named.flatten() {
+        Some(name) if scale.is_empty() => (name.to_owned(), pixels),
+        Some(name) => (name.to_owned(), format!("{pixels} · {scale}")),
+        None if scale.is_empty() => (pixels, String::new()),
+        None => (pixels, scale.to_owned()),
+    }
+}
+
 fn output_size_label(size: OutputSize, canvas_pixels: u64) -> String {
     let pixels = u64::from(size.width) * u64::from(size.height);
     let scale = if pixels < canvas_pixels {
@@ -1424,6 +1454,20 @@ mod tests {
                 .all(|s| s.width.is_multiple_of(2) && s.height.is_multiple_of(2))
         );
         assert!(sizes.iter().all(|s| s.width * 9 == s.height * 16));
+        let down = options
+            .iter()
+            .find(|o| o.label == "1280 x 720 (downscale)")
+            .and_then(|o| o.size)
+            .unwrap();
+        assert_eq!(
+            output_choice_copy(down, canvas),
+            ("720p".to_owned(), "1280 × 720 · downscale".to_owned())
+        );
+        let custom = fit_output_size(1600, canvas).unwrap();
+        assert_eq!(
+            output_choice_copy(custom, canvas),
+            ("1600 × 900".to_owned(), "downscale".to_owned())
+        );
         assert!(options.iter().any(|o| o.label == "1280 x 720 (downscale)"));
         assert!(options.iter().any(|o| o.label == "2560 x 1440 (upscale)"));
         assert!(options.iter().any(|o| o.label == "3840 x 2160 (upscale)"));

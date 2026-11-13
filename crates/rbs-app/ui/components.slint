@@ -1151,6 +1151,134 @@ component Segment inherits Rectangle {
     FocusRing { show: focus.ring; }
 }
 
+// One fixed picture size inside a SizeNest. `scale` is its long side divided by 4K,
+// so the frames share one corner and keep their pixel ratio.
+export struct SizeBand { title: string, detail: string, picture-w: int, picture-h: int, index: int, scale: float }
+
+component NestBand inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked();
+    callback pointed(bool);
+    property <bool> hot: touch.has-hover || focus.has-focus;
+    changed hot => { root.pointed(root.hot); }
+    border-width: Tokens.size-border;
+    border-color: !root.enabled ? Theme.border-subtle : root.hot || root.checked ? Theme.accent : Theme.border-strong;
+    background: !root.enabled ? Theme.surface-sunken : root.hot || root.checked ? Theme.accent-subtle : Theme.surface-raised;
+    animate background { duration: Tokens.motion-fast; }
+    accessible-role: button;
+    accessible-label: @tr("{}, {}", root.title, root.detail);
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    focus := RingFocus {
+        focus-on-click: false;
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus-pointer(); root.clicked(); }
+    }
+    FocusRing { show: focus.ring; }
+}
+
+component NestExtra inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked();
+    callback pointed(bool);
+    b := Button {
+        text: root.title;
+        dense: true;
+        checked: root.checked;
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    property <bool> hot: b.pointed;
+    changed hot => { root.pointed(root.hot); }
+}
+
+// Fixed sizes as one stack of frames, largest behind, sharing the top-left corner.
+// A size that is not one of those frames is a separate button. The line under the
+// frames names the hovered frame, or the chosen one when nothing is hovered (U7).
+export component SizeNest inherits Rectangle {
+    in property <[SizeBand]> bands;
+    in property <[SizeBand]> extras;
+    in property <int> index: -1;
+    in property <bool> portrait: false;
+    in property <bool> enabled: true;
+    in property <string> label;
+    // The chosen size in words, shown when nothing is hovered.
+    in property <string> value;
+    callback selected(int, int, int);
+    property <string> hot-line;
+    horizontal-stretch: 1;
+    HorizontalLayout {
+        alignment: start;
+        spacing: Tokens.space-4;
+        if root.bands.length > 0: frame := Rectangle {
+            width: root.portrait ? Tokens.size-menu-sm * 9 / 16 : Tokens.size-menu-sm;
+            height: root.portrait ? Tokens.size-menu-sm : Tokens.size-menu-sm * 9 / 16;
+            background: Theme.surface-sunken;
+            border-radius: Tokens.radius-sm;
+            accessible-role: groupbox;
+            accessible-label: root.label;
+            for band in root.bands: NestBand {
+                x: 0px;
+                y: 0px;
+                width: frame.width * band.scale;
+                height: frame.height * band.scale;
+                title: band.title;
+                detail: band.detail;
+                checked: band.index == root.index;
+                enabled: root.enabled;
+                clicked => { root.selected(band.index, band.picture-w, band.picture-h); }
+                pointed(on) => {
+                    if on { root.hot-line = @tr("{} · {}", band.title, band.detail); }
+                    else if root.hot-line == @tr("{} · {}", band.title, band.detail) { root.hot-line = ""; }
+                }
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: start;
+            spacing: Tokens.space-2;
+            Text {
+                text: root.hot-line != "" ? root.hot-line : root.value;
+                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if root.extras.length > 0: HorizontalLayout {
+                alignment: start;
+                spacing: Tokens.space-2;
+                for extra in root.extras: NestExtra {
+                    title: extra.title;
+                    detail: extra.detail;
+                    checked: extra.index == root.index;
+                    enabled: root.enabled;
+                    clicked => { root.selected(extra.index, extra.picture-w, extra.picture-h); }
+                    pointed(on) => {
+                        if on { root.hot-line = @tr("{} · {}", extra.title, extra.detail); }
+                        else if root.hot-line == @tr("{} · {}", extra.title, extra.detail) { root.hot-line = ""; }
+                    }
+                }
+            }
+            @children
+        }
+    }
+}
+
 // SegmentedControl: a few mutually exclusive options side by side, in a sunken track
 // with the chosen one raised (mockup E). The chosen option is also bold and marked
 // checked for screen readers, so it is never shown by colour alone (U7).
