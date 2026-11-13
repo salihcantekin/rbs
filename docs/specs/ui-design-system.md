@@ -394,6 +394,7 @@ Toolbar items are command registry ids ([ADR-0050](../adr/0050-command-registry-
   | `scene.add` | action | `scene.add` (protocol 1.6), the server picks the name | Scene |
   | `scene.rename?scene=&name=` | action | `scene.rename {scene, name}` | Scene |
   | `scene.remove?scene=` | action, disabled for the last scene | `scene.remove {scene}` | Scene |
+  | `scene.duplicate?scene=` | action | `scene.duplicate {scene}` (protocol 1.43) | Scene |
   | `item.visible.toggle?item=`, `item.locked.toggle?item=` | toggle, checked while shown or locked | `item.set_visible {item, visible}`, `item.set_locked {item, locked}` (protocol 1.6) | Source |
   | `source.muted.toggle?source=` | toggle, checked while muted | `source.set_muted {source, muted}` | Source |
   | `source.mixer_hidden.toggle?source=` ("Hidden from Mixer", icon `eye-off`) | toggle, checked while hidden | `source.set_mixer_hidden {source, hidden}` (protocol 1.14, ADR-0080) | Source |

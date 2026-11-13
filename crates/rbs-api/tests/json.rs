@@ -252,6 +252,7 @@ fn every_request() -> Vec<Request> {
             scene: 2,
             name: "Game".into(),
         })),
+        c(Command::SceneDuplicate(SceneRef { scene: 2 })),
         c(Command::SceneSwitch(SceneRef { scene: 0 })),
         c(Command::SourceRename(RenameSource {
             source: 3,
