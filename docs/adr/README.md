@@ -118,7 +118,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0107](0107-temporal-sources-sleep-when-hidden.md) | Temporal sources sleep unless a shown scene draws them | Proposed |
 | [0108](0108-media-file-source.md) | A local media-file source for video and animated pictures | Proposed |
 | [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
-| [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Proposed |
+| [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Accepted |
 | [0111](0111-vertical-outputs-start-with-the-main-ones.md) | Vertical outputs start and stop with the main ones, and each output shows its own state | Accepted |
 | [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted |
 | [0113](0113-experience-level-and-first-run.md) | An experience level and the first-run choice | Accepted |

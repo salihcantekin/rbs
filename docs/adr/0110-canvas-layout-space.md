@@ -1,6 +1,6 @@
 # ADR-0110: Canvas layout space
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-13
 - Deciders: Salih
 - Supersedes: ADR-0053 decision 12 (style lengths now take the fit scale of decision 2), ADR-0063 decision 1 (the "rescaled like the scene's" clause) and ADR-0063 consequence 3.
@@ -38,4 +38,4 @@ Item boxes are already the document. A second copy of each box, or a stored mult
 
 Independent review per ADR-0014.
 
-- 2026-11-13, independent AI session: approve with changes. The map is exact at equal sizes and edits do not compound; the file round-trips. Handled: superseded decisions named (ADR-0053 decision 12, ADR-0063 decision 1 and consequence 3), the space of the shared default box, read-back pixels and undo on a size change (decision 6), the no-op box check compares in layout space, the missing "use this size" step and boxes outside the space stated, round-trip and repeated-box tests. Waiting for the owner's acceptance.
+- 2026-11-13, independent AI session: approve with changes. The map is exact at equal sizes and edits do not compound; the file round-trips. Handled: superseded decisions named (ADR-0053 decision 12, ADR-0063 decision 1 and consequence 3), the space of the shared default box, read-back pixels and undo on a size change (decision 6), the no-op box check compares in layout space, the missing "use this size" step and boxes outside the space stated, round-trip and repeated-box tests. Accepted by the owner (Salih) on 2026-11-13.
