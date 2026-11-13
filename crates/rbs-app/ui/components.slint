@@ -3057,3 +3057,73 @@ export component FeatureSection inherits VerticalLayout {
         }
     }
 }
+
+// One setting (ADR-0114): its name and explanation on the left, its control on the
+// right. When the row is narrower than `size.row.stack-below`, or the control needs
+// more than half the row, the control goes under the name instead (stacked). A
+// divider line separates it from the row above; the first row of a card without a
+// title sets `divider: false`. The two shapes are placed by geometry because
+// `@children` cannot sit under an `if`.
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> help;
+    // The help is a problem (error colour), not an explanation.
+    in property <bool> help-is-problem;
+    // The help is a warning (warning colour). The words say so; colour is not
+    // the only signal (U7). A problem takes the error colour.
+    in property <bool> help-is-warning;
+    in property <bool> divider: true;
+    // Off: the label shows in the disabled colour (the control is disabled too).
+    in property <bool> enabled: true;
+    // The preferred width of the control column. Beside the name it never takes
+    // more than half the row.
+    in property <length> control-width: Tokens.size-menu-md;
+    // The control fills the column (fields, lists to pick from); off, it keeps its own
+    // width at the column's right edge (toggles, segmented controls, buttons), or at
+    // the left edge when stacked.
+    in property <bool> fill: true;
+    // The control is under the name.
+    out property <bool> stacked: root.width < Tokens.size-row-stack-below || controls.min-width > root.width / 2;
+    property <bool> has-info: root.label != "" || root.help != "";
+    property <length> column: max(controls.min-width, min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2));
+    property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
+    property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
+    min-width: max(info.min-width, controls.min-width);
+    min-height: Tokens.space-3 * 2 + root.inner;
+    preferred-height: Tokens.space-3 * 2 + root.inner;
+    if root.divider: Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    info := VerticalLayout {
+        x: 0;
+        width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap);
+        y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
+        height: self.preferred-height;
+        spacing: Tokens.space-1;
+        if root.label != "": Text {
+            text: root.label;
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        if root.help != "": Text {
+            text: root.help;
+            color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+    }
+    controls := HorizontalLayout {
+        width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
+        x: root.stacked ? 0px : root.width - self.width;
+        y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
+        height: self.preferred-height;
+        alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
+        spacing: Tokens.space-2;
+        @children
+    }
+}
