@@ -909,6 +909,35 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
         Update::BoxPlaced { seq: 3, ok } => Some(ok),
         _ => None,
     }));
+    // After the main program switches, the following canvas shows the new scene (not
+    // the scene it showed when it was added), so that scene's sources are placed on it.
+    let first = scenes(&mut c)["program"].clone();
+    let two = ok(&c.call("scene.add", json!({"name": "Two"})))["scene"].clone();
+    ok(&c.call("scene.switch", json!({"scene": two})));
+    let other = add(&mut c, "screen", "Screen 2");
+    next(&updates, |u| match u {
+        Update::Sources(r)
+            if r.iter()
+                .any(|r| u64::from(r.id.get()) == other && r.vertical_layout.is_some()) =>
+        {
+            Some(())
+        }
+        _ => None,
+    });
+    host.send(Command::SetSourceBox {
+        seq: 6,
+        gesture: 8,
+        id: SourceId::from_raw(other as u32),
+        position: [0.0, 0.0],
+        size: [1080.0, 960.0],
+        canvas: OutputCanvas::Vertical,
+    });
+    assert!(next(&updates, |u| match u {
+        Update::BoxPlaced { seq: 6, ok } => Some(ok),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    }));
+    ok(&c.call("scene.switch", json!({"scene": first})));
     // In studio mode the vertical canvas shows the scene on air, not the one edited:
     // its boxes are refused, and the rows give none.
     let program = scenes(&mut c)["program"].clone();
