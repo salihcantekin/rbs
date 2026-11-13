@@ -364,6 +364,13 @@ export global Studio {
     callback preview-nudge(int /* dx */, int /* dy */);
     // Escape on the picture panel.
     callback preview-deselect();
+    // The same on the vertical canvas's picture (ADR-0093 decision 4): boxes there are
+    // the sources' own layout on that canvas; no crop and no menu yet.
+    in property <[MarkData]> vertical-marks;
+    callback vertical-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */);
+    callback vertical-drag(float /* x */, float /* y */);
+    callback vertical-release();
+    callback vertical-nudge(int /* dx */, int /* dy */);
     callback undo-delete();
     callback dismiss-deleted();
     // What Undo and Redo would apply to the scene now: 0 nothing, 1 adding, 2 deleting,
@@ -625,25 +632,35 @@ export global Studio {
 
 // The canvas as the viewers see it. The picture is a native layer the app places over
 // this rectangle; Slint draws only the background and the letterbox bars.
+// "rbs.program", "rbs.preview" or the vertical canvas's "rbs.program?canvas=vertical"
+// (ADR-0093 decision 7: its picture is made only while the panel shows).
 export component ProgramPanel inherits Rectangle {
-    // "rbs.program" or "rbs.preview".
     in property <string> panel;
     in property <string> title;
+    property <bool> vertical: panel == "rbs.program?canvas=vertical";
     // In studio mode both panels have a picture: Preview the preview scene, Program the
     // scene on air (ADR-0061).
     property <bool> scene: Studio.studio-mode && panel == "rbs.preview";
-    property <bool> here: Studio.studio-mode || Studio.picture-panel == panel;
-    property <int> shown: !here ? 6 : scene ? Studio.scene-preview-state : Studio.preview-state;
+    property <bool> here: vertical || Studio.studio-mode || Studio.picture-panel == panel;
+    // The codes of `Studio.preview-state`; the vertical panel's add 7 (no vertical
+    // canvas) and 8 (its picture did not start).
+    property <int> shown: vertical ? Studio.vertical-preview-state : !here ? 6 : scene ? Studio.scene-preview-state : Studio.preview-state;
     background: Theme.surface-sunken;
     accessible-role: image;
     accessible-label: title;
     accessible-description: shown != 0 ? note.text
+        : vertical ? @tr("The live picture of the vertical canvas")
         : scene ? @tr("The picture of the preview scene, the next to go on air")
         : @tr("The live picture of the scene on air");
     note := Text {
         visible: shown != 0;
         width: parent.width - 2 * Tokens.space-4;
-        text: shown == 1 ? (scene ? @tr("The preview is starting.") : @tr("The program is starting."))
+        text: vertical && shown == 1 ? @tr("The vertical picture is starting.")
+            : vertical && shown == 2 ? @tr("The vertical picture is not available on this platform yet. Its recording and stream work as usual.")
+            : vertical && shown == 3 ? @tr("The vertical picture cannot be shown in this session, for example over remote desktop.")
+            : shown == 7 ? @tr("There is no vertical canvas. Add a vertical output to see it here.")
+            : shown == 8 ? @tr("The vertical picture did not start. Hide and show this panel to try again.")
+            : shown == 1 ? (scene ? @tr("The preview is starting.") : @tr("The program is starting."))
             : shown == 2 && scene ? @tr("The preview scene's own picture is not available on this platform yet. Its sources are in the Sources panel, and Transition puts it on air.")
             : shown == 2 ? @tr("The program picture is not available on this platform yet.")
             : shown == 3 ? @tr("The program picture cannot be shown in this session, for example over remote desktop.")
@@ -660,18 +677,23 @@ export component ProgramPanel inherits Rectangle {
     // the selected source by 1 canvas pixel, with Shift by 10; Escape clears the
     // selection. Delete or Backspace asks with the source row's confirmation: a bar
     // drawn on the picture would sit under the live picture.
-    // In studio mode the preview scene is edited, on the Preview picture only.
-    property <bool> editable: here && Studio.state == 1 && (!Studio.studio-mode || scene);
+    // In studio mode the preview scene is edited, on the Preview picture only; the
+    // vertical canvas, which shows the scene on air, only outside studio mode and while
+    // its picture shows (no dragging blind), where a box becomes the source's own
+    // layout on that canvas (ADR-0093 decision 4).
+    property <bool> editable: vertical
+        ? Studio.state == 1 && !Studio.studio-mode && shown == 0
+        : here && Studio.state == 1 && (!Studio.studio-mode || scene);
     keys := FocusScope {
         focus-on-click: false;
         enabled: editable;
         key-pressed(e) => {
             if Studio.selected-source < 0 { return reject; }
             let step = e.modifiers.shift ? 10 : 1;
-            if e.text == Key.LeftArrow { Studio.preview-nudge(-step, 0); return accept; }
-            if e.text == Key.RightArrow { Studio.preview-nudge(step, 0); return accept; }
-            if e.text == Key.UpArrow { Studio.preview-nudge(0, -step); return accept; }
-            if e.text == Key.DownArrow { Studio.preview-nudge(0, step); return accept; }
+            if e.text == Key.LeftArrow { root.nudge(-step, 0); return accept; }
+            if e.text == Key.RightArrow { root.nudge(step, 0); return accept; }
+            if e.text == Key.UpArrow { root.nudge(0, -step); return accept; }
+            if e.text == Key.DownArrow { root.nudge(0, step); return accept; }
             if e.text == Key.Escape { Studio.preview-deselect(); return accept; }
             if e.text == Key.Delete || e.text == Key.Backspace {
                 Studio.ask-remove-selected();
@@ -683,6 +705,12 @@ export component ProgramPanel inherits Rectangle {
     // A right-click on the picture: the menu of the source under the pointer (it
     // becomes the selection), else the panel's own menu.
     property <Point> menu-at;
+    function nudge(dx: int, dy: int) {
+        if vertical { Studio.vertical-nudge(dx, dy); } else { Studio.preview-nudge(dx, dy); }
+    }
+    function release() {
+        if vertical { Studio.vertical-release(); } else { Studio.preview-release(); }
+    }
     menu := CommandMenu {
         context: "preview";
         target: "h=" + round(touch.height / 1px) + "&id=" + root.panel + "&w=" + round(touch.width / 1px)
@@ -691,14 +719,15 @@ export component ProgramPanel inherits Rectangle {
     touch := TouchArea {
         enabled: editable;
         pointer-event(e) => {
-            if e.kind == PointerEventKind.cancel { Studio.preview-release(); return; }
+            if e.kind == PointerEventKind.cancel { root.release(); return; }
             // The menu opens when the right button goes up, not down, so the press it
             // opened on has its release. On Windows the click that closes a system menu
             // reaches the picture as a press at the place the menu opened (the moves
             // made while it was open never arrive) and without its release; the app
             // tells it from a real press by the cursor's place (`preview-menu-opened`).
             if e.button == PointerEventButton.right {
-                if e.kind == PointerEventKind.up {
+                // The vertical picture has no menu yet.
+                if e.kind == PointerEventKind.up && !vertical {
                     keys.focus();
                     root.menu-at = { x: self.mouse-x, y: self.mouse-y };
                     Studio.preview-menu-opened(self.mouse-x / 1px, self.mouse-y / 1px);
@@ -709,52 +738,35 @@ export component ProgramPanel inherits Rectangle {
             if e.button != PointerEventButton.left { return; }
             if e.kind == PointerEventKind.down {
                 keys.focus();
-                Studio.preview-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
+                if vertical {
+                    Studio.vertical-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta);
+                } else {
+                    Studio.preview-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
+                }
             }
-            if e.kind == PointerEventKind.up { Studio.preview-release(); }
+            if e.kind == PointerEventKind.up { root.release(); }
         }
         moved => {
-            if self.pressed { Studio.preview-drag(self.mouse-x / 1px, self.mouse-y / 1px); }
+            if self.pressed {
+                if vertical {
+                    Studio.vertical-drag(self.mouse-x / 1px, self.mouse-y / 1px);
+                } else {
+                    Studio.preview-drag(self.mouse-x / 1px, self.mouse-y / 1px);
+                }
+            }
         }
     }
     // Where no layer shows the picture, the toolkit draws the selection itself, clipped
     // to the panel like the layer's marks.
     if shown != 0 && editable: Rectangle {
         clip: true;
-        for m in Studio.marks: Rectangle {
+        for m in vertical ? Studio.vertical-marks : Studio.marks: Rectangle {
             x: m.x;
             y: m.y;
             width: m.w;
             height: m.h;
             background: m.kind == 2 ? Theme.surface-raised : Theme.accent;
         }
-    }
-}
-
-// The vertical canvas as its viewers see it (ADR-0093 decision 7), view only. The
-// picture is a native layer placed over this rectangle, made only while the panel shows.
-export component VerticalPanel inherits Rectangle {
-    in property <string> title;
-    property <int> shown: Studio.vertical-preview-state;
-    background: Theme.surface-sunken;
-    accessible-role: image;
-    accessible-label: title;
-    accessible-description: shown != 0 ? note.text : @tr("The live picture of the vertical canvas");
-    note := Text {
-        visible: shown != 0;
-        width: parent.width - 2 * Tokens.space-4;
-        text: shown == 1 ? @tr("The vertical picture is starting.")
-            : shown == 2 ? @tr("The vertical picture is not available on this platform yet. Its recording and stream work as usual.")
-            : shown == 3 ? @tr("The vertical picture cannot be shown in this session, for example over remote desktop.")
-            : shown == 4 ? @tr("The picture shows in the main window. Dock this panel back to see it here.")
-            : shown == 7 ? @tr("There is no vertical canvas. Add a vertical output to see it here.")
-            : shown == 8 ? @tr("The vertical picture did not start. Hide and show this panel to try again.")
-            : @tr("The studio is not running: {}", Studio.failure);
-        color: Theme.text-secondary;
-        font-size: Tokens.type-body-size;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        wrap: word-wrap;
     }
 }
 

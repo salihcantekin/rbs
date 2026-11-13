@@ -1553,9 +1553,9 @@ impl Ctx {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_scene_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
-    /// The vertical canvas's picture (ADR-0093; macOS only for now, as the preview
-    /// scene's: Windows has one picture target per window).
-    #[cfg(target_os = "macos")]
+    /// The vertical canvas's picture (ADR-0093 decision 7). On Windows it shares the
+    /// window's DirectComposition target with the other pictures (#310).
+    #[cfg(any(target_os = "macos", windows))]
     fn connect_vertical_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
         preview::connect(preview::Picture::Vertical, endpoint, |ok| {
             let ctx = CTX.with(|c| c.borrow().clone());
@@ -1568,7 +1568,7 @@ impl Ctx {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_vertical_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
     /// Shows the Settings window at `section`, made on first use and kept until it is
@@ -1819,10 +1819,12 @@ impl Ctx {
         } else {
             picture_main
         };
+        let vertical_main = in_main(studio_ui::VERTICAL_PANEL);
         if let Some([_, _, w, h]) = edit_main {
             app.studio.set_picture_size(w, h);
         }
-        let vertical_main = in_main(studio_ui::VERTICAL_PANEL);
+        app.studio
+            .set_vertical_picture_size(vertical_main.map(|[_, _, w, h]| [w, h]));
         // Hiding the panel clears a failure: showing it again asks once more.
         if vertical_main.is_none() {
             app.studio.vertical_picture_failed = false;
@@ -1852,7 +1854,7 @@ impl Ctx {
             0 => ps::STARTING,
             2 => ps::STOPPED,
             _ if s.vertical.is_none() => ps::NO_CANVAS,
-            _ if !s.preview_offered || !cfg!(target_os = "macos") => ps::NO_PLATFORM,
+            _ if !s.preview_offered || !cfg!(any(target_os = "macos", windows)) => ps::NO_PLATFORM,
             _ if s.vertical_picture_failed => ps::FAILED,
             _ if s.vertical_preview_failed => ps::NO_SESSION,
             _ if vertical_main.is_none() && float_has(studio_ui::VERTICAL_PANEL) => {
@@ -1879,7 +1881,7 @@ impl Ctx {
 
         // The vertical canvas makes its picture only while its panel shows here: a
         // picture costs a compositor pass each frame (ADR-0093 decision 7, P13).
-        let vertical_wanted = cfg!(target_os = "macos")
+        let vertical_wanted = cfg!(any(target_os = "macos", windows))
             && running
             && s.preview_offered
             && s.vertical.is_some()
@@ -1919,6 +1921,14 @@ impl Ctx {
             };
             preview::set_marks(&app.main, marked, app.studio.marks());
             preview::set_marks(&app.main, other, &[]);
+            // The vertical picture is edited outside studio mode only (it shows the
+            // scene on air).
+            let vertical_marks = if studio_mode {
+                &[][..]
+            } else {
+                app.studio.vertical_marks()
+            };
+            preview::set_marks(&app.main, Picture::Vertical, vertical_marks);
             preview::place(&app.main);
         }
     }
@@ -3498,6 +3508,26 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_preview_release, |app| {
         app.studio.preview_release();
+    });
+    on!(
+        on_vertical_press,
+        |app, x: f32, y: f32, w: f32, h: f32, shift: bool, no_snap: bool| {
+            app.studio.vertical_press([x, y], [w, h], shift, no_snap);
+        }
+    );
+    on!(on_vertical_drag, |app, x: f32, y: f32| {
+        // As on the main picture: a drag whose button is no longer down ends here.
+        if primary_button_up() {
+            app.studio.vertical_release();
+        } else {
+            app.studio.vertical_drag([x, y]);
+        }
+    });
+    on!(on_vertical_release, |app| {
+        app.studio.vertical_release();
+    });
+    on!(on_vertical_nudge, |app, dx: i32, dy: i32| {
+        app.studio.vertical_nudge(dx as f32, dy as f32);
     });
     on!(on_preview_nudge, |app, dx: i32, dy: i32| {
         app.studio.preview_nudge(dx as f32, dy as f32);

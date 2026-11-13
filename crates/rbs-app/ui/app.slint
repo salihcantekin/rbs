@@ -12,7 +12,7 @@ import { ReplayBuffer } from "replay.slint";
 import { SourceSettingsWindow } from "source_settings.slint";
 import { CommandMenu, ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
-import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, VerticalPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
+import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { SourceSettingsWindow, ModeData, SourceSettingsData }
 export { OverlayProbe } from "overlay_probe.slint";
@@ -276,15 +276,10 @@ component PanelContent inherits Rectangle {
     in property <TabData> tab;
     property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.transition" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.library" || tab.id == "rbs.stats" || tab.id == "rbs.program?canvas=vertical";
     background: Theme.surface-raised;
-    if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
+    if tab.id == "rbs.program" || tab.id == "rbs.preview" || tab.id == "rbs.program?canvas=vertical": ProgramPanel {
         width: parent.width;
         height: parent.height;
         panel: tab.id;
-        title: tab.title;
-    }
-    if tab.id == "rbs.program?canvas=vertical": VerticalPanel {
-        width: parent.width;
-        height: parent.height;
         title: tab.title;
     }
     if tab.id == "rbs.scenes": ScenesPanel {

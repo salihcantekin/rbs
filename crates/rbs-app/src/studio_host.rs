@@ -320,6 +320,10 @@ pub struct SourceRow {
     pub meter: Option<Arc<LevelMeter>>,
     /// Where its picture is on the canvas (video sources); `None` for sound only.
     pub layout: Option<Layout>,
+    /// Where its picture is on the vertical canvas, in that canvas's pixels, while one
+    /// exists (video sources, ADR-0093 decision 4): its own layout there, else the
+    /// default one placed in that canvas.
+    pub vertical_layout: Option<Layout>,
     /// Its item in the program scene.
     pub item: ItemId,
     /// The picture this source is the "Capture audio too" companion of (ADR-0096).
@@ -395,6 +399,7 @@ impl PartialEq for SourceRow {
             && self.kind == other.kind
             && self.status == other.status
             && self.layout == other.layout
+            && self.vertical_layout == other.vertical_layout
             && self.item == other.item
             && self.companion_of == other.companion_of
             && self.picture == other.picture
@@ -903,6 +908,9 @@ pub enum Command {
         position: [f32; 2],
         /// Width and height.
         size: [f32; 2],
+        /// The canvas whose layout changes: the main one, or the vertical one, where
+        /// the box becomes the item's own layout there (ADR-0093 decision 4, U15).
+        canvas: OutputCanvas,
     },
     /// Cut source pixels from the edges of a video source's picture (ADR-0058), on the
     /// layout the canvas shows. With `keep_scale`, the box changes so a source pixel
@@ -3228,6 +3236,29 @@ impl Host {
                 id,
                 position,
                 size,
+                canvas: OutputCanvas::Vertical,
+            } => {
+                let ok = match self.set_vertical_box(id, position, size, gesture) {
+                    Ok(changed) => {
+                        if changed {
+                            self.apply(notify);
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        notify(Update::Error(e.text().to_owned()));
+                        false
+                    }
+                };
+                notify(Update::BoxPlaced { seq, ok });
+            }
+            Command::SetSourceBox {
+                seq,
+                gesture,
+                id,
+                position,
+                size,
+                canvas: OutputCanvas::Main,
             } => {
                 // The same handler a remote `item.set_box` runs. The window still
                 // matches the answer by `seq`, including a refusal.
@@ -7360,6 +7391,71 @@ impl Host {
         Ok(true)
     }
 
+    /// The vertical canvas, when its boxes can be edited: it shows the scene being
+    /// edited, which is the scene on air outside studio mode (it follows the main
+    /// program and shows no fallback).
+    fn vertical_edits(&self) -> Option<CanvasId> {
+        let v = self.vertical?;
+        let shown = self.collection.canvas(v.canvas)?.program?;
+        (self.preview().is_none() && shown == self.edited()).then_some(v.canvas)
+    }
+
+    /// Places a video source's picture on the vertical canvas (ADR-0093 decision 4):
+    /// the box, in that canvas's pixels, becomes the item's own layout there, so the
+    /// main canvas does not change (U15). Starts from what the vertical canvas shows.
+    /// `Ok(false)` when the box is already there.
+    fn set_vertical_box(
+        &mut self,
+        id: SourceId,
+        position: [f32; 2],
+        size: [f32; 2],
+        gesture: u64,
+    ) -> Result<bool, Refusal> {
+        let valid = position.iter().chain(size.iter()).all(|v| v.is_finite())
+            && size.iter().all(|v| *v != 0.0);
+        if !valid {
+            return Err(Refusal::Invalid(
+                "Position and size must be numbers, and the size cannot be 0.".into(),
+            ));
+        }
+        if self.vertical.is_none() {
+            return Err(Refusal::NotFound("There is no vertical canvas.".into()));
+        }
+        let canvas = self.vertical_edits().ok_or_else(|| {
+            Refusal::Conflict(
+                "The vertical canvas shows another scene: its boxes are edited while it shows the scene on air outside studio mode."
+                    .into(),
+            )
+        })?;
+        let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
+        if self
+            .globals()
+            .is_some_and(|g| self.scene_of(item.id) == Some(g))
+        {
+            return Err(Refusal::Conflict(
+                "Global sources are not on the vertical canvas yet.".into(),
+            ));
+        }
+        let mut layout = self
+            .collection
+            .placed_layout(canvas, item.layout_on(canvas));
+        if layout.position == position && layout.size == size {
+            return Ok(false);
+        }
+        layout.position = position;
+        layout.size = size;
+        let item = item.id;
+        let stored = self.collection.stored_layout(canvas, &layout);
+        let undo = self
+            .collection
+            .set_item_layout(item, Some(canvas), stored)
+            .map_err(|e| Refusal::of(&e))?;
+        let name = self.name_of(id);
+        self.history
+            .record(EditKind::Place, &name, gesture, vec![undo]);
+        Ok(true)
+    }
+
     /// A new style for an item's layout on the studio's canvas (its own layout there if
     /// it has one, else the default); `Ok(false)` when it already has it.
     fn set_item_style(
@@ -7806,6 +7902,12 @@ impl Host {
                     layout: kind
                         .is_some_and(|k| !k.is_audio())
                         .then(|| self.shown_layout(item)),
+                    // Global sources are not drawn on the vertical canvas yet.
+                    vertical_layout: kind
+                        .is_some_and(|k| !k.is_audio() && !global)
+                        .then(|| self.vertical_edits())
+                        .flatten()
+                        .map(|c| self.collection.placed_layout(c, item.layout_on(c))),
                     meter: matches!(status, SourceStatus::Running)
                         .then(|| self.studio.meter(s.id).cloned())
                         .flatten(),
