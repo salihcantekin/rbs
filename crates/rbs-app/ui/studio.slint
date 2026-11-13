@@ -731,8 +731,7 @@ export component ProgramPanel inherits Rectangle {
             // made while it was open never arrive) and without its release; the app
             // tells it from a real press by the cursor's place (`preview-menu-opened`).
             if e.button == PointerEventButton.right {
-                // The vertical picture has no menu yet.
-                if e.kind == PointerEventKind.up && !vertical {
+                if e.kind == PointerEventKind.up {
                     keys.focus();
                     root.menu-at = { x: self.mouse-x, y: self.mouse-y };
                     Studio.preview-menu-opened(self.mouse-x / 1px, self.mouse-y / 1px);

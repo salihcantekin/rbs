@@ -2127,3 +2127,42 @@ fn a_following_canvas_does_not_keep_its_own_scenes_sources_warm() {
     assert!(!warm.contains(&s.cam), "{warm:?}");
     assert!(warm.contains(&s.screen), "{warm:?}");
 }
+
+/// ADR-0110: placing a box in another canvas size and storing it back gives the box
+/// again (within float error), and equal sizes leave it exactly as it is.
+#[test]
+fn a_layout_maps_out_and_back_to_itself() {
+    use rbs_scene::model::Layout;
+    let sizes = [
+        (2, 2),
+        (64, 64),
+        (1920, 1080),
+        (1080, 1920),
+        (1440, 2560),
+        (2560, 1440),
+        (720, 1280),
+        (3840, 2160),
+        (8192, 2),
+    ];
+    let boxes = [
+        Layout::new([0.0, 0.0], [1920.0, 1080.0]),
+        Layout::new([-150.5, 33.25], [640.0, 360.0]),
+        Layout::new([1700.0, 900.0], [-320.0, 180.0]),
+    ];
+    for from in sizes {
+        for to in sizes {
+            for l in boxes {
+                let back = l.placed_in(from, to).stored_in(from, to);
+                for i in 0..2 {
+                    let tol = 1e-3 * l.position[i].abs().max(l.size[i].abs()).max(1.0);
+                    assert!(
+                        (back.position[i] - l.position[i]).abs() <= tol,
+                        "{from:?} {to:?}"
+                    );
+                    assert!((back.size[i] - l.size[i]).abs() <= tol, "{from:?} {to:?}");
+                }
+                assert_eq!(l.placed_in(from, from), l);
+            }
+        }
+    }
+}

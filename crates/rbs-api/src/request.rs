@@ -222,6 +222,10 @@ pub struct SetItemStyle {
     pub item: u32,
     /// The new style.
     pub style: ItemStyle,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 /// `item.set_crop` (protocol 1.5, ADR-0058): the source pixels cut from each edge of
@@ -238,6 +242,10 @@ pub struct SetItemCrop {
     /// `true`.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub keep_scale: bool,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 /// A direction on the canvas, as the user sees it.
@@ -258,6 +266,10 @@ pub struct FlipItem {
     pub item: u32,
     /// The mirror axis.
     pub axis: Axis,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 /// `item.rotate` (protocol 1.18, ADR-0084): turn the item clockwise about its centre.
@@ -268,6 +280,10 @@ pub struct RotateItem {
     pub item: u32,
     /// Degrees clockwise: a non-zero multiple of 90 from -360 to 360.
     pub degrees: i32,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 /// How `item.fit` places the picture.
@@ -290,6 +306,10 @@ pub struct FitItem {
     pub item: u32,
     /// How to place it.
     pub mode: FitKind,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 /// Which axes `item.align` centres on.
@@ -313,6 +333,10 @@ pub struct AlignItem {
     /// Centre on this axis only; both when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axis: Option<AlignAxis>,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 /// `item.reset_transform` (protocol 1.18, ADR-0084).
@@ -321,6 +345,10 @@ pub struct AlignItem {
 pub struct ResetItemTransform {
     /// The item's id.
     pub item: u32,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 fn yes() -> bool {
@@ -419,6 +447,39 @@ pub struct AddVerticalCanvas {
     /// main canvas's layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<VerticalLayout>,
+}
+
+/// `canvas.auto_layout` (protocol 1.44, ADR-0093 decision 4): arranges a scene's
+/// visible source items for the vertical canvas, one undo step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanvasAutoLayout {
+    /// The canvas to arrange for; only `"vertical"` in 1.44.
+    pub canvas: OutputCanvas,
+    /// The arrangement.
+    pub mode: VerticalLayout,
+    /// The scene; the one the vertical canvas shows now when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<u32>,
+}
+
+/// `canvas.auto_layout`'s answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoLayoutDone {
+    /// The number of layouts written; 0 is not an error.
+    pub items: u32,
+}
+
+/// `canvas.set_vertical_size` (protocol 1.44, ADR-0093 decision 8): the vertical
+/// canvas's size in pixels, even and from 64 to 8192.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetVerticalSize {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
 }
 
 /// `canvas.set_master_volume` (protocol 1.15, ADR-0081): the studio canvas's master.
@@ -759,6 +820,10 @@ pub struct SetItemBox {
     /// does not track one.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub seq: u64,
+    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
+    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
 }
 
 /// `item.set_box`'s answer: the request's `seq`, and that the box is the source's now.
@@ -769,6 +834,11 @@ pub struct BoxPlaced {
     pub seq: u64,
     /// The box was taken (changed, or it was already that box).
     pub ok: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_main(c: &OutputCanvas) -> bool {
+    *c == OutputCanvas::Main
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
@@ -1002,6 +1072,10 @@ pub enum Command {
     ItemAlign(AlignItem),
     /// `item.reset_transform` (protocol 1.18).
     ItemResetTransform(ResetItemTransform),
+    /// `canvas.auto_layout` (protocol 1.44).
+    CanvasAutoLayout(CanvasAutoLayout),
+    /// `canvas.set_vertical_size` (protocol 1.44).
+    CanvasSetVerticalSize(SetVerticalSize),
     /// `scene.list` (protocol 1.6).
     SceneList,
     /// `scene.add` (protocol 1.6).
@@ -1200,6 +1274,8 @@ impl Command {
             Command::ItemFit(_) => "item.fit",
             Command::ItemAlign(_) => "item.align",
             Command::ItemResetTransform(_) => "item.reset_transform",
+            Command::CanvasAutoLayout(_) => "canvas.auto_layout",
+            Command::CanvasSetVerticalSize(_) => "canvas.set_vertical_size",
             Command::SceneList => "scene.list",
             Command::SceneAdd(_) => "scene.add",
             Command::SceneRemove(_) => "scene.remove",
@@ -1379,6 +1455,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_settings", Some(Scope::Control)),
     m("source.set_companion_audio", Some(Scope::Control)),
     m("canvas.add_vertical", Some(Scope::Control)),
+    m("canvas.auto_layout", Some(Scope::Control)),
+    m("canvas.set_vertical_size", Some(Scope::Control)),
     m("canvas.remove_vertical", Some(Scope::Control)),
     m("settings.recent_targets", Some(Scope::Control)),
     m("settings.clear_recent_targets", Some(Scope::Control)),
@@ -1555,6 +1633,10 @@ enum WireRequest {
     ItemAlign(AlignItem),
     #[serde(rename = "item.reset_transform")]
     ItemResetTransform(ResetItemTransform),
+    #[serde(rename = "canvas.auto_layout")]
+    CanvasAutoLayout(CanvasAutoLayout),
+    #[serde(rename = "canvas.set_vertical_size")]
+    CanvasSetVerticalSize(SetVerticalSize),
     #[serde(rename = "scene.list")]
     SceneList(Empty),
     #[serde(rename = "scene.add")]
@@ -1786,6 +1868,8 @@ impl From<WireRequest> for Request {
             }
             WireRequest::CanvasAddVertical(p) => Request::Command(C::CanvasAddVertical(p)),
             WireRequest::CanvasRemoveVertical(p) => Request::Command(C::CanvasRemoveVertical(p)),
+            WireRequest::CanvasAutoLayout(p) => Request::Command(C::CanvasAutoLayout(p)),
+            WireRequest::CanvasSetVerticalSize(p) => Request::Command(C::CanvasSetVerticalSize(p)),
             WireRequest::SettingsRecentTargets(p) => Request::Command(C::SettingsRecentTargets(p)),
             WireRequest::SettingsClearRecentTargets(p) => {
                 Request::Command(C::SettingsClearRecentTargets(p))
@@ -1902,6 +1986,8 @@ impl From<Request> for WireRequest {
                 C::SourceSetCompanionAudio(p) => WireRequest::SourceSetCompanionAudio(p),
                 C::CanvasAddVertical(p) => WireRequest::CanvasAddVertical(p),
                 C::CanvasRemoveVertical(p) => WireRequest::CanvasRemoveVertical(p),
+                C::CanvasAutoLayout(p) => WireRequest::CanvasAutoLayout(p),
+                C::CanvasSetVerticalSize(p) => WireRequest::CanvasSetVerticalSize(p),
                 C::SettingsRecentTargets(p) => WireRequest::SettingsRecentTargets(p),
                 C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
@@ -2185,6 +2271,8 @@ pub enum Response {
     Looks(LookList),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
+    /// `canvas.auto_layout` (protocol 1.44).
+    AutoLayoutDone(AutoLayoutDone),
     /// `item.remove`, `global.remove` (protocol 1.10).
     ItemRemoved(ItemRemoved),
     /// `output.profiles`.
