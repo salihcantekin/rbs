@@ -7396,7 +7396,17 @@ impl Host {
     /// program and shows no fallback).
     fn vertical_edits(&self) -> Option<CanvasId> {
         let v = self.vertical?;
-        let shown = self.collection.canvas(v.canvas)?.program?;
+        let canvas = self.collection.canvas(v.canvas)?;
+        // A following canvas shows its leader's program scene (or its fallback), not
+        // its own `program`, which is only what it showed before it followed.
+        let shown = if canvas.follow.is_some() {
+            *self
+                .collection
+                .followed_programs(&BTreeMap::new())
+                .get(&v.canvas)?
+        } else {
+            canvas.program?
+        };
         (self.preview().is_none() && shown == self.edited()).then_some(v.canvas)
     }
 
