@@ -44,12 +44,24 @@ pub struct Item {
 }
 
 /// The parameters in `target` (`key=value&...`, percent-encoded as in command ids);
-/// `None` when it does not parse.
+/// `None` when it does not parse. A `?` or `=` inside a value is read as itself, so a
+/// panel id with a parameter (`id=rbs.program?canvas=vertical`) needs no encoding in
+/// Slint.
 pub fn target(text: &str) -> Option<Vec<(String, String)>> {
     if text.is_empty() {
         return Some(Vec::new());
     }
-    let id = CommandId::parse(&format!("context.target?{text}")).ok()?;
+    let mut query = String::with_capacity(text.len());
+    for (i, pair) in text.split('&').enumerate() {
+        if i > 0 {
+            query.push('&');
+        }
+        let (k, v) = pair.split_once('=')?;
+        query.push_str(k);
+        query.push('=');
+        query.push_str(&v.replace('?', "%3F").replace('=', "%3D"));
+    }
+    let id = CommandId::parse(&format!("context.target?{query}")).ok()?;
     Some(id.params().to_vec())
 }
 

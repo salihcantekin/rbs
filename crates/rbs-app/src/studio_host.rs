@@ -643,6 +643,12 @@ pub enum Command {
     /// Stops the second canvas and removes it from the collection (its outputs must be
     /// stopped first). [`Update::Vertical`] answers.
     RemoveVerticalCanvas,
+    /// Arranges the scene the vertical canvas shows (`canvas.auto_layout`, protocol
+    /// 1.44). One undo step; a refusal comes back as [`Update::Error`].
+    AutoLayoutVertical(rbs_api::request::VerticalLayout),
+    /// The vertical canvas's size (`canvas.set_vertical_size`, protocol 1.44): its
+    /// compositor restarts, [`Update::Vertical`] answers.
+    SetVerticalSize(Size),
     /// The canvas's master volume, a linear factor from 0 to 1 (ADR-0081). A live
     /// control like a source's volume: not on the undo stack, no rebind.
     SetMasterVolume {
@@ -3024,6 +3030,25 @@ impl Host {
             Command::RemoveVerticalCanvas => {
                 let done = self.remove_vertical();
                 self.answer_live(done, notify);
+            }
+            Command::AutoLayoutVertical(mode) => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasAutoLayout(rbs_api::request::CanvasAutoLayout {
+                        canvas: OutputCanvas::Vertical,
+                        mode,
+                        scene: None,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetVerticalSize(size) => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasSetVerticalSize(rbs_api::request::SetVerticalSize {
+                        width: size.width,
+                        height: size.height,
+                    }),
+                    notify,
+                );
             }
             Command::SetMasterVolume { volume } => {
                 self.run_ui_api(

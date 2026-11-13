@@ -622,7 +622,7 @@ impl App {
             Run::SetSourceActive(id, active) => self.studio.set_source_active(id, active),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
-            Run::Transform(id, op) => self.studio.transform_source(id, op),
+            Run::Transform(id, op, canvas) => self.studio.transform_source(id, op, canvas),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
             Run::SourceMonitor(id, m) => self
@@ -665,6 +665,13 @@ impl App {
                 self.studio.set_vertical_flags(flags);
             }
             Run::RemoveVertical => self.studio.send(studio_host::Command::RemoveVerticalCanvas),
+            Run::AutoLayoutVertical(mode) => {
+                self.studio
+                    .send(studio_host::Command::AutoLayoutVertical(mode));
+            }
+            Run::VerticalSize(w, h) => self.studio.send(studio_host::Command::SetVerticalSize(
+                rbs_core::media::Size::new(w, h),
+            )),
             Run::GoLiveVertical => {
                 if let Err(e) = self.studio.go_live_vertical() {
                     self.show_error(UiError::Other(e));
@@ -945,7 +952,15 @@ impl App {
                 else {
                     return Vec::new();
                 };
-                match self.studio.preview_source_at([x, y], [w, h]) {
+                // On the vertical picture the source's Transform entries carry
+                // `canvas=vertical` (protocol 1.44): they change its layout there only.
+                let vertical = param(&target, "id").as_deref() == Some(studio_ui::VERTICAL_PANEL);
+                let hit = if vertical {
+                    self.studio.vertical_source_at([x, y], [w, h])
+                } else {
+                    self.studio.preview_source_at([x, y], [w, h])
+                };
+                match hit {
                     Some(id) => {
                         let Some(f) = self.studio.source_facts(Some(&id.to_string()), None) else {
                             return Vec::new();
@@ -954,6 +969,9 @@ impl App {
                             ("item".to_owned(), f.item.to_string()),
                             ("source".to_owned(), f.id.to_string()),
                         ];
+                        if vertical {
+                            target.push(("canvas".to_owned(), "vertical".to_owned()));
+                        }
                         Context::Source
                     }
                     None => {
@@ -3793,7 +3811,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             9 => studio_host::TransformOp::Reset,
             _ => return,
         };
-        app.studio.transform_source(id, op);
+        app.studio.transform_source(id, op, None);
     });
     on!(
         on_set_source_rotation,
