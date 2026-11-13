@@ -224,7 +224,7 @@ fn appearance_compact_steps_upgrade_and_round_trip() {
     chosen.compact_steps = 3;
     data.set_appearance(&lock, &chosen).unwrap();
     let text = std::fs::read_to_string(d.path().join(APPEARANCE_FILE)).unwrap();
-    assert!(text.contains("format = 3"), "{text}");
+    assert!(text.contains("format = 4"), "{text}");
     assert!(text.contains("compact_steps = 3"), "{text}");
     let (read, err) = data.appearance();
     assert!(err.is_none(), "{err:?}");

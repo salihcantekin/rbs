@@ -1429,11 +1429,11 @@ export component SectionHeader inherits Rectangle {
             alignment: center;
             min-width: 0px;
             Text {
-                text: root.title.to-uppercase();
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
+                // ADR-0112 decision 5: sentence case in `type.label`.
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
                 font-weight: Tokens.type-label-weight;
-                letter-spacing: Tokens.size-tracking-caps;
                 min-width: 0px;
                 overflow: elide;
                 accessible-role: none;
