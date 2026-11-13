@@ -1131,3 +1131,124 @@ fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
     });
     drop(host);
 }
+
+/// Protocol 1.44: the vertical canvas's layouts and size through the control API.
+#[test]
+fn the_control_api_arranges_and_resizes_the_vertical_canvas() {
+    use rbs_app::studio_host::{Command, VerticalCanvas};
+    use rbs_core::media::Size;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    // Without a vertical canvas: not_found.
+    assert_eq!(
+        kind(&c.call(
+            "canvas.auto_layout",
+            json!({"canvas": "vertical", "mode": "fit"})
+        )),
+        "not_found"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "canvas.set_vertical_size",
+            json!({"width": 720, "height": 1280})
+        )),
+        "not_found"
+    );
+    host.send(Command::AddVerticalCanvas(VerticalCanvas {
+        size: Size::new(1080, 1920),
+        follow: true,
+        layout: None,
+    }));
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r) if r.iter().any(|r| r.vertical_layout.is_some()) => Some(r),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    let main = rows[0].layout.unwrap();
+    let item = sources(&mut c)
+        .iter()
+        .find(|r| r["id"] == screen)
+        .map(|r| r["item"].as_u64().unwrap())
+        .unwrap();
+    // The main canvas cannot be arranged in 1.44; a bad size is invalid.
+    assert_eq!(
+        kind(&c.call(
+            "canvas.auto_layout",
+            json!({"canvas": "main", "mode": "fit"})
+        )),
+        "invalid_params"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "canvas.set_vertical_size",
+            json!({"width": 721, "height": 1280})
+        )),
+        "invalid_params"
+    );
+    // A flip on the vertical canvas leaves the main layout.
+    ok(&c.call(
+        "item.flip",
+        json!({"item": item, "axis": "horizontal", "canvas": "vertical"}),
+    ));
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r)
+            if r[0]
+                .vertical_layout
+                .is_some_and(|l| l.flip_state().horizontal) =>
+        {
+            Some(r)
+        }
+        _ => None,
+    });
+    assert_eq!(rows[0].layout, Some(main));
+    // A box on the vertical canvas, then the same box again changes nothing.
+    let put = json!({"source": screen, "position": [0.0, 0.0], "size": [540.0, 960.0], "canvas": "vertical"});
+    assert_eq!(ok(&c.call("item.set_box", put.clone()))["ok"], true);
+    assert_eq!(ok(&c.call("item.set_box", put))["ok"], true);
+    // Auto layout answers how many layouts it wrote: the screen once its size is known.
+    let done = ok(&c.call(
+        "canvas.auto_layout",
+        json!({"canvas": "vertical", "mode": "stack"}),
+    ))
+    .clone();
+    assert!(done["items"].as_u64().unwrap() <= 1, "{done}");
+    // Studio mode does not refuse auto layout; it does refuse an item edit.
+    let program = scenes(&mut c)["program"].clone();
+    ok(&c.call("canvas.set_preview", json!({"scene": program})));
+    ok(&c.call(
+        "canvas.auto_layout",
+        json!({"canvas": "vertical", "mode": "fit"}),
+    ));
+    assert_eq!(
+        kind(&c.call(
+            "item.fit",
+            json!({"item": item, "mode": "fit", "canvas": "vertical"})
+        )),
+        "conflict"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "item.set_style",
+            json!({"item": item, "style": {"shape": "circle"}, "canvas": "vertical"})
+        )),
+        "conflict"
+    );
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    // A new size: the canvas runs at it, and the same size again changes nothing.
+    ok(&c.call(
+        "canvas.set_vertical_size",
+        json!({"width": 720, "height": 1280}),
+    ));
+    next(&updates, |u| match u {
+        Update::Vertical(Some(v)) if v.size == Size::new(720, 1280) => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    ok(&c.call(
+        "canvas.set_vertical_size",
+        json!({"width": 720, "height": 1280}),
+    ));
+    drop(host);
+}

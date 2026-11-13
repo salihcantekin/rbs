@@ -102,3 +102,4 @@ Concerns (non-blocking, all taken):
 Owner approval: Salih asked for this design and its first step on 2026-11-06 ("evet bunu yap"); threads may mark ADRs Accepted under the project's ADR policy.
 
 Superseded in part (2026-11-07): the input-size clause of decision 6 ("`process` must not allocate" when the input's size changes, re-warm on the control thread) is replaced by ADR-0062 decision 5 (textures of the new size are acquired once in `process`, the input is still never shown unfiltered). The rest of this ADR stands.
+- 2026-11-13: decision 12 (rescale of style lengths with `rescale_layout`) is superseded by [ADR-0110](0110-canvas-layout-space.md): style lengths take the layout-space fit scale.

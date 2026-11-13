@@ -3282,6 +3282,7 @@ impl Host {
                         size,
                         gesture,
                         seq,
+                        canvas: OutputCanvas::Main,
                     }),
                     notify,
                 );
@@ -7427,18 +7428,150 @@ impl Host {
     /// program and shows no fallback).
     fn vertical_edits(&self) -> Option<CanvasId> {
         let v = self.vertical?;
-        let canvas = self.collection.canvas(v.canvas)?;
-        // A following canvas shows its leader's program scene (or its fallback), not
-        // its own `program`, which is only what it showed before it followed.
-        let shown = if canvas.follow.is_some() {
-            *self
-                .collection
-                .followed_programs(&BTreeMap::new())
-                .get(&v.canvas)?
-        } else {
-            canvas.program?
-        };
+        let shown = self.vertical_shown()?;
         (self.preview().is_none() && shown == self.edited()).then_some(v.canvas)
+    }
+
+    /// The scene the vertical canvas shows now. A following canvas shows its leader's
+    /// program scene (or its fallback), not its own `program`, which is only what it
+    /// showed before it followed.
+    fn vertical_shown(&self) -> Option<SceneId> {
+        let v = self.vertical?;
+        let canvas = self.collection.canvas(v.canvas)?;
+        if canvas.follow.is_some() {
+            self.collection
+                .followed_programs(&BTreeMap::new())
+                .get(&v.canvas)
+                .copied()
+        } else {
+            canvas.program
+        }
+    }
+
+    /// Arranges `scene` (default: the one the vertical canvas shows) for the vertical
+    /// canvas, one undo step (`canvas.auto_layout`, ADR-0093 decision 4). The number of
+    /// layouts written.
+    fn auto_layout_vertical(
+        &mut self,
+        mode: AutoLayout,
+        scene: Option<SceneId>,
+    ) -> Result<u32, Refusal> {
+        let v = self
+            .vertical
+            .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".into()))?;
+        let scene = match scene {
+            Some(s) => s,
+            None => self
+                .vertical_shown()
+                .ok_or_else(|| Refusal::NotFound("The vertical canvas shows no scene.".into()))?,
+        };
+        let shown = self
+            .collection
+            .scene(scene)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", scene.get())))?;
+        if self.collection.is_global_scene(scene)
+            || !self.collection.scenes_for(v.canvas).any(|s| s.id == scene)
+        {
+            return Err(Refusal::Conflict(
+                "This scene cannot be shown on the vertical canvas.".into(),
+            ));
+        }
+        let name = shown.name.clone();
+        let count = shown
+            .items
+            .iter()
+            .filter(|i| i.visible)
+            .filter(|i| match i.content {
+                ItemContent::Source(id) => self.sizes.contains_key(&id),
+                _ => false,
+            })
+            .count() as u32;
+        let sizes = &self.sizes;
+        let undo = self
+            .collection
+            .auto_layout(
+                v.canvas,
+                scene,
+                mode,
+                &|source| sizes.get(&source).copied(),
+                &BTreeMap::new(),
+            )
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::Transform, &name, 0, vec![undo]);
+        Ok(count)
+    }
+
+    /// Changes the vertical canvas's size (`canvas.set_vertical_size`, ADR-0093
+    /// decision 8): its compositor restarts, layouts stay in its layout space
+    /// (ADR-0110), and the undo history stays. `Ok(false)` when it has that size.
+    fn set_vertical_size(&mut self, size: Size) -> Result<bool, Refusal> {
+        let v = self
+            .vertical
+            .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".into()))?;
+        if v.size == size {
+            return Ok(false);
+        }
+        if self.outs[slot(OutputCanvas::Vertical)].busy() {
+            return Err(Refusal::Conflict(
+                "Stop the recording or stream of the vertical canvas first.".to_owned(),
+            ));
+        }
+        let fps = self
+            .collection
+            .canvas(v.canvas)
+            .map(|c| c.frame_rate)
+            .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".into()))?;
+        let mut draft = self.collection.clone();
+        draft
+            .set_canvas_format(v.canvas, size, fps)
+            .map_err(|e| Refusal::of(&e))?;
+        let run = run_copy_or(&self.collection, self.canvas, self.held.as_ref());
+        self.studio
+            .deactivate_canvas(
+                run.as_ref().unwrap_or(&self.collection),
+                &self.adapters.sources,
+                v.canvas,
+            )
+            .map_err(|e| match e {
+                RecordError::CanvasBusy(_) => Refusal::Conflict(
+                    "Stop the recording or stream of the vertical canvas first.".to_owned(),
+                ),
+                e => Refusal::Failed(e.to_string()),
+            })?;
+        let before = std::mem::replace(&mut self.collection, draft);
+        let started = {
+            let extra = self.vertical_extra(v.canvas);
+            let run = self.run_collection();
+            let running = run.as_ref().unwrap_or(&self.collection);
+            self.studio
+                .activate_canvas(running, &self.adapters.sources, extra)
+        };
+        match started {
+            Ok(_) => {
+                self.vertical = Some(VerticalState { size, ..v });
+                self.waiting = self.studio.waiting();
+                Ok(true)
+            }
+            Err(e) => {
+                // The canvas runs again at the size it had.
+                self.collection = before;
+                let extra = self.vertical_extra(v.canvas);
+                let run = self.run_collection();
+                let running = run.as_ref().unwrap_or(&self.collection);
+                if self
+                    .studio
+                    .activate_canvas(running, &self.adapters.sources, extra)
+                    .is_err()
+                {
+                    self.vertical = None;
+                }
+                self.waiting = self.studio.waiting();
+                Err(Refusal::Failed(format!(
+                    "The vertical canvas did not start at that size: {e}"
+                )))
+            }
+        }
     }
 
     /// Places a video source's picture on the vertical canvas (ADR-0093 decision 4):
@@ -7480,13 +7613,21 @@ impl Host {
         let mut layout = self
             .collection
             .placed_layout(canvas, item.layout_on(canvas));
-        if layout.position == position && layout.size == size {
+        if !item.overrides.contains_key(&canvas)
+            && layout.position == position
+            && layout.size == size
+        {
             return Ok(false);
         }
         layout.position = position;
         layout.size = size;
-        let item = item.id;
+        // Compared in layout space: a box mapped out and back is not always the same
+        // float, and the same box must not make a second undo step (ADR-0110).
         let stored = self.collection.stored_layout(canvas, &layout);
+        if item.overrides.get(&canvas) == Some(&stored) {
+            return Ok(false);
+        }
+        let item = item.id;
         let undo = self
             .collection
             .set_item_layout(item, Some(canvas), stored)
@@ -7683,10 +7824,11 @@ impl Host {
         &mut self,
         item: u32,
         op: TransformOp,
+        canvas: OutputCanvas,
         notify: &dyn Fn(Update),
     ) -> Result<Response, ApiError> {
         let changed = self
-            .transform_item(ItemId::from_raw(item), op, 0, OutputCanvas::Main)
+            .transform_item(ItemId::from_raw(item), op, 0, canvas)
             .map_err(|e| refused(&e))?;
         if changed {
             self.apply(notify);
@@ -8524,6 +8666,47 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::CanvasAutoLayout(p) => {
+                use rbs_api::request::VerticalLayout as L;
+                if p.canvas != OutputCanvas::Vertical {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "canvas must be \"vertical\" (arranging the main canvas is not in this version)",
+                    ));
+                }
+                let mode = match p.mode {
+                    L::Fit => AutoLayout::Fit,
+                    L::Fill => AutoLayout::Fill,
+                    L::Stack => AutoLayout::Stack,
+                };
+                let items = host
+                    .auto_layout_vertical(mode, p.scene.map(SceneId::from_raw))
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::AutoLayoutDone(rbs_api::request::AutoLayoutDone {
+                    items,
+                }))
+            }
+            C::CanvasSetVerticalSize(p) => {
+                let fits = |v: u32| {
+                    (VERTICAL_MIN_SIDE..=VERTICAL_MAX_SIDE).contains(&v) && v.is_multiple_of(2)
+                };
+                if !fits(p.width) || !fits(p.height) {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        format!(
+                            "width and height must be even and from {VERTICAL_MIN_SIDE} to {VERTICAL_MAX_SIDE}"
+                        ),
+                    ));
+                }
+                let done = host
+                    .set_vertical_size(Size::new(p.width, p.height))
+                    .map_err(|e| refused(&e))?;
+                if done {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::CanvasRemoveVertical(_) => {
                 if host.vertical.is_none() {
                     return Err(ApiError::new(
@@ -8733,9 +8916,16 @@ impl ApiTarget<'_> {
                 Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
             }
             C::ItemSetBox(p) => {
-                let changed = host
-                    .set_source_box(SourceId::from_raw(p.source), p.position, p.size, p.gesture)
-                    .map_err(|e| refused(&e))?;
+                let source = SourceId::from_raw(p.source);
+                let changed = match p.canvas {
+                    OutputCanvas::Main => {
+                        host.set_source_box(source, p.position, p.size, p.gesture)
+                    }
+                    OutputCanvas::Vertical => {
+                        host.set_vertical_box(source, p.position, p.size, p.gesture)
+                    }
+                }
+                .map_err(|e| refused(&e))?;
                 if changed {
                     host.apply(notify);
                 }
@@ -8841,7 +9031,7 @@ impl ApiTarget<'_> {
                     Axis::Horizontal => TransformOp::FlipHorizontal,
                     Axis::Vertical => TransformOp::FlipVertical,
                 };
-                host.api_transform(p.item, op, notify)
+                host.api_transform(p.item, op, p.canvas, notify)
             }
             C::ItemRotate(p) => {
                 if p.degrees % 90 != 0 || p.degrees == 0 || p.degrees.abs() > 360 {
@@ -8850,7 +9040,12 @@ impl ApiTarget<'_> {
                         "degrees must be a non-zero multiple of 90 from -360 to 360",
                     ));
                 }
-                host.api_transform(p.item, TransformOp::Turn(p.degrees as f32), notify)
+                host.api_transform(
+                    p.item,
+                    TransformOp::Turn(p.degrees as f32),
+                    p.canvas,
+                    notify,
+                )
             }
             C::ItemFit(p) => {
                 let mode = match p.mode {
@@ -8858,7 +9053,7 @@ impl ApiTarget<'_> {
                     FitKind::Fill => FitMode::Fill,
                     FitKind::Stretch => FitMode::Stretch,
                 };
-                host.api_transform(p.item, TransformOp::Fit(mode), notify)
+                host.api_transform(p.item, TransformOp::Fit(mode), p.canvas, notify)
             }
             C::ItemAlign(p) => {
                 let axis = match p.axis {
@@ -8867,19 +9062,15 @@ impl ApiTarget<'_> {
                     Some(AlignAxis::Horizontal) => CenterAxis::Horizontal,
                     Some(AlignAxis::Vertical) => CenterAxis::Vertical,
                 };
-                host.api_transform(p.item, TransformOp::Center(axis), notify)
+                host.api_transform(p.item, TransformOp::Center(axis), p.canvas, notify)
             }
-            C::ItemResetTransform(p) => host.api_transform(p.item, TransformOp::Reset, notify),
+            C::ItemResetTransform(p) => {
+                host.api_transform(p.item, TransformOp::Reset, p.canvas, notify)
+            }
             C::ItemSetCrop(p) => {
                 let [l, t, r, b] = p.crop;
                 let item = ItemId::from_raw(p.item);
-                match host.set_item_crop(
-                    item,
-                    Crop::new(l, t, r, b),
-                    p.keep_scale,
-                    0,
-                    OutputCanvas::Main,
-                ) {
+                match host.set_item_crop(item, Crop::new(l, t, r, b), p.keep_scale, 0, p.canvas) {
                     Ok(changed) => {
                         if changed {
                             host.apply(notify);
@@ -8900,6 +9091,8 @@ impl ApiTarget<'_> {
             C::ItemSetStyle(p) => {
                 let style = scene_style(&p.style)
                     .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+                // The canvas comes first in the error order (protocol 1.44).
+                host.edit_canvas(p.canvas).map_err(|e| refused(&e))?;
                 let item = ItemId::from_raw(p.item);
                 let found = host
                     .collection
@@ -8922,8 +9115,16 @@ impl ApiTarget<'_> {
                     }
                     Some(_) => {}
                 }
+                if p.canvas == OutputCanvas::Vertical
+                    && host.collection.item(item).map(|(scene, _)| scene) == host.globals()
+                {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "Global sources are not on the vertical canvas yet.",
+                    ));
+                }
                 if host
-                    .set_item_style(item, style, 0, OutputCanvas::Main)
+                    .set_item_style(item, style, 0, p.canvas)
                     .map_err(failed)?
                 {
                     host.apply(notify);
