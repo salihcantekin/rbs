@@ -341,7 +341,7 @@ pub struct AddScene {
     pub name: Option<String>,
 }
 
-/// `scene.remove` and `scene.switch` (protocol 1.6).
+/// `scene.remove` and `scene.switch` (protocol 1.6), `scene.duplicate` (protocol 1.43).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneRef {
@@ -1010,6 +1010,8 @@ pub enum Command {
     SceneRemove(SceneRef),
     /// `scene.rename` (protocol 1.6).
     SceneRename(RenameScene),
+    /// `scene.duplicate` (protocol 1.43): a copy of the scene, not on air.
+    SceneDuplicate(SceneRef),
     /// `scene.switch` (protocol 1.6).
     SceneSwitch(SceneRef),
     /// `source.rename` (protocol 1.6).
@@ -1202,6 +1204,7 @@ impl Command {
             Command::SceneAdd(_) => "scene.add",
             Command::SceneRemove(_) => "scene.remove",
             Command::SceneRename(_) => "scene.rename",
+            Command::SceneDuplicate(_) => "scene.duplicate",
             Command::SceneSwitch(_) => "scene.switch",
             Command::SourceRename(_) => "source.rename",
             Command::SourceSetVolume(_) => "source.set_volume",
@@ -1354,6 +1357,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("scene.add", Some(Scope::Control)),
     m("scene.remove", Some(Scope::Control)),
     m("scene.rename", Some(Scope::Control)),
+    m("scene.duplicate", Some(Scope::Control)),
     m("scene.switch", Some(Scope::Control)),
     m("source.rename", Some(Scope::Control)),
     m("source.set_volume", Some(Scope::Control)),
@@ -1489,6 +1493,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.toolbar.set",
     "ui.toolbar.reset",
     "ui.theme.reload",
+    "ui.theme.switch",
     "ui.settings.open",
     "ui.source.settings",
     "ui.properties.show",
@@ -1558,6 +1563,8 @@ enum WireRequest {
     SceneRemove(SceneRef),
     #[serde(rename = "scene.rename")]
     SceneRename(RenameScene),
+    #[serde(rename = "scene.duplicate")]
+    SceneDuplicate(SceneRef),
     #[serde(rename = "scene.switch")]
     SceneSwitch(SceneRef),
     #[serde(rename = "source.rename")]
@@ -1754,6 +1761,7 @@ impl From<WireRequest> for Request {
             WireRequest::SceneAdd(p) => Request::Command(C::SceneAdd(p)),
             WireRequest::SceneRemove(p) => Request::Command(C::SceneRemove(p)),
             WireRequest::SceneRename(p) => Request::Command(C::SceneRename(p)),
+            WireRequest::SceneDuplicate(p) => Request::Command(C::SceneDuplicate(p)),
             WireRequest::SceneSwitch(p) => Request::Command(C::SceneSwitch(p)),
             WireRequest::SourceRename(p) => Request::Command(C::SourceRename(p)),
             WireRequest::SourceSetVolume(p) => Request::Command(C::SourceSetVolume(p)),
@@ -1871,6 +1879,7 @@ impl From<Request> for WireRequest {
                 C::SceneAdd(p) => WireRequest::SceneAdd(p),
                 C::SceneRemove(p) => WireRequest::SceneRemove(p),
                 C::SceneRename(p) => WireRequest::SceneRename(p),
+                C::SceneDuplicate(p) => WireRequest::SceneDuplicate(p),
                 C::SceneSwitch(p) => WireRequest::SceneSwitch(p),
                 C::SourceRename(p) => WireRequest::SourceRename(p),
                 C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),

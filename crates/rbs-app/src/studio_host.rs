@@ -8160,6 +8160,13 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SceneDuplicate(p) => {
+                let id = host
+                    .duplicate_scene(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::SceneAdded(SceneAdded { scene: id.get() }))
+            }
             C::SceneSources(p) => {
                 let id = SceneId::from_raw(p.scene);
                 if !host.listed(id) {

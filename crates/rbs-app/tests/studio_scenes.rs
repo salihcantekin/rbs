@@ -269,6 +269,23 @@ fn scenes_are_added_switched_renamed_and_removed_and_the_program_never_goes_empt
     );
     ok(&c.call("scene.rename", json!({"scene": two, "name": "Game"})));
 
+    // Duplicating copies the scene with its sources, names it for the user and does
+    // not go on air; one undo step takes it away again (protocol 1.43).
+    let copy = ok(&c.call("scene.duplicate", json!({"scene": one})))["scene"]
+        .as_u64()
+        .unwrap();
+    let list = scenes(&mut c);
+    assert_eq!(names(&list), ["Scene", "Game", "Scene 2"]);
+    assert_eq!(list["program"], one);
+    let copied = c.call("scene.sources", json!({"scene": copy}));
+    assert_eq!(ok(&copied)["sources"][0]["id"], screen);
+    assert_eq!(
+        kind(&c.call("scene.duplicate", json!({"scene": 99}))),
+        "not_found"
+    );
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(names(&scenes(&mut c)), ["Scene", "Game"]);
+
     // Switching: the Sources list follows the scene on air.
     ok(&c.call("scene.switch", json!({"scene": two})));
     assert_eq!(scenes(&mut c)["program"], two);
