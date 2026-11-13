@@ -94,7 +94,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0083](0083-mixer-orientation-chosen-by-the-user.md) | The Mixer orientation (rows or columns) is chosen by the user, saved per workspace | Accepted |
 | [0084](0084-source-transform-commands-and-source-context-menu.md) | Source transform commands (flip, rotate, fit, align) and a categorized source context menu | Accepted |
 | [0085](0085-more-containers-codecs-and-advanced-encoder-settings.md) | More containers and codecs, and advanced video and audio encoder settings | Proposed |
-| [0086](0086-recording-sources-separately-iso.md) | Record sources separately (ISO recording) next to the master recording | Proposed |
+| [0086](0086-recording-sources-separately-iso.md) | Record sources separately (ISO recording) next to the master recording | Accepted |
 | [0087](0087-output-cost-estimate-and-hardware-limits.md) | Show the cost of outputs before they start, and the limits of this hardware | Proposed |
 | [0088](0088-replay-buffer-and-retroactive-recording.md) | Replay buffer: keep the last minutes in memory, save a clip, or turn the buffer into a recording | Accepted |
 | [0089](0089-recording-markers-and-editor-project-export.md) | Recording markers and an editor project (FCPXML) written from the recording manifest | Proposed |
