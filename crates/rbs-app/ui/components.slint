@@ -3155,6 +3155,12 @@ export component ListRow inherits Rectangle {
     in property <string> lead;
     in property <bool> has-icon;
     in property <IconName> icon;
+    // A Checkbox before the name for the item's on/off state, where that state is
+    // what the list is about (a filter; owner decision 2026-11-13, ADR-0114 review).
+    in property <bool> has-check;
+    in property <bool> checked;
+    in property <string> check-label;
+    callback check-toggled(bool);
     in property <string> name;
     // A line under the name (why a source is not running); empty for one line.
     in property <string> note;
@@ -3272,6 +3278,16 @@ export component ListRow inherits Rectangle {
                 if root.lead == "" && root.has-icon: VerticalLayout {
                     alignment: center;
                     Icon { name: root.icon; ink: root.ink; }
+                }
+                if root.has-check: VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    Checkbox {
+                        width: Tokens.size-icon-box;
+                        checked: root.checked;
+                        accessible-label: root.check-label;
+                        toggled(on) => { root.check-toggled(on); }
+                    }
                 }
                 if root.editing: VerticalLayout {
                     alignment: center;

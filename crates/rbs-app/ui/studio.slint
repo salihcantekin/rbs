@@ -3343,7 +3343,13 @@ component FilterRowView inherits Rectangle {
         width: parent.width;
         name: data.name;
         note: data.known ? "" : @tr("Not available in this version");
-        dimmed: data.known && !data.enabled;
+        has-check: data.known;
+        checked: data.enabled;
+        check-label: @tr("Turn {} on or off", data.name);
+        check-toggled(on) => {
+            Studio.select-filter(source.id, data.id);
+            Studio.set-filter-enabled(data.id, on);
+        }
         selected: root.selected;
         accessible-name: @tr("{}, {}", data.name, data.enabled ? @tr("on") : @tr("off"));
         accessible-hint: @tr("Return shows its settings, Delete asks before removing it");
@@ -3353,18 +3359,6 @@ component FilterRowView inherits Rectangle {
         activated => { Studio.select-filter(source.id, data.id); }
         delete-asked => { self.confirm = true; }
         confirmed => { Studio.remove-filter(data.id); }
-        // On or off is a state of the item: a Checkbox in the trailing part (ADR-0114).
-        if data.known: VerticalLayout {
-            alignment: center;
-            Checkbox {
-                checked: data.enabled;
-                accessible-label: @tr("Turn {} on or off", data.name);
-                toggled(on) => {
-                    Studio.select-filter(source.id, data.id);
-                    Studio.set-filter-enabled(data.id, on);
-                }
-            }
-        }
         VerticalLayout {
             alignment: center;
             IconButton {
