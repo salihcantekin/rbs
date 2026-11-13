@@ -3181,6 +3181,8 @@ component FillLine inherits Rectangle {
     }
     if data.filled: ColourCode {
         x: (root.stacked ? 0px : root.width - root.tail) + root.swatch + Tokens.size-field-gap;
+        // On its own line the code reaches the panel's edge like the fields above it.
+        width: root.stacked ? root.width - self.x : Tokens.size-color-code;
         y: (root.stacked ? root.line + Tokens.size-field-gap : 0px) + (root.line - self.height) / 2;
         data: root.data;
     }
@@ -4557,7 +4559,7 @@ export component RecordingSettings inherits Rectangle {
                 label: @tr("Output size");
                 help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next recording.");
                 HorizontalLayout {
-                    alignment: center;
+                    alignment: start;
                     spacing: Tokens.space-3;
                     Toggle {
                         label: @tr("Same as canvas");
@@ -4748,7 +4750,7 @@ export component StreamSettings inherits Rectangle {
                 label: @tr("Output size");
                 help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next stream.");
                 HorizontalLayout {
-                    alignment: center;
+                    alignment: start;
                     spacing: Tokens.space-3;
                     Toggle {
                         label: @tr("Same as canvas");

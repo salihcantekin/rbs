@@ -2107,7 +2107,10 @@ export component NumberField inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-increment => { step-by(1); }
     accessible-action-decrement => { step-by(-1); }
-    if prefix != "": Text {
+    // Never narrower than the prefix, the value and the steppers side by side, so a
+    // narrow panel does not run "Bottom" into its value (U11).
+    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + steppers.width;
+    pre := Text {
         x: Tokens.space-2;
         height: parent.height;
         text: root.prefix;
