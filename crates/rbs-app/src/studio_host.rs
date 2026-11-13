@@ -7391,6 +7391,15 @@ impl Host {
         Ok(true)
     }
 
+    /// The vertical canvas, when its boxes can be edited: it shows the scene being
+    /// edited, which is the scene on air outside studio mode (it follows the main
+    /// program and shows no fallback).
+    fn vertical_edits(&self) -> Option<CanvasId> {
+        let v = self.vertical?;
+        let shown = self.collection.canvas(v.canvas)?.program?;
+        (self.preview().is_none() && shown == self.edited()).then_some(v.canvas)
+    }
+
     /// Places a video source's picture on the vertical canvas (ADR-0093 decision 4):
     /// the box, in that canvas's pixels, becomes the item's own layout there, so the
     /// main canvas does not change (U15). Starts from what the vertical canvas shows.
@@ -7409,11 +7418,24 @@ impl Host {
                 "Position and size must be numbers, and the size cannot be 0.".into(),
             ));
         }
-        let canvas = self
-            .vertical
-            .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".into()))?
-            .canvas;
+        if self.vertical.is_none() {
+            return Err(Refusal::NotFound("There is no vertical canvas.".into()));
+        }
+        let canvas = self.vertical_edits().ok_or_else(|| {
+            Refusal::Conflict(
+                "The vertical canvas shows another scene: its boxes are edited while it shows the scene on air outside studio mode."
+                    .into(),
+            )
+        })?;
         let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
+        if self
+            .globals()
+            .is_some_and(|g| self.scene_of(item.id) == Some(g))
+        {
+            return Err(Refusal::Conflict(
+                "Global sources are not on the vertical canvas yet.".into(),
+            ));
+        }
         let mut layout = self
             .collection
             .placed_layout(canvas, item.layout_on(canvas));
@@ -7880,14 +7902,12 @@ impl Host {
                     layout: kind
                         .is_some_and(|k| !k.is_audio())
                         .then(|| self.shown_layout(item)),
+                    // Global sources are not drawn on the vertical canvas yet.
                     vertical_layout: kind
-                        .is_some_and(|k| !k.is_audio())
-                        .then_some(())
-                        .and(self.vertical)
-                        .map(|v| {
-                            self.collection
-                                .placed_layout(v.canvas, item.layout_on(v.canvas))
-                        }),
+                        .is_some_and(|k| !k.is_audio() && !global)
+                        .then(|| self.vertical_edits())
+                        .flatten()
+                        .map(|c| self.collection.placed_layout(c, item.layout_on(c))),
                     meter: matches!(status, SourceStatus::Running)
                         .then(|| self.studio.meter(s.id).cloned())
                         .flatten(),

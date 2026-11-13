@@ -1823,9 +1823,8 @@ impl Ctx {
         if let Some([_, _, w, h]) = edit_main {
             app.studio.set_picture_size(w, h);
         }
-        if let Some([_, _, w, h]) = vertical_main {
-            app.studio.set_vertical_picture_size(w, h);
-        }
+        app.studio
+            .set_vertical_picture_size(vertical_main.map(|[_, _, w, h]| [w, h]));
         // Hiding the panel clears a failure: showing it again asks once more.
         if vertical_main.is_none() {
             app.studio.vertical_picture_failed = false;

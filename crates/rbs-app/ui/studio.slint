@@ -678,10 +678,11 @@ export component ProgramPanel inherits Rectangle {
     // selection. Delete or Backspace asks with the source row's confirmation: a bar
     // drawn on the picture would sit under the live picture.
     // In studio mode the preview scene is edited, on the Preview picture only; the
-    // vertical canvas, which shows the scene on air, only outside studio mode, where a
-    // box becomes the source's own layout on that canvas (ADR-0093 decision 4).
+    // vertical canvas, which shows the scene on air, only outside studio mode and while
+    // its picture shows (no dragging blind), where a box becomes the source's own
+    // layout on that canvas (ADR-0093 decision 4).
     property <bool> editable: vertical
-        ? Studio.state == 1 && !Studio.studio-mode && shown != 4 && shown != 7
+        ? Studio.state == 1 && !Studio.studio-mode && shown == 0
         : here && Studio.state == 1 && (!Studio.studio-mode || scene);
     keys := FocusScope {
         focus-on-click: false;

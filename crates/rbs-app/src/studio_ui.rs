@@ -255,6 +255,8 @@ pub struct StudioUi {
     /// The same on the vertical canvas's picture (ADR-0093 decision 4). Its requests
     /// carry [`VERTICAL_SEQ`] so their answers find it.
     vedit: PreviewEdit,
+    /// The vertical picture shows in the main window.
+    vertical_shown: bool,
     vmark_buf: Vec<Mark>,
     vertical_marks: Rc<VecModel<MarkData>>,
     kind_list: Vec<SourceKind>,
@@ -526,6 +528,7 @@ impl StudioUi {
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
             vedit: PreviewEdit::default(),
+            vertical_shown: false,
             vmark_buf: Vec::with_capacity(MAX_MARKS),
             vertical_marks: Rc::new(VecModel::default()),
             kind_list: Vec::new(),
@@ -2248,9 +2251,13 @@ impl StudioUi {
             return;
         }
         let (position, size) = (b.position, b.size);
-        let seq = match canvas {
-            OutputCanvas::Main => seq,
-            OutputCanvas::Vertical => seq | VERTICAL_SEQ,
+        // The two pictures count requests and drags from 1 each: the vertical one's
+        // are marked, so answers find it and its drags never join a main one's undo
+        // step (gesture 0, a step of its own, stays 0).
+        let (seq, gesture) = match canvas {
+            OutputCanvas::Main => (seq, gesture),
+            OutputCanvas::Vertical if gesture == 0 => (seq | VERTICAL_SEQ, 0),
+            OutputCanvas::Vertical => (seq | VERTICAL_SEQ, gesture | VERTICAL_SEQ),
         };
         self.send(Command::SetSourceBox {
             seq,
@@ -2401,10 +2408,19 @@ impl StudioUi {
         self.run_vertical(e);
     }
 
-    /// The vertical picture's size in the main window, from the layout.
-    pub fn set_vertical_picture_size(&mut self, w: f32, h: f32) {
-        self.vedit.set_panel(w, h);
-        self.refresh_marks();
+    /// The vertical picture's size in the main window, from the layout; `None` while
+    /// it does not show there (its marks are then not worked out, P13).
+    pub fn set_vertical_picture_size(&mut self, size: Option<[f32; 2]>) {
+        let shown = size.is_some();
+        let changed =
+            shown != self.vertical_shown || size.is_some_and(|[w, h]| self.vedit.panel() != [w, h]);
+        self.vertical_shown = shown;
+        if let Some([w, h]) = size {
+            self.vedit.set_panel(w, h);
+        }
+        if changed {
+            self.refresh_marks();
+        }
     }
 
     /// The selection as marks on the vertical picture.
@@ -2485,7 +2501,7 @@ impl StudioUi {
         self.mark_buf = buf;
         // The vertical picture shows the same selection.
         let mut buf = std::mem::take(&mut self.vmark_buf);
-        match self.vertical_px() {
+        match self.vertical_px().filter(|_| self.vertical_shown) {
             Some(canvas) => {
                 let placed = self.placed_vertical(false);
                 self.vedit.marks(canvas, &placed, self.selected, &mut buf);
@@ -4635,8 +4651,13 @@ impl StudioUi {
                 } else if self.vertical.is_none() && self.vertical_known {
                     out.vertical_added = true;
                 }
+                // A drag on the old canvas gets no answer it can use.
+                if self.vertical.map(|o| (o.canvas, o.size)) != v.map(|n| (n.canvas, n.size)) {
+                    self.vedit.reset();
+                }
                 self.vertical = v;
                 self.vertical_known = true;
+                self.refresh_marks();
             }
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
@@ -4665,8 +4686,10 @@ impl StudioUi {
                 if studio != self.studio_mode {
                     self.studio_mode = studio;
                     out.studio_mode_started = studio;
-                    // The picture handles move between the panels.
+                    // The picture handles move between the panels; the vertical
+                    // picture is not edited in studio mode.
                     self.selected = -1;
+                    self.vedit.reset();
                     self.refresh_marks();
                 }
                 self.scene_list = Some(list);

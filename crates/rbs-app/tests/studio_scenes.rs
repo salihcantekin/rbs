@@ -909,6 +909,20 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
         Update::BoxPlaced { seq: 3, ok } => Some(ok),
         _ => None,
     }));
+    // In studio mode the vertical canvas shows the scene on air, not the one edited:
+    // its boxes are refused, and the rows give none.
+    let program = scenes(&mut c)["program"].clone();
+    ok(&c.call("canvas.set_preview", json!({"scene": program})));
+    next(&updates, |u| match u {
+        Update::Sources(r) if r.iter().all(|r| r.vertical_layout.is_none()) => Some(()),
+        _ => None,
+    });
+    box_on(5, [0.0, 0.0], [10.0, 10.0], OutputCanvas::Vertical);
+    assert!(!next(&updates, |u| match u {
+        Update::BoxPlaced { seq: 5, ok } => Some(ok),
+        _ => None,
+    }));
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
     // Without a vertical canvas a vertical box is refused.
     host.send(Command::RemoveVerticalCanvas);
     next(&updates, |u| match u {
