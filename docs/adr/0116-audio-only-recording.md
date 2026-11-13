@@ -1,6 +1,6 @@
 # ADR-0116: Audio recording, an output that writes the mix without a picture
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-13
 - Deciders: Salih (owner)
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0038](0038-io-graph-nodes.md), [ADR-0041](0041-studio-recording-on-a-running-engine.md), [ADR-0045](0045-recording-tail-on-stop.md), [ADR-0051](0051-user-data-profiles-and-scene-collections.md)
@@ -60,4 +60,4 @@ The owner asked (2026-11-13) for a way to record only sound: a podcast, a voice-
 ## Review
 
 - 2026-11-13, independent AI session (fresh context; given only this ADR, the spec edits, the specs, ADRs and code), verdict: changes requested, 13 findings. Resolved in this revision: (1) the engine change is breaking and touches `StartReport`, the per-output record, pins, counters and attribution: decision 2 lists them; (2) the per-canvas limit change is stated as an amendment of ADR-0047 and ADR-0093 (header, decision 3); (3) `RecordState`/`RecordingSummary` cannot carry it: new `AudioRecordState` and `AudioRecordingSummary` (decision 7); (4) refusals of profile/collection switch, canvas change, quit, event topic list, effect class and on-air check added (decision 7, control-api spec); (5) shared-encoder tail waits for pts at or after the end (decision 2); (6) slot contention with ADR-0111: first come, first served, nothing stopped (decision 3); (7) `Recording::start`/CLI behaviour stated (decision 2); (8) folder stripped on export (decision 6); (9) `M4A ` brand, header-only, `.mka` default until the player check passes (decision 5); (10) command renamed `audio_record.toggle`; (11) the host reports a missing audio encoder itself (decision 2); (12) silence allowed and shown (decision 1); (13) tests added (Consequences). Open for the owner: accept decision 3's first-come rule and the permanent Record ▾.
-- Owner approval: pending.
+- 2026-11-13, owner approval: Salih approved the ADR, including the first-come slot rule (decision 3) and the always-visible Record ▾ (decision 8). The visual design of step (d) still needs its own proposal and approval (rule 16).

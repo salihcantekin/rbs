@@ -300,7 +300,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 - **Running.** The node is not essential: its failure is kept in `MonitorState::failure` (cleared when it runs again), never in `failure()` or an output's failure. `MonitorState::latency` is the graph latency plus the ring target plus the device's latency. `set_monitor_volume` ramps (`OUTPUT_VOLUME_RAMP`), clamped to `0..=MAX_OUTPUT_VOLUME`.
 - **Stop.** `stop_monitor` removes the node with a plain apply and takes it back, through the pending takes if the audio partition still runs it; the device is stopped and dropped on the control thread. `shutdown` stops the monitor.
 
-### Audio recording (ADR-0116, Proposed: not built yet)
+### Audio recording (ADR-0116, Accepted: not built yet)
 
 Planned contract; the code above still requires `video`. An audio recording is an output with a sound stream and no picture.
 

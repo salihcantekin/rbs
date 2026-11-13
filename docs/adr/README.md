@@ -119,4 +119,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0108](0108-media-file-source.md) | A local media-file source for video and animated pictures | Proposed |
 | [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
 | [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Proposed |
-| [0116](0116-audio-only-recording.md) | Audio recording, an output that writes the mix without a picture | Proposed |
+| [0116](0116-audio-only-recording.md) | Audio recording, an output that writes the mix without a picture | Accepted |
