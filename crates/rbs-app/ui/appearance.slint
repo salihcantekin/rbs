@@ -670,6 +670,8 @@ component ThemeListRow inherits Rectangle {
                 border-radius: self.height / 2;
                 border-width: Tokens.size-border;
                 border-color: Theme.border-subtle;
+                // Filled, so the chip stays a chip on the row's hover or selected plate.
+                background: Theme.surface-raised;
                 height: chip.preferred-height + Tokens.space-1;
                 width: chip.preferred-width + Tokens.space-2 * 2;
                 chip := Text {

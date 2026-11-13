@@ -3616,8 +3616,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_source_sync_offset, |app, id: i32, ms: i32| {
         app.studio.set_source_sync_offset(id, ms);
     });
-    on!(on_library_shown, |app| {
-        app.studio.library_shown();
+    on!(on_library_shown, |app, picture_px: i32| {
+        app.studio.library_shown(picture_px);
     });
     on!(on_apply_look, |app, id: slint::SharedString| {
         app.studio.apply_look(id.as_str());

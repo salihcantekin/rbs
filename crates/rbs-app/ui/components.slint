@@ -2473,6 +2473,9 @@ export component ListRow inherits Rectangle {
     // none). The row grows to hold it.
     in property <image> picture;
     in property <length> picture-height;
+    // A pattern behind the picture, so transparent parts (a frame's inside, a PNG
+    // with alpha) read as transparent instead of as the well. Opaque pictures cover it.
+    in property <bool> picture-checker;
     // Room kept at the start for a picture the owner draws over the row (a theme's
     // swatch); zero for none.
     in property <length> lead-space;
@@ -2615,6 +2618,21 @@ export component ListRow inherits Rectangle {
                         border-color: Theme.border-subtle;
                         background: Theme.surface-sunken;
                         clip: true;
+                        if root.picture-checker: Rectangle {
+                            property <length> cell: Tokens.size-row-picture-check;
+                            property <int> cols: Math.ceil(self.width / self.cell);
+                            property <int> rows: Math.ceil(self.height / self.cell);
+                            for i in self.cols * self.rows: Rectangle {
+                                property <int> cx: Math.mod(i, parent.cols);
+                                property <int> cy: Math.floor(i / parent.cols);
+                                x: self.cx * parent.cell;
+                                y: self.cy * parent.cell;
+                                width: parent.cell;
+                                height: parent.cell;
+                                visible: Math.mod(self.cx + self.cy, 2) == 1;
+                                background: Theme.surface-checker;
+                            }
+                        }
                         Image {
                             source: root.picture;
                             width: 100%;

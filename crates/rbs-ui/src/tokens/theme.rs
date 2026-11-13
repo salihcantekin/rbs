@@ -177,6 +177,10 @@ pub const THEMEABLE: &[Themeable] = &[
     colour("color.surface.raised", "Panel background"),
     colour("color.surface.overlay", "Menu and popover background"),
     colour("color.surface.sunken", "Well background"),
+    colour(
+        "color.surface.checker",
+        "Pattern behind transparent pictures",
+    ),
     colour("color.toast.surface", "Notice background"),
     colour("color.toast.edge", "Notice outline"),
     colour("color.text.primary", "Text"),

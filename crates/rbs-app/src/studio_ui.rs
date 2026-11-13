@@ -235,6 +235,8 @@ pub struct StudioUi {
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
     library_samples: Rc<VecModel<SampleData>>,
+    /// The physical pixel height the sample thumbnails were made for.
+    library_thumb_height: u32,
     /// The selected source's id (-1 none). The Sources rows follow this.
     pub selected: i32,
     /// The source Properties last showed. It stays when the selection is cleared,
@@ -522,6 +524,7 @@ impl StudioUi {
             picker_dirty: false,
             library_looks: Rc::new(VecModel::from(library_looks())),
             library_samples: Rc::new(VecModel::default()),
+            library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
             selected: -1,
             inspected: Cell::new(-1),
@@ -3910,10 +3913,14 @@ impl StudioUi {
     }
 
     /// Reads the output profiles and scene collections for the menus again.
-    /// The Library panel shows: makes the sample thumbnails the first time.
-    pub fn library_shown(&mut self) {
-        if self.library_samples.row_count() == 0 {
-            self.library_samples.set_vec(library_samples());
+    /// The Library panel shows: makes the sample thumbnails at `picture_px`, the
+    /// physical pixel height a row shows them at, the first time and whenever that
+    /// height changes (another spacing or screen scale).
+    pub fn library_shown(&mut self, picture_px: i32) {
+        let height = u32::try_from(picture_px).unwrap_or(0).clamp(1, 1024);
+        if self.library_samples.row_count() == 0 || self.library_thumb_height != height {
+            self.library_thumb_height = height;
+            self.library_samples.set_vec(library_samples(height));
         }
     }
 
@@ -5960,42 +5967,30 @@ fn library_looks() -> Vec<LookData> {
         .collect()
 }
 
-/// Pixels of a sample picture's thumbnail, in the aspect of the canvas it is for.
-const THUMB: (u32, u32) = (288, 162);
-
 /// How many rows of the Source tab's list get a picture, and the size asked for (twice the
 /// token size, so it stays sharp on a high-density screen).
 const THUMBS_PER_LIST: usize = 24;
 const THUMB_REQUEST: (u32, u32) = (192, 108);
 
-/// The sample pictures with their thumbnails (made once, when the Library first shows).
-fn library_samples() -> Vec<SampleData> {
-    let mut background = 0i32;
-    let mut frame = 0i32;
+/// The sample pictures with their thumbnails, `height` physical pixels high: drawn
+/// larger and averaged down, so a thin frame line stays visible (`thumbnail`).
+fn library_samples(height: u32) -> Vec<SampleData> {
+    use rbs_app::thumbnail::{OVERSAMPLE, shrink_rgba, wide_size};
+    let (w, h) = wide_size(height);
     rbs_sources::still::SAMPLES
         .iter()
         .filter_map(|s| {
-            let px = rbs_sources::still::sample_picture(s.id, THUMB.0, THUMB.1)?;
-            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                &px, THUMB.0, THUMB.1,
-            );
+            let big = rbs_sources::still::sample_picture(s.id, w * OVERSAMPLE, h * OVERSAMPLE)?;
+            let px = shrink_rgba(&big, w * OVERSAMPLE, h * OVERSAMPLE, w, h);
+            if px.is_empty() {
+                return None;
+            }
+            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&px, w, h);
             let is_frame = s.kind == rbs_sources::still::SampleKind::Frame;
-            // Place within its own kind, so the two columns stay even when the
-            // other kind is hidden.
-            let slot = if is_frame {
-                let n = frame;
-                frame += 1;
-                n
-            } else {
-                let n = background;
-                background += 1;
-                n
-            };
             Some(SampleData {
                 id: s.id.into(),
                 name: s.name.into(),
                 frame: is_frame,
-                slot,
                 thumb: slint::Image::from_rgba8(buffer),
             })
         })

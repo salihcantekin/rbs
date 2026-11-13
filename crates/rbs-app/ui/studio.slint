@@ -33,7 +33,7 @@ export struct SceneData { id: int, name: string, live: bool, preview: bool, numb
 // A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
 // picture: `frame` is true for a frame (transparent in the middle), `thumb` its picture.
 export struct LookData { id: string, name: string, group: int }
-export struct SampleData { id: string, name: string, frame: bool, slot: int, thumb: image }
+export struct SampleData { id: string, name: string, frame: bool, thumb: image }
 export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
@@ -269,7 +269,8 @@ export global Studio {
     in property <[LookData]> library-looks;
     in property <[string]> library-look-names;
     in property <[SampleData]> library-samples;
-    callback library-shown();
+    // The argument is the physical pixel height a sample's picture is shown at.
+    callback library-shown(int /* picture_px */);
     callback apply-look(string /* look id */);
     callback apply-look-at(int /* index in library-looks */);
     callback add-sample(string /* sample id */);
@@ -5355,6 +5356,7 @@ component SampleGrid inherits VerticalLayout {
             name: s.name;
             picture: s.thumb;
             picture-height: Tokens.size-row-picture-md;
+            picture-checker: true;
             selectable: false;
             accessible-name: @tr("Add {}", s.name);
             activated => { Studio.add-sample(s.id); }
@@ -5384,7 +5386,10 @@ export component LibraryPanel inherits Rectangle {
     property <int> pick: 0;
     // 0 Background, 1 Frame.
     property <int> sample-kind: 0;
-    init => { Studio.library-shown(); }
+    // Thumbnails are made at the size the rows show them (`thumbnail.rs`).
+    property <int> picture-px: Math.round(Tokens.size-row-picture-md / 1phx);
+    init => { Studio.library-shown(root.picture-px); }
+    changed picture-px => { Studio.library-shown(root.picture-px); }
     // The list has no width, and the flickable has no content-width. A `width: 100%`
     // here is the preferred width of the contents, so a short control stays short
     // (design system: filling a row). Properties uses the same shape.

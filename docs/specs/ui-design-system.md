@@ -29,6 +29,7 @@ File layout (format 2; format 1 is format 2 without `[font]` and is still read, 
 | Token | Use |
 | --- | --- |
 | `color.surface.base` / `.raised` / `.overlay` / `.sunken` | Window background, panels, popovers and the plate under the pointer, wells. `overlay` must differ from `raised`, so a row under the pointer is visible on every theme |
+| `color.surface.checker` | The darker squares of the pattern behind a picture's transparent parts, on `surface.sunken` (a `ListRow` picture with `picture-checker`). Decorative: it carries no information |
 | `color.text.primary` / `.secondary` / `.disabled` / `.inverse` | Text |
 | `color.border.subtle` / `.strong` / `.focus` | Dividers, inputs, focus ring |
 | `color.accent` / `.accent.hover` / `.accent.subtle` | Primary actions, selection |
@@ -65,7 +66,7 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Lines | `size.border`=1, `size.focus-ring`=2 |
 | Icons | `size.icon.box`=16 (icon box), `size.icon.stroke`=1.5 (line width) |
 | Menus | `size.menu.sm`=220, `size.menu.md`=300 (menu widths), `size.select.list-h`=320 (a drop-down list's height before it scrolls, about ten options), `size.app-menu.w`=600, `size.app-menu.categories`=165, `size.app-menu.list-h`=450 (RBS menu width, category column width, item list height before it scrolls) |
-| Rows | `size.row.picture.sm`=24, `size.row.picture.md`=36, `size.row.picture.lg`=54 (height of a `ListRow` picture in a 16:9 well), `size.row.stack-below`=280 (a `SettingRow` narrower than this, or whose control needs more than half its width, puts the control under the name; ADR-0114) |
+| Rows | `size.row.picture.sm`=24, `size.row.picture.md`=36, `size.row.picture.lg`=54 (height of a `ListRow` picture in a 16:9 well), `size.row.picture.check`=6 (square of the pattern behind transparent parts), `size.row.stack-below`=280 (a `SettingRow` narrower than this, or whose control needs more than half its width, puts the control under the name; ADR-0114) |
 | Transition rail | `size.transition.between`=156 (column between the pictures), `size.transition.below`=44 (row below them), `size.transition.min-picture`=160 and `size.transition.min-h`=240 (below them when narrower or shorter), `size.transition.type`=112, `size.transition.type-min`=72, `size.transition.duration`=88 (field widths below the pictures), `size.transition.compact`=600 (narrower: duration and caption hidden), `size.transition.narrow`=40 (narrower: the Transition panel shows only its button), `size.transition.short`=120 (narrower: the button says "Go" and the studio mode hint is hidden) |
 | Source tab list | `size.target.thumb-w`=96 and `size.target.thumb-h`=54 (the picture in front of a display's or window's name, 16:9; not themeable) |
 | Toast | `size.toast.border`=2 (outline; themeable, floor 2, up to 4, so a theme cannot drop it), `size.toast.rail`=4 (side mark; not themeable, floor 4), `size.toast.max`=480 (widest the card may be; a longer message elides; not themeable, so a theme cannot grow it to the window) |

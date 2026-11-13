@@ -47,6 +47,7 @@ pub mod replay_settings;
 pub mod stream_key;
 pub mod stream_profile;
 pub mod studio_host;
+pub mod thumbnail;
 pub mod user_session;
 pub mod vcam_settings;
 pub mod vertical_outputs;
