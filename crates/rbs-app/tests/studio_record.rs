@@ -582,6 +582,7 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
         id,
         crop: [0, 0, right, 0],
         keep_scale: true,
+        canvas: rbs_app::studio_host::OutputCanvas::Main,
     });
     let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.right == right));
     let cut = rows[0].layout.unwrap();
@@ -609,6 +610,7 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
         id,
         crop: [w / 2, 0, w - w / 2, 0],
         keep_scale: true,
+        canvas: rbs_app::studio_host::OutputCanvas::Main,
     });
     next(&rx, |u| match u {
         Update::Error(_) => Some(()),

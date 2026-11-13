@@ -3509,12 +3509,20 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_preview_release, |app| {
         app.studio.preview_release();
     });
-    on!(
-        on_vertical_press,
-        |app, x: f32, y: f32, w: f32, h: f32, shift: bool, no_snap: bool| {
-            app.studio.vertical_press([x, y], [w, h], shift, no_snap);
-        }
-    );
+    on!(on_vertical_press, |app,
+                            x: f32,
+                            y: f32,
+                            w: f32,
+                            h: f32,
+                            shift: bool,
+                            no_snap: bool,
+                            crop: bool| {
+        app.studio
+            .vertical_press([x, y], [w, h], shift, no_snap, crop);
+    });
+    on!(on_set_props_vertical, |app, vertical: bool| {
+        app.studio.set_props_vertical(vertical);
+    });
     on!(on_vertical_drag, |app, x: f32, y: f32| {
         // As on the main picture: a drag whose button is no longer down ends here.
         if primary_button_up() {

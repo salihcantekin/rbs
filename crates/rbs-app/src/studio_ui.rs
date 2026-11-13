@@ -36,7 +36,8 @@ use rbs_core::fault::SourceFault;
 use rbs_record::Link;
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::{
-    Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, SceneId, Shape, SourceId, SourceRegion,
+    Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Shape, SourceId,
+    SourceRegion,
 };
 use rbs_transport::Secret;
 use rbs_ui::fader;
@@ -255,6 +256,9 @@ pub struct StudioUi {
     /// The same on the vertical canvas's picture (ADR-0093 decision 4). Its requests
     /// carry [`VERTICAL_SEQ`] so their answers find it.
     vedit: PreviewEdit,
+    /// The canvas Properties edits: the vertical one after a source is picked on the
+    /// Vertical panel or with its switch (ADR-0093 decision 4).
+    props_on: OutputCanvas,
     /// The vertical picture shows in the main window.
     vertical_shown: bool,
     vmark_buf: Vec<Mark>,
@@ -528,6 +532,7 @@ impl StudioUi {
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
             vedit: PreviewEdit::default(),
+            props_on: OutputCanvas::Main,
             vertical_shown: false,
             vmark_buf: Vec::with_capacity(MAX_MARKS),
             vertical_marks: Rc::new(VecModel::default()),
@@ -690,6 +695,9 @@ impl StudioUi {
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
+        let (props_vertical, props_can_vertical) = self.props_vertical();
+        g.set_props_vertical(props_vertical);
+        g.set_props_can_vertical(props_can_vertical);
         let looks = (0..self.sources.row_count()).any(|i| {
             self.sources
                 .row_data(i)
@@ -1759,6 +1767,7 @@ impl StudioUi {
             id: SourceId::from_raw(id as u32),
             op,
             gesture: 0,
+            canvas: self.props_target(id),
         });
     }
 
@@ -1770,6 +1779,7 @@ impl StudioUi {
             id: SourceId::from_raw(id as u32),
             op: TransformOp::SetAngle(degrees),
             gesture: gesture.max(0) as u64,
+            canvas: self.props_target(id),
         });
     }
 
@@ -2056,7 +2066,13 @@ impl StudioUi {
     /// the picture panel's drags go through [`PreviewEdit`], numbered).
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
         self.deleted.clear();
-        self.send_box(0, id, SourceBox::new([x, y], [w, h]), 0, OutputCanvas::Main);
+        self.send_box(
+            0,
+            id,
+            SourceBox::new([x, y], [w, h]),
+            0,
+            self.props_target(id),
+        );
     }
 
     /// Source pixels cut from each edge of a video source's picture (the Properties
@@ -2072,6 +2088,7 @@ impl StudioUi {
             id: SourceId::from_raw(id as u32),
             crop: crop.map(|v| v.max(0) as u32),
             keep_scale: true,
+            canvas: self.props_target(id),
         });
     }
 
@@ -2233,14 +2250,70 @@ impl StudioUi {
             gesture: 0,
             id: SourceId::from_raw(id as u32),
             style,
+            canvas: self.props_target(id),
         });
+    }
+
+    /// The canvas Properties edits for row `r`: the vertical one only while it is
+    /// chosen and the row can be placed there.
+    fn props_canvas(&self, r: &SourceRow) -> OutputCanvas {
+        if self.props_on == OutputCanvas::Vertical && r.vertical_layout.is_some() {
+            OutputCanvas::Vertical
+        } else {
+            OutputCanvas::Main
+        }
+    }
+
+    /// The layout Properties shows for row `r`.
+    fn props_layout(&self, r: &SourceRow) -> Option<Layout> {
+        match self.props_canvas(r) {
+            OutputCanvas::Main => r.layout,
+            OutputCanvas::Vertical => r.vertical_layout,
+        }
+    }
+
+    /// The canvas Properties edits for source `id`.
+    fn props_target(&self, id: i32) -> OutputCanvas {
+        self.rows
+            .iter()
+            .find(|r| r.id.get() as i32 == id)
+            .map_or(OutputCanvas::Main, |r| self.props_canvas(r))
+    }
+
+    /// A press on a picture: Properties then edits that picture's canvas.
+    fn pick_props(&mut self, on: OutputCanvas) {
+        if on != self.props_on {
+            self.props_on = on;
+            self.refresh_rows();
+        }
+    }
+
+    /// Properties' Horizontal / Vertical switch (ADR-0093 decision 4).
+    pub fn set_props_vertical(&mut self, vertical: bool) {
+        let on = if vertical {
+            OutputCanvas::Vertical
+        } else {
+            OutputCanvas::Main
+        };
+        self.pick_props(on);
+    }
+
+    /// Whether Properties edits the vertical canvas for the selected source, and
+    /// whether it could.
+    pub fn props_vertical(&self) -> (bool, bool) {
+        let row = self
+            .rows
+            .iter()
+            .find(|r| r.id.get() as i32 == self.selected);
+        let can = row.is_some_and(|r| r.vertical_layout.is_some());
+        (can && self.props_on == OutputCanvas::Vertical, can)
     }
 
     fn rows_style(&self, id: i32) -> Option<ItemStyle> {
         self.rows
             .iter()
             .find(|r| r.id.get() as i32 == id)
-            .and_then(|r| r.layout.map(|l| l.style))
+            .and_then(|r| self.props_layout(r).map(|l| l.style))
     }
 
     fn send_box(&mut self, seq: u64, id: i32, b: SourceBox, gesture: u64, canvas: OutputCanvas) {
@@ -2326,6 +2399,7 @@ impl StudioUi {
                         id: SourceId::from_raw(id as u32),
                         crop,
                         keep_scale: true,
+                        canvas: OutputCanvas::Main,
                     });
                 }
             }
@@ -2336,11 +2410,30 @@ impl StudioUi {
     /// What an edit on the vertical picture asks of the studio. It has no crop.
     fn run_vertical(&mut self, effect: Effect) {
         match effect {
-            Effect::None | Effect::SendCrop(..) => {}
+            Effect::None => {}
             Effect::Select(id) => self.selected = id,
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Vertical);
+            }
+            Effect::SendCrop(seq, id, crop, gesture) => {
+                self.deleted.clear();
+                if self.host.is_none() {
+                    self.vedit.reset();
+                } else {
+                    self.send(Command::SetSourceCrop {
+                        seq: seq | VERTICAL_SEQ,
+                        gesture: if gesture == 0 {
+                            0
+                        } else {
+                            gesture | VERTICAL_SEQ
+                        },
+                        id: SourceId::from_raw(id as u32),
+                        crop,
+                        keep_scale: true,
+                        canvas: OutputCanvas::Vertical,
+                    });
+                }
             }
         }
         self.refresh_marks();
@@ -2374,7 +2467,14 @@ impl StudioUi {
     }
 
     /// A press on the vertical picture (its coordinates, its size `size`).
-    pub fn vertical_press(&mut self, at: [f32; 2], size: [f32; 2], shift: bool, no_snap: bool) {
+    pub fn vertical_press(
+        &mut self,
+        at: [f32; 2],
+        size: [f32; 2],
+        shift: bool,
+        no_snap: bool,
+        crop: bool,
+    ) {
         let Some(canvas) = self.vertical_px() else {
             return;
         };
@@ -2382,10 +2482,11 @@ impl StudioUi {
         let keys = DragKeys {
             free: shift,
             no_snap,
-            crop: false,
+            crop,
         };
         let placed = self.placed_vertical(false);
         let e = self.vedit.press(at, canvas, &placed, self.selected, keys);
+        self.pick_props(OutputCanvas::Vertical);
         self.run_vertical(e);
     }
 
@@ -2454,6 +2555,7 @@ impl StudioUi {
         let e = self
             .edit
             .press(at, self.canvas_px(), &placed, self.selected, keys);
+        self.pick_props(OutputCanvas::Main);
         self.run(e);
     }
 
@@ -4538,6 +4640,10 @@ impl StudioUi {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
             }
+            Update::CropPlaced { seq, ok } if seq & VERTICAL_SEQ != 0 => {
+                let next = self.vedit.answered(seq & !VERTICAL_SEQ, ok);
+                self.run_vertical(next);
+            }
             // Crops from the Properties fields are numbered 0, which the picture
             // panel never uses.
             Update::CropPlaced { seq, ok } => {
@@ -4998,11 +5104,13 @@ impl StudioUi {
                         (unavailable_text(*fault, r.kind).to_owned(), false)
                     }
                 };
-                let (x, y, w, h) = r.layout.map_or((0.0, 0.0, 0.0, 0.0), |l| {
+                // Properties shows the layout of the canvas it edits.
+                let shown = self.props_layout(r);
+                let (x, y, w, h) = shown.map_or((0.0, 0.0, 0.0, 0.0), |l| {
                     (l.position[0], l.position[1], l.size[0], l.size[1])
                 });
-                let style = r.layout.map(|l| l.style).unwrap_or_default();
-                let crop = r.layout.map(|l| l.crop).unwrap_or_default();
+                let style = shown.map(|l| l.style).unwrap_or_default();
+                let crop = shown.map(|l| l.crop).unwrap_or_default();
                 let (shape, radius) = match style.shape {
                     Shape::Circle => (1, 0.0),
                     Shape::Ellipse => (2, 0.0),
@@ -5055,9 +5163,9 @@ impl StudioUi {
                     pic_w: r.picture.map_or(0, |p| p.0 as i32),
                     pic_h: r.picture.map_or(0, |p| p.1 as i32),
                     locked: r.locked,
-                    flip_h: r.layout.is_some_and(|l| l.flip_state().horizontal),
-                    flip_v: r.layout.is_some_and(|l| l.flip_state().vertical),
-                    rotation: r.layout.map_or(0.0, |l| l.rotation),
+                    flip_h: shown.is_some_and(|l| l.flip_state().horizontal),
+                    flip_v: shown.is_some_and(|l| l.flip_state().vertical),
+                    rotation: shown.map_or(0.0, |l| l.rotation),
                     audio: r.kind.is_some_and(SourceKind::is_audio),
                     muted: r.audio.muted,
                     volume: fader::position_of(r.audio.volume),
