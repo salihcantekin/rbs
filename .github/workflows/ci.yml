@@ -1,12 +1,12 @@
 name: CI
 
+# Automatic triggers (push / pull_request) are disabled for now.
+# Run from the Actions tab: "Run workflow".
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
-# A new push to a pull request cancels its older, now outdated run. Runs on main are
-# never cancelled, so every merge leaves a complete run (and a fresh cache) behind.
+# Kept for when push/PR triggers return: a new push to a pull request cancels its
+# older run; runs on main are never cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
