@@ -1066,3 +1066,94 @@ fn the_control_api_adds_and_removes_the_vertical_canvas() {
     });
     drop(host);
 }
+
+#[test]
+fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
+    use rbs_app::studio_host::{Command, OutputCanvas, TransformOp, VerticalCanvas};
+    use rbs_core::media::Size;
+    use rbs_scene::model::{ItemStyle, Shape, SourceId};
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let id = SourceId::from_raw(add(&mut c, "screen", "Screen") as u32);
+    host.send(Command::AddVerticalCanvas(VerticalCanvas {
+        size: Size::new(1080, 1920),
+        follow: true,
+        layout: None,
+    }));
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r) if r.iter().any(|r| r.vertical_layout.is_some()) => Some(r),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    let main = rows[0].layout.unwrap();
+    // The vertical layout is the canvas's own from the first change on.
+    host.send(Command::SetSourceStyle {
+        gesture: 0,
+        id,
+        style: ItemStyle::new(Shape::Circle),
+        canvas: OutputCanvas::Vertical,
+    });
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r)
+            if r[0]
+                .vertical_layout
+                .is_some_and(|l| l.style.shape == Shape::Circle) =>
+        {
+            Some(r)
+        }
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert_eq!(rows[0].layout, Some(main));
+    host.send(Command::SetSourceCrop {
+        seq: 9,
+        gesture: 0,
+        id,
+        crop: [10, 0, 0, 0],
+        keep_scale: false,
+        canvas: OutputCanvas::Vertical,
+    });
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r) if r[0].vertical_layout.is_some_and(|l| l.crop.left == 10) => Some(r),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert_eq!(rows[0].layout, Some(main));
+    assert_eq!(
+        rows[0].vertical_layout.map(|l| l.style.shape),
+        Some(Shape::Circle)
+    );
+    host.send(Command::TransformSource {
+        id,
+        op: TransformOp::FlipHorizontal,
+        gesture: 0,
+        canvas: OutputCanvas::Vertical,
+    });
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r)
+            if r[0]
+                .vertical_layout
+                .is_some_and(|l| l.flip_state().horizontal) =>
+        {
+            Some(r)
+        }
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert_eq!(rows[0].layout, Some(main));
+    // In studio mode the vertical canvas is not edited: the style is refused.
+    let program = scenes(&mut c)["program"].clone();
+    ok(&c.call("canvas.set_preview", json!({"scene": program})));
+    host.send(Command::SetSourceStyle {
+        gesture: 0,
+        id,
+        style: ItemStyle::new(Shape::Ellipse),
+        canvas: OutputCanvas::Vertical,
+    });
+    next(&updates, |u| match u {
+        Update::Error(_) => Some(()),
+        _ => None,
+    });
+    drop(host);
+}

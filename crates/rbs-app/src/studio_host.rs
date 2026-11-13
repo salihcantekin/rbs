@@ -929,6 +929,9 @@ pub enum Command {
         crop: [u32; 4],
         /// Keep the scale (else the cropped picture fills the box).
         keep_scale: bool,
+        /// The canvas whose layout changes: the vertical canvas's own layout only while
+        /// it shows the scene being edited (ADR-0093 decision 4).
+        canvas: OutputCanvas,
     },
     /// Flip, turn, fit or centre a video source's picture on the layout the canvas
     /// shows (ADR-0084). One undo step; a refusal is an [`Update::Error`].
@@ -939,6 +942,9 @@ pub enum Command {
         op: TransformOp,
         /// Moves that share a non-zero gesture are one undo step. 0 never joins.
         gesture: u64,
+        /// The canvas whose layout changes: the vertical canvas's own layout only while
+        /// it shows the scene being edited (ADR-0093 decision 4).
+        canvas: OutputCanvas,
     },
     /// Show a part of a video source's picture filling as much of the canvas as fits
     /// (ADR-0058, Properties' Show buttons). One undo step.
@@ -986,6 +992,9 @@ pub enum Command {
         id: SourceId,
         /// The new style.
         style: ItemStyle,
+        /// The canvas whose layout changes: the vertical canvas's own layout only while
+        /// it shows the scene being edited (ADR-0093 decision 4).
+        canvas: OutputCanvas,
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
@@ -3280,6 +3289,7 @@ impl Host {
                 id,
                 crop,
                 keep_scale,
+                canvas,
             } => {
                 let [l, t, r, b] = crop;
                 let edit = self
@@ -3287,7 +3297,7 @@ impl Host {
                     .map_err(CropRefusal::NotFound)
                     .map(|(_, item)| item.id)
                     .and_then(|item| {
-                        self.set_item_crop(item, Crop::new(l, t, r, b), keep_scale, gesture)
+                        self.set_item_crop(item, Crop::new(l, t, r, b), keep_scale, gesture, canvas)
                     });
                 let ok = match edit {
                     Ok(true) => {
@@ -3302,9 +3312,14 @@ impl Host {
                 };
                 notify(Update::CropPlaced { seq, ok });
             }
-            Command::TransformSource { id, op, gesture } => {
+            Command::TransformSource {
+                id,
+                op,
+                gesture,
+                canvas,
+            } => {
                 let edit = match self.item_of(id).map(|(_, item)| item.id) {
-                    Ok(item) => self.transform_item(item, op, gesture),
+                    Ok(item) => self.transform_item(item, op, gesture, canvas),
                     Err(t) => Err(Refusal::NotFound(t)),
                 };
                 match edit {
@@ -3352,11 +3367,16 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text().into())),
             },
-            Command::SetSourceStyle { gesture, id, style } => {
+            Command::SetSourceStyle {
+                gesture,
+                id,
+                style,
+                canvas,
+            } => {
                 let edit = self
                     .item_of(id)
                     .map(|(_, item)| item.id)
-                    .and_then(|item| self.set_item_style(item, style, gesture));
+                    .and_then(|item| self.set_item_style(item, style, gesture, canvas));
                 match edit {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
@@ -3984,8 +4004,10 @@ impl Host {
         canvas: Option<CanvasId>,
         live: Layout,
     ) -> Result<Undo, SceneError> {
-        self.collection
-            .set_item_layout(id, canvas, self.stored_layout(&live))
+        // An own layout is stored in its canvas's space, the default in the studio's.
+        let space = canvas.unwrap_or(self.canvas);
+        let stored = self.collection.stored_layout(space, &live);
+        self.collection.set_item_layout(id, canvas, stored)
     }
 
     /// Restarts the studio with the canvas at `size` and `fps`. Stored item boxes stay
@@ -7473,24 +7495,31 @@ impl Host {
         item: ItemId,
         style: ItemStyle,
         gesture: u64,
+        on: OutputCanvas,
     ) -> Result<bool, String> {
         if !style.is_valid() {
             return Err(STYLE_ERROR.into());
         }
-        let gone = || "This source is not in the scene any more.".to_owned();
-        let found = self
-            .collection
-            .scenes()
-            .find_map(|s| s.items.iter().find(|i| i.id == item).cloned());
-        let found = found.ok_or_else(gone)?;
-        let mut layout = self.shown_layout(&found);
+        let Some((_, found)) = self.collection.item(item) else {
+            return Err("This source is not in the scene any more.".to_owned());
+        };
+        let found = found.clone();
+        let (mut layout, own) = match on {
+            OutputCanvas::Main => (
+                self.shown_layout(&found),
+                found
+                    .overrides
+                    .contains_key(&self.canvas)
+                    .then_some(self.canvas),
+            ),
+            OutputCanvas::Vertical => {
+                let (_, layout, own) = self.crop_target_on(item, on).map_err(|e| e.text())?;
+                (layout, own)
+            }
+        };
         if layout.style == style {
             return Ok(false);
         }
-        let own = found
-            .overrides
-            .contains_key(&self.canvas)
-            .then_some(self.canvas);
         layout.style = style;
         let undo = self
             .save_live_layout(item, own, layout)
@@ -7510,6 +7539,67 @@ impl Host {
         &self,
         item: ItemId,
     ) -> Result<(SourceId, Layout, Option<CanvasId>), CropRefusal> {
+        self.crop_target_on(item, OutputCanvas::Main)
+    }
+
+    /// The canvas a window edit of `on` changes: the studio's canvas, or the vertical
+    /// canvas while it shows the scene being edited (ADR-0093 decision 4).
+    fn edit_canvas(&self, on: OutputCanvas) -> Result<CanvasId, Refusal> {
+        match on {
+            OutputCanvas::Main => Ok(self.canvas),
+            OutputCanvas::Vertical => {
+                if self.vertical.is_none() {
+                    return Err(Refusal::NotFound("There is no vertical canvas.".into()));
+                }
+                self.vertical_edits().ok_or_else(|| {
+                    Refusal::Conflict(
+                        "The vertical canvas shows another scene: its sources are edited while it shows the scene on air outside studio mode."
+                            .into(),
+                    )
+                })
+            }
+        }
+    }
+
+    /// The width and height of canvas `id` in pixels.
+    fn canvas_px(&self, id: CanvasId) -> Option<(u32, u32)> {
+        self.collection
+            .canvas(id)
+            .map(|c| (c.size.width, c.size.height))
+    }
+
+    /// As [`Self::crop_target`], on the canvas `on` names. On the vertical canvas the
+    /// layout is always written as that canvas's own (U15); global sources are not on
+    /// it yet.
+    fn crop_target_on(
+        &self,
+        item: ItemId,
+        on: OutputCanvas,
+    ) -> Result<(SourceId, Layout, Option<CanvasId>), CropRefusal> {
+        if on == OutputCanvas::Vertical {
+            let canvas = self.edit_canvas(on).map_err(|e| match e {
+                Refusal::NotFound(t) => CropRefusal::NotFound(t),
+                e => CropRefusal::Invalid(e.text().into()),
+            })?;
+            let (scene, found) = self
+                .collection
+                .item(item)
+                .ok_or_else(|| CropRefusal::NotFound(format!("no item {}", item.get())))?;
+            if self.globals() == Some(scene) {
+                return Err(CropRefusal::Invalid(
+                    "Global sources are not on the vertical canvas yet.".into(),
+                ));
+            }
+            let ItemContent::Source(source) = found.content else {
+                return Err(CropRefusal::Invalid(
+                    "crop is for source items, not nested scenes".into(),
+                ));
+            };
+            let layout = self
+                .collection
+                .placed_layout(canvas, found.layout_on(canvas));
+            return Ok((source, layout, Some(canvas)));
+        }
         let found = self
             .collection
             .scenes()
@@ -7557,8 +7647,9 @@ impl Host {
         crop: Crop,
         keep_scale: bool,
         gesture: u64,
+        on: OutputCanvas,
     ) -> Result<bool, CropRefusal> {
-        let (source, old, own) = self.crop_target(item)?;
+        let (source, old, own) = self.crop_target_on(item, on)?;
         let size = self.sizes.get(&source).copied();
         let region = self.collection.source(source).and_then(|s| s.region);
         let layout = if keep_scale {
@@ -7586,7 +7677,7 @@ impl Host {
         notify: &dyn Fn(Update),
     ) -> Result<Response, ApiError> {
         let changed = self
-            .transform_item(ItemId::from_raw(item), op, 0)
+            .transform_item(ItemId::from_raw(item), op, 0, OutputCanvas::Main)
             .map_err(|e| refused(&e))?;
         if changed {
             self.apply(notify);
@@ -7602,9 +7693,11 @@ impl Host {
         item: ItemId,
         op: TransformOp,
         gesture: u64,
+        on: OutputCanvas,
     ) -> Result<bool, Refusal> {
         let locked = self.collection.item(item).is_some_and(|(_, i)| i.locked);
-        let (source, old, own) = self.crop_target(item).map_err(|e| match e {
+        let target = self.edit_canvas(on)?;
+        let (source, old, own) = self.crop_target_on(item, on).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
             CropRefusal::Invalid(t) => Refusal::Invalid(t),
             CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
@@ -7615,9 +7708,7 @@ impl Host {
             ));
         }
         let canvas = self
-            .collection
-            .canvas(self.canvas)
-            .map(|c| (c.size.width, c.size.height))
+            .canvas_px(target)
             .ok_or_else(|| Refusal::Failed("the canvas is gone".into()))?;
         let picture = || {
             let capture = self.sizes.get(&source).copied().ok_or_else(|| {
@@ -8779,7 +8870,13 @@ impl ApiTarget<'_> {
             C::ItemSetCrop(p) => {
                 let [l, t, r, b] = p.crop;
                 let item = ItemId::from_raw(p.item);
-                match host.set_item_crop(item, Crop::new(l, t, r, b), p.keep_scale, 0) {
+                match host.set_item_crop(
+                    item,
+                    Crop::new(l, t, r, b),
+                    p.keep_scale,
+                    0,
+                    OutputCanvas::Main,
+                ) {
                     Ok(changed) => {
                         if changed {
                             host.apply(notify);
@@ -8821,7 +8918,10 @@ impl ApiTarget<'_> {
                     }
                     Some(_) => {}
                 }
-                if host.set_item_style(item, style, 0).map_err(failed)? {
+                if host
+                    .set_item_style(item, style, 0, OutputCanvas::Main)
+                    .map_err(failed)?
+                {
                     host.apply(notify);
                 }
                 Ok(Response::Done(Empty {}))
