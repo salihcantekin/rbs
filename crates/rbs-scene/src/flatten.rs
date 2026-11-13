@@ -430,16 +430,27 @@ impl SceneCollection {
     ///
     /// Temporal sources are omitted. A hidden temporal source is not linked. One a
     /// shown scene draws is linked from that scene's `visible_sources`, not from here.
+    /// For a canvas that follows another, only scenes the leader can show count.
     pub fn warm_sources(&self, canvas: CanvasId) -> BTreeSet<SourceId> {
         let Some(c) = self.canvas(canvas) else {
             return BTreeSet::new();
         };
         let globals = c.globals;
-        let showable: BTreeSet<SceneId> = self
+        let mut showable: BTreeSet<SceneId> = self
             .showable_scenes(canvas)
             .into_iter()
             .map(|s| s.id)
             .collect();
+        // A following canvas shows only scenes its leader can put on air (ADR-0093
+        // decision 3), so its own scenes do not keep their devices open (P13).
+        if let Some(leader) = c.follow.filter(|l| *l != canvas) {
+            let led: BTreeSet<SceneId> = self
+                .showable_scenes(leader)
+                .into_iter()
+                .map(|s| s.id)
+                .collect();
+            showable.retain(|s| led.contains(s));
+        }
         self.wanted_sources()
             .into_iter()
             .filter(|id| !self.is_temporal(*id))
