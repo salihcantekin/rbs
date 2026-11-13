@@ -224,7 +224,7 @@ pub fn output_size_options(canvas: (u32, u32), saved: Option<OutputSize>) -> Vec
 /// named by its pixels. The detail carries the pixels and downscale or upscale.
 pub fn output_choice_copy(size: OutputSize, canvas: (u32, u32)) -> (String, String) {
     let long = size.width.max(size.height);
-    let named = output_size_matches(size.pair(), canvas).then(|| match long {
+    let named = output_size_matches(size.pair(), canvas).then_some(match long {
         1280 => Some("720p"),
         1920 => Some("1080p"),
         2560 => Some("1440p"),

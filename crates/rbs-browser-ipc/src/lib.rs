@@ -189,6 +189,7 @@ fn strip_prefix(bytes: &[u8]) -> Option<&[u8]> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
     use super::*;
 
     #[test]
@@ -222,8 +223,10 @@ mod tests {
 
     #[test]
     fn the_page_boundary_denies_script_and_devices() {
-        assert!(!PageBoundary::DENIED.js_bindings);
-        assert!(!PageBoundary::DENIED.device_prompts);
+        const {
+            assert!(!PageBoundary::DENIED.js_bindings);
+            assert!(!PageBoundary::DENIED.device_prompts);
+        }
     }
 
     #[test]

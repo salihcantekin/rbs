@@ -69,7 +69,7 @@ pub(crate) fn thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, Captu
 
 /// Region-section grab (ADR-0103): same path as a thumbnail, long side ≤ 960.
 pub(crate) fn region_grab(target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError> {
-    let side = max_long.min(REGION_GRAB_LONG).max(1);
+    let side = max_long.clamp(1, REGION_GRAB_LONG.max(1));
     let limit = Size::new(side, side);
     let (w, h, rgba) = grab_rgba(target, limit, "region_grab")?;
     RegionGrab::new(w, h, rgba).ok_or(CaptureError::FormatUnsupported)

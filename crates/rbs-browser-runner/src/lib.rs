@@ -203,7 +203,7 @@ pub fn helper_main(hold: bool) -> Result<(), String> {
     for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
         let x = index % width;
         let y = index / width;
-        let light = ((x / 32) + (y / 32)) % 2 == 0;
+        let light = ((x / 32) + (y / 32)).is_multiple_of(2);
         if light {
             pixel[0] = 40;
             pixel[1] = 180;
