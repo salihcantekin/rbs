@@ -11,6 +11,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Filter | An effect applied to a source or audio | Effect, plugin | Filter node |
 | Transition | How the view changes from one scene to another | Effect | Transition node |
 | Canvas | The pixel grid and frame rate a scene is drawn on, for example horizontal 1920x1080 or vertical 1080x1920. Scene items are placed in these pixels | Resolution, Output size | Canvas |
+| Vertical output | The recording or stream of the vertical canvas. With "Main + vertical" (the default), Record and Go live start and stop it with the main one; "Main only" leaves it to its own menu entry (ADR-0111). UI text says "vertical", not an aspect ratio, because a custom vertical canvas need not be 9:16 | 9:16 output, Shorts, second output | `OutputCanvas::Vertical` |
 | Output size | The encoded picture size of one recording or one stream. "Same as canvas", when nothing is stored, encodes at that output's canvas. It is not the size of the preview panel | Resolution, Canvas | `output_size` on the output profile; absent means that output's canvas (ADR-0102) |
 | Output | A destination: a streaming service, a recording, a virtual camera | Target | Output node |
 | Go live / End stream | Start / stop streaming to the selected outputs | Start stream, Stop live | - |
