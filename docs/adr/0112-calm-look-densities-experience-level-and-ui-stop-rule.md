@@ -88,4 +88,22 @@ ADR-0094 A to E stand. Added or made exact:
 
 ## Review
 
-Independent review per ADR-0014. Record: reviewer (human handle, or "independent AI session"), date, verdict (approve / changes requested), main concerns and how each was resolved.
+Independent review per ADR-0014.
+
+Round 1. Reviewer: independent AI session. Date: 2026-11-13. Verdict: changes requested. All concerns open; this text is not yet revised.
+
+1. Changes to accepted decisions are not declared: ADR-0077 decision 6 (Apply / OK in Source settings) and the theme editor's Save / Cancel (ADR-0057 decision 6, ADR-0072 decision 5) against D4; ADR-0094 A3 (feature section order) against D3; ADR-0094 C2 against D1's stacked variant and paired fields; U2 and ADR-0094 A3 (Advanced in place) against the global level of C1; CLAUDE.md rule 16 and ADR-0094 Migration (three themes) against E6. Each needs an explicit "amends" line with the new wording.
+2. A4 and A5 describe as new what the code already has: `Tabs` is already a sunken pill (`components.slint` 1353-1364) and `SectionHeader` already has no rule. A4 must keep the `Tabs` component and its role, and say what happens to `size.tab.indicator`.
+3. A1 is not a token table. The study has `window`, `page`, `card` and `hover` colours that no token holds, and no values for several existing tokens. Its `border-strong` (1.45:1 dark, 1.53:1 light) fails the 3:1 contrast rules in `tokens.rs`; its dark live red is not the fixed `#c4262e`; its indigo accent sits close to the error purple and the brand colour.
+4. Borderless fields and panels have no accessibility argument (U7, 3:1): field on panel is 1.07:1 dark and 1.13:1 light. The fate of button outlines, switch tracks and checkboxes is unspecified.
+5. High contrast is contradictory: its surfaces are all black, so panels cannot be separated by tone, and E6 drops its screenshot for a migration that changes its structure everywhere.
+6. "User themes keep working" is asserted, not shown: a theme whose sunken colour equals its panel colour gets invisible fields with no warning.
+7. Density numbers do not fit the mechanism: text size is an integer (12.5 px cannot be stored), `apply_density` does not touch type styles, compact today gives a 24 px control (not 26), no row-height token exists, roomy has no step above the largest token, and results for user themes are undefined.
+8. The experience level relies on a settings schema with levels that does not exist; storage, the control API command and the scope (Properties, Mixer) are not stated.
+9. Hiding by level can strand a user (imported non-default advanced values act unseen), and the Simple starting workspace has no Mixer, Properties or Transition, which breaks U1 and U16 for the first-time streamer.
+10. Several `ui_patterns` checks are not definable over `.slint` text ("a setting", "window buttons", "multi-select list", help passed as a property). The raw `TouchArea` list will never reach zero and its relation to the exceptions register is undefined. `FormRow`, `ListRow` and `DialogActions` do not exist and their relation to `SettingRow` and `PropertyRow` is not stated.
+11. Protected files deadlock the migration: every migration must lower a list inside a protected test. Hooks miss shell writes; CODEOWNERS does not cover the UI and rule paths; the text checks should not need a UI build.
+12. D4 contradicts D5; "undoable" is unproven for all settings; the changed mark needs defaults (the missing schema); A5 needs a new type token; A2 "no other shadow" contradicts the study's shadows on the slider knob and the chosen segment; A6 is undecided inside a decision.
+13. Context: "`Checkbox` is used 8 times for a plain on/off" is overstated (at most 5 or 6 are plain on/off); "about 65 help texts" has no stated method. The other counts are correct.
+14. Five decisions with different reversal costs in one ADR. Split into look and densities; experience level and first run; screen grammar; stop rule.
+15. Missing alternatives: a resting hairline on fields; Advanced in place as U2 defines it; a wider `compact_steps` scale; enforcement in CI only; finishing the migrations of ADR-0076, 0078 and 0094 first.

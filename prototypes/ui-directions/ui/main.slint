@@ -8,8 +8,8 @@ component Picture inherits Rectangle {
     border-radius: Look.r-picture;
     clip: true;
     background: @linear-gradient(180deg, #1a3558 0%, #53295f 100%);
-    drop-shadow-blur: Look.direction == 2 ? 24px : 0px;
-    drop-shadow-color: Look.direction == 2 ? Look.shadow : transparent;
+    drop-shadow-blur: Look.base == 2 ? 24px : 0px;
+    drop-shadow-color: Look.base == 2 ? Look.shadow : transparent;
     drop-shadow-offset-y: 6px;
     Rectangle {
         x: parent.width * 6%;
@@ -161,7 +161,7 @@ component Strip inherits Rectangle {
 
 component FrameBar inherits Rectangle {
     height: 44px;
-    background: Look.direction == 2 ? Look.panel : Look.window;
+    background: Look.base == 2 ? Look.panel : Look.window;
     HorizontalLayout {
         padding-left: 12px;
         padding-right: 10px;
@@ -215,7 +215,7 @@ component FrameBar inherits Rectangle {
 
 component StatusBar inherits Rectangle {
     height: 26px;
-    background: Look.direction == 2 ? Look.panel : Look.window;
+    background: Look.base == 2 ? Look.panel : Look.window;
     HorizontalLayout {
         padding-left: 12px;
         padding-right: 12px;
@@ -292,7 +292,7 @@ component MainScreen inherits Rectangle {
     background: Look.window;
     VerticalLayout {
         FrameBar { }
-        if Look.direction == 2: Rectangle { height: 1px; background: Look.border; }
+        if Look.base == 2: Rectangle { height: 1px; background: Look.border; }
         VerticalLayout {
             padding: Look.window-pad;
             padding-top: 0px;
@@ -340,9 +340,9 @@ component MainScreen inherits Rectangle {
                     horizontal-stretch: 1;
                     Rectangle {
                         vertical-stretch: 1;
-                        background: Look.direction == 2 ? transparent : Look.sunken;
+                        background: Look.base == 2 ? transparent : Look.sunken;
                         border-radius: Look.r-panel;
-                        property <length> pad: Look.direction == 2 ? 28px : 16px;
+                        property <length> pad: Look.base == 2 ? 28px : 16px;
                         property <length> pw: min(self.width - pad * 2, (self.height - pad * 2) * 16 / 9);
                         Picture {
                             width: parent.pw;
@@ -365,7 +365,7 @@ component MainScreen inherits Rectangle {
             }
             Panel {
                 title: "Mixer";
-                height: Look.direction == 2 ? 236px : 216px;
+                height: Look.base == 2 ? 236px : 216px;
                 HorizontalLayout {
                     spacing: 4px;
                     alignment: start;
@@ -378,7 +378,7 @@ component MainScreen inherits Rectangle {
                 }
             }
         }
-        if Look.direction == 2: Rectangle { height: 1px; background: Look.border; }
+        if Look.base == 2: Rectangle { height: 1px; background: Look.border; }
         StatusBar { }
     }
 }
@@ -417,7 +417,7 @@ component SettingsScreen inherits Rectangle {
     HorizontalLayout {
         Rectangle {
             width: 216px;
-            background: Look.direction == 1 ? Look.page : Look.panel;
+            background: Look.base == 1 ? Look.page : Look.panel;
             VerticalLayout {
                 padding: 12px;
                 spacing: 2px;
@@ -438,7 +438,7 @@ component SettingsScreen inherits Rectangle {
                 Rectangle { vertical-stretch: 1; }
             }
         }
-        if Look.direction != 1: Rectangle { width: 1px; background: Look.border; }
+        if Look.base != 1: Rectangle { width: 1px; background: Look.border; }
         VerticalLayout {
             padding: 24px;
             padding-top: 18px;

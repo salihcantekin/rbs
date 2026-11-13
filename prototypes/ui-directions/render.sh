@@ -7,8 +7,8 @@ cd "$(dirname "$0")"
 scale="${1:-1}"
 mkdir -p out .variants
 names=(main settings first-run sheet)
-letters=(a b c)
-for d in 0 1 2; do for t in dark light; do for s in 0 1 2 3; do
+letters=(a b c b2)
+for d in 0 1 2 3; do for t in dark light; do for s in 0 1 2 3; do
   f=".variants/v.slint"
   printf 'import { App } from "../ui/main.slint";\nexport component V inherits App { direction: %s; dark: %s; screen: %s; }\n' \
     "$d" "$([ "$t" = dark ] && echo true || echo false)" "$s" > "$f"
