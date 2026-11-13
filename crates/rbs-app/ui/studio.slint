@@ -190,6 +190,11 @@ export global Studio {
     // The source selected in the Sources panel (its id; -1 none). Every window shows
     // the same selection. The Sources rows follow this, including when it is none.
     in property <int> selected-source: -1;
+    // Properties edits the vertical canvas's own layout of the selected source
+    // (ADR-0093 decision 4); `props-can-vertical` while that source can be placed there.
+    in property <bool> props-vertical;
+    in property <bool> props-can-vertical;
+    callback set-props-vertical(bool);
     // The source Properties shows: the selection, else the last selected source that
     // still exists, else the first source in the list. -1 only when there is none.
     in property <int> properties-source: -1;
@@ -367,7 +372,7 @@ export global Studio {
     // The same on the vertical canvas's picture (ADR-0093 decision 4): boxes there are
     // the sources' own layout on that canvas; no crop and no menu yet.
     in property <[MarkData]> vertical-marks;
-    callback vertical-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */);
+    callback vertical-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
     callback vertical-drag(float /* x */, float /* y */);
     callback vertical-release();
     callback vertical-nudge(int /* dx */, int /* dy */);
@@ -739,7 +744,7 @@ export component ProgramPanel inherits Rectangle {
             if e.kind == PointerEventKind.down {
                 keys.focus();
                 if vertical {
-                    Studio.vertical-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta);
+                    Studio.vertical-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
                 } else {
                     Studio.preview-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
                 }
@@ -4287,6 +4292,20 @@ component SourceProperties inherits VerticalLayout {
         }
     }
     if tab == 3: SourceFields { data: data; }
+    // Which canvas's layout the Transform fields edit (ADR-0093 decision 4): the
+    // vertical canvas's own layout changes only that canvas.
+    if tab == 0 && Studio.props-can-vertical: SegmentedControl {
+        label: @tr("Canvas of {}", data.name);
+        options: [@tr("Main"), @tr("Vertical")];
+        index: Studio.props-vertical ? 1 : 0;
+        selected(i) => { Studio.set-props-vertical(i == 1); }
+    }
+    if tab == 0 && Studio.props-vertical: Text {
+        text: @tr("Changes here apply to the vertical canvas only.");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        wrap: word-wrap;
+    }
     if tab == 0: TransformFields { data: data; }
     if tab == 1: FiltersFields { data: data; }
     if tab == 2: AudioFields { data: data; }
