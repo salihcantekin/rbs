@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, SegmentedControl, Select, Slider, TextField, Toggle, ValueReadout, SettingRow } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, SegmentedControl, Select, Slider, TextField, Toggle, ValueReadout, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -647,54 +647,24 @@ component ThemeListRow inherits Rectangle {
     callback duplicate-it();
     callback export-it();
     callback delete-it();
-    property <length> actions-width: root.compact ? 0px : 5 * Tokens.size-control-sm + 4 * Tokens.space-1 + Tokens.space-2;
-    min-height: row.min-height;
-    preferred-height: row.preferred-height;
-    border-radius: Tokens.radius-md;
-    background: root.selected || (touch.has-hover && root.enabled) ? Theme.surface-overlay : transparent;
-    border-width: root.selected ? Tokens.size-border : 0px;
-    border-color: Theme.accent;
-    accessible-role: list-item;
-    accessible-label: root.theme.user ? root.theme.name : @tr("{} (built in)", root.theme.name);
-    accessible-item-selectable: true;
-    accessible-item-selected: root.selected;
-    accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { root.activated(); } }
-    forward-focus: focus;
-    row := HorizontalLayout {
-        padding: Tokens.space-2;
-        padding-left: Tokens.space-3;
-        padding-right: Tokens.space-2 + root.actions-width;
-        spacing: Tokens.space-3;
-        VerticalLayout {
-            horizontal-stretch: 0;
-            alignment: center;
-            Swatch {
-                surface: root.theme.surface;
-                text: root.theme.text;
-                accent: root.theme.accent;
-            }
-        }
-        VerticalLayout {
-            horizontal-stretch: 1;
-            alignment: center;
-            spacing: Tokens.space-1;
-            Text {
-                text: root.theme.name;
-                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-                font-size: Tokens.type-label-size;
-                font-weight: root.selected ? Tokens.type-title-weight : Tokens.type-label-weight;
-                horizontal-alignment: left;
-                overflow: elide;
-                accessible-role: none;
-            }
-            if !root.theme.usable: Problem { text: @tr("Cannot be used: {}", root.theme.problem); }
-            if root.theme.usable && root.theme.warnings > 0: Warning {
-                text: root.theme.warnings == 1 ? @tr("1 colour warning") : @tr("{} colour warnings", root.theme.warnings);
-            }
-        }
+    property <length> swatch-w: 3 * Tokens.size-icon-box;
+    height: row.height;
+    forward-focus: row;
+    row := ListRow {
+        width: parent.width;
+        lead-space: root.swatch-w;
+        name: root.theme.name;
+        // Why a theme cannot be used, or how many colours need a look (U7: words).
+        warning: !root.theme.usable;
+        note: !root.theme.usable ? @tr("Cannot be used: {}", root.theme.problem)
+            : root.theme.warnings == 1 ? @tr("1 colour warning")
+            : root.theme.warnings > 1 ? @tr("{} colour warnings", root.theme.warnings)
+            : "";
+        selected: root.selected;
+        enabled: root.enabled;
+        accessible-name: root.theme.user ? root.theme.name : @tr("{} (built in)", root.theme.name);
+        activated => { root.activated(); }
         if !root.theme.user && !root.compact: VerticalLayout {
-            horizontal-stretch: 0;
             alignment: center;
             Rectangle {
                 border-radius: self.height / 2;
@@ -710,77 +680,67 @@ component ThemeListRow inherits Rectangle {
                 }
             }
         }
-    }
-    focus := RingFocus {
-        focus-on-click: false;
-        enabled: root.enabled;
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
-            reject
-        }
-    }
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.activated(); }
-    }
-    // After the row's TouchArea, so the buttons take their own clicks. Actions a theme
-    // does not have (Export and Delete of a built-in one) leave their place empty, so
-    // the icons line up from row to row.
-    if !root.compact: HorizontalLayout {
-        x: parent.width - root.actions-width;
-        width: root.actions-width - Tokens.space-2;
-        height: parent.height;
-        spacing: Tokens.space-1;
-        alignment: end;
-        VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.check;
-                name: @tr("Use {}", root.theme.name);
-                enabled: root.enabled && root.theme.usable;
-                clicked => { root.use-it(); }
+        // Actions a theme does not have (Export and Delete of a built-in one) leave
+        // their place empty, so the icons line up from row to row.
+        if !root.compact: HorizontalLayout {
+            spacing: Tokens.space-1;
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: IconName.check;
+                    name: @tr("Use {}", root.theme.name);
+                    enabled: root.enabled && root.theme.usable;
+                    clicked => { root.use-it(); }
+                }
             }
-        }
-        VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.pencil;
-                name: root.theme.user ? @tr("Edit {}", root.theme.name) : @tr("Duplicate {} to edit", root.theme.name);
-                enabled: root.enabled;
-                clicked => { root.edit-it(); }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: IconName.pencil;
+                    name: root.theme.user ? @tr("Edit {}", root.theme.name) : @tr("Duplicate {} to edit", root.theme.name);
+                    enabled: root.enabled;
+                    clicked => { root.edit-it(); }
+                }
             }
-        }
-        VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.copy;
-                name: @tr("Duplicate {}", root.theme.name);
-                enabled: root.enabled;
-                clicked => { root.duplicate-it(); }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: IconName.copy;
+                    name: @tr("Duplicate {}", root.theme.name);
+                    enabled: root.enabled;
+                    clicked => { root.duplicate-it(); }
+                }
             }
-        }
-        VerticalLayout {
-            alignment: center;
-            width: Tokens.size-control-sm;
-            if root.theme.user: IconButton {
-                icon: IconName.export;
-                name: @tr("Export {}…", root.theme.name);
-                enabled: root.enabled;
-                clicked => { root.export-it(); }
+            VerticalLayout {
+                alignment: center;
+                width: Tokens.size-control-sm;
+                if root.theme.user: IconButton {
+                    icon: IconName.export;
+                    name: @tr("Export {}…", root.theme.name);
+                    enabled: root.enabled;
+                    clicked => { root.export-it(); }
+                }
             }
-        }
-        VerticalLayout {
-            alignment: center;
-            width: Tokens.size-control-sm;
-            if root.theme.user: IconButton {
-                icon: IconName.trash;
-                name: @tr("Delete {}…", root.theme.name);
-                enabled: root.enabled;
-                clicked => { root.delete-it(); }
+            VerticalLayout {
+                alignment: center;
+                width: Tokens.size-control-sm;
+                if root.theme.user: IconButton {
+                    icon: IconName.trash;
+                    name: @tr("Delete {}…", root.theme.name);
+                    enabled: root.enabled;
+                    clicked => { root.delete-it(); }
+                }
             }
         }
     }
-    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
+    // The swatch is drawn over the room the row keeps for it (no input of its own).
+    Swatch {
+        x: Tokens.space-2;
+        y: (root.height - Tokens.size-icon-box) / 2;
+        surface: root.theme.surface;
+        text: root.theme.text;
+        accent: root.theme.accent;
+    }
 }
 
 export component AppearanceSettings inherits Rectangle {
