@@ -127,7 +127,8 @@ export component SettingsCard inherits Rectangle {
     property <bool> closed: root.id != "" && Sections.closed(root.id, Sections.rev);
     background: Theme.surface-raised;
     border-radius: Tokens.radius-lg;
-    border-width: Tokens.size-border;
+    // ADR-0112 decision 3: the outline shows only where colour does not separate the card.
+    border-width: Theme.panel-outline ? Tokens.size-border : 0px;
     border-color: Theme.border-subtle;
     accessible-role: groupbox;
     accessible-label: title;
@@ -148,11 +149,11 @@ export component SettingsCard inherits Rectangle {
             toggled(o) => { Sections.set-closed(root.id, !o); }
         }
         if root.id == "" && root.title != "": Text {
-            text: root.title.to-uppercase();
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            font-weight: Tokens.type-title-weight;
-            letter-spacing: Tokens.size-tracking-caps;
+            // ADR-0112 decision 5: sentence case in `type.label`, as `SectionHeader`.
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
             accessible-role: none;
         }
         // Slint cannot put @children in an `if`, so a closed card hides its rows and

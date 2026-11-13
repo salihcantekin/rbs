@@ -6547,6 +6547,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// ADR-0112 decision 12: the main window's frame row fits the 1280 x 720 minimum
+    /// (U11) in every density and built-in theme: with the default toolbar and the fixed
+    /// Go live and Record buttons, the row's minimum width is at most 1280 px. The
+    /// docked areas' minimums are fixed sizes (`rbs_ui::frame`),
+    /// which density does not change.
+    #[test]
+    fn the_frame_row_fits_1280_by_720_in_every_density() {
+        use crate::look::{apply_tokens, slot};
+        use crate::menu_bar::{Shown, toolbar};
+        use crate::ui::{MainWindow, Shell, Theme, Tokens, ToolbarData};
+        use rbs_ui::tokens::{Base, Density, Tokens as TokenFile, apply_density};
+        use slint::ComponentHandle;
+
+        let (ui, d) = ui("frame-fits");
+        let ws = rbs_ui::builtin::edit();
+        let shown = Shown {
+            workspace: &ws,
+            workspaces: &[],
+            studio: &ui,
+            panels: Vec::new(),
+            themes: Vec::new(),
+            maximized: None,
+            camera: Default::default(),
+            replay: Default::default(),
+            can_undo: true,
+            can_redo: false,
+        };
+        let (row, _) = toolbar(&shown);
+        let data = |items: &[crate::menu_bar::ToolItem]| -> Vec<ToolbarData> {
+            items
+                .iter()
+                .map(|t| ToolbarData {
+                    id: t.id.as_str().into(),
+                    title: t.title.as_str().into(),
+                    kind: t.kind as i32,
+                    enabled: t.enabled,
+                    checked: t.checked,
+                    live: t.live,
+                    icon: t.icon.as_str().into(),
+                    icon_only: t.icon_only,
+                })
+                .collect()
+        };
+        let model = |v: Vec<ToolbarData>| slint::ModelRc::new(slint::VecModel::from(v));
+        i_slint_backend_testing::init_no_event_loop();
+        let file = TokenFile::built_in().unwrap();
+        for density in [Density::Regular, Density::Compact, Density::Roomy] {
+            for base in [Base::Dark, Base::Light] {
+                let mut theme = file.built_in_theme(base);
+                apply_density(&mut theme.length, density, 3);
+                let w = MainWindow::new().unwrap();
+                let s = slot(&theme, "").unwrap();
+                apply_tokens(
+                    &w.global::<Theme>(),
+                    &w.global::<Tokens>(),
+                    &file,
+                    [s.clone(), s],
+                )
+                .unwrap();
+                let shell = w.global::<Shell>();
+                shell.set_toolbar(model(data(&row.lead)));
+                shell.set_toolbar_end(model(data(&row.end)));
+                shell.set_toolbar_fixed(model(data(&row.fixed)));
+                shell.set_toolbar_visible(true);
+                w.window().set_size(slint::LogicalSize::new(1280.0, 720.0));
+                w.show().unwrap();
+                let narrowest = w.get_frame_row_width();
+                assert!(
+                    narrowest <= 1280.0,
+                    "{density:?} {base:?}: the frame row needs {narrowest} px, more than 1280"
+                );
+                w.hide().unwrap();
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn the_panel_commands_follow_the_stack_rules_and_run_layout_commands() {
         use crate::menu_bar::{Run, Shown, run};
