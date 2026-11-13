@@ -110,6 +110,18 @@ The notice card for a one-off message (U18): an undo after closing a guarded pan
 
 It closes when Dismiss is pressed or when `delay.toast` has passed, whichever comes first. The seconds step every `delay.toast-tick`. A new notice, even with the same words, starts the time again. The first Close that leaves RBS running (ADR-0056) uses the same card without a countdown: OK and Dismiss hide the windows, so it waits for one of them. The card exists only while a notice is showing.
 
+### ListRow
+
+One item of a list (ADR-0114 decision 2), in `components.slint`. Used by the Scenes, Sources and Filters lists; the Appearance theme list, the Shortcuts command list, the app menu items and the Library cells move onto it next.
+
+- **Parts.** A leading part: `lead` text (a scene's number, `type.caption`, secondary) or an icon (`has-icon`, `icon`). The `name` (`type.body`, elided; the title weight while `selected`), and under it an optional `note` (`type.caption`, secondary), with a `warning` mark before the name when the note is a problem (U7). `dimmed` draws the icon and name in `text.disabled` (a hidden source, a filter that is off). The children are the trailing part, `space.1` apart: state the user toggles per item (an eye, a lock, a `Checkbox`) and actions (`more`, remove).
+- **Size.** `size.control.md` high, plus `type.caption.line` with a note. Padding `space.2` at the start and `space.1` at the end, `space.2` between parts. `radius.sm`.
+- **States.** Hover and `selected` show `surface.overlay`; `selected` adds a `size.border` accent border. Keyboard focus shows the focus ring (`radius.md`). A row dragged over another shows a `size.focus-ring` accent line along that row's top.
+- **Keyboard and pointer.** Return or Space and a click call `activated`; a double-click calls `double-clicked`; F2 renames in place when `edit-label` is set (Return keeps the new name, the field's own keys cancel); Delete or Backspace calls `delete-asked`; the Menu key, Shift+F10 and a right click call `menu-asked` with where to open. Other keys go to `key` for the owner (Alt+Up and Alt+Down move a source).
+- **Remove asked in place.** With `confirm` on, the row shows `confirm-question`, a danger button named `confirm-name` and Cancel; Return, Delete or the danger button call `confirmed`, Escape or Cancel go back.
+- **Drag.** With `allow-drag` and `drag-data` the row can be dragged; `drop-enabled` turns its drop area on only while a row of the same list is dragged (so a dragged panel reaches the dock), and `can-take` and `took` decide and carry out the move.
+- **Accessibility.** Role `list-item`, selectable, selected while `selected`; `accessible-name` (default the name) and `accessible-hint` (the keys) are the owner's words.
+
 ### SettingRow
 
 One setting (ADR-0094 C2, ADR-0114 decision 1), in `components.slint`. Properties: `label` (`type.label`, `text.primary`, `text.disabled` when `enabled` is off), `help` (`type.caption`, `text.secondary`; `help-is-problem` gives `state.error`, `help-is-warning` gives `state.warning`, and the words say so), `divider` (a `border.subtle` line on top; off for a card's first row), `control-width` (the preferred control column, `size.menu.md` by default) and `fill` (on: the control fills the column, for fields and drop-downs; off: it keeps its own width, for toggles, segmented controls and buttons). The control is the row's children, laid out side by side with `space.2`. Padding is `space.3` above and below.
