@@ -115,10 +115,18 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
 }
 
 fn start() -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
+    start_with(None)
+}
+
+/// [`start`] with a saved collection, as RBS opens one.
+fn start_with(
+    collection: Option<rbs_scene::SceneCollection>,
+) -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
     let gpu = gpu()?;
     let (tx, updates) = mpsc::channel();
     let mut config = HostConfig::desktop();
     config.preview = None;
+    config.collection = collection;
     let host = StudioHost::spawn(
         config,
         || {
@@ -826,6 +834,47 @@ fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
         Update::Error(e) => panic!("{e}"),
         _ => None,
     });
+    assert_eq!(state.size, Size::new(1080, 1920));
+    assert!(state.follow);
+    host.send(Command::RemoveVerticalCanvas);
+    next(&updates, |u| match u {
+        Update::Vertical(None) => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    drop(host);
+}
+
+#[test]
+fn a_saved_vertical_canvas_runs_again_when_the_collection_opens() {
+    use rbs_app::studio_host::Command;
+    use rbs_core::media::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_scene::model::SceneScope;
+    // What `canvas.add_vertical` leaves in the document: a second canvas that follows
+    // the main one and shows a shared scene.
+    let mut doc = rbs_scene::SceneCollection::default();
+    let fps = FrameRate::new(30, 1).unwrap();
+    let (main, _) = doc.add_canvas("Main", Size::new(1280, 720), fps).unwrap();
+    let (scene, _) = doc.add_scene("Scene", SceneScope::Shared).unwrap();
+    doc.set_program(main, Some(scene)).unwrap();
+    let (vertical, _) = doc
+        .add_canvas("Vertical", Size::new(1080, 1920), fps)
+        .unwrap();
+    doc.set_program(vertical, Some(scene)).unwrap();
+    doc.set_canvas_follow(vertical, Some(main), Default::default())
+        .unwrap();
+    let Some((host, updates, _api, _c)) = start_with(Some(doc)) else {
+        return;
+    };
+    // It runs without a new Add: its outputs, panel and Remove are offered again.
+    let state = next(&updates, |u| match u {
+        Update::Vertical(v) => Some(v),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    })
+    .expect("the saved vertical canvas runs");
+    assert_eq!(state.canvas, vertical);
     assert_eq!(state.size, Size::new(1080, 1920));
     assert!(state.follow);
     host.send(Command::RemoveVerticalCanvas);

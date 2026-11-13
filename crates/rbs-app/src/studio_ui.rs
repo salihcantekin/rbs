@@ -258,6 +258,9 @@ pub struct StudioUi {
     pub scene_preview_failed: bool,
     /// The vertical canvas the host runs, if any (ADR-0093).
     pub vertical: Option<rbs_app::studio_host::VerticalState>,
+    /// The host has said once whether a vertical canvas runs. Its first word is the
+    /// state at start (a saved canvas that runs again), not an Add, so it opens no panel.
+    vertical_known: bool,
     /// The vertical canvas's picture layer exists (ADR-0093).
     pub vertical_preview_ready: bool,
     /// The vertical canvas's picture layer could not be made in this session.
@@ -494,6 +497,7 @@ impl StudioUi {
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
+            vertical_known: false,
             vertical_preview_ready: false,
             vertical_preview_failed: false,
             vertical_picture_failed: false,
@@ -4361,10 +4365,11 @@ impl StudioUi {
                     self.server_serial += 1;
                     self.vertical_preview_ready = false;
                     self.vertical_preview_failed = false;
-                } else if self.vertical.is_none() {
+                } else if self.vertical.is_none() && self.vertical_known {
                     out.vertical_added = true;
                 }
                 self.vertical = v;
+                self.vertical_known = true;
             }
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
@@ -6476,6 +6481,24 @@ mod tests {
     }
 
     #[test]
+    fn a_vertical_canvas_running_at_start_opens_no_panel_but_a_later_add_does() {
+        let (mut ui, d) = ui("vertical-at-start");
+        let vertical = rbs_app::studio_host::VerticalState {
+            canvas: rbs_scene::model::CanvasId::from_raw(2),
+            size: rbs_core::media::video::Size::new(1080, 1920),
+            follow: true,
+        };
+        // The saved canvas runs again: the panel keeps the place the workspace saved.
+        let out = ui.apply(Update::Vertical(Some(vertical)));
+        assert!(!out.vertical_added);
+        assert_eq!(ui.vertical, Some(vertical));
+        // Removed, then added again by the user: its panel opens.
+        assert!(!ui.apply(Update::Vertical(None)).vertical_added);
+        assert!(ui.apply(Update::Vertical(Some(vertical))).vertical_added);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     #[allow(clippy::unwrap_used)] // Tests fail by panicking.
     fn the_vertical_preview_toggle_opens_and_closes_its_panel_while_the_canvas_exists() {
         use crate::menu_bar::{Run, Shown, run};
@@ -6510,6 +6533,8 @@ mod tests {
         let mut ws = rbs_ui::builtin::edit();
         // No vertical canvas: the toggle is not offered.
         assert_eq!(shown(&ui, &ws), (false, false, false, None));
+        // The host's first word is the state at start.
+        assert!(!ui.apply(Update::Vertical(None)).vertical_added);
         // Adding one asks for its panel to open.
         let out = ui.apply(Update::Vertical(Some(
             rbs_app::studio_host::VerticalState {
