@@ -2481,6 +2481,11 @@ export component ListRow inherits Rectangle {
     in property <bool> selectable: true;
     // Off: the name is in the disabled colour and the row takes no input.
     in property <bool> enabled: true;
+    // The row sits on `surface.overlay` (a menu): the chosen row takes the accent's
+    // subtle fill, because the usual overlay plate would not show there.
+    in property <bool> on-overlay;
+    // The icon's colour when it is not the name's (a checked menu item's check).
+    in property <color> icon-ink: root.ink;
     in property <bool> has-check;
     in property <bool> checked;
     in property <string> check-label;
@@ -2538,7 +2543,8 @@ export component ListRow inherits Rectangle {
     border-radius: Tokens.radius-sm;
     border-width: root.selected ? Tokens.size-border : 0px;
     border-color: Theme.accent;
-    background: root.selected || (touch.has-hover && root.enabled) ? Theme.surface-overlay : transparent;
+    background: root.on-overlay ? (root.selected ? (root.dimmed ? Theme.surface-raised : Theme.accent-subtle) : transparent)
+        : root.selected || (touch.has-hover && root.enabled) ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: root.accessible-name != "" ? root.accessible-name : root.name;
     accessible-description: root.accessible-hint;
@@ -2628,7 +2634,7 @@ export component ListRow inherits Rectangle {
                 }
                 if root.lead == "" && root.has-icon: VerticalLayout {
                     alignment: center;
-                    Icon { name: root.icon; ink: root.ink; }
+                    Icon { name: root.icon; ink: root.icon-ink; }
                 }
                 if root.has-check: VerticalLayout {
                     alignment: center;
