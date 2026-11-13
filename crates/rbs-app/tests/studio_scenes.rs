@@ -872,6 +872,98 @@ fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
 }
 
 #[test]
+fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
+    use rbs_app::studio_host::{Command, OutputCanvas, VerticalCanvas};
+    use rbs_core::media::Size;
+    use rbs_scene::model::SourceId;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let id = add(&mut c, "screen", "Screen");
+    host.send(Command::AddVerticalCanvas(VerticalCanvas {
+        size: Size::new(1080, 1920),
+        follow: true,
+        layout: None,
+    }));
+    next(&updates, |u| match u {
+        Update::Vertical(Some(_)) => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    // The rows say where the picture is on the vertical canvas too.
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r) if r.iter().any(|r| r.vertical_layout.is_some()) => Some(r),
+        _ => None,
+    });
+    let main_before = rows[0].layout.unwrap();
+    let box_on = |seq: u64, position: [f32; 2], size: [f32; 2], canvas: OutputCanvas| {
+        host.send(Command::SetSourceBox {
+            seq,
+            gesture: 7,
+            id: SourceId::from_raw(id as u32),
+            position,
+            size,
+            canvas,
+        });
+    };
+    box_on(1, [100.0, 200.0], [540.0, 960.0], OutputCanvas::Vertical);
+    let rows = next(&updates, |u| match u {
+        Update::Sources(r)
+            if r[0]
+                .vertical_layout
+                .is_some_and(|l| l.position == [100.0, 200.0] && l.size == [540.0, 960.0]) =>
+        {
+            Some(r)
+        }
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    // The main canvas keeps its box.
+    assert_eq!(rows[0].layout, Some(main_before));
+    assert!(next(&updates, |u| match u {
+        Update::BoxPlaced { seq: 1, ok } => Some(ok),
+        _ => None,
+    }));
+    // The same box again changes nothing and is still answered; a zero size is refused.
+    box_on(2, [100.0, 200.0], [540.0, 960.0], OutputCanvas::Vertical);
+    assert!(next(&updates, |u| match u {
+        Update::BoxPlaced { seq: 2, ok } => Some(ok),
+        _ => None,
+    }));
+    box_on(3, [0.0, 0.0], [0.0, 960.0], OutputCanvas::Vertical);
+    assert!(!next(&updates, |u| match u {
+        Update::BoxPlaced { seq: 3, ok } => Some(ok),
+        _ => None,
+    }));
+    // In studio mode the vertical canvas shows the scene on air, not the one edited:
+    // its boxes are refused, and the rows give none.
+    let program = scenes(&mut c)["program"].clone();
+    ok(&c.call("canvas.set_preview", json!({"scene": program})));
+    next(&updates, |u| match u {
+        Update::Sources(r) if r.iter().all(|r| r.vertical_layout.is_none()) => Some(()),
+        _ => None,
+    });
+    box_on(5, [0.0, 0.0], [10.0, 10.0], OutputCanvas::Vertical);
+    assert!(!next(&updates, |u| match u {
+        Update::BoxPlaced { seq: 5, ok } => Some(ok),
+        _ => None,
+    }));
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    // Without a vertical canvas a vertical box is refused.
+    host.send(Command::RemoveVerticalCanvas);
+    next(&updates, |u| match u {
+        Update::Vertical(None) => Some(()),
+        _ => None,
+    });
+    box_on(4, [0.0, 0.0], [10.0, 10.0], OutputCanvas::Vertical);
+    assert!(!next(&updates, |u| match u {
+        Update::BoxPlaced { seq: 4, ok } => Some(ok),
+        _ => None,
+    }));
+    drop(host);
+}
+
+#[test]
 fn a_saved_vertical_canvas_runs_again_when_the_collection_opens() {
     use rbs_app::studio_host::Command;
     use rbs_core::media::Size;
