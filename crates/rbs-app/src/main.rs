@@ -202,6 +202,9 @@ struct App {
     /// The capture-exclusion last applied, and how many windows existed then.
     /// A different pair applies it again (a new window, or the setting changed).
     capture_applied: (bool, usize),
+    /// The capture pair a deferred retry is aiming for, with how many short syncs
+    /// remain. Cleared when applied or when the wanted pair changes.
+    capture_retry: Option<((bool, usize), u8)>,
     /// Where the preview picture's context menu opened (the picture's coordinates)
     /// and the system cursor then (screen pixels), until the next press on a picture.
     menu_press: Option<([f32; 2], (i32, i32))>,
@@ -311,6 +314,15 @@ impl App {
     fn library_done(&mut self, done: Result<(), String>) {
         if let Err(e) = done {
             self.show_error(UiError::Other(e));
+        }
+    }
+
+    /// Hides the Source settings window before a scene collection switch, so the old
+    /// source's settings do not stay open over the new collection.
+    fn dismiss_source_settings(&mut self) {
+        if let Some(w) = self.source_settings.take() {
+            let _ = w.hide();
+            self.studio.source_settings_closed();
         }
     }
 
@@ -515,9 +527,10 @@ impl App {
                         .main_layout()
                         .is_some_and(|m| m.group_of(&id).is_some())
                     {
-                        self.reveal = Some(id);
+                        self.reveal = Some(id.clone());
                         self.dismiss_flyout = false;
                     }
+                    self.raise_host_of(&id);
                 }
             }
             Run::Profile(id) => {
@@ -525,6 +538,7 @@ impl App {
                 self.library_done(done);
             }
             Run::Collection(id) => {
+                self.dismiss_source_settings();
                 let done = self.studio.switch_collection(&id, close_preview);
                 self.library_done(done);
             }
@@ -687,10 +701,12 @@ impl App {
                 self.studio.delete_profile(&id)
             }
             (EntryKind::Collection, EntryOp::New | EntryOp::Duplicate) => {
+                self.dismiss_source_settings();
                 self.studio.new_collection(name, copy, close_preview)
             }
             (EntryKind::Collection, EntryOp::Rename) => self.studio.rename_collection(name),
             (EntryKind::Collection, EntryOp::Delete) => {
+                self.dismiss_source_settings();
                 let id = self.studio.user.collection_id.as_str().to_owned();
                 self.studio.delete_collection(&id, close_preview)
             }
@@ -772,7 +788,8 @@ impl App {
     fn ask_rename(&mut self, id: i32, scene: bool) {
         let name = if scene { "rbs.scenes" } else { "rbs.sources" };
         if let Some(p) = panel(name) {
-            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
+            self.raise_host_of(&p);
         }
         // The id says which row; the count makes each ask a change, also for the same
         // row twice. A row made later (its panel was closed) checks the id when made.
@@ -795,7 +812,8 @@ impl App {
     /// The Scenes panel opens so the row is there.
     fn ask_remove_scene(&mut self, id: i32) {
         if let Some(p) = panel("rbs.scenes") {
-            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
+            self.raise_host_of(&p);
         }
         let ask = |g: Studio<'_>| {
             g.set_confirming_scene(id);
@@ -820,7 +838,8 @@ impl App {
     /// 2 Audio, 3 Source; ADR-0084).
     fn show_source_properties(&mut self, source: i32, tab: i32) {
         if let Some(p) = panel("rbs.properties") {
-            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
+            self.raise_host_of(&p);
         }
         self.studio.selected = source;
         let apply = |g: Studio<'_>| {
@@ -838,7 +857,8 @@ impl App {
     /// selected so a folded global row is in the list.
     fn ask_remove_source(&mut self, id: i32, delete: bool) {
         if let Some(p) = panel("rbs.sources") {
-            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
+            self.raise_host_of(&p);
         }
         self.studio.selected = id;
         let ask = |g: Studio<'_>| {
@@ -850,6 +870,19 @@ impl App {
         ask(self.main.global::<Studio>());
         for f in &self.floats {
             ask(f.window.global::<Studio>());
+        }
+    }
+
+    /// Brings the OS window that holds `panel` in front (main or a floating window),
+    /// so opening an already-open panel is not a no-op when that window is behind.
+    fn raise_host_of(&self, panel: &PanelId) {
+        match self.session.workspace().find(panel) {
+            Some((0, _, _)) | None => window_place::raise(self.main.window()),
+            Some((w, _, _)) => {
+                if let Some(slot) = self.floats.iter().find(|f| f.index == Some(w)) {
+                    window_place::raise(slot.window.window());
+                }
+            }
         }
     }
 
@@ -1170,13 +1203,52 @@ struct Ctx {
     live_timer: Rc<slint::Timer>,
 }
 
-/// Shows the Settings window. The only place that does, so every way to open Settings
-/// (toolbar gear, RBS menu, shortcut, control API) lands centred on the main window,
-/// including a window that was closed somewhere else and opened again.
+/// Shows the Settings window the first time, centred on the main window. Every way to
+/// open Settings (toolbar gear, RBS menu, shortcut, control API) goes through here or
+/// through [`raise_settings`] when the window is already open.
 fn present_settings(w: &SettingsWindow, app: &App) {
     let t = w.global::<Tokens>();
     let size = slint::LogicalSize::new(t.get_size_settings_w(), t.get_size_settings_h());
     let _ = window_place::show_centred(w, &app.main, size, app.hidden);
+    // Same turn as show: do not wait for the next sync (a recording may start at once).
+    let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
+}
+
+/// Brings the already-open Settings window forward without moving it (the user may
+/// have placed it).
+fn raise_settings(w: &SettingsWindow) {
+    window_place::raise(w.window());
+}
+
+/// Applies the capture-exclusion flag to one OS window. `false` when the handle is not
+/// ready yet or the OS refused (Linux always succeeds: capture exclusion is a no-op).
+fn exclude_window_from_capture(window: &slint::Window, exclude: bool) -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let binding = window.window_handle();
+        let Ok(handle) = binding.window_handle() else {
+            return false;
+        };
+        match handle.as_raw() {
+            #[cfg(windows)]
+            RawWindowHandle::Win32(win) => rbs_app::win::exclude_from_capture(win.hwnd, exclude),
+            #[cfg(target_os = "macos")]
+            RawWindowHandle::AppKit(view) => {
+                // SAFETY: the handle is the live NSView of this window, on the UI thread.
+                let Some(view) = std::ptr::NonNull::new(view.ns_view.as_ptr()) else {
+                    return false;
+                };
+                rbs_app::native::exclude_from_capture(view, exclude)
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (window, exclude);
+        true
+    }
 }
 
 /// Sections of the Settings window (`SettingsWindow.section`).
@@ -1387,6 +1459,7 @@ impl Ctx {
             }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
+                    app.dismiss_source_settings();
                     app.studio.switch_collection(&id, close_preview)
                 } else {
                     app.studio.switch_profile(&id)
@@ -1457,7 +1530,7 @@ impl Ctx {
             app.studio.settings_opened();
             if let Some(w) = &app.settings {
                 w.set_section(section);
-                present_settings(w, app);
+                raise_settings(w);
                 if section == SECTION_APPEARANCE {
                     appearance_page::opened(&ctx, app);
                 }
@@ -1541,6 +1614,9 @@ impl Ctx {
             });
             w.set_section(section);
             present_settings(&w, app);
+            // End-of-sync refresh must run again for this new window.
+            app.capture_applied.1 = usize::MAX;
+            app.capture_retry = None;
             app.settings = Some(w);
             if section == SECTION_APPEARANCE {
                 appearance_page::opened(&ctx, app);
@@ -1961,6 +2037,7 @@ impl Ctx {
     fn show_all(&self, app: &mut App) {
         if !app.hidden {
             let _ = app.main.show();
+            window_place::raise(app.main.window());
             #[cfg(windows)]
             title_bar::attach_after_show(&app.main);
             return;
@@ -1969,6 +2046,7 @@ impl Ctx {
         #[cfg(target_os = "macos")]
         rbs_app::native::set_hidden(false);
         let _ = app.main.show();
+        window_place::raise(app.main.window());
         #[cfg(windows)]
         title_bar::attach_after_show(&app.main);
         for f in &app.floats {
@@ -1987,59 +2065,62 @@ impl Ctx {
         self.update(|_| {});
     }
 
-    /// Leaves the RBS windows out of a screen capture, or puts them back.
-    /// `false` when the main window has no handle yet, so the next sync tries again.
-    /// Windows (`WDA_EXCLUDEFROMCAPTURE`) and macOS (`NSWindow.sharingType`). Linux
-    /// keeps the windows in the capture.
+    /// Leaves every RBS window out of a screen capture, or puts them back.
+    /// `false` when any window has no handle yet or the OS refused, so the next sync
+    /// tries again. Windows (`WDA_EXCLUDEFROMCAPTURE`) and macOS (`NSWindow.sharingType`).
+    /// Linux keeps the windows in the capture.
     fn apply_capture_exclusion(app: &App) -> bool {
-        #[cfg(any(windows, target_os = "macos"))]
-        {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            let exclude = app.bg.exclude_own_window;
-            let mut windows = vec![app.main.window()];
-            if let Some(w) = &app.settings {
-                windows.push(w.window());
-            }
-            if let Some(w) = &app.source_settings {
-                windows.push(w.window());
-            }
-            for f in &app.floats {
-                windows.push(f.window.window());
-            }
-            let mut main_ok = false;
-            for (i, w) in windows.iter().enumerate() {
-                let window_handle = w.window_handle();
-                let Ok(handle) = window_handle.window_handle() else {
-                    continue;
-                };
-                let applied = match handle.as_raw() {
-                    #[cfg(windows)]
-                    RawWindowHandle::Win32(win) => {
-                        rbs_app::win::exclude_from_capture(win.hwnd, exclude);
-                        true
-                    }
-                    #[cfg(target_os = "macos")]
-                    RawWindowHandle::AppKit(view) => {
-                        // SAFETY: the handle is the live NSView of this window, on the
-                        // UI thread that owns it.
-                        let Some(view) = std::ptr::NonNull::new(view.ns_view.as_ptr()) else {
-                            continue;
-                        };
-                        rbs_app::native::exclude_from_capture(view, exclude)
-                    }
-                    _ => false,
-                };
-                if i == 0 && applied {
-                    main_ok = true;
-                }
-            }
-            main_ok
+        let exclude = app.bg.exclude_own_window;
+        let mut ok = exclude_window_from_capture(app.main.window(), exclude);
+        if let Some(w) = &app.settings {
+            ok &= exclude_window_from_capture(w.window(), exclude);
         }
-        #[cfg(not(any(windows, target_os = "macos")))]
-        {
-            let _ = app;
-            true
+        if let Some(w) = &app.source_settings {
+            ok &= exclude_window_from_capture(w.window(), exclude);
         }
+        for f in &app.floats {
+            ok &= exclude_window_from_capture(f.window.window(), exclude);
+        }
+        ok
+    }
+
+    /// How many OS windows the capture setting must cover right now.
+    fn capture_window_count(app: &App) -> usize {
+        1 + usize::from(app.settings.is_some())
+            + usize::from(app.source_settings.is_some())
+            + app.floats.len()
+    }
+
+    /// Applies the capture setting to every current window. When a window is not ready
+    /// yet, leaves [`App::capture_applied`] unchanged and schedules a short follow-up
+    /// sync (at most a few times per target) so a recording started right away still
+    /// omits RBS.
+    fn refresh_capture_exclusion(&self, app: &mut App) {
+        let capture = (app.bg.exclude_own_window, Self::capture_window_count(app));
+        if app.capture_applied == capture {
+            app.capture_retry = None;
+            return;
+        }
+        if Self::apply_capture_exclusion(app) {
+            app.capture_applied = capture;
+            app.capture_retry = None;
+            return;
+        }
+        // A new Settings / Source settings / float window often has no OS handle on the
+        // same turn it is shown; try a few more times shortly after.
+        let left = match app.capture_retry {
+            Some((target, n)) if target == capture => n,
+            _ => 5,
+        };
+        if left == 0 {
+            app.capture_retry = Some((capture, 0));
+            return;
+        }
+        app.capture_retry = Some((capture, left - 1));
+        let ctx = self.clone();
+        entry::single_shot(Duration::from_millis(16), move || {
+            ctx.update(|_| {});
+        });
     }
 
     /// The General section's setting (ADR-0056 decision 1).
@@ -2077,14 +2158,6 @@ impl Ctx {
         }
         if app.exiting {
             return;
-        }
-        let windows = 1
-            + usize::from(app.settings.is_some())
-            + usize::from(app.source_settings.is_some())
-            + app.floats.len();
-        let capture = (app.bg.exclude_own_window, windows);
-        if app.capture_applied != capture && Self::apply_capture_exclusion(&app) {
-            app.capture_applied = capture;
         }
         if std::mem::take(&mut app.reload_themes) {
             appearance_page::reload(self, &mut app);
@@ -2153,6 +2226,9 @@ impl Ctx {
         }
 
         self.sync_floats(&mut app);
+        // After Settings, Source settings and floats exist for this turn (they may have
+        // been opened earlier in this sync): every RBS window gets the capture flag.
+        self.refresh_capture_exclusion(&mut app);
 
         // Shared state, pushed into every window's copy of the global.
         set_rows(
@@ -2415,6 +2491,12 @@ impl Ctx {
             slint::CloseRequestResponse::HideWindow
         });
         let _ = fw.show();
+        // Capture exclusion for this float: refresh_capture_exclusion runs after
+        // sync_floats; apply once here too so a recording that starts immediately
+        // already omits it when the handle is ready.
+        if let Ok(app) = self.app.try_borrow() {
+            let _ = exclude_window_from_capture(fw.window(), app.bg.exclude_own_window);
+        }
         Some(FloatSlot {
             window: fw,
             panels: Vec::new(),
@@ -3163,9 +3245,8 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
 fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
     app.studio.request_source_settings(id);
     if let Some(w) = &app.source_settings {
-        let t = w.global::<Tokens>();
-        let size = slint::LogicalSize::new(t.get_size_floating_w(), t.get_size_floating_h());
-        let _ = window_place::show_centred(w, &app.main, size, app.hidden);
+        // Already open: bring it forward; keep the place the user left it.
+        window_place::raise(w.window());
         return;
     }
     let Ok(w) = SourceSettingsWindow::new() else {
@@ -3205,6 +3286,9 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
     let t = w.global::<Tokens>();
     let size = slint::LogicalSize::new(t.get_size_floating_w(), t.get_size_floating_h());
     let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
+    let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
+    app.capture_applied.1 = usize::MAX;
+    app.capture_retry = None;
     app.source_settings = Some(w);
 }
 
@@ -4066,6 +4150,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             hidden: false,
             bg,
             capture_applied: (false, usize::MAX),
+            capture_retry: None,
             menu_press: None,
             preview_endpoint: None,
             scene_preview_endpoint: None,

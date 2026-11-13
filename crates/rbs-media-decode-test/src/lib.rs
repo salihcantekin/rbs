@@ -49,12 +49,63 @@ impl ScriptFrame {
         frame_duration: Duration,
         mark: u8,
     ) -> Self {
+        Self::rgba_rgb(width, height, pts, frame_duration, [mark, mark, mark])
+    }
+
+    /// A straight-alpha sRGB `Rgba8` frame filled with `rgb` (alpha 255).
+    pub fn rgba_rgb(
+        width: u32,
+        height: u32,
+        pts: Duration,
+        frame_duration: Duration,
+        rgb: [u8; 3],
+    ) -> Self {
         let n = (width as usize)
             .saturating_mul(height as usize)
             .saturating_mul(4);
         let mut bytes = vec![0u8; n];
         for pixel in bytes.chunks_exact_mut(4) {
-            pixel[0] = mark;
+            pixel[0] = rgb[0];
+            pixel[1] = rgb[1];
+            pixel[2] = rgb[2];
+            pixel[3] = 255;
+        }
+        Self {
+            width,
+            height,
+            pts: Some(pts),
+            frame_duration: Some(frame_duration),
+            layout: PictureLayout::Rgba8,
+            color: SampleColor::Srgb,
+            bytes,
+        }
+    }
+
+    /// Cyan/blue checker like the browser stand-in helper; `phase` shifts the pattern.
+    pub fn checkerboard(
+        width: u32,
+        height: u32,
+        pts: Duration,
+        frame_duration: Duration,
+        phase: u32,
+    ) -> Self {
+        let width_usize = width as usize;
+        let height_usize = height as usize;
+        let mut bytes = vec![0u8; width_usize.saturating_mul(height_usize).saturating_mul(4)];
+        let shift = (phase as usize).saturating_mul(16);
+        for (index, pixel) in bytes.chunks_exact_mut(4).enumerate() {
+            let x = index % width_usize;
+            let y = index / width_usize;
+            let light = ((x.saturating_add(shift)) / 32 + y / 32) % 2 == 0;
+            if light {
+                pixel[0] = 40;
+                pixel[1] = 180;
+                pixel[2] = 255;
+            } else {
+                pixel[0] = 20;
+                pixel[1] = 40;
+                pixel[2] = 120;
+            }
             pixel[3] = 255;
         }
         Self {
@@ -104,6 +155,22 @@ impl ScriptClip {
                 ScriptFrame::rgba(2, 2, Duration::ZERO, step, 1),
                 ScriptFrame::rgba(2, 2, step, step, 2),
                 ScriptFrame::rgba(2, 2, step + step, step, 3),
+            ],
+            audio: None,
+            fail_open: None,
+        }
+    }
+
+    /// Three 320×180 frames at 0, 100 ms, and 200 ms with a moving checker. No audio.
+    pub fn demo_pattern() -> Self {
+        let step = Duration::from_millis(100);
+        let w = 320;
+        let h = 180;
+        Self {
+            frames: vec![
+                ScriptFrame::checkerboard(w, h, Duration::ZERO, step, 0),
+                ScriptFrame::checkerboard(w, h, step, step, 1),
+                ScriptFrame::checkerboard(w, h, step + step, step, 2),
             ],
             audio: None,
             fail_open: None,

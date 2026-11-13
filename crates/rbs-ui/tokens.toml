@@ -107,6 +107,8 @@ format = 2
 "size.panel.pad" = 12
 "size.section.gap" = 16
 "size.field.gap" = 8
+# Short NumberField for insets and bar thickness (about four digits plus steppers).
+"size.field.compact" = 96
 # Thickness of the chosen tab's underline.
 "size.tab.indicator" = 2
 "size.control.sm" = 24

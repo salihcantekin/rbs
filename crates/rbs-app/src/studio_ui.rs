@@ -25,7 +25,9 @@ use rbs_app::studio_host::{
     RecordingUpdate, SceneList, SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats,
     StreamRequest, StreamUpdate, StudioHost, Target, TransformOp, Update,
 };
-use rbs_app::user_session::{RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession};
+use rbs_app::user_session::{
+    DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
+};
 use rbs_audio::LevelMeter;
 use rbs_core::fault::SourceFault;
 use rbs_record::Link;
@@ -389,6 +391,9 @@ struct Switching {
     name: String,
     /// The collection to delete once the switch is done (deleting the one in use).
     delete_after: Option<EntryId>,
+    /// After a successful switch and delete of the last collection, rename the
+    /// replacement to [`DEFAULT_NAME`] once that name is free.
+    prefer_default_name: bool,
 }
 
 /// What the Remote control section shows while other computers can connect.
@@ -3835,7 +3840,7 @@ impl StudioUi {
         }
         self.can_switch_collection()?;
         let (name, collection) = self.user.load_collection(&id)?;
-        self.ask_switch(id, name, collection, None, close_preview);
+        self.ask_switch(id, name, collection, None, false, close_preview);
         Ok(())
     }
 
@@ -3850,17 +3855,45 @@ impl StudioUi {
         Ok(())
     }
 
+    /// Drops the Scenes, Sources and Mixer lists at once so a collection switch or
+    /// delete never leaves the previous collection's rows on screen.
+    fn clear_collection_view(&mut self) {
+        self.selected = -1;
+        self.inspected.set(-1);
+        self.rows.clear();
+        self.heard.clear();
+        self.heard_names.clear();
+        self.slots.clear();
+        self.master_slot = None;
+        self.scene_list = None;
+        self.source_settings_view = None;
+        self.sources.set_vec(Vec::new());
+        self.scenes.set_vec(Vec::new());
+        self.meters.set_vec(Vec::new());
+        self.hidden_meters.set_vec(Vec::new());
+        self.master_meter.set_vec(Vec::new());
+        self.source_settings.set_vec(Vec::new());
+        self.source_targets.set_vec(Vec::new());
+        self.marks.set_vec(Vec::new());
+        self.send(Command::CloseSourceSettings);
+        self.refresh_existing();
+        self.refresh_global_existing();
+        self.refresh_marks();
+    }
+
     fn ask_switch(
         &mut self,
         id: EntryId,
         name: String,
         collection: rbs_scene::SceneCollection,
         delete_after: Option<EntryId>,
+        prefer_default_name: bool,
         close_preview: impl FnOnce(),
     ) {
         self.switch_seq += 1;
         let autosave = self.user.saver_for(&id, &name);
         close_preview();
+        self.clear_collection_view();
         self.preview_ready = false;
         self.preview_failed = false;
         self.scene_preview_ready = false;
@@ -3873,6 +3906,7 @@ impl StudioUi {
             id,
             name,
             delete_after,
+            prefer_default_name,
         });
         self.send(Command::SwitchCollection {
             seq: self.switch_seq,
@@ -3888,9 +3922,23 @@ impl StudioUi {
             Ok(()) => {
                 self.user.collection_switched(&s.id, &s.name);
                 self.selected = -1;
-                s.delete_after
+                let mut told = s
+                    .delete_after
                     .and_then(|old| self.user.delete_collection(&old).err())
-                    .map(|e| format!("The scene collection was not deleted: {e}"))
+                    .map(|e| format!("The scene collection was not deleted: {e}"));
+                // The last collection was replaced: once it is gone, prefer the name
+                // "Default" for the empty starter that took its place.
+                if told.is_none()
+                    && s.prefer_default_name
+                    && !self.user.collection_name.eq_ignore_ascii_case(DEFAULT_NAME)
+                {
+                    if let Err(e) = self.user.rename_collection(DEFAULT_NAME) {
+                        told = Some(format!(
+                            "The new scene collection could not be named {DEFAULT_NAME}: {e}"
+                        ));
+                    }
+                }
+                told
             }
             Err(why) => Some(why),
         };
@@ -3899,36 +3947,25 @@ impl StudioUi {
     }
 
     /// Why an Output profile or Scene collection command cannot run now (the menus
-    /// disable it with this reason): live, restarting, or the only entry. `op` is
-    /// `new`, `duplicate`, `rename`, `delete`, `import` or `export`.
+    /// disable it with this reason): live, restarting, or (for output profiles) the
+    /// only entry. `op` is `new`, `duplicate`, `rename`, `delete`, `import` or `export`.
     pub fn entry_blocked(&self, collection: bool, op: &str) -> Result<(), String> {
         let restarting = self.switching.is_some() || self.canvas_restarting;
         match (collection, op) {
             (_, "import" | "export") => Ok(()),
             (true, "rename") if restarting => Err("The studio is still restarting.".into()),
             (_, "rename") => Ok(()),
-            (_, "delete") => {
-                let count = if collection {
-                    self.user.collections().len()
-                } else {
-                    self.user.profiles().len()
-                };
-                if count < 2 {
-                    let what = if collection {
-                        "scene collection"
-                    } else {
-                        "output profile"
-                    };
-                    return Err(format!(
-                        "The only {what} cannot be deleted. Make another first."
-                    ));
+            (false, "delete") => {
+                if self.user.profiles().len() < 2 {
+                    return Err(
+                        "The only output profile cannot be deleted. Make another first.".into(),
+                    );
                 }
-                if collection {
-                    self.can_switch_collection()
-                } else {
-                    self.idle_for("deleting the output profile in use")
-                }
+                self.idle_for("deleting the output profile in use")
             }
+            // The only scene collection can be deleted: a "Default" one with one empty
+            // scene replaces it.
+            (true, "delete") => self.can_switch_collection(),
             (true, _) => self.can_switch_collection(),
             (false, _) => self.idle_for("switching output profiles"),
         }
@@ -3947,7 +3984,7 @@ impl StudioUi {
         let id = self.user.new_collection(name, &self.canvas, copy)?;
         self.refresh_library();
         let (name, collection) = self.user.load_collection(&id)?;
-        self.ask_switch(id, name, collection, None, close_preview);
+        self.ask_switch(id, name, collection, None, false, close_preview);
         Ok(())
     }
 
@@ -3959,7 +3996,8 @@ impl StudioUi {
     }
 
     /// Scene collection menu: deletes the collection `id`. Deleting the one in use
-    /// first runs another (refused while live, and for the only one).
+    /// first runs another (refused while live). The only scene collection is replaced
+    /// by a new [`DEFAULT_NAME`] collection with one empty scene.
     pub fn delete_collection(
         &mut self,
         id: &str,
@@ -3971,15 +4009,31 @@ impl StudioUi {
             self.refresh_library();
             return result;
         }
-        let (other, _) = self
+        self.can_switch_collection()?;
+        let (other, prefer_default_name) = match self
             .user
             .collections()
             .into_iter()
             .find(|(other, _)| *other != id)
-            .ok_or("The only scene collection cannot be deleted. Make another first.")?;
-        self.can_switch_collection()?;
+        {
+            Some((other, _)) => (other, false),
+            None => {
+                let name = free_collection_name(&self.user, DEFAULT_NAME);
+                let prefer_default_name = !name.eq_ignore_ascii_case(DEFAULT_NAME);
+                let other = self.user.new_collection(&name, &self.canvas, false)?;
+                self.refresh_library();
+                (other, prefer_default_name)
+            }
+        };
         let (name, collection) = self.user.load_collection(&other)?;
-        self.ask_switch(other, name, collection, Some(id), close_preview);
+        self.ask_switch(
+            other,
+            name,
+            collection,
+            Some(id),
+            prefer_default_name,
+            close_preview,
+        );
         Ok(())
     }
 
@@ -4871,6 +4925,20 @@ fn choices<T: Clone + PartialEq>(c: &Choices<T>) -> (ModelRc<SharedString>, i32)
 
 fn kbps(k: u32) -> String {
     format!("{k} kbit/s")
+}
+
+/// A free display name for a new scene collection, based on `wanted` (`Default`, then
+/// `Default 2`, …), matching import's numbering.
+fn free_collection_name(user: &UserSession, wanted: &str) -> String {
+    let names: Vec<String> = user.collections().into_iter().map(|(_, n)| n).collect();
+    let free = |n: &str| !names.iter().any(|m| m.eq_ignore_ascii_case(n));
+    if free(wanted) {
+        return wanted.to_owned();
+    }
+    (2..u32::MAX)
+        .map(|n| format!("{wanted} {n}"))
+        .find(|n| free(&n))
+        .unwrap_or_else(|| format!("{wanted} new"))
 }
 
 fn size_index(
@@ -6127,6 +6195,44 @@ mod tests {
     }
 
     #[test]
+    fn free_collection_name_numbers_when_default_is_taken() {
+        let (ui, d) = ui("free-col-name");
+        assert_eq!(
+            free_collection_name(&ui.user, DEFAULT_NAME),
+            "Default 2",
+            "a fresh library already has Default"
+        );
+        ui.user
+            .new_collection("Default 2", &ui.canvas, false)
+            .unwrap();
+        assert_eq!(free_collection_name(&ui.user, DEFAULT_NAME), "Default 3");
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn clearing_the_collection_view_drops_scenes_and_sources() {
+        let (mut ui, d) = ui("clear-col-view");
+        ui.sources.set_vec(vec![SourceData {
+            id: 1,
+            name: "Cam".into(),
+            ..SourceData::default()
+        }]);
+        ui.scenes.set_vec(vec![SceneData {
+            id: 1,
+            name: "Scene".into(),
+            live: true,
+            preview: false,
+            number: 1,
+        }]);
+        ui.selected = 1;
+        ui.clear_collection_view();
+        assert_eq!(ui.sources.row_count(), 0);
+        assert_eq!(ui.scenes.row_count(), 0);
+        assert_eq!(ui.selected, -1);
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
     fn the_profile_and_collection_commands_run_and_say_why_they_cannot() {
         use crate::menu_bar::{EntryKind, EntryOp, Run, Shown, run};
         use rbs_ui::command::{CommandId, CommandState, Context};
@@ -6162,13 +6268,17 @@ mod tests {
             run("ui.collection.export", &s),
             Some(Run::Entry(EntryKind::Collection, EntryOp::Export, None))
         );
-        // A fresh library holds one entry of each: the only one cannot be deleted, and
-        // the reason says so; the other commands are not blocked by that.
-        for id in ["ui.profile.delete", "ui.collection.delete"] {
-            let why = s.enabled(&cmd(id)).unwrap_err();
-            assert!(why.starts_with("The only"), "{id}: {why}");
-            assert_eq!(run(id, &s), None, "{id}");
-        }
+        // A fresh library holds one output profile: the only one cannot be deleted.
+        // The only scene collection can be deleted once the studio runs (a Default
+        // replacement takes its place); without a studio the switch is refused.
+        let why = s.enabled(&cmd("ui.profile.delete")).unwrap_err();
+        assert!(why.starts_with("The only"), "ui.profile.delete: {why}");
+        assert_eq!(run("ui.profile.delete", &s), None);
+        let why = s.enabled(&cmd("ui.collection.delete")).unwrap_err();
+        assert!(
+            why.contains("studio"),
+            "ui.collection.delete without a studio: {why}"
+        );
         assert!(s.enabled(&cmd("ui.profile.rename")).is_ok());
         // The two status-bar menus offer the picker's submenu and the commands.
         for c in [Context::Profiles, Context::Collections] {

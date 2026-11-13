@@ -39,6 +39,23 @@ pub fn exclude_from_capture(ns_view: NonNull<c_void>, exclude: bool) -> bool {
     true
 }
 
+/// Brings the window that owns `ns_view` in front of the others of this process,
+/// without moving it. Used when the user asks to open a window that is already open.
+pub fn bring_forward(ns_view: NonNull<c_void>) {
+    let view = ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: same as [`exclude_from_capture`]: the view belongs to this process and
+    // this thread. A nil window means the view is not on screen yet.
+    let window: *mut AnyObject = unsafe { msg_send![view, window] };
+    if window.is_null() {
+        return;
+    }
+    // SAFETY: `window` is this process's NSWindow. `makeKeyAndOrderFront:` only
+    // changes key status and z-order; the sender may be nil.
+    unsafe {
+        let _: () = msg_send![window, makeKeyAndOrderFront: std::ptr::null_mut::<AnyObject>()];
+    }
+}
+
 /// Drops a saved window frame so the next placement is the one RBS sets, not the
 /// place macOS remembered from the last close.
 pub fn forget_saved_frame(ns_view: NonNull<c_void>) {

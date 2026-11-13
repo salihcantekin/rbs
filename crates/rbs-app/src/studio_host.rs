@@ -6723,7 +6723,13 @@ impl Host {
         {
             return Err(Refusal::Invalid("The region leaves no picture.".into()));
         }
-        if source.chrome == chrome {
+        // Chrome equal but region cleared (e.g. Apply after chrome wrote insets) still
+        // needs a write so the cut comes back (ADR-0104).
+        let region_matches = match chrome {
+            None => source.region.is_none(),
+            Some(c) => source.region == Some(c.region()),
+        };
+        if source.chrome == chrome && region_matches {
             return Ok(false);
         }
         let name = source.name.clone();

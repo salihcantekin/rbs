@@ -767,13 +767,14 @@ component SourceRowView inherits Rectangle {
     accessible-role: list-item;
     accessible-label: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
     accessible-description: (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
-        + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu"));
+        + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu"));
     accessible-item-selectable: true;
     accessible-item-selected: selected;
     accessible-action-default => { Studio.select-source(data.id); }
     // Return or Space selects the focused row; the TouchArea is after the FocusScope
     // so it gets the press (see Button).
-    // Rename: from the menu, a shortcut, F2 or a double-click.
+    // Rename: from the menu, a shortcut or F2. Double-click opens Source settings
+    // when the source has one (screens, windows and cameras).
     in-out property <bool> editing;
     property <int> rename-asked: Studio.rename-source-asked;
     changed rename-asked => { root.take-rename(); }
@@ -839,7 +840,14 @@ component SourceRowView inherits Rectangle {
         touch := TouchArea {
             enabled: !root.confirm;
             clicked => { if !root.confirm { focus.focus-pointer(); Studio.select-source(data.id); } }
-            double-clicked => { root.editing = true; }
+            double-clicked => {
+                Studio.select-source(data.id);
+                // Screens, windows and cameras (kind-code 0–2) have a Source settings
+                // window; other kinds keep the selection only (Rename stays on F2 / menu).
+                if data.kind-code >= 0 && data.kind-code <= 2 {
+                    Studio.open-source-settings(data.id);
+                }
+            }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     focus.focus-pointer();
@@ -908,30 +916,35 @@ component SourceRowView inherits Rectangle {
                         overflow: elide;
                     }
                 }
-                // Eye = lasting hide/show (undoable). Bolt = timed cue while still hidden.
+                // Eye = lasting hide/show (undoable). Hourglass = timed show (ADR-0105).
                 VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: data.visible ? IconName.eye : IconName.eye-off;
-                        name: data.visible
-                            ? @tr("Hide {}", data.name)
-                            : (data.show-for-ms > 0
-                                ? @tr("Unhide {} permanently", data.name)
-                                : @tr("Show {}", data.name));
-                        checked: !data.visible;
-                        clicked => { Studio.set-source-visible(data.id, !data.visible); }
-                    }
-                }
-                if data.picture && data.show-for-ms > 0: VerticalLayout {
                     alignment: center;
                     spacing: Tokens.space-1;
                     IconButton {
-                        icon: IconName.bolt;
-                        name: @tr("Timed show {} for {} ms", data.name, data.show-for-ms);
-                        enabled: !data.visible;
-                        clicked => { Studio.show-item(data.item-id); }
+                        icon: data.show-for-ms > 0
+                            ? IconName.hourglass
+                            : (data.visible ? IconName.eye : IconName.eye-off);
+                        name: data.show-for-ms > 0
+                            ? (data.visible
+                                ? @tr("Hide {}", data.name)
+                                : @tr("Timed show {} for {} ms", data.name, data.show-for-ms))
+                            : (data.visible
+                                ? @tr("Hide {}", data.name)
+                                : @tr("Show {}", data.name));
+                        checked: data.show-for-ms > 0 ? false : !data.visible;
+                        clicked => {
+                            if data.show-for-ms > 0 {
+                                if data.visible {
+                                    Studio.set-source-visible(data.id, false);
+                                } else {
+                                    Studio.show-item(data.item-id);
+                                }
+                            } else {
+                                Studio.set-source-visible(data.id, !data.visible);
+                            }
+                        }
                     }
-                    if data.cue-remaining-ms > 0: Text {
+                    if data.picture && data.show-for-ms > 0 && data.cue-remaining-ms > 0: Text {
                         text: data.cue-remaining-ms + @tr(" ms left");
                         color: Theme.text-secondary;
                         font-size: Tokens.type-caption-size;
@@ -4233,7 +4246,7 @@ component SourceProperties inherits VerticalLayout {
     if data.picture: Section {
         title: @tr("Timed show");
         id: "properties.timed-show";
-        hint: @tr("Hide with the eye first, then press Show now (or the bolt in Sources). It appears for the duration and hides again without Undo. The eye alone is a lasting show.");
+        hint: @tr("Hide with the hourglass in Sources if you need to, or press Show now here. It appears for the duration and hides again without Undo. Leave Show duration at 0 and use the eye in Sources for a lasting show.");
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             NumberField {

@@ -192,6 +192,8 @@ fn capture_error(e: &CaptureError) -> NodeError {
         }
         CaptureError::FormatUnsupported => NodeError::Permanent("capture format unsupported"),
         CaptureError::TargetNotFound => NodeError::Permanent("capture target not found"),
+        CaptureError::TargetLost => NodeError::Backend("capture target lost"),
+        CaptureError::DeviceBusy => NodeError::Backend("capture device busy"),
         e if e.is_recoverable() => NodeError::Backend("capture failed"),
         _ => NodeError::Permanent("capture failed"),
     }

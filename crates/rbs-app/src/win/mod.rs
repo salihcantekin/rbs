@@ -193,8 +193,9 @@ pub fn native_menu(dark: bool) {
     }
 }
 
-/// Leaves this window out of a screen capture, or puts it back.
-pub fn exclude_from_capture(hwnd: NonZeroIsize, exclude: bool) {
+/// Leaves this window out of a screen capture, or puts it back. `false` when the
+/// system refused the call (the caller tries again once the window is ready).
+pub fn exclude_from_capture(hwnd: NonZeroIsize, exclude: bool) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
     };
@@ -205,7 +206,25 @@ pub fn exclude_from_capture(hwnd: NonZeroIsize, exclude: bool) {
     };
     // SAFETY: `hwnd` is a window this process created. The call only sets a flag
     // the capture APIs read; a rejected call leaves the window as it was.
+    unsafe { SetWindowDisplayAffinity(hwnd.get() as HWND, affinity) != 0 }
+}
+
+/// Brings an already-shown window of this process in front of the others, without
+/// moving it. Restores it when minimised. Used when the user asks to open a window
+/// that is already open (Settings, Source settings, a floating panel, the main window).
+pub fn bring_forward(hwnd: NonZeroIsize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+    let hwnd = hwnd.get() as HWND;
+    // SAFETY: `hwnd` is a window this process created and still owns. ShowWindow /
+    // BringWindowToTop / SetForegroundWindow only change z-order and activation; a
+    // refused SetForegroundWindow leaves the window where it was.
     unsafe {
-        SetWindowDisplayAffinity(hwnd.get() as HWND, affinity);
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
     }
 }

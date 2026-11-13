@@ -1,5 +1,6 @@
 //! Where a dialog window opens: centred on the window it belongs to (U-rule: a
 //! window opened from RBS appears over RBS, not where the OS happens to put it).
+//! Also brings an already-open window to the front when the user asks for it again.
 
 use slint::{
     ComponentHandle, LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize, PlatformError,
@@ -89,7 +90,7 @@ pub fn centre_on(child: &slint::Window, parent: &slint::Window, size: LogicalSiz
 }
 
 /// Shows `child` centred on `parent`, the same way on every OS. This is the one way a
-/// dialog window of RBS is shown (a test keeps it so).
+/// dialog window of RBS is shown the first time (a test keeps it so).
 ///
 /// The position is set before `show`, so the window is created where it belongs and
 /// no OS (macOS cascades new windows) places it first. Once the window is up, one
@@ -99,6 +100,9 @@ pub fn centre_on(child: &slint::Window, parent: &slint::Window, size: LogicalSiz
 ///
 /// `parent_hidden` is true while every window is hidden (ADR-0056): there is
 /// nothing to centre on, and the OS places the window.
+///
+/// When the window is already open and only needs to come forward, use [`raise`]
+/// instead so the user's place is kept.
 pub fn show_centred<C: ComponentHandle + 'static, P: ComponentHandle + 'static>(
     child: &C,
     parent: &P,
@@ -134,6 +138,29 @@ pub fn show_centred<C: ComponentHandle + 'static, P: ComponentHandle + 'static>(
         centre_later(again.0, again.1, requested);
     });
     Ok(())
+}
+
+/// Brings an already-shown window in front of the others of this process, without
+/// moving it. Restores it when minimised. No-op when the OS handle is not ready yet
+/// (Linux today has no extra call: `show` alone does not raise an obscured window).
+pub fn raise(window: &slint::Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    // `window_handle()` returns a guard; keep it for the borrow of the raw handle.
+    let binding = window.window_handle();
+    let Ok(handle) = binding.window_handle() else {
+        return;
+    };
+    match handle.as_raw() {
+        #[cfg(windows)]
+        RawWindowHandle::Win32(win) => rbs_app::win::bring_forward(win.hwnd),
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(view) => {
+            if let Some(view) = std::ptr::NonNull::new(view.ns_view.as_ptr()) {
+                rbs_app::native::bring_forward(view);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn centre_later<C: ComponentHandle, P: ComponentHandle>(
@@ -234,9 +261,9 @@ mod tests {
         assert_eq!(not_yet, requested);
     }
 
-    /// Every dialog window of RBS is shown by `show_centred`, so it opens over the
-    /// main window on every OS. Centring after a plain `show()` is what left Settings
-    /// off-centre on macOS while it worked on Windows.
+    /// A dialog's first open goes through `show_centred` (over the main window on every
+    /// OS). An already-open dialog is brought forward with `raise`, not re-centred.
+    /// Centring after a plain `show()` is what left Settings off-centre on macOS.
     #[test]
     fn dialog_windows_are_shown_only_through_show_centred() {
         let src = include_str!("main.rs");
@@ -245,10 +272,14 @@ mod tests {
             "Settings must be shown with show_centred"
         );
         assert!(
+            src.contains("window_place::raise("),
+            "an open dialog is raised, not shown again"
+        );
+        assert!(
             !src.contains("window_place::centre_on("),
             "use window_place::show_centred, not centre_on after show"
         );
-        // Settings and the source settings window are shown only through `show_centred`.
+        // Settings and the source settings window are not shown with a bare `show()`.
         assert!(
             !src.contains("let _ = w.show();"),
             "dialog windows are shown with show_centred"

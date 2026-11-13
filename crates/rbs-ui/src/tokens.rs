@@ -84,6 +84,7 @@ pub const LENGTHS: &[&str] = &[
     "size.panel.pad",
     "size.section.gap",
     "size.field.gap",
+    "size.field.compact",
     "size.tab.indicator",
     "size.control.sm",
     "size.control.md",

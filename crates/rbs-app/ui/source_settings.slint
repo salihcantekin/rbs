@@ -4,8 +4,23 @@
 // keeps the window; OK sends it and closes; Cancel closes. The choice is a draft until
 // then. The preview and the main window stay usable while it is open.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Select, Toggle, OverlayHost, NumberField, SegmentedControl } from "components.slint";
+import { Button, Select, Toggle, OverlayHost, NumberField } from "components.slint";
+import { SettingsCard, SettingRow } from "settings.slint";
 import { Studio, SourceSettingsData } from "studio.slint";
+
+// One resize/move handle on the capture-region preview (matches preview canvas marks).
+component CaptureRegionHandle inherits Rectangle {
+    in property <float> center-x;
+    in property <float> center-y;
+    property <float> half: 4.0; // literal: mirrors rbs_ui::transform::HANDLE_SIZE / 2
+    x: (center-x - half) * 1px;
+    y: (center-y - half) * 1px;
+    width: 8px; // literal: mirrors rbs_ui::transform::HANDLE_SIZE
+    height: 8px; // literal: mirrors rbs_ui::transform::HANDLE_SIZE
+    background: Theme.surface-raised;
+    border-width: Tokens.size-border;
+    border-color: Theme.accent;
+}
 
 export component SourceSettingsWindow inherits Window {
     default-font-family: Theme.font-family;
@@ -13,9 +28,10 @@ export component SourceSettingsWindow inherits Window {
     title: @tr("{}: Source settings", d.name);
     icon: @image-url("../assets/brand/icon-win-256.png");
     preferred-width: Tokens.size-floating-w;
-    // Region preview needs more height than the mode/rate form alone.
-    preferred-height: Tokens.size-floating-h * 1.35;
+    // Tall enough for Video + region/chrome cards with Cancel/Apply/OK still on screen.
+    preferred-height: Tokens.size-settings-h;
     min-width: Tokens.size-menu-md;
+    min-height: Tokens.size-floating-h;
     background: Theme.surface-base;
     // Escape or Cancel: the window closes without sending anything.
     callback dismiss();
@@ -46,21 +62,121 @@ export component SourceSettingsWindow inherits Window {
     // 0 top, 1 right, 2 bottom, 3 left. Windows taskbar defaults to bottom.
     in-out property <int> chrome-edge: 2;
     in-out property <int> chrome-thickness: 48;
-    // Region drag on the preview (widget px → full-capture insets).
+    // Region drag on the preview (widget px → full-capture insets). Grip 0–7 handles, 8 move.
     property <bool> region-dragging: false;
-    property <float> region-drag-x0: 0;
-    property <float> region-drag-y0: 0;
-    property <float> region-drag-x1: 0;
-    property <float> region-drag-y1: 0;
-    property <float> preview-w-px: (Tokens.size-floating-w - Tokens.space-4 * 2) / 1px;
-    property <float> preview-h-px: min(
-        Tokens.size-floating-h * 0.45 / 1px,
-        root.preview-w-px * (d.region-preview.height / max(1., d.region-preview.width))
-    );
-    property <float> region-sel-x0: root.region-dragging ? root.region-drag-x0 : root.cap-preview-x(root.cap-l);
-    property <float> region-sel-y0: root.region-dragging ? root.region-drag-y0 : root.cap-preview-y(root.cap-t);
-    property <float> region-sel-x1: root.region-dragging ? root.region-drag-x1 : root.cap-preview-x-right(root.cap-r);
-    property <float> region-sel-y1: root.region-dragging ? root.region-drag-y1 : root.cap-preview-y-bottom(root.cap-b);
+    property <int> region-grip: -1;
+    property <float> region-drag-mx0: 0;
+    property <float> region-drag-my0: 0;
+    property <int> region-start-l: 0;
+    property <int> region-start-t: 0;
+    property <int> region-start-r: 0;
+    property <int> region-start-b: 0;
+    // Live size of `preview-host` (bound below). Stale values misalign the crop frame.
+    property <float> preview-w-px: 1;
+    property <float> preview-h-px: 1;
+    // True while the pointer is down on the region preview (blocks Flickable scroll).
+    property <bool> region-pointer-down: false;
+    property <float> region-sel-x0: root.cap-preview-x(root.cap-l);
+    property <float> region-sel-y0: root.cap-preview-y(root.cap-t);
+    property <float> region-sel-x1: root.cap-preview-x-right(root.cap-r);
+    property <float> region-sel-y1: root.cap-preview-y-bottom(root.cap-b);
+    function region-handle-reach() -> float {
+        8.0 // literal: mirrors rbs_ui::transform::HANDLE_REACH
+    }
+    function region-handle-half() -> float {
+        4.0 // literal: mirrors rbs_ui::transform::HANDLE_SIZE / 2
+    }
+    function region-hx(g: int) -> float {
+        if g == 0 || g == 6 || g == 7 { return root.region-sel-x0; }
+        if g == 2 || g == 3 || g == 4 { return root.region-sel-x1; }
+        return (root.region-sel-x0 + root.region-sel-x1) * 0.5;
+    }
+    function region-hy(g: int) -> float {
+        if g == 0 || g == 1 || g == 2 { return root.region-sel-y0; }
+        if g == 4 || g == 5 || g == 6 { return root.region-sel-y1; }
+        return (root.region-sel-y0 + root.region-sel-y1) * 0.5;
+    }
+    property <int> region-pick-grip: -1;
+    property <float> region-pick-best: 9.0;
+    function region-pointer-in-sel(mx: float, my: float) -> bool {
+        mx >= root.region-sel-x0 && mx <= root.region-sel-x1 && my >= root.region-sel-y0 && my <= root.region-sel-y1
+    }
+    function region-grip-consider(g: int, mx: float, my: float) {
+        let d = max(Math.abs(mx - root.region-hx(g)), Math.abs(my - root.region-hy(g)));
+        if d <= root.region-handle-reach() && d < root.region-pick-best {
+            root.region-pick-best = d;
+            root.region-pick-grip = g;
+        }
+    }
+    function region-grip-at(mx: float, my: float) -> int {
+        if !root.cap-has && !root.region-dragging { return -1; }
+        root.region-pick-best = root.region-handle-reach() + 1.0;
+        root.region-pick-grip = -1;
+        root.region-grip-consider(0, mx, my);
+        root.region-grip-consider(1, mx, my);
+        root.region-grip-consider(2, mx, my);
+        root.region-grip-consider(3, mx, my);
+        root.region-grip-consider(4, mx, my);
+        root.region-grip-consider(5, mx, my);
+        root.region-grip-consider(6, mx, my);
+        root.region-grip-consider(7, mx, my);
+        if root.region-pick-grip >= 0 { return root.region-pick-grip; }
+        return root.region-pointer-in-sel(mx, my) ? 8 : -1;
+    }
+    function region-clamp-insets() {
+        if d.pic-w <= 0 || d.pic-h <= 0 { return; }
+        root.cap-l = max(0, min(root.cap-l, d.pic-w - 1));
+        root.cap-t = max(0, min(root.cap-t, d.pic-h - 1));
+        root.cap-r = max(0, min(root.cap-r, d.pic-w - 1));
+        root.cap-b = max(0, min(root.cap-b, d.pic-h - 1));
+        if root.cap-l + root.cap-r >= d.pic-w {
+            let over = root.cap-l + root.cap-r - (d.pic-w - 1);
+            if root.cap-l >= over {
+                root.cap-l = root.cap-l - over;
+            } else {
+                root.cap-r = d.pic-w - 1 - root.cap-l;
+            }
+        }
+        if root.cap-t + root.cap-b >= d.pic-h {
+            let over = root.cap-t + root.cap-b - (d.pic-h - 1);
+            if root.cap-t >= over {
+                root.cap-t = root.cap-t - over;
+            } else {
+                root.cap-b = d.pic-h - 1 - root.cap-t;
+            }
+        }
+    }
+    function region-apply-grip(mx: float, my: float) {
+        if d.pic-w <= 0 || d.pic-h <= 0 || root.preview-scale() <= 0 { return; }
+        let sc = root.preview-scale();
+        let ox = root.preview-ox();
+        let oy = root.preview-oy();
+        if root.region-grip == 8 {
+            let dx = round((mx - root.region-drag-mx0) / sc);
+            let dy = round((my - root.region-drag-my0) / sc);
+            let w = d.pic-w - root.region-start-l - root.region-start-r;
+            let h = d.pic-h - root.region-start-t - root.region-start-b;
+            let nl = max(0, min(root.region-start-l + dx, d.pic-w - w));
+            let nt = max(0, min(root.region-start-t + dy, d.pic-h - h));
+            root.cap-l = nl;
+            root.cap-r = d.pic-w - w - nl;
+            root.cap-t = nt;
+            root.cap-b = d.pic-h - h - nt;
+            return;
+        }
+        if root.region-grip == 0 || root.region-grip == 6 || root.region-grip == 7 {
+            root.cap-l = min(max(0, round((mx - ox) / sc)), d.pic-w - root.cap-r - 1);
+        }
+        if root.region-grip == 2 || root.region-grip == 3 || root.region-grip == 4 {
+            root.cap-r = min(max(0, d.pic-w - round((mx - ox) / sc)), d.pic-w - root.cap-l - 1);
+        }
+        if root.region-grip == 0 || root.region-grip == 1 || root.region-grip == 2 {
+            root.cap-t = min(max(0, round((my - oy) / sc)), d.pic-h - root.cap-b - 1);
+        }
+        if root.region-grip == 4 || root.region-grip == 5 || root.region-grip == 6 {
+            root.cap-b = min(max(0, d.pic-h - round((my - oy) / sc)), d.pic-h - root.cap-t - 1);
+        }
+    }
     function cap-preview-x(left: int) -> float {
         root.preview-ox() + left * root.preview-scale();
     }
@@ -82,36 +198,27 @@ export component SourceSettingsWindow inherits Window {
     function preview-oy() -> float {
         (root.preview-h-px - max(1., d.pic-h) * root.preview-scale()) * 0.5;
     }
-    function apply-drag-to-region(view-w: float, view-h: float) {
-        if d.pic-w <= 0 || d.pic-h <= 0 { return; }
-        root.preview-w-px = view-w;
-        root.preview-h-px = view-h;
-        if root.preview-scale() <= 0 { return; }
-        root.cap-l = max(0, round((min(root.region-drag-x0, root.region-drag-x1) - root.preview-ox()) / root.preview-scale()));
-        root.cap-t = max(0, round((min(root.region-drag-y0, root.region-drag-y1) - root.preview-oy()) / root.preview-scale()));
-        root.cap-r = max(0, d.pic-w - round((max(root.region-drag-x0, root.region-drag-x1) - root.preview-ox()) / root.preview-scale()));
-        root.cap-b = max(0, d.pic-h - round((max(root.region-drag-y0, root.region-drag-y1) - root.preview-oy()) / root.preview-scale()));
-        if root.cap-l + root.cap-r >= d.pic-w || root.cap-t + root.cap-b >= d.pic-h {
-            root.cap-l = 0;
-            root.cap-t = 0;
-            root.cap-r = 0;
-            root.cap-b = 0;
-            root.cap-has = false;
-            return;
-        }
-        root.cap-has = true;
-    }
     property <bool> camera: d.kind-code == 2;
     property <bool> capture-kind: d.kind-code >= 0 && d.kind-code <= 2;
     property <bool> display: d.kind-code == 0;
     // The rates of the chosen mode for a camera; a screen's and window's own list.
     property <[string]> rates: camera ? (mode-index >= 0 && mode-index < d.modes.length ? d.modes[mode-index].rates : []) : d.rates;
+    property <[string]> chrome-edge-labels: [@tr("Top"), @tr("Right"), @tr("Bottom"), @tr("Left")];
+    property <[string]> chrome-fill-labels: [@tr("Cover"), @tr("Fit")];
     function pick-chrome-edge(t: int, r: int, b: int, l: int) -> int {
-        if t >= r && t >= b && t >= l { return 0; }
-        if r >= b && r >= l { return 1; }
-        if b >= l { return 2; }
+        // No insets yet: Windows taskbar defaults to the bottom edge.
+        if t == 0 && r == 0 && b == 0 && l == 0 { return 2; }
+        // Strict greater-than so a tie does not prefer Top; bottom wins ties.
+        if t > r && t > b && t > l { return 0; }
+        if r > b && r > l && r > t { return 1; }
+        if b >= t && b >= r && b >= l { return 2; }
         return 3;
     }
+    // Preview box height grows with the window (layout stretch alone was ignored).
+    property <length> region-preview-h: max(
+        Tokens.size-transition-min-picture,
+        root.height * 0.45
+    );
     function chrome-edge-thickness(edge: int, t: int, r: int, b: int, l: int) -> int {
         if edge == 0 { return t; }
         if edge == 1 { return r; }
@@ -144,15 +251,34 @@ export component SourceSettingsWindow inherits Window {
         root.chrome-l = d.chrome-l;
         root.chrome-fill = d.chrome-fill;
         root.chrome-edge = root.pick-chrome-edge(d.chrome-t, d.chrome-r, d.chrome-b, d.chrome-l);
-        root.chrome-thickness = max(1, root.chrome-edge-thickness(root.chrome-edge, d.chrome-t, d.chrome-r, d.chrome-b, d.chrome-l));
+        // Zero insets: keep a usable default thickness (48), not 1 px from max(1, 0).
+        root.chrome-thickness = d.chrome-t == 0 && d.chrome-r == 0 && d.chrome-b == 0 && d.chrome-l == 0
+            ? 48
+            : max(1, root.chrome-edge-thickness(root.chrome-edge, d.chrome-t, d.chrome-r, d.chrome-b, d.chrome-l));
     }
     function apply-region-chrome() {
-        if root.capture-kind {
-            Studio.set-source-capture-region(d.id, !root.cap-has, root.cap-l, root.cap-t, root.cap-r, root.cap-b);
+        // Manual region and display chrome both write Source.region; only one applies.
+        // Clearing chrome also clears the region, so when saving a crop: clear chrome
+        // first (if any), then write the region.
+        if root.capture-kind && root.cap-has {
+            root.chrome-on = false;
+            if root.display {
+                Studio.set-display-chrome(d.id, false, 0, 0, 0, 0, root.chrome-fill);
+            }
+            Studio.set-source-capture-region(d.id, false, root.cap-l, root.cap-t, root.cap-r, root.cap-b);
+            return;
         }
-        if root.display {
+        if root.display && root.chrome-on {
             root.write-chrome-from-edge();
-            Studio.set-display-chrome(d.id, root.chrome-on, root.chrome-t, root.chrome-r, root.chrome-b, root.chrome-l, root.chrome-fill);
+            Studio.set-display-chrome(d.id, true, root.chrome-t, root.chrome-r, root.chrome-b, root.chrome-l, root.chrome-fill);
+            return;
+        }
+        // Both off: clear chrome (and its region) then clear any manual region.
+        if root.display {
+            Studio.set-display-chrome(d.id, false, 0, 0, 0, 0, root.chrome-fill);
+        }
+        if root.capture-kind {
+            Studio.set-source-capture-region(d.id, true, 0, 0, 0, 0);
         }
     }
     keys := FocusScope {
@@ -161,243 +287,360 @@ export component SourceSettingsWindow inherits Window {
             reject
         }
         VerticalLayout {
-            padding: Tokens.space-4;
+            padding: Tokens.size-panel-pad;
             spacing: Tokens.size-section-gap;
+            vertical-stretch: 1;
             if d.id < 0: Text {
                 text: @tr("Loading the settings…");
                 color: Theme.text-secondary;
                 font-size: Tokens.type-body-size;
             }
-            if d.id >= 0: VerticalLayout {
-                spacing: Tokens.size-field-gap;
+            // Body scrolls; Cancel / Apply / OK stay visible below.
+            // interactive off while cropping so vertical drags do not scroll the page.
+            if d.id >= 0: Flickable {
                 vertical-stretch: 1;
-                alignment: start;
-                Text {
-                    text: @tr("Video");
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-caption-size;
-                    font-weight: Tokens.type-label-weight;
-                }
-                if camera: Text {
-                    text: @tr("Mode");
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-label-size;
-                }
-                if camera: Select {
-                    label: @tr("Mode");
-                    options: d.mode-labels;
-                    index: root.mode-index;
-                    placeholder: @tr("Not listed by this camera");
-                    enabled: d.modes.length > 0;
-                    selected(i) => {
-                        root.mode-index = i;
-                        // The chosen rate stays when the new mode runs at it, else the first.
-                        root.rate-index = root.rate-index < d.modes[i].rates.length ? root.rate-index : 0;
-                    }
-                }
-                Text {
-                    text: @tr("Frame rate");
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-label-size;
-                }
-                Select {
-                    label: @tr("Frame rate");
-                    options: root.rates;
-                    index: root.rate-index;
-                    placeholder: @tr("Default");
-                    selected(i) => { root.rate-index = i; }
-                }
-                if d.has-cursor: Toggle {
-                    text: @tr("Show the cursor");
-                    checked: root.cursor;
-                    toggled(v) => { root.cursor = v; }
-                }
-                if capture-kind: VerticalLayout {
-                    spacing: Tokens.size-field-gap;
-                    Text {
-                        text: @tr("Capture region");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        font-weight: Tokens.type-label-weight;
-                    }
-                    if d.pic-w > 0 && d.pic-h > 0: Text {
-                        text: @tr("Full capture: {} × {} px", d.pic-w, d.pic-h);
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                    }
-                    Text {
-                        horizontal-stretch: 1;
-                        text: d.has-region-preview
-                            ? @tr("Drag on the picture to keep that area. Apply fits it on the canvas and does not restart capture.")
-                            : @tr("Waiting for a preview… You can still type edges in capture pixels.");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        wrap: word-wrap;
-                    }
-                    if d.has-region-preview: Rectangle {
-                        width: 100%;
-                        horizontal-stretch: 1;
-                        height: root.preview-h-px * 1px;
-                        clip: true;
-                        background: Theme.surface-raised;
-                        Image {
-                            width: parent.width;
-                            height: parent.height;
-                            source: d.region-preview;
-                            image-fit: contain;
+                interactive: !root.region-pointer-down;
+                viewport-width: self.width;
+                viewport-height: body.preferred-height;
+                body := VerticalLayout {
+                    width: parent.width;
+                    spacing: Tokens.size-section-gap;
+
+                SettingsCard {
+                    title: @tr("Video");
+                    id: "source-settings.video";
+                    description: @tr("Mode, frame rate and cursor for this capture.");
+                    if camera: SettingRow {
+                        label: @tr("Mode");
+                        help: @tr("Resolution and colour mode listed by the camera.");
+                        divider: false;
+                        Select {
+                            label: @tr("Mode");
+                            options: d.mode-labels;
+                            index: root.mode-index;
+                            placeholder: @tr("Not listed by this camera");
+                            enabled: d.modes.length > 0;
+                            selected(i) => {
+                                root.mode-index = i;
+                                root.rate-index = root.rate-index < d.modes[i].rates.length ? root.rate-index : 0;
+                            }
                         }
-                        // Selection overlay in preview coordinates.
-                        if root.cap-has || root.region-dragging: Rectangle {
-                            x: min(root.region-sel-x0, root.region-sel-x1) * 1px;
-                            y: min(root.region-sel-y0, root.region-sel-y1) * 1px;
-                            width: abs(root.region-sel-x1 - root.region-sel-x0) * 1px;
-                            height: abs(root.region-sel-y1 - root.region-sel-y0) * 1px;
-                            border-width: Tokens.size-focus-ring;
-                            border-color: Theme.accent;
-                            background: #00000000; // literal: selection hole, not chrome
+                    }
+                    SettingRow {
+                        label: @tr("Frame rate");
+                        help: @tr("How often a new picture is taken.");
+                        divider: camera;
+                        Select {
+                            label: @tr("Frame rate");
+                            options: root.rates;
+                            index: root.rate-index;
+                            placeholder: @tr("Default");
+                            selected(i) => { root.rate-index = i; }
                         }
-                        TouchArea {
-                            width: parent.width;
-                            height: parent.height;
-                            pointer-event(e) => {
-                                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                                    root.region-dragging = true;
-                                    root.cap-has = true;
-                                    root.region-drag-x0 = self.mouse-x / 1px;
-                                    root.region-drag-y0 = self.mouse-y / 1px;
-                                    root.region-drag-x1 = root.region-drag-x0;
-                                    root.region-drag-y1 = root.region-drag-y0;
+                    }
+                    if d.has-cursor: SettingRow {
+                        label: @tr("Show the cursor");
+                        help: @tr("Draw the pointer in the captured picture.");
+                        fill: false;
+                        Toggle {
+                            label: @tr("Show the cursor");
+                            checked: root.cursor;
+                            toggled(v) => { root.cursor = v; }
+                        }
+                    }
+                }
+
+                if capture-kind: Rectangle {
+                    background: Theme.surface-raised;
+                    border-radius: Tokens.radius-lg;
+                    border-width: Tokens.size-border;
+                    border-color: Theme.border-subtle;
+                    accessible-role: groupbox;
+                    accessible-label: @tr("Capture region");
+                    VerticalLayout {
+                        padding: Tokens.size-panel-pad;
+                        spacing: Tokens.size-field-gap;
+                        Text {
+                            text: @tr("Capture region").to-uppercase();
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                            font-weight: Tokens.type-title-weight;
+                            letter-spacing: Tokens.size-tracking-caps;
+                            accessible-role: none;
+                        }
+                        SettingRow {
+                            label: @tr("Use a region");
+                            help: @tr("Crop the capture to a rectangle. Turns off Hide taskbar. Apply fits it on the canvas and does not restart capture.");
+                            divider: false;
+                            fill: false;
+                            Toggle {
+                                label: @tr("Use a region");
+                                checked: root.cap-has;
+                                toggled(v) => {
+                                    root.cap-has = v;
+                                    // Chrome and a manual region both own Source.region.
+                                    if v { root.chrome-on = false; }
                                 }
-                                if e.kind == PointerEventKind.move && root.region-dragging {
-                                    root.region-drag-x1 = self.mouse-x / 1px;
-                                    root.region-drag-y1 = self.mouse-y / 1px;
+                            }
+                        }
+                        if root.cap-has && d.pic-w > 0 && d.pic-h > 0: Text {
+                            text: @tr("Full capture: {} × {} px", d.pic-w, d.pic-h);
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                        }
+                        if root.cap-has: Text {
+                            horizontal-stretch: 1;
+                            text: d.has-region-preview
+                                ? @tr("Drag the handles or edges. Enlarge this window for a larger preview.")
+                                : @tr("Waiting for a preview… You can still type edges in capture pixels.");
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                            wrap: word-wrap;
+                        }
+                        if root.cap-has: preview-host := Rectangle {
+                            height: root.region-preview-h;
+                            width: 100%;
+                            horizontal-stretch: 1;
+                            clip: true;
+                            background: Theme.surface-sunken;
+                            border-radius: Tokens.radius-sm;
+                            // Keep crop math on the same box the Image letterboxes into.
+                            changed width => { root.preview-w-px = max(1., self.width / 1px); }
+                            changed height => { root.preview-h-px = max(1., self.height / 1px); }
+                            init => {
+                                root.preview-w-px = max(1., self.width / 1px);
+                                root.preview-h-px = max(1., self.height / 1px);
+                            }
+                            if d.has-region-preview: Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: d.region-preview;
+                                image-fit: contain;
+                            }
+                            if root.cap-has || root.region-dragging: Rectangle {
+                                x: root.region-sel-x0 * 1px;
+                                y: root.region-sel-y0 * 1px;
+                                width: (root.region-sel-x1 - root.region-sel-x0) * 1px;
+                                height: (root.region-sel-y1 - root.region-sel-y0) * 1px;
+                                border-width: Tokens.size-focus-ring;
+                                border-color: Theme.accent;
+                                background: #00000000; // literal: selection hole, not chrome
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(0);
+                                center-y: root.region-hy(0);
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(1);
+                                center-y: root.region-hy(1);
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(2);
+                                center-y: root.region-hy(2);
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(3);
+                                center-y: root.region-hy(3);
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(4);
+                                center-y: root.region-hy(4);
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(5);
+                                center-y: root.region-hy(5);
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(6);
+                                center-y: root.region-hy(6);
+                            }
+                            if root.cap-has || root.region-dragging: CaptureRegionHandle {
+                                center-x: root.region-hx(7);
+                                center-y: root.region-hy(7);
+                            }
+                            TouchArea {
+                                width: parent.width;
+                                height: parent.height;
+                                pointer-event(e) => {
+                                    let mx = self.mouse-x / 1px;
+                                    let my = self.mouse-y / 1px;
+                                    if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                                        root.region-pointer-down = true;
+                                        root.preview-w-px = max(1., preview-host.width / 1px);
+                                        root.preview-h-px = max(1., preview-host.height / 1px);
+                                        let grip = root.region-grip-at(mx, my);
+                                        if grip >= 0 {
+                                            root.region-dragging = true;
+                                            root.region-grip = grip;
+                                            root.region-drag-mx0 = mx;
+                                            root.region-drag-my0 = my;
+                                            root.region-start-l = root.cap-l;
+                                            root.region-start-t = root.cap-t;
+                                            root.region-start-r = root.cap-r;
+                                            root.region-start-b = root.cap-b;
+                                            root.cap-has = true;
+                                        }
+                                    }
+                                    if e.kind == PointerEventKind.move && root.region-dragging {
+                                        root.region-apply-grip(mx, my);
+                                    }
+                                    if e.kind == PointerEventKind.up {
+                                        root.region-pointer-down = false;
+                                        if root.region-dragging {
+                                            root.region-dragging = false;
+                                            root.region-grip = -1;
+                                            root.region-clamp-insets();
+                                        }
+                                    }
+                                    if e.kind == PointerEventKind.cancel {
+                                        root.region-pointer-down = false;
+                                        root.region-dragging = false;
+                                        root.region-grip = -1;
+                                    }
                                 }
-                                if e.kind == PointerEventKind.up && root.region-dragging {
-                                    root.region-dragging = false;
-                                    root.region-drag-x1 = self.mouse-x / 1px;
-                                    root.region-drag-y1 = self.mouse-y / 1px;
-                                    root.apply-drag-to-region(self.width / 1px, self.height / 1px);
+                            }
+                        }
+                        if root.cap-has: HorizontalLayout {
+                            spacing: Tokens.size-field-gap;
+                            alignment: start;
+                            NumberField {
+                                preferred-width: Tokens.size-field-compact;
+                                prefix: @tr("L");
+                                label: @tr("Region left of {}", d.name);
+                                value: root.cap-l;
+                                edited(v) => { root.cap-l = max(0, round(v)); }
+                            }
+                            NumberField {
+                                preferred-width: Tokens.size-field-compact;
+                                prefix: @tr("R");
+                                label: @tr("Region right of {}", d.name);
+                                value: root.cap-r;
+                                edited(v) => { root.cap-r = max(0, round(v)); }
+                            }
+                            NumberField {
+                                preferred-width: Tokens.size-field-compact;
+                                prefix: @tr("T");
+                                label: @tr("Region top of {}", d.name);
+                                value: root.cap-t;
+                                edited(v) => { root.cap-t = max(0, round(v)); }
+                            }
+                            NumberField {
+                                preferred-width: Tokens.size-field-compact;
+                                prefix: @tr("B");
+                                label: @tr("Region bottom of {}", d.name);
+                                value: root.cap-b;
+                                edited(v) => { root.cap-b = max(0, round(v)); }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    text: @tr("Clear");
+                                    dense: true;
+                                    kind: "ghost";
+                                    enabled: root.cap-has;
+                                    clicked => {
+                                        root.cap-has = false;
+                                        root.cap-l = 0;
+                                        root.cap-t = 0;
+                                        root.cap-r = 0;
+                                        root.cap-b = 0;
+                                    }
                                 }
                             }
                         }
                     }
-                    Toggle {
-                        text: @tr("Use a region");
-                        checked: root.cap-has;
-                        toggled(v) => { root.cap-has = v; }
-                    }
-                    if root.cap-has: HorizontalLayout {
-                        spacing: Tokens.size-field-gap;
-                        NumberField {
-                            horizontal-stretch: 1;
-                            prefix: @tr("L");
-                            label: @tr("Region left of {}", d.name);
-                            value: root.cap-l;
-                            edited(v) => { root.cap-l = max(0, round(v)); }
-                        }
-                        NumberField {
-                            horizontal-stretch: 1;
-                            prefix: @tr("R");
-                            label: @tr("Region right of {}", d.name);
-                            value: root.cap-r;
-                            edited(v) => { root.cap-r = max(0, round(v)); }
-                        }
-                    }
-                    if root.cap-has: HorizontalLayout {
-                        spacing: Tokens.size-field-gap;
-                        NumberField {
-                            horizontal-stretch: 1;
-                            prefix: @tr("T");
-                            label: @tr("Region top of {}", d.name);
-                            value: root.cap-t;
-                            edited(v) => { root.cap-t = max(0, round(v)); }
-                        }
-                        NumberField {
-                            horizontal-stretch: 1;
-                            prefix: @tr("B");
-                            label: @tr("Region bottom of {}", d.name);
-                            value: root.cap-b;
-                            edited(v) => { root.cap-b = max(0, round(v)); }
-                        }
-                    }
-                    Button {
-                        text: @tr("Clear region");
-                        dense: true;
-                        enabled: root.cap-has;
-                        clicked => {
-                            root.cap-has = false;
-                            root.cap-l = 0;
-                            root.cap-t = 0;
-                            root.cap-r = 0;
-                            root.cap-b = 0;
-                        }
-                    }
                 }
-                if display: VerticalLayout {
-                    spacing: Tokens.size-field-gap;
-                    Text {
-                        text: @tr("Display chrome");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        font-weight: Tokens.type-label-weight;
+
+                if display: SettingsCard {
+                    title: @tr("Display chrome");
+                    id: "source-settings.chrome";
+                    description: @tr("Cut taskbar or Dock insets from the capture without restarting it.");
+                    SettingRow {
+                        label: @tr("Hide taskbar and Dock");
+                        help: @tr("Choose the edge and thickness in capture pixels. Turns off Use a region.");
+                        divider: false;
+                        fill: false;
+                        Toggle {
+                            label: @tr("Hide taskbar and Dock");
+                            checked: root.chrome-on;
+                            toggled(v) => {
+                                root.chrome-on = v;
+                                // Chrome and a manual region both own Source.region.
+                                if v {
+                                    root.cap-has = false;
+                                    if root.chrome-t == 0 && root.chrome-r == 0 && root.chrome-b == 0 && root.chrome-l == 0 {
+                                        root.chrome-edge = 2;
+                                        root.chrome-thickness = max(48, root.chrome-thickness);
+                                    }
+                                }
+                            }
+                        }
                     }
-                    Text {
-                        horizontal-stretch: 1;
-                        text: @tr("Cut taskbar or Dock insets from the capture. Apply does not restart capture.");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        wrap: word-wrap;
-                    }
-                    Toggle {
-                        text: @tr("Hide taskbar and Dock");
-                        checked: root.chrome-on;
-                        toggled(v) => { root.chrome-on = v; }
-                    }
-                    if root.chrome-on: Text {
-                        horizontal-stretch: 1;
-                        text: @tr("Choose which edge holds the bar, and how thick it is in capture pixels. Reset fills every edge from the system work area.");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        wrap: word-wrap;
-                    }
-                    if root.chrome-on: SegmentedControl {
+                    if root.chrome-on: SettingRow {
                         label: @tr("Bar edge");
-                        options: [@tr("Top"), @tr("Right"), @tr("Bottom"), @tr("Left")];
-                        index: root.chrome-edge;
-                        selected(i) => { root.chrome-edge = i; }
+                        help: @tr("Which edge holds the bar. Bottom is usual on Windows.");
+                        Select {
+                            preferred-width: Tokens.size-transition-short;
+                            label: @tr("Bar edge");
+                            options: root.chrome-edge-labels;
+                            index: root.chrome-edge;
+                            selected(i) => { root.chrome-edge = i; }
+                        }
                     }
-                    if root.chrome-on: NumberField {
-                        horizontal-stretch: 1;
-                        label: @tr("Bar thickness of {} in pixels", d.name);
-                        value: root.chrome-thickness;
-                        edited(v) => { root.chrome-thickness = max(1, round(v)); }
+                    if root.chrome-on: SettingRow {
+                        label: @tr("Thickness");
+                        help: @tr("Height or width of the bar in capture pixels.");
+                        fill: false;
+                        NumberField {
+                            preferred-width: Tokens.size-field-compact;
+                            label: @tr("Bar thickness of {} in pixels", d.name);
+                            value: root.chrome-thickness;
+                            edited(v) => { root.chrome-thickness = max(1, round(v)); }
+                        }
+                        Text {
+                            text: @tr("px");
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-body-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
                     }
-                    if root.chrome-on: SegmentedControl {
+                    if root.chrome-on: SettingRow {
                         label: @tr("Place the work area");
-                        options: [@tr("Cover"), @tr("Fit")];
-                        index: root.chrome-fill;
-                        selected(i) => { root.chrome-fill = i; }
+                        help: @tr("Cover fills the item box; Fit keeps the cut area's shape.");
+                        Select {
+                            preferred-width: Tokens.size-transition-short;
+                            label: @tr("Place the work area");
+                            options: root.chrome-fill-labels;
+                            index: root.chrome-fill;
+                            selected(i) => { root.chrome-fill = i; }
+                        }
                     }
-                    if root.chrome-on: HorizontalLayout {
-                        spacing: Tokens.size-field-gap;
+                    if root.chrome-on: SettingRow {
+                        label: @tr("Chrome actions");
+                        help: @tr("Apply writes the cut. Fit places the item. Reset uses the system work area.");
+                        fill: false;
                         Button {
-                            text: @tr("Apply chrome");
+                            text: @tr("Apply");
                             dense: true;
+                            kind: "primary";
                             clicked => { root.apply-region-chrome(); }
                         }
                         Button {
-                            text: @tr("Fit");
+                            text: @tr("Fit item");
                             dense: true;
                             clicked => { Studio.fit-display-chrome(d.id); }
                         }
                         Button {
                             text: @tr("Reset");
                             dense: true;
+                            kind: "ghost";
                             enabled: d.has-work-rect;
                             clicked => { Studio.reset-display-chrome(d.id); }
                         }
                     }
                 }
+
                 Text {
                     horizontal-stretch: 1;
                     text: @tr("A change opens the source again with the new settings. Its name, layout and filters stay. One Undo step.");
@@ -405,7 +648,8 @@ export component SourceSettingsWindow inherits Window {
                     font-size: Tokens.type-caption-size;
                     wrap: word-wrap;
                 }
-            }
+                } // body
+            } // Flickable
             HorizontalLayout {
                 spacing: Tokens.size-field-gap;
                 alignment: end;

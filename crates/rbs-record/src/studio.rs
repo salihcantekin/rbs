@@ -28,7 +28,7 @@ use rbs_gpu::{CanvasDesc, GpuContext};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::runtime::param::ParamSender;
 use rbs_graph::runtime::queue::QueueStats;
-use rbs_graph::runtime::{Node, RuntimeEvent};
+use rbs_graph::runtime::{FaultCause, JoinError, Node, NodeHealth, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::export::{ExportEnd, ExportNodeStats};
@@ -2473,14 +2473,14 @@ impl Studio {
                         }
                     } else if let Some(c) = self.camera.as_mut().filter(|c| c.node.node == *node) {
                         // Not essential: the studio and its outputs run on (ADR-0066).
-                        c.failure = Some(format!("{cause:?}"));
+                        c.failure = Some(source_fault_message(cause));
                     } else if let Some(m) = self.monitor.as_mut().filter(|m| m.node() == *node) {
                         // Not essential: the mix and the encoders never wait for the
                         // monitor (ADR-0097 decision 4).
-                        m.failure = Some(format!("{cause:?}"));
+                        m.failure = Some(source_fault_message(cause));
                     } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node)
                     {
-                        e.state.failed = Some(format!("{cause:?}"));
+                        e.state.failed = Some(source_fault_message(cause));
                     }
                 }
                 RuntimeEvent::Restarted { node, .. } | RuntimeEvent::Recovered { node } => {
@@ -3461,7 +3461,36 @@ fn browser_claims(collection: &SceneCollection) -> Vec<BrowserClaim> {
     claims
 }
 
-/// Engine errors and links that could not cross partitions, as failures.
+/// Plain text for a source capture or media node failure (not `Debug` dumps).
+fn source_fault_message(cause: &FaultCause) -> String {
+    match cause {
+        FaultCause::Bypassed(health) => bypassed_source_message(health),
+        FaultCause::Join(JoinError::Prepare(e)) => format!("Could not start: {e}"),
+        FaultCause::Join(JoinError::BackingOff { retry_at: Some(_) }) => {
+            "Waiting to restart…".to_owned()
+        }
+        FaultCause::Join(JoinError::BackingOff { retry_at: None }) => {
+            "Press Reload to try again.".to_owned()
+        }
+        FaultCause::Join(other) => other.to_string(),
+        _ => "Source failed.".to_owned(),
+    }
+}
+
+fn bypassed_source_message(health: &NodeHealth) -> String {
+    if health.panicked {
+        return "Capture stopped after a crash. Press Reload.".to_owned();
+    }
+    match health.last_error {
+        Some("capture target lost") => "Camera or display lost. Retrying…".to_owned(),
+        Some("capture device busy") => "Camera in use by another app. Retrying…".to_owned(),
+        Some("capture failed") => "Capture interrupted. Press Reload to try again.".to_owned(),
+        Some("panicked") => "Capture stopped after a crash. Press Reload.".to_owned(),
+        Some(msg) => msg.to_owned(),
+        None => "Stopped. Press Reload.".to_owned(),
+    }
+}
+
 /// The input parameters for a sync offset in ns (positive delays).
 fn input_params(offset_ns: i64) -> InputParams {
     let d = Duration::from_nanos(offset_ns.unsigned_abs());
