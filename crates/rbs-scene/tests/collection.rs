@@ -10,8 +10,8 @@ use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, CanvasId, CollectionGlide, Crop, DisplayChrome, FilterId, GlideEasing, ItemContent,
     ItemId, ItemStyle, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, MAX_SOURCE_VOLUME,
-    MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape,
-    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
+    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, SceneId, SceneScope, SettingValue, Settings,
+    Shadow, Shape, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{Affine2, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -2165,4 +2165,29 @@ fn a_layout_maps_out_and_back_to_itself() {
             }
         }
     }
+}
+
+#[test]
+fn recording_a_source_separately_is_one_undo_and_starts_off() {
+    let mut col = SceneCollection::new();
+    let (mic, _) = col
+        .add_source("Mic", ty("audio-input"), Settings::new())
+        .unwrap();
+    assert!(col.source(mic).unwrap().record_separately.is_none());
+    let set = col
+        .set_source_record_separately(mic, RecordSeparately::new(false, true))
+        .unwrap();
+    assert!(col.source(mic).unwrap().record_separately.audio);
+    let again = col
+        .set_source_record_separately(mic, RecordSeparately::default())
+        .unwrap();
+    assert!(col.source(mic).unwrap().record_separately.is_none());
+    col.undo(again).unwrap();
+    assert!(col.source(mic).unwrap().record_separately.audio);
+    col.undo(set).unwrap();
+    assert!(col.source(mic).unwrap().record_separately.is_none());
+    assert!(matches!(
+        col.set_source_record_separately(SourceId::from_raw(99), RecordSeparately::default()),
+        Err(SceneError::UnknownSource(_))
+    ));
 }

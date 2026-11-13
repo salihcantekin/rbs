@@ -770,7 +770,7 @@ impl CommandState for Shown<'_> {
                 VerticalOut::Off => {
                     self.running()?;
                     self.has_vertical()?;
-                    s.cannot_record.clone().map_or(Ok(()), Err)
+                    s.recording_blocked(true).map_or(Ok(()), Err)
                 }
             },
             "record.toggle" | "record.main.toggle" => match s.rec_state {
@@ -782,7 +782,7 @@ impl CommandState for Shown<'_> {
                     if s.st_state != st_state::OFF {
                         return Err("End the stream to record.".to_owned());
                     }
-                    s.cannot_record.clone().map_or(Ok(()), Err)
+                    s.recording_blocked(false).map_or(Ok(()), Err)
                 }
             },
             _ => Ok(()),
@@ -956,6 +956,17 @@ impl CommandState for Shown<'_> {
     }
 
     fn title(&self, id: &CommandId) -> Option<String> {
+        if id.base() == "record.toggle" && self.studio.record_button_audio() {
+            let running = self.studio.rec_state != rec_state::OFF;
+            return Some(
+                if running {
+                    "Stop audio recording"
+                } else {
+                    "Record audio"
+                }
+                .to_owned(),
+            );
+        }
         if id.base() == "canvas.vertical_size"
             && let Some((w, h)) = size_of(id)
         {
@@ -1321,9 +1332,12 @@ fn build_items(state: &Shown<'_>, bar: &rbs_ui::workspace::Toolbar) -> Vec<ToolI
                 }
                 let on = entry.checkable && state.checked(&id);
                 // A running output's toggle says what it does now (as Live controls do).
+                let audio = state.studio.record_button_audio();
                 let (title, live) = match (id.base(), on) {
                     ("stream.toggle", true) => ("End stream".to_owned(), true),
+                    ("record.toggle", true) if audio => ("Stop audio recording".to_owned(), true),
                     ("record.toggle", true) => ("Stop recording".to_owned(), true),
+                    ("record.toggle", false) if audio => ("Record audio".to_owned(), false),
                     ("vcam.toggle", true) => ("Stop virtual camera".to_owned(), true),
                     ("replay.toggle", true) => ("Disarm replay buffer".to_owned(), false),
                     _ => (title, false),

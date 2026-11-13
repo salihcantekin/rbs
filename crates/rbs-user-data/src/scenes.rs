@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 15
+//! format = 15                 # 16 when a source records separately (ADR-0086)
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -38,6 +38,7 @@
 //! # glide = { duration_ms = 600, easing = "linear" }  # slide override (format 12, ADR-0100)
 //! # region = [0, 40, 0, 80]   # full-picture insets, left top right bottom (format 14, ADR-0103)
 //! # chrome = { top = 40, bottom = 80, fill = "cover" }  # display only (format 14, ADR-0104)
+//! # record_separately = { video = true, audio = true }  # format 16, ADR-0086; absent: neither
 //!
 //! [[scenes]]
 //! id = 0
@@ -68,9 +69,9 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, Canvas, CanvasId, CollectionGlide, Crop, Fallback, Filter, FilterId, GlideEasing,
-    ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene, SceneId, SceneItem, SceneScope,
-    SettingValue, Settings, Shadow, Shape, Source, SourceAudio, SourceGlide, SourceId,
-    SourceMonitor, SourceRegion,
+    ItemContent, ItemId, ItemStyle, Layout, MasterAudio, RecordSeparately, Scene, SceneId,
+    SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, Source, SourceAudio, SourceGlide,
+    SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, SceneCollection};
@@ -302,6 +303,32 @@ struct SourceDoc {
     /// Display chrome (format 14, ADR-0104). Absent: off. Only a display source may have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     chrome: Option<ChromeDoc>,
+    /// Separate files for this source (format 16, ADR-0086). Absent: neither feed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    record_separately: Option<RecordSeparatelyDoc>,
+}
+
+/// Which feeds of a source are recorded as their own files (ADR-0086).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordSeparatelyDoc {
+    #[serde(default, skip_serializing_if = "is_false")]
+    video: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    audio: bool,
+}
+
+impl RecordSeparatelyDoc {
+    fn from(flag: RecordSeparately) -> Self {
+        Self {
+            video: flag.video,
+            audio: flag.audio,
+        }
+    }
+
+    fn flag(&self) -> RecordSeparately {
+        RecordSeparately::new(self.video, self.audio)
+    }
 }
 
 /// Display chrome in the document (ADR-0104).
@@ -682,7 +709,15 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 15;
+    const FORMAT: u32 = 16;
+
+    fn write_format(&self) -> u32 {
+        if self.sources().any(|s| !s.record_separately.is_none()) {
+            16
+        } else {
+            15
+        }
+    }
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -704,9 +739,12 @@ impl Document for SceneCollection {
     /// a format 13 body is a format 14 body without them. Format 15 adds the optional
     /// canvas `layout_width` and `layout_height` (ADR-0110); a format 14 body is a
     /// format 15 body without them, and the layout space is then the canvas size.
+    /// Format 16 adds the optional source `record_separately` (ADR-0086); a format 15
+    /// body is a format 16 body without it. A file is written as 16 only when a
+    /// source has the flag ([`Document::write_format`]).
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=14 => {
+            1..=15 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -792,6 +830,18 @@ impl Document for SceneCollection {
                         "format {from} has no canvas `layout_width` or `layout_height` (format 15)"
                     ));
                 }
+                let separate = body
+                    .get("sources")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|s| s.contains_key("record_separately"));
+                if from < 16 && separate {
+                    return Err(format!(
+                        "format {from} has no source `record_separately` (format 16)"
+                    ));
+                }
                 Ok(())
             }
             _ => Err(format!("format {from} cannot be read")),
@@ -860,6 +910,8 @@ impl Document for SceneCollection {
                     hints: s.hints.clone(),
                     region: s.region.map(SourceRegion::to_array),
                     chrome: s.chrome.map(ChromeDoc::from),
+                    record_separately: (!s.record_separately.is_none())
+                        .then(|| RecordSeparatelyDoc::from(s.record_separately)),
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -998,6 +1050,10 @@ impl Document for SceneCollection {
                 source.hints = s.hints;
                 source.region = s.region.map(SourceRegion::from_array);
                 source.chrome = s.chrome.map(|chrome| chrome.chrome()).transpose()?;
+                source.record_separately = s
+                    .record_separately
+                    .as_ref()
+                    .map_or(RecordSeparately::default(), RecordSeparatelyDoc::flag);
                 Ok(source)
             })
             .collect::<Result<Vec<_>, String>>()?;

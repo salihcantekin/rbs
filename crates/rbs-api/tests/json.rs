@@ -79,6 +79,7 @@ fn profile() -> RecordingProfile {
         b_frames: 2,
         cbr_padding: false,
         audio_kbps: 160,
+        bit_depth: 16,
         delivery: Delivery::Video,
         open_shadows: false,
         output_size: None,

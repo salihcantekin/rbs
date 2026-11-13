@@ -57,7 +57,7 @@ impl AdapterFactory for MpegTsMuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::MpegTs.as_str()]))
-            .with(caps::CODECS, set(&["h264", "aac"]))
+            .with(caps::CODECS, set(&["mpegts.h264", "mpegts.aac"]))
             .with(caps::LIVE, CapabilityValue::Flag(true)))
     }
 }

@@ -443,6 +443,36 @@ pub struct Source {
     /// Display chrome (ADR-0104). `None` is off. Only a display source may set it.
     /// Not settings, same as [`Self::region`].
     pub chrome: Option<DisplayChrome>,
+    /// Separate recording of this source (ADR-0086). Both false is the default and is
+    /// left out of the file. The binder does not read it: a set flag adds no node
+    /// until an ISO recording starts.
+    pub record_separately: RecordSeparately,
+}
+
+/// Which of a source's feeds are recorded as their own files (ADR-0086).
+///
+/// The two switches are independent. A picture source uses `video`, an audio source
+/// uses `audio`, and a source with both (a media file) may set either. Both false
+/// means the source is only in the master recording.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecordSeparately {
+    /// The source's picture, as its own file.
+    pub video: bool,
+    /// The source's sound, as its own file.
+    pub audio: bool,
+}
+
+impl RecordSeparately {
+    /// Both switches. Either may be set on its own.
+    pub const fn new(video: bool, audio: bool) -> Self {
+        Self { video, audio }
+    }
+
+    /// True when neither feed is recorded separately.
+    pub const fn is_none(self) -> bool {
+        !self.video && !self.audio
+    }
 }
 
 /// Most milliseconds a glide may last (ADR-0100).
@@ -685,6 +715,7 @@ impl Source {
             hints: BTreeMap::new(),
             region: None,
             chrome: None,
+            record_separately: RecordSeparately::default(),
         }
     }
 }

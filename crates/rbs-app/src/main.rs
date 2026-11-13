@@ -1928,9 +1928,23 @@ impl Ctx {
         #[cfg(any(target_os = "macos", windows))]
         {
             use preview::Picture;
-            preview::set_area(Picture::Program, picture_main);
-            preview::set_area(Picture::Scene, scene_main);
-            preview::set_area(Picture::Vertical, vertical_main);
+            let banner = t.get_size_control_md();
+            let inset = |area: Option<[f32; 4]>, on: bool| {
+                area.map(|[x, y, w, h]| {
+                    if !on || h <= banner * 2.0 {
+                        [x, y, w, h]
+                    } else {
+                        [x, y + banner, w, h - banner]
+                    }
+                })
+            };
+            let main_audio = app.studio.records_audio(studio_host::OutputCanvas::Main);
+            let vertical_audio = app
+                .studio
+                .records_audio(studio_host::OutputCanvas::Vertical);
+            preview::set_area(Picture::Program, inset(picture_main, main_audio));
+            preview::set_area(Picture::Scene, inset(scene_main, main_audio));
+            preview::set_area(Picture::Vertical, inset(vertical_main, vertical_audio));
             // The handles go on the edited scene's picture only.
             let (marked, other) = if studio_mode {
                 (Picture::Scene, Picture::Program)
@@ -2012,7 +2026,13 @@ impl Ctx {
         };
         let mut status = match (app.studio.streaming_for(), app.studio.recording_for()) {
             (Some((d, host, _)), _) => format!("Live on {host}, {}", clock(d)),
-            (None, Some((d, _))) => format!("Recording, {}", clock(d)),
+            (None, Some((d, _))) => {
+                if app.studio.record_button_audio() {
+                    format!("Recording audio, {}", clock(d))
+                } else {
+                    format!("Recording, {}", clock(d))
+                }
+            }
             (None, None) => "Not live".to_owned(),
         };
         if app.bg_state.problem {
@@ -2400,6 +2420,7 @@ impl Ctx {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
             g.set_live_outputs(live.outputs_text().into());
+            g.set_audio_only(app.studio.record_button_audio());
             g.set_live_camera(live.camera);
             g.set_panels(panels.clone());
             g.set_workspaces(workspaces.clone());
@@ -3899,8 +3920,14 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_folder, |app, text: slint::SharedString| {
         app.studio.set_folder(&text);
     });
-    on!(on_set_format, |app, i: i32| {
-        app.studio.set_format(i);
+    on!(on_set_media, |app, i: i32| {
+        app.studio.set_media(i);
+    });
+    on!(on_set_container, |app, i: i32| {
+        app.studio.set_container(i);
+    });
+    on!(on_set_bit_depth, |app, i: i32| {
+        app.studio.set_bit_depth(i);
     });
     on!(on_set_settings_canvas, |app, i: i32| {
         app.studio.set_settings_canvas(i);

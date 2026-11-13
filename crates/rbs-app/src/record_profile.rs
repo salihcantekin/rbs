@@ -349,6 +349,44 @@ fn default_keyframe_seconds() -> u32 {
     2
 }
 
+/// PCM widths a WAV recording offers, in the order Settings lists them.
+pub const PCM_BITS: [u16; 3] = [16, 24, 32];
+
+/// Labels for [`PCM_BITS`].
+pub const PCM_LABELS: [&str; 3] = ["16-bit", "24-bit", "32-bit float"];
+
+/// Integer widths a FLAC recording offers. FLAC has no float samples.
+pub const FLAC_BITS: [u16; 2] = [16, 24];
+
+/// Labels for [`FLAC_BITS`].
+pub const FLAC_LABELS: [&str; 2] = ["16-bit", "24-bit"];
+
+/// The words for a PCM width on the output card: "PCM 16-bit", "PCM 24-bit" or
+/// "PCM 32-bit float". Anything else reads as 16-bit.
+pub fn pcm_line(bits: u16) -> &'static str {
+    match bits {
+        24 => "PCM 24-bit",
+        32 => "PCM 32-bit float",
+        _ => "PCM 16-bit",
+    }
+}
+
+fn default_pcm_bits() -> u16 {
+    16
+}
+
+fn default_video_format() -> Format {
+    Format::Mkv
+}
+
+fn default_audio_format() -> Format {
+    Format::Wav
+}
+
+fn is_pcm_16(bits: &u16) -> bool {
+    *bits == 16
+}
+
 /// The recording's container, as the user picks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -357,17 +395,23 @@ pub enum Format {
     Mkv,
     /// Fragmented MP4 (`.mp4`).
     Mp4,
+    /// WAV (`.wav`): the mix as PCM, with no picture (ADR-0085).
+    Wav,
+    /// FLAC (`.flac`): the mix, lossless, with no picture (ADR-0085).
+    Flac,
 }
 
 impl Format {
-    /// Both, in the order the UI lists them.
-    pub const ALL: [Format; 2] = [Format::Mkv, Format::Mp4];
+    /// All of them, in the order the UI lists them.
+    pub const ALL: [Format; 4] = [Format::Mkv, Format::Mp4, Format::Wav, Format::Flac];
 
     /// The container.
     pub fn container(self) -> ContainerId {
         match self {
             Format::Mkv => ContainerId::Matroska,
             Format::Mp4 => ContainerId::Mp4Fragmented,
+            Format::Wav => ContainerId::Wav,
+            Format::Flac => ContainerId::Flac,
         }
     }
 
@@ -376,6 +420,8 @@ impl Format {
         match self {
             Format::Mkv => "mkv",
             Format::Mp4 => "mp4",
+            Format::Wav => "wav",
+            Format::Flac => "flac",
         }
     }
 
@@ -384,7 +430,70 @@ impl Format {
         match self {
             Format::Mkv => "MKV",
             Format::Mp4 => "MP4",
+            Format::Wav => "WAV",
+            Format::Flac => "FLAC",
         }
+    }
+
+    /// WAV and FLAC are one audio file of the mix. MKV and MP4 carry a picture.
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, Format::Wav | Format::Flac)
+    }
+
+    /// Video containers, in the order the container menu lists them.
+    pub const VIDEO: [Format; 2] = [Format::Mkv, Format::Mp4];
+
+    /// Audio containers, in the order the container menu lists them.
+    pub const AUDIO: [Format; 2] = [Format::Wav, Format::Flac];
+
+    /// The containers of this format's category.
+    pub fn category(self) -> &'static [Format] {
+        if self.is_audio_only() {
+            &Self::AUDIO
+        } else {
+            &Self::VIDEO
+        }
+    }
+
+    /// This format's place in [`Format::category`].
+    pub fn category_index(self) -> usize {
+        self.category().iter().position(|f| *f == self).unwrap_or(0)
+    }
+
+    /// Sample widths this format offers, in UI order. MKV and MP4 do not use them.
+    pub fn widths(self) -> &'static [u16] {
+        match self {
+            Format::Flac => &FLAC_BITS,
+            _ => &PCM_BITS,
+        }
+    }
+
+    /// Labels for [`Format::widths`].
+    pub fn width_labels(self) -> &'static [&'static str] {
+        match self {
+            Format::Flac => &FLAC_LABELS,
+            _ => &PCM_LABELS,
+        }
+    }
+
+    /// The audio codec an audio-only recording of this format opens.
+    pub fn audio_codec(self) -> CodecId {
+        match self {
+            Format::Flac => CodecId::Flac,
+            _ => CodecId::Pcm,
+        }
+    }
+}
+
+/// The words for an audio-only recording's width on the output card.
+/// WAV reads "PCM 16-bit". FLAC reads "16-bit" or "24-bit".
+pub fn audio_fact(format: Format, bits: u16) -> &'static str {
+    match format {
+        Format::Flac => match bits {
+            24 => "24-bit",
+            _ => "16-bit",
+        },
+        _ => pcm_line(bits),
     }
 }
 
@@ -652,6 +761,23 @@ impl Encoding {
     }
 }
 
+/// What [`RecordProfile::recording_start`] asks a recording to open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordingStart {
+    /// The container.
+    pub container: ContainerId,
+    /// `None`: audio only, no picture encoder.
+    pub video: Option<VideoSettings>,
+    /// Audio bitrate in bit/s. Zero for PCM.
+    pub audio_bitrate_bps: u64,
+    /// PCM width when `video` is `None`.
+    pub bit_depth: Option<u16>,
+    /// The video encoder to try alone. `None` for WAV, or for the best encoder.
+    pub encoder: Option<String>,
+    /// Encoded picture size. `None` for WAV, and for "same as canvas".
+    pub size: Option<(u32, u32)>,
+}
+
 /// What the next recording uses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -662,8 +788,14 @@ pub struct RecordProfile {
     /// none (ADR-0051): this computer's default is used.
     #[serde(default = "default_folder")]
     pub folder: PathBuf,
-    /// The container.
+    /// The container of the next recording.
     pub format: Format,
+    /// The video container to restore when the category returns to Video.
+    #[serde(default = "default_video_format")]
+    pub video_format: Format,
+    /// The audio container to restore when the category returns to Audio.
+    #[serde(default = "default_audio_format")]
+    pub audio_format: Format,
     /// The video encoder's adapter id, or `None` for the best one this system has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
@@ -697,8 +829,13 @@ pub struct RecordProfile {
     /// With CBR, pad the video to its full bitrate (filler data).
     #[serde(default)]
     pub cbr_padding: bool,
-    /// Audio bitrate in kbit/s, one of [`AUDIO_KBPS`].
+    /// Audio bitrate in kbit/s, one of [`AUDIO_KBPS`]. Unused while the format is WAV.
     pub audio_kbps: u32,
+    /// PCM sample width of a WAV recording: 16, 24 or 32 (float). Omitted when 16,
+    /// so an older file stays 16-bit. Ignored for MKV and MP4, and kept when the
+    /// format changes back.
+    #[serde(default = "default_pcm_bits", skip_serializing_if = "is_pcm_16")]
+    pub bit_depth: u16,
     /// Colour encoding. Omitted when [`Delivery::Video`].
     #[serde(default, skip_serializing_if = "is_video")]
     pub delivery: Delivery,
@@ -720,6 +857,8 @@ impl RecordProfile {
             format_version: FORMAT,
             folder: default_folder(),
             format: Format::Mkv,
+            video_format: Format::Mkv,
+            audio_format: Format::Wav,
             encoder: None,
             video_codec: VideoCodec::H264,
             rate_control: RateMode::Cbr,
@@ -732,6 +871,7 @@ impl RecordProfile {
             b_frames: 0,
             cbr_padding: false,
             audio_kbps: 0,
+            bit_depth: default_pcm_bits(),
             delivery: Delivery::Video,
             open_shadows: false,
             output_size: None,
@@ -804,6 +944,45 @@ impl RecordProfile {
         self.encoding().video_settings()
     }
 
+    /// Selects `format` and remembers it for its category. FLAC has no 32-bit float,
+    /// so a WAV width of 32 becomes 16. Video settings are left as they are.
+    pub fn use_format(&mut self, format: Format) {
+        self.format = format;
+        if format == Format::Flac && !FLAC_BITS.contains(&self.bit_depth) {
+            self.bit_depth = default_pcm_bits();
+        }
+        self.remember_active();
+    }
+
+    /// Video (`false`) or Audio (`true`). The other category comes back as it was.
+    pub fn use_media(&mut self, audio: bool) {
+        if audio == self.format.is_audio_only() {
+            return;
+        }
+        let next = if audio {
+            self.audio_format
+        } else {
+            self.video_format
+        };
+        let next = if next.is_audio_only() == audio {
+            next
+        } else if audio {
+            Format::Wav
+        } else {
+            Format::Mkv
+        };
+        self.use_format(next);
+    }
+
+    /// The active container is the one its category restores.
+    pub fn remember_active(&mut self) {
+        if self.format.is_audio_only() {
+            self.audio_format = self.format;
+        } else {
+            self.video_format = self.format;
+        }
+    }
+
     /// Why this profile cannot be used, in words, or `None`.
     pub fn problem(&self) -> Option<String> {
         if self.format_version != FORMAT {
@@ -815,9 +994,51 @@ impl RecordProfile {
         if !self.folder.is_absolute() {
             return Some("The folder must be a full path, for example C:\\Videos.".into());
         }
+        if self.format == Format::Flac {
+            return (!FLAC_BITS.contains(&self.bit_depth))
+                .then(|| format!("FLAC width {} is not 16-bit or 24-bit.", self.bit_depth));
+        }
+        if self.format == Format::Wav {
+            return (!PCM_BITS.contains(&self.bit_depth)).then(|| {
+                format!(
+                    "PCM width {} is not 16-bit, 24-bit or 32-bit float.",
+                    self.bit_depth
+                )
+            });
+        }
         self.encoding()
             .problem()
             .or_else(|| output_size_problem(self.output_size))
+    }
+
+    /// What a recording of this profile opens. WAV is PCM of the mix and FLAC is
+    /// the same mix compressed: no picture, no video encoder and no output size.
+    /// `encoder` is the video encoder the UI picked; an audio-only format does not
+    /// use it.
+    pub fn recording_start(
+        &self,
+        encoder: Option<String>,
+        size: Option<(u32, u32)>,
+    ) -> RecordingStart {
+        if self.format.is_audio_only() {
+            RecordingStart {
+                container: self.format.container(),
+                video: None,
+                audio_bitrate_bps: 0,
+                bit_depth: Some(self.bit_depth),
+                encoder: None,
+                size: None,
+            }
+        } else {
+            RecordingStart {
+                container: self.format.container(),
+                video: Some(self.video_settings()),
+                audio_bitrate_bps: u64::from(self.audio_kbps) * 1000,
+                bit_depth: None,
+                encoder,
+                size,
+            }
+        }
     }
 
     /// The file a recording started at `now` (local time) is written to:
@@ -855,6 +1076,8 @@ impl RecordProfile {
             container: match self.format {
                 Format::Mkv => api::Container::Mkv,
                 Format::Mp4 => api::Container::Mp4,
+                Format::Wav => api::Container::Wav,
+                Format::Flac => api::Container::Flac,
             },
             encoder: self.encoder.clone(),
             video_codec: match self.video_codec {
@@ -880,6 +1103,7 @@ impl RecordProfile {
             b_frames: self.b_frames,
             cbr_padding: self.cbr_padding,
             audio_kbps: self.audio_kbps,
+            bit_depth: self.bit_depth,
             delivery: match self.delivery {
                 Delivery::Video => api::Delivery::Video,
                 Delivery::Screen => api::Delivery::Screen,
@@ -910,13 +1134,17 @@ impl RecordProfile {
     /// [`RecordProfile::problem`].
     pub fn from_api(p: &rbs_api::types::RecordingProfile) -> Self {
         use rbs_api::types as api;
-        Self {
+        let mut profile = Self {
             format_version: FORMAT,
             folder: PathBuf::from(&p.folder),
             format: match p.container {
                 api::Container::Mkv => Format::Mkv,
                 api::Container::Mp4 => Format::Mp4,
+                api::Container::Wav => Format::Wav,
+                api::Container::Flac => Format::Flac,
             },
+            video_format: Format::Mkv,
+            audio_format: Format::Wav,
             encoder: p.encoder.clone(),
             video_codec: match p.video_codec {
                 api::VideoCodec::H264 => VideoCodec::H264,
@@ -941,6 +1169,7 @@ impl RecordProfile {
             b_frames: p.b_frames,
             cbr_padding: p.cbr_padding,
             audio_kbps: p.audio_kbps,
+            bit_depth: p.bit_depth,
             delivery: match p.delivery {
                 api::Delivery::Video => Delivery::Video,
                 api::Delivery::Screen => Delivery::Screen,
@@ -950,7 +1179,9 @@ impl RecordProfile {
                 width: s.width,
                 height: s.height,
             }),
-        }
+        };
+        profile.remember_active();
+        profile
     }
 }
 
@@ -1073,13 +1304,16 @@ pub fn load(config: &Path) -> (RecordProfile, Option<String>) {
         }
     };
     match toml::from_str::<RecordProfile>(&text) {
-        Ok(p) => match p.problem() {
-            None => (p, None),
-            Some(why) => (
-                RecordProfile::new(),
-                Some(format!("{}: {why}", path.display())),
-            ),
-        },
+        Ok(mut p) => {
+            p.remember_active();
+            match p.problem() {
+                None => (p, None),
+                Some(why) => (
+                    RecordProfile::new(),
+                    Some(format!("{}: {why}", path.display())),
+                ),
+            }
+        }
         Err(e) => (
             RecordProfile::new(),
             Some(format!("{}: {e}", path.display())),
@@ -1397,6 +1631,72 @@ mod tests {
         );
         assert_eq!(Format::Mkv.container(), ContainerId::Matroska);
         assert_eq!(Format::Mp4.container(), ContainerId::Mp4Fragmented);
+        p.format = Format::Wav;
+        p.bit_depth = 24;
+        p.video_kbps = 1;
+        assert_eq!(
+            p.file_for(t),
+            PathBuf::from("/videos").join("RBS 2026-11-03 21-30-05.wav")
+        );
+        p.folder = std::env::temp_dir();
+        assert_eq!(
+            p.problem(),
+            None,
+            "a WAV profile does not use the video bitrate"
+        );
+        let start = p.recording_start(Some("nvenc".into()), Some((1280, 720)));
+        assert_eq!(start.container, ContainerId::Wav);
+        assert_eq!(start.video, None);
+        assert_eq!(start.bit_depth, Some(24));
+        assert_eq!(start.encoder, None);
+        assert_eq!(start.size, None);
+        assert_eq!(start.audio_bitrate_bps, 0);
+        let api = p.to_api();
+        assert_eq!(api.container, rbs_api::types::Container::Wav);
+        assert_eq!(api.bit_depth, 24);
+        let back = RecordProfile::from_api(&api);
+        assert_eq!(back.format, Format::Wav);
+        assert_eq!(back.bit_depth, 24);
+        p.bit_depth = 12;
+        assert!(p.problem().is_some());
+        p.bit_depth = 32;
+        p.use_format(Format::Flac);
+        assert_eq!(p.bit_depth, 16, "FLAC has no 32-bit float");
+        assert_eq!(p.format, Format::Flac);
+        p.bit_depth = 24;
+        p.folder = std::env::temp_dir();
+        assert_eq!(p.problem(), None);
+        let start = p.recording_start(Some("nvenc".into()), Some((1280, 720)));
+        assert_eq!(start.container, ContainerId::Flac);
+        assert_eq!(start.video, None);
+        assert_eq!(start.bit_depth, Some(24));
+        assert_eq!(p.format.audio_codec(), CodecId::Flac);
+        assert_eq!(
+            p.file_for(t),
+            std::env::temp_dir().join("RBS 2026-11-03 21-30-05.flac")
+        );
+        let api = p.to_api();
+        assert_eq!(api.container, rbs_api::types::Container::Flac);
+        let back = RecordProfile::from_api(&api);
+        assert_eq!(back.format, Format::Flac);
+        assert_eq!(back.bit_depth, 24);
+        p.bit_depth = 32;
+        assert!(p.problem().is_some());
+    }
+
+    #[test]
+    fn the_media_choice_keeps_each_category() {
+        let mut p = RecordProfile::new();
+        p.folder = std::env::temp_dir();
+        p.use_format(Format::Mp4);
+        p.use_media(true);
+        assert_eq!(p.format, Format::Wav);
+        p.use_format(Format::Flac);
+        p.use_media(false);
+        assert_eq!(p.format, Format::Mp4);
+        p.use_media(true);
+        assert_eq!(p.format, Format::Flac);
+        assert_eq!(p.format.category_index(), 1);
     }
 
     #[test]

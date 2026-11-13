@@ -72,7 +72,15 @@ impl AdapterFactory for MatroskaMuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Matroska.as_str()]))
-            .with(caps::CODECS, set(&["h264", "hevc", "av1", "aac"]))
+            .with(
+                caps::CODECS,
+                set(&[
+                    "matroska.h264",
+                    "matroska.hevc",
+                    "matroska.av1",
+                    "matroska.aac",
+                ]),
+            )
             .with(caps::LIVE, CapabilityValue::Flag(true))
             .with(caps::PATCHES, CapabilityValue::Flag(true)))
     }

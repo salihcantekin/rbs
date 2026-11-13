@@ -4332,8 +4332,10 @@ dependencies = [
  "rbs-codec-amf",
  "rbs-codec-audiotoolbox",
  "rbs-codec-ffmpeg",
+ "rbs-codec-flac",
  "rbs-codec-mf",
  "rbs-codec-nvenc",
+ "rbs-codec-pcm",
  "rbs-codec-qsv",
  "rbs-codec-vaapi",
  "rbs-codec-videotoolbox",
@@ -4345,9 +4347,11 @@ dependencies = [
  "rbs-graph",
  "rbs-media-decode-test",
  "rbs-mux",
+ "rbs-mux-flac",
  "rbs-mux-fmp4",
  "rbs-mux-matroska",
  "rbs-mux-mpegts",
+ "rbs-mux-wav",
  "rbs-params",
  "rbs-record",
  "rbs-remote-settings",
@@ -4595,8 +4599,10 @@ dependencies = [
  "rbs-codec-amf",
  "rbs-codec-audiotoolbox",
  "rbs-codec-ffmpeg",
+ "rbs-codec-flac",
  "rbs-codec-mf",
  "rbs-codec-nvenc",
+ "rbs-codec-pcm",
  "rbs-codec-qsv",
  "rbs-codec-vaapi",
  "rbs-codec-videotoolbox",
@@ -4604,9 +4610,11 @@ dependencies = [
  "rbs-engine",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-mux-flac",
  "rbs-mux-fmp4",
  "rbs-mux-matroska",
  "rbs-mux-mpegts",
+ "rbs-mux-wav",
  "rbs-record",
  "rbs-remote-settings",
  "rbs-scene",
@@ -4667,6 +4675,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-codec-flac"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-codec",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-codec-hw"
 version = "0.0.1"
 dependencies = [
@@ -4698,6 +4715,15 @@ dependencies = [
  "rbs-codec-hw",
  "rbs-core",
  "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-pcm"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-codec",
+ "rbs-core",
 ]
 
 [[package]]
@@ -4847,6 +4873,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-mux-flac"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-mux",
+]
+
+[[package]]
 name = "rbs-mux-flv"
 version = "0.0.1"
 dependencies = [
@@ -4883,6 +4918,15 @@ dependencies = [
  "criterion 0.8.2",
  "rbs-core",
  "rbs-media-format",
+ "rbs-mux",
+]
+
+[[package]]
+name = "rbs-mux-wav"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-core",
  "rbs-mux",
 ]
 

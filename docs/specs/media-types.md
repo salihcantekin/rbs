@@ -95,7 +95,7 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 
 ### Packets (`rbs_core::media::packet`)
 
-- `CodecId` (non-exhaustive): `H264`, `Hevc`, `Av1`, `Vp9`, `Aac`, `Opus`; `as_str()` gives capability values.
+- `CodecId` (non-exhaustive): `H264`, `Hevc`, `Av1`, `Vp9`, `Aac`, `Opus`, `Pcm`, `Flac`; `as_str()` gives capability values. `Pcm` is uncompressed (16-bit, 24-bit or 32-bit float). `Flac` is a native FLAC frame (`rbs-codec-flac`): 16-bit or 24-bit integer, 4096-sample frames (the last may be shorter).
 - `BitstreamFormat` (non-exhaustive): `AnnexB`, `LengthPrefixed { length_size }`, `Obu`, `Raw`, `Adts`.
 - `StreamDescriptor { codec, bitstream, extradata: Bytes, params }`: produced by an encoder, consumed by muxers and transports. `params` is `StreamParams::Video { format, frame_rate }` or `StreamParams::Audio { format, frame_size }`.
 - `EncodedPacket { codec, bitstream, pts, dts, duration, keyframe, data: Bytes }`, built with `EncodedPacket::new`, which returns `MediaError::DtsAfterPts` when `dts > pts`, and `with_duration`. Fields are read-only through accessors. `pts` and `dts` are master-clock times with `dts <= pts`.
@@ -106,7 +106,7 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 
 Shared by the mux and transport ports ([output ports](output-ports.md), ADR-0019), which may depend only on `rbs-core`.
 
-- `ContainerId` (non-exhaustive): `Mp4Fragmented`, `Matroska`, `MpegTs`, `Flv`; `as_str()` gives `mux.container` values (`mp4.fragmented`, `matroska`, `mpegts`, `flv`) and `transport_input()` gives `transport.input` values (`container.<name>`).
+- `ContainerId` (non-exhaustive): `Mp4Fragmented`, `Matroska`, `MpegTs`, `Flv`, `Wav`, `Flac`; `as_str()` gives `mux.container` values (`mp4.fragmented`, `matroska`, `mpegts`, `flv`, `wav`, `flac`) and `transport_input()` gives `transport.input` values (`container.<name>`). `Flac` is a native FLAC stream (`rbs-mux-flac`): STREAMINFO with unknown length, then the encoder's frames, and no size patch.
 - `StreamIndex(u16)`: position of a stream in the descriptor list of one output.
 - `MuxChunk { kind: ChunkKind, data: Bytes }` with `ChunkKind::Header`, `Media { keyframe, timestamp }`, `Trailer` or `Patch { offset }`. `keyframe` means an entry point for every stream of the output: a reader starting at this chunk can decode all of them (video from a keyframe; in an audio-only output every chunk can be one). Patches overwrite earlier bytes and are applied only by seekable transports; `is_sequential()` is false for them.
 

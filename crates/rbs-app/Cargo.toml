@@ -69,6 +69,10 @@ rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
+rbs-mux-wav = { path = "../rbs-mux-wav" }
+rbs-mux-flac = { path = "../rbs-mux-flac" }
+rbs-codec-pcm = { path = "../rbs-codec-pcm" }
+rbs-codec-flac = { path = "../rbs-codec-flac" }
 rbs-transport-file = { path = "../rbs-transport-file" }
 # Go live (src/stream_profile.rs): the stream's URL, secret and reconnect policy, and
 # the pure-Rust stream adapters every platform registers, as `rbs-cli stream` does.

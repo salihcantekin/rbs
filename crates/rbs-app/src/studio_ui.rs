@@ -16,8 +16,8 @@ use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{
     AUDIO_KBPS, Delivery, Encoding, Format, OutputSize, RateMode, RecordProfile, VIDEO_KBPS,
-    VideoCodec, fit_output_size, output_choice_copy, output_size_options, recommended_video_kbps,
-    vertical_recording_from_main,
+    VideoCodec, audio_fact, fit_output_size, output_choice_copy, output_size_options,
+    recommended_video_kbps, vertical_recording_from_main,
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
@@ -405,6 +405,8 @@ pub struct StudioUi {
     key_hint: String,
     /// [`st_state`].
     pub st_state: i32,
+    /// The file being recorded has no picture. Set when recording starts.
+    rec_file_audio: bool,
     /// The vertical canvas's recording and stream (ADR-0093 decision 6): the frame's
     /// Record and Go live menus start and stop them, and an output profile switch
     /// waits for them as for the main ones.
@@ -580,6 +582,7 @@ impl StudioUi {
             next_undo: None,
             next_redo: None,
             rec_state: rec_state::OFF,
+            rec_file_audio: false,
             rec_file: None,
             rec_note: String::new(),
             rec_note_bad: false,
@@ -737,8 +740,30 @@ impl StudioUi {
             self.settings_canvas == OutputCanvas::Vertical && self.vertical_profile.is_none(),
         );
         let p = self.record_form();
-        g.set_out_format(Format::ALL.iter().position(|f| *f == p.format).unwrap_or(0) as i32);
-        g.set_out_formats(strings(Format::ALL.iter().map(|f| f.label().to_owned())));
+        g.set_out_media(i32::from(p.format.is_audio_only()));
+        g.set_out_containers(strings(
+            p.format.category().iter().map(|f| f.label().to_owned()),
+        ));
+        g.set_out_container(p.format.category_index() as i32);
+        g.set_out_audio_only(p.format.is_audio_only());
+        g.set_out_flac(p.format == Format::Flac);
+        g.set_out_bit_depth(
+            p.format
+                .widths()
+                .iter()
+                .position(|b| *b == p.bit_depth)
+                .unwrap_or(0) as i32,
+        );
+        g.set_out_pcm_widths(strings(
+            p.format.width_labels().iter().map(|s| (*s).to_owned()),
+        ));
+        g.set_rec_audio_only(self.profile.format.is_audio_only());
+        g.set_vertical_audio_only(self.records_audio(OutputCanvas::Vertical));
+        g.set_rec_button_audio(if self.rec_state == rec_state::OFF {
+            self.profile.format.is_audio_only()
+        } else {
+            self.rec_file_audio
+        });
         g.set_out_enc(self.encoder_data(output::RECORDING));
         let canvas = self.settings_canvas_size();
         let rec_size = self.recording_output_size();
@@ -752,21 +777,48 @@ impl StudioUi {
         g.set_out_value(rec_nest.value.into());
         g.set_out_long(output_long_side(rec_size, canvas) as i32);
         g.set_out_note(self.profile_note.as_str().into());
-        g.set_out_summary(
-            format!(
-                "{} · {} · {} · audio {} kbit/s · {}",
-                p.format.label(),
-                self.encoder_name(&p.encoding()),
-                p.encoding().video_summary(),
-                p.audio_kbps,
-                p.folder.display()
+        let (encoder_line, video_line, audio_line, summary) = if p.format.is_audio_only() {
+            let audio = audio_fact(p.format, p.bit_depth);
+            (
+                String::new(),
+                String::new(),
+                audio.to_owned(),
+                format!(
+                    "{} · audio only · {} · {}",
+                    p.format.label(),
+                    audio,
+                    p.folder.display()
+                ),
             )
+        } else {
+            let video = p.encoding().video_summary();
+            let audio = format!("{} kbit/s", p.audio_kbps);
+            (
+                self.encoder_name(&p.encoding()),
+                video.clone(),
+                audio.clone(),
+                format!(
+                    "{} · {} · {} · audio {} · {}",
+                    p.format.label(),
+                    self.encoder_name(&p.encoding()),
+                    video,
+                    audio,
+                    p.folder.display()
+                ),
+            )
+        };
+        g.set_out_summary(summary.into());
+        g.set_out_kind(
+            if p.format.is_audio_only() {
+                format!("{} · audio only", p.format.label())
+            } else {
+                p.format.label().to_owned()
+            }
             .into(),
         );
-        g.set_out_kind(p.format.label().into());
-        g.set_out_encoder_name(self.encoder_name(&p.encoding()).into());
-        g.set_out_video_line(p.encoding().video_summary().into());
-        g.set_out_audio_line(format!("{} kbit/s", p.audio_kbps).into());
+        g.set_out_encoder_name(encoder_line.into());
+        g.set_out_video_line(video_line.into());
+        g.set_out_audio_line(audio_line.into());
         g.set_out_where(p.folder.display().to_string().into());
         if g.get_out_folder_serial() != self.folder_serial as i32 {
             g.set_out_folder(self.record_form().folder.display().to_string().into());
@@ -2981,8 +3033,8 @@ impl StudioUi {
         if self.rec_state != rec_state::OFF {
             return;
         }
-        if let Some(why) = &self.cannot_record {
-            self.set_note(why.clone(), true);
+        if let Some(why) = self.recording_blocked(false) {
+            self.set_note(why, true);
             return;
         }
         let p = &self.profile;
@@ -2990,15 +3042,13 @@ impl StudioUi {
             self.set_note(why, true);
             return;
         }
-        let encoder = self.encoder_id(&p.encoding());
-        let request = RecordRequest {
-            path: p.file_for(chrono::Local::now().naive_local()),
-            container: p.format.container(),
-            encoder,
-            video: p.video_settings(),
-            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
-            size: p.output_size.map(OutputSize::pair),
-        };
+        let request = request_of(
+            p,
+            p.file_for(chrono::Local::now().naive_local()),
+            self.encoder_id(&p.encoding()),
+            p.output_size.map(OutputSize::pair),
+        );
+        self.rec_file_audio = p.format.is_audio_only();
         self.rec_state = rec_state::STARTING;
         self.set_note(String::new(), false);
         self.send(Command::StartRecording(request));
@@ -3029,10 +3079,57 @@ impl StudioUi {
         self.folder_serial += 1;
     }
 
-    pub fn set_format(&mut self, i: i32) {
-        if let Some(f) = Format::ALL.get(i as usize) {
-            self.record_form_mut().format = *f;
+    /// Video (0) or Audio (1). The container of that category is restored.
+    pub fn set_media(&mut self, i: i32) {
+        self.record_form_mut().use_media(i != 0);
+        self.save_profile_form();
+    }
+
+    /// A container in the current category was picked.
+    pub fn set_container(&mut self, i: i32) {
+        let format = self.record_form().format;
+        if let Some(f) = format.category().get(i as usize) {
+            self.record_form_mut().use_format(*f);
             self.save_profile_form();
+        }
+    }
+
+    /// Whether `canvas`'s next recording is audio only.
+    pub(crate) fn records_audio(&self, canvas: OutputCanvas) -> bool {
+        self.record_form_for(canvas).format.is_audio_only()
+    }
+
+    /// The Record button names audio. Idle follows the profile; a running file
+    /// follows the file that started.
+    pub(crate) fn record_button_audio(&self) -> bool {
+        if self.rec_state == rec_state::OFF {
+            self.profile.format.is_audio_only()
+        } else {
+            self.rec_file_audio
+        }
+    }
+
+    /// The sample width of a WAV or FLAC recording was picked (0 is 16-bit).
+    pub fn set_bit_depth(&mut self, i: i32) {
+        let format = self.record_form().format;
+        if let Some(bits) = format.widths().get(i as usize) {
+            self.record_form_mut().bit_depth = *bits;
+            self.save_profile_form();
+        }
+    }
+
+    /// Why Record is refused before it asks the host. A WAV or FLAC profile does
+    /// not need a video encoder. `vertical` is the vertical canvas's recording.
+    pub fn recording_blocked(&self, vertical: bool) -> Option<String> {
+        let canvas = if vertical {
+            OutputCanvas::Vertical
+        } else {
+            OutputCanvas::Main
+        };
+        if self.record_form_for(canvas).format.is_audio_only() {
+            None
+        } else {
+            self.cannot_record.clone()
         }
     }
 
@@ -3307,27 +3404,26 @@ impl StudioUi {
         if self.vertical.is_none() || self.vertical_rec != VerticalOut::Off {
             return Ok(());
         }
-        if let Some(why) = &self.cannot_record {
-            return Err(vertical_why(why));
+        if let Some(why) = self.recording_blocked(true) {
+            return Err(vertical_why(&why));
         }
         let p = self.record_form_for(OutputCanvas::Vertical);
         if let Some(why) = p.problem() {
             return Err(vertical_why(&why));
         }
-        let request = RecordRequest {
-            path: p.vertical_file_for(chrono::Local::now().naive_local()),
-            container: p.format.container(),
-            encoder: self.encoder_id(&p.encoding()),
-            video: p.video_settings(),
-            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
-            // No vertical section yet: encode at the vertical canvas, not at the
-            // main recording's size (ADR-0102).
-            size: self
-                .vertical_profile
-                .as_ref()
-                .and_then(|v| v.output_size)
-                .map(OutputSize::pair),
-        };
+        // No vertical section yet: encode at the vertical canvas, not at the
+        // main recording's size (ADR-0102).
+        let size = self
+            .vertical_profile
+            .as_ref()
+            .and_then(|v| v.output_size)
+            .map(OutputSize::pair);
+        let request = request_of(
+            p,
+            p.vertical_file_for(chrono::Local::now().naive_local()),
+            self.encoder_id(&p.encoding()),
+            size,
+        );
         self.vertical_rec = VerticalOut::Starting;
         self.send(Command::StartVerticalRecording(request));
         Ok(())
@@ -5043,7 +5139,10 @@ impl StudioUi {
                 ));
                 self.rec_state = rec_state::RECORDING;
                 self.rec_file = Some((path, Instant::now()));
-                self.set_note(format!("Video encoder: {video_encoder}"), false);
+                self.rec_file_audio = self.profile.format.is_audio_only();
+                if !self.rec_file_audio {
+                    self.set_note(format!("Video encoder: {video_encoder}"), false);
+                }
             }
             // A recording started with the stream (or by a control API client) runs
             // while Record was on its way: the recording that runs is shown already.
@@ -5053,6 +5152,7 @@ impl StudioUi {
             RecordingUpdate::NotStarted(why) => {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
+                self.rec_file_audio = false;
                 self.set_note(format!("The recording did not start: {why}"), true);
             }
             RecordingUpdate::Stopped {
@@ -5064,6 +5164,7 @@ impl StudioUi {
             } => {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
+                self.rec_file_audio = false;
                 log(&format!(
                     "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
                 ));
@@ -5719,6 +5820,24 @@ fn size_index(
     saved: Option<OutputSize>,
 ) -> i32 {
     options.iter().position(|o| o.size == saved).unwrap_or(0) as i32
+}
+
+fn request_of(
+    profile: &RecordProfile,
+    path: PathBuf,
+    encoder: Option<String>,
+    size: Option<(u32, u32)>,
+) -> RecordRequest {
+    let start = profile.recording_start(encoder, size);
+    RecordRequest {
+        path,
+        container: start.container,
+        encoder: start.encoder,
+        video: start.video,
+        audio_bitrate_bps: start.audio_bitrate_bps,
+        bit_depth: start.bit_depth,
+        size: start.size,
+    }
 }
 
 fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {

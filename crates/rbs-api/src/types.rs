@@ -263,6 +263,15 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
+fn default_pcm_bits() -> u16 {
+    16
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_pcm_16(bits: &u16) -> bool {
+    *bits == 16
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
 fn is_zero_ms(v: &i32) -> bool {
     *v == 0
@@ -635,6 +644,10 @@ pub enum Container {
     Mkv,
     /// Fragmented MP4 (`.mp4`).
     Mp4,
+    /// WAV (`.wav`): the mix as PCM, with no picture (protocol 1.42).
+    Wav,
+    /// FLAC (`.flac`): the mix, lossless, with no picture (protocol 1.43).
+    Flac,
 }
 
 /// How the encoder spends bits.
@@ -718,6 +731,10 @@ pub struct RecordingProfile {
     pub cbr_padding: bool,
     /// Audio bitrate in kbit/s.
     pub audio_kbps: u32,
+    /// Sample width of a WAV or FLAC recording. WAV is 16, 24 or 32 (float). FLAC
+    /// is 16 or 24. Omitted when 16 (protocol 1.42; FLAC is protocol 1.43).
+    #[serde(default = "default_pcm_bits", skip_serializing_if = "is_pcm_16")]
+    pub bit_depth: u16,
     /// Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37).
     #[serde(default, skip_serializing_if = "Delivery::is_video")]
     pub delivery: Delivery,

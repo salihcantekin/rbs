@@ -47,6 +47,14 @@ pub trait Document: Sized {
 
     /// The body in the current format. Must not use the keys `format`, `kind` or `name`.
     fn to_body(&self) -> Result<toml::Table, String>;
+
+    /// The `format` [`render`] writes for this value. At least 1 and at most
+    /// [`Document::FORMAT`]. The default is [`Document::FORMAT`]. A scene collection
+    /// writes an earlier format when it does not use a later key, so a file that
+    /// never records a source separately stays readable by the previous build.
+    fn write_format(&self) -> u32 {
+        Self::FORMAT
+    }
 }
 
 /// A body from a serde type (helper for [`Document::to_body`]).
@@ -203,10 +211,17 @@ pub fn parse<T: Document>(text: &str) -> Result<Read<T>, DataError> {
 /// The text of a document in the current format, with `name` if given.
 pub fn render<T: Document>(document: &T, name: Option<&str>) -> Result<String, DataError> {
     let body = document.to_body().map_err(DataError::Invalid)?;
+    let format = document.write_format();
+    if format == 0 || format > T::FORMAT {
+        return Err(DataError::Invalid(format!(
+            "write format {format} is outside 1..={}",
+            T::FORMAT
+        )));
+    }
     let mut table = toml::Table::new();
     table.insert(
         FORMAT_KEY.to_owned(),
-        toml::Value::Integer(i64::from(T::FORMAT)),
+        toml::Value::Integer(i64::from(format)),
     );
     table.insert(KIND_KEY.to_owned(), toml::Value::String(T::KIND.to_owned()));
     if let Some(n) = name {
@@ -435,11 +450,12 @@ pub fn aside_path(path: &Path, why: &str) -> PathBuf {
 ///   in its body, or another kind) is moved to [`unreadable_path`] first.
 pub fn write<T: Document>(path: &Path, document: &T, name: Option<&str>) -> Result<(), DataError> {
     let text = render(document, name)?;
+    let writing = document.write_format();
     if let Some(old) = read_text_unbounded(path)? {
         // The whole document, not only its envelope: a hand edit that breaks the body
         // (a typo'd key, a broken invariant) must be kept too.
         match peek_text::<T>(&old).and_then(|f| parse::<T>(&old).map(|_| f)) {
-            Ok(found) if found < T::FORMAT => {
+            Ok(found) if found < writing => {
                 let backup = backup_path(path, found);
                 if !backup.exists() {
                     write_atomic(&backup, old.as_bytes())?;

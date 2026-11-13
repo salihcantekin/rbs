@@ -1,6 +1,6 @@
 # ADR-0085: More containers and codecs, and advanced video and audio encoder settings
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-09
 - Deciders: Salih (owner)
 - Builds on: [ADR-0007](0007-ffmpeg-as-optional-adapter.md), [ADR-0019](0019-encode-mux-transport-ports.md), [ADR-0047](0047-several-outputs-per-canvas.md), [ADR-0051](0051-user-data-profiles-and-scene-collections.md) (output profiles), [ADR-0055](0055-crash-resilience.md), [ADR-0076](0076-component-standards-and-panel-spacing.md), [ADR-0078](0078-saved-section-state-and-shared-section-components.md), [ADR-0082](0082-audio-filter-chains-on-sources.md) (`rbs-params`)
@@ -45,4 +45,5 @@ Forces: no vendor names in engine code, choice by capability (P3); every encoder
 ## Review
 
 - 2026-11-09, independent AI session (round 1, reviewing only the ADRs, specs and code): changes requested. Concerns covered contract details, claims about existing code, hot-path and zero-cost rules, and number allocation across these ADRs; each was resolved in the text above (the numbers of protocol minors and scene formats are now assigned at merge time, not claimed by ADRs).
-- Round 2 (verification by a different fresh reviewer) and the owner's approval are still needed before the status can become Accepted (ADR-0014).
+- 2026-11-13: Owner approval by Salih. The recorded independent review is the 2026-11-09 round, whose changes are in the decision text. Status becomes Accepted. Round 2 was not a separate session. Work starts at decision 8: `mux.codecs` values become `<container>.<codec>` on the existing muxers, then `Wav` and PCM (16-bit, 24-bit and 32-bit float). `Flac` and its container id are named; the writer is a later slice of (b). Opus-in-a-new-file, `Mov`, AV1 beyond what a probe already offers, ProRes, finalize-on-stop, the `options()` method (decision 5, its own port review) and the Format card stay later steps.
+- 2026-11-13: The FLAC writer of decision 8(b) is in the tree. `rbs-codec-flac` writes native frames (RFC 9639 streamable subset: fixed predictors, one Rice partition, constant and verbatim subframes, 4096 samples, 16-bit or 24-bit integer). `rbs-mux-flac` writes `fLaC` and STREAMINFO with an unknown length and does not patch. Both are registered in `rbs-app` and `rbs-cli`. The Settings Format control lists FLAC beside WAV (16-bit or 24-bit; 32-bit float becomes 16 when FLAC is chosen). Opus-in-a-new-file, `Mov`, AV1 beyond what a probe already offers, ProRes, finalize-on-stop, `options()` and the Format card stay later.

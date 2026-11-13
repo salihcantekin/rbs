@@ -11,8 +11,8 @@ use rbs_graph::node::NodeTypeId;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     Border, CollectionGlide, Crop, DisplayChrome, Fallback, GlideEasing, ItemContent, ItemStyle,
-    Layout, SceneScope, SettingValue, Settings, Shadow, Shape, SourceGlide, SourceMonitor,
-    SourceRegion,
+    Layout, RecordSeparately, SceneScope, SettingValue, Settings, Shadow, Shape, SourceGlide,
+    SourceMonitor, SourceRegion,
 };
 use rbs_user_data::document;
 use rbs_user_data::{DataError, UserData};
@@ -732,6 +732,38 @@ fn a_changed_canvas_keeps_its_layout_space_in_the_file() {
     let older = "format = 14\nkind = \"scene-collection\"\n[[canvases]]\nid = 0\nname = \"M\"\nwidth = 1080\nheight = 1920\nlayout_width = 1920\nlayout_height = 1080\nframe_rate = [30, 1]\n";
     match document::parse::<SceneCollection>(older) {
         Err(DataError::Invalid(why)) => assert!(why.contains("layout_width"), "{why}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_source_recorded_separately_raises_the_format_and_an_older_file_refuses_it() {
+    let mut plain = SceneCollection::new();
+    plain
+        .add_source("Mic", ty("audio-input"), Settings::new())
+        .unwrap();
+    let plain_text = document::render(&plain, Some("Show")).unwrap();
+    assert!(plain_text.contains("format = 15"), "{plain_text}");
+    assert!(!plain_text.contains("record_separately"), "{plain_text}");
+
+    let mut col = SceneCollection::new();
+    let (mic, _) = col
+        .add_source("Mic", ty("audio-input"), Settings::new())
+        .unwrap();
+    col.set_source_record_separately(mic, RecordSeparately::new(false, true))
+        .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 16"), "{text}");
+    assert!(text.contains("[sources.record_separately]"), "{text}");
+    assert!(text.contains("audio = true"), "{text}");
+    assert!(!text.contains("video"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert!(back.source(mic).unwrap().record_separately.audio);
+    assert!(!back.source(mic).unwrap().record_separately.video);
+
+    let older = "format = 15\nkind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"Mic\"\ntype = \"org.rbs.source.audio-input\"\nrecord_separately = { audio = true }\n";
+    match document::parse::<SceneCollection>(older) {
+        Err(DataError::Invalid(why)) => assert!(why.contains("record_separately"), "{why}"),
         other => panic!("expected Invalid, got {other:?}"),
     }
 }

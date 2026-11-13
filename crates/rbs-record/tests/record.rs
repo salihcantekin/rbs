@@ -10,17 +10,26 @@
 
 mod support;
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rbs_codec::{EncoderPreset, KeyframeInterval, RateControl};
-use rbs_core::media::{CodecId, ContainerId, Size};
+use rbs_codec::{
+    AudioEncoder, AudioEncoderConfig, AudioEncoderFactory, CreateError, EncodeError, EncoderChange,
+    EncoderPreset, KeyframeInterval, RateControl, caps as codec_caps,
+};
+use rbs_core::capability::CapabilitySet;
+use rbs_core::media::{
+    AudioBlock, BitstreamFormat, Bytes, CodecId, ContainerId, EncodedPacket, Size,
+    StreamDescriptor, StreamParams,
+};
+use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::{Cadence, SampleRate};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, Port, RecordError, RecordSettings, Recording,
+    VIDEO_ENCODER,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
@@ -39,7 +48,10 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
     let mut recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
 
     let started = recording.started().clone();
-    assert_eq!(started.video_encoder.adapter.as_str(), "org.rbs.test.h264");
+    assert_eq!(
+        started.video_encoder.as_ref().unwrap().adapter.as_str(),
+        "org.rbs.test.h264"
+    );
     assert_eq!(
         started.audio_encoder.as_ref().unwrap().adapter.as_str(),
         "org.rbs.codec.mf-aac.fake"
@@ -231,6 +243,161 @@ fn without_audio_only_video_is_recorded_and_audio_sources_stay_closed() {
 }
 
 #[test]
+fn without_video_only_audio_is_recorded_and_no_picture_source_opens() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    let (engine, clock) = engine_at_start();
+    let mut settings = RecordSettings::new(canvas, "mem://audio", ContainerId::Matroska);
+    settings.video = None;
+    let sessions = r.video_sessions.load(Ordering::Relaxed);
+    let mut recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
+    let started = recording.started().clone();
+    assert_eq!(started.video_encoder, None);
+    assert!(started.audio_encoder.is_some());
+    assert!(!started.video_shared);
+    let names: Vec<&str> = started.sources.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Microphone", "System audio"]);
+    assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
+    assert!(!recording.engine().has_worker(VIDEO_ENCODER));
+    assert_eq!(r.capture.live_buffers(), 0);
+    let reached = run_until(&mut recording, &clock, |_| r.log.count(0) >= 5);
+    assert!(reached, "{:?}", recording.progress());
+    let report = recording.finish();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    assert_eq!(r.log.streams.lock().unwrap().len(), 1);
+    assert_eq!(r.log.streams.lock().unwrap()[0].codec, CodecId::Aac);
+    assert_eq!(r.log.count(1), 0);
+    assert_eq!(report.progress.frames_encoded, 0);
+}
+
+#[test]
+fn an_output_with_neither_picture_nor_sound_does_not_start() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    let (engine, _) = engine_at_start();
+    let mut settings = RecordSettings::new(canvas, "mem://empty", ContainerId::Matroska);
+    settings.video = None;
+    settings.audio = None;
+    let err = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap_err();
+    assert!(matches!(err, RecordError::EmptyOutput), "{err}");
+    assert_eq!(r.video_sessions.load(Ordering::Relaxed), 0);
+    assert_eq!(r.capture.live_buffers(), 0);
+    assert_eq!(r.audio.active_streams(), 0);
+}
+
+/// Remembers the adapter options of the audio session it opens, and emits nothing.
+struct SeenAudio {
+    codec: CodecId,
+    options: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl AdapterFactory for SeenAudio {
+    fn id(&self) -> AdapterId {
+        match self.codec {
+            CodecId::Flac => AdapterId::new("org.rbs.test.flac"),
+            _ => AdapterId::new("org.rbs.test.pcm"),
+        }
+    }
+    fn display_name(&self) -> &str {
+        "seen audio"
+    }
+    fn probe(&self) -> Result<CapabilitySet, ProbeError> {
+        Ok(CapabilitySet::new().with(codec_caps::AUDIO_ENCODE, set(&[self.codec.as_str()])))
+    }
+}
+
+impl AudioEncoderFactory for SeenAudio {
+    fn create(&self, config: &AudioEncoderConfig) -> Result<Box<dyn AudioEncoder>, CreateError> {
+        *self.options.lock().unwrap() = config.adapter_options.clone();
+        let stream = StreamDescriptor::new(
+            self.codec,
+            BitstreamFormat::Raw,
+            Bytes::new(),
+            StreamParams::audio(config.format, 480),
+        );
+        Ok(Box::new(SeenSession { stream }))
+    }
+}
+
+struct SeenSession {
+    stream: StreamDescriptor,
+}
+
+impl AudioEncoder for SeenSession {
+    fn stream(&self) -> &StreamDescriptor {
+        &self.stream
+    }
+    fn frame_size(&self) -> u32 {
+        480
+    }
+    fn submit(&mut self, _: &AudioBlock<'_>) -> Result<(), EncodeError> {
+        Ok(())
+    }
+    fn drain(&mut self, _: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
+        Ok(())
+    }
+    fn reconfigure(&mut self, _: &EncoderChange) -> Result<(), EncodeError> {
+        Ok(())
+    }
+    fn flush(&mut self, _: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
+        Ok(())
+    }
+}
+
+fn bit_depth_reaches(codec: CodecId, adapter: &str) {
+    let Some(gpu) = gpu() else { return };
+    let mut r = rig();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    r.adapters
+        .audio_encoders
+        .register(Arc::new(SeenAudio {
+            codec,
+            options: Arc::clone(&seen),
+        }))
+        .unwrap();
+    r.adapters.probe();
+    let (col, canvas) = scene();
+    let (engine, _) = engine_at_start();
+    let mut settings = RecordSettings::new(canvas, "mem://audio", ContainerId::Matroska);
+    settings.video = None;
+    let mut audio = rbs_record::AudioSettings::default();
+    audio.codec = codec;
+    audio.bitrate_bps = 0;
+    audio.bit_depth = Some(24);
+    settings.audio = Some(audio);
+    let recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
+    assert_eq!(recording.started().video_encoder, None);
+    assert_eq!(
+        recording
+            .started()
+            .audio_encoder
+            .as_ref()
+            .unwrap()
+            .adapter
+            .as_str(),
+        adapter
+    );
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        [("bit_depth".to_owned(), "24".to_owned())]
+    );
+    let report = recording.finish();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+}
+
+#[test]
+fn pcm_bit_depth_reaches_the_audio_encoder() {
+    bit_depth_reaches(CodecId::Pcm, "org.rbs.test.pcm");
+}
+
+#[test]
+fn flac_bit_depth_reaches_the_audio_encoder() {
+    bit_depth_reaches(CodecId::Flac, "org.rbs.test.flac");
+}
+
+#[test]
 fn a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy() {
     let Some(gpu) = gpu() else { return };
     let r = rig();
@@ -379,17 +546,21 @@ fn every_video_quality_setting_reaches_the_encoder() {
     let (col, canvas) = scene();
     let (engine, _) = engine_at_start();
     let mut settings = RecordSettings::new(canvas, "mem://quality", ContainerId::Matroska);
-    settings.video.rate_control = RateControl::Vbr {
+    let video = settings.video.as_mut().unwrap();
+    video.rate_control = RateControl::Vbr {
         target_bps: 6_000_000,
         max_bps: 9_000_000,
     };
-    settings.video.keyframe_interval = KeyframeInterval::Frames(90);
-    settings.video.max_b_frames = 2;
-    settings.video.profile = Some("main".into());
-    settings.video.preset = EncoderPreset::Quality;
+    video.keyframe_interval = KeyframeInterval::Frames(90);
+    video.max_b_frames = 2;
+    video.profile = Some("main".into());
+    video.preset = EncoderPreset::Quality;
     let recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
     let config = r.video_config.lock().unwrap().clone().unwrap();
-    assert_eq!(config.rate_control, settings.video.rate_control);
+    assert_eq!(
+        config.rate_control,
+        settings.video.as_ref().unwrap().rate_control
+    );
     assert_eq!(config.keyframe_interval, KeyframeInterval::Frames(90));
     assert_eq!(config.max_b_frames, 2);
     assert_eq!(config.profile.as_deref(), Some("main"));
@@ -405,7 +576,7 @@ fn a_rate_control_no_encoder_takes_fails_with_each_reason() {
     let (col, canvas) = scene();
     let (engine, _) = engine_at_start();
     let mut settings = RecordSettings::new(canvas, "mem://padded", ContainerId::Matroska);
-    settings.video.rate_control = RateControl::CbrPadded {
+    settings.video.as_mut().unwrap().rate_control = RateControl::CbrPadded {
         bitrate_bps: 8_000_000,
     };
     let err = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap_err();

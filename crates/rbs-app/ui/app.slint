@@ -70,6 +70,9 @@ export global Shell {
     in property <int> live-state;
     in property <string> live-duration;
     in property <string> live-outputs;
+    // The recording in progress, or the next one while idle is not what this names:
+    // the running file has no picture.
+    in property <bool> audio-only;
     // RBS sends the program to the virtual camera (ADR-0066 decision 12).
     in property <bool> live-camera;
     in property <[PanelEntry]> panels;
@@ -220,12 +223,12 @@ export global Shell {
 component LiveIndicator inherits Rectangle {
     property <bool> active: Shell.live-state != 0 || Shell.live-camera;
     property <string> state-text: Shell.live-state == 1 ? @tr("Live")
-        : Shell.live-state == 2 ? @tr("Recording")
-        : Shell.live-state == 3 ? @tr("Live and recording")
+        : Shell.live-state == 2 ? (Shell.audio-only ? @tr("Recording audio") : @tr("Recording"))
+        : Shell.live-state == 3 ? (Shell.audio-only ? @tr("Live and recording audio") : @tr("Live and recording"))
         : @tr("Not live");
     property <string> output-text: Shell.live-state == 1 ? @tr("LIVE")
-        : Shell.live-state == 2 ? @tr("REC")
-        : Shell.live-state == 3 ? @tr("LIVE · REC")
+        : Shell.live-state == 2 ? (Shell.audio-only ? @tr("REC audio") : @tr("REC"))
+        : Shell.live-state == 3 ? (Shell.audio-only ? @tr("LIVE · REC audio") : @tr("LIVE · REC"))
         : "";
     property <string> short-text: !Shell.live-camera ? output-text
         : output-text != "" ? @tr("{} · CAM", output-text)
@@ -1598,8 +1601,8 @@ component StatusBar inherits Rectangle {
     // frame's compact live indicator.
     property <string> outputs: Shell.live-outputs != "" ? " · " + Shell.live-outputs : "";
     property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration) + outputs
-        : Shell.live-state == 2 ? @tr("Recording {}", Shell.live-duration) + outputs
-        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration) + outputs
+        : Shell.live-state == 2 ? (Shell.audio-only ? @tr("Recording audio {}", Shell.live-duration) : @tr("Recording {}", Shell.live-duration)) + outputs
+        : Shell.live-state == 3 ? (Shell.audio-only ? @tr("Live and recording audio {}", Shell.live-duration) : @tr("Live and recording {}", Shell.live-duration)) + outputs
         : @tr("Not live · not recording");
     property <string> text-with-camera: !Shell.live-camera ? state-text
         : Shell.live-state == 0 ? @tr("Virtual camera on · not live · not recording")

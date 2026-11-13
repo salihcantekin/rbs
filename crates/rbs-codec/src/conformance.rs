@@ -125,6 +125,8 @@ fn codec_by_name(name: &str, kind: MediaKind) -> Option<CodecId> {
         CodecId::Vp9,
         CodecId::Aac,
         CodecId::Opus,
+        CodecId::Pcm,
+        CodecId::Flac,
     ]
     .into_iter()
     .find(|c| c.as_str() == name && c.media_kind() == kind)

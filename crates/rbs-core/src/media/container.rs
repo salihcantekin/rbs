@@ -23,15 +23,21 @@ pub enum ContainerId {
     MpegTs,
     /// Flash Video (FLV), including Enhanced RTMP codec extensions.
     Flv,
+    /// RIFF WAVE, written so it can become RF64 past 4 GiB (ADR-0085). PCM audio.
+    Wav,
+    /// Native FLAC (ADR-0085). `rbs-mux-flac` writes the stream.
+    Flac,
 }
 
 impl ContainerId {
     /// Every container id, in declaration order.
-    pub const ALL: [ContainerId; 4] = [
+    pub const ALL: [ContainerId; 6] = [
         ContainerId::Mp4Fragmented,
         ContainerId::Matroska,
         ContainerId::MpegTs,
         ContainerId::Flv,
+        ContainerId::Wav,
+        ContainerId::Flac,
     ];
 
     /// Stable lowercase name, used in capability values (`mux.container`).
@@ -41,6 +47,8 @@ impl ContainerId {
             ContainerId::Matroska => "matroska",
             ContainerId::MpegTs => "mpegts",
             ContainerId::Flv => "flv",
+            ContainerId::Wav => "wav",
+            ContainerId::Flac => "flac",
         }
     }
 
@@ -57,6 +65,8 @@ impl ContainerId {
             ContainerId::Matroska => "container.matroska",
             ContainerId::MpegTs => "container.mpegts",
             ContainerId::Flv => "container.flv",
+            ContainerId::Wav => "container.wav",
+            ContainerId::Flac => "container.flac",
         }
     }
 }

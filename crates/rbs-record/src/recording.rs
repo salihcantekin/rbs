@@ -68,6 +68,11 @@ pub const VIDEO_ENCODER_4: PartitionId = PartitionId(14);
 pub const AUDIO_ENCODER_4: PartitionId = PartitionId(15);
 /// Default output partition of the fourth output slot.
 pub const OUTPUT_4: PartitionId = PartitionId(16);
+/// Audio encoders of separate source files (ADR-0086). One worker runs every audio
+/// file of the set, so a slow encoder delays those files and not the master.
+pub const ISO_AUDIO_ENCODER: PartitionId = PartitionId(17);
+/// Mux and transport of separate source files. One worker runs every file of the set.
+pub const ISO_OUTPUT: PartitionId = PartitionId(18);
 
 /// The ports a recording chooses adapters for.
 #[non_exhaustive]
@@ -199,8 +204,11 @@ impl Default for VideoSettings {
 pub struct AudioSettings {
     /// Codec.
     pub codec: CodecId,
-    /// Bitrate in bit/s.
+    /// Bitrate in bit/s. PCM ignores it.
     pub bitrate_bps: u64,
+    /// PCM sample width when `codec` is [`CodecId::Pcm`]: 16, 24 or 32 (float).
+    /// `None` is 16-bit. Other codecs ignore it, and it is not sent to them.
+    pub bit_depth: Option<u16>,
 }
 
 impl Default for AudioSettings {
@@ -209,6 +217,7 @@ impl Default for AudioSettings {
         Self {
             codec: CodecId::Aac,
             bitrate_bps: 160_000,
+            bit_depth: None,
         }
     }
 }
@@ -323,8 +332,8 @@ pub struct RecordSettings {
     pub reconnect: ReconnectPolicy,
     /// Opaque transport options ([`OutputSettings::transport_options`]).
     pub transport_options: Vec<(String, String)>,
-    /// Video encoding.
-    pub video: VideoSettings,
+    /// Video encoding. `None` records audio only.
+    pub video: Option<VideoSettings>,
     /// Audio encoding; `None` records video only.
     pub audio: Option<AudioSettings>,
     /// The audio graph's format, block size and latency.
@@ -474,6 +483,13 @@ pub enum RecordError {
         /// The refused height.
         height: u32,
     },
+    /// The output asked for neither video nor audio. Nothing was chosen.
+    EmptyOutput,
+    /// Separate audio files are already open ([`crate::Studio::start_iso_audio`]).
+    IsoRunning,
+    /// The separate-file plan refused the collection, or a marked source is not in
+    /// the program mix (ADR-0086).
+    Iso(crate::iso::IsoError),
 }
 
 impl fmt::Display for RecordError {
@@ -518,6 +534,9 @@ impl fmt::Display for RecordError {
                     "output size {width}x{height} is not an even size from 2 to 7680"
                 )
             }
+            RecordError::EmptyOutput => f.write_str("the output has neither video nor audio"),
+            RecordError::IsoRunning => f.write_str("separate audio files are already open"),
+            RecordError::Iso(e) => write!(f, "separate files: {e}"),
             RecordError::TooManyOutputs => write!(
                 f,
                 "this canvas already feeds the most outputs at once ({}); a studio runs at most {}",
@@ -575,8 +594,8 @@ pub struct SourceState {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartReport {
-    /// The video encoder.
-    pub video_encoder: Chosen,
+    /// The video encoder. `None` when the output records audio only.
+    pub video_encoder: Option<Chosen>,
     /// The audio encoder, when audio is recorded.
     pub audio_encoder: Option<Chosen>,
     /// The muxer; `None` when the transport takes packets.

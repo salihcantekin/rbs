@@ -34,7 +34,7 @@ use rbs_capture::CaptureError;
 use rbs_codec::caps as codec_caps;
 use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
 use rbs_core::fault::SourceFault;
-use rbs_core::media::{ContainerId, Size};
+use rbs_core::media::{CodecId, ContainerId, Size};
 use rbs_core::registry::{AdapterFactory, Registry};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::FrameRate;
@@ -1217,9 +1217,13 @@ pub struct RecordRequest {
     /// The video encoder's adapter id: only this one is used. `None`: the best one.
     pub encoder: Option<String>,
     /// Video encoding: rate control, keyframes, profile, preset, B-frames, padding.
-    pub video: VideoSettings,
-    /// Audio bitrate in bit/s.
+    /// `None`: audio only, no picture encoder.
+    pub video: Option<VideoSettings>,
+    /// Audio bitrate in bit/s. Zero for PCM and FLAC.
     pub audio_bitrate_bps: u64,
+    /// Sample width when `video` is `None`: PCM 16, 24 or 32 (float), FLAC 16 or 24.
+    /// `None` is 16-bit.
+    pub bit_depth: Option<u16>,
     /// Encoded picture size (ADR-0102). `None`: this output's canvas.
     pub size: Option<(u32, u32)>,
 }
@@ -4266,12 +4270,23 @@ impl Host {
         out.video = r.video.clone();
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
             let mut a = AudioSettings::default();
-            a.bitrate_bps = r.audio_bitrate_bps;
+            if r.video.is_none() {
+                a.codec = if r.container == ContainerId::Flac {
+                    CodecId::Flac
+                } else {
+                    CodecId::Pcm
+                };
+                a.bitrate_bps = 0;
+                a.bit_depth = r.bit_depth;
+            } else {
+                a.bitrate_bps = r.audio_bitrate_bps;
+            }
             a
         });
         // The size this recording starts with. A later settings change waits for the
         // next start (ADR-0102). `None` stays the canvas, including a side above 7680.
-        out.size = r.size;
+        // An audio-only file has no picture size.
+        out.size = if r.video.is_none() { None } else { r.size };
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
         let started = started.map(|(id, video_encoder, audio_encoder)| {
@@ -4499,22 +4514,25 @@ impl Host {
             .encoder
             .clone()
             .filter(|id| self.encoders.iter().any(|e| e.id == *id));
+        // A vertical recording with no section of its own keeps the main encoding
+        // and encodes at the vertical canvas: the main size is not copied.
+        let size = match c {
+            OutputCanvas::Main => p.output_size.map(|s| s.pair()),
+            OutputCanvas::Vertical => self
+                .vertical_profile
+                .as_ref()
+                .and_then(|v| v.output_size)
+                .map(|s| s.pair()),
+        };
+        let start = p.recording_start(encoder, size);
         Ok(RecordRequest {
             path,
-            container: p.format.container(),
-            encoder,
-            video: p.video_settings(),
-            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
-            // A vertical recording with no section of its own keeps the main encoding
-            // and encodes at the vertical canvas: the main size is not copied.
-            size: match c {
-                OutputCanvas::Main => p.output_size.map(|s| s.pair()),
-                OutputCanvas::Vertical => self
-                    .vertical_profile
-                    .as_ref()
-                    .and_then(|v| v.output_size)
-                    .map(|s| s.pair()),
-            },
+            container: start.container,
+            encoder: start.encoder,
+            video: start.video,
+            audio_bitrate_bps: start.audio_bitrate_bps,
+            bit_depth: start.bit_depth,
+            size: start.size,
         })
     }
 
@@ -4540,11 +4558,13 @@ impl Host {
         if !on || o.recording.is_some() || o.streaming.is_none() {
             return;
         }
-        let started = match &self.cannot_record {
-            Some(why) => Err(why.clone()),
-            None => self
-                .profile_request(c, self.recording_file(c))
-                .and_then(|r| self.start_recording(c, &r, Some(API_PROFILE_ID.into()))),
+        let started = if !self.record_profile(c).format.is_audio_only()
+            && let Some(why) = &self.cannot_record
+        {
+            Err(why.clone())
+        } else {
+            self.profile_request(c, self.recording_file(c))
+                .and_then(|r| self.start_recording(c, &r, Some(API_PROFILE_ID.into())))
         };
         let update = match started {
             Ok(update) => {
@@ -4608,7 +4628,7 @@ impl Host {
         out.canvas = canvas;
         out.reconnect = r.reconnect;
         out.transport_options = r.transport_options.clone();
-        out.video = r.video.clone();
+        out.video = Some(r.video.clone());
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
             let mut a = AudioSettings::default();
             a.bitrate_bps = r.audio_bitrate_bps;
@@ -4670,7 +4690,11 @@ impl Host {
                 let report = self.studio.output(id).ok_or("the output did not start")?;
                 Ok((
                     id,
-                    report.video_encoder.name.clone(),
+                    report
+                        .video_encoder
+                        .as_ref()
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default(),
                     report.audio_encoder.as_ref().map(|c| c.name.clone()),
                 ))
             });
@@ -9649,7 +9673,9 @@ impl ApiTarget<'_> {
                 format!("{} already exists", path.display()),
             ));
         }
-        if let Some(why) = &host.cannot_record {
+        if !host.record_profile(c).format.is_audio_only()
+            && let Some(why) = &host.cannot_record
+        {
             return Err(failed(why.clone()));
         }
         if host.outs[slot(c)].recording.is_some() {

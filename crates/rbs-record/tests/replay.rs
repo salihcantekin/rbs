@@ -34,7 +34,7 @@ fn start(r: &Rig) -> (Studio, TestClock) {
 fn settings() -> ReplaySettings {
     let out = OutputSettings::new("mem://rec", ContainerId::Matroska);
     ReplaySettings::new(
-        out.video.clone(),
+        out.video.clone().unwrap(),
         out.audio.clone(),
         Duration::from_secs(60),
         256 << 20,

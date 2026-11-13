@@ -71,7 +71,15 @@ impl AdapterFactory for Fmp4MuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Mp4Fragmented.as_str()]))
-            .with(caps::CODECS, set(&["h264", "hevc", "av1", "aac"]))
+            .with(
+                caps::CODECS,
+                set(&[
+                    "mp4.fragmented.h264",
+                    "mp4.fragmented.hevc",
+                    "mp4.fragmented.av1",
+                    "mp4.fragmented.aac",
+                ]),
+            )
             .with(caps::LIVE, CapabilityValue::Flag(true)))
     }
 }

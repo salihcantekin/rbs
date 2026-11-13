@@ -64,7 +64,7 @@ fn recording() -> OutputSettings {
 
 fn stream(bitrate_bps: u64) -> OutputSettings {
     let mut out = OutputSettings::packets("stream://live/app");
-    out.video.rate_control = RateControl::Cbr { bitrate_bps };
+    out.video.as_mut().unwrap().rate_control = RateControl::Cbr { bitrate_bps };
     out
 }
 

@@ -11,8 +11,9 @@ use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, DISPLAY_SOURCE_TYPE, DisplayChrome, Fallback,
     Filter, FilterId, ItemContent, ItemId, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS,
-    MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
-    Source, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, show_for_is_valid,
+    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, Scene, SceneId, SceneItem, SceneScope,
+    SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
+    SourceRegion, show_for_is_valid,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -239,6 +240,12 @@ enum Op {
         source: SourceId,
         expected: Option<SourceRegion>,
         new: Option<SourceRegion>,
+    },
+    /// Replaces which of a source's feeds are recorded separately (ADR-0086).
+    SetSourceRecordSeparately {
+        source: SourceId,
+        expected: RecordSeparately,
+        new: RecordSeparately,
     },
     /// Replaces a display source's chrome and the region it writes (ADR-0104).
     SetSourceChrome {
@@ -922,6 +929,7 @@ impl SceneCollection {
             hints: Default::default(),
             region: None,
             chrome: None,
+            record_separately: RecordSeparately::default(),
         };
         let undo = self.apply_with(
             Op::InsertSource {
@@ -1096,6 +1104,21 @@ impl SceneCollection {
             source: id,
             expected,
             new: glide,
+        })
+    }
+
+    /// Sets which of a source's feeds are recorded as their own files (ADR-0086).
+    /// One undo step. Both false is the default. The binder does not read it.
+    pub fn set_source_record_separately(
+        &mut self,
+        id: SourceId,
+        record_separately: RecordSeparately,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_source(id)?.record_separately;
+        self.apply(Op::SetSourceRecordSeparately {
+            source: id,
+            expected,
+            new: record_separately,
         })
     }
 
@@ -1767,6 +1790,25 @@ impl SceneCollection {
                 }
                 slot.region = new;
                 Ok(Op::SetSourceRegion {
+                    source,
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::SetSourceRecordSeparately {
+                source,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .sources
+                    .get_mut(&source)
+                    .ok_or(SceneError::UnknownSource(source))?;
+                if slot.record_separately != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.record_separately = new;
+                Ok(Op::SetSourceRecordSeparately {
                     source,
                     expected: new,
                     new: expected,

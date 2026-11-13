@@ -1,0 +1,24 @@
+[package]
+name = "rbs-codec-pcm"
+description = "PCM audio encoder for RBS: f32 blocks to 16-bit, 24-bit or float payloads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-codec = { path = "../rbs-codec" }
+
+[dev-dependencies]
+rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "encode"
+harness = false
+
+[lints]
+workspace = true

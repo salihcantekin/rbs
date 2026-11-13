@@ -41,6 +41,10 @@ pub enum CodecId {
     Aac,
     /// Opus.
     Opus,
+    /// Uncompressed PCM (ADR-0085): 16-bit or 24-bit integer, or 32-bit float.
+    Pcm,
+    /// FLAC (ADR-0085). `rbs-codec-flac` writes one native frame per block.
+    Flac,
 }
 
 impl CodecId {
@@ -53,6 +57,8 @@ impl CodecId {
             CodecId::Vp9 => "vp9",
             CodecId::Aac => "aac",
             CodecId::Opus => "opus",
+            CodecId::Pcm => "pcm",
+            CodecId::Flac => "flac",
         }
     }
 
@@ -60,7 +66,7 @@ impl CodecId {
     pub const fn media_kind(self) -> MediaKind {
         match self {
             CodecId::H264 | CodecId::Hevc | CodecId::Av1 | CodecId::Vp9 => MediaKind::Video,
-            CodecId::Aac | CodecId::Opus => MediaKind::Audio,
+            CodecId::Aac | CodecId::Opus | CodecId::Pcm | CodecId::Flac => MediaKind::Audio,
         }
     }
 }

@@ -17,7 +17,7 @@ use rbs_audio_filters::{
 };
 use rbs_codec::{AudioEncoderConfig, EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
+use rbs_core::media::{CodecId, ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
@@ -61,8 +61,10 @@ use crate::recording::{
 };
 use crate::select::{self, Chosen};
 
+mod iso_audio;
 mod monitor;
 mod replay;
+pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use monitor::MonitorState;
 pub use replay::ReplaySettings;
 
@@ -175,9 +177,9 @@ pub struct OutputSettings {
     pub reconnect: ReconnectPolicy,
     /// Opaque transport options (`latency_ms` for SRT), passed through unread.
     pub transport_options: Vec<(String, String)>,
-    /// Video encoding.
-    pub video: VideoSettings,
-    /// Audio encoding; `None` records video only.
+    /// Video encoding. `None` records audio only: no export and no video encoder.
+    pub video: Option<VideoSettings>,
+    /// Audio encoding. `None` records video only.
     pub audio: Option<AudioSettings>,
     /// The canvas this output takes (ADR-0093): the main canvas or one of
     /// [`StudioSettings::extra_canvases`]. `None`: the main canvas.
@@ -236,7 +238,7 @@ impl OutputSettings {
             secret: None,
             reconnect: ReconnectPolicy::Off,
             transport_options: Vec::new(),
-            video: VideoSettings::default(),
+            video: Some(VideoSettings::default()),
             audio: Some(AudioSettings::default()),
             canvas: None,
             size: None,
@@ -455,6 +457,8 @@ pub struct OutputId(u64);
 /// The video half of a prepared output: a new export and encoder, or a running
 /// encoder chain shared with another output.
 enum VideoPlan {
+    /// Audio only: no export and no video encoder.
+    None,
     New {
         export: Box<VideoExportNode>,
         encoder: Box<VideoEncoderNode>,
@@ -530,59 +534,72 @@ impl Prepared {
         audio_graph: AudioGraphConfig,
         running: &Chains,
     ) -> Result<Self, RecordError> {
-        let (width, height) = resolve_output_size(out.size, canvas_size)?;
-        let (canvas_width, canvas_height) = canvas_size;
-        // System memory: the export reads the canvas back (the P4 exception of
-        // ADR-0038); native export will take the memory kind from the encoder.
-        // Equal size prepares the 1:1 download; a different size scales once from
-        // this canvas, never from another output.
-        let export = VideoExportNode::with_tone(
-            out.video.format,
-            canvas_width,
-            canvas_height,
-            width,
-            height,
-            out.video.color,
-            out.video.open_shadows,
-        );
-        let video_config = video_encoder_config(&out.video, export.frame_format(), fps);
-        let shared_video = running.video.iter().position(|c| {
-            c.as_ref().is_some_and(|c| {
-                c.canvas == canvas
-                    && c.settings == out.video
-                    && c.size == (width, height)
-                    // An export asked to end takes no later canvas (ADR-0045).
-                    && c.end.requested().is_none()
-                    && select::is_video_candidate(
-                        &adapters.video_encoders,
-                        &video_config,
-                        &c.chosen.adapter,
-                    )
-            })
-        });
-        let (video, video_stream) =
-            match shared_video.and_then(|i| Some((i, running.video[i].as_ref()?))) {
-                Some((i, chain)) => (VideoPlan::Shared(i), chain.stream.clone()),
-                None => {
-                    let (encoder, chosen) =
-                        select::video_encoder(&adapters.video_encoders, &video_config)?;
-                    let stream = encoder.stream().clone();
-                    (
+        if out.video.is_none() && out.audio.is_none() {
+            return Err(RecordError::EmptyOutput);
+        }
+        let mut streams = Vec::new();
+        let video = match &out.video {
+            None => VideoPlan::None,
+            Some(video) => {
+                let (width, height) = resolve_output_size(out.size, canvas_size)?;
+                let (canvas_width, canvas_height) = canvas_size;
+                // System memory: the export reads the canvas back (the P4 exception of
+                // ADR-0038); native export will take the memory kind from the encoder.
+                // Equal size prepares the 1:1 download; a different size scales once from
+                // this canvas, never from another output.
+                let export = VideoExportNode::with_tone(
+                    video.format,
+                    canvas_width,
+                    canvas_height,
+                    width,
+                    height,
+                    video.color,
+                    video.open_shadows,
+                );
+                let video_config = video_encoder_config(video, export.frame_format(), fps);
+                let shared_video = running.video.iter().position(|c| {
+                    c.as_ref().is_some_and(|c| {
+                        c.canvas == canvas
+                            && c.settings == *video
+                            && c.size == (width, height)
+                            // An export asked to end takes no later canvas (ADR-0045).
+                            && c.end.requested().is_none()
+                            && select::is_video_candidate(
+                                &adapters.video_encoders,
+                                &video_config,
+                                &c.chosen.adapter,
+                            )
+                    })
+                });
+                match shared_video.and_then(|i| Some((i, running.video[i].as_ref()?))) {
+                    Some((i, chain)) => {
+                        streams.push(chain.stream.clone());
+                        VideoPlan::Shared(i)
+                    }
+                    None => {
+                        let (encoder, chosen) =
+                            select::video_encoder(&adapters.video_encoders, &video_config)?;
+                        streams.push(encoder.stream().clone());
                         VideoPlan::New {
                             export: Box::new(export),
                             encoder: Box::new(encoder),
                             chosen,
-                            settings: out.video.clone(),
+                            settings: video.clone(),
                             size: (width, height),
-                        },
-                        stream,
-                    )
+                        }
+                    }
                 }
-            };
-        let mut streams = vec![video_stream];
+            }
+        };
         let audio = match &out.audio {
             Some(a) => {
-                let config = AudioEncoderConfig::new(a.codec, audio_graph.format, a.bitrate_bps);
+                let mut config =
+                    AudioEncoderConfig::new(a.codec, audio_graph.format, a.bitrate_bps);
+                if matches!(a.codec, CodecId::Pcm | CodecId::Flac)
+                    && let Some(bits) = a.bit_depth
+                {
+                    config = config.with_adapter_option("bit_depth", bits.to_string());
+                }
                 let shared = running.audio.iter().enumerate().find_map(|(i, c)| {
                     let c = c.as_ref()?;
                     (c.settings == *a
@@ -703,12 +720,12 @@ struct Attached {
     report: StartReport,
     output: Added,
     output_stats: Arc<OutputNodeStats>,
-    /// Slots of the chains it takes packets from.
-    video: usize,
+    /// Slots of the chains it takes packets from. `video` is `None` for audio only.
+    video: Option<usize>,
     audio: Option<usize>,
     failure: Option<String>,
-    export: Arc<ExportNodeStats>,
-    encoder: Arc<EncoderNodeStats>,
+    export: Option<Arc<ExportNodeStats>>,
+    encoder: Option<Arc<EncoderNodeStats>>,
     audio_dropped: Option<Arc<AtomicU64>>,
     /// The audio encoder's flushes and tail losses (ADR-0045).
     audio_tail: Option<(Arc<AtomicU64>, Arc<AtomicU64>)>,
@@ -858,6 +875,9 @@ pub struct Studio {
     /// The monitor output while it plays (ADR-0097 F1); `None` otherwise, so no device,
     /// ring or node of it exists.
     monitor: Option<monitor::MonitorRun>,
+    /// Separate audio files while they are open (ADR-0086). `None` adds no node and
+    /// no worker. Not one of [`MAX_OUTPUTS`].
+    iso_audio: Option<iso_audio::IsoAudioRun>,
     /// Soloed sources (session state, never saved; ADR-0097 decision 5).
     solo: BTreeSet<SourceId>,
     /// One cap of two browser helpers for every source this studio instantiates
@@ -1171,6 +1191,7 @@ impl Studio {
             filter_problems: Vec::new(),
             camera: None,
             monitor: None,
+            iso_audio: None,
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
             browser_tree,
@@ -2570,7 +2591,7 @@ impl Studio {
             .iter()
             .filter(|r| {
                 r.output.node == node
-                    || video == Some(r.video)
+                    || (video.is_some() && video == r.video)
                     || (audio.is_some() && audio == r.audio)
             })
             .map(|r| r.id)
@@ -2643,9 +2664,9 @@ impl Studio {
     }
 
     /// Encoder counters of the chains in `video` and `audio` slots now.
-    fn base_of(&self, video: usize, audio: Option<usize>) -> Base {
+    fn base_of(&self, video: Option<usize>, audio: Option<usize>) -> Base {
         let mut b = Base::default();
-        if let Some(c) = &self.chains.video[video] {
+        if let Some(c) = video.and_then(|i| self.chains.video[i].as_ref()) {
             b.frames_exported = c.export_stats.frames.load(Ordering::Relaxed);
             b.export_drops = sum(&[&c.export_stats.busy, &c.export_stats.lost]);
             let e = &c.encoder_stats;
@@ -2698,13 +2719,16 @@ impl Studio {
         };
 
         // Video: a new chain in a free slot, or the shared one's encoder.
+        // Audio only adds neither, and the audio encoder feeds `s0`.
         let mut new_video = None;
-        let (video_slot, video_encoder_node) = match &p.video {
+        let video_slot = match &p.video {
+            VideoPlan::None => None,
             VideoPlan::Shared(i) => {
                 let c = self.chains.video[*i]
                     .as_ref()
                     .ok_or(RecordError::NotBound("shared video encoder"))?;
-                (*i, c.encoder.node)
+                graph.connect(c.encoder.node, "packets", output_id, "s0")?;
+                Some(*i)
             }
             VideoPlan::New {
                 export, encoder, ..
@@ -2724,6 +2748,7 @@ impl Studio {
                 let encoder_id = add_active(&mut graph, Node::<()>::descriptor(&**encoder), part)?;
                 graph.connect(compositor, "canvas", export_id, "canvas")?;
                 graph.connect(export_id, "video", encoder_id, "video")?;
+                graph.connect(encoder_id, "packets", output_id, "s0")?;
                 let e = Added {
                     node: export_id,
                     partition: RENDER,
@@ -2737,10 +2762,10 @@ impl Studio {
                 nodes.push(e);
                 nodes.push(v);
                 new_video = Some((e, v));
-                (i, encoder_id)
+                Some(i)
             }
         };
-        graph.connect(video_encoder_node, "packets", output_id, "s0")?;
+        let audio_pin = if video_slot.is_none() { "s0" } else { "s1" };
 
         let mut new_audio = None;
         let audio_slot = match &p.audio {
@@ -2749,7 +2774,7 @@ impl Studio {
                 let c = self.chains.audio[*i]
                     .as_ref()
                     .ok_or(RecordError::NotBound("shared audio encoder"))?;
-                graph.connect(c.encoder.node, "packets", output_id, "s1")?;
+                graph.connect(c.encoder.node, "packets", output_id, audio_pin)?;
                 Some(*i)
             }
             AudioPlan::New { node, .. } => {
@@ -2767,7 +2792,7 @@ impl Studio {
                 let part = parts.slot(i).audio_encoder;
                 let id = add_active(&mut graph, Node::<()>::descriptor(&**node), part)?;
                 graph.connect(mixer, "main", id, "in")?;
-                graph.connect(id, "packets", output_id, "s1")?;
+                graph.connect(id, "packets", output_id, audio_pin)?;
                 let a = Added {
                     node: id,
                     partition: part,
@@ -2796,7 +2821,7 @@ impl Studio {
                 }
             };
         let mut video_chain = None;
-        let mut video_shared = true;
+        let mut video_shared = matches!(p.video, VideoPlan::Shared(_));
         if let (
             VideoPlan::New {
                 export,
@@ -2867,20 +2892,23 @@ impl Studio {
         // Committed: the graph, the chains and the output.
         self.graph = graph;
         let base = self.base_of(video_slot, audio_slot);
-        if let Some(c) = video_chain {
-            self.chains.video[video_slot] = Some(c);
+        if let (Some(c), Some(i)) = (video_chain, video_slot) {
+            self.chains.video[i] = Some(c);
         }
         if let (Some(c), Some(i)) = (audio_chain, audio_slot) {
             self.chains.audio[i] = Some(c);
         }
-        let (video_chosen, export, encoder, video_queue) = match &self.chains.video[video_slot] {
-            Some(c) => (
-                c.chosen.clone(),
-                Arc::clone(&c.export_stats),
-                Arc::clone(&c.encoder_stats),
-                c.queue.clone(),
-            ),
-            None => return Err(RecordError::NotBound("video encoder")),
+        let (video_chosen, export, encoder, video_queue) = match video_slot {
+            None => (None, None, None, None),
+            Some(i) => match &self.chains.video[i] {
+                Some(c) => (
+                    Some(c.chosen.clone()),
+                    Some(Arc::clone(&c.export_stats)),
+                    Some(Arc::clone(&c.encoder_stats)),
+                    c.queue.clone(),
+                ),
+                None => return Err(RecordError::NotBound("video encoder")),
+            },
         };
         let audio = audio_slot.and_then(|i| self.chains.audio[i].as_ref());
         let audio_chosen = audio.map(|c| c.chosen.clone());
@@ -2990,7 +3018,9 @@ impl Studio {
         let Some((v, a)) = video else {
             return;
         };
-        let video_queue = self.chains.video[v].as_ref().and_then(|c| c.queue.clone());
+        let video_queue = v
+            .and_then(|i| self.chains.video[i].as_ref())
+            .and_then(|c| c.queue.clone());
         let audio_queue = a
             .and_then(|i| self.chains.audio[i].as_ref())
             .and_then(|c| c.queue.clone());
@@ -3029,8 +3059,13 @@ impl Studio {
         let mut nodes: Vec<Added> = gone.iter().map(|r| r.output).collect();
         let mut removed = Vec::new();
         for r in gone {
-            let video_alone = !self.outputs.iter().any(|o| o.video == r.video);
-            if video_alone && let Some(c) = self.chains.video[r.video].take() {
+            let video_alone = r
+                .video
+                .is_some_and(|v| !self.outputs.iter().any(|o| o.video == Some(v)));
+            if video_alone
+                && let Some(v) = r.video
+                && let Some(c) = self.chains.video[v].take()
+            {
                 nodes.push(c.export);
                 nodes.push(c.encoder);
             }
@@ -3095,7 +3130,9 @@ impl Studio {
         // A shared encoder that keeps running is not flushed: its held packets are the
         // other output's.
         let flush_lost = if drained_video {
-            r.encoder.flush_lost.load(Ordering::Relaxed)
+            r.encoder
+                .as_ref()
+                .map_or(0, |e| e.flush_lost.load(Ordering::Relaxed))
         } else {
             0
         };
@@ -3120,7 +3157,10 @@ impl Studio {
         let now = self.engine.clock().now();
         let alone = self.attached(id).map(|r| {
             r.ended.map_or_else(
-                || self.outputs.iter().filter(|o| o.video == r.video).count() == 1,
+                || match r.video {
+                    None => true,
+                    Some(v) => self.outputs.iter().filter(|o| o.video == Some(v)).count() == 1,
+                },
                 |(_, alone)| alone,
             )
         });
@@ -3133,7 +3173,10 @@ impl Studio {
         if r.ended.is_some() {
             return true;
         }
-        if alone && let Some(c) = &self.chains.video[r.video] {
+        if alone
+            && let Some(v) = r.video
+            && let Some(c) = &self.chains.video[v]
+        {
             c.end.end_at(now);
         }
         r.ended = Some((now, alone));
@@ -3152,14 +3195,20 @@ impl Studio {
         let Some((at, alone)) = r.ended else {
             return false;
         };
-        let taken = r.encoder.last_frame.load(Ordering::Relaxed);
+        let Some(slot) = r.video else {
+            return true;
+        };
+        let (Some(encoder), Some(export)) = (&r.encoder, &r.export) else {
+            return true;
+        };
+        let taken = encoder.last_frame.load(Ordering::Relaxed);
         let delivered = if alone {
             // End to end: the export passed on its last frame, and the encoder took it
             // (the queue between them keeps only the newest frame).
-            self.chains.video[r.video]
+            self.chains.video[slot]
                 .as_ref()
                 .is_none_or(|c| c.end.ended())
-                && taken >= r.export.last_frame.load(Ordering::Relaxed)
+                && taken >= export.last_frame.load(Ordering::Relaxed)
         } else {
             // A shared export keeps going: the encoder took a frame at or after the end.
             taken > at.as_nanos()
@@ -3268,15 +3317,20 @@ impl Studio {
     /// `p` with `r`'s output counters filled in.
     fn counters_of(r: &Attached, mut p: Progress) -> Progress {
         let b = &r.base;
-        let e = &r.encoder;
         let since = |now: u64, base: u64| now.saturating_sub(base);
-        p.frames_exported = since(r.export.frames.load(Ordering::Relaxed), b.frames_exported);
-        p.export_drops = since(sum(&[&r.export.busy, &r.export.lost]), b.export_drops);
-        p.frames_encoded = since(e.submitted.load(Ordering::Relaxed), b.frames_encoded);
-        p.encoder_drops = since(
-            sum(&[&e.busy_drops, &e.refused, &e.overflow_drops]),
-            b.encoder_drops,
-        );
+        if let (Some(export), Some(encoder)) = (&r.export, &r.encoder) {
+            p.frames_exported = since(export.frames.load(Ordering::Relaxed), b.frames_exported);
+            p.export_drops = since(sum(&[&export.busy, &export.lost]), b.export_drops);
+            p.frames_encoded = since(encoder.submitted.load(Ordering::Relaxed), b.frames_encoded);
+            p.encoder_drops = since(
+                sum(&[
+                    &encoder.busy_drops,
+                    &encoder.refused,
+                    &encoder.overflow_drops,
+                ]),
+                b.encoder_drops,
+            );
+        }
         p.encoder_skipped = since(
             r.queues.video.as_ref().map_or(0, |q| q.video_drops()),
             b.encoder_skipped,
@@ -3405,6 +3459,7 @@ impl Studio {
     /// of them), then the engine. Returns each output's report, in start order, and the
     /// shutdown's errors.
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>) {
+        self.stop_iso_audio();
         self.stop_virtual_camera();
         self.stop_monitor();
         let ids = self.outputs();

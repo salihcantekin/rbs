@@ -141,10 +141,10 @@ pub fn muxer(factory: &dyn MuxerFactory) -> Report {
     }
     let codecs = set_values(&caps, &caps::CODECS);
     let mut streams = Vec::new();
-    if codecs.iter().any(|c| c == "h264") {
+    if declares_codec(&codecs, "h264") {
         streams.push(h264_stream());
     }
-    if codecs.iter().any(|c| c == "aac") {
+    if declares_codec(&codecs, "aac") {
         streams.push(aac_stream());
     }
     for name in &containers {
@@ -387,6 +387,17 @@ fn non_monotonic_case(
     report.check(format!("{name}/non-monotonic-dts"), result);
 }
 
+/// True when `declared` lists `codec` by itself or as the codec half of a
+/// `<container>.<codec>` pair (ADR-0085).
+fn declares_codec(declared: &[String], codec: &str) -> bool {
+    declared.iter().any(|value| {
+        value == codec
+            || value
+                .rsplit_once('.')
+                .is_some_and(|(_, name)| name == codec)
+    })
+}
+
 fn unsupported_codec_case(
     report: &mut Report,
     name: &str,
@@ -397,7 +408,7 @@ fn unsupported_codec_case(
     let case = format!("{name}/undeclared-codec");
     let Some(codec) = [CodecId::Vp9, CodecId::Opus, CodecId::Av1, CodecId::Hevc]
         .into_iter()
-        .find(|c| !declared.iter().any(|d| d == c.as_str()))
+        .find(|c| !declares_codec(declared, c.as_str()))
     else {
         report.record(case, Outcome::Skipped("every codec is declared".into()));
         return;

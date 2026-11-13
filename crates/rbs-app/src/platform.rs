@@ -20,6 +20,16 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
             .register(Arc::new(rbs_mux_matroska::MatroskaMuxerFactory)),
     );
     note(a.muxers.register(Arc::new(rbs_mux_fmp4::Fmp4MuxerFactory)));
+    note(a.muxers.register(Arc::new(rbs_mux_wav::WavMuxerFactory)));
+    note(a.muxers.register(Arc::new(rbs_mux_flac::FlacMuxerFactory)));
+    note(
+        a.audio_encoders
+            .register(Arc::new(rbs_codec_pcm::PcmEncoderFactory)),
+    );
+    note(
+        a.audio_encoders
+            .register(Arc::new(rbs_codec_flac::FlacEncoderFactory)),
+    );
     note(
         a.transports
             .register(Arc::new(rbs_transport_file::FileTransportFactory)),

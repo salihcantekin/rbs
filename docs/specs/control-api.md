@@ -470,6 +470,10 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 
 `collection.set_glide { duration_ms, easing }` sets the collection morph defaults (`duration_ms` in `0..=5000`, `easing` `"linear"` or `"ease-in-out"`). `source.set_glide { source, glide }` sets a per-source slide override (`glide` is `{ duration_ms, easing }` or `null` to clear). Each is one undo step. Fade-ins always use the collection duration and a linear ramp. `scene.list` and `scene.changed` carry the collection `glide` (absent when 400 ms and ease-in-out) and each `sources` entry may carry `glide` when overridden. `source.list` / `source.changed` rows carry the same optional `glide`. A 1.34 server answers `method_not_found` and omits the fields.
 
+### Protocol 1.45: WAV and FLAC recording profiles
+
+A recording profile's `container` may be `"wav"` or `"flac"`. WAV is PCM of the mix with no picture. `bit_depth` is 16, 24 or 32 (32 is float). FLAC is a native FLAC stream of the mix, with no picture. `bit_depth` is 16 or 24 (integer). Omitted, and 16, are 16-bit, and the server omits 16 so a 1.44 client still reads a profile that stays MKV or MP4. A 1.44 client treats `"wav"` and `"flac"` as unknown containers. 32 is a WAV width and is refused for FLAC. A WAV or FLAC profile does not need a video encoder to start; MKV and MP4 still do. 1.42 and 1.43 were already `canvas: "all"` and `scene.duplicate`.
+
 ### Protocol 1.41: source region and display chrome (ADR-0103, ADR-0104)
 
 `source.set_region { source, region }` sets or clears a source's region. `region` is `[left, top, right, bottom]` in full-picture pixels, or `null` for the whole picture. `source.get_region { source }` returns `{ source, region }`. Both need `control`. One undo step, an edit kind of its own, not `item.set_crop`. `not_found` for an unknown source. `invalid_params` for a sound-only source, or for a region that leaves no pixel after intersection with the picture size the source has already reported. When that size is not known yet, the region is stored.

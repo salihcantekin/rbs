@@ -296,11 +296,13 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         None => Some(std::path::absolute(&a.out).map_err(|e| e.to_string())?),
     };
     let existed = file.as_ref().is_some_and(|f| f.exists());
-    settings.video.rate_control = a.rate_control;
-    settings.video.keyframe_interval = a.keyframe_interval;
-    settings.video.max_b_frames = a.b_frames;
-    settings.video.profile = a.profile.clone();
-    settings.video.preset = a.preset;
+    if let Some(video) = &mut settings.video {
+        video.rate_control = a.rate_control;
+        video.keyframe_interval = a.keyframe_interval;
+        video.max_b_frames = a.b_frames;
+        video.profile = a.profile.clone();
+        video.preset = a.preset;
+    }
     settings.audio = (!a.no_audio).then(|| {
         let mut audio = AudioSettings::default();
         audio.bitrate_bps = a.audio_bitrate;
@@ -338,7 +340,10 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     let started = recording.started().clone();
     println!(
         "video encoder: {} | audio encoder: {} | muxer: {} | transport: {}",
-        started.video_encoder.name,
+        started
+            .video_encoder
+            .as_ref()
+            .map_or("none", |c| c.name.as_str()),
         started
             .audio_encoder
             .as_ref()

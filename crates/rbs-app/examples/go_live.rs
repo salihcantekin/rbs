@@ -206,8 +206,9 @@ fn main() -> ExitCode {
                         path: path.clone(),
                         container: ContainerId::Matroska,
                         encoder: None,
-                        video: record_video.clone(),
+                        video: Some(record_video.clone()),
                         audio_bitrate_bps: e.audio_bps(),
+                        bit_depth: None,
                         size: None,
                     }));
                     record_state = Some(1);

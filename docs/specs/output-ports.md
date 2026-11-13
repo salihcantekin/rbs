@@ -300,7 +300,7 @@ Invariants:
 5. Packets of codecs the container does not support are refused at `create` with `CreateError::Unsupported`.
 6. A non-monotonic `dts` within a stream returns `MuxError::NonMonotonic` (recoverable: the packet is dropped).
 
-Capability keys: `mux.container` (Set of `ContainerId`), `mux.codecs` (Set of codecs it can carry), `mux.live` (Flag: playable without trailer), `mux.patches` (Flag: emits patch chunks).
+Capability keys: `mux.container` (Set of `ContainerId`), `mux.codecs` (Set of `<container>.<codec>`, `container` from `ContainerId::as_str` and `codec` from `CodecId::as_str`, for example `matroska.h264`, `wav.pcm` or `flac.flac`; a bare codec name is still read as that codec), `mux.live` (Flag: playable without trailer), `mux.patches` (Flag: emits patch chunks). Native FLAC declares `mux.live` and not `mux.patches`: the header stores an unknown length, so a crash keeps every frame already written.
 
 ## `rbs-transport`
 

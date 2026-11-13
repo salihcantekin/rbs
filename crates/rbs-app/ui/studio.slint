@@ -424,8 +424,23 @@ export global Studio {
     in-out property <string> out-folder;
     // Bumped by Rust when `out-folder` is set from outside the field.
     in-out property <int> out-folder-serial;
-    in property <[string]> out-formats;
-    in property <int> out-format;
+    // 0 video, 1 audio. The container menu lists that category.
+    in property <int> out-media;
+    in property <[string]> out-containers;
+    in property <int> out-container;
+    // WAV or FLAC: the Encoding card shows the sample width and hides the picture settings.
+    in property <bool> out-audio-only;
+    // FLAC: the width row is 16-bit and 24-bit. WAV keeps 32-bit float.
+    in property <bool> out-flac;
+    in property <[string]> out-pcm-widths;
+    in property <int> out-bit-depth;
+    // The main recording is audio only, so Record works with no video encoder.
+    in property <bool> rec-audio-only;
+    // The vertical canvas's next recording is audio only.
+    in property <bool> vertical-audio-only;
+    // The Record button names audio: idle follows the profile, a running file follows
+    // the file that started.
+    in property <bool> rec-button-audio;
     // Output size of the next recording (ADR-0102): a switch, then nested frames.
     in property <bool> out-same;
     in property <bool> out-portrait;
@@ -440,7 +455,9 @@ export global Studio {
     // A problem with the settings or their file; empty when none.
     in property <string> out-note;
     callback set-folder(string);
-    callback set-format(int);
+    callback set-media(int);
+    callback set-container(int);
+    callback set-bit-depth(int);
     // An Output size chip of an output (0 recording, 1 stream) was picked.
     callback set-output-size(int /* output */, int /* index */);
     // A long side was typed for that output. The short side follows the canvas.
@@ -635,6 +652,39 @@ export global Studio {
     in property <bool> switching;
 }
 
+// The audio-only strip above a program picture. The native picture starts below it, so
+// this stays visible. `size.control.md` high, matching the inset in the preview layer.
+component AudioOnlyStrip inherits Rectangle {
+    height: Tokens.size-control-md;
+    background: Theme.surface-raised;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-strong;
+    HorizontalLayout {
+        height: parent.height;
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        spacing: Tokens.space-2;
+        alignment: center;
+        VerticalLayout {
+            height: parent.height;
+            alignment: center;
+            Icon { name: IconName.speaker; ink: Theme.text-primary; }
+        }
+        VerticalLayout {
+            height: parent.height;
+            alignment: center;
+            Text {
+                text: @tr("Audio only. The picture is not recorded.");
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
 // The canvas as the viewers see it. The picture is a native layer the app places over
 // this rectangle; Slint draws only the background and the letterbox bars.
 // "rbs.program", "rbs.preview" or the vertical canvas's "rbs.program?canvas=vertical"
@@ -653,10 +703,18 @@ export component ProgramPanel inherits Rectangle {
     background: Theme.surface-sunken;
     accessible-role: image;
     accessible-label: title;
-    accessible-description: shown != 0 ? note.text
+    property <bool> audio-only: vertical ? Studio.vertical-audio-only
+        : (panel == "rbs.program" || panel == "rbs.preview") && Studio.rec-audio-only;
+    accessible-description: root.audio-only ? @tr("Audio only. The picture is not recorded.")
+        : shown != 0 ? note.text
         : vertical ? @tr("The live picture of the vertical canvas")
         : scene ? @tr("The picture of the preview scene, the next to go on air")
         : @tr("The live picture of the scene on air");
+    // The native picture starts below this strip (the same height, Tokens.size-control-md).
+    if root.audio-only: AudioOnlyStrip {
+        y: 0;
+        width: parent.width;
+    }
     note := Text {
         visible: shown != 0;
         width: parent.width - 2 * Tokens.space-4;
@@ -1007,7 +1065,9 @@ component SceneRowView inherits Rectangle {
                     Icon { name: IconName.dot; ink: Theme.state-live; }
                 }
                 Text {
-                    text: root.live-state == 1 ? @tr("Live") : root.live-state == 2 ? @tr("REC") : @tr("Live · REC");
+                    text: root.live-state == 1 ? @tr("Live")
+                        : root.live-state == 2 ? (Studio.rec-button-audio ? @tr("REC audio") : @tr("REC"))
+                        : Studio.rec-button-audio ? @tr("Live · REC audio") : @tr("Live · REC");
                     color: Theme.text-secondary;
                     font-size: Tokens.type-caption-size;
                     font-weight: Tokens.type-label-weight;
@@ -2354,9 +2414,12 @@ export component LiveControlsPanel inherits Rectangle {
             Button {
                 // Stopping: the button says so (disabled) until the file is closed;
                 // Record comes back only then.
-                text: Studio.rec-state == 3 ? @tr("Stopping…") : recording ? @tr("Stop recording") : @tr("Record");
+                text: Studio.rec-state == 3 ? @tr("Stopping…")
+                    : recording ? (Studio.rec-button-audio ? @tr("Stop audio recording") : @tr("Stop recording"))
+                    : Studio.rec-button-audio ? @tr("Record audio") : @tr("Record");
                 kind: recording || Studio.rec-state == 3 ? "live" : "secondary";
-                enabled: Studio.state == 1 && Studio.rec-unavailable == ""
+                enabled: Studio.state == 1
+                    && (Studio.rec-unavailable == "" || Studio.rec-audio-only)
                     && (recording || Studio.rec-state == 0);
                 clicked => {
                     if recording { Studio.stop-recording(); } else { Studio.record(); }
@@ -2417,11 +2480,13 @@ export component LiveControlsPanel inherits Rectangle {
         Text {
             // State in words (U4, U9); the live indicator shows it everywhere too.
             text: Studio.rec-state == 1 ? @tr("Starting the recording…")
-                : Studio.rec-state == 2 ? @tr("Recording to {}", Studio.rec-file)
+                : Studio.rec-state == 2 ? (Studio.rec-button-audio ? @tr("Recording audio to {}", Studio.rec-file) : @tr("Recording to {}", Studio.rec-file))
                 : Studio.rec-state == 3 ? @tr("Stopping the recording and closing the file…")
-                : Studio.rec-unavailable != "" ? Studio.rec-unavailable
-                : Studio.rec-note;
-            color: Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
+                : Studio.rec-unavailable != "" && !Studio.rec-audio-only ? Studio.rec-unavailable
+                : Studio.rec-note != "" ? Studio.rec-note
+                : Studio.rec-audio-only ? @tr("Audio only. The picture is not recorded.")
+                : "";
+            color: Studio.rec-state == 0 && ((Studio.rec-unavailable != "" && !Studio.rec-audio-only) || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
         }
@@ -4171,22 +4236,63 @@ export component RecordingSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Format");
-                help: @tr("The container of the file.");
+                help: @tr("Video carries the picture. Audio is the mix, with no picture. WAV is uncompressed. FLAC is lossless and smaller.");
                 enabled: idle;
                 fill: false;
-                SegmentedControl {
-                    label: @tr("Format");
-                    options: Studio.out-formats;
-                    index: Studio.out-format;
-                    enabled: idle;
-                    selected(i) => { Studio.set-format(i); }
+                control-width: Tokens.size-menu-md + Tokens.size-menu-sm;
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: center;
+                    SegmentedControl {
+                        label: @tr("Format");
+                        options: [@tr("Video"), @tr("Audio")];
+                        index: Studio.out-media;
+                        enabled: idle;
+                        selected(i) => { Studio.set-media(i); }
+                    }
+                    Select {
+                        label: @tr("Container");
+                        preferred-width: Tokens.size-menu-sm;
+                        options: Studio.out-containers;
+                        index: Studio.out-container;
+                        enabled: idle;
+                        selected(i) => { Studio.set-container(i); }
+                    }
                 }
             }
         }
         SettingsCard {
             title: @tr("Encoding");
             id: "settings.recording.encoding";
-            SettingBlock {
+            if Studio.out-audio-only && !Studio.out-flac: SettingRow {
+                divider: false;
+                label: @tr("PCM");
+                help: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording. 32-bit float does not clip.");
+                enabled: idle;
+                fill: false;
+                SegmentedControl {
+                    label: @tr("PCM");
+                    options: Studio.out-pcm-widths;
+                    index: Studio.out-bit-depth;
+                    enabled: idle;
+                    selected(i) => { Studio.set-bit-depth(i); }
+                }
+            }
+            if Studio.out-flac: SettingRow {
+                divider: false;
+                label: @tr("Width");
+                help: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording.");
+                enabled: idle;
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Width");
+                    options: Studio.out-pcm-widths;
+                    index: Studio.out-bit-depth;
+                    enabled: idle;
+                    selected(i) => { Studio.set-bit-depth(i); }
+                }
+            }
+            if !Studio.out-audio-only: SettingBlock {
                 divider: false;
                 label: @tr("Output size");
                 help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next recording.");
@@ -4238,7 +4344,7 @@ export component RecordingSettings inherits Rectangle {
                     }
                 }
             }
-            fields := EncoderFields {
+            if !Studio.out-audio-only: fields := EncoderFields {
                 data: Studio.out-enc;
                 idle: idle;
                 set(field, value) => { Studio.set-encoding(0, field, value); }
@@ -5202,8 +5308,8 @@ component OutputCard inherits Rectangle {
             font-weight: Tokens.type-title-weight;
         }
         OutputFact { label: @tr("Format"); value: kind; }
-        OutputFact { label: @tr("Encoder"); value: encoder; }
-        OutputFact { label: @tr("Video"); value: video; }
+        if encoder != "": OutputFact { label: @tr("Encoder"); value: encoder; }
+        if video != "": OutputFact { label: @tr("Video"); value: video; }
         OutputFact { label: @tr("Audio"); value: audio; }
         OutputFact { label: where-label; value: where; }
         HorizontalLayout {

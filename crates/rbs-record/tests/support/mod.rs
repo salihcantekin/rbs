@@ -30,10 +30,10 @@ use rbs_graph::description::PartitionId;
 use rbs_graph::node::NodeTypeId;
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::{
-    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, OUTPUT, OUTPUT_2,
-    OUTPUT_3, OUTPUT_4, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER,
-    RecordAdapters, Recording, Studio, VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3,
-    VIDEO_ENCODER_4,
+    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, ISO_AUDIO_ENCODER,
+    ISO_OUTPUT, OUTPUT, OUTPUT_2, OUTPUT_3, OUTPUT_4, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING,
+    REPLAY_VIDEO_ENCODER, RecordAdapters, Recording, Studio, VIDEO_ENCODER, VIDEO_ENCODER_2,
+    VIDEO_ENCODER_3, VIDEO_ENCODER_4,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneScope, Settings};
@@ -292,8 +292,8 @@ impl TransportFactory for LogTransportFactory {
         &self,
         config: &TransportConfig,
     ) -> Result<Box<dyn Transport>, rbs_transport::CreateError> {
-        // `mem://fail` is a destination that cannot be opened.
-        if config.url == "mem://fail" {
+        // `mem://fail` and `mem://fail/...` are destinations that cannot be opened.
+        if config.url == "mem://fail" || config.url.starts_with("mem://fail/") {
             return Err(rbs_transport::CreateError::InvalidConfig(
                 "cannot open (test)".into(),
             ));
@@ -583,6 +583,8 @@ pub fn run_until<T: Driven>(
         REPLAY_VIDEO_ENCODER,
         REPLAY_AUDIO_ENCODER,
         REPLAY_RING,
+        ISO_AUDIO_ENCODER,
+        ISO_OUTPUT,
     ];
     let gpu = gpu().expect("run_until needs the GPU the studio runs on");
     let wall = Instant::now();

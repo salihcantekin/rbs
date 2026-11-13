@@ -308,8 +308,9 @@ fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
         path,
         container: ContainerId::Matroska,
         encoder: encoder.map(str::to_owned),
-        video,
+        video: Some(video),
         audio_bitrate_bps: 128_000,
+        bit_depth: None,
         size: None,
     }
 }

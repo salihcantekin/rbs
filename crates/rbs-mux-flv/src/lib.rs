@@ -55,7 +55,7 @@ impl AdapterFactory for FlvMuxerFactory {
         };
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Flv.as_str()]))
-            .with(caps::CODECS, set(&["h264", "aac"]))
+            .with(caps::CODECS, set(&["flv.h264", "flv.aac"]))
             .with(caps::LIVE, CapabilityValue::Flag(true)))
     }
 }

@@ -443,8 +443,9 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         path: file.clone(),
         container: ContainerId::Matroska,
         encoder: None,
-        video: VideoSettings::default(),
+        video: Some(VideoSettings::default()),
         audio_bitrate_bps: 128_000,
+        bit_depth: None,
         size: None,
     }));
     let recording = |rx: &_| {
@@ -751,8 +752,9 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
         path: manual.clone(),
         container: ContainerId::Matroska,
         encoder: None,
-        video: VideoSettings::default(),
+        video: Some(VideoSettings::default()),
         audio_bitrate_bps: 128_000,
+        bit_depth: None,
         size: None,
     }));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
