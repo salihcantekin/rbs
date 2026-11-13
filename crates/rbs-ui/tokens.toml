@@ -125,6 +125,8 @@ format = 2
 "size.icon.stroke" = 1.5
 "size.menu.sm" = 220
 "size.menu.md" = 300
+# A setting row narrower than this puts its control under its name (ADR-0114).
+"size.row.stack-below" = 280
 "size.select.list-h" = 320
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165

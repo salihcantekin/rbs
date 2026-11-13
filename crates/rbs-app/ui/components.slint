@@ -1225,60 +1225,73 @@ export component SizeNest inherits Rectangle {
     callback selected(int, int, int);
     property <string> hot-line;
     horizontal-stretch: 1;
-    HorizontalLayout {
-        alignment: start;
-        spacing: Tokens.space-4;
-        if root.bands.length > 0: frame := Rectangle {
-            width: root.portrait ? Tokens.size-menu-sm * 9 / 16 : Tokens.size-menu-sm;
-            height: root.portrait ? Tokens.size-menu-sm : Tokens.size-menu-sm * 9 / 16;
-            background: Theme.surface-sunken;
-            border-radius: Tokens.radius-sm;
-            accessible-role: groupbox;
-            accessible-label: root.label;
-            for band in root.bands: NestBand {
-                x: 0px;
-                y: 0px;
-                width: frame.width * band.scale;
-                height: frame.height * band.scale;
-                title: band.title;
-                detail: band.detail;
-                checked: band.index == root.index;
-                enabled: root.enabled;
-                clicked => { root.selected(band.index, band.picture-w, band.picture-h); }
-                pointed(on) => {
-                    if on { root.hot-line = @tr("{} · {}", band.title, band.detail); }
-                    else if root.hot-line == @tr("{} · {}", band.title, band.detail) { root.hot-line = ""; }
-                }
+    property <bool> has-frame: root.bands.length > 0;
+    property <length> frame-w: !root.has-frame ? 0px : root.portrait ? Tokens.size-menu-sm * 9 / 16 : Tokens.size-menu-sm;
+    property <length> frame-h: !root.has-frame ? 0px : root.portrait ? Tokens.size-menu-sm : Tokens.size-menu-sm * 9 / 16;
+    property <length> gap: root.has-frame ? Tokens.space-4 : 0px;
+    // The picture and the column beside it do not fit: the column goes under the
+    // picture, so nothing leaves a narrow card. Placed by geometry because
+    // `@children` cannot sit under an `if`.
+    out property <bool> stacked: root.has-frame && root.width < root.frame-w + root.gap + side.min-width;
+    min-width: max(root.frame-w, side.min-width);
+    preferred-width: root.frame-w + root.gap + side.preferred-width;
+    min-height: root.stacked ? root.frame-h + root.gap + side.preferred-height : max(root.frame-h, side.preferred-height);
+    preferred-height: self.min-height;
+    if root.has-frame: frame := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.frame-w;
+        height: root.frame-h;
+        background: Theme.surface-sunken;
+        border-radius: Tokens.radius-sm;
+        accessible-role: groupbox;
+        accessible-label: root.label;
+        for band in root.bands: NestBand {
+            x: 0px;
+            y: 0px;
+            width: frame.width * band.scale;
+            height: frame.height * band.scale;
+            title: band.title;
+            detail: band.detail;
+            checked: band.index == root.index;
+            enabled: root.enabled;
+            clicked => { root.selected(band.index, band.picture-w, band.picture-h); }
+            pointed(on) => {
+                if on { root.hot-line = @tr("{} · {}", band.title, band.detail); }
+                else if root.hot-line == @tr("{} · {}", band.title, band.detail) { root.hot-line = ""; }
             }
         }
-        VerticalLayout {
-            horizontal-stretch: 1;
+    }
+    side := VerticalLayout {
+        x: root.stacked ? 0px : root.frame-w + root.gap;
+        y: root.stacked ? root.frame-h + root.gap : 0px;
+        width: root.width - self.x;
+        height: self.preferred-height;
+        alignment: start;
+        spacing: Tokens.space-2;
+        Text {
+            text: root.hot-line != "" ? root.hot-line : root.value;
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        if root.extras.length > 0: HorizontalLayout {
             alignment: start;
             spacing: Tokens.space-2;
-            Text {
-                text: root.hot-line != "" ? root.hot-line : root.value;
-                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-                font-size: Tokens.type-caption-size;
-                wrap: word-wrap;
-                accessible-role: none;
-            }
-            if root.extras.length > 0: HorizontalLayout {
-                alignment: start;
-                spacing: Tokens.space-2;
-                for extra in root.extras: NestExtra {
-                    title: extra.title;
-                    detail: extra.detail;
-                    checked: extra.index == root.index;
-                    enabled: root.enabled;
-                    clicked => { root.selected(extra.index, extra.picture-w, extra.picture-h); }
-                    pointed(on) => {
-                        if on { root.hot-line = @tr("{} · {}", extra.title, extra.detail); }
-                        else if root.hot-line == @tr("{} · {}", extra.title, extra.detail) { root.hot-line = ""; }
-                    }
+            for extra in root.extras: NestExtra {
+                title: extra.title;
+                detail: extra.detail;
+                checked: extra.index == root.index;
+                enabled: root.enabled;
+                clicked => { root.selected(extra.index, extra.picture-w, extra.picture-h); }
+                pointed(on) => {
+                    if on { root.hot-line = @tr("{} · {}", extra.title, extra.detail); }
+                    else if root.hot-line == @tr("{} · {}", extra.title, extra.detail) { root.hot-line = ""; }
                 }
             }
-            @children
         }
+        @children
     }
 }
 
@@ -2094,7 +2107,10 @@ export component NumberField inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-increment => { step-by(1); }
     accessible-action-decrement => { step-by(-1); }
-    if prefix != "": Text {
+    // Never narrower than the prefix, the value and the steppers side by side, so a
+    // narrow panel does not run "Bottom" into its value (U11).
+    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + steppers.width;
+    pre := Text {
         x: Tokens.space-2;
         height: parent.height;
         text: root.prefix;
@@ -3055,5 +3071,75 @@ export component FeatureSection inherits VerticalLayout {
             spacing: Tokens.size-field-gap;
             @children
         }
+    }
+}
+
+// One setting (ADR-0114): its name and explanation on the left, its control on the
+// right. When the row is narrower than `size.row.stack-below`, or the control needs
+// more than half the row, the control goes under the name instead (stacked). A
+// divider line separates it from the row above; the first row of a card without a
+// title sets `divider: false`. The two shapes are placed by geometry because
+// `@children` cannot sit under an `if`.
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> help;
+    // The help is a problem (error colour), not an explanation.
+    in property <bool> help-is-problem;
+    // The help is a warning (warning colour). The words say so; colour is not
+    // the only signal (U7). A problem takes the error colour.
+    in property <bool> help-is-warning;
+    in property <bool> divider: true;
+    // Off: the label shows in the disabled colour (the control is disabled too).
+    in property <bool> enabled: true;
+    // The preferred width of the control column. Beside the name it never takes
+    // more than half the row.
+    in property <length> control-width: Tokens.size-menu-md;
+    // The control fills the column (fields, lists to pick from); off, it keeps its own
+    // width at the column's right edge (toggles, segmented controls, buttons), or at
+    // the left edge when stacked.
+    in property <bool> fill: true;
+    // The control is under the name.
+    out property <bool> stacked: root.width < Tokens.size-row-stack-below || controls.min-width > root.width / 2;
+    property <bool> has-info: root.label != "" || root.help != "";
+    property <length> column: max(controls.min-width, min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2));
+    property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
+    property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
+    min-width: max(info.min-width, controls.min-width);
+    min-height: Tokens.space-3 * 2 + root.inner;
+    preferred-height: Tokens.space-3 * 2 + root.inner;
+    if root.divider: Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    info := VerticalLayout {
+        x: 0;
+        width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap);
+        y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
+        height: self.preferred-height;
+        spacing: Tokens.space-1;
+        if root.label != "": Text {
+            text: root.label;
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        if root.help != "": Text {
+            text: root.help;
+            color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+    }
+    controls := HorizontalLayout {
+        width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
+        x: root.stacked ? 0px : root.width - self.width;
+        y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
+        height: self.preferred-height;
+        alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
+        spacing: Tokens.space-2;
+        @children
     }
 }

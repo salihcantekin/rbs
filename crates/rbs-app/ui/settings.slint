@@ -182,68 +182,6 @@ export component SettingsCard inherits Rectangle {
     }
 }
 
-// One setting: its name and explanation on the left, its control on the right. A
-// divider line separates it from the row above; the first row of a card without a
-// title sets `divider: false`.
-export component SettingRow inherits Rectangle {
-    in property <string> label;
-    in property <string> help;
-    // The help is a problem (error colour), not an explanation.
-    in property <bool> help-is-problem;
-    // The help is a warning (warning colour). The words say so; colour is not
-    // the only signal (U7). A problem takes the error colour.
-    in property <bool> help-is-warning;
-    in property <bool> divider: true;
-    // Off: the label shows in the disabled colour (the control is disabled too).
-    in property <bool> enabled: true;
-    // The width of the control column.
-    in property <length> control-width: Tokens.size-menu-md;
-    // The control fills the column (fields, lists to pick from); off, it keeps its own
-    // width at the column's right edge (toggles, segmented controls, buttons).
-    in property <bool> fill: true;
-    min-height: lay.min-height;
-    preferred-height: lay.preferred-height;
-    if root.divider: Rectangle {
-        y: 0;
-        height: Tokens.size-border;
-        background: Theme.border-subtle;
-    }
-    lay := HorizontalLayout {
-        padding-top: Tokens.space-3;
-        padding-bottom: Tokens.space-3;
-        spacing: Tokens.space-4;
-        VerticalLayout {
-            horizontal-stretch: 1;
-            alignment: center;
-            spacing: Tokens.space-1;
-            if root.label != "": Text {
-                text: root.label;
-                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-                font-size: Tokens.type-label-size;
-                font-weight: Tokens.type-label-weight;
-                wrap: word-wrap;
-                accessible-role: none;
-            }
-            if root.help != "": Text {
-                text: root.help;
-                color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                wrap: word-wrap;
-            }
-        }
-        VerticalLayout {
-            horizontal-stretch: 0;
-            width: root.fill ? root.control-width : min(root.control-width, controls.preferred-width);
-            alignment: center;
-            controls := HorizontalLayout {
-                alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.end;
-                spacing: Tokens.space-2;
-                @children
-            }
-        }
-    }
-}
-
 // A setting whose content takes the card's width (a key pin, a list, a group of
 // buttons): its name and explanation on top, the content under them.
 export component SettingBlock inherits Rectangle {
@@ -259,10 +197,14 @@ export component SettingBlock inherits Rectangle {
         background: Theme.border-subtle;
     }
     lay := VerticalLayout {
-        padding-top: Tokens.space-3;
+        // Without a name and help the empty part below still gets the spacing, so the
+        // top padding gives it back.
+        padding-top: root.label != "" || root.help != "" ? Tokens.space-3 : Tokens.space-3 - Tokens.space-2;
         padding-bottom: Tokens.space-3;
         spacing: Tokens.space-2;
-        if root.label != "" || root.help != "": VerticalLayout {
+        // The name and help are always in the layout (empty when not set): under an
+        // `if`, a wrapped help was measured one line short and the next row overlapped.
+        info := VerticalLayout {
             spacing: Tokens.space-1;
             if root.label != "": Text {
                 text: root.label;
