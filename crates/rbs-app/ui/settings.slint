@@ -197,10 +197,14 @@ export component SettingBlock inherits Rectangle {
         background: Theme.border-subtle;
     }
     lay := VerticalLayout {
-        padding-top: Tokens.space-3;
+        // Without a name and help the empty part below still gets the spacing, so the
+        // top padding gives it back.
+        padding-top: root.label != "" || root.help != "" ? Tokens.space-3 : Tokens.space-3 - Tokens.space-2;
         padding-bottom: Tokens.space-3;
         spacing: Tokens.space-2;
-        if root.label != "" || root.help != "": VerticalLayout {
+        // The name and help are always in the layout (empty when not set): under an
+        // `if`, a wrapped help was measured one line short and the next row overlapped.
+        info := VerticalLayout {
             spacing: Tokens.space-1;
             if root.label != "": Text {
                 text: root.label;
