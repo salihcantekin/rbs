@@ -3,6 +3,10 @@
 //! `cargo xtask check-layers` fails when a crate depends on a layer it may not see.
 //! The allowlists are the current tree. A new crate, or a new dependency that crosses
 //! a layer, is classified here in the same change as the overview table.
+//!
+//! `cargo xtask check-ui` runs the counted UI checks of ADR-0115 (`check_ui`).
+
+mod check_ui;
 
 use std::env;
 use std::fs;
@@ -23,8 +27,22 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Some("check-ui") => {
+            let rest: Vec<String> = args.collect();
+            match check_ui::run(&workspace_root(), &rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(errors) => {
+                    for error in errors {
+                        eprintln!("check-ui: {error}");
+                    }
+                    // An agent's edit hook treats exit code 2 as "refused, read stderr".
+                    let hook = rest.first().is_some_and(|arg| arg == "--hook");
+                    ExitCode::from(if hook { 2 } else { 1 })
+                }
+            }
+        }
         _ => {
-            eprintln!("usage: cargo xtask check-layers");
+            eprintln!("usage: cargo xtask check-layers\n{}", check_ui::USAGE);
             ExitCode::from(2)
         }
     }

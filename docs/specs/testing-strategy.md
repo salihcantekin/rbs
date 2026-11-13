@@ -39,3 +39,26 @@ Binding ([ADR-0032](../adr/0032-fast-deterministic-tests.md); procedure: `test-r
 | Whole fast tier | `cargo nextest run --workspace` (or `cargo test --workspace`) |
 | Slow tier | `cargo nextest run --workspace --run-ignored only -E 'test(/^slow_/)'` |
 | Stress one test binary | run it 50 times pinned to two cores (`taskset -c 0,1`) with busy loops on the others |
+
+## Counted UI checks (ADR-0115)
+
+`cargo xtask check-ui` reads the `.slint` files under `crates/rbs-app/ui` as text, with comments and string contents removed, and counts over the whole tree:
+
+| Check | Counts | Outside the library only |
+| --- | --- | --- |
+| `touch` | `TouchArea {` elements and components that `inherits TouchArea` | yes |
+| `duplicate` | component declarations whose name is declared in more than one file | no |
+| `help` | `help:` statements, up to their `;`, that hold a string literal over 90 characters | yes |
+
+The library is the `library` list in `docs/ui/baseline.toml`. Each count must equal its number in that file plus the entries for that check in `docs/ui/exceptions.toml`; a count above or below fails. The unit test `the_tree_matches_the_baseline_and_the_register` in `xtask` runs the check, so `cargo test --workspace` includes it; it reads only the tree and takes milliseconds.
+
+| Command | Does |
+| --- | --- |
+| `cargo xtask check-ui` | Fails unless every count matches |
+| `cargo xtask check-ui --lower` | Writes lower counts down: register entries of that check first (oldest first), then the baseline; refuses to raise |
+| `cargo xtask check-ui --except <check> <count> <file> <reason> <owner's approval> <date>` | Appends a register entry after the owner approved in writing; `<check>` is a check name or `library` for a new library file |
+| `cargo xtask check-ui --against <commit>` | The pre-merge gate, run by the owner: also fails when a baseline number is above the one at `<commit>` or a library file was added without a `library` entry, and prints the register entries added since |
+| `cargo xtask check-ui --hook pre\|post` | An agent's edit hook (`.claude/settings.json`): `pre` refuses a direct edit to the two files, `post` runs the check after an edit to a `.slint` file or `tokens.toml`; exit code 2 on refusal |
+
+Neither file is edited by hand. The checks see only what they name; the `ui-review` skill lists what stays a review rule.
+

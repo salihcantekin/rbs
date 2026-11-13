@@ -1,0 +1,11 @@
+# Allowed counts for `cargo xtask check-ui` (ADR-0115). Do not edit by hand.
+# A lower count is written down with `cargo xtask check-ui --lower`.
+# A count rises only through docs/ui/exceptions.toml, after the owner approves.
+
+# Files that hold library components. They are not counted by `touch` and `help`.
+library = ["components.slint"]
+
+[baseline]
+touch = 39
+duplicate = 7
+help = 23
