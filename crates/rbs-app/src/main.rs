@@ -3144,12 +3144,13 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 23] = [
+const SETTINGS_SECTIONS: [&str; 24] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.appearance.themes",
     "settings.general.capture",
     "settings.general.closing",
+    "settings.general.glide",
     "settings.general.studio",
     "settings.recording.files",
     "settings.recording.encoding",

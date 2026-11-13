@@ -944,6 +944,8 @@ impl Studio {
     /// recording added to the graph before anything is instantiated: with `Strict`, every
     /// source the recording schedules is instantiated before the first apply opens any
     /// device.
+    // Internal start path shared by the public constructors; each argument is distinct.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_with(
         mut engine: Engine,
         gpu: Arc<GpuContext>,

@@ -273,7 +273,7 @@ const fn va_profile(profile: Profile) -> sys::VAProfile {
         Profile::HevcMain => sys::VAProfileHEVCMain,
         Profile::HevcMain10 => sys::VAProfileHEVCMain10,
         // The probe does not list AV1, so `plan` does not produce this profile.
-        Profile::Av1Main => unreachable!("this adapter does not probe AV1"),
+        Profile::Av1Main => panic!("this adapter does not probe AV1"),
     }
 }
 

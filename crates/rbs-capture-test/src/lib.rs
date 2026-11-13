@@ -693,6 +693,7 @@ fn fit_inside(src: (u32, u32), max: (u32, u32)) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
     use super::*;
     use rbs_core::time::TestClock;
 

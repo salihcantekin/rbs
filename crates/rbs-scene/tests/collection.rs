@@ -2100,3 +2100,30 @@ fn a_canvas_size_change_keeps_the_stored_box_and_fits_it_on_the_way_back() {
     let drawn = s.col.flatten(s.wide, scene).unwrap();
     assert_eq!(drawn[0].transform, Affine2::of_layout(&live));
 }
+
+#[test]
+fn a_following_canvas_does_not_keep_its_own_scenes_sources_warm() {
+    let mut s = studio();
+    let (shared, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(shared, ItemContent::Source(s.screen), full(1.0, 1.0), None)
+        .unwrap();
+    let (own, _) = s
+        .col
+        .add_scene("Vertical only", SceneScope::Canvas(s.tall))
+        .unwrap();
+    s.col
+        .add_item(own, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    s.col.set_program(s.wide, Some(shared)).unwrap();
+    s.col.set_program(s.tall, Some(own)).unwrap();
+    // On its own, the vertical canvas keeps the camera of its own scene warm.
+    assert!(s.col.warm_sources(s.tall).contains(&s.cam));
+    // Following, it shows only what the horizontal canvas puts on air.
+    s.col
+        .set_canvas_follow(s.tall, Some(s.wide), Default::default())
+        .unwrap();
+    let warm = s.col.warm_sources(s.tall);
+    assert!(!warm.contains(&s.cam), "{warm:?}");
+    assert!(warm.contains(&s.screen), "{warm:?}");
+}

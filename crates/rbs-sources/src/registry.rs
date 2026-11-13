@@ -341,7 +341,8 @@ pub enum SourceInstance {
     /// Adopt into the render partition.
     Video(VideoSource),
     /// Adopt into the render partition. Its audio pin is the ADR-0106 producer.
-    Media(MediaSource),
+    /// Boxed: the node with its queues is far larger than the other variants.
+    Media(Box<MediaSource>),
     /// Adopt into the render partition. No audio pin.
     Browser(BrowserSource),
     /// Adopt into the audio partition.
@@ -1095,11 +1096,11 @@ impl SourceTypes {
             ctx.audio.block_frames,
         );
         let stats = node.stats();
-        Ok(SourceInstance::Media(MediaSource {
+        Ok(SourceInstance::Media(Box::new(MediaSource {
             node,
             stats,
             adapter: factory.id(),
-        }))
+        })))
     }
 
     fn instantiate_browser(
@@ -1277,8 +1278,23 @@ fn default_capture_target(
     })
 }
 
+fn default_endpoint(
+    candidates: &[Arc<dyn AudioBackend>],
+    kind: EndpointKind,
+) -> Option<(Arc<dyn AudioBackend>, EndpointId)> {
+    candidates.iter().find_map(|b| {
+        let endpoints = b.enumerate(kind).ok()?;
+        let chosen = endpoints
+            .iter()
+            .find(|e| e.is_default)
+            .or_else(|| endpoints.first())?;
+        Some((Arc::clone(b), chosen.id.clone()))
+    })
+}
+
 #[cfg(test)]
 mod fill_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
     use super::*;
 
     fn colour_settings(filled: Option<bool>) -> Settings {
@@ -1313,18 +1329,4 @@ mod fill_tests {
         assert!(validate_settings(&id, &bad).is_err());
         assert!(validate_settings(&id, &colour_settings(Some(false))).is_ok());
     }
-}
-
-fn default_endpoint(
-    candidates: &[Arc<dyn AudioBackend>],
-    kind: EndpointKind,
-) -> Option<(Arc<dyn AudioBackend>, EndpointId)> {
-    candidates.iter().find_map(|b| {
-        let endpoints = b.enumerate(kind).ok()?;
-        let chosen = endpoints
-            .iter()
-            .find(|e| e.is_default)
-            .or_else(|| endpoints.first())?;
-        Some((Arc::clone(b), chosen.id.clone()))
-    })
 }

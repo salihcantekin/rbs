@@ -708,10 +708,8 @@ fn a_region_and_display_chrome_round_trip_and_an_older_file_refuses_them() {
         Some(rbs_scene::ChromeFill::Fit)
     );
 
-    let old = format!(
-        "format = 13\nkind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"S\"\ntype = \"org.rbs.source.display\"\nregion = [1, 0, 0, 0]\n"
-    );
-    assert!(document::parse::<SceneCollection>(&old).is_err());
+    let old = "format = 13\nkind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"S\"\ntype = \"org.rbs.source.display\"\nregion = [1, 0, 0, 0]\n";
+    assert!(document::parse::<SceneCollection>(old).is_err());
 }
 
 #[test]

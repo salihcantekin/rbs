@@ -155,6 +155,8 @@ pub struct MediaSourceNode {
 
 impl MediaSourceNode {
     /// A standby node. Nothing is opened and no queue is allocated.
+    // Each argument is a distinct source setting from the scene; a builder would only move them.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         factory: Arc<dyn MediaDecoderFactory>,
         path: std::path::PathBuf,
@@ -555,11 +557,7 @@ impl Node<GpuRuntime> for MediaSourceNode {
             .held
             .as_ref()
             .and_then(VideoFrame::share)
-            .or_else(|| {
-                self.pending
-                    .as_ref()
-                    .and_then(|item| item.frame.share())
-            })
+            .or_else(|| self.pending.as_ref().and_then(|item| item.frame.share()))
         {
             let format = *system.format();
             self.upload
@@ -631,6 +629,8 @@ struct Ready {
     has_audio: bool,
 }
 
+// The decode thread owns its copies of the node's shared counters; grouping them adds no clarity.
+#[allow(clippy::too_many_arguments)]
 fn worker(
     factory: Arc<dyn MediaDecoderFactory>,
     path: std::path::PathBuf,

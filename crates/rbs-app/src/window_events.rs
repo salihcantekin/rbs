@@ -122,17 +122,22 @@ where
 /// turn.
 #[cfg(windows)]
 fn keep_visible_soon<C: ComponentHandle + 'static>(weak: slint::Weak<C>) {
+    // `entry::single_shot` lives in the binary, not this library; the body runs under
+    // the same panic boundary through `rbs_crash::contain` (ADR-0055 decision 2).
+    #[allow(clippy::disallowed_methods)]
     slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let Some(c) = weak.upgrade() else {
-            return;
-        };
-        let handle = c.window().window_handle();
-        let Ok(handle) = handle.window_handle() else {
-            return;
-        };
-        if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-            crate::win::redraw::keep_visible(win32.hwnd);
-        }
+        let _ = rbs_crash::contain(|| {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let Some(c) = weak.upgrade() else {
+                return;
+            };
+            let handle = c.window().window_handle();
+            let Ok(handle) = handle.window_handle() else {
+                return;
+            };
+            if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+                crate::win::redraw::keep_visible(win32.hwnd);
+            }
+        });
     });
 }
