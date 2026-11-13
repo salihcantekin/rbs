@@ -2152,8 +2152,8 @@ export component MainWindow inherits Window {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
         mark: IconName.canvas-vertical;
-        text: Shell.vertical-left == 1 ? @tr("The vertical recording is still running.")
-            : @tr("The vertical stream is still live.");
+        text: Shell.vertical-left == 1 ? @tr("Vertical recording still on")
+            : @tr("Vertical stream still live");
         action: Shell.vertical-left == 1 ? @tr("Stop it") : @tr("End it");
         action-icon: IconName.stop;
         act => { Shell.vertical-left-stop(); }
