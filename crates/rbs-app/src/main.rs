@@ -241,6 +241,9 @@ struct App {
     confirm_end_all: bool,
     /// The same for the vertical canvas's stream (ADR-0093 decision 6).
     confirm_end_vertical: bool,
+    /// The main output of this kind stopped and its vertical one runs on: the notice
+    /// with a Stop action (ADR-0111 decision 6), once per such stop.
+    vertical_left: Option<OutputKind>,
     /// Settings › Virtual camera (ADR-0066).
     vcam: vcam_page::Camera,
     replay: replay_page::Replay,
@@ -495,6 +498,18 @@ impl App {
         }
     }
 
+    /// The main output of `kind` was asked to stop; `all`: its vertical one too. When
+    /// the vertical one runs on, the notice says so with a Stop action (ADR-0111).
+    fn main_stopped(&mut self, kind: OutputKind, all: bool) {
+        let runs = match kind {
+            OutputKind::Record => self.studio.vertical_rec.on(),
+            OutputKind::Stream => self.studio.vertical_st.on(),
+        };
+        if !all && runs {
+            self.vertical_left = Some(kind);
+        }
+    }
+
     /// Runs a command registry id from the menu bar or an app-scope shortcut
     /// (ADR-0050, ADR-0060), with the menu's confirmations.
     fn run_command(&mut self, id: &str) {
@@ -632,13 +647,19 @@ impl App {
                 self.confirm_end = true;
                 self.confirm_end_all = all;
             }
-            Run::AskEndStream(all) => self.studio.end_stream_all(all),
+            Run::AskEndStream(all) => {
+                self.studio.end_stream_all(all);
+                self.main_stopped(OutputKind::Stream, all);
+            }
             Run::Record(all) => {
                 if let Err(e) = self.studio.record_all(all) {
                     self.show_error(UiError::Other(e));
                 }
             }
-            Run::StopRecording(all) => self.studio.stop_recording_all(all),
+            Run::StopRecording(all) => {
+                self.studio.stop_recording_all(all);
+                self.main_stopped(OutputKind::Record, all);
+            }
             Run::WithVertical(kind, on) => {
                 let flags = self.studio.vertical_flags.set(kind, on);
                 self.studio.set_vertical_flags(flags);
@@ -1383,6 +1404,15 @@ impl Ctx {
             return;
         };
         // Since going live while live, else since the recording started.
+        // The vertical chips' times (ADR-0111), also while the main canvas is idle.
+        let rec = app.studio.vertical_rec_chip().map(|c| c.time_text());
+        let st = app.studio.vertical_st_chip().map(|c| c.time_text());
+        for g in std::iter::once(app.main.global::<Shell>())
+            .chain(app.floats.iter().map(|f| f.window.global::<Shell>()))
+        {
+            g.set_vertical_rec_time(rec.clone().unwrap_or_default().into());
+            g.set_vertical_live_time(st.clone().unwrap_or_default().into());
+        }
         let elapsed = match (
             app.demo_since,
             app.studio.streaming_for(),
@@ -1694,8 +1724,12 @@ impl Ctx {
                 app.session.set_live(live);
             }
         }
-        // One tick a second while live or recording, none otherwise (ADR-0013).
-        if app.session.live().is_active() {
+        // One tick a second while live or recording (either canvas), none otherwise
+        // (ADR-0013).
+        if app.session.live().is_active()
+            || app.studio.vertical_rec.busy()
+            || app.studio.vertical_st.busy()
+        {
             if !self.live_timer.running() {
                 let ctx = self.clone();
                 entry::start(
@@ -2266,6 +2300,15 @@ impl Ctx {
         if !app.studio.vertical_st.on() {
             app.confirm_end_vertical = false;
         }
+        // The notice goes once its vertical output stops (from anywhere).
+        let still = match app.vertical_left {
+            Some(OutputKind::Record) => app.studio.vertical_rec.on(),
+            Some(OutputKind::Stream) => app.studio.vertical_st.on(),
+            None => true,
+        };
+        if !still {
+            app.vertical_left = None;
+        }
         let edges = view::edge_tabs(&app.session.workspace().windows[0]);
         let reveal = app.reveal.take().and_then(|id| {
             edges.iter().enumerate().find_map(|(edge, tabs)| {
@@ -2348,6 +2391,19 @@ impl Ctx {
             g.set_vertical_outputs(app.studio.vertical.is_some());
             g.set_vertical_live(app.studio.vertical_st.on());
             g.set_vertical_rec(app.studio.vertical_rec.on());
+            g.set_end_stream_both(app.confirm_end_all && app.studio.vertical_st.on());
+            g.set_vertical_left(match app.vertical_left {
+                None => 0,
+                Some(OutputKind::Record) => 1,
+                Some(OutputKind::Stream) => 2,
+            });
+            g.set_vertical_stream_set_up(app.studio.vertical_stream_set_up());
+            let rec = app.studio.vertical_rec_chip();
+            g.set_vertical_rec_state(rec.map_or(0, |c| c.state.code()));
+            g.set_vertical_rec_time(rec.map(|c| c.time_text()).unwrap_or_default().into());
+            let st = app.studio.vertical_st_chip();
+            g.set_vertical_live_state(st.map_or(0, |c| c.state.code()));
+            g.set_vertical_live_time(st.map(|c| c.time_text()).unwrap_or_default().into());
             g.set_toolbar(toolbar.clone());
             g.set_toolbar_visible(toolbar_visible);
             g.set_toolbar_end(toolbar_end.clone());
@@ -2673,8 +2729,28 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     on!(on_end_stream_answer, |app, end: bool| {
         app.confirm_end = false;
         if end {
-            app.studio.end_stream_all(app.confirm_end_all);
+            let all = app.confirm_end_all;
+            app.studio.end_stream_all(all);
+            app.main_stopped(OutputKind::Stream, all);
         }
+    });
+    on!(on_vertical_left_stop, |app| {
+        match app.vertical_left.take() {
+            Some(OutputKind::Record) => app.run_command("record.vertical.toggle"),
+            Some(OutputKind::Stream) => app.run_command("stream.vertical.toggle"),
+            None => {}
+        }
+    });
+    on!(on_vertical_left_dismiss, |app| {
+        app.vertical_left = None;
+    });
+    // A chip's stop: that vertical output alone; ending a stream asks first (U4).
+    on!(on_vertical_stop, |app, stream: bool| {
+        app.run_command(if stream {
+            "stream.vertical.toggle"
+        } else {
+            "record.vertical.toggle"
+        });
     });
     on!(on_end_vertical_answer, |app, end: bool| {
         app.confirm_end_vertical = false;
@@ -3762,6 +3838,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_stop_recording, |app| {
         let all = app.studio.with_vertical(OutputKind::Record);
         app.studio.stop_recording_all(all);
+        app.main_stopped(OutputKind::Record, all);
     });
     on!(on_set_folder, |app, text: slint::SharedString| {
         app.studio.set_folder(&text);
@@ -3793,6 +3870,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_end_stream, |app| {
         let all = app.studio.with_vertical(OutputKind::Stream);
         app.studio.end_stream_all(all);
+        app.main_stopped(OutputKind::Stream, all);
     });
     on!(on_vcam_toggle, |app, on: bool| {
         vcam_page::send(app, on);
@@ -4208,6 +4286,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             confirm_end: false,
             confirm_end_all: false,
             confirm_end_vertical: false,
+            vertical_left: None,
             vcam,
             replay,
             demo_since: demo_live.then(Instant::now),

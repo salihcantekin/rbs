@@ -161,6 +161,46 @@ impl VerticalOut {
     }
 }
 
+/// What a vertical output's chip shows (ADR-0111 decision 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipState {
+    Starting,
+    /// A stream that started and has not reached its server yet.
+    Connecting,
+    /// Recording, or live.
+    Running,
+    Ending,
+}
+
+impl ChipState {
+    /// The code `Shell.vertical-*-state` takes: 1 starting, 2 connecting, 3 running,
+    /// 4 ending (0: no chip).
+    pub fn code(self) -> i32 {
+        match self {
+            ChipState::Starting => 1,
+            ChipState::Connecting => 2,
+            ChipState::Running => 3,
+            ChipState::Ending => 4,
+        }
+    }
+}
+
+/// A running vertical output, as its chip beside Record or Go live shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerticalChip {
+    pub state: ChipState,
+    /// Since it started; `None` until the host said so.
+    pub elapsed: Option<Duration>,
+}
+
+impl VerticalChip {
+    /// The elapsed time as the live indicator writes it (`0:01:05`).
+    pub fn time_text(&self) -> String {
+        let s = self.elapsed.unwrap_or_default().as_secs();
+        format!("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+    }
+}
+
 /// Why "Go live vertical" cannot start without a server (the toast adds "Vertical
 /// canvas: ").
 const VERTICAL_SETUP: &str = "Set up the vertical stream in Settings, Stream.";
@@ -355,6 +395,11 @@ pub struct StudioUi {
     /// waits for them as for the main ones.
     pub vertical_rec: VerticalOut,
     pub vertical_st: VerticalOut,
+    /// When the vertical recording and stream started (ADR-0111 chips), and whether
+    /// the vertical stream is connected.
+    vertical_rec_since: Option<Instant>,
+    vertical_st_since: Option<Instant>,
+    vertical_st_connected: bool,
     /// The canvas whose settings the Recording and Stream sections show and change
     /// (ADR-0093 decision 6); the main one while there is no vertical canvas.
     settings_canvas: OutputCanvas,
@@ -558,6 +603,9 @@ impl StudioUi {
             st_state: st_state::OFF,
             vertical_rec: VerticalOut::Off,
             vertical_st: VerticalOut::Off,
+            vertical_rec_since: None,
+            vertical_st_since: None,
+            vertical_st_connected: false,
             settings_canvas: OutputCanvas::Main,
             vertical_profile: None,
             vertical_stream: None,
@@ -2972,6 +3020,37 @@ impl StudioUi {
         }
     }
 
+    /// The chip of the vertical recording beside Record (ADR-0111 decision 6): `None`
+    /// while it does not run.
+    pub fn vertical_rec_chip(&self) -> Option<VerticalChip> {
+        let state = match self.vertical_rec {
+            VerticalOut::Off => return None,
+            VerticalOut::Starting => ChipState::Starting,
+            VerticalOut::On => ChipState::Running,
+            VerticalOut::Ending => ChipState::Ending,
+        };
+        Some(VerticalChip {
+            state,
+            elapsed: self.vertical_rec_since.map(|t| t.elapsed()),
+        })
+    }
+
+    /// The chip of the vertical stream beside Go live: connecting until the server
+    /// took it.
+    pub fn vertical_st_chip(&self) -> Option<VerticalChip> {
+        let state = match self.vertical_st {
+            VerticalOut::Off => return None,
+            VerticalOut::Starting => ChipState::Starting,
+            VerticalOut::On if !self.vertical_st_connected => ChipState::Connecting,
+            VerticalOut::On => ChipState::Running,
+            VerticalOut::Ending => ChipState::Ending,
+        };
+        Some(VerticalChip {
+            state,
+            elapsed: self.vertical_st_since.map(|t| t.elapsed()),
+        })
+    }
+
     /// A vertical server is saved ("Vertical stream not set up" otherwise).
     pub fn vertical_stream_set_up(&self) -> bool {
         self.vertical_stream
@@ -3252,6 +3331,8 @@ impl StudioUi {
                 && !self.setup_note_stale(),
         );
         g.set_st_needs_setup(self.stream.missing().is_some());
+        // End stream also ends the vertical stream: the question names both (ADR-0111).
+        g.set_st_end_both(self.with_vertical(OutputKind::Stream) && self.vertical_st.on());
         if g.get_st_server_serial() != self.server_serial as i32 {
             g.set_st_server(st.server.as_str().into());
             g.set_st_server_serial(self.server_serial as i32);
@@ -4561,8 +4642,14 @@ impl StudioUi {
             // profile switch.
             Update::VerticalRecording(r) => {
                 match &r {
-                    RecordingUpdate::Started { .. } => self.vertical_rec = VerticalOut::On,
-                    RecordingUpdate::Stopped { .. } => self.vertical_rec = VerticalOut::Off,
+                    RecordingUpdate::Started { .. } => {
+                        self.vertical_rec = VerticalOut::On;
+                        self.vertical_rec_since = Some(Instant::now());
+                    }
+                    RecordingUpdate::Stopped { .. } => {
+                        self.vertical_rec = VerticalOut::Off;
+                        self.vertical_rec_since = None;
+                    }
                     // A refused start leaves a running one running.
                     RecordingUpdate::NotStarted(_) => {
                         if self.vertical_rec == VerticalOut::Starting {
@@ -4581,14 +4668,22 @@ impl StudioUi {
             }
             Update::VerticalStream(u) => {
                 match &u {
-                    StreamUpdate::Started { .. } => self.vertical_st = VerticalOut::On,
-                    StreamUpdate::Ended { .. } => self.vertical_st = VerticalOut::Off,
+                    StreamUpdate::Started { .. } => {
+                        self.vertical_st = VerticalOut::On;
+                        self.vertical_st_since = Some(Instant::now());
+                        self.vertical_st_connected = false;
+                    }
+                    StreamUpdate::Ended { .. } => {
+                        self.vertical_st = VerticalOut::Off;
+                        self.vertical_st_since = None;
+                        self.vertical_st_connected = false;
+                    }
                     StreamUpdate::NotStarted(_) | StreamUpdate::NoKey => {
                         if self.vertical_st == VerticalOut::Starting {
                             self.vertical_st = VerticalOut::Off;
                         }
                     }
-                    StreamUpdate::Link(_) => {}
+                    StreamUpdate::Link(link) => self.vertical_st_connected = link.connected,
                 }
                 let why = match u {
                     StreamUpdate::NotStarted(why) => Some(why),
@@ -6858,6 +6953,8 @@ mod tests {
                 ("Record vertical".to_owned(), true, false),
                 ("Go live main only".to_owned(), true, false),
                 ("Go live vertical".to_owned(), true, false),
+                (String::new(), true, false),
+                ("Set up vertical stream...".to_owned(), true, false),
             ]
         );
         // "Main + vertical" by default: Record and Go live act on both canvases, and
@@ -6893,7 +6990,11 @@ mod tests {
             assert_eq!(
                 choices,
                 [
-                    ("Main + vertical".to_owned(), "on".to_owned(), true),
+                    (
+                        "Main + vertical (vertical stream not set up)".to_owned(),
+                        "on".to_owned(),
+                        true
+                    ),
                     ("Main only".to_owned(), "off".to_owned(), false),
                 ]
             );
@@ -6916,8 +7017,18 @@ mod tests {
             audio_encoder: None,
         }));
         assert_eq!(ui.vertical_rec, VerticalOut::On);
+        // Each running vertical output has its chip (ADR-0111 decision 6): the stream
+        // connects until its server took it.
+        let rec = ui.vertical_rec_chip().unwrap();
+        assert_eq!(rec.state, ChipState::Running);
+        assert_eq!(rec.time_text().len(), "0:00:00".len());
+        assert_eq!(ui.vertical_st_chip().unwrap().state, ChipState::Connecting);
+        let mut link = Link::default();
+        link.connected = true;
+        ui.apply(Update::VerticalStream(StreamUpdate::Link(link)));
+        assert_eq!(ui.vertical_st_chip().unwrap().state, ChipState::Running);
         assert_eq!(
-            titles(&ui)[4..],
+            titles(&ui)[4..7],
             [
                 ("Stop vertical recording".to_owned(), true, true),
                 ("Go live main only".to_owned(), true, false),
@@ -6988,6 +7099,8 @@ mod tests {
             connects: 1,
         }));
         assert!(!ui.vertical_rec.busy() && !ui.vertical_st.busy());
+        assert_eq!(ui.vertical_rec_chip(), None);
+        assert_eq!(ui.vertical_st_chip(), None);
         // A start the host refuses ends the wait.
         ui.vertical_st = VerticalOut::Starting;
         let out = ui.apply(Update::VerticalStream(StreamUpdate::NoKey));

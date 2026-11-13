@@ -2603,6 +2603,8 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "record.vertical.toggle",
             "stream.main.toggle",
             "stream.vertical.toggle",
+            "|",
+            "ui.settings.open?section=stream",
         ],
     ),
     (

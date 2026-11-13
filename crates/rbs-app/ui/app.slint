@@ -136,6 +136,22 @@ export global Shell {
     // The vertical canvas streams, records (or starts to): Go live and Record show "9:16".
     in property <bool> vertical-live;
     in property <bool> vertical-rec;
+    // The chips beside Record and Go live (ADR-0111): 0 none, 1 starting, 2 connecting,
+    // 3 recording or live, 4 stopping; and the elapsed time.
+    in property <int> vertical-rec-state;
+    in property <string> vertical-rec-time;
+    in property <int> vertical-live-state;
+    in property <string> vertical-live-time;
+    // A chip's stop: the vertical stream (true) or recording alone.
+    callback vertical-stop(bool /* stream */);
+    // End stream ends the vertical stream too: the question names both.
+    in property <bool> end-stream-both;
+    // The main output stopped and the vertical one runs on: 1 recording, 2 stream.
+    in property <int> vertical-left;
+    callback vertical-left-stop();
+    callback vertical-left-dismiss();
+    // A vertical server is saved; without one the ▾ menu offers to set it up.
+    in property <bool> vertical-stream-set-up;
     // The gap between panel cards and around them: the layout's divider thickness.
     // literal: Rust sets it to rbs_ui::layout::HANDLE_THICKNESS, which the frame geometry also uses
     in property <length> gap: 6px;
@@ -1083,13 +1099,16 @@ component EndStreamConfirm inherits HorizontalLayout {
     accessible-label: vertical ? @tr("End the vertical stream?") : @tr("End the stream?");
     init => { keep-stream.focus(); }
     Text {
-        text: vertical ? @tr("End the vertical stream? Viewers see it end.") : @tr("End the stream? Viewers see it end.");
+        text: vertical ? @tr("End the vertical stream? Viewers see it end.")
+            : Shell.end-stream-both ? @tr("End both streams, main and vertical? Viewers see them end.")
+            : @tr("End the stream? Viewers see it end.");
         color: Theme.text-primary;
         font-size: Tokens.type-body-size;
         vertical-alignment: center;
     }
     Button {
-        text: vertical ? @tr("Yes, end the vertical stream") : @tr("Yes, end the stream");
+        text: vertical ? @tr("Yes, end the vertical stream")
+            : Shell.end-stream-both ? @tr("Yes, end both streams") : @tr("Yes, end the stream");
         kind: "live";
         clicked => { if vertical { Shell.end-vertical-answer(true); } else { Shell.end-stream-answer(true); } }
     }
@@ -1126,7 +1145,9 @@ component EndStreamCard inherits Rectangle {
         padding: Tokens.space-3;
         spacing: Tokens.space-2;
         Text {
-            text: vertical ? @tr("End the vertical stream? Viewers see it end.") : @tr("End the stream? Viewers see it end.");
+            text: vertical ? @tr("End the vertical stream? Viewers see it end.")
+                : Shell.end-stream-both ? @tr("End both streams, main and vertical? Viewers see them end.")
+                : @tr("End the stream? Viewers see it end.");
             color: Theme.text-primary;
             font-size: Tokens.type-body-size;
         }
@@ -1134,7 +1155,8 @@ component EndStreamCard inherits Rectangle {
             alignment: end;
             spacing: Tokens.space-2;
             Button {
-                text: vertical ? @tr("Yes, end the vertical stream") : @tr("Yes, end the stream");
+                text: vertical ? @tr("Yes, end the vertical stream")
+                    : Shell.end-stream-both ? @tr("Yes, end both streams") : @tr("Yes, end the stream");
                 kind: "live";
                 clicked => { root.answer(true); }
             }
@@ -1241,8 +1263,8 @@ component ToolbarCell inherits HorizontalLayout {
         checked: item.checked && !item.live;
         kind: go-live ? "primary" : "secondary";
         menu-name: item.id == "stream.toggle" ? @tr("Vertical stream") : @tr("Vertical recording");
-        // The vertical output runs: its aspect ratio, the same in every language.
-        menu-text: vertical-on ? "9:16" : "";
+        // A running vertical output shows as its own chip beside the buttons (ADR-0111).
+        menu-text: "";
         menu-description: vertical-on ? @tr("The vertical canvas is on air") : "";
         clicked => { Menus.run(item.id); }
         open-menu(x) => { root.open-vertical(x); }
@@ -1286,6 +1308,66 @@ component CaptionButton inherits Rectangle {
     touch := TouchArea {
         enabled: !root.outside;
         clicked => { root.clicked(); }
+    }
+}
+
+// A running vertical output beside Record and Go live (ADR-0111 decision 6): the
+// vertical mark, its state, the time since it started and a stop for it alone. It
+// exists only while that output runs (P13); the 1 Hz tick that moves its time runs
+// only then too.
+component VerticalChip inherits Rectangle {
+    // 1 starting, 2 connecting, 3 recording or live, 4 stopping.
+    in property <int> state;
+    in property <string> time;
+    in property <bool> stream;
+    callback stop();
+    property <bool> on-air: state == 3;
+    property <string> state-text: state == 1 ? @tr("Starting…")
+        : state == 2 ? @tr("Connecting…")
+        : state == 4 ? (stream ? @tr("Ending…") : @tr("Stopping…"))
+        : stream ? @tr("Live") : @tr("Recording");
+    height: Tokens.size-control-md;
+    width: row.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: on-air ? Theme.state-live : Theme.border-subtle;
+    background: Theme.surface-raised;
+    accessible-role: groupbox;
+    accessible-label: stream ? @tr("Vertical stream: {} {}", state-text, time)
+        : @tr("Vertical recording: {} {}", state-text, time);
+    row := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        spacing: Tokens.space-1;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.canvas-vertical; ink: on-air ? Theme.state-live : Theme.text-secondary; }
+        }
+        Text {
+            text: (stream ? @tr("Vertical live") : @tr("Vertical rec")) + (on-air ? "" : " · " + state-text);
+            color: Theme.text-primary;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if on-air: Text {
+            text: time;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.stop;
+                name: stream ? @tr("End vertical stream") : @tr("Stop vertical recording");
+                enabled: state == 1 || state == 2 || state == 3;
+                clicked => { root.stop(); }
+            }
+        }
     }
 }
 
@@ -1418,6 +1500,19 @@ component FrameBar inherits Rectangle {
                 vertical-on: item.id == "stream.toggle" ? Shell.vertical-live : Shell.vertical-rec;
                 open-workspaces(x) => { }
                 open-vertical(x) => { vertical-menu.open({ x: x - root.absolute-position.x, y: root.height }); }
+            }
+            // Each running vertical output's chip (ADR-0111 decision 6).
+            if Shell.vertical-live-state != 0: VerticalChip {
+                state: Shell.vertical-live-state;
+                time: Shell.vertical-live-time;
+                stream: true;
+                stop => { Shell.vertical-stop(true); }
+            }
+            if Shell.vertical-rec-state != 0: VerticalChip {
+                state: Shell.vertical-rec-state;
+                time: Shell.vertical-rec-time;
+                stream: false;
+                stop => { Shell.vertical-stop(false); }
             }
             // Idle it is not in the layout at all (the status bar says "Not live").
             if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
@@ -2050,6 +2145,19 @@ export component MainWindow inherits Window {
         generation: Studio.deleted-generation;
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
+    }
+    // The main output stopped and its vertical one runs on (ADR-0111 decision 6): once
+    // per such stop, not modal; Stop ends that output (a stream asks first, U4).
+    if Shell.vertical-left != 0 && Shell.toast-kind == 0 && Studio.deleted == "": Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        mark: IconName.canvas-vertical;
+        text: Shell.vertical-left == 1 ? @tr("The vertical recording is still running.")
+            : @tr("The vertical stream is still live.");
+        action: Shell.vertical-left == 1 ? @tr("Stop it") : @tr("End it");
+        action-icon: IconName.stop;
+        act => { Shell.vertical-left-stop(); }
+        dismiss => { Shell.vertical-left-dismiss(); }
     }
     // End stream asks first (U4), in a card under Go live and Record.
     if (Shell.end-stream-confirm || Shell.end-vertical-confirm) && !Shell.quit-confirm: EndStreamCard {

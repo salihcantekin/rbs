@@ -864,8 +864,15 @@ impl CommandState for Shown<'_> {
                     return Vec::new();
                 };
                 let on = self.studio.vertical_flags.with_main(kind);
+                // The hint of ADR-0111 decision 6: Go live skips a vertical stream that
+                // has no server.
+                let both = if kind == OutputKind::Stream && !self.studio.vertical_stream_set_up() {
+                    "Main + vertical (vertical stream not set up)"
+                } else {
+                    "Main + vertical"
+                };
                 vec![
-                    ("Main + vertical".to_owned(), "on".to_owned(), on),
+                    (both.to_owned(), "on".to_owned(), on),
                     ("Main only".to_owned(), "off".to_owned(), !on),
                 ]
             }
@@ -964,6 +971,19 @@ impl CommandState for Shown<'_> {
             "canvas.add_vertical" if self.studio.vertical.is_some() => {
                 return Some("Vertical output settings...".to_owned());
             }
+            // In the ▾ menu: where the vertical stream is set up.
+            "ui.settings.open"
+                if id.param("section") == Some("stream") && self.studio.vertical.is_some() =>
+            {
+                return Some(
+                    if self.studio.vertical_stream_set_up() {
+                        "Stream settings..."
+                    } else {
+                        "Set up vertical stream..."
+                    }
+                    .to_owned(),
+                );
+            }
             "stream.vertical.toggle" if self.studio.vertical_st.on() => {
                 return Some("End vertical stream".to_owned());
             }
@@ -1040,6 +1060,11 @@ impl CommandState for Shown<'_> {
                     || self.studio.vertical_rec.busy()
             }
             "canvas.remove_vertical" => self.studio.vertical.is_some(),
+            // Stream settings in the ▾ menu (the only layout that names this id), while
+            // a vertical canvas exists.
+            "ui.settings.open" if id.param("section") == Some("stream") => {
+                self.studio.vertical.is_some()
+            }
             // The vertical picture's toggle, while a vertical canvas exists (or its panel
             // is still open).
             "canvas.vertical_preview.toggle" => {
