@@ -1553,9 +1553,9 @@ impl Ctx {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_scene_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
-    /// The vertical canvas's picture (ADR-0093; macOS only for now, as the preview
-    /// scene's: Windows has one picture target per window).
-    #[cfg(target_os = "macos")]
+    /// The vertical canvas's picture (ADR-0093 decision 7). On Windows it shares the
+    /// window's DirectComposition target with the other pictures (#310).
+    #[cfg(any(target_os = "macos", windows))]
     fn connect_vertical_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
         preview::connect(preview::Picture::Vertical, endpoint, |ok| {
             let ctx = CTX.with(|c| c.borrow().clone());
@@ -1568,7 +1568,7 @@ impl Ctx {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_vertical_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
     /// Shows the Settings window at `section`, made on first use and kept until it is
@@ -1854,7 +1854,7 @@ impl Ctx {
             0 => ps::STARTING,
             2 => ps::STOPPED,
             _ if s.vertical.is_none() => ps::NO_CANVAS,
-            _ if !s.preview_offered || !cfg!(target_os = "macos") => ps::NO_PLATFORM,
+            _ if !s.preview_offered || !cfg!(any(target_os = "macos", windows)) => ps::NO_PLATFORM,
             _ if s.vertical_picture_failed => ps::FAILED,
             _ if s.vertical_preview_failed => ps::NO_SESSION,
             _ if vertical_main.is_none() && float_has(studio_ui::VERTICAL_PANEL) => {
@@ -1881,7 +1881,7 @@ impl Ctx {
 
         // The vertical canvas makes its picture only while its panel shows here: a
         // picture costs a compositor pass each frame (ADR-0093 decision 7, P13).
-        let vertical_wanted = cfg!(target_os = "macos")
+        let vertical_wanted = cfg!(any(target_os = "macos", windows))
             && running
             && s.preview_offered
             && s.vertical.is_some()
