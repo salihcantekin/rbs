@@ -499,14 +499,18 @@ enum CropRefusal {
     NoPicture,
     /// The scene refused the edit.
     Failed(String),
+    /// The canvas cannot be edited now (the vertical canvas shows another scene, or
+    /// the source is global there).
+    Conflict(String),
 }
 
 impl CropRefusal {
     fn text(&self) -> String {
         match self {
-            CropRefusal::NotFound(t) | CropRefusal::Invalid(t) | CropRefusal::Failed(t) => {
-                t.clone()
-            }
+            CropRefusal::NotFound(t)
+            | CropRefusal::Invalid(t)
+            | CropRefusal::Failed(t)
+            | CropRefusal::Conflict(t) => t.clone(),
             CropRefusal::NoPicture => {
                 "This source has no picture yet, so its crop cannot keep the scale.".into()
             }
@@ -6396,6 +6400,9 @@ impl Host {
         }
         self.collection = draft;
         self.vertical = None;
+        // Steps that wrote vertical layouts would name a canvas that is gone (scene
+        // model invariant 4), so the history ends here, as after a canvas change.
+        self.history.clear();
         self.forget_vertical_outputs();
         self.waiting = self.studio.waiting();
         Ok(true)
@@ -6851,6 +6858,7 @@ impl Host {
         let (_, old, own) = self.crop_target(item).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
             CropRefusal::Invalid(t) => Refusal::Invalid(t),
+            CropRefusal::Conflict(t) => Refusal::Conflict(t),
             CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
         })?;
         let canvas = self
@@ -6928,6 +6936,7 @@ impl Host {
         let (_, old, own) = self.crop_target(item).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
             CropRefusal::Invalid(t) => Refusal::Invalid(t),
+            CropRefusal::Conflict(t) => Refusal::Conflict(t),
             CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
         })?;
         let canvas = self
@@ -7579,14 +7588,14 @@ impl Host {
         if on == OutputCanvas::Vertical {
             let canvas = self.edit_canvas(on).map_err(|e| match e {
                 Refusal::NotFound(t) => CropRefusal::NotFound(t),
-                e => CropRefusal::Invalid(e.text().into()),
+                e => CropRefusal::Conflict(e.text().into()),
             })?;
             let (scene, found) = self
                 .collection
                 .item(item)
                 .ok_or_else(|| CropRefusal::NotFound(format!("no item {}", item.get())))?;
             if self.globals() == Some(scene) {
-                return Err(CropRefusal::Invalid(
+                return Err(CropRefusal::Conflict(
                     "Global sources are not on the vertical canvas yet.".into(),
                 ));
             }
@@ -7700,6 +7709,7 @@ impl Host {
         let (source, old, own) = self.crop_target_on(item, on).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
             CropRefusal::Invalid(t) => Refusal::Invalid(t),
+            CropRefusal::Conflict(t) => Refusal::Conflict(t),
             CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
         })?;
         if locked {
@@ -8880,6 +8890,7 @@ impl ApiTarget<'_> {
                         match e {
                             CropRefusal::NotFound(_) => ErrorKind::NotFound,
                             CropRefusal::Invalid(_) => ErrorKind::InvalidParams,
+                            CropRefusal::Conflict(_) => ErrorKind::Conflict,
                             CropRefusal::NoPicture | CropRefusal::Failed(_) => ErrorKind::Failed,
                         },
                         e.text(),
