@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow } from "components.slint";
+import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -784,287 +784,141 @@ component SourceRowView inherits Rectangle {
     // the row's focus is about to go.
     callback leaving();
     property <bool> selected: Studio.selected-source == data.id;
-    property <color> ink: data.visible ? Theme.text-primary : Theme.text-disabled;
-    // Delete or Backspace asks first; a second Delete, Return or Remove confirms.
     // `delete-all`: the confirm removes the source from every scene (Delete source).
-    property <bool> confirm;
-    // A menu or the Delete key leaves the row without focus, and a touch area
-    // under the confirm buttons takes the first click. The row takes the focus
-    // again, and its own press is off while it asks.
-    changed confirm => {
-        if root.confirm { focus.focus(); }
-    }
     property <bool> delete-all;
     property <int> confirm-asked: Studio.confirm-source-asked;
     changed confirm-asked => { root.take-confirm(); }
     function take-confirm() {
         if Studio.confirming-source == data.id {
             root.delete-all = Studio.confirm-source-kind == 2;
-            root.confirm = true;
+            row.confirm = true;
             Studio.confirming-source = -1;
         }
     }
-    // Another source row is dragged over this one: it would take this row's place.
-    property <bool> drop-here: drop.has-drag && Studio.dragging-source >= 0 && Studio.dragging-source != data.id;
-    height: data.ok ? Tokens.size-control-md : Tokens.size-control-md + Tokens.type-caption-line;
-    border-radius: Tokens.radius-sm;
-    border-width: selected ? Tokens.size-border : 0px;
-    border-color: Theme.accent;
-    background: selected || touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: list-item;
-    accessible-label: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
-    accessible-description: (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
-        + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu"));
-    accessible-item-selectable: true;
-    accessible-item-selected: selected;
-    accessible-action-default => { Studio.select-source(data.id); }
-    // Return or Space selects the focused row; the TouchArea is after the FocusScope
-    // so it gets the press (see Button).
     // Rename: from the menu, a shortcut or F2. Double-click opens Source settings
     // when the source has one (screens, windows and cameras).
-    in-out property <bool> editing;
     property <int> rename-asked: Studio.rename-source-asked;
     changed rename-asked => { root.take-rename(); }
     init => { root.take-confirm(); root.take-rename(); }
     function take-rename() {
-        if Studio.renaming-source == data.id { root.editing = true; Studio.renaming-source = -1; }
+        if Studio.renaming-source == data.id { row.editing = true; Studio.renaming-source = -1; }
     }
+    height: row.height;
     menu := CommandMenu {
         context: "source";
         target: "source=" + data.id;
     }
-    focus := RingFocus {
-        focus-on-click: false;
-        key-pressed(e) => {
-            if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
-            if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
-                root.leaving();
-                if root.delete-all { Studio.delete-source(data.id); } else { Studio.remove-from-scene(data.id); }
-                return accept;
-            }
-            if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
-            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
-                menu.open({ x: Tokens.space-2, y: root.height });
-                return accept;
-            }
-            if e.text == Key.F2 { root.editing = true; return accept; }
+    row := ListRow {
+        width: parent.width;
+        has-icon: true;
+        icon: Icons.named(data.icon);
+        name: data.name;
+        // A source that is not running (its window closed, its camera unplugged): the
+        // mark and the reason say so, the name is dimmed (ADR-0077, U7).
+        warning: !data.ok;
+        note: data.ok ? "" : data.status;
+        dimmed: !data.visible;
+        selected: root.selected;
+        accessible-name: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
+        accessible-hint: (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
+            + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu"));
+        edit-label: @tr("Name of the source {}", data.name);
+        confirm-question: root.delete-all ? @tr("Delete {} from every scene?", data.name)
+            : data.global ? @tr("Remove {} from global sources?", data.name)
+            : @tr("Remove {} from this scene?", data.name);
+        confirm-name: root.delete-all ? @tr("Delete {}", data.name)
+            : data.global ? @tr("Remove {} from global sources", data.name)
+            : @tr("Remove {} from this scene", data.name);
+        // Rows of sources with a picture can be dragged onto each other to change the
+        // layer order; a press without a drag selects the row.
+        allow-drag: data.picture;
+        drag-data: Studio.source-data(data.id);
+        drop-enabled: Studio.dragging-source >= 0;
+        activated => { Studio.select-source(data.id); }
+        double-clicked => {
+            Studio.select-source(data.id);
+            // Screens, windows and cameras (kind-code 0–2) have a Source settings
+            // window; other kinds keep the selection only (Rename stays on F2 / menu).
+            if data.kind-code >= 0 && data.kind-code <= 2 { Studio.open-source-settings(data.id); }
+        }
+        menu-asked(at) => { Studio.select-source(data.id); menu.open(at); }
+        renamed(t) => { Studio.rename-source(data.id, t); }
+        delete-asked => { root.delete-all = false; self.confirm = true; }
+        confirmed => {
+            root.leaving();
+            if root.delete-all { Studio.delete-source(data.id); } else { Studio.remove-from-scene(data.id); }
+        }
+        dragging(on) => { Studio.dragging-source = on ? data.id : -1; }
+        can-take(d) => { return !Studio.is-panel(d) && Studio.dragging-source >= 0 && data.picture && Studio.dragging-source != data.id; }
+        took(d) => {
+            Studio.move-source-to(Studio.dragging-source, data.id);
+            Studio.dragging-source = -1;
+        }
+        key(e) => {
             if e.modifiers.alt && e.text == Key.UpArrow && data.picture && data.can-up {
                 root.leaving(); Studio.move-source(data.id, true); return accept;
             }
             if e.modifiers.alt && e.text == Key.DownArrow && data.picture && data.can-down {
                 root.leaving(); Studio.move-source(data.id, false); return accept;
             }
-            if e.text == Key.Delete || e.text == Key.Backspace {
-                root.delete-all = false;
-                root.confirm = true;
-                return accept;
-            }
             reject
         }
-    }
-    // Rows of sources with a picture can be dragged onto each other to change the
-    // layer order; a press without a drag selects the row.
-    drop := DropArea {
-        // Off while a panel is dragged, so the drop reaches the dock under the row.
-        enabled: Studio.dragging-source >= 0;
-        can-drop(e) => {
-            if Studio.is-panel(e.data) || Studio.dragging-source < 0 { return DragAction.none; }
-            return data.picture && Studio.dragging-source != data.id ? DragAction.move : DragAction.none;
+        // In every scene, or also in other scenes (ADR-0065): one source, one device;
+        // the words are in the accessible description (U7).
+        if data.global || data.in-globals: VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.globe; ink: Theme.text-secondary; }
         }
-        dropped(e) => {
-            if Studio.is-panel(e.data) || Studio.dragging-source < 0 { return DragAction.none; }
-            Studio.move-source-to(Studio.dragging-source, data.id);
-            Studio.dragging-source = -1;
-            return DragAction.move;
+        if !data.global && !data.in-globals && data.also-in != "": VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.link; ink: Theme.text-secondary; }
         }
-    }
-    drag := DragArea {
-        allow-move: data.picture && !root.confirm;
-        data: Studio.source-data(data.id);
-        changed dragging => {
-            if self.dragging { Studio.dragging-source = data.id; } else { Studio.dragging-source = -1; }
-        }
-        touch := TouchArea {
-            enabled: !root.confirm;
-            clicked => { if !root.confirm { focus.focus-pointer(); Studio.select-source(data.id); } }
-            double-clicked => {
-                Studio.select-source(data.id);
-                // Screens, windows and cameras (kind-code 0–2) have a Source settings
-                // window; other kinds keep the selection only (Rename stays on F2 / menu).
-                if data.kind-code >= 0 && data.kind-code <= 2 {
-                    Studio.open-source-settings(data.id);
-                }
-            }
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    focus.focus-pointer();
-                    Studio.select-source(data.id);
-                    menu.open({ x: self.mouse-x, y: self.mouse-y });
-                }
-            }
-            HorizontalLayout {
-                padding-left: Tokens.space-2;
-                padding-right: Tokens.space-1;
-                spacing: Tokens.space-2;
-                VerticalLayout {
-                    alignment: center;
-                    Icon { name: Icons.named(data.icon); ink: data.visible ? Theme.text-primary : Theme.text-disabled; }
-                }
-                if root.editing: VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 1;
-                    TextField {
-                        label: @tr("Name of the source {}", data.name);
-                        text: data.name;
-                        init => { self.focus(); }
-                        accepted(t) => {
-                            root.editing = false;
-                            if t != data.name { Studio.rename-source(data.id, t); }
-                        }
-                    }
-                }
-                if !root.editing: VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 1;
-                    HorizontalLayout {
-                        spacing: Tokens.space-1;
-                        // A source that is not running (its window closed, its camera
-                        // unplugged): the mark and the reason say so, the name is dimmed
-                        // (ADR-0077, U7: never colour alone).
-                        if !data.ok: VerticalLayout {
-                            alignment: center;
-                            Icon { name: IconName.warning; ink: Theme.state-warning; }
-                        }
-                        Text {
-                            text: data.name;
-                            color: data.ok ? root.ink : Theme.text-disabled;
-                            font-size: Tokens.type-body-size;
-                            font-weight: root.selected ? Tokens.type-title-weight : Tokens.type-body-weight;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                        }
-                        // In every scene, or also in other scenes (ADR-0065): one
-                        // source, one device; the words are in the accessible
-                        // description (U7).
-                        if data.global || data.in-globals: VerticalLayout {
-                            alignment: center;
-                            Icon { name: IconName.globe; ink: Theme.text-secondary; }
-                        }
-                        if !data.global && !data.in-globals && data.also-in != "": VerticalLayout {
-                            alignment: center;
-                            Icon { name: IconName.link; ink: Theme.text-secondary; }
-                        }
-                    }
-                    // State in words, never colour alone (U7); shown when it needs attention.
-                    if !data.ok: Text {
-                        text: data.status;
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        overflow: elide;
-                    }
-                }
-                // Eye = lasting hide/show (undoable). Hourglass = timed show (ADR-0105).
-                VerticalLayout {
-                    alignment: center;
-                    spacing: Tokens.space-1;
-                    IconButton {
-                        icon: data.show-for-ms > 0
-                            ? IconName.hourglass
-                            : (data.visible ? IconName.eye : IconName.eye-off);
-                        name: data.show-for-ms > 0
-                            ? (data.visible
-                                ? @tr("Hide {}", data.name)
-                                : @tr("Timed show {} for {} ms", data.name, data.show-for-ms))
-                            : (data.visible
-                                ? @tr("Hide {}", data.name)
-                                : @tr("Show {}", data.name));
-                        checked: data.show-for-ms > 0 ? false : !data.visible;
-                        clicked => {
-                            if data.show-for-ms > 0 {
-                                if data.visible {
-                                    Studio.set-source-visible(data.id, false);
-                                } else {
-                                    Studio.show-item(data.item-id);
-                                }
-                            } else {
-                                Studio.set-source-visible(data.id, !data.visible);
-                            }
-                        }
-                    }
-                    if data.picture && data.show-for-ms > 0 && data.cue-remaining-ms > 0: Text {
-                        text: data.cue-remaining-ms + @tr(" ms left");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        horizontal-alignment: center;
-                    }
-                }
-                // Locked on the picture panel (sources with a picture only).
-                if data.picture: VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: data.locked ? IconName.lock : IconName.unlock;
-                        name: data.locked ? @tr("Unlock {}", data.name) : @tr("Lock {}", data.name);
-                        checked: data.locked;
-                        clicked => { Studio.set-source-locked(data.id, !data.locked); }
-                    }
-                }
-            }
-        }
-    }
-    if root.confirm: Rectangle {
-        y: 0;
-        width: parent.width;
-        height: parent.height;
-        clip: true;
-        background: Theme.surface-overlay;
-        border-radius: Tokens.radius-sm;
-        border-width: Tokens.size-border;
-        border-color: Theme.accent;
-        HorizontalLayout {
-            height: parent.height;
-            padding-left: Tokens.space-2;
-            padding-right: Tokens.space-1;
-            spacing: Tokens.space-1;
-            Text {
-                text: root.delete-all ? @tr("Delete {} from every scene?", data.name)
-                    : data.global ? @tr("Remove {} from global sources?", data.name)
-                    : @tr("Remove {} from this scene?", data.name);
-                color: Theme.text-primary;
-                font-size: Tokens.type-caption-size;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
-            }
+            // Eye = lasting hide/show (undoable). Hourglass = timed show (ADR-0105).
             VerticalLayout {
                 alignment: center;
+                spacing: Tokens.space-1;
                 IconButton {
-                    kind: "danger";
-                    name: root.delete-all ? @tr("Delete {}", data.name)
-                        : data.global ? @tr("Remove {} from global sources", data.name)
-                        : @tr("Remove {} from this scene", data.name);
+                    icon: data.show-for-ms > 0
+                        ? IconName.hourglass
+                        : (data.visible ? IconName.eye : IconName.eye-off);
+                    name: data.show-for-ms > 0
+                        ? (data.visible
+                            ? @tr("Hide {}", data.name)
+                            : @tr("Timed show {} for {} ms", data.name, data.show-for-ms))
+                        : (data.visible
+                            ? @tr("Hide {}", data.name)
+                            : @tr("Show {}", data.name));
+                    checked: data.show-for-ms > 0 ? false : !data.visible;
                     clicked => {
-                        root.leaving();
-                        if root.delete-all { Studio.delete-source(data.id); } else { Studio.remove-from-scene(data.id); }
+                        if data.show-for-ms > 0 {
+                            if data.visible {
+                                Studio.set-source-visible(data.id, false);
+                            } else {
+                                Studio.show-item(data.item-id);
+                            }
+                        } else {
+                            Studio.set-source-visible(data.id, !data.visible);
+                        }
                     }
                 }
-            }
-            VerticalLayout {
-                alignment: center;
-                IconButton {
-                    icon: IconName.close;
-                    name: @tr("Cancel");
-                    clicked => { root.confirm = false; }
+                if data.picture && data.show-for-ms > 0 && data.cue-remaining-ms > 0: Text {
+                    text: data.cue-remaining-ms + @tr(" ms left");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    horizontal-alignment: center;
                 }
             }
-        }
+            // Locked on the picture panel (sources with a picture only).
+            if data.picture: VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: data.locked ? IconName.lock : IconName.unlock;
+                    name: data.locked ? @tr("Unlock {}", data.name) : @tr("Lock {}", data.name);
+                    checked: data.locked;
+                    clicked => { Studio.set-source-locked(data.id, !data.locked); }
+                }
+            }
     }
-    // Where a dragged row would go: a line along this row's top.
-    if drop-here: Rectangle {
-        y: 0;
-        height: Tokens.size-focus-ring;
-        background: Theme.accent;
-    }
-    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 // One scene in the Scenes panel: its number, its name and, on air, a Live badge
@@ -1072,260 +926,119 @@ component SourceRowView inherits Rectangle {
 component SceneRowView inherits Rectangle {
     in property <SceneData> data;
     in property <bool> can-remove;
-    // 0 nothing goes out, 1 streaming, 2 recording, 3 both (the shell's live state).
     in property <int> live-state;
+    // Remove was confirmed: the list is made again, so the row's focus is about to go.
     callback leaving();
-    property <bool> tools: touch.has-hover || editing;
-    property <bool> confirm;
-    // Same as a source row: the menu or Delete key drops the focus, so the row
-    // takes it again and ignores its own press while it asks.
-    changed confirm => {
-        if root.confirm { focus.focus(); }
-    }
+    property <bool> studio: Studio.studio-mode;
+    property <bool> marked: studio ? data.preview : data.live;
     property <int> confirm-asked: Studio.confirm-scene-asked;
     changed confirm-asked => { root.take-scene-confirm(); }
     function take-scene-confirm() {
         if Studio.confirming-scene == data.id {
-            root.confirm = true;
+            row.confirm = true;
             Studio.confirming-scene = -1;
         }
     }
-    in-out property <bool> editing;
-    height: Tokens.size-control-md;
-    border-radius: Tokens.radius-sm;
-    border-width: marked ? Tokens.size-border : 0px;
-    border-color: Theme.accent;
-    // The scene being worked on is marked like a selected row: the one shown, or in
-    // studio mode the preview scene (ADR-0061). The live colour and badge only while
-    // the scene on air actually goes out (streaming or recording, U12).
-    property <bool> studio: Studio.studio-mode;
-    property <bool> marked: studio ? data.preview : data.live;
-    // Another scene row is dragged over this one: it would take this row's place.
-    property <bool> drop-here: drop.has-drag && Studio.dragging-scene >= 0 && Studio.dragging-scene != data.id;
-    background: marked || touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: list-item;
-    accessible-label: @tr("{}{}{}", data.name,
-        studio && data.preview ? @tr(", in preview") : "",
-        !data.live ? ""
-        : root.live-state == 0 ? (studio ? @tr(", program") : @tr(", shown"))
-        : root.live-state == 2 ? @tr(", on air and recording")
-        : @tr(", on air"));
-    accessible-description: Studio.studio-mode
-        ? @tr("Return puts it in preview, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu")
-        : @tr("Return puts it on air, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu");
-    accessible-item-selectable: true;
-    accessible-item-selected: data.live;
-    accessible-action-default => { Studio.switch-scene(data.id); }
     property <int> rename-asked: Studio.rename-scene-asked;
     changed rename-asked => { root.take-rename(); }
     init => { root.take-scene-confirm(); root.take-rename(); }
     function take-rename() {
-        if Studio.renaming-scene == data.id { root.editing = true; Studio.renaming-scene = -1; }
+        if Studio.renaming-scene == data.id { row.editing = true; Studio.renaming-scene = -1; }
     }
+    height: row.height;
     menu := CommandMenu {
         context: "scene";
         target: "scene=" + data.id;
     }
-    focus := RingFocus {
-        focus-on-click: false;
-        key-pressed(e) => {
-            if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
-            if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
-                root.leaving(); Studio.remove-scene(data.id); return accept;
-            }
-            if e.text == Key.Return || e.text == " " { Studio.switch-scene(data.id); return accept; }
-            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
-                menu.open({ x: Tokens.space-2, y: root.height });
-                return accept;
-            }
-            if e.text == Key.F2 { root.editing = true; return accept; }
-            if (e.text == Key.Delete || e.text == Key.Backspace) && root.can-remove {
-                root.confirm = true;
-                return accept;
-            }
-            reject
-        }
-    }
-    // The row's buttons sit inside its TouchArea, so pointing at them keeps the row
-    // hovered; their space is always reserved, so the Live badge never moves (ADR-0059).
-    // Dragging the row reorders the scene list. A panel drag is not a scene.
-    drop := DropArea {
+    row := ListRow {
         width: parent.width;
-        height: parent.height;
-        enabled: Studio.dragging-scene >= 0;
-        can-drop(e) => {
-            if Studio.is-panel(e.data) || Studio.dragging-scene < 0 || Studio.dragging-scene == data.id {
-                return DragAction.none;
-            }
-            return DragAction.move;
-        }
-        dropped(e) => {
-            if Studio.is-panel(e.data) || Studio.dragging-scene < 0 { return DragAction.none; }
+        lead: data.number;
+        name: data.name;
+        selected: root.marked;
+        accessible-name: @tr("{}{}{}", data.name,
+            root.studio && data.preview ? @tr(", in preview") : "",
+            !data.live ? ""
+            : root.live-state == 0 ? (root.studio ? @tr(", program") : @tr(", shown"))
+            : root.live-state == 2 ? @tr(", on air and recording")
+            : @tr(", on air"));
+        accessible-hint: Studio.studio-mode
+            ? @tr("Return puts it in preview, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu")
+            : @tr("Return puts it on air, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu");
+        edit-label: @tr("Name of the scene {}", data.name);
+        confirm-question: @tr("Remove {}?", data.name);
+        confirm-name: @tr("Remove scene {}", data.name);
+        allow-drag: true;
+        drag-data: Studio.scene-data(data.id);
+        drop-enabled: Studio.dragging-scene >= 0;
+        activated => { Studio.switch-scene(data.id); }
+        double-clicked => { self.editing = true; }
+        menu-asked(at) => { menu.open(at); }
+        renamed(t) => { Studio.rename-scene(data.id, t); }
+        delete-asked => { if root.can-remove { self.confirm = true; } }
+        confirmed => { root.leaving(); Studio.remove-scene(data.id); }
+        dragging(on) => { Studio.dragging-scene = on ? data.id : -1; }
+        can-take(d) => { return !Studio.is-panel(d) && Studio.dragging-scene >= 0 && Studio.dragging-scene != data.id; }
+        took(d) => {
             Studio.move-scene-to(Studio.dragging-scene, data.id);
             Studio.dragging-scene = -1;
-            return DragAction.move;
         }
-    }
-    drag := DragArea {
-        allow-move: !root.editing && !root.confirm;
-        data: Studio.scene-data(data.id);
-        changed dragging => {
-            if self.dragging { Studio.dragging-scene = data.id; } else { Studio.dragging-scene = -1; }
-        }
-    touch := TouchArea {
-        enabled: !root.confirm;
-        clicked => { if !root.confirm { focus.focus-pointer(); Studio.switch-scene(data.id); } }
-        double-clicked => { root.editing = true; }
-        // A right-click opens the row's menu without putting the scene on air.
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                focus.focus-pointer();
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-1;
-        spacing: Tokens.space-2;
-        Text {
-            min-width: Tokens.size-icon-box;
-            text: data.number;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-        if !root.editing: Text {
-            horizontal-stretch: 1;
-            text: data.name;
-            color: Theme.text-primary;
-            font-size: Tokens.type-body-size;
-            font-weight: root.marked ? Tokens.type-title-weight : Tokens.type-body-weight;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        if root.editing: VerticalLayout {
-            horizontal-stretch: 1;
-            alignment: center;
-            name-field := TextField {
-                label: @tr("Name of the scene {}", data.name);
-                text: data.name;
-                init => { self.focus(); }
-                accepted(t) => {
-                    root.editing = false;
-                    if t != data.name { Studio.rename-scene(data.id, t); }
+            if studio && data.live && root.live-state == 0 && !row.editing: VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    height: Tokens.type-caption-line;
+                    width: program-text.preferred-width + 2 * Tokens.space-2;
+                    border-radius: self.height / 2;
+                    background: Theme.surface-overlay;
+                    program-text := Text {
+                        text: @tr("Program");
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        font-weight: Tokens.type-label-weight;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
                 }
             }
-        }
-        // In studio mode the scene on air says so in neutral colours while nothing
-        // goes out (ADR-0061).
-        if studio && data.live && root.live-state == 0 && !root.editing: VerticalLayout {
-            alignment: center;
-            Rectangle {
-                height: Tokens.type-caption-line;
-                width: program-text.preferred-width + 2 * Tokens.space-2;
-                border-radius: self.height / 2;
-                background: Theme.surface-overlay;
-                program-text := Text {
-                    text: @tr("Program");
+            // On air: in words with a small dot in the live colour (U7, U12), only while
+            // it goes out. No filled badge: the live indicator already carries the state.
+            if data.live && root.live-state != 0 && !row.editing: HorizontalLayout {
+                spacing: Tokens.space-1 / 2;
+                VerticalLayout {
+                    alignment: center;
+                    Icon { name: IconName.dot; ink: Theme.state-live; }
+                }
+                Text {
+                    text: root.live-state == 1 ? @tr("Live") : root.live-state == 2 ? @tr("REC") : @tr("Live · REC");
                     color: Theme.text-secondary;
                     font-size: Tokens.type-caption-size;
                     font-weight: Tokens.type-label-weight;
                     vertical-alignment: center;
-                    horizontal-alignment: center;
                 }
             }
-        }
-        // On air: in words with a small dot in the live colour (U7, U12), only while
-        // it goes out. No filled badge: the live indicator already carries the state.
-        if data.live && root.live-state != 0 && !root.editing: HorizontalLayout {
-            spacing: Tokens.space-1 / 2;
-            VerticalLayout {
-                alignment: center;
-                Icon { name: IconName.dot; ink: Theme.state-live; }
-            }
-            Text {
-                text: root.live-state == 1 ? @tr("Live") : root.live-state == 2 ? @tr("REC") : @tr("Live · REC");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                font-weight: Tokens.type-label-weight;
-                vertical-alignment: center;
-            }
-        }
-        if !root.editing: VerticalLayout {
-            alignment: center;
-            IconButton {
-                visible: root.tools;
-                icon: IconName.more;
-                name: @tr("Actions for {}", data.name);
-                clicked => {
-                    menu.open({
-                        x: self.absolute-position.x - menu.absolute-position.x,
-                        y: self.absolute-position.y - menu.absolute-position.y + self.height,
-                    });
-                }
-            }
-        }
-        if !root.editing: VerticalLayout {
-            alignment: center;
-            IconButton {
-                visible: root.tools && root.can-remove;
-                icon: IconName.close;
-                name: @tr("Remove scene {}", data.name);
-                clicked => { focus.focus-pointer(); root.confirm = true; }
-            }
-        }
-    }
-    }
-    }
-    if root.confirm: Rectangle {
-        y: 0;
-        width: parent.width;
-        height: parent.height;
-        clip: true;
-        background: Theme.surface-overlay;
-        border-radius: Tokens.radius-sm;
-        border-width: Tokens.size-border;
-        border-color: Theme.accent;
-        HorizontalLayout {
-            height: parent.height;
-            padding-left: Tokens.space-2;
-            padding-right: Tokens.space-1;
-            spacing: Tokens.space-1;
-            Text {
-                text: @tr("Remove {}?", data.name);
-                color: Theme.text-primary;
-                font-size: Tokens.type-caption-size;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
-            }
-            VerticalLayout {
+            if !row.editing: VerticalLayout {
                 alignment: center;
                 IconButton {
-                    kind: "danger";
-                    name: @tr("Remove scene {}", data.name);
-                    clicked => { root.leaving(); Studio.remove-scene(data.id); }
+                    visible: row.hovered || row.editing;
+                    icon: IconName.more;
+                    name: @tr("Actions for {}", data.name);
+                    clicked => {
+                        menu.open({
+                            x: self.absolute-position.x - menu.absolute-position.x,
+                            y: self.absolute-position.y - menu.absolute-position.y + self.height,
+                        });
+                    }
                 }
             }
-            VerticalLayout {
+            if !row.editing: VerticalLayout {
                 alignment: center;
                 IconButton {
+                    visible: (row.hovered || row.editing) && root.can-remove;
                     icon: IconName.close;
-                    name: @tr("Cancel");
-                    clicked => { root.confirm = false; }
+                    name: @tr("Remove scene {}", data.name);
+                    clicked => { row.focus-pointer(); row.confirm = true; }
                 }
             }
-        }
     }
-    // Where a dragged scene would go: a line along this row's top.
-    if drop-here: Rectangle {
-        y: 0;
-        height: Tokens.size-focus-ring;
-        width: parent.width;
-        background: Theme.accent;
-    }
-    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 // The scenes the canvas may show (ADR-0059). A click puts one on air (a cut); the `+`
