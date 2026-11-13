@@ -1,6 +1,6 @@
 # ADR-0113: An experience level and the first-run choice
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-13
 - Deciders: Salih (owner)
 - Amends: rule U2 (two sentences rewritten, one added, and its row in "How rules are checked"); rule U10 (adds the first-run question)
@@ -57,3 +57,5 @@ Round 2 (2026-11-13, independent AI session, changes requested on all four texts
 Round 3 (2026-11-13, independent AI session; this text: changes requested with one blocking concern). The full record is in ADR-0115. Answered here: the unit of `Show` is the shell, which gets `more-hidden` and `show-all` and draws the line itself (4, blocking); an upgrading user gets no page and `pro`, and a card never replaces a workspace (5); a section with a problem is always drawn, and the page filter is a requirement on later work (6).
 
 Follow-up check by the same reviewer (2026-11-13, texts at `26c3d03`): approve, with one non-blocking concern, that many existing users have no `app.toml` and would have read as new installs. Fixed here: an existing install is recognised by any user file in the user data folder.
+
+- 2026-11-13: Owner (Salih) accepts this ADR after the independent review recorded above (rounds 1 to 3 and the follow-up check; reviewer verdict: approve). Status: Accepted.

@@ -1,6 +1,6 @@
 # ADR-0115: A stop rule for UI changes by AI agents, with counted checks and an exceptions register
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-13
 - Deciders: Salih (owner)
 - Amends: `CLAUDE.md` rule 16 and the Migration paragraph of [ADR-0094](0094-ui-interaction-patterns-and-tabler-icon-set.md) (which themes are shown for approval)
@@ -140,3 +140,5 @@ New concerns, shortened:
 All twelve were answered in the texts on 2026-11-13 (noted in each ADR's Review section). The same reviewer then checked the two blocking fixes; its answer is recorded below.
 
 Follow-up check. Reviewer: the round 3 reviewer. Date: 2026-11-13. Texts at commit `26c3d03`. Verdict on ADR-0112: approve, if the owner accepts its new concern 1 or the author fixes it. Verdict on ADR-0113: approve, if the owner accepts its new concern 2 or the author fixes it. Verdict on ADR-0114: approve. Verdict on ADR-0115: approve. Round 3 concerns: all resolved except 5 (partly). New concerns, all non-blocking: 1. [ADR-0112] the Light hairline on a popup fell to 1.01 and menu dividers have no fill; one Consequences sentence was no longer true. 2. [ADR-0113] `app.toml` is written only when a General setting changes, so many existing users would read as new installs. 3. [ADR-0115] the round 3 record pointed to this answer before it existed. Concerns 1 and 2 were then fixed in the texts (see their Review sections); this paragraph answers 3. Those two last fixes were not seen by the reviewer.
+
+- 2026-11-13: Owner (Salih) accepts this ADR after the independent review recorded above (rounds 1 to 3 and the follow-up check; reviewer verdict: approve). Status: Accepted.

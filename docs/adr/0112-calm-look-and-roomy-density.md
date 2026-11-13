@@ -1,6 +1,6 @@
 # ADR-0112: The Calm look for the built-in themes and a roomy density
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-13
 - Deciders: Salih (owner)
 - Amends: [ADR-0076](0076-component-standards-and-panel-spacing.md) decision 3 (section title style only)
@@ -80,3 +80,5 @@ Round 2 (2026-11-13, independent AI session, changes requested on all four texts
 Round 3 (2026-11-13, independent AI session; this text: changes requested with one blocking concern). The full record is in ADR-0115. Answered here: the Light hover plate keeps today's 1.11 on the window ground and the pair is in the table (1, blocking); the Dark panel is lighter and the threshold is 1.15, between today's values and the new ones (2); `radius.lg` is stated as a shared length and Settings card titles follow decision 5 (3).
 
 Follow-up check by the same reviewer (2026-11-13, texts at `26c3d03`): approve, with one non-blocking concern, that the Light hairline fell to 1.01 on a popup, where menu dividers have no fill to carry them. Fixed here: Light `color.border.subtle` is `#d0d3da`, which gives 1.15 on a popup (today 1.11), and the token tests pass with it as before.
+
+- 2026-11-13: Owner (Salih) accepts this ADR after the independent review recorded above (rounds 1 to 3 and the follow-up check; reviewer verdict: approve). Status: Accepted.

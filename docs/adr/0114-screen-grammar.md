@@ -1,6 +1,6 @@
 # ADR-0114: One screen grammar: row, list row, section marks, held edits, one home
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-13
 - Deciders: Salih (owner)
 - Amends: [ADR-0094](0094-ui-interaction-patterns-and-tabler-icon-set.md) rule C1 (`Field` is not moved to the library; the stacked `SettingRow` replaces it), rule C2 (two named row variants), rule A3 (two optional header parts) and its Migration steps 2 and 3 (replaced by the list in Consequences; step 5 and the Enforcement checks stand); [ADR-0076](0076-component-standards-and-panel-spacing.md) decision 1 (the row's name is `SettingRow`; `PropertyRow` was never built and the name is retired) and decision 3 (the same two header parts)
@@ -62,3 +62,5 @@ Independent review per ADR-0014. Round 1 (2026-11-13, independent AI session, ch
 Round 2 (2026-11-13, independent AI session, changes requested on all four texts). The full record is in ADR-0115. Concerns 14, 15 and 16 and the rest of round 1 concern 10 are answered here: the Amends header names A3, ADR-0076 decisions 1 and 3 and the Migration steps, and the frame search is withdrawn (14); the stacked row has a value, a control-column rule and a Slint spike, and `ListRow` uses one `@children` (15); confirmations are a third named kind drawn by `DialogActions`, and the `cancel` count is gone (16); `PropertyRow` is retired in favour of `SettingRow` (round 1, 10).
 
 Round 3 (2026-11-13, independent AI session; this text: approve, with two non-blocking concerns). The full record is in ADR-0115. Both are fixed here: C1 is named in the Amends header and ADR-0094's step 5 and Enforcement checks stand (7); the control column never goes below the control's minimum width (8).
+
+- 2026-11-13: Owner (Salih) accepts this ADR after the independent review recorded above (rounds 1 to 3 and the follow-up check; reviewer verdict: approve). Status: Accepted.

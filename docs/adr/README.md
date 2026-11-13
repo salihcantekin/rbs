@@ -119,7 +119,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0108](0108-media-file-source.md) | A local media-file source for video and animated pictures | Proposed |
 | [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
 | [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Proposed |
-| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Proposed |
-| [0113](0113-experience-level-and-first-run.md) | An experience level and the first-run choice | Proposed |
-| [0114](0114-screen-grammar.md) | One screen grammar: row, list row, section marks, held edits, one home | Proposed |
-| [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Proposed |
+| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted |
+| [0113](0113-experience-level-and-first-run.md) | An experience level and the first-run choice | Accepted |
+| [0114](0114-screen-grammar.md) | One screen grammar: row, list row, section marks, held edits, one home | Accepted |
+| [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Accepted |
