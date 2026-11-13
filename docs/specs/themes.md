@@ -13,7 +13,7 @@ Users change the look of RBS with themes: files that override design tokens on t
 
 In scope: the theme document (format 1), resolving a theme on its base, checks and bounds, the theme library, the appearance document, the Appearance page's behaviour, applying a theme at run time.
 
-Out of scope, later changes: themes in `.rbspack` packs; font files; a curated accent shortcut; detecting the OS high-contrast setting; theme methods in the control API other than `ui.theme.reload`; a text size preference. The token names, groups and built-in values are in the [design system spec](ui-design-system.md#tokens).
+Out of scope, later changes: themes in `.rbspack` packs; font files; a curated accent shortcut; detecting the OS high-contrast setting; theme methods in the control API other than `ui.theme.reload` and `ui.theme.switch {id}` (View › Theme; [control API](control-api.md#client-scoped-ui-commands)); a text size preference. The token names, groups and built-in values are in the [design system spec](ui-design-system.md#tokens).
 
 ## Contract
 
