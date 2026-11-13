@@ -127,6 +127,10 @@ format = 2
 "size.menu.md" = 300
 # A setting row narrower than this puts its control under its name (ADR-0114).
 "size.row.stack-below" = 280
+# Height of a picture at the start of a ListRow (16:9 well): small, medium, large.
+"size.row.picture.sm" = 24
+"size.row.picture.md" = 36
+"size.row.picture.lg" = 54
 "size.select.list-h" = 320
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165

@@ -2468,6 +2468,11 @@ export component ListRow inherits Rectangle {
     in property <IconName> icon;
     // A Checkbox before the name for the item's on/off state, where that state is
     // what the list is about (a filter; owner decision 2026-11-13, ADR-0114 review).
+    // A picture at the start instead of an icon (a sample's thumbnail), in a 16:9
+    // well `picture-height` high (one of the `size.row.picture.*` tokens; zero for
+    // none). The row grows to hold it.
+    in property <image> picture;
+    in property <length> picture-height;
     // Room kept at the start for a picture the owner draws over the row (a theme's
     // swatch); zero for none.
     in property <length> lead-space;
@@ -2528,7 +2533,8 @@ export component ListRow inherits Rectangle {
     property <bool> taking;
     property <color> ink: root.dimmed || !root.enabled ? Theme.text-disabled : Theme.text-primary;
     changed confirm => { if root.confirm { focus.focus(); } }
-    height: root.note != "" && !root.note-beside ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md;
+    height: max(root.note != "" && !root.note-beside ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md,
+        root.picture-height > 0 ? root.picture-height + 2 * Tokens.space-1 : 0px);
     border-radius: Tokens.radius-sm;
     border-width: root.selected ? Tokens.size-border : 0px;
     border-color: Theme.accent;
@@ -2593,6 +2599,25 @@ export component ListRow inherits Rectangle {
                 padding-right: Tokens.space-1;
                 spacing: Tokens.space-2;
                 if root.lead-space > 0: Rectangle { width: root.lead-space; }
+                if root.picture-height > 0: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: root.picture-height * 16 / 9;
+                        height: root.picture-height;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        background: Theme.surface-sunken;
+                        clip: true;
+                        Image {
+                            source: root.picture;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: contain;
+                            accessible-role: none;
+                        }
+                    }
+                }
                 if root.lead != "": Text {
                     min-width: Tokens.size-icon-box;
                     text: root.lead;
