@@ -274,11 +274,20 @@ fn scenes_are_added_switched_renamed_and_removed_and_the_program_never_goes_empt
     let copy = ok(&c.call("scene.duplicate", json!({"scene": one})))["scene"]
         .as_u64()
         .unwrap();
+    c.event("scene.changed", |d| {
+        d["scenes"].as_array().unwrap().len() == 3
+    });
     let list = scenes(&mut c);
     assert_eq!(names(&list), ["Scene", "Game", "Scene 2"]);
     assert_eq!(list["program"], one);
     let copied = c.call("scene.sources", json!({"scene": copy}));
     assert_eq!(ok(&copied)["sources"][0]["id"], screen);
+    // The copy has its own item ids.
+    let original = c.call("scene.sources", json!({"scene": one}));
+    assert_ne!(
+        ok(&copied)["sources"][0]["item"],
+        ok(&original)["sources"][0]["item"]
+    );
     assert_eq!(
         kind(&c.call("scene.duplicate", json!({"scene": 99}))),
         "not_found"
