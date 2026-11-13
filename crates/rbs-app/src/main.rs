@@ -1819,10 +1819,13 @@ impl Ctx {
         } else {
             picture_main
         };
+        let vertical_main = in_main(studio_ui::VERTICAL_PANEL);
         if let Some([_, _, w, h]) = edit_main {
             app.studio.set_picture_size(w, h);
         }
-        let vertical_main = in_main(studio_ui::VERTICAL_PANEL);
+        if let Some([_, _, w, h]) = vertical_main {
+            app.studio.set_vertical_picture_size(w, h);
+        }
         // Hiding the panel clears a failure: showing it again asks once more.
         if vertical_main.is_none() {
             app.studio.vertical_picture_failed = false;
@@ -1919,6 +1922,14 @@ impl Ctx {
             };
             preview::set_marks(&app.main, marked, app.studio.marks());
             preview::set_marks(&app.main, other, &[]);
+            // The vertical picture is edited outside studio mode only (it shows the
+            // scene on air).
+            let vertical_marks = if studio_mode {
+                &[][..]
+            } else {
+                app.studio.vertical_marks()
+            };
+            preview::set_marks(&app.main, Picture::Vertical, vertical_marks);
             preview::place(&app.main);
         }
     }
@@ -3498,6 +3509,26 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_preview_release, |app| {
         app.studio.preview_release();
+    });
+    on!(
+        on_vertical_press,
+        |app, x: f32, y: f32, w: f32, h: f32, shift: bool, no_snap: bool| {
+            app.studio.vertical_press([x, y], [w, h], shift, no_snap);
+        }
+    );
+    on!(on_vertical_drag, |app, x: f32, y: f32| {
+        // As on the main picture: a drag whose button is no longer down ends here.
+        if primary_button_up() {
+            app.studio.vertical_release();
+        } else {
+            app.studio.vertical_drag([x, y]);
+        }
+    });
+    on!(on_vertical_release, |app| {
+        app.studio.vertical_release();
+    });
+    on!(on_vertical_nudge, |app, dx: i32, dy: i32| {
+        app.studio.vertical_nudge(dx as f32, dy as f32);
     });
     on!(on_preview_nudge, |app, dx: i32, dy: i32| {
         app.studio.preview_nudge(dx as f32, dy as f32);
