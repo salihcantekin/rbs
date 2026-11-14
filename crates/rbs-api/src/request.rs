@@ -12,9 +12,9 @@ use crate::types::ItemStyle;
 use crate::types::{
     Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, FilterTypeList, Library,
     MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputKind, OutputProfile,
-    OutputTarget, OutputsResult, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap,
-    Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
-    VcamStatus,
+    OutputTarget, OutputsResult, ProtectionStatus, RecordState, RecordingProfile, ReplayStatus,
+    SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch,
+    StreamState, StudioInfo, VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -1211,6 +1211,8 @@ pub enum Command {
     OutputSetWithVertical(SetWithVertical),
     /// `replay.status` (protocol 1.27).
     ReplayStatus,
+    /// `protection.status` (protocol 1.49, ADR-0090).
+    ProtectionStatus,
     /// `source.set_monitor` (protocol 1.30).
     SourceSetMonitor(SetSourceMonitor),
     /// `monitor.status` (protocol 1.30).
@@ -1354,6 +1356,7 @@ impl Command {
             Command::OutputSetWithVertical(_) => "output.set_with_vertical",
             Command::StreamStatus(_) => "stream.status",
             Command::ReplayStatus => "replay.status",
+            Command::ProtectionStatus => "protection.status",
             Command::SourceSetMonitor(_) => "source.set_monitor",
             Command::MonitorStatus => "monitor.status",
             Command::MonitorDevices => "monitor.devices",
@@ -1510,6 +1513,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("stream.status", Some(Scope::Read)),
     m("output.set_with_vertical", Some(Scope::Control)),
     m("replay.status", Some(Scope::Read)),
+    m("protection.status", Some(Scope::Read)),
     m("source.set_monitor", Some(Scope::Control)),
     m("monitor.status", Some(Scope::Read)),
     m("monitor.devices", Some(Scope::Read)),
@@ -1776,6 +1780,8 @@ enum WireRequest {
     OutputSetWithVertical(SetWithVertical),
     #[serde(rename = "replay.status")]
     ReplayStatus(Empty),
+    #[serde(rename = "protection.status")]
+    ProtectionStatus(Empty),
     #[serde(rename = "source.set_monitor")]
     SourceSetMonitor(SetSourceMonitor),
     #[serde(rename = "monitor.status")]
@@ -1927,6 +1933,7 @@ impl From<WireRequest> for Request {
             WireRequest::StreamStatus(p) => Request::Command(C::StreamStatus(p)),
             WireRequest::OutputSetWithVertical(p) => Request::Command(C::OutputSetWithVertical(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
+            WireRequest::ProtectionStatus(_) => Request::Command(C::ProtectionStatus),
             WireRequest::SourceSetMonitor(p) => Request::Command(C::SourceSetMonitor(p)),
             WireRequest::MonitorStatus(_) => Request::Command(C::MonitorStatus),
             WireRequest::MonitorDevices(_) => Request::Command(C::MonitorDevices),
@@ -2046,6 +2053,7 @@ impl From<Request> for WireRequest {
                 C::StreamStatus(p) => WireRequest::StreamStatus(p),
                 C::OutputSetWithVertical(p) => WireRequest::OutputSetWithVertical(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
+                C::ProtectionStatus => WireRequest::ProtectionStatus(Empty {}),
                 C::SourceSetMonitor(p) => WireRequest::SourceSetMonitor(p),
                 C::MonitorStatus => WireRequest::MonitorStatus(Empty {}),
                 C::MonitorDevices => WireRequest::MonitorDevices(Empty {}),
@@ -2323,6 +2331,8 @@ pub enum Response {
     VcamStatus(Snapshot<VcamStatus>),
     /// `replay.status` (protocol 1.27).
     ReplayStatus(Snapshot<ReplayStatus>),
+    /// `protection.status` (protocol 1.49).
+    ProtectionStatus(Snapshot<ProtectionStatus>),
     /// `monitor.status` (protocol 1.30).
     MonitorStatus(Snapshot<MonitorStatus>),
     /// `monitor.devices` (protocol 1.30).

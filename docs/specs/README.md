@@ -24,6 +24,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [scene-sources.md](scene-sources.md) | Draft | `rbs-sources` (built-in source types, adapter registry for sources, instances for bound sources) |
 | [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
+| [recording-protection.md](recording-protection.md) | Draft | `rbs-record` (`protection`: guard, probe port and worker), `rbs-system-probe` (OS readings), `rbs-app` (host, `protection.status`; ADR-0090 phase one, ADR Proposed) |
 | [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk` (manifest), `rbs-plugin-host` (reads manifests, loads nothing). Loaders are not started |
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
 | [control-api.md](control-api.md) | Draft | `rbs-api`, `rbs-api-ws`, `rbs-api-ipc` (ADR-0044). What is still missing is in that spec's implementation status |

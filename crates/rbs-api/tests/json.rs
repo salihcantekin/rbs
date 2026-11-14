@@ -373,6 +373,7 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::StreamStatus(OnCanvas::default())),
         c(Command::ReplayStatus),
+        c(Command::ProtectionStatus),
         c(Command::SourceSetMonitor(SetSourceMonitor {
             source: 3,
             monitor: MonitorMode::Also,
@@ -797,6 +798,8 @@ fn every_result_and_event_type_round_trips() {
         }),
         EventPayload::ReplayChanged(replay_status()),
         EventPayload::MonitorChanged(monitor_status()),
+        EventPayload::ProtectionChanged(protection_status()),
+        EventPayload::ProtectionChanged(ProtectionStatus::idle()),
         EventPayload::RecordCanvasState(CanvasRecordState {
             canvas: OutputCanvas::Vertical,
             state: RecordState::Idle { last: None },
@@ -866,6 +869,52 @@ fn monitor_values_have_their_wire_form() {
             is_default: true,
         }],
     });
+}
+
+fn protection_status() -> ProtectionStatus {
+    ProtectionStatus {
+        guarded: true,
+        level: ProtectionLevel::Warning,
+        disks: vec![ProtectionDisk {
+            level: ProtectionLevel::Warning,
+            free_bytes: Some(3 << 30),
+            seconds_left: Some(120),
+            recordings: vec![OutputCanvas::Main],
+        }],
+        outputs: vec![ProtectionOutput {
+            canvas: OutputCanvas::Main,
+            output: OutputKind::Record,
+            level: ProtectionLevel::Ok,
+        }],
+        render: ProtectionLevel::Ok,
+        audio: ProtectionLevel::Ok,
+        memory: ProtectionMemory {
+            level: ProtectionLevel::Unavailable,
+            available_bytes: None,
+        },
+        alerts: vec![ProtectionAlert {
+            kind: ProtectionKind::Disk,
+            level: ProtectionLevel::Warning,
+            text: "Recording will stop in about 2 minutes: the disk is almost full.".into(),
+            canvas: None,
+            output: None,
+        }],
+    }
+}
+
+#[test]
+fn protection_status_has_the_wire_shape_of_the_spec() {
+    let v = serde_json::to_value(protection_status()).unwrap();
+    assert_eq!(v["level"], "warning");
+    assert_eq!(v["disks"][0]["recordings"][0], "main");
+    assert_eq!(v["outputs"][0]["output"], "record");
+    assert_eq!(v["memory"]["level"], "unavailable");
+    assert!(v["memory"].get("available_bytes").is_none());
+    assert!(v["alerts"][0].get("canvas").is_none());
+    assert_eq!(v["alerts"][0]["kind"], "disk");
+    let idle = serde_json::to_value(ProtectionStatus::idle()).unwrap();
+    assert_eq!(idle["guarded"], false);
+    assert_eq!(idle["level"], "ok");
 }
 
 fn replay_status() -> ReplayStatus {

@@ -7,11 +7,18 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use rbs_api::request::ClientInfo;
+use rbs_api::session::ServerConfig;
+use rbs_api::thread::ApiOptions;
+use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
+use rbs_api::{ApiServer, TokenStore};
 use rbs_app::edit_history::EditKind;
+use rbs_app::studio_host::protection::SystemProbeFactory;
 use rbs_app::studio_host::{
     Command, CropRegion, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
     SourceStatus, StudioHost, Update,
@@ -33,6 +40,7 @@ use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
+use rbs_record::protection::{Probed, SystemProbe, VolumeKey, VolumeSpace};
 use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
 
 /// Hang guard only: every wait ends as soon as its update arrives.
@@ -208,11 +216,20 @@ fn host_with(
     clock: &TestClock,
     fault: Option<Fault>,
 ) -> (StudioHost, Receiver<Update>) {
+    let mut config = HostConfig::desktop();
+    config.fault = fault;
+    spawn_host(gpu, clock, config)
+}
+
+/// The test host with `config` (its preview is turned off).
+fn spawn_host(
+    gpu: Arc<GpuContext>,
+    clock: &TestClock,
+    mut config: HostConfig,
+) -> (StudioHost, Receiver<Update>) {
     let (tx, rx) = mpsc::channel();
     let clock = clock.clone();
-    let mut config = HostConfig::desktop();
     config.preview = None;
-    config.fault = fault;
     let host = StudioHost::spawn(
         config,
         || {
@@ -924,4 +941,177 @@ fn separate_files_clean_up_after_a_refused_or_panicked_start() {
 
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A disk whose free space the test sets; memory is unsupported.
+struct FakeDisk(Arc<AtomicU64>);
+
+impl SystemProbe for FakeDisk {
+    fn volume_space(&mut self, _folder: &std::path::Path) -> Probed<VolumeSpace> {
+        Probed::Value(VolumeSpace {
+            volume: VolumeKey(1),
+            free_bytes: self.0.load(AtomicOrdering::SeqCst),
+        })
+    }
+    fn available_memory(&mut self) -> Probed<u64> {
+        Probed::Unsupported
+    }
+}
+
+#[test]
+fn a_recording_stops_cleanly_with_the_reason_when_its_disk_reaches_the_reserve() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-protect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let free = Arc::new(AtomicU64::new(500 << 20));
+    let mut config = HostConfig::desktop();
+    let disk = Arc::clone(&free);
+    config.system_probe = Some(SystemProbeFactory::new(move || {
+        Box::new(FakeDisk(Arc::clone(&disk)))
+    }));
+    let (host, rx) = spawn_host(gpu, &clock, config);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let (api, mut c) = Client::connect(&host);
+    let none = serde_json::json!({});
+    // Nothing runs: no guard.
+    let idle = c.call("protection.status", none.clone());
+    assert_eq!(idle["result"]["data"]["guarded"], false, "{idle}");
+    assert_eq!(idle["result"]["data"]["level"], "ok", "{idle}");
+    let path = dir.join("full.mkv");
+    host.send(Command::StartRecording(request(
+        path.clone(),
+        Some(WORKING),
+    )));
+    match recording(&rx) {
+        RecordingUpdate::Started { .. } => {}
+        other => panic!("{other:?}"),
+    }
+    // 500 MiB is below the 1 GiB reserve: once the probe answered, the guard asks the
+    // recording to end, the user is told why, and the tail ends it with that reason.
+    // The clock moves a second per wait so the guard steps; no real time is waited for.
+    let told = next_while(
+        &rx,
+        || clock.advance(Duration::from_secs(1)),
+        |u| match u {
+            // Moving the test clock a whole second skips render ticks, so a render
+            // warning may come first; the disk's sentence is the one waited for.
+            Update::Error(e) if e.contains("disk") => Some(e),
+            Update::Recording(r) => panic!("stopped before the user was told: {r:?}"),
+            Update::Failed(e) => panic!("the studio failed: {e}"),
+            _ => None,
+        },
+    );
+    assert!(told.contains("before the disk was full"), "{told}");
+    // While the tail runs (the clock stands still), the API shows why.
+    let st = c.call("protection.status", none.clone());
+    let data = &st["result"]["data"];
+    assert_eq!(data["guarded"], true, "{st}");
+    assert_eq!(data["level"], "critical", "{st}");
+    assert_eq!(data["disks"][0]["recordings"][0], "main", "{st}");
+    assert_eq!(data["alerts"][0]["kind"], "disk", "{st}");
+    assert_eq!(data["alerts"][0]["text"], told.as_str(), "{st}");
+    assert_eq!(data["memory"]["level"], "unavailable", "{st}");
+    let stopped = next_while(
+        &rx,
+        || clock.advance(Duration::from_secs(1)),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            Update::Failed(e) => panic!("the studio failed: {e}"),
+            _ => None,
+        },
+    );
+    match stopped {
+        RecordingUpdate::Stopped {
+            path: p, failure, ..
+        } => {
+            assert_eq!(p, path);
+            assert_eq!(failure.as_deref(), Some(told.as_str()));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(path.exists(), "the file is complete, not removed");
+    // The guard is gone with the last output, after its next round.
+    next_while(
+        &rx,
+        || clock.advance(Duration::from_secs(1)),
+        |u| match u {
+            Update::Stats(_) => Some(()),
+            _ => None,
+        },
+    );
+    let idle = c.call("protection.status", none);
+    assert_eq!(idle["result"]["data"]["guarded"], false, "{idle}");
+    drop((api, host));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct ChannelSender(Sender<serde_json::Value>);
+
+impl ConnectionSender for ChannelSender {
+    fn try_send(&mut self, text: &Arc<str>) -> Result<(), SendError> {
+        self.0
+            .send(serde_json::from_str(text).unwrap())
+            .map_err(|_| SendError::Closed)
+    }
+
+    fn close(&mut self, _reason: CloseReason) {}
+}
+
+/// A same-user IPC client of the control API, in memory.
+struct Client {
+    handle: ConnectionHandle,
+    rx: Receiver<serde_json::Value>,
+    next: i64,
+}
+
+impl Client {
+    fn connect(host: &StudioHost) -> (ApiServer, Self) {
+        let config = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
+        let (api, endpoint) =
+            ApiServer::start(config, TokenStore::new(), ApiOptions::new(host.api_waker())).unwrap();
+        host.attach_api(endpoint, None);
+        let (out_tx, out_rx) = mpsc::channel();
+        let handle = api
+            .inbox()
+            .connect(
+                PeerInfo::same_user_ipc(),
+                Box::new(ChannelSender(out_tx)),
+                Box::new(|| {}),
+            )
+            .unwrap();
+        let mut c = Self {
+            handle,
+            rx: out_rx,
+            next: 1,
+        };
+        let hello = c.call(
+            "session.hello",
+            serde_json::json!({"protocols": ["1.28"], "client": {"name": "test", "version": "1"}}),
+        );
+        assert_eq!(
+            hello["result"]["protocol"],
+            rbs_api::session::PROTOCOL_VERSION,
+            "{hello}"
+        );
+        (api, c)
+    }
+
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next;
+        self.next += 1;
+        let text =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.handle.push_message(text.to_string());
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an answer");
+            if v["id"] == id {
+                return v;
+            }
+        }
+    }
 }

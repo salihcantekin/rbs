@@ -64,6 +64,7 @@ use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
 mod monitor;
+pub mod protection;
 pub mod replay;
 
 use crate::canvas_profile::CanvasProfile;
@@ -1301,6 +1302,9 @@ struct CanvasOutputs {
     auto_recording: bool,
     /// The running stream: its URL, the connection last reported and its output.
     streaming: Option<(String, Link, OutputId)>,
+    /// Recording protection ended the recording (ADR-0090 decision 3): the reason for
+    /// its summary once the tail is in.
+    protection_stop: Option<String>,
     /// The recording, as the control API reports it.
     record_state: api::RecordState,
     /// The stream, as the control API reports it.
@@ -1314,6 +1318,7 @@ impl Default for CanvasOutputs {
             ending: false,
             auto_recording: false,
             streaming: None,
+            protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
         }
@@ -1911,6 +1916,9 @@ pub struct HostConfig {
     /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
     /// is opened only while a source is monitored or soloed.
     pub monitor: MonitorSettings,
+    /// Reads free disk space and memory for recording protection (ADR-0090); `None`:
+    /// disk and memory are reported unavailable and only lag is watched.
+    pub system_probe: Option<protection::SystemProbeFactory>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -1940,6 +1948,7 @@ impl HostConfig {
             recent_dir: None,
             swap_after_transition: false,
             monitor: MonitorSettings::default(),
+            system_probe: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -2389,6 +2398,8 @@ struct Host {
     camera_published: Option<api::VcamStatus>,
     /// The replay buffer's settings and state (ADR-0088).
     replay: replay::ReplayHost,
+    /// Recording protection while an output runs (ADR-0090).
+    protection: protection::ProtectionHost,
 }
 
 /// What the control thread is handed besides the studio configuration.
@@ -2643,6 +2654,9 @@ fn round(
     if let Some(left) = host.report_stats(now, notify) {
         wait = wait.min(left);
     }
+    if let Some(left) = host.drive_protection(now, notify) {
+        wait = wait.min(left);
+    }
     if let Some(left) = host.report_camera(now, notify) {
         wait = wait.min(left);
     }
@@ -2817,6 +2831,7 @@ fn start(
         camera_setup: None,
         camera_published: None,
         replay: replay::ReplayHost::new(),
+        protection: protection::ProtectionHost::new(config.system_probe),
         keys,
         key_account: config.key_account,
         engine: Box::new(engine),
@@ -4634,6 +4649,7 @@ impl Host {
         let o = &mut self.outs[slot(c)];
         o.ending = false;
         o.auto_recording = false;
+        let protected = o.protection_stop.take();
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
         // recording still tracked and ends it again (ADR-0055 decision 3).
         let Some((path, id)) = o.recording.clone() else {
@@ -4653,7 +4669,7 @@ impl Host {
                 r.failure,
             )
         });
-        let failure = failure.or(failed);
+        let failure = failure.or(failed).or(protected);
         self.set_record_state(
             c,
             api::RecordState::Idle {
@@ -9588,6 +9604,10 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::ProtectionStatus => Ok(Response::ProtectionStatus(api::Snapshot {
+                seq: host.events.seq_map([Topic::ProtectionChanged]),
+                data: host.api_protection(),
+            })),
             C::ReplayStatus => Ok(Response::ReplayStatus(api::Snapshot {
                 // The state as it is now, so the data and its `seq` match.
                 seq: {

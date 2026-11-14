@@ -454,6 +454,14 @@ struct CameraRun {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(u64);
 
+#[cfg(test)]
+impl OutputId {
+    /// An id for unit tests of code that only compares ids.
+    pub(crate) const fn test(n: u64) -> Self {
+        Self(n)
+    }
+}
+
 /// The video half of a prepared output: a new export and encoder, or a running
 /// encoder chain shared with another output.
 enum VideoPlan {
