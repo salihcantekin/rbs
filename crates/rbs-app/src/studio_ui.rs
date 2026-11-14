@@ -6478,18 +6478,33 @@ fn rates_between(min: u32, max: u32, stored: Option<u32>) -> Vec<u32> {
     rates
 }
 
+/// A camera's modes as the Source settings window lists them: each picture size once,
+/// largest first (ties: the wider one), with every rate any of its modes runs at. A
+/// camera reports one mode per size, pixel format and rate range, and the port picks
+/// the pixel format itself, so listing those separately only repeats the same size.
+fn camera_sizes(modes: &[rbs_sources::SourceMode]) -> Vec<((u32, u32), Vec<u32>)> {
+    let mut sizes: Vec<((u32, u32), Vec<u32>)> = Vec::new();
+    for m in modes {
+        let rates = rates_between(m.min_fps, m.max_fps, None);
+        match sizes.iter_mut().find(|(s, _)| *s == (m.width, m.height)) {
+            Some((_, have)) => {
+                have.extend(rates);
+                have.sort_unstable();
+                have.dedup();
+            }
+            None => sizes.push(((m.width, m.height), rates)),
+        }
+    }
+    sizes.sort_by(|((aw, ah), _), ((bw, bh), _)| {
+        (u64::from(*bw) * u64::from(*bh), *bw).cmp(&(u64::from(*aw) * u64::from(*ah), *aw))
+    });
+    sizes
+}
+
 fn source_settings_data(view: &SourceSettingsView) -> (SourceSettingsData, SettingsChoices) {
     let camera = view.kind == SourceKind::Camera;
     let (modes, rates): (Vec<(u32, u32)>, Vec<Vec<u32>>) = if camera {
-        view.modes
-            .iter()
-            .map(|m| {
-                (
-                    (m.width, m.height),
-                    rates_between(m.min_fps, m.max_fps, None),
-                )
-            })
-            .unzip()
+        camera_sizes(&view.modes).into_iter().unzip()
     } else {
         (Vec::new(), vec![rates_between(15, 60, view.fps)])
     };
@@ -6798,6 +6813,35 @@ mod tests {
         assert_eq!(patch["height"], 1080);
         assert_eq!(patch["fps"], 30);
         assert!(!patch.contains_key("cursor"));
+    }
+
+    #[test]
+    fn a_camera_lists_each_size_once_largest_first_with_all_its_rates() {
+        let mode = |width, height, min_fps, max_fps| rbs_sources::SourceMode {
+            width,
+            height,
+            min_fps,
+            max_fps,
+        };
+        let mut view = camera_view(Some((1920, 1080)), Some(60));
+        // The same sizes in two pixel formats with different rate ranges, smallest first.
+        view.modes = vec![
+            mode(640, 480, 30, 30),
+            mode(1920, 1080, 30, 30),
+            mode(640, 480, 30, 30),
+            mode(1920, 1080, 60, 60),
+            mode(1280, 720, 5, 10),
+            mode(1280, 960, 30, 30),
+        ];
+        let (data, choices) = source_settings_data(&view);
+        assert_eq!(
+            choices.modes,
+            [(1920, 1080), (1280, 960), (1280, 720), (640, 480)]
+        );
+        assert_eq!(choices.rates[0], [30, 60]);
+        assert_eq!(choices.rates[2], [5, 10]);
+        assert_eq!(data.mode_labels.row_count(), 4);
+        assert_eq!((data.mode_index, data.rate_index), (0, 1));
     }
 
     #[test]

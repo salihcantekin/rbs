@@ -301,6 +301,9 @@ fn place_one(window: &MainWindow, which: Picture) {
         if overlays.get_color_open() {
             st.covers.push(overlay(overlays.get_color_cover()));
         }
+        if overlays.get_select_open() {
+            st.covers.push(overlay(overlays.get_select_cover()));
+        }
         if overlays.get_picker_open() {
             st.covers.push(overlay(overlays.get_picker_cover()));
         }
