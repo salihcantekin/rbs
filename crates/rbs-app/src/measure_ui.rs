@@ -5,9 +5,9 @@
 //! phase:
 //!
 //! - **idle**: nothing is sent; frames counted here are redraws nobody asked for;
-//! - **hover**: the pointer sweeps across the window and back, one step per tick, on a
-//!   new row every pass, so the hover fills change whichever page is showing (the first-run
-//!   page included);
+//! - **hover**: the pointer traces a Lissajous path over the whole window, one step per
+//!   tick (x and y bounce between the edges with different periods), so the hover fills
+//!   change whichever page is showing, the first-run page included;
 //! - **resize**: the window grows and shrinks by up to 200 logical pixels, one step per
 //!   tick.
 //!
@@ -35,10 +35,10 @@ use slint::platform::WindowEvent;
 
 const WARM_UP: Duration = Duration::from_secs(3);
 const TICK: Duration = Duration::from_millis(16);
-/// Pointer steps across the window, and the rows of the sweep: the first at `HOVER_ROW`
-/// logical pixels from the top, each pass `HOVER_ROW` lower, wrapping at the bottom.
+/// Pointer steps from edge to edge: across (x) and down (y). Different, coprime periods
+/// make the path cover the window within a few seconds.
 const HOVER_STEPS: u32 = 120;
-const HOVER_ROW: f32 = 28.0;
+const HOVER_STEPS_Y: u32 = 43;
 const RESIZE_REACH: f32 = 200.0;
 const RESIZE_STEPS: u32 = 60;
 
@@ -161,15 +161,8 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
         let size = window.size().to_logical(scale);
         match names[index] {
             "hover" => {
-                let pass = tick / HOVER_STEPS;
-                let step = tick % (2 * HOVER_STEPS);
-                let step = if step < HOVER_STEPS {
-                    step
-                } else {
-                    2 * HOVER_STEPS - step
-                };
-                let x = size.width * step as f32 / HOVER_STEPS as f32;
-                let y = hover_row(pass, size.height);
+                let x = size.width * bounce(tick, HOVER_STEPS);
+                let y = size.height * bounce(tick, HOVER_STEPS_Y);
                 window.dispatch_event(WindowEvent::PointerMoved {
                     position: slint::LogicalPosition::new(x, y),
                 });
@@ -195,10 +188,11 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
     std::mem::forget(timer);
 }
 
-/// The y of the hover sweep's `pass`-th row in a window `height` tall.
-fn hover_row(pass: u32, height: f32) -> f32 {
-    let rows = (height / HOVER_ROW).floor().max(1.0) as u32;
-    HOVER_ROW * ((pass % rows) as f32 + 0.5)
+/// A triangle wave over `steps`: 0 at tick 0, 1 at `steps`, back to 0 at `2 * steps`.
+fn bounce(tick: u32, steps: u32) -> f32 {
+    let step = tick % (2 * steps);
+    let step = if step < steps { step } else { 2 * steps - step };
+    step as f32 / steps as f32
 }
 
 fn ms(d: Duration) -> f64 {
@@ -251,11 +245,11 @@ mod tests {
     }
 
     #[test]
-    fn hover_rows_move_down_and_wrap_inside_the_window() {
-        let h = 100.0;
-        let ys: Vec<f32> = (0..5).map(|p| hover_row(p, h)).collect();
-        assert_eq!(ys, vec![14.0, 42.0, 70.0, 14.0, 42.0]);
-        assert!(ys.iter().all(|y| *y < h));
-        assert_eq!(hover_row(3, 10.0), 14.0);
+    fn bounce_goes_edge_to_edge_and_back() {
+        assert_eq!(bounce(0, 4), 0.0);
+        assert_eq!(bounce(2, 4), 0.5);
+        assert_eq!(bounce(4, 4), 1.0);
+        assert_eq!(bounce(6, 4), 0.5);
+        assert_eq!(bounce(8, 4), 0.0);
     }
 }
