@@ -1,0 +1,18 @@
+[package]
+name = "rbs-manifest"
+description = "The recording manifest of RBS: the files of a recording, their timing and the markers, as a TOML document (ADR-0086, ADR-0089)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Model layer (docs/architecture/overview.md#layers): data and its TOML form only. No
+# engine, port, adapter, GPU or UI crate. `rbs-record` writes it, `rbs-project` reads it.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+toml = "0.9"
+
+[lints]
+workspace = true

@@ -165,7 +165,7 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | `scope_denied` | -32010 | Scope missing |
 | `not_permitted` | -32011 | Planned (ADR-0052): the token lacks the irreversible-actions permission; `data.reason` is `irreversible`, `on_air` or `network` |
 | `busy` | -32020 | Request queue full |
-| `rate_limited` | -32021 | Request rate exceeded |
+| `rate_limited` | -32021 | Request rate exceeded (also `marker.add` above its own rate, protocol 1.50) |
 | `message_too_large` | -32022 | Message over the size limit |
 | `batch_unsupported` | -32023 | JSON array of requests |
 | `not_found` | -32030 | Object does not exist |
@@ -254,6 +254,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `record.start_to_file {profile, path, canvas?}` | `admin` | Record to an explicit file; refused if it exists |
 | `record.status {canvas?}` | `read` | Recording state; a running main recording lists its separate files in `tracks` and marked sources without a file in `skipped` (protocol 1.46) |
 | `source.set_record_separately {source, enabled}` | `control` | Record the source's sound as a file of its own next to the main recording, from the next recording on (protocol 1.46, ADR-0086); see "Protocol 1.46" |
+| `marker.add {label?, color?, canvas?}`, `marker.remove {canvas, index}` | `control` | A marker in the running recordings, and taking one back (protocol 1.50, ADR-0089); see "Protocol 1.50" |
 | `stream.start {canvas?}`, `stream.stop {canvas?}` | `control` | Go live with the saved stream settings and the key in the system's credential store, and end the stream (protocol 1.1); `canvas: "all"` from protocol 1.42 |
 | `output.set_with_vertical {kind, on}` | `control` | Whether Record (`kind: "record"`) or Go live (`"stream"`) also starts and stops the vertical canvas's output; saved in the output profile; not undoable; allowed while outputs run (protocol 1.42, ADR-0111) |
 | `stream.status {canvas?}` | `read` | Stream state (protocol 1.1) |
@@ -394,6 +395,7 @@ While a vertical canvas exists, Record and Go live in the desktop app start and 
 - **Record when the stream starts** stays per canvas (1.29): the main stream's `auto_record` records the main canvas only.
 - **The choice.** `settings.get` and `settings.changed` carry `vertical: { "record_with_main", "stream_with_main" }`, both `true` by default and present also with no vertical canvas. `vertical` is an object so that the vertical recording and stream settings can join it in a later minor version. `output.set_with_vertical {kind, on}` (`control`, so a control-surface token can flip it) changes one flag and publishes `settings.changed`; `settings.set` does not write the flags in 1.42. The flags live in the output profile's `[outputs-vertical]` section ([recording spec](recording.md#further-canvases-adr-0093-first-step)).
 - **Commands.** `ui.command.run` of `record.toggle` and `stream.toggle` runs the start or stop with `canvas: "all"` while the kind's flag is on and a vertical canvas exists, and `canvas: "main"` otherwise. Their checked state is the main canvas's. `record.main.toggle` and `stream.main.toggle` always act on the main canvas, `record.vertical.toggle` and `stream.vertical.toggle` on the vertical one, and `output.with_vertical?kind=record|stream&on=on|off` runs `output.set_with_vertical` ([UI design system](ui-design-system.md)).
+- **Markers.** `marker.add` also takes `canvas: "all"`, and it is its default (protocol 1.50, unlike `record.*`): see "Protocol 1.50".
 - **Older servers.** 1.29 to 1.41 refuse `"all"` with `invalid_params` and answer `method_not_found` to `output.set_with_vertical`; a 1.28 server ignores `canvas` and acts on the main canvas. A client checks for 1.42 before sending `"all"`, and a client of an older server, whose `settings.get` has no `vertical`, assumes main only.
 
 ### Vertical canvas layouts (protocol 1.44, ADR-0093 decisions 4 and 8)
@@ -495,6 +497,13 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Rows.** `scene.list` and `scene.changed` scene rows add `own_audio: true` for a scene in Own levels (absent otherwise). `source.list`, `source.changed` and `scene.sources` rows keep `volume` and `muted` as the source's own values and add `heard: {volume, muted}` while the program scene has an entry for the source (absent otherwise, when `volume` and `muted` are what is heard). `source.set_volume` and `source.set_muted` still change the source's own values; while the program scene has an entry for the source, `heard` shows that the entry is still in force.
 - **Refusals.** `not_found` for an unknown scene (the canvas's global scene included, which no method lists) or source; `invalid_params` for `scene.audio.set` with neither `volume` nor `muted`, a volume outside `0..=1` or not finite, or unknown keys.
 - **Older clients and servers.** A 1.47 client sees the same objects as before for a collection without Own levels; on a scene in Own levels its `volume` and `muted` remain the source's own values, which may differ from what is heard. A 1.47 server answers `method_not_found` and omits the fields. 1.47 was the loudness meter. A collection that uses Own levels is saved as scene format 17, which older builds refuse to open.
+
+### Protocol 1.50: recording markers (ADR-0089, first slice)
+
+- **`marker.add {label?, color?, canvas?}`** (scope `control`, effect `edit`: `marker.remove` takes it back with nothing lost). A manual marker in every running recording `canvas` names: `main`, `vertical` or `all`, the default. Each recording gets it at the same master-clock time, relative to its own start. `label` is one line of at most 200 Unicode scalar values (surrounding spaces trimmed); absent or blank is "Marker N", N counting that recording's manual markers. `color` is `blue` (default), `red`, `orange`, `yellow`, `green` or `purple`. Answers `{markers: [{canvas, index, t_ns}]}`, main first: `index` is 1-based and stable for the recording, `t_ns` the position from the recording's start in nanoseconds. Errors, in this order: `invalid_params` (label, colour, canvas or any other field); `not_found` for `vertical` without a vertical canvas; `conflict` when nothing records on the canvases asked for, or a recording has 10 000 markers (nothing is added then). At most 2 calls a second per session, refused or not; more is `rate_limited`, sent at once like the other protecting refusals. The limit is the API's: the desktop's Marker command and shortcut (a later step) will not have it.
+- **`marker.remove {canvas, index}`** (scope `control`, effect `edit`). `canvas` is `main` or `vertical`. The other markers keep their index and a later marker never reuses it. Answers `{}`. Errors: `invalid_params`; `not_found` for `vertical` without a vertical canvas and for an index the recording does not have; `conflict` when nothing records on that canvas.
+- **Where they go.** The recording's manifest (recording spec, "Recording manifest"), written when the recording stops: `recording.rbs.toml` in a recording folder, `<file stem>.rbs.toml` beside a plain recording that has markers. The reaction-time offset (`marker_lead`), the periodic flush, automatic markers, `marker.list`, the `marker.changed` topic and `project.export` are later minors.
+- **Older servers.** A 1.49 server answers `method_not_found`; a client checks the protocol version first.
 
 ### Protocol 1.46: separate files (ADR-0086)
 

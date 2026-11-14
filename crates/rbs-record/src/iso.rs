@@ -1,7 +1,7 @@
 //! Separate files next to a master recording (ADR-0086).
 //!
 //! [`plan`] names each track from the sources marked in the collection and opens
-//! nothing. [`RecordingManifest::at_start`] is the manifest written when a recording
+//! nothing. [`manifest_at_start`] is the manifest written when a recording
 //! starts. Audio files are opened by [`crate::Studio::start_iso_audio`] in the
 //! caller's container and codec. PCM and FLAC pass `bit_depth` when it is set;
 //! absent is 16-bit. Video files are named and not opened yet. Offsets and drop
@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{RecordSeparately, SourceId};
 use rbs_sources::types::{SourceClass, class_of};
@@ -129,11 +130,8 @@ impl fmt::Display for IsoError {
 /// Writes `recording.rbs.toml` into `dir` (a temporary name, then a rename). The
 /// manifest text has no directory. An I/O error is [`IsoError::Manifest`].
 pub fn write_manifest(dir: &std::path::Path, manifest: &RecordingManifest) -> Result<(), IsoError> {
-    let path = dir.join("recording.rbs.toml");
-    let tmp = dir.join(".recording.rbs.toml.tmp");
-    std::fs::write(&tmp, manifest.to_toml()).map_err(|_| IsoError::Manifest)?;
-    std::fs::rename(&tmp, &path).map_err(|_| IsoError::Manifest)?;
-    Ok(())
+    rbs_manifest::write(dir, rbs_manifest::FOLDER_MANIFEST, manifest)
+        .map_err(|_| IsoError::Manifest)
 }
 
 /// The files a recording will write, named from the collection.
@@ -223,94 +221,33 @@ fn check_class(
     }
 }
 
-/// One file in the recording manifest.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManifestFile {
-    /// `"master"`, `"video"` or `"audio"`.
-    pub role: String,
-    /// Name inside the recording folder.
-    pub file_name: String,
-    /// Set for a separate track.
-    pub source: Option<SourceId>,
-    /// The source's display name, for a separate track.
-    pub source_name: Option<String>,
-}
-
-/// The manifest written when a recording starts (ADR-0086 decision 6).
-///
-/// It has no directory and no secret. `start_offset_ns` and the drop counters are
-/// absent until the recording stops.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordingManifest {
-    /// Wall-clock UTC of `t0`, as the caller formatted it.
-    pub t0_utc: String,
-    /// `t0` on the master clock, in nanoseconds.
-    pub t0_ns: u64,
-    /// The master file, then each separate track.
-    pub files: Vec<ManifestFile>,
-}
-
-impl RecordingManifest {
-    /// The manifest at the moment recording starts. `master_file` is a single name,
-    /// never a path.
-    pub fn at_start(
-        plan: &IsoPlan,
-        master_file: &str,
-        t0_utc: &str,
-        t0_ns: u64,
-    ) -> Result<Self, IsoError> {
-        if !single_file_name(master_file) {
-            return Err(IsoError::MasterName);
-        }
-        if t0_utc.is_empty() {
-            return Err(IsoError::Clock);
-        }
-        let mut files = Vec::with_capacity(plan.tracks.len() + 1);
-        files.push(ManifestFile {
-            role: "master".to_owned(),
-            file_name: master_file.to_owned(),
-            source: None,
-            source_name: None,
-        });
-        for track in &plan.tracks {
-            files.push(ManifestFile {
-                role: track.role.as_str().to_owned(),
-                file_name: track.file_name.clone(),
-                source: Some(track.source),
-                source_name: Some(track.source_name.clone()),
-            });
-        }
-        Ok(Self {
-            t0_utc: t0_utc.to_owned(),
-            t0_ns,
-            files,
-        })
+/// The manifest at the moment recording starts (ADR-0086 decision 6). `master_file`
+/// is a single name, never a path. Offsets, formats and markers are absent until the
+/// recording stops.
+pub fn manifest_at_start(
+    plan: &IsoPlan,
+    master_file: &str,
+    t0_utc: &str,
+    t0_ns: u64,
+) -> Result<RecordingManifest, IsoError> {
+    if !rbs_manifest::single_file_name(master_file) {
+        return Err(IsoError::MasterName);
     }
-
-    /// TOML with `format` and `kind`. Names are the file names only.
-    pub fn to_toml(&self) -> String {
-        let mut text = format!(
-            "format = 1\nkind = \"recording-manifest\"\nt0_utc = {}\nt0_ns = {}\n",
-            toml_string(&self.t0_utc),
-            self.t0_ns
-        );
-        for file in &self.files {
-            text.push_str("\n[[files]]\n");
-            text.push_str(&format!("role = {}\n", toml_string(&file.role)));
-            text.push_str(&format!("name = {}\n", toml_string(&file.file_name)));
-            if let Some(source) = file.source {
-                text.push_str(&format!("source = {}\n", source.get()));
-            }
-            if let Some(name) = &file.source_name {
-                text.push_str(&format!("source_name = {}\n", toml_string(name)));
-            }
-        }
-        text
+    if t0_utc.is_empty() {
+        return Err(IsoError::Clock);
     }
-}
-
-fn single_file_name(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':', '\0'])
+    let mut manifest = RecordingManifest::new(t0_utc, t0_ns);
+    manifest.files.reserve(plan.tracks.len() + 1);
+    manifest
+        .files
+        .push(ManifestFile::listed("master", master_file));
+    for track in &plan.tracks {
+        let mut file = ManifestFile::listed(track.role.as_str(), &track.file_name);
+        file.source = Some(SourceRef::new(track.source.get()));
+        file.source_name = Some(track.source_name.clone());
+        manifest.files.push(file);
+    }
+    Ok(manifest)
 }
 
 fn safe_stem(name: &str, id: SourceId) -> String {
@@ -391,25 +328,6 @@ fn take_name(used: &mut BTreeSet<String>, stem: &str, id: SourceId) -> String {
     }
 }
 
-fn toml_string(value: &str) -> String {
-    let mut out = String::from("\"");
-    for c in value.chars() {
-        match c {
-            '\\' | '"' => {
-                out.push('\\');
-                out.push(c);
-            }
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{:04X}", u32::from(c))),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -464,16 +382,15 @@ mod tests {
         assert_eq!(plan.tracks[2].file_name, "Mic 2");
 
         let manifest =
-            RecordingManifest::at_start(&plan, "master.mkv", "2026-11-13T19:00:00Z", 1_000)
-                .unwrap();
+            manifest_at_start(&plan, "master.mkv", "2026-11-13T19:00:00Z", 1_000).unwrap();
         let text = manifest.to_toml();
         assert!(text.starts_with("format = 1\nkind = \"recording-manifest\"\n"));
         assert!(text.contains("role = \"master\"\nname = \"master.mkv\"\n"));
         assert!(text.contains("role = \"audio\"\nname = \"Mic 2\"\n"));
         assert!(!text.contains('\\'));
         assert!(!text.contains("start_offset_ns"));
-        assert!(RecordingManifest::at_start(&plan, "C:/out.mkv", "t", 0).is_err());
-        assert!(RecordingManifest::at_start(&plan, "master.mkv", "", 0).is_err());
+        assert!(manifest_at_start(&plan, "C:/out.mkv", "t", 0).is_err());
+        assert!(manifest_at_start(&plan, "master.mkv", "", 0).is_err());
     }
 
     #[test]
@@ -520,16 +437,10 @@ mod tests {
 
     #[test]
     fn the_start_manifest_is_written_without_a_directory_in_the_text() {
-        let manifest = RecordingManifest {
-            t0_utc: "2026-11-13T19:00:00Z".to_owned(),
-            t0_ns: 1,
-            files: vec![ManifestFile {
-                role: "master".to_owned(),
-                file_name: "master.mkv".to_owned(),
-                source: None,
-                source_name: None,
-            }],
-        };
+        let mut manifest = RecordingManifest::new("2026-11-13T19:00:00Z", 1);
+        manifest
+            .files
+            .push(ManifestFile::listed("master", "master.mkv"));
         let dir = std::env::temp_dir().join(format!("rbs-iso-manifest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
