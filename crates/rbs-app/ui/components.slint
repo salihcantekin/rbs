@@ -473,7 +473,7 @@ export component Button inherits Rectangle {
     // An icon-only danger button (a row's delete) rests bare, like a ghost, so a list
     // of rows does not carry a tinted disc each.
     property <bool> rests-filled: kind == "secondary" || (kind == "danger" && !round) || framed;
-    property <bool> outlined: enabled && !filled && (checked || (Theme.high-contrast ? kind != "ghost" || framed : Theme.button-outline && rests-filled));
+    property <bool> outlined: enabled && !filled && (checked || (Theme.high-contrast ? (kind != "ghost" && !(kind == "danger" && round)) || framed : Theme.button-outline && rests-filled));
     background: !enabled ? transparent
         : kind == "primary" ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live

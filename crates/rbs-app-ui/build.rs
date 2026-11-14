@@ -4,7 +4,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rbs_ui::tokens::{BUTTON_SURFACES, THEMES, Tokens, button_outline, panel_outline};
+use rbs_ui::tokens::{
+    BUTTON_FILLS, BUTTON_SURFACES, THEMES, Tokens, button_outline, panel_outline,
+};
 
 /// `color.surface.base` -> `surface-base`; `space.1` -> `space-1`.
 fn ident(name: &str, strip: &str) -> String {
@@ -76,9 +78,9 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
             "        {{ high-contrast: {}, panel-outline: {}, button-outline: {}, font-family: \"\"",
             name == THEMES[2],
             panel_outline(c["color.surface.raised"], c["color.surface.base"]),
-            BUTTON_SURFACES
+            BUTTON_FILLS
                 .iter()
-                .any(|n| button_outline(c["color.button.fill"], c[*n]))
+                .any(|f| BUTTON_SURFACES.iter().any(|n| button_outline(c[*f], c[*n])))
         )?;
         for n in &colors {
             write!(s, ", {}: {}", ident(n, "color."), c[*n])?;

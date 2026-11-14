@@ -804,21 +804,24 @@ impl ResolvedTheme {
         }
     }
 
-    /// True when a secondary button draws its `color.border.subtle` outline: its fill
-    /// (`color.button.fill`) is closer than [`PANEL_OUTLINE_BELOW`] to one of the surfaces
-    /// a button sits on, so the fill alone would not show the button's edge (ADR-0118).
-    /// Also true when a colour is missing.
+    /// True when secondary and danger buttons draw their `color.border.subtle` outline:
+    /// a resting fill ([`BUTTON_FILLS`]) is closer than [`PANEL_OUTLINE_BELOW`] to one of
+    /// the surfaces a button sits on, so the fill alone would not show the button's edge
+    /// (ADR-0118). Also true when a colour is missing.
     pub fn button_outline(&self) -> bool {
         let get = |n: &str| self.colors.get(n).copied();
-        match get("color.button.fill") {
+        BUTTON_FILLS.iter().any(|f| match get(f) {
             Some(fill) => BUTTON_SURFACES
                 .iter()
                 .map(|n| get(n))
                 .any(|s| s.is_none_or(|s| button_outline(fill, s))),
             None => true,
-        }
+        })
     }
 }
+
+/// The resting fills of buttons that may draw an outline: secondary and danger.
+pub const BUTTON_FILLS: [&str; 2] = ["color.button.fill", "color.action.destructive.subtle"];
 
 /// The surfaces a button sits on: the window ground, panels, wells and popups.
 pub const BUTTON_SURFACES: [&str; 4] = [

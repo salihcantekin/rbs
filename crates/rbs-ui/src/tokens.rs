@@ -893,7 +893,7 @@ mod tests {
         // that fails.
         let red_error = base.replacen(
             "\"color.state.error\" = \"#c38bf0\"",
-            "\"color.state.error\" = \"#ff7070\"",
+            "\"color.state.error\" = \"#ff8a8a\"",
             1,
         );
         assert!(Tokens::parse(&red_error).unwrap_err().0.contains("hue"));
