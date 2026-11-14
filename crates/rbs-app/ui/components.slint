@@ -459,6 +459,20 @@ export component Button inherits Rectangle {
     in property <bool> lead-signal: false;
     // A ghost button that must read as a button at rest (the mixer mute).
     in property <bool> framed: false;
+    // Menu form (ADR-0118 decision 9): a short name before the text in `text.secondary`
+    // ("Workspace" before the current one's name), and a hint after it in `text.secondary`
+    // at caption size (a bound shortcut).
+    in property <string> caption;
+    in property <string> hint;
+    // The app's mark before the text, on the button's own fill (the RBS button).
+    in property <bool> brand: false;
+    // Text at caption size and weight, for a dense ghost button among caption text
+    // (the status bar's pickers).
+    in property <bool> small: false;
+    // The button opens a menu: Down opens it too, as Return and Space do.
+    in property <bool> menu: false;
+    // What the button does, for screen readers, when the tooltip does not say it.
+    in property <string> description: tooltip;
     // The short name or reason shown as a tooltip while the pointer rests on the button or
     // it has the keyboard focus (ADR-0094, one host per window: OverlayHost).
     in property <string> tooltip;
@@ -512,7 +526,7 @@ export component Button inherits Rectangle {
     accessible-checked: checked;
     accessible-enabled: enabled;
     accessible-action-default => { if enabled { clicked(); } }
-    accessible-description: root.tooltip;
+    accessible-description: root.description;
     forward-focus: focus;
     // The pointer is over the button, or it has the keyboard focus: an icon-only
     // control uses it to show its name beside itself.
@@ -556,11 +570,35 @@ export component Button inherits Rectangle {
             alignment: center;
             Icon { name: root.shown-lead; ink: root.enabled ? root.lead-ink : root.ink; }
         }
+        // The app's mark sits on a `surface.raised` chip, like a lead icon, where its
+        // 3:1 rule holds whatever the button's fill.
+        if root.brand: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-button-chip;
+                height: Tokens.size-button-chip;
+                border-radius: Tokens.radius-md;
+                background: Theme.surface-raised;
+                BrandMark { ground: Theme.surface-raised; }
+            }
+        }
+        if root.caption != "": Text {
+            text: root.caption;
+            color: root.enabled && !root.filled ? Theme.text-secondary : root.ink;
+            font-size: root.small ? Tokens.type-caption-size : Tokens.type-label-size;
+            vertical-alignment: center;
+        }
         if root.text != "": Text {
             text: root.text;
             color: root.ink;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
+            font-size: root.small ? Tokens.type-caption-size : Tokens.type-label-size;
+            font-weight: root.small ? Tokens.type-caption-weight : Tokens.type-label-weight;
+            vertical-alignment: center;
+        }
+        if root.hint != "": Text {
+            text: root.hint;
+            color: root.enabled && !root.filled ? Theme.text-secondary : root.ink;
+            font-size: Tokens.type-caption-size;
             vertical-alignment: center;
         }
         if root.icon != IconName.none: VerticalLayout {
@@ -572,7 +610,7 @@ export component Button inherits Rectangle {
         focus-on-click: false;
         enabled: root.enabled;
         key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            if e.text == Key.Return || e.text == " " || (root.menu && e.text == Key.DownArrow) { root.clicked(); return accept; }
             if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
             reject
         }
@@ -2144,9 +2182,11 @@ component StepButton inherits Rectangle {
     in property <bool> enabled: true;
     callback step();
     property <bool> repeating;
+    // The Tint look's button colours (ADR-0118). It stays a part of the field, not a
+    // Button: a Button takes the focus, and the stepper must leave it in the field.
     background: !root.enabled ? transparent
-        : touch.pressed ? Theme.surface-raised
-        : touch.has-hover ? Theme.surface-overlay : transparent;
+        : touch.pressed ? Theme.button-pressed
+        : touch.has-hover ? Theme.button-hover : transparent;
     accessible-role: none;
     Icon {
         width: Tokens.size-icon-box * 0.75;
