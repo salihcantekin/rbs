@@ -100,6 +100,15 @@ pub enum IsoError {
     },
     /// `recording.rbs.toml` could not be written. The message has no path.
     Manifest,
+    /// A video track's source has no picture yet, so its file's size is unknown
+    /// (ADR-0086 decision 3: the size is fixed at the start), or it is not in the
+    /// graph. Keeping off-air sources Active is a later step (decision 8).
+    NoPicture {
+        /// The source.
+        source: SourceId,
+        /// Its display name.
+        name: String,
+    },
 }
 
 impl fmt::Display for IsoError {
@@ -123,6 +132,7 @@ impl fmt::Display for IsoError {
                 write!(f, "{name} is not in the program mix")
             }
             Self::Manifest => f.write_str("the recording manifest could not be written"),
+            Self::NoPicture { name, .. } => write!(f, "{name} has no picture yet"),
         }
     }
 }

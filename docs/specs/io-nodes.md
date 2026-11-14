@@ -37,7 +37,8 @@ impl VideoExportNode {                                        // Node<GpuRuntime
     // `width` x `height` is the encoded picture (ADR-0102). Equal to the canvas: 1:1.
     pub fn frame_format(&self) -> VideoFormat;                // the encoder config's input format
     pub fn kernel(&self) -> ScaleKernel;                      // after prepare, the download's kernel; before, scale_kernel of the sizes
-    pub fn stats(&self) -> Arc<ExportNodeStats>;              // frames, busy, lost
+    pub fn give_way_after(self, budget: Duration) -> Self;   // ADR-0086 decision 9; default never
+    pub fn stats(&self) -> Arc<ExportNodeStats>;              // frames, busy, lost, gave_way
     pub fn end(&self) -> Arc<ExportEnd>;                      // ADR-0045
 }
 impl ExportEnd {                                              // shared with the control thread
@@ -126,7 +127,7 @@ Counters are those of the capture node: `picture_size` is known from constructio
 | --- | --- |
 | `prepare` | Creates a `YuvDownload` for the output size and format (converter, plane textures, staging ring, frame buffers). Output size equal to the canvas: `with_tone` (1:1 `textureLoad`). A different size: `scaled_tone` from the canvas size to the output size, one pass (ADR-0102) |
 | `prepare` (again) | Clears `ExportEnd::ended`; the end time stays |
-| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. On a tick past the end with no readback in flight, `ended` is set. Every delivered frame's time is stored in `ExportNodeStats::last_frame` |
+| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. On a tick past the end with no readback in flight, `ended` is set. Every delivered frame's time is stored in `ExportNodeStats::last_frame`. Giving way (`give_way_after`, only the separate video files set it): when `Tick::previous_busy` is over the budget, step 2 does not submit the canvas and counts `gave_way`; readbacks still go on "video". The default budget is never reached, so the master's export makes one compare and no other change |
 | `release` | Counts readbacks still in flight in `lost`, then drops the download |
 
 Invariants:

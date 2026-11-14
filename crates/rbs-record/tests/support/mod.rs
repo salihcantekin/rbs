@@ -31,9 +31,9 @@ use rbs_graph::node::NodeTypeId;
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::{
     AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, ISO_AUDIO_ENCODER,
-    ISO_OUTPUT, OUTPUT, OUTPUT_2, OUTPUT_3, OUTPUT_4, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING,
-    REPLAY_VIDEO_ENCODER, RecordAdapters, Recording, Studio, VIDEO_ENCODER, VIDEO_ENCODER_2,
-    VIDEO_ENCODER_3, VIDEO_ENCODER_4,
+    ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT, OUTPUT_2, OUTPUT_3, OUTPUT_4, RENDER,
+    REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters, Recording, Studio,
+    VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneScope, Settings};
@@ -537,7 +537,7 @@ impl Driven for Studio {
 }
 
 /// The cadence partitions: id, cadence, offset.
-fn cadences() -> [(PartitionId, Cadence, Duration); 7] {
+fn cadences() -> [(PartitionId, Cadence, Duration); 9] {
     let frames = Cadence::frames(Timestamp::ZERO, FPS);
     [
         (RENDER, frames, Duration::ZERO),
@@ -546,6 +546,8 @@ fn cadences() -> [(PartitionId, Cadence, Duration); 7] {
         (VIDEO_ENCODER_3, frames, FPS.frame_duration() / 4),
         (VIDEO_ENCODER_4, frames, FPS.frame_duration() / 4),
         (REPLAY_VIDEO_ENCODER, frames, FPS.frame_duration() / 4),
+        (ISO_VIDEO_ENCODERS[0], frames, FPS.frame_duration() / 4),
+        (ISO_VIDEO_ENCODERS[1], frames, FPS.frame_duration() / 4),
         (
             AUDIO,
             AudioGraphConfig::default().cadence(START),
@@ -585,6 +587,8 @@ pub fn run_until<T: Driven>(
         REPLAY_RING,
         ISO_AUDIO_ENCODER,
         ISO_OUTPUT,
+        ISO_VIDEO_ENCODERS[0],
+        ISO_VIDEO_ENCODERS[1],
     ];
     let gpu = gpu().expect("run_until needs the GPU the studio runs on");
     let wall = Instant::now();
