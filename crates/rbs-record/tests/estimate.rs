@@ -343,3 +343,27 @@ fn every_separate_track_lists_what_it_adds() {
     assert_eq!(m.level, None);
     assert_eq!(m.limit, None);
 }
+
+#[test]
+fn the_separate_video_limit_is_three_until_the_encoder_is_known() {
+    use rbs_record::estimate::{UNKNOWN_SESSIONS_VIDEO_LIMIT, separate_video_limit};
+    // Hardware, nothing declared or measured.
+    let e = estimate(&plan(HW, 0), &declared(None));
+    assert_eq!(separate_video_limit(&e), UNKNOWN_SESSIONS_VIDEO_LIMIT);
+    // Declared: the declared count decides, above or below three.
+    let e = estimate(&plan(HW, 0), &declared(Some(8)));
+    assert_eq!(separate_video_limit(&e), 7);
+    let e = estimate(&plan(HW, 0), &declared(Some(2)));
+    assert_eq!(separate_video_limit(&e), 1);
+    // Software: unlimited sessions, but its load is not measured.
+    let e = estimate(&plan(SW, 0), &declared(None));
+    assert_eq!(separate_video_limit(&e), UNKNOWN_SESSIONS_VIDEO_LIMIT);
+    // Measured: the measurement decides.
+    let mut limits = declared(None);
+    limits.calibration = Some(Calibration {
+        encoders: vec![measure(6, 10_000_000_000, Duration::from_micros(100))],
+        ..Calibration::default()
+    });
+    let e = estimate(&plan(HW, 0), &limits);
+    assert_eq!(separate_video_limit(&e), 5);
+}

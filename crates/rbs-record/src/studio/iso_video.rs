@@ -224,7 +224,7 @@ struct Tap {
 /// missed none or one (ADR-0119 step (a) measurement, its `## Review` record). A
 /// partition per file comes with encoders that do not share the master's engine
 /// (ADR-0119 steps (c) and (d)).
-const SHARED_ENGINE_PARTITIONS: usize = 2;
+pub(super) const SHARED_ENGINE_PARTITIONS: usize = 2;
 
 impl super::Studio {
     /// Opens one video file per source marked for separate video. The input is that

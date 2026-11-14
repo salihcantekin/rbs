@@ -11,7 +11,8 @@ Say before a start what it will cost on this computer, which resource sets the l
 | Part | Crate | Notes |
 | --- | --- | --- |
 | `estimate()`, `EstimatePlan`, `Limits`, `Estimate` | `rbs-record` (`estimate`) | Pure: no clock read, no OS call, no thread, no adapter. Tested with synthetic plans |
-| Plan building from the output profile and the collection | `rbs-app` (later step) | Resolves the adapter each encoder would use and its declared capabilities |
+| `Studio::separate_video_plan` | `rbs-record` (`studio::estimate_plan`) | The plan of a start of separate video files next to what runs, and the adapters' declared capabilities; reads state only, opens nothing |
+| `separate_video_limit` in the host | `rbs-app` (`studio_host`) | The desktop app's and the API's picture files (1.52) |
 | `DiskProbe` (free space per folder, short-lived thread, cache) | `rbs-record` (`estimate`) | Takes the caller's master-clock time and a `ReadFreeSpace` function (`rbs-system-probe` in the app, a fake in tests) |
 | `calibration.toml` (`CalibrationFile`, `load`, `save`, `for_estimate`, `prune`) | `rbs-app` (`calibration_file`) | Beside `app.toml`, outside the `UserData` library |
 | Calibration run | later step | ADR-0087 decision 4 |
@@ -88,6 +89,25 @@ Closed codes, as ADR-0087 decision 7: `unknown`, `no_adapter`, `open_failed`, `s
 
 Each separate track lists what it adds per resource: a video track one session, its pixel rate, its bytes per second, its export memory and, when measured, its export time over the tick; an audio track its bytes per second.
 
+## The studio's plan
+
+`Studio::separate_video_plan(adapters, collection, start)` builds the `EstimatePlan` of a start of separate video files (`IsoVideoStart`) next to what runs now, and the `DeclaredAdapter` list of the adapters it names. It reads the studio's state and the registries' probe results only; nothing opens.
+
+- Every running video encoder chain is one `VideoEncode` (`Recording`), at the size it was opened with and the canvas frame rate; every running audio chain one `AudioEncode`.
+- The files' encoder is the one the selection would most likely use for the start's settings at the canvas size: the first candidate in registry order that a running chain already uses (it is known to open), else the first candidate. The real selection passes over an encoder that refuses to open, so this is a best guess.
+- Each source marked for video (`iso::plan`) is one `VideoEncode` (`Iso`) at its picture size, or the canvas size before it has a picture, on the shared engine workers in turn, holding `DOWNLOAD_BUFFERS` export buffers. Image tracks are listed. The template is one more such file at the canvas size.
+- Bytes per second: the bit rate over 8 (VBR: the target); constant quality is planned at 0.1 bit per pixel per frame.
+- `adapter.hardware` and `codec.sessions.max` come from the registry's probe; `codec.video.pixel_rate.max` is not a port key yet and is left out.
+
+## Separate video limit
+
+`separate_video_limit(estimate)` is the number of separate video files a start opens; marked sources past it are skipped with the reason `limit`, in source id order.
+
+- It is `max_video.count` when what an encoder can take is known.
+- While `encoder_sessions` or `cpu_load` is among `max_video.unknown` (a hardware encoder whose session limit is neither measured nor declared, or a software encoder whose load is not measured), it is at most `UNKNOWN_SESSIONS_VIDEO_LIMIT` (3), and 3 when the count is `None`: the owner's choice of 2026-11-14 (ADR-0087 Review). Three 1080p60 files kept the master whole on an M4 Pro with its hardware encoder; four did not.
+- A measured or declared session limit decides, above or below 3.
+- Until the calibration (step D) no encoder entry is measured, and no adapter in the tree declares `codec.sessions.max`, so every computer gets 3 today. The Settings card still shows the fixed 3 (`SEPARATE_VIDEO_LIMIT`); the live number comes with the UI step.
+
 ## Disk probe
 
 - `DiskProbe::free_space(folder, now)` never waits. It answers `Known(bytes)` when the folder was read less than `CACHE_FOR` (60 s) ago on the caller's clock, `Unknown(reason)` when the last read failed or timed out, and `Pending` otherwise. A missing or stale reading starts a read for the next estimate.
@@ -140,7 +160,7 @@ Nothing runs unless the caller asks. The function is called by the control threa
 
 ## Later steps
 
-- C: reading `calibration.toml` at app start, the disk probe in the host, `record.estimate`, the start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, and the plan built by the host; the estimate replaces the fixed limit of 3 separate video files.
+- C: the desktop app's and the API's picture files take their limit from the estimate (above, done). Next: reading `calibration.toml` at app start, the disk probe in the host, `record.estimate`, the start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, and the plan built by the host.
 - D: *Test this computer* (`calibration.run`, `calibration.cancel`, `calibration.status`, topic `calibration.state`).
 - E: the render partition's previous-tick time published for the estimate (hot path: measurements and sign-off).
 - F: the meter, the sentence, the button and the start confirmation in the desktop app.

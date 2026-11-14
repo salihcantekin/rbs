@@ -304,6 +304,20 @@ fn files_past_the_limit_and_sources_without_a_picture_are_skipped_when_asked() {
     });
     assert!(reached, "{:?}", studio.progress());
 
+    // The estimate's plan (ADR-0087): the master's encoder and three marked pictures,
+    // all on the one test encoder, which declares no session limit.
+    let (plan, declared) = studio.separate_video_plan(&r.adapters, &col, &start_request());
+    let count = |iso: bool| {
+        plan.video
+            .iter()
+            .filter(|e| matches!(e.used_by, rbs_record::estimate::Use::Iso(_)) == iso)
+            .count()
+    };
+    assert_eq!((count(false), count(true)), (1, 3), "{:#?}", plan.video);
+    assert!(plan.video_template.is_some());
+    assert_eq!(declared.len(), 1);
+    assert_eq!(declared[0].sessions_max, None);
+
     let mut request = start_request();
     request.max_video = 1;
     let err = studio.start_iso_video(&r.adapters, &request).unwrap_err();
