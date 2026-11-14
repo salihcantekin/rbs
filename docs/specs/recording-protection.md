@@ -1,6 +1,6 @@
 # Recording protection
 
-Status: Draft. Decision: [ADR-0090](../adr/0090-recording-protection-disk-lag-and-adaptive-bitrate.md) (Proposed). This spec covers phase one; later phases are listed at the end.
+Status: Draft. Decision: [ADR-0090](../adr/0090-recording-protection-disk-lag-and-adaptive-bitrate.md) (Accepted). This spec covers phase one; later phases are listed at the end.
 
 ## Purpose
 
