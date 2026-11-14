@@ -2070,6 +2070,9 @@ export component NumberField inherits Rectangle {
     // A short visible label inside the field, before the value (X, Y, W, H...); the
     // value is then right-aligned. `label` stays the accessible name.
     in property <string> prefix;
+    // A unit after the value, inside the field (ms, px): it reads as "400 ms", and
+    // the value is then right-aligned next to it.
+    in property <string> unit;
     in property <float> value;
     in property <float> step: 1;
     in property <bool> enabled: true;
@@ -2108,9 +2111,11 @@ export component NumberField inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-increment => { step-by(1); }
     accessible-action-decrement => { step-by(-1); }
-    // Never narrower than the prefix, the value and the steppers side by side, so a
-    // narrow panel does not run "Bottom" into its value (U11).
-    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + steppers.width;
+    // Room the unit takes at the value's trailing end, with its gap.
+    property <length> unit-room: root.unit != "" ? post.preferred-width + Tokens.space-1 : 0px;
+    // Never narrower than the prefix, the value, the unit and the steppers side by
+    // side, so a narrow panel does not run "Bottom" into its value (U11).
+    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + root.unit-room + steppers.width;
     pre := Text {
         x: Tokens.space-2;
         height: parent.height;
@@ -2122,13 +2127,13 @@ export component NumberField inherits Rectangle {
     }
     input := TextInput {
         x: Tokens.space-2;
-        width: parent.width - 2 * Tokens.space-2 - steppers.width;
+        width: parent.width - 2 * Tokens.space-2 - steppers.width - root.unit-room;
         height: parent.height;
         text: shown(root.value);
         enabled: root.enabled;
         single-line: true;
         vertical-alignment: center;
-        horizontal-alignment: root.prefix != "" ? right : left;
+        horizontal-alignment: root.prefix != "" || root.unit != "" ? right : left;
         color: root.enabled ? Theme.text-primary : Theme.text-disabled;
         font-size: Tokens.type-body-size;
         // The caret is drawn in the selection colour (Slint 1.18 on macOS): accent,
@@ -2144,6 +2149,16 @@ export component NumberField inherits Rectangle {
         }
         accepted => { root.commit(); }
         edited => { root.typed(self.text); }
+    }
+    post := Text {
+        x: parent.width - Tokens.space-2 - steppers.width - self.width;
+        width: self.preferred-width;
+        height: parent.height;
+        text: root.unit;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        accessible-role: none;
     }
     // The stepper column: the arrow keys' up and down as buttons, so the field shows
     // that it steps (U2). A divider line separates it from the value.
