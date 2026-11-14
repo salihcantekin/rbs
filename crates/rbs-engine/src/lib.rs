@@ -21,4 +21,4 @@ mod worker;
 
 pub use engine::{Applied, Engine, EngineConfig, EngineError, Serviced, Shutdown};
 pub use handle::{EngineEvent, EngineHandle, EventSink};
-pub use worker::{DEFAULT_DOORBELL_TIMER, Pacing, WorkerStats};
+pub use worker::{DEFAULT_DOORBELL_TIMER, Pacing, TICK_BUCKETS, TickTimes, WorkerStats};
