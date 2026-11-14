@@ -3,7 +3,7 @@
 // windows. Rust (`shortcuts_page`) pushes state into the `Shortcuts` global and
 // handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, Icon, IconButton, IconName, KeyboardShortcutHint, Select, TextField } from "components.slint";
+import { Button, Checkbox, Icon, IconButton, IconName, KeyboardShortcutHint, ListRow, Select, TextField } from "components.slint";
 import { SettingsCard, SettingsCallout, SettingsNotice, RevealOnShow } from "settings.slint";
 
 // One shortcut of a row: its label ("⇧⌘Z"), canonical text, and scope.
@@ -183,72 +183,59 @@ component CommandRow inherits VerticalLayout {
         letter-spacing: 0.06 * Tokens.type-caption-size;
         accessible-role: none;
     }
-    Rectangle {
-        min-height: Tokens.size-control-md;
-        border-radius: Tokens.radius-sm;
-        background: hover.has-hover ? Theme.surface-overlay : transparent;
-        hover := TouchArea { }
+    // The command is not chosen: the row only gives it the shared hover plate and
+    // name (ADR-0114 ListRow); its chips and buttons take the focus.
+    ListRow {
+        selectable: false;
+        name: item.title;
         HorizontalLayout {
-            padding-left: Tokens.space-2;
-            padding-right: Tokens.space-1;
-            spacing: Tokens.space-2;
-            Text {
-                horizontal-stretch: 1;
-                min-width: Tokens.size-menu-sm / 2;
-                text: item.title;
-                color: Theme.text-primary;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-            HorizontalLayout {
-                horizontal-stretch: 0;
-                spacing: Tokens.space-1;
-                alignment: end;
-                for chip[ci] in item.chips: HorizontalLayout {
-                    spacing: 0px;
-                    VerticalLayout {
-                        alignment: center;
-                        KeyboardShortcutHint {
-                            keys: chip.label;
-                            tag: chip.global ? @tr("Global") : "";
-                            accessible-role: button;
-                            accessible-label: @tr("Edit {}", chip.label);
-                            accessible-action-default => { Shortcuts.edit(index, ci); }
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                double-clicked => { Shortcuts.edit(index, ci); }
-                            }
+            horizontal-stretch: 0;
+            spacing: Tokens.space-1;
+            alignment: end;
+            for chip[ci] in item.chips: HorizontalLayout {
+                spacing: 0px;
+                VerticalLayout {
+                    alignment: center;
+                    KeyboardShortcutHint {
+                        keys: chip.label;
+                        tag: chip.global ? @tr("Global") : "";
+                        accessible-role: button;
+                        accessible-label: @tr("Edit {}", chip.label);
+                        accessible-action-default => { Shortcuts.edit(index, ci); }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            double-clicked => { Shortcuts.edit(index, ci); }
                         }
                     }
-                    IconButton {
-                        name: @tr("Remove {}", chip.label);
-                        icon: IconName.close;
-                        clicked => { Shortcuts.remove(index, ci); }
-                    }
+                }
+                IconButton {
+                    name: @tr("Remove {}", chip.label);
+                    icon: IconName.close;
+                    clicked => { Shortcuts.remove(index, ci); }
                 }
             }
-            // Reset and Add in a column of their own, so every row lines them up.
-            HorizontalLayout {
-                horizontal-stretch: 0;
-                width: Tokens.size-menu-sm * 0.6;
-                spacing: Tokens.space-1;
-                alignment: end;
-                if item.changed: Button {
-                    text: @tr("Reset");
-                    accessible-name: @tr("Reset {}", item.title);
-                    kind: "ghost";
-                    dense: true;
-                    clicked => { Shortcuts.reset(index); }
-                }
-                Button {
-                    text: @tr("Add");
-                    accessible-name: @tr("Add a shortcut for {}", item.title);
-                    kind: "ghost";
-                    dense: true;
-                    lead: IconName.plus;
-                    enabled: Shortcuts.recording != index && item.chips.length < 4;
-                    clicked => { Shortcuts.add(index); }
-                }
+        }
+        // Reset and Add in a column of their own, so every row lines them up.
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            width: Tokens.size-menu-sm * 0.6;
+            spacing: Tokens.space-1;
+            alignment: end;
+            if item.changed: Button {
+                text: @tr("Reset");
+                accessible-name: @tr("Reset {}", item.title);
+                kind: "ghost";
+                dense: true;
+                clicked => { Shortcuts.reset(index); }
+            }
+            Button {
+                text: @tr("Add");
+                accessible-name: @tr("Add a shortcut for {}", item.title);
+                kind: "ghost";
+                dense: true;
+                lead: IconName.plus;
+                enabled: Shortcuts.recording != index && item.chips.length < 4;
+                clicked => { Shortcuts.add(index); }
             }
         }
     }

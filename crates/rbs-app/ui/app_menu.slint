@@ -5,7 +5,7 @@
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
-import { BrandMark, Icon, IconName, Icons, MenuSurface, FocusRing, RingFocus, OverlayCover } from "components.slint";
+import { BrandMark, Icon, IconName, Icons, ListRow, MenuSurface, FocusRing, RingFocus, OverlayCover } from "components.slint";
 
 // One row of the item column. kind: 1 command, 2 section heading, 3 separator,
 // 4 picker (opens its choices), 5 back (from a picker's choices).
@@ -90,61 +90,38 @@ component CategoryRow inherits Rectangle {
     }
 }
 
-// A row of the item column.
+// A row of the item column: a ListRow on the menu's overlay surface (owner decision
+// 2026-11-13). The menu moves the current row with the keys, so the row takes no
+// focus of its own.
 component ItemRow inherits Rectangle {
     in property <AppMenuRow> data;
     in property <bool> current;
     callback hovered();
     callback activated();
-    property <color> ink: !data.enabled ? Theme.text-disabled : current ? Theme.text-inverse : Theme.text-primary;
-    property <color> soft: !data.enabled ? Theme.text-disabled : current ? Theme.text-inverse : Theme.text-secondary;
-    height: Tokens.size-control-md;
-    border-radius: Tokens.radius-sm;
-    // A disabled row can be the current one (its reason shows below): a quieter fill.
-    background: !current ? transparent : data.enabled ? Theme.accent : Theme.surface-raised;
-    accessible-role: button;
-    accessible-label: data.kind == 4 && data.value != "" ? @tr("{}: {}", data.title, data.value) : data.title;
-    accessible-description: data.reason;
-    accessible-checkable: data.checkable;
-    accessible-checked: data.checked;
-    accessible-enabled: data.enabled;
-    accessible-action-default => { if data.enabled { activated(); } }
-    // Enabled even for a disabled row: hovering makes it current, so its reason shows.
-    TouchArea {
-        changed has-hover => { if self.has-hover { root.hovered(); } }
-        clicked => { if data.enabled { root.activated(); } }
-    }
-    HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
-        spacing: Tokens.space-2;
+    height: row.height;
+    row := ListRow {
+        width: parent.width;
+        selectable: false;
+        on-overlay: true;
+        has-icon: true;
+        // A checked item shows its checkmark in its icon's place (spec, "Icons").
+        icon: data.kind == 5 ? IconName.chevron-left : data.checked ? IconName.check : Icons.named(data.icon);
+        icon-ink: !data.enabled ? Theme.text-disabled : data.checked ? Theme.accent : Theme.text-primary;
+        name: data.title;
+        note: data.value != "" ? data.value : data.shortcut;
+        note-beside: true;
+        // A disabled row can still be the current one (its reason shows below), so it
+        // keeps the pointer: hovering makes it current.
+        dimmed: !data.enabled;
+        selected: root.current;
+        accessible-name: data.kind == 4 && data.value != "" ? @tr("{}: {}", data.title, data.value) : data.title;
+        accessible-hint: data.reason;
+        changed hovered => { if self.hovered { root.hovered(); } }
+        activated => { if data.enabled { root.activated(); } }
         VerticalLayout {
             alignment: center;
             width: Tokens.size-icon-box;
-            // A checked item shows its checkmark in its icon's place (spec, "Icons").
-            Icon {
-                name: data.kind == 5 ? IconName.chevron-left : data.checked ? IconName.check : Icons.named(data.icon);
-                ink: data.checked && !current && data.enabled ? Theme.accent : root.ink;
-            }
-        }
-        Text {
-            text: data.title;
-            color: root.ink;
-            font-size: Tokens.type-body-size;
-            vertical-alignment: center;
-            overflow: elide;
-            horizontal-stretch: 1;
-        }
-        if data.value != "" || data.shortcut != "": Text {
-            text: data.value != "" ? data.value : data.shortcut;
-            color: root.soft;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-        }
-        VerticalLayout {
-            alignment: center;
-            width: Tokens.size-icon-box;
-            Icon { name: data.kind == 4 ? IconName.chevron-right : IconName.none; ink: root.soft; }
+            Icon { name: data.kind == 4 ? IconName.chevron-right : IconName.none; ink: Theme.text-secondary; }
         }
     }
 }

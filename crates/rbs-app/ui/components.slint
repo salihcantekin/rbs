@@ -2468,6 +2468,27 @@ export component ListRow inherits Rectangle {
     in property <IconName> icon;
     // A Checkbox before the name for the item's on/off state, where that state is
     // what the list is about (a filter; owner decision 2026-11-13, ADR-0114 review).
+    // A picture at the start instead of an icon (a sample's thumbnail), in a 16:9
+    // well `picture-height` high (one of the `size.row.picture.*` tokens; zero for
+    // none). The row grows to hold it.
+    in property <image> picture;
+    in property <length> picture-height;
+    // A pattern behind the picture, so transparent parts (a frame's inside, a PNG
+    // with alpha) read as transparent instead of as the well. Opaque pictures cover it.
+    in property <bool> picture-checker;
+    // Room kept at the start for a picture the owner draws over the row (a theme's
+    // swatch); zero for none.
+    in property <length> lead-space;
+    // Off for a list whose items are not chosen (the Shortcuts commands): no
+    // selection for screen readers and no focus stop of its own.
+    in property <bool> selectable: true;
+    // Off: the name is in the disabled colour and the row takes no input.
+    in property <bool> enabled: true;
+    // The row sits on `surface.overlay` (a menu): the chosen row takes the accent's
+    // subtle fill, because the usual overlay plate would not show there.
+    in property <bool> on-overlay;
+    // The icon's colour when it is not the name's (a checked menu item's check).
+    in property <color> icon-ink: root.ink;
     in property <bool> has-check;
     in property <bool> checked;
     in property <string> check-label;
@@ -2518,21 +2539,26 @@ export component ListRow inherits Rectangle {
     public function focus-pointer() { focus.focus-pointer(); }
     property <bool> drop-here: drop.has-drag && root.drop-enabled && root.taking;
     property <bool> taking;
-    property <color> ink: root.dimmed ? Theme.text-disabled : Theme.text-primary;
+    property <color> ink: root.dimmed || !root.enabled ? Theme.text-disabled : Theme.text-primary;
     changed confirm => { if root.confirm { focus.focus(); } }
-    height: root.note != "" && !root.note-beside ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md;
+    height: max(root.note != "" && !root.note-beside ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md,
+        root.picture-height > 0 ? root.picture-height + 2 * Tokens.space-1 : 0px);
     border-radius: Tokens.radius-sm;
     border-width: root.selected ? Tokens.size-border : 0px;
     border-color: Theme.accent;
-    background: root.selected || touch.has-hover ? Theme.surface-overlay : transparent;
+    background: root.on-overlay ? (root.selected ? (root.dimmed ? Theme.surface-raised : Theme.accent-subtle) : transparent)
+        : root.selected || (touch.has-hover && root.enabled) ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: root.accessible-name != "" ? root.accessible-name : root.name;
     accessible-description: root.accessible-hint;
-    accessible-item-selectable: true;
+    accessible-item-selectable: root.selectable;
     accessible-item-selected: root.selected;
-    accessible-action-default => { root.activated(); }
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.activated(); } }
+    forward-focus: focus;
     focus := RingFocus {
         focus-on-click: false;
+        enabled: root.selectable && root.enabled;
         key-pressed(e) => {
             if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
             if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
@@ -2568,7 +2594,7 @@ export component ListRow inherits Rectangle {
         data: root.drag-data;
         changed dragging => { root.dragging(self.dragging); }
         touch := TouchArea {
-            enabled: !root.confirm;
+            enabled: !root.confirm && root.enabled;
             clicked => { focus.focus-pointer(); root.activated(); }
             double-clicked => { root.double-clicked(); }
             pointer-event(e) => {
@@ -2581,6 +2607,41 @@ export component ListRow inherits Rectangle {
                 padding-left: Tokens.space-2;
                 padding-right: Tokens.space-1;
                 spacing: Tokens.space-2;
+                if root.lead-space > 0: Rectangle { width: root.lead-space; }
+                if root.picture-height > 0: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: root.picture-height * 16 / 9;
+                        height: root.picture-height;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        background: Theme.surface-sunken;
+                        clip: true;
+                        if root.picture-checker: Rectangle {
+                            property <length> cell: Tokens.size-row-picture-check;
+                            property <int> cols: Math.ceil(self.width / self.cell);
+                            property <int> rows: Math.ceil(self.height / self.cell);
+                            for i in self.cols * self.rows: Rectangle {
+                                property <int> cx: Math.mod(i, parent.cols);
+                                property <int> cy: Math.floor(i / parent.cols);
+                                x: self.cx * parent.cell;
+                                y: self.cy * parent.cell;
+                                width: parent.cell;
+                                height: parent.cell;
+                                visible: Math.mod(self.cx + self.cy, 2) == 1;
+                                background: Theme.surface-checker;
+                            }
+                        }
+                        Image {
+                            source: root.picture;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: contain;
+                            accessible-role: none;
+                        }
+                    }
+                }
                 if root.lead != "": Text {
                     min-width: Tokens.size-icon-box;
                     text: root.lead;
@@ -2591,7 +2652,7 @@ export component ListRow inherits Rectangle {
                 }
                 if root.lead == "" && root.has-icon: VerticalLayout {
                     alignment: center;
-                    Icon { name: root.icon; ink: root.ink; }
+                    Icon { name: root.icon; ink: root.icon-ink; }
                 }
                 if root.has-check: VerticalLayout {
                     alignment: center;

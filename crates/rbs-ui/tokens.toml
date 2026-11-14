@@ -17,6 +17,7 @@ format = 2
 "color.surface.raised" = "#1c1d21"
 "color.surface.overlay" = "#27282d"
 "color.surface.sunken" = "#0f1012"
+"color.surface.checker" = "#1e2025"
 # Notice card: a blue fill and a light edge, so it does not blend into the grey panels.
 "color.toast.surface" = "#1a2030"
 "color.toast.edge" = "#d6e4ff"
@@ -45,6 +46,7 @@ format = 2
 "color.surface.raised" = "#ffffff"
 "color.surface.overlay" = "#e0e1e7"
 "color.surface.sunken" = "#f1f1f4"
+"color.surface.checker" = "#d6d7de"
 "color.toast.surface" = "#ffffff"
 "color.toast.edge" = "#0a4db8"
 "color.text.primary" = "#15171a"
@@ -72,6 +74,7 @@ format = 2
 "color.surface.raised" = "#0a0a0a"
 "color.surface.overlay" = "#141414"
 "color.surface.sunken" = "#000000"
+"color.surface.checker" = "#262626"
 "color.toast.surface" = "#0a0a0a"
 "color.toast.edge" = "#8ad4ff"
 "color.text.primary" = "#ffffff"
@@ -127,6 +130,12 @@ format = 2
 "size.menu.md" = 300
 # A setting row narrower than this puts its control under its name (ADR-0114).
 "size.row.stack-below" = 280
+# Height of a picture at the start of a ListRow (16:9 well): small, medium, large.
+"size.row.picture.sm" = 24
+"size.row.picture.md" = 36
+"size.row.picture.lg" = 54
+# Square of the pattern behind a picture's transparent parts.
+"size.row.picture.check" = 6
 "size.select.list-h" = 320
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165
@@ -181,11 +190,6 @@ format = 2
 "size.transition.type-min" = 72
 "size.transition.duration" = 88
 "size.transition.compact" = 600
-# Library panel: a sample picture's thumbnail (16:9).
-# Add-grid picture: at most this wide and this tall, so two columns fit a narrow
-# panel and a long grid stays short (16:9, capped).
-"size.library.thumb-w" = 96
-"size.library.thumb-h" = 48
 # Source tab: a window or display's picture in front of its name in the target list (16:9).
 "size.target.thumb-w" = 96
 "size.target.thumb-h" = 54
