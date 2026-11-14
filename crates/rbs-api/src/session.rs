@@ -27,6 +27,10 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.52 adds separate picture files (ADR-0086 step 3.5, ADR-0117): `video`, `audio`
+/// and `video_as` on `source.set_record_separately`, `record_tracks` on a source, the
+/// `video` and `image` track roles and the skip reasons `limit`, `no_picture`,
+/// `audio_only` and `open_failed`.
 /// 1.51 adds `"mov"` on a recording profile (ADR-0085 step c).
 /// 1.50 adds recording markers (ADR-0089): `marker.add` and `marker.remove`.
 /// 1.49 adds recording protection (ADR-0090): `protection.status` and
@@ -40,7 +44,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.51";
+pub const PROTOCOL_VERSION: &str = "1.52";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

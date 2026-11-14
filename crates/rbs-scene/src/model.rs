@@ -461,12 +461,60 @@ pub struct RecordSeparately {
     pub video: bool,
     /// The source's sound, as its own file.
     pub audio: bool,
+    /// The form of the picture's file (ADR-0117 decision 1). Kept only while `video`
+    /// is set: clearing every feed drops it.
+    pub video_as: VideoAs,
+}
+
+/// The form of a source's separate picture file (ADR-0117 decision 1).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoAs {
+    /// Images for a still source, a video file otherwise, decided at each start.
+    #[default]
+    Auto,
+    /// Always a video file.
+    Video,
+    /// Images; only a still source can be recorded this way.
+    Image,
+}
+
+impl VideoAs {
+    /// The document and control-API name: `"auto"`, `"video"` or `"image"`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Video => "video",
+            Self::Image => "image",
+        }
+    }
+
+    /// Parse a document or API string.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(Self::Auto),
+            "video" => Some(Self::Video),
+            "image" => Some(Self::Image),
+            _ => None,
+        }
+    }
 }
 
 impl RecordSeparately {
-    /// Both switches. Either may be set on its own.
+    /// Both switches, the picture's form automatic. Either may be set on its own.
     pub const fn new(video: bool, audio: bool) -> Self {
-        Self { video, audio }
+        Self {
+            video,
+            audio,
+            video_as: VideoAs::Auto,
+        }
+    }
+
+    /// The same switches with the picture's form `video_as`.
+    #[must_use]
+    pub const fn with_video_as(mut self, video_as: VideoAs) -> Self {
+        self.video_as = video_as;
+        self
     }
 
     /// True when neither feed is recorded separately.

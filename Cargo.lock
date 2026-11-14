@@ -4582,6 +4582,7 @@ dependencies = [
 name = "rbs-cli"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "rbs-api",
  "rbs-api-ipc",
  "rbs-api-ws",
@@ -4630,6 +4631,7 @@ dependencies = [
  "rbs-vcam-mf",
  "rbs-vcam-test",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

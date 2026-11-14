@@ -198,6 +198,10 @@ pub struct SourceInfo {
     /// when it is not.
     #[serde(default, skip_serializing_if = "is_false")]
     pub record_separately: bool,
+    /// Which feeds are marked, and the picture's form (protocol 1.52, ADR-0117);
+    /// absent when none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_tracks: Option<RecordTracks>,
     /// What the mix hears while the program scene, in Own levels, has an entry for the
     /// source (protocol 1.48, ADR-0091); absent otherwise, when `volume` and `muted` are
     /// what is heard.
@@ -981,12 +985,59 @@ pub struct SkippedTrack {
     pub reason: SkipReason,
 }
 
+/// The feeds of a source marked to record separately (protocol 1.52).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordTracks {
+    /// Its picture.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub video: bool,
+    /// Its sound.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub audio: bool,
+    /// The picture's form; `auto` when absent.
+    #[serde(default, skip_serializing_if = "PictureForm::is_auto")]
+    pub video_as: PictureForm,
+}
+
+/// The form of a marked picture in a source row (protocol 1.52). The request side is
+/// `request::VideoAs`; this one reads a later server's value as `other`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PictureForm {
+    /// Images for a still source, a video file otherwise.
+    #[default]
+    Auto,
+    /// A video file.
+    Video,
+    /// PNG images.
+    Image,
+    /// A form this client does not know (a later minor).
+    #[serde(other)]
+    Other,
+}
+
+impl PictureForm {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
 /// Why a marked source has no file (protocol 1.46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkipReason {
     /// The program mix does not hear the source when the recording starts.
     NotHeard,
+    /// More video files than this version writes beside the recording (protocol
+    /// 1.52; a fixed number until the ADR-0087 estimate).
+    Limit,
+    /// The source has no picture when the recording starts (protocol 1.52).
+    NoPicture,
+    /// The recording has no picture (WAV or FLAC), so a video file has no encoder
+    /// settings to match (protocol 1.52).
+    AudioOnly,
+    /// The file could not be opened (protocol 1.52).
+    OpenFailed,
     /// A reason this client does not know (a later minor).
     #[serde(other)]
     Other,
@@ -995,9 +1046,10 @@ pub enum SkipReason {
 /// One separate file of a running recording (protocol 1.46, ADR-0086).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordTrack {
-    /// The file's name inside the recording's folder. No directory.
+    /// The file's name inside the recording's folder. No directory. For `image`, the
+    /// first image (`<name>.png`; later ones are `<name>-2.png`, ...).
     pub file: String,
-    /// What it carries. Only `audio` in 1.46.
+    /// What it carries. Only `audio` in 1.46; `video` and `image` from 1.52.
     pub role: TrackRole,
     /// The source it records (`source.list`).
     pub source: u32,
@@ -1007,10 +1059,12 @@ pub struct RecordTrack {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackRole {
-    /// The source's picture (not written in 1.46).
+    /// The source's picture as a video file (written from 1.52).
     Video,
     /// The source's sound.
     Audio,
+    /// A still source's picture as PNG images (protocol 1.52, ADR-0117).
+    Image,
     /// A role this client does not know (a later minor).
     #[serde(other)]
     Other,

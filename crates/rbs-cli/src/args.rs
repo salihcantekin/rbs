@@ -213,7 +213,7 @@ usage:
   rbs-cli vcam status|add|format|remove [--size WxH] [--fps N]
 
 record options:
-  --seconds N          stop after N seconds (default: press Enter to stop)
+  --seconds N          stop after N seconds (default: Enter or Ctrl+C)
   --size WxH           canvas size (default 1920x1080)
   --fps N              canvas frame rate (default 60)
   --rate-control MODE  cbr, vbr or cq (constant quality) (default cbr)
