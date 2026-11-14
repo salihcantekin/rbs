@@ -1307,7 +1307,8 @@ export component SegmentedControl inherits Rectangle {
     // Same as Tabs: the track takes the row, and the options share it. A width
     // binding would turn this stretch off and leave the track as wide as its labels.
     horizontal-stretch: 1;
-    min-width: 0px;
+    // Never narrower than its labels: a squeezed track clips the last option.
+    min-width: track.min-width;
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-md;
     border-width: Tokens.size-border;
@@ -1318,7 +1319,7 @@ export component SegmentedControl inherits Rectangle {
     // `parent.width`, not stretch alone: this layout is inside a rectangle, so it
     // stays as wide as the labels until it is given the track's width. The options
     // then share it (design system: filling a row).
-    HorizontalLayout {
+    track := HorizontalLayout {
         width: parent.width;
         height: parent.height;
         padding: Tokens.size-focus-ring;
