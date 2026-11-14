@@ -82,3 +82,4 @@ Round 3 (2026-11-13, independent AI session; this text: changes requested with o
 Follow-up check by the same reviewer (2026-11-13, texts at `26c3d03`): approve, with one non-blocking concern, that the Light hairline fell to 1.01 on a popup, where menu dividers have no fill to carry them. Fixed here: Light `color.border.subtle` is `#d0d3da`, which gives 1.15 on a popup (today 1.11), and the token tests pass with it as before.
 
 - 2026-11-13: Owner (Salih) accepts this ADR after the independent review recorded above (rounds 1 to 3 and the follow-up check; reviewer verdict: approve). Status: Accepted.
+- 2026-11-14: decision 4 is superseded in part by [ADR-0118](0118-tint-buttons.md) (Tint buttons): a secondary button has no `border.strong` outline; it draws a `border.subtle` outline only while its fill does not separate from a surface. Fields, dropdowns, segmented tracks and switches keep their boundaries.

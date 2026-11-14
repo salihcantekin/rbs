@@ -1235,11 +1235,13 @@ component ToolbarCell inherits HorizontalLayout {
     property <bool> record: item.id == "record.toggle" && !item.live;
     horizontal-stretch: item.kind == 3 ? 1 : 0;
     if (item.kind == 0 || item.kind == 4) && item.icon-only: Button {
-        width: Tokens.size-control-lg;
+        // Round, like every icon-only button (ADR-0118).
+        width: self.height;
         accessible-name: item.title;
         lead: Icons.named(item.icon);
         lead-ink: item.live && self.enabled ? Theme.state-live
             : item.checked ? Theme.text-primary : Theme.text-secondary;
+        lead-signal: item.live && self.enabled;
         kind: "ghost";
         enabled: item.enabled;
         checked: item.checked && !item.live;
@@ -1250,6 +1252,7 @@ component ToolbarCell inherits HorizontalLayout {
         lead: Icons.named(item.icon);
         // Record's dot, and the stop square of a running output, in the live colour.
         lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
+        lead-signal: (record || item.live) && self.enabled;
         enabled: item.enabled;
         checked: item.checked && !item.live;
         kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
@@ -1259,6 +1262,7 @@ component ToolbarCell inherits HorizontalLayout {
         text: item.title;
         lead: Icons.named(item.icon);
         lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
+        lead-signal: (record || item.live) && self.enabled;
         enabled: item.enabled;
         checked: item.checked && !item.live;
         kind: go-live ? "primary" : "secondary";
