@@ -1,7 +1,9 @@
 //! Counted UI checks of ADR-0115 (`cargo xtask check-ui`).
 //!
-//! The checks read the `.slint` files under `crates/rbs-app/ui` as text and count three
-//! things over the whole tree. Each count must equal its number in `docs/ui/baseline.toml`
+//! The checks read the `.slint` files under `crates/rbs-app/ui` as text and count four
+//! things over the whole tree: raw `TouchArea`s outside the library, component names
+//! declared in more than one file, long `help:` texts, and effects drawn outside the
+//! library (`drop-shadow-*`, `inner-shadow-*`, gradients, `Theme.effects-*`; ADR-0120). Each count must equal its number in `docs/ui/baseline.toml`
 //! plus the approved entries in `docs/ui/exceptions.toml`. `--lower` writes lower counts
 //! down, `--except` records an increase the owner approved, and `--against <commit>`
 //! compares both files with an older commit before a merge.
@@ -14,7 +16,7 @@ use std::process::Command;
 use toml::Value;
 
 /// The checks, in the order they are printed and stored.
-pub const CHECKS: &[&str] = &["touch", "duplicate", "help"];
+pub const CHECKS: &[&str] = &["touch", "duplicate", "help", "effects"];
 
 /// The rule id of a register entry that allows a new library file.
 const LIBRARY_RULE: &str = "library";
@@ -152,6 +154,10 @@ fn meaning(check: &str) -> &'static str {
         "touch" => "A raw `TouchArea` outside the library is a home-made control.",
         "duplicate" => "A component name is declared in more than one file.",
         "help" => "A `help:` text over 90 characters belongs in an `InfoHint` (ADR-0094).",
+        "effects" => {
+            "A shadow, gradient or `Theme.effects-*` outside the library: only library \
+             components draw effects (ADR-0120)."
+        }
         _ => "",
     }
 }
@@ -210,7 +216,7 @@ fn lower(root: &Path) -> Result<(), Vec<String>> {
 fn except(root: &Path, entry: Exception) -> Result<(), Vec<String>> {
     if !CHECKS.contains(&entry.check.as_str()) && entry.check != LIBRARY_RULE {
         return Err(vec![format!(
-            "unknown check {}; use touch, duplicate, help or library",
+            "unknown check {}; use touch, duplicate, help, effects or library",
             entry.check
         )]);
     }
@@ -347,11 +353,14 @@ pub fn read_baseline(text: &str) -> Result<Baseline, Vec<String>> {
         .ok_or_else(|| vec![format!("{BASELINE}: missing [baseline]")])?;
     let mut counts = BTreeMap::new();
     for check in CHECKS {
-        let number = table
-            .get(*check)
-            .and_then(Value::as_integer)
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| vec![format!("{BASELINE}: `{check}` must be a number from 0 up")])?;
+        // A check added later (effects, ADR-0120) reads as 0 until `--lower` writes it.
+        let number = match table.get(*check) {
+            None => 0,
+            Some(v) => v
+                .as_integer()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| vec![format!("{BASELINE}: `{check}` must be a number from 0 up")])?,
+        };
         counts.insert((*check).to_owned(), number);
     }
     Ok(Baseline { library, counts })
@@ -419,7 +428,7 @@ const EXCEPTIONS_HEAD: &str = "\
 pub fn write_baseline(baseline: &Baseline) -> String {
     let library: Vec<String> = baseline.library.iter().map(|f| quote(f)).collect();
     let mut out = format!(
-        "{BASELINE_HEAD}\n# Files that hold library components. They are not counted by `touch` and `help`.\n\
+        "{BASELINE_HEAD}\n# Files that hold library components. They are not counted by `touch`, `help` and `effects`.\n\
          library = [{}]\n\n[baseline]\n",
         library.join(", ")
     );
@@ -487,6 +496,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Vec<String>> {
 pub fn count_files(files: &[(String, String)], library: &[String]) -> BTreeMap<String, u32> {
     let mut touch = 0;
     let mut help = 0;
+    let mut effects = 0;
     let mut declared: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     let mut declarations: Vec<String> = Vec::new();
     for (name, text) in files {
@@ -500,6 +510,7 @@ pub fn count_files(files: &[(String, String)], library: &[String]) -> BTreeMap<S
         }
         touch += code.touch_areas();
         help += code.long_help();
+        effects += code.effects();
     }
     let duplicate = declarations
         .iter()
@@ -512,6 +523,7 @@ pub fn count_files(files: &[(String, String)], library: &[String]) -> BTreeMap<S
         u32::try_from(duplicate).unwrap_or(u32::MAX),
     );
     counts.insert("help".to_owned(), help);
+    counts.insert("effects".to_owned(), effects);
     counts
 }
 
@@ -611,6 +623,27 @@ impl Code {
         u32::try_from(found).unwrap_or(u32::MAX)
     }
 
+    /// Effects drawn by hand (ADR-0120): `drop-shadow-*` and `inner-shadow-*`
+    /// properties, `@linear-gradient`, `@radial-gradient`, `@conic-gradient` and any
+    /// `Theme.effects-*` read. Comments are not code, so they do not count.
+    fn effects(&self) -> u32 {
+        let found = (0..self.tokens.len())
+            .filter(|i| match self.word(*i) {
+                Some(w) if w.starts_with("drop-shadow-") || w.starts_with("inner-shadow-") => {
+                    !(*i > 0 && self.mark(i - 1) == Some('.'))
+                }
+                Some("linear-gradient" | "radial-gradient" | "conic-gradient") => {
+                    *i > 0 && self.mark(i - 1) == Some('@')
+                }
+                Some(w) if w.starts_with("effects-") => {
+                    *i > 1 && self.mark(i - 1) == Some('.') && self.word(i - 2) == Some("Theme")
+                }
+                _ => false,
+            })
+            .count();
+        u32::try_from(found).unwrap_or(u32::MAX)
+    }
+
     /// `help:` statements, up to their `;`, that hold a string literal over the limit.
     fn long_help(&self) -> u32 {
         let mut found = 0;
@@ -683,6 +716,34 @@ mod tests {
             ),
         ]);
         assert_eq!(c["touch"], 2);
+    }
+
+    #[test]
+    fn effects_count_shadows_gradients_and_theme_effects_outside_the_library() {
+        let c = counts(&[
+            (
+                "components.slint",
+                "component A { drop-shadow-blur: Theme.effects-shadow-blur; }",
+            ),
+            (
+                "panel.slint",
+                "// drop-shadow-blur: 3px; in a comment\n\
+                 component B { drop-shadow-blur: 2px; inner-shadow-color: red;\n\
+                 background: @linear-gradient(90deg, red, blue);\n\
+                 x: Theme.effects-press; y: Tokens.effects-press; }",
+            ),
+        ]);
+        assert_eq!(c["effects"], 4);
+    }
+
+    #[test]
+    fn a_baseline_without_a_later_check_reads_it_as_0() {
+        let b = read_baseline(
+            "library = [\"components.slint\"]\n[baseline]\ntouch = 1\nduplicate = 2\nhelp = 3\n",
+        )
+        .unwrap();
+        assert_eq!(b.counts["effects"], 0);
+        assert!(write_baseline(&b).contains("effects = 0"));
     }
 
     #[test]

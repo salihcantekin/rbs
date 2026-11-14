@@ -9,7 +9,9 @@ use std::fmt;
 
 use serde::Deserialize;
 
+mod effects;
 mod theme;
+pub use effects::*;
 pub use theme::*;
 
 /// The token file shipped with RBS.
@@ -187,8 +189,8 @@ pub const TYPE_STYLES: &[&str] = &[
     "type.heading",
 ];
 
-/// An sRGB colour with alpha.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An sRGB colour with alpha. The default is transparent black.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Color {
     /// Red.
     pub r: u8,
@@ -275,6 +277,9 @@ pub struct Tokens {
     pub duration: BTreeMap<String, u32>,
     /// Text styles.
     pub type_styles: BTreeMap<String, TypeStyle>,
+    /// The effect values of the lively settings (ADR-0120); `None` for a file before
+    /// format 3, where every theme is calm.
+    pub effects: Option<EffectTables>,
 }
 
 #[derive(Deserialize)]
@@ -288,6 +293,7 @@ struct RawTokens {
     #[serde(rename = "type")]
     type_styles: BTreeMap<String, TypeStyle>,
     font: Option<BTreeMap<String, Vec<String>>>,
+    effects: Option<BTreeMap<String, BTreeMap<String, f64>>>,
 }
 
 /// A problem in a token file.
@@ -525,7 +531,7 @@ impl Tokens {
         let font_family = match (raw.format, raw.font) {
             (1, None) => Vec::new(),
             (1, Some(_)) => return Err(TokenError("[font] needs format 2".into())),
-            (2, Some(mut font)) => {
+            (2 | 3, Some(mut font)) => {
                 let family = font
                     .remove(FONT_FAMILY)
                     .ok_or_else(|| TokenError(format!("[font] is missing {FONT_FAMILY}")))?;
@@ -534,8 +540,15 @@ impl Tokens {
                 }
                 family
             }
-            (2, None) => return Err(TokenError("[font] is missing".into())),
+            (2 | 3, None) => return Err(TokenError("[font] is missing".into())),
             (f, _) => return Err(TokenError(format!("unsupported format {f}"))),
+        };
+        // Effect tables (ADR-0120 decision 6): format 3 has both, older formats none.
+        let effects = match (raw.format, raw.effects) {
+            (3, Some(t)) => Some(EffectTables::parse(t)?),
+            (3, None) => return Err(TokenError("[effects] is missing".into())),
+            (_, Some(_)) => return Err(TokenError("[effects] needs format 3".into())),
+            (_, None) => None,
         };
         let fixed_names: Vec<&str> = FIXED.iter().map(|(n, _)| *n).collect();
         let fixed = colors(raw.fixed, &fixed_names, "[fixed]")?;
@@ -607,14 +620,48 @@ impl Tokens {
             length: raw.length,
             duration: raw.duration,
             type_styles: raw.type_styles,
+            effects,
         };
         tokens.check_contrast()?;
+        tokens.check_effects()?;
         Ok(tokens)
     }
 
     /// The tokens shipped with RBS.
     pub fn built_in() -> Result<Tokens, TokenError> {
         Tokens::parse(BUILT_IN)
+    }
+
+    /// A shipped file cannot make a lively setting silently calm: every built-in base
+    /// but high contrast (always calm) passes the effect checks in every setting
+    /// (ADR-0120 decision 9).
+    fn check_effects(&self) -> Result<(), TokenError> {
+        let Some(tables) = &self.effects else {
+            return Ok(());
+        };
+        let label_line = self
+            .type_styles
+            .get("type.label")
+            .map_or(0.0, |s| f32::from(s.line));
+        for base in [Base::Dark, Base::Light] {
+            for setting in Effects::LIVELY {
+                if let Some(why) = check(
+                    &tables.values(setting),
+                    &self.themes[base.index()].1,
+                    &self.length,
+                    label_line,
+                    base == Base::Dark,
+                    self.fixed["color.state.live"],
+                ) {
+                    return Err(TokenError(format!(
+                        "theme {} with {} effects: {why}",
+                        base.name(),
+                        setting.name()
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn check_contrast(&self) -> Result<(), TokenError> {

@@ -14,10 +14,23 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, Document};
 use crate::library::EntryId;
 
+/// Format 2 adds the `effects` key (ADR-0120 decision 2). A theme is written as format 2
+/// only when its stored `effects` is not calm, so older builds keep reading every calm
+/// theme; they refuse a format 2 file and fall back to its base.
 impl Document for ThemeBody {
     const KIND: &'static str = "theme";
-    const FORMAT: u32 = 1;
+    const FORMAT: u32 = 2;
     const MAX_SIZE: u64 = MAX_THEME_FILE;
+
+    /// Format 1 to 2 changes nothing: format 2 only adds an optional key. A format 1
+    /// file with an `effects` key (a hand edit) is read and honoured.
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        let _ = body;
+        match from {
+            1 => Ok(()),
+            _ => Err(format!("format {from} cannot be read")),
+        }
+    }
 
     fn from_body(body: toml::Table) -> Result<Self, String> {
         ThemeBody::from_body(body)
@@ -25,6 +38,15 @@ impl Document for ThemeBody {
 
     fn to_body(&self) -> Result<toml::Table, String> {
         Ok(ThemeBody::to_body(self))
+    }
+
+    /// The stored key decides, never the resolved effects, so a key is never dropped.
+    fn write_format(&self) -> u32 {
+        if self.stored_effects().is_some() {
+            2
+        } else {
+            1
+        }
     }
 }
 

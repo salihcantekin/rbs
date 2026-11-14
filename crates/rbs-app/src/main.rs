@@ -23,6 +23,7 @@ mod context_menu;
 mod entry;
 mod icons;
 mod look;
+mod measure_ui;
 mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
@@ -4217,6 +4218,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         if let Ok(app) = ctx.app.try_borrow() {
             let main = app.main.as_weak();
             let set = entry::set_rendering_notifier(app.main.window(), move |state, api| {
+                measure_ui::observe(&state);
                 // Once per surface: which graphics API Slint draws with. Slint's CPU
                 // surface calls no notifier at all, so a log without this line means
                 // that fallback.
@@ -4750,6 +4752,9 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     main.show()?;
     #[cfg(windows)]
     title_bar::attach_after_show(&main);
+    if let Some(seconds) = measure_ui::requested() {
+        measure_ui::install(&main, seconds);
+    }
     slint::run_event_loop_until_quit()?;
     let _ = main.hide();
     // The layer's frames go back before the studio and its publisher stop.

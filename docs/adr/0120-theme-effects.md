@@ -345,3 +345,4 @@ These details do not change the decision. The implementing PR settles them and t
   - Follow-up check by the same reviewer: **approve with nits**. The two wording nits (the scaling sentence in 11 and the live bullet) are fixed in this text.
 - Renumbered from 0118 to 0120 on 2026-11-14, because 0118 became Tint buttons and 0119 was taken. Renamed from "style" to "effects" in round 3 (glossary).
 - 2026-11-14 18:12: owner approval ("onaylıyorum") after the round 5 follow-up check. Status Accepted.
+- 2026-11-14: decisions 1, 5, 6, 7, 8, 9, 10, 11 and 16 superseded in part by [ADR-0122](0122-bold-theme-effects.md); Vivid is renamed Glow throughout.

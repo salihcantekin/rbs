@@ -1,6 +1,7 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
-import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, Experience } from "components.slint";
+import { Theme, Tokens } from "tokens.slint";
+import { Button, SplitButton, InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, Experience } from "components.slint";
 import { SettingsCard } from "settings.slint";
 
 export component OverlayProbe inherits Window {
@@ -167,4 +168,64 @@ export component ExperienceProbe inherits Window {
             init => { root.made += 1; }
         }
     }
+}
+
+// A window for tests/effects_render.rs (ADR-0120 decision 11): the rows the rendered
+// focus-ring test names, laid out with the library spacing. Each `focus-*` gives one
+// control the keyboard focus, so its ring shows. Not shown by the app.
+export component EffectsProbe inherits Window {
+    // literal-begin: a test window; its size and padding are test data
+    width: 480px;
+    height: 260px;
+    background: Theme.surface-base;
+    VerticalLayout {
+        padding: 16px;
+        // literal-end
+        spacing: Tokens.space-2;
+        alignment: start;
+        // A keyboard-focused Button between two neighbours at space.1.
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            alignment: start;
+            Button { text: "Left"; kind: "primary"; }
+            mid := Button { text: "Focused"; }
+            Button { text: "Right"; kind: "primary"; }
+        }
+        // The Go live / Record SplitButton row at space.2.
+        HorizontalLayout {
+            spacing: Tokens.space-2;
+            alignment: start;
+            go := SplitButton { text: "Go live"; kind: "primary"; menu-name: "Vertical stream"; }
+            rec := SplitButton { text: "Record"; menu-name: "Vertical recording"; }
+            Button { text: "Studio mode"; checked: true; }
+        }
+        // An IconButton row at space.1.
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            alignment: start;
+            IconButton { name: "One"; icon: IconName.gear; framed: true; }
+            icon := IconButton { name: "Two"; icon: IconName.gear; framed: true; }
+            IconButton { name: "Three"; icon: IconName.gear; checked: true; }
+        }
+        // A vertical pair: a Button above an IconButton at space.1.
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            alignment: start;
+            HorizontalLayout { alignment: start; above := Button { text: "Above"; kind: "primary"; } }
+            HorizontalLayout { alignment: start; below := IconButton { name: "Below"; icon: IconName.gear; framed: true; } }
+        }
+    }
+    // Every control's place and size, for the test that effects never change them.
+    out property <string> geometry: "\{mid.absolute-position.x / 1px} \{mid.width / 1px} \{mid.height / 1px} "
+        + "\{go.absolute-position.x / 1px} \{go.absolute-position.y / 1px} \{go.width / 1px} \{rec.width / 1px} "
+        + "\{icon.absolute-position.x / 1px} \{icon.width / 1px} \{icon.height / 1px} "
+        + "\{above.absolute-position.y / 1px} \{above.width / 1px} \{below.absolute-position.y / 1px} \{below.width / 1px}";
+    public function focus-mid() { mid.take-focus(); }
+    public function focus-go() { go.focus-command(); }
+    public function focus-go-menu() { go.focus-menu(); }
+    public function focus-record() { rec.focus-command(); }
+    public function focus-record-menu() { rec.focus-menu(); }
+    public function focus-icon() { icon.take-focus(); }
+    public function focus-above() { above.take-focus(); }
+    public function focus-below() { below.take-focus(); }
 }

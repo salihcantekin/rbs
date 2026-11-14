@@ -165,7 +165,9 @@ winresource = "0.1"
 
 [dev-dependencies]
 # Headless Slint windows for tests/popup_covers.rs; already in the lockfile through Slint.
-i-slint-backend-testing = { version = "=1.18.1", default-features = false }
+# `renderer-skia`: tests/effects_render.rs reads real Skia pixels (the mock renderer and
+# Slint's software renderer draw no shadows; ADR-0120 decision 11).
+i-slint-backend-testing = { version = "=1.18.1", default-features = false, features = ["renderer-skia"] }
 # The crash-resilience tests inject panics into the studio host (tests/studio_faults.rs).
 rbs-app = { path = ".", features = ["fault-injection"] }
 # The control API tests read JSON-RPC answers (tests/studio_api.rs, studio_stream.rs).

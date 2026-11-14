@@ -5,8 +5,9 @@
 //! `system` mode they hold the appearance's `dark` and `light` themes, in `fixed` mode
 //! both hold its `theme`. A user theme that cannot be used falls back to the built-in
 //! theme of its base, so a high-contrast user keeps high contrast. `RBS_TOKENS=<file>`
-//! (another complete token file) and `RBS_THEME=<dark|light|high-contrast>` are
-//! development aids that win over the appearance choice.
+//! (another complete token file), `RBS_THEME=<dark|light|high-contrast>` and
+//! `RBS_EFFECTS=<calm|vivid|tactile>` (both slots' effects, for the UI measure mode,
+//! ADR-0120 decision 13) are development aids that win over the appearance choice.
 
 use std::path::Path;
 
@@ -175,6 +176,11 @@ pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Opti
         resolve(&file, data, dark, Base::Dark, &mut notes),
         resolve(&file, data, light, Base::Light, &mut notes),
     ];
+    if let Some(setting) = dev_effects() {
+        for t in &mut themes {
+            force_effects(&file, t, setting);
+        }
+    }
     pack(&mut themes, &appearance);
     let fonts = [
         choose_font(&themes[0].font_family, fonts, SAMPLE_TEXT),
@@ -254,6 +260,28 @@ fn read(path: &Path) -> Result<TokenFile, String> {
         .map_err(|e| format!("The token file {} is not used: {e}", path.display()))
 }
 
+/// The effects `RBS_EFFECTS` asks for.
+pub fn dev_effects() -> Option<rbs_ui::tokens::Effects> {
+    std::env::var("RBS_EFFECTS")
+        .ok()
+        .and_then(|n| rbs_ui::tokens::Effects::from_name(&n))
+}
+
+/// Gives `theme` the effects `setting` (a development aid): high contrast stays calm, and
+/// a token file without effect tables gives calm.
+fn force_effects(file: &TokenFile, theme: &mut ResolvedTheme, setting: rbs_ui::tokens::Effects) {
+    let values = match &file.effects {
+        Some(t) if !theme.high_contrast() => t.values(setting),
+        _ => rbs_ui::tokens::EffectValues::default(),
+    };
+    theme.effects = if values.is_calm() {
+        rbs_ui::tokens::Effects::Calm
+    } else {
+        setting
+    };
+    theme.effect_values = values;
+}
+
 /// The theme `RBS_THEME` asks for.
 pub fn dev_theme() -> Option<Base> {
     std::env::var("RBS_THEME")
@@ -326,7 +354,7 @@ mod tests {
     use slint::{ComponentHandle, Model};
 
     use super::{
-        FontCatalog, Look, SLOT_TOKENS, apply_tokens, choose_font, complete_family,
+        FontCatalog, Look, SLOT_EFFECTS, SLOT_TOKENS, apply_tokens, choose_font, complete_family,
         matching_families, resolve, slot, sorted_families, suggest_families,
     };
     use crate::ui::{MainWindow, Theme, Tokens};
@@ -464,6 +492,55 @@ mod tests {
         }
         let got: BTreeSet<&str> = SLOT_TOKENS.iter().copied().collect();
         assert_eq!(got, expected);
+    }
+
+    /// The effect fields of a slot (ADR-0120), listed explicitly: they are not
+    /// themeable one by one, so they are not in `SLOT_TOKENS`.
+    #[test]
+    fn the_slot_has_the_effect_fields() {
+        assert_eq!(
+            SLOT_EFFECTS,
+            [
+                "effects-on",
+                "effects-shadow-blur",
+                "effects-shadow-offset",
+                "effects-shadow",
+                "effects-glow-blur",
+                "effects-glow",
+                "effects-sheen",
+                "effects-sheen-band",
+                "effects-key-edge",
+                "effects-press",
+                "effects-key-primary",
+                "effects-key-secondary",
+                "effects-key-danger",
+                "effects-key-checked",
+            ]
+        );
+    }
+
+    /// Built-in themes are calm; a vivid theme's slot carries what `effect_draw` gives,
+    /// and compact density scales the effects into its smaller extent.
+    #[test]
+    fn a_theme_with_effects_fills_the_slot() {
+        let file = TokenFile::built_in().unwrap();
+        let calm = slot(&file.built_in_theme(Base::Dark), "").unwrap();
+        assert!(!calm.effects_on);
+        assert_eq!(calm.effects_press, 0.0);
+        let mut body = ThemeBody::new(Base::Dark);
+        body.effects = Some("tactile".into());
+        let mut r = file.resolve(&body).unwrap();
+        let s = slot(&r, "").unwrap();
+        let fx = r.effect_draw();
+        assert!(s.effects_on);
+        assert_eq!(s.effects_key_edge, fx.key_edge);
+        assert_eq!(s.effects_press, fx.press);
+        assert_eq!(s.effects_shadow, argb(fx.shadow));
+        assert_eq!(s.effects_key_primary, argb(fx.key[0]));
+        rbs_ui::tokens::apply_density(&mut r.length, rbs_ui::tokens::Density::Compact, 1);
+        let compact = slot(&r, "").unwrap();
+        assert!(compact.effects_key_edge < s.effects_key_edge);
+        assert!(compact.effects_press <= compact.effects_key_edge);
     }
 
     /// A user theme changes colours, lengths, durations, text styles and the font of

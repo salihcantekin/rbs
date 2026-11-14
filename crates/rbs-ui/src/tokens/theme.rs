@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use super::{
-    CONTRAST_RULES, Color, FIXED, LIVE_SURFACES, MIN_DELTA_E_FROM_LIVE, MIN_HUE_DISTANCE_FROM_LIVE,
-    THEME_COLORS, THEME_CONTRAST_RULES, THEMES, TokenError, Tokens, TypeStyle, hue_distance,
-    valid_name,
+    CONTRAST_RULES, Color, EFFECTS_KEY, EffectDraw, EffectValues, Effects, FIXED, LIVE_SURFACES,
+    MIN_DELTA_E_FROM_LIVE, MIN_HUE_DISTANCE_FROM_LIVE, THEME_COLORS, THEME_CONTRAST_RULES, THEMES,
+    TokenError, Tokens, TypeStyle, check, draw, hue_distance, valid_name,
 };
 
 /// The font family token: a list of family names, the first installed one is used.
@@ -384,6 +384,9 @@ pub enum Severity {
     /// A colour rule a user theme breaks: the theme is used and saved, with this shown.
     /// Built-in themes treat it as an error.
     Warning,
+    /// Not a colour rule and never refusing: the theme's effects show as calm, and why
+    /// (ADR-0120 decision 9). Its token is [`EFFECTS_KEY`].
+    Notice,
 }
 
 /// The colour rule a warning comes from, so a UI can say it in its own words.
@@ -449,9 +452,23 @@ impl ThemeProblem {
         }
     }
 
+    fn notice(reason: String) -> ThemeProblem {
+        ThemeProblem {
+            token: Some(EFFECTS_KEY.to_owned()),
+            reason,
+            severity: Severity::Notice,
+            rule: None,
+        }
+    }
+
     /// True when it refuses the theme.
     pub fn is_error(&self) -> bool {
         self.severity == Severity::Error
+    }
+
+    /// True for a colour warning (ADR-0072), not an error or an effects notice.
+    pub fn is_warning(&self) -> bool {
+        self.severity == Severity::Warning
     }
 }
 
@@ -498,6 +515,9 @@ pub struct ThemeBody {
     pub length: BTreeMap<String, f32>,
     /// `[duration]` overrides, milliseconds.
     pub duration: BTreeMap<String, u32>,
+    /// The `effects` key as stored (ADR-0120 decision 1): `None` is calm. A value this
+    /// build does not know is kept as it is and reads as calm.
+    pub effects: Option<String>,
     /// Known tokens whose value is of the wrong kind, with the reason; reported by
     /// [`Tokens::resolve`] and kept on save.
     pub invalid: BTreeMap<String, (String, toml::Value, String)>,
@@ -592,6 +612,19 @@ impl ThemeBody {
                 None => {}
             }
         }
+        match body.remove(EFFECTS_KEY) {
+            Some(toml::Value::String(e)) => {
+                if !valid_name(&e) {
+                    return Err(format!("effects {e:?} is not a valid name"));
+                }
+                // Calm is the same as no key, and is written as no key.
+                if e != Effects::Calm.name() {
+                    theme.effects = Some(e);
+                }
+            }
+            Some(_) => return Err("effects must be a string".into()),
+            None => {}
+        }
         for table in TABLES {
             let entries = match body.remove(table) {
                 Some(toml::Value::Table(t)) => t,
@@ -675,6 +708,9 @@ impl ThemeBody {
         if let Some(d) = &self.description {
             body.insert("description".into(), d.clone().into());
         }
+        if let Some(e) = self.stored_effects() {
+            body.insert(EFFECTS_KEY.into(), e.into());
+        }
         let mut tables: BTreeMap<&str, toml::Table> = BTreeMap::new();
         for (n, c) in &self.colors {
             tables
@@ -737,6 +773,27 @@ impl ThemeBody {
         body
     }
 
+    /// The stored `effects` value that is not calm, if any: what is written, and what
+    /// makes the document need format 2 (ADR-0120 decision 2).
+    pub fn stored_effects(&self) -> Option<&str> {
+        self.effects
+            .as_deref()
+            .filter(|e| *e != Effects::Calm.name())
+    }
+
+    /// The setting the editor shows: the stored one, or calm for none or an unknown one.
+    pub fn effects_choice(&self) -> Effects {
+        self.effects
+            .as_deref()
+            .and_then(Effects::from_name)
+            .unwrap_or_default()
+    }
+
+    /// Stores `setting` (calm as no key).
+    pub fn set_effects(&mut self, setting: Effects) {
+        self.effects = (setting != Effects::Calm).then(|| setting.name().to_owned());
+    }
+
     /// Names of tokens this build does not know, sorted.
     pub fn unknown_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
@@ -780,14 +837,47 @@ pub struct ResolvedTheme {
     pub font_family: Vec<String>,
     /// Token names in the theme that this build does not know (not applied).
     pub unknown: Vec<String>,
-    /// Colour rules the theme breaks (ADR-0072); empty for a built-in theme.
+    /// Colour rules the theme breaks (ADR-0072), and the effects notice (ADR-0120,
+    /// [`Severity::Notice`]); empty for a built-in theme.
     pub warnings: Vec<ThemeProblem>,
+    /// The effects drawn (ADR-0120): calm unless the theme asks for more and may have it.
+    pub effects: Effects,
+    /// The values of [`ResolvedTheme::effects`]; all zero for calm.
+    pub effect_values: EffectValues,
 }
 
 impl ResolvedTheme {
     /// True when the base is `high-contrast`.
     pub fn high_contrast(&self) -> bool {
         self.base == Base::HighContrast
+    }
+
+    /// What a slot draws for the theme's effects, on its lengths as they are now (after
+    /// density, ADR-0120 decision 11).
+    pub fn effect_draw(&self) -> EffectDraw {
+        let label_line = self
+            .type_styles
+            .get("type.label")
+            .map_or(0.0, |s| f32::from(s.line));
+        draw(
+            &self.effect_values,
+            &self.colors,
+            &self.length,
+            label_line,
+            self.base == Base::Dark,
+        )
+    }
+
+    /// The colour warnings (ADR-0072), without the effects notice.
+    pub fn colour_warnings(&self) -> impl Iterator<Item = &ThemeProblem> {
+        self.warnings.iter().filter(|p| p.is_warning())
+    }
+
+    /// The effects notice, if the theme's effects show as calm for a reason.
+    pub fn effects_notice(&self) -> Option<&ThemeProblem> {
+        self.warnings
+            .iter()
+            .find(|p| p.severity == Severity::Notice)
     }
 
     /// True when docked panels and Settings cards draw their outline: the panel colour
@@ -859,7 +949,67 @@ impl Tokens {
             font_family: self.font_family.clone(),
             unknown: Vec::new(),
             warnings: Vec::new(),
+            effects: Effects::Calm,
+            effect_values: EffectValues::default(),
         }
+    }
+
+    /// The effects `theme` resolves to, with the notice when it asks for more than it
+    /// gets (ADR-0120 decisions 2, 3, 6 and 9). `out` is the theme resolved so far.
+    fn resolve_effects(
+        &self,
+        theme: &ThemeBody,
+        out: &ResolvedTheme,
+    ) -> (Effects, EffectValues, Option<ThemeProblem>) {
+        let calm = (Effects::Calm, EffectValues::default());
+        let Some(name) = theme.stored_effects() else {
+            return (calm.0, calm.1, None);
+        };
+        let Some(setting) = Effects::from_name(name) else {
+            return (
+                calm.0,
+                calm.1,
+                Some(ThemeProblem::notice(
+                    "This theme uses effects this version does not have; it shows as Calm".into(),
+                )),
+            );
+        };
+        // High contrast is always calm, and keeps the key (decision 3): no notice, the
+        // editor shows the choice disabled with that reason.
+        if out.high_contrast() {
+            return (calm.0, calm.1, None);
+        }
+        let Some(tables) = &self.effects else {
+            return (
+                calm.0,
+                calm.1,
+                Some(ThemeProblem::notice(
+                    "This build's token file has no effects".into(),
+                )),
+            );
+        };
+        let values = tables.values(setting);
+        let label_line = out
+            .type_styles
+            .get("type.label")
+            .map_or(0.0, |s| f32::from(s.line));
+        if let Some(why) = check(
+            &values,
+            &out.colors,
+            &out.length,
+            label_line,
+            out.base == Base::Dark,
+            self.fixed["color.state.live"],
+        ) {
+            return (
+                calm.0,
+                calm.1,
+                Some(ThemeProblem::notice(format!(
+                    "The effects show as Calm: {why}"
+                ))),
+            );
+        }
+        (setting, values, None)
     }
 
     /// Applies `theme`'s overrides to its base and runs every check and theme rule.
@@ -933,6 +1083,10 @@ impl Tokens {
             font_family: &out.font_family,
         };
         problems.extend(look.check());
+        let (effects, values, notice) = self.resolve_effects(theme, &out);
+        out.effects = effects;
+        out.effect_values = values;
+        problems.extend(notice);
         // Colour rules only warn on a user theme (ADR-0072); any other problem refuses it.
         if problems.iter().any(ThemeProblem::is_error) {
             Err(ThemeProblems(problems))
