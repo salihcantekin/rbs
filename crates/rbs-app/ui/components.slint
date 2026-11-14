@@ -502,7 +502,9 @@ export component Button inherits Rectangle {
     // of rows does not carry a tinted disc each.
     property <bool> rests-filled: kind == "secondary" || (kind == "danger" && !round) || framed;
     property <bool> outlined: enabled && !filled && (checked || (Theme.high-contrast ? (kind != "ghost" && !(kind == "danger" && round)) || framed : Theme.button-outline && rests-filled));
-    background: !enabled ? transparent
+    // The face: drawn by the root in calm, by the face copy below when the button draws
+    // effects. One expression for both, so the two never differ.
+    property <color> face-fill: !enabled ? transparent
         : kind == "primary" ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live
         : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.action-destructive-subtle-hover : root.round ? transparent : Theme.action-destructive-subtle)
@@ -511,11 +513,71 @@ export component Button inherits Rectangle {
         : touch.has-hover ? Theme.button-hover
         : kind == "secondary" || framed ? Theme.button-fill
         : transparent;
-    border-width: outlined ? Tokens.size-border : 0px;
+    property <length> face-border: outlined ? Tokens.size-border : 0px;
+    // Theme effects (ADR-0120 decisions 8 and 10). Only a button whose kind and state
+    // take an effect draws them: never an unframed ghost, an icon-only danger button or a
+    // disabled one. Calm (`Theme.effects-on` false) adds no drawn item.
+    property <bool> fx: Theme.effects-on && enabled
+        && (kind == "primary" || kind == "live" || kind == "secondary" || (kind == "danger" && !round) || framed || (checked && kind != "danger"));
+    // The glow is under the main action only, and off while the keyboard focus ring shows.
+    property <bool> fx-glow: fx && kind == "primary" && !checked && !focus.ring;
+    property <bool> fx-sheen: fx && !checked && (kind == "primary" || kind == "secondary" || (kind == "ghost" && framed));
+    // The key edge: the rest fill of the kind, darker. Live has none (rule U12).
+    property <length> fx-edge: kind == "live" ? 0px : Theme.effects-key-edge;
+    property <color> fx-key: kind == "live" ? Theme.state-live
+        : kind == "primary" ? Theme.effects-key-primary
+        : kind == "danger" ? Theme.effects-key-danger
+        : checked ? Theme.effects-key-checked
+        : Theme.effects-key-secondary;
+    // How far the face and its content move down while pressed.
+    property <length> fx-down: fx && touch.pressed ? Theme.effects-press : 0px;
+    background: fx ? transparent : face-fill;
+    border-width: fx ? 0px : face-border;
     border-color: checked ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+    // The bases: they never move, so their blur images never change. Each carries one
+    // shadow; the part below the box is the key edge. They start at the press depth, so
+    // the pressed face covers them.
+    if root.fx: Rectangle {
+        y: Theme.effects-press;
+        width: root.width;
+        height: root.height - Theme.effects-press + root.fx-edge;
+        border-radius: root.border-radius;
+        background: root.fx-key;
+        drop-shadow-blur: Theme.effects-shadow-blur;
+        drop-shadow-offset-y: Theme.effects-shadow-offset;
+        drop-shadow-color: Theme.effects-shadow;
+    }
+    if root.fx-glow: Rectangle {
+        y: Theme.effects-press;
+        width: root.width;
+        height: root.height - Theme.effects-press + root.fx-edge;
+        border-radius: root.border-radius;
+        background: root.fx-key;
+        drop-shadow-blur: Theme.effects-glow-blur;
+        drop-shadow-color: Theme.effects-glow;
+    }
+    // The face: the fill, border and sheen, moved by the press.
+    if root.fx: Rectangle {
+        y: root.fx-down;
+        width: root.width;
+        height: root.height;
+        border-radius: root.border-radius;
+        background: root.face-fill;
+        border-width: root.face-border;
+        border-color: root.border-color;
+        clip: true;
+        // The sheen: inside the border, clamped clear of all ink, under the lip.
+        if root.fx-sheen: Rectangle {
+            x: root.face-border;
+            y: root.face-border;
+            width: parent.width - 2 * root.face-border;
+            height: Theme.effects-sheen-band;
+            background: Theme.effects-sheen;
+        }
+    }
     // A one-pixel lip along the top of a filled button, inset past the corners.
     if root.enabled && root.kind == "primary" && !root.round && !touch.has-hover && !touch.pressed: Rectangle {
-        y: 0px;
+        y: root.fx-down;
         x: root.border-radius;
         width: parent.width - 2 * root.border-radius;
         height: Tokens.size-border;
@@ -549,6 +611,7 @@ export component Button inherits Rectangle {
     // A danger button always shows the trash icon (ADR-0076): it is never bare coloured text.
     property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" && root.icon == IconName.none ? IconName.trash : IconName.none;
     content := HorizontalLayout {
+        y: root.fx-down;
         alignment: center;
         spacing: Tokens.space-1 + Tokens.space-1 / 2;
         // With text beside it, the lead icon of an unfilled button sits on its own small
@@ -675,6 +738,31 @@ export component SplitButton inherits Rectangle {
     height: Tokens.size-control-md;
     min-width: shape.min-width;
     preferred-width: shape.preferred-width;
+    // Theme effects (ADR-0120): a base under the whole shape with the shadow, the glow
+    // (primary) and the key edge, and a sheen inside it; no press, because the parts share
+    // one clipped background. All off while either focus ring shows, since the rings sit
+    // outside the shape, and while the command is disabled.
+    property <bool> fx: Theme.effects-on && root.enabled && !main-focus.ring && !part-focus.ring;
+    property <color> fx-key: kind == "primary" ? Theme.effects-key-primary
+        : checked ? Theme.effects-key-checked
+        : Theme.effects-key-secondary;
+    if root.fx: Rectangle {
+        width: root.width;
+        height: root.height + Theme.effects-key-edge;
+        border-radius: Tokens.radius-button;
+        background: root.fx-key;
+        drop-shadow-blur: Theme.effects-shadow-blur;
+        drop-shadow-offset-y: Theme.effects-shadow-offset;
+        drop-shadow-color: Theme.effects-shadow;
+    }
+    if root.fx && root.kind == "primary" && !root.checked: Rectangle {
+        width: root.width;
+        height: root.height + Theme.effects-key-edge;
+        border-radius: Tokens.radius-button;
+        background: root.fx-key;
+        drop-shadow-blur: Theme.effects-glow-blur;
+        drop-shadow-color: Theme.effects-glow;
+    }
     // The shape clips its parts to the rounded corners; the focus rings are drawn
     // around it, on what the button sits on (a ring on the primary fill would not show).
     shape := Rectangle {
@@ -786,6 +874,14 @@ export component SplitButton inherits Rectangle {
                 clicked => { part-focus.focus-pointer(); root.open-menu(part.absolute-position.x); }
             }
         }
+    }
+    // The sheen, inside the border and clear of all ink, over the parts' hover fills.
+    if root.fx && !root.checked: Rectangle {
+        x: shape.border-width;
+        y: shape.border-width;
+        width: parent.width - 2 * shape.border-width;
+        height: Theme.effects-sheen-band;
+        background: Theme.effects-sheen;
     }
     }
     FocusRing {

@@ -76,8 +76,8 @@ fn refused_theme_documents() {
         }
     }
     assert!(matches!(
-        refused("format = 2\nkind = \"theme\"\nbase = \"dark\"\n"),
-        DataError::Newer { found: 2, .. }
+        refused("format = 3\nkind = \"theme\"\nbase = \"dark\"\n"),
+        DataError::Newer { found: 3, .. }
     ));
     assert!(matches!(
         refused("format = 1\nkind = \"output-profile\"\n"),
@@ -305,4 +305,68 @@ fn reset_appearance_moves_the_file_aside() {
     assert_eq!(second, d.path().join("appearance.toml.reset-2.bak"));
     assert!(first.exists() && second.exists());
     assert!(!d.path().join(APPEARANCE_FILE).exists());
+}
+
+/// ADR-0120 decision 2: the stored `effects` key decides the format written.
+#[test]
+fn calm_themes_are_written_as_format_1_and_any_other_effects_as_format_2() {
+    let format_of = |theme: &ThemeBody| {
+        let text = document::render(theme, Some("T")).unwrap();
+        let line = text.lines().find(|l| l.starts_with("format")).unwrap();
+        (line.to_owned(), text)
+    };
+    let calm = ThemeBody::new(Base::Dark);
+    let (line, text) = format_of(&calm);
+    assert_eq!(line, "format = 1");
+    assert!(!text.contains("effects"));
+    for stored in ["vivid", "tactile", "glossy"] {
+        let mut t = ThemeBody::new(Base::Dark);
+        t.effects = Some(stored.into());
+        let (line, text) = format_of(&t);
+        assert_eq!(line, "format = 2", "{stored}");
+        assert!(text.contains(&format!("effects = \"{stored}\"")));
+        assert_eq!(document::parse::<ThemeBody>(&text).unwrap().document, t);
+    }
+    // High contrast resolves to calm but keeps its key, so it stays format 2.
+    let mut hc = ThemeBody::new(Base::HighContrast);
+    hc.effects = Some("vivid".into());
+    assert_eq!(format_of(&hc).0, "format = 2");
+}
+
+#[test]
+fn format_1_reads_as_calm_and_a_hand_edited_effects_key_is_honoured() {
+    let read = document::parse::<ThemeBody>(MIDNIGHT).unwrap();
+    assert_eq!(read.format, 1);
+    assert_eq!(read.document.effects, None);
+    let edited = MIDNIGHT.replacen(
+        "base = \"dark\"",
+        "base = \"dark\"\neffects = \"tactile\"",
+        1,
+    );
+    let theme = document::parse::<ThemeBody>(&edited).unwrap().document;
+    assert_eq!(theme.effects.as_deref(), Some("tactile"));
+    let r = Tokens::built_in().unwrap().resolve(&theme).unwrap();
+    assert_eq!(r.effects, rbs_ui::tokens::Effects::Tactile);
+}
+
+#[test]
+fn switching_a_calm_theme_to_vivid_keeps_the_format_1_file_once() {
+    let d = TempDir::new("theme-effects-backup");
+    let path = d.path().join("midnight.toml");
+    let mut theme = ThemeBody::new(Base::Dark);
+    document::write(&path, &theme, Some("Midnight")).unwrap();
+    theme.effects = Some("vivid".into());
+    document::write(&path, &theme, Some("Midnight")).unwrap();
+    let backup = document::backup_path(&path, 1);
+    assert!(backup.exists());
+    assert!(
+        std::fs::read_to_string(&backup)
+            .unwrap()
+            .contains("format = 1")
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("format = 2")
+    );
 }

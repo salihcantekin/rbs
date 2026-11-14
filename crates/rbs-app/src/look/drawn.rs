@@ -16,6 +16,9 @@
 //!   and in a text colour take the same branch, and `x == "a"` and `x == "b"` are never
 //!   both true. Every consistent assignment is tried.
 //!
+//! - Theme effects (`Theme.effects-*`, ADR-0120) are read as off (calm): a button's
+//!   face copy draws the same fill as its root, which is what is checked.
+//!
 //! Not seen: a sibling rectangle drawn under a text (only ancestors count) and colours
 //! set from Rust. Those stay with the review checklist.
 
@@ -941,6 +944,15 @@ impl Eval<'_> {
             }
             Cond::Not(p) => Ok(!self.truth(p, env, assign, depth)?),
             Cond::Atom(id) => {
+                // Theme effects are read as calm (ADR-0120 decision 10): the face copy
+                // and its sheen are not seen, and the root draws the face, so each pair
+                // is checked once. A local property that reads them comes here too.
+                if self.parser.atoms.info[*id as usize]
+                    .lhs
+                    .starts_with("Theme.effects-")
+                {
+                    return Ok(false);
+                }
                 if depth < 16
                     && let Some(v) = self.decided(*id, env, assign, depth)?
                 {

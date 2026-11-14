@@ -23,6 +23,45 @@ fn themeable(name: &str) -> bool {
     rbs_ui::tokens::themeable(name).is_some()
 }
 
+/// The effect fields of a slot (ADR-0120): Slint name, Slint type, calm default, and
+/// the Rust expression on `rbs_ui::tokens::EffectDraw` (`fx`) that fills it.
+const EFFECT_FIELDS: &[(&str, &str, &str, &str)] = &[
+    ("effects-on", "bool", "false", "fx.on"),
+    ("effects-shadow-blur", "length", "0px", "fx.shadow_blur"),
+    ("effects-shadow-offset", "length", "0px", "fx.shadow_offset"),
+    ("effects-shadow", "color", "#00000000", "argb(fx.shadow)"),
+    ("effects-glow-blur", "length", "0px", "fx.glow_blur"),
+    ("effects-glow", "color", "#00000000", "argb(fx.glow)"),
+    ("effects-sheen", "color", "#00000000", "argb(fx.sheen)"),
+    ("effects-sheen-band", "length", "0px", "fx.sheen_band"),
+    ("effects-key-edge", "length", "0px", "fx.key_edge"),
+    ("effects-press", "length", "0px", "fx.press"),
+    (
+        "effects-key-primary",
+        "color",
+        "#00000000",
+        "argb(fx.key[0])",
+    ),
+    (
+        "effects-key-secondary",
+        "color",
+        "#00000000",
+        "argb(fx.key[1])",
+    ),
+    (
+        "effects-key-danger",
+        "color",
+        "#00000000",
+        "argb(fx.key[2])",
+    ),
+    (
+        "effects-key-checked",
+        "color",
+        "#00000000",
+        "argb(fx.key[3])",
+    ),
+];
+
 /// `tokens.slint`: the `Theme` and `Tokens` globals. Every value has the built-in
 /// token file as its default, so the files compile and preview on their own; the app
 /// sets them at run time (`tokens_apply.rs`).
@@ -49,6 +88,9 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(s, "    panel-outline: bool,")?;
     writeln!(s, "    button-outline: bool,")?;
     writeln!(s, "    font-family: string,")?;
+    for (id, ty, _, _) in EFFECT_FIELDS {
+        writeln!(s, "    {id}: {ty},")?;
+    }
     for name in &colors {
         writeln!(s, "    {}: color,", ident(name, "color."))?;
     }
@@ -82,6 +124,10 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
                 .iter()
                 .any(|f| BUTTON_SURFACES.iter().any(|n| button_outline(c[*f], c[*n])))
         )?;
+        // Built-in themes are calm (ADR-0120 decision 4).
+        for (id, _, calm, _) in EFFECT_FIELDS {
+            write!(s, ", {id}: {calm}")?;
+        }
         for n in &colors {
             write!(s, ", {}: {}", ident(n, "color."), c[*n])?;
         }
@@ -130,6 +176,13 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
         s,
         "    out property <bool> button-outline: slots[active].button-outline;"
     )?;
+    writeln!(
+        s,
+        "    // Theme effects (ADR-0120): drawn only by library components (check-ui)."
+    )?;
+    for (id, ty, _, _) in EFFECT_FIELDS {
+        writeln!(s, "    out property <{ty}> {id}: slots[active].{id};")?;
+    }
     writeln!(s, "    // The window font: empty is the OS UI font.")?;
     writeln!(
         s,
@@ -222,11 +275,19 @@ fn generate_apply(t: &Tokens) -> Result<String, std::fmt::Error> {
     for name in t.type_styles.keys() {
         writeln!(s, "    let {} = style(\"{name}\")?;", rust(name, ""))?;
     }
+    writeln!(
+        s,
+        "    let argb = |c: rbs_ui::tokens::Color| slint::Color::from_argb_u8(c.a, c.r, c.g, c.b);"
+    )?;
+    writeln!(s, "    let fx = theme.effect_draw();")?;
     writeln!(s, "    Ok(ThemeSlot {{")?;
     writeln!(s, "        high_contrast: theme.high_contrast(),")?;
     writeln!(s, "        panel_outline: theme.panel_outline(),")?;
     writeln!(s, "        button_outline: theme.button_outline(),")?;
     writeln!(s, "        font_family: font.into(),")?;
+    for (id, _, _, expr) in EFFECT_FIELDS {
+        writeln!(s, "        {}: {expr},", id.replace('-', "_"))?;
+    }
     for name in t.themes[0].1.keys() {
         writeln!(s, "        {}: color(\"{name}\")?,", rust(name, "color."))?;
     }
@@ -296,6 +357,15 @@ fn generate_apply(t: &Tokens) -> Result<String, std::fmt::Error> {
         .chain(t.type_styles.keys())
     {
         write!(s, "\"{name}\", ")?;
+    }
+    writeln!(s, "];")?;
+    writeln!(
+        s,
+        "/// The effect fields of a slot (ADR-0120), for the golden test (`look`)."
+    )?;
+    write!(s, "pub const SLOT_EFFECTS: &[&str] = &[")?;
+    for (id, _, _, _) in EFFECT_FIELDS {
+        write!(s, "\"{id}\", ")?;
     }
     writeln!(s, "];")?;
     Ok(s)
