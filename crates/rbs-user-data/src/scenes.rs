@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 15                 # 16 when a source records separately (ADR-0086)
+//! format = 15                 # 16 when a source records separately (ADR-0086), 17 when a scene has own levels (ADR-0091)
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -44,6 +44,7 @@
 //! id = 0
 //! name = "Scene"
 //! # canvas = 0                 # only that canvas shows it; absent: shared
+//! # audio = { levels = [{ source = 0, volume = 0.5, muted = true }] }  # Own levels (format 17, ADR-0091)
 //!
 //! [[scenes.items]]
 //! id = 0
@@ -69,9 +70,9 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, Canvas, CanvasId, CollectionGlide, Crop, Fallback, Filter, FilterId, GlideEasing,
-    ItemContent, ItemId, ItemStyle, Layout, MasterAudio, RecordSeparately, Scene, SceneId,
-    SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, Source, SourceAudio, SourceGlide,
-    SourceId, SourceMonitor, SourceRegion,
+    ItemContent, ItemId, ItemStyle, Layout, MasterAudio, RecordSeparately, Scene, SceneAudio,
+    SceneId, SceneItem, SceneLevel, SceneScope, SettingValue, Settings, Shadow, Shape, Source,
+    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, SceneCollection};
@@ -463,6 +464,61 @@ struct SceneDoc {
     canvas: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     items: Vec<ItemDoc>,
+    /// The scene's own levels (format 17, ADR-0091). Absent: Shared levels; an empty
+    /// table: Own levels with no entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio: Option<SceneAudioDoc>,
+}
+
+/// A scene's own levels in the document (ADR-0091).
+#[derive(Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SceneAudioDoc {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    levels: Vec<SceneLevelDoc>,
+}
+
+/// One entry of a scene's own levels: a source and the fields the scene sets.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SceneLevelDoc {
+    source: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    volume: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    muted: Option<bool>,
+}
+
+impl SceneAudioDoc {
+    fn of(audio: &SceneAudio) -> Self {
+        Self {
+            levels: audio
+                .levels
+                .iter()
+                .map(|(id, l)| SceneLevelDoc {
+                    source: id.get(),
+                    volume: l.volume.map(f64::from),
+                    muted: l.muted,
+                })
+                .collect(),
+        }
+    }
+
+    fn audio(self, scene: &str) -> Result<SceneAudio, String> {
+        let mut levels = BTreeMap::new();
+        for l in self.levels {
+            // Range checks are the collection's (`InvalidVolume`).
+            #[allow(clippy::cast_possible_truncation)] // A volume is 0 to 1.
+            let level = SceneLevel::new(l.volume.map(|v| v as f32), l.muted);
+            if levels.insert(SourceId::from_raw(l.source), level).is_some() {
+                return Err(format!(
+                    "scene {scene:?} lists source {} twice in its levels",
+                    l.source
+                ));
+            }
+        }
+        Ok(SceneAudio::new(levels))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -709,10 +765,12 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 16;
+    const FORMAT: u32 = 17;
 
     fn write_format(&self) -> u32 {
-        if self.sources().any(|s| !s.record_separately.is_none()) {
+        if self.scenes().any(Scene::own_levels) {
+            17
+        } else if self.sources().any(|s| !s.record_separately.is_none()) {
             16
         } else {
             15
@@ -741,10 +799,12 @@ impl Document for SceneCollection {
     /// format 15 body without them, and the layout space is then the canvas size.
     /// Format 16 adds the optional source `record_separately` (ADR-0086); a format 15
     /// body is a format 16 body without it. A file is written as 16 only when a
-    /// source has the flag ([`Document::write_format`]).
+    /// source has the flag ([`Document::write_format`]). Format 17 adds the optional
+    /// scene `audio` (ADR-0091); a format 16 body is a format 17 body without it, and a
+    /// file is written as 17 only when a scene has it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=15 => {
+            1..=16 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -841,6 +901,16 @@ impl Document for SceneCollection {
                     return Err(format!(
                         "format {from} has no source `record_separately` (format 16)"
                     ));
+                }
+                let levels = body
+                    .get("scenes")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|s| s.contains_key("audio"));
+                if from < 17 && levels {
+                    return Err(format!("format {from} has no scene `audio` (format 17)"));
                 }
                 Ok(())
             }
@@ -961,6 +1031,7 @@ impl Document for SceneCollection {
                     name: s.name.clone(),
                     canvas,
                     items,
+                    audio: s.audio.as_ref().map(SceneAudioDoc::of),
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -1064,7 +1135,9 @@ impl Document for SceneCollection {
                 let scope = s.canvas.map_or(SceneScope::Shared, |c| {
                     SceneScope::Canvas(CanvasId::from_raw(c))
                 });
-                let mut scene = Scene::new(SceneId::from_raw(s.id), &s.name, scope);
+                let audio = s.audio.map(|a| a.audio(&s.name)).transpose()?;
+                let mut scene =
+                    Scene::new(SceneId::from_raw(s.id), &s.name, scope).with_audio(audio);
                 scene.items = s
                     .items
                     .into_iter()

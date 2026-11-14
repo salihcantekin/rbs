@@ -8,12 +8,12 @@ use common::TempDir;
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
-use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     Border, CollectionGlide, Crop, DisplayChrome, Fallback, GlideEasing, ItemContent, ItemStyle,
     Layout, RecordSeparately, SceneScope, SettingValue, Settings, Shadow, Shape, SourceGlide,
     SourceMonitor, SourceRegion,
 };
+use rbs_scene::{SceneAudio, SceneCollection, SceneLevel};
 use rbs_user_data::document;
 use rbs_user_data::{DataError, UserData};
 
@@ -766,4 +766,72 @@ fn a_source_recorded_separately_raises_the_format_and_an_older_file_refuses_it()
         Err(DataError::Invalid(why)) => assert!(why.contains("record_separately"), "{why}"),
         other => panic!("expected Invalid, got {other:?}"),
     }
+}
+
+#[test]
+fn scene_levels_raise_the_format_round_trip_and_an_older_file_refuses_them() {
+    let mut col = SceneCollection::new();
+    let (mic, _) = col
+        .add_source("Mic", ty("audio-input"), Settings::new())
+        .unwrap();
+    let (music, _) = col
+        .add_source("Music", ty("audio-input"), Settings::new())
+        .unwrap();
+    let (talk, _) = col.add_scene("Talking", SceneScope::Shared).unwrap();
+    let (brb, _) = col.add_scene("Be right back", SceneScope::Shared).unwrap();
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("format = 17"), "{plain}");
+    assert!(!plain.contains("[scenes.audio]"), "{plain}");
+
+    col.set_scene_own_levels(talk, SceneAudio::default())
+        .unwrap();
+    col.set_scene_level(talk, mic, Some(SceneLevel::new(None, Some(true))))
+        .unwrap();
+    col.set_scene_level(talk, music, Some(SceneLevel::new(Some(0.25), None)))
+        .unwrap();
+    // Own levels with no entries is kept too.
+    col.set_scene_own_levels(brb, SceneAudio::default())
+        .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 17"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(
+        back.scene(talk).unwrap().audio,
+        col.scene(talk).unwrap().audio
+    );
+    assert!(back.scene(brb).unwrap().own_levels());
+    assert!(
+        back.scene(brb)
+            .unwrap()
+            .audio
+            .as_ref()
+            .unwrap()
+            .levels
+            .is_empty()
+    );
+
+    let scene = "[[scenes]]\nid = 0\nname = \"S\"\n";
+    let older = format!(
+        "format = 16\nkind = \"scene-collection\"\n[next]\nscene = 1\n{scene}[scenes.audio]\n"
+    );
+    match document::parse::<SceneCollection>(&older) {
+        Err(DataError::Invalid(why)) => assert!(why.contains("audio"), "{why}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    // A level for a source that does not exist is refused (scene-model invariant 4).
+    let dangling = format!(
+        "format = 17\nkind = \"scene-collection\"\n[next]\nscene = 1\n{scene}audio = {{ levels = [{{ source = 7, muted = true }}] }}\n"
+    );
+    assert!(matches!(
+        document::parse::<SceneCollection>(&dangling),
+        Err(DataError::Invalid(_))
+    ));
+    // So is a volume out of range.
+    let loud = format!(
+        "format = 17\nkind = \"scene-collection\"\n[next]\nsource = 1\nscene = 1\n[[sources]]\nid = 0\nname = \"Mic\"\ntype = \"org.rbs.source.mic\"\n{scene}audio = {{ levels = [{{ source = 0, volume = 2.0 }}] }}\n"
+    );
+    assert!(matches!(
+        document::parse::<SceneCollection>(&loud),
+        Err(DataError::Invalid(_))
+    ));
 }

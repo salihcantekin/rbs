@@ -31,6 +31,6 @@ pub use crop::{place_chrome, recrop_keeping, visible_size};
 pub use flatten::{Affine2, FlatLayer};
 pub use model::{
     COMPANION_OF_HINT, ChromeFill, CollectionGlide, DISPLAY_SOURCE_TYPE, DisplayChrome,
-    GlideEasing, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, STANDBY_HINT, SourceGlide, SourceRegion,
-    show_for_is_valid,
+    GlideEasing, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, STANDBY_HINT, SceneAudio, SceneLevel, SourceGlide,
+    SourceRegion, show_for_is_valid,
 };

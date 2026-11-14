@@ -742,16 +742,97 @@ pub struct Scene {
     pub scope: SceneScope,
     /// Items, bottom first.
     pub items: Vec<SceneItem>,
+    /// The scene's own levels (ADR-0091): `None` is Shared levels, the sources' own
+    /// volume and mute apply; `Some` is Own levels.
+    pub audio: Option<SceneAudio>,
 }
 
 impl Scene {
-    /// An empty scene, for documents.
+    /// An empty scene in Shared levels, for documents.
     pub fn new(id: SceneId, name: &str, scope: SceneScope) -> Self {
         Self {
             id,
             name: name.to_owned(),
             scope,
             items: Vec::new(),
+            audio: None,
+        }
+    }
+
+    /// The same scene with these levels (ADR-0091; `None`: Shared levels).
+    pub fn with_audio(self, audio: Option<SceneAudio>) -> Self {
+        Self { audio, ..self }
+    }
+
+    /// True while the scene is in Own levels (ADR-0091).
+    pub fn own_levels(&self) -> bool {
+        self.audio.is_some()
+    }
+}
+
+/// A scene's own volume and mute for one source (ADR-0091). An absent field uses the
+/// source's own value.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SceneLevel {
+    /// Linear amplitude factor in `0.0..=`[`MAX_SOURCE_VOLUME`].
+    pub volume: Option<f32>,
+    /// Muted or not.
+    pub muted: Option<bool>,
+}
+
+impl SceneLevel {
+    /// A level with these fields.
+    pub const fn new(volume: Option<f32>, muted: Option<bool>) -> Self {
+        Self { volume, muted }
+    }
+
+    /// True if the volume, when set, is finite and in range.
+    pub fn is_valid(&self) -> bool {
+        self.volume
+            .is_none_or(|v| v.is_finite() && (0.0..=MAX_SOURCE_VOLUME).contains(&v))
+    }
+
+    /// True if neither field is set: the entry changes nothing.
+    pub const fn is_empty(&self) -> bool {
+        self.volume.is_none() && self.muted.is_none()
+    }
+
+    /// `audio` with this level's fields in place of its volume and mute.
+    pub fn over(&self, audio: SourceAudio) -> SourceAudio {
+        SourceAudio {
+            volume: self.volume.unwrap_or(audio.volume),
+            muted: self.muted.unwrap_or(audio.muted),
+            ..audio
+        }
+    }
+}
+
+/// A scene's own levels (Own levels, ADR-0091): an entry per source the scene sets.
+/// A source without an entry keeps its own volume and mute.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SceneAudio {
+    /// The entries, by source.
+    pub levels: BTreeMap<SourceId, SceneLevel>,
+}
+
+impl SceneAudio {
+    /// Own levels with these entries.
+    pub fn new(levels: BTreeMap<SourceId, SceneLevel>) -> Self {
+        Self { levels }
+    }
+
+    /// The scene's entry for `source`, if it has one.
+    pub fn level(&self, source: SourceId) -> Option<&SceneLevel> {
+        self.levels.get(&source)
+    }
+
+    /// `audio` (the source's own) with the scene's entry for `source` applied.
+    pub fn heard(&self, source: SourceId, audio: SourceAudio) -> SourceAudio {
+        match self.levels.get(&source) {
+            Some(level) => level.over(audio),
+            None => audio,
         }
     }
 }

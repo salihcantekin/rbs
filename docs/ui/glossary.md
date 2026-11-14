@@ -20,6 +20,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
 | Automatic, Rows, Columns | Mixer layouts: follow the panel's shape, sources stacked top to bottom, or side by side | Horizontal, Vertical, Auto | Orientation (in UI text) |
 | Workspace | A saved arrangement of panels, floating windows and projectors. It never holds scenes, sources or output settings | Profile, layout, scene collection | UI workspace file |
+| Scene levels | A scene's own volume and mute for the sources it chooses (Own levels), heard while it is on air; Shared levels uses the sources' own (ADR-0091) | Scene mix, snapshot | `SceneAudio` |
 | Scene collection | A set of scenes and sources saved together. It holds no panel layout and no output settings | Project, workspace | Scene document |
 | Global source | A source shown and heard in every scene of a canvas, kept in Settings › Global sources | Global audio device, shared source | Item of the canvas's global scene (ADR-0065) |
 | Remove from scene / Delete source | Remove the source from this scene only / remove it from every scene | Delete (for removing from one scene) | Scene item removal / source removal |

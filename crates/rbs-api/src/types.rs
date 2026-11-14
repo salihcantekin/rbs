@@ -198,6 +198,20 @@ pub struct SourceInfo {
     /// when it is not.
     #[serde(default, skip_serializing_if = "is_false")]
     pub record_separately: bool,
+    /// What the mix hears while the program scene, in Own levels, has an entry for the
+    /// source (protocol 1.50, ADR-0091); absent otherwise, when `volume` and `muted` are
+    /// what is heard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heard: Option<Heard>,
+}
+
+/// The volume and mute a source is heard at (protocol 1.50, ADR-0091).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Heard {
+    /// A linear factor from 0 to 1.
+    pub volume: f32,
+    /// Muted.
+    pub muted: bool,
 }
 
 /// Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).
@@ -393,6 +407,9 @@ pub struct SceneInfo {
     pub id: u32,
     /// Its name, unique in the collection.
     pub name: String,
+    /// The scene keeps its own levels (protocol 1.50, ADR-0091); absent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_audio: bool,
 }
 
 /// How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.

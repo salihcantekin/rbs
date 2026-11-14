@@ -741,7 +741,24 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
     let len = scene
         .and_then(|s| col.scene(s))
         .map_or(0, |s| s.items.len());
-    match rng.below(31) {
+    match rng.below(34) {
+        // Scene levels (ADR-0091); every fifth volume is out of range.
+        31 => {
+            let scene = scene.ok_or(missing.clone())?;
+            let levels = col.heard_levels(canvas.ok_or(missing)?, scene);
+            col.set_scene_own_levels(scene, levels)
+        }
+        32 => col.set_scene_shared_levels(scene.ok_or(missing)?),
+        33 => col.set_scene_level(
+            scene.ok_or(missing.clone())?,
+            source.ok_or(missing)?,
+            (!n.is_multiple_of(7)).then(|| {
+                rbs_scene::SceneLevel::new(
+                    Some((n % 5) as f32 * 0.3),
+                    n.is_multiple_of(3).then_some(true),
+                )
+            }),
+        ),
         29 => col.set_globals(canvas.ok_or(missing)?, scene),
         14 => {
             let (s, f) = filter.ok_or(missing)?;
