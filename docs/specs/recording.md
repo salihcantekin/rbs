@@ -367,6 +367,10 @@ The studio host (`rbs-app`) opens the separate audio files with the main canvas'
 - Stopping the main recording stops the audio files too, after the master's tail. Deleting a marked source during the take leaves its file valid and the take running.
 - Offsets from `t0` are not written yet: the WAVs start before the master by the master's start-up time.
 - A picture flag alone, `iso: false`, the vertical canvas and no flag at all record one file, as before 1.46.
+- UI (ADR-0086 step 2):
+  - Properties › Audio has a *Recording* section with a *Record separately* Toggle. It sends `Command::SetRecordSeparately`, and while a take runs it says the mark applies to the next recording.
+  - Settings › Recording has a *Separate files* card that lists the marked sources by name (`SourceEntry::record_separately`). It has no switch until the `recording.iso` profile section exists.
+  - While recording, the Outputs panel's recording card has a *Separate files* line naming the sources written (`RecordingUpdate::Started::separate`).
 
 ## Recording manifest (ADR-0086 decision 6, ADR-0089)
 
