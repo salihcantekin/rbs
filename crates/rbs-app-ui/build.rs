@@ -4,7 +4,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rbs_ui::tokens::{THEMES, Tokens, panel_outline};
+use rbs_ui::tokens::{
+    BUTTON_FILLS, BUTTON_SURFACES, THEMES, Tokens, button_outline, panel_outline,
+};
 
 /// `color.surface.base` -> `surface-base`; `space.1` -> `space-1`.
 fn ident(name: &str, strip: &str) -> String {
@@ -45,6 +47,7 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(s, "export struct ThemeSlot {{")?;
     writeln!(s, "    high-contrast: bool,")?;
     writeln!(s, "    panel-outline: bool,")?;
+    writeln!(s, "    button-outline: bool,")?;
     writeln!(s, "    font-family: string,")?;
     for name in &colors {
         writeln!(s, "    {}: color,", ident(name, "color."))?;
@@ -72,9 +75,12 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
         let (name, c) = &t.themes[base];
         write!(
             s,
-            "        {{ high-contrast: {}, panel-outline: {}, font-family: \"\"",
+            "        {{ high-contrast: {}, panel-outline: {}, button-outline: {}, font-family: \"\"",
             name == THEMES[2],
-            panel_outline(c["color.surface.raised"], c["color.surface.base"])
+            panel_outline(c["color.surface.raised"], c["color.surface.base"]),
+            BUTTON_FILLS
+                .iter()
+                .any(|f| BUTTON_SURFACES.iter().any(|n| button_outline(c[*f], c[*n])))
         )?;
         for n in &colors {
             write!(s, ", {}: {}", ident(n, "color."), c[*n])?;
@@ -118,6 +124,11 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(
         s,
         "    out property <bool> panel-outline: slots[active].panel-outline;"
+    )?;
+    writeln!(s, "    // Secondary buttons draw their outline (ADR-0118).")?;
+    writeln!(
+        s,
+        "    out property <bool> button-outline: slots[active].button-outline;"
     )?;
     writeln!(s, "    // The window font: empty is the OS UI font.")?;
     writeln!(
@@ -214,6 +225,7 @@ fn generate_apply(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(s, "    Ok(ThemeSlot {{")?;
     writeln!(s, "        high_contrast: theme.high_contrast(),")?;
     writeln!(s, "        panel_outline: theme.panel_outline(),")?;
+    writeln!(s, "        button_outline: theme.button_outline(),")?;
     writeln!(s, "        font_family: font.into(),")?;
     for name in t.themes[0].1.keys() {
         writeln!(s, "        {}: color(\"{name}\")?,", rust(name, "color."))?;

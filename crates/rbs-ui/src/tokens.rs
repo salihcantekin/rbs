@@ -39,10 +39,18 @@ pub const THEME_COLORS: &[&str] = &[
     "color.accent",
     "color.accent.hover",
     "color.accent.subtle",
+    "color.accent.subtle.hover",
+    "color.accent.pressed",
+    "color.button.fill",
+    "color.button.hover",
+    "color.button.pressed",
+    "color.button.chip",
     "color.brand",
     "color.state.warning",
     "color.state.healthy",
     "color.state.error",
+    "color.action.destructive.subtle",
+    "color.action.destructive.subtle.hover",
     "color.action.destructive",
     "color.meter.low",
     "color.meter.mid",
@@ -97,6 +105,8 @@ pub const LENGTHS: &[&str] = &[
     "radius.sm",
     "radius.md",
     "radius.lg",
+    "radius.button",
+    "size.button.chip",
     "size.border",
     "size.focus-ring",
     "size.icon.box",
@@ -370,6 +380,49 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.accent", "color.surface.overlay", 3.0, 3.0),
     ("color.accent", "color.surface.sunken", 3.0, 3.0),
     ("color.text.secondary", "color.accent.subtle", 4.5, 7.0),
+    // Buttons (owner decision 2026-11-14, Tint look): text on the resting, hovered and
+    // pressed fills, the accent icon on its chip, the danger ink on its fill.
+    ("color.text.primary", "color.button.fill", 4.5, 7.0),
+    ("color.text.primary", "color.button.hover", 4.5, 7.0),
+    ("color.text.primary", "color.button.pressed", 4.5, 7.0),
+    ("color.accent", "color.button.chip", 3.0, 3.0),
+    // The focus ring is drawn inside a button, over its own fill (ADR-0118).
+    ("color.border.focus", "color.button.fill", 3.0, 3.0),
+    ("color.border.focus", "color.button.hover", 3.0, 3.0),
+    ("color.border.focus", "color.button.pressed", 3.0, 3.0),
+    ("color.border.focus", "color.accent.subtle.hover", 3.0, 3.0),
+    (
+        "color.border.focus",
+        "color.action.destructive.subtle",
+        3.0,
+        3.0,
+    ),
+    (
+        "color.border.focus",
+        "color.action.destructive.subtle.hover",
+        3.0,
+        3.0,
+    ),
+    ("color.text.primary", "color.button.chip", 4.5, 7.0),
+    ("color.text.secondary", "color.button.chip", 4.5, 7.0),
+    ("color.text.secondary", "color.button.fill", 4.5, 7.0),
+    ("color.text.secondary", "color.button.hover", 4.5, 7.0),
+    ("color.text.secondary", "color.button.pressed", 4.5, 7.0),
+    ("color.text.inverse", "color.accent.pressed", 4.5, 7.0),
+    ("color.text.primary", "color.accent.subtle.hover", 4.5, 7.0),
+    ("color.accent", "color.accent.subtle.hover", 3.0, 3.0),
+    (
+        "color.state.error",
+        "color.action.destructive.subtle",
+        4.5,
+        7.0,
+    ),
+    (
+        "color.state.error",
+        "color.action.destructive.subtle.hover",
+        4.5,
+        7.0,
+    ),
     // Pairs the desktop UI draws (`rbs-app` test `every_drawn_pair_has_a_contrast_rule`).
     // Error messages are text, so they need the text minimum.
     ("color.state.error", "color.surface.base", 4.5, 7.0),
@@ -836,9 +889,11 @@ mod tests {
         let e = Tokens::parse(&low_contrast).unwrap_err().0;
         assert!(e.contains("color.text.secondary"), "{e}");
 
+        // Light enough to pass error-on-danger-fill contrast, so the hue check is the one
+        // that fails.
         let red_error = base.replacen(
             "\"color.state.error\" = \"#c38bf0\"",
-            "\"color.state.error\" = \"#ff5555\"",
+            "\"color.state.error\" = \"#ff8a8a\"",
             1,
         );
         assert!(Tokens::parse(&red_error).unwrap_err().0.contains("hue"));

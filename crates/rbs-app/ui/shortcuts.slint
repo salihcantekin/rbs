@@ -221,11 +221,10 @@ component CommandRow inherits VerticalLayout {
             width: Tokens.size-menu-sm * 0.6;
             spacing: Tokens.space-1;
             alignment: end;
-            if item.changed: Button {
-                text: @tr("Reset");
-                accessible-name: @tr("Reset {}", item.title);
-                kind: "ghost";
-                dense: true;
+            // The reset-to-default mark of every setting (ADR-0114 review, 2026-11-14).
+            if item.changed: IconButton {
+                icon: IconName.reset;
+                name: @tr("Reset {}", item.title);
                 clicked => { Shortcuts.reset(index); }
             }
             Button {

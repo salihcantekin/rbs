@@ -41,3 +41,4 @@ Round 1, independent AI session (2026-11-08): changes requested. Resolved: Tabs 
 Round 2, independent AI session (2026-11-08): approve. Round 1 items verified in code. Minor items done: wording "checked" (Slint has no selected property) and tests for the across-tokens rule and the non-themeable tab indicator. Noted, not changed: Tabs arrows are fixed Left/Right (no right-to-left handling) and Tabs have no disabled state. The owner approved the decision and the result (2026-11-08); status Accepted.
 
 Note (2026-11-08): saving the section state in the workspace file is done by [ADR-0078](0078-saved-section-state-and-shared-section-components.md).
+- 2026-11-14: decision 4 is superseded in part by [ADR-0118](0118-tint-buttons.md) (Tint buttons): a danger button is a destructive tint, with no outline unless its fill does not separate from a surface; its `trash` icon and `state.error` ink stay.
