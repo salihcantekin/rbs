@@ -50,7 +50,7 @@ Per running output, from `Progress` counted from the output's start:
 - **Memory.** `warning` below the minimum, cleared above it plus 10 %. macOS reports `unavailable` in phase one.
 - **Telling the user.** Each item that reaches `warning` or `critical` (or a higher level than before) is written to the developer log and shown once with the existing error notice; a protection stop is told by its own sentence. `notice` is only in the API state. No new visual element in phase one.
 
-## Control API (protocol 1.49, provisional; the minor is set at merge)
+## Control API (protocol 1.49)
 
 `protection.status` (scope `read`) answers a snapshot (`seq` of `protection.changed`):
 
