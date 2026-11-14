@@ -19,6 +19,9 @@ use rbs_sources::types::{SourceClass, class_of};
 pub const MAX_ISO_VIDEO: usize = 16;
 /// Most separate audio files in one recording (ADR-0086).
 pub const MAX_ISO_AUDIO: usize = 32;
+/// Most image tracks in one recording (ADR-0117 decision 5). Not counted in
+/// [`MAX_ISO_VIDEO`]: an image track has no encoder.
+pub const MAX_ISO_IMAGES: usize = 32;
 
 /// Which feed a separate file carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +30,9 @@ pub enum IsoRole {
     Video,
     /// The source's sound.
     Audio,
+    /// The picture of a still source, written as PNG images when it changes
+    /// (ADR-0117).
+    Image,
 }
 
 impl IsoRole {
@@ -35,6 +41,7 @@ impl IsoRole {
         match self {
             Self::Video => "video",
             Self::Audio => "audio",
+            Self::Image => "image",
         }
     }
 }
@@ -60,8 +67,14 @@ pub struct IsoPlan {
 }
 
 /// Why a separate-file plan cannot start.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IsoError {
+    /// More image tracks than [`MAX_ISO_IMAGES`].
+    TooManyImages {
+        /// How many were marked.
+        count: usize,
+    },
     /// More video tracks than [`MAX_ISO_VIDEO`].
     TooManyVideo {
         /// How many were marked.
@@ -100,6 +113,9 @@ pub enum IsoError {
     },
     /// `recording.rbs.toml` could not be written. The message has no path.
     Manifest,
+    /// A still source is marked and the start names no folder for its images
+    /// (ADR-0117).
+    ImageFolder,
     /// A video track's source has no picture yet, so its file's size is unknown
     /// (ADR-0086 decision 3: the size is fixed at the start), or it is not in the
     /// graph. Keeping off-air sources Active is a later step (decision 8).
@@ -117,6 +133,9 @@ impl fmt::Display for IsoError {
             Self::TooManyVideo { count } => {
                 write!(f, "{count} separate video files; at most {MAX_ISO_VIDEO}")
             }
+            Self::TooManyImages { count } => {
+                write!(f, "{count} separate image tracks; at most {MAX_ISO_IMAGES}")
+            }
             Self::TooManyAudio { count } => {
                 write!(f, "{count} separate audio files; at most {MAX_ISO_AUDIO}")
             }
@@ -132,6 +151,7 @@ impl fmt::Display for IsoError {
                 write!(f, "{name} is not in the program mix")
             }
             Self::Manifest => f.write_str("the recording manifest could not be written"),
+            Self::ImageFolder => f.write_str("no folder was given for the separate images"),
             Self::NoPicture { name, .. } => write!(f, "{name} has no picture yet"),
         }
     }
@@ -175,10 +195,17 @@ pub fn plan(collection: &SceneCollection) -> Result<IsoPlan, IsoError> {
                 &take_name(&mut used, &format!("{stem}-audio"), source.id),
             ));
         } else if flag.video {
+            // ADR-0117 decisions 1 and 2 (`auto`): a still source's picture is
+            // written as images. Asked of the class, never of a type id.
+            let role = if class_of(&source.type_id) == Some(SourceClass::Still) {
+                IsoRole::Image
+            } else {
+                IsoRole::Video
+            };
             tracks.push(track(
                 source.id,
                 &source.name,
-                IsoRole::Video,
+                role,
                 &take_name(&mut used, &stem, source.id),
             ));
         } else {
@@ -197,6 +224,10 @@ pub fn plan(collection: &SceneCollection) -> Result<IsoPlan, IsoError> {
     }
     if audio > MAX_ISO_AUDIO {
         return Err(IsoError::TooManyAudio { count: audio });
+    }
+    let images = tracks.iter().filter(|t| t.role == IsoRole::Image).count();
+    if images > MAX_ISO_IMAGES {
+        return Err(IsoError::TooManyImages { count: images });
     }
     Ok(IsoPlan { tracks })
 }

@@ -67,7 +67,9 @@ mod loudness;
 mod monitor;
 mod replay;
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
-pub use iso_video::{DEFAULT_GIVE_WAY_SHARE, IsoVideoStart, IsoVideoStarted, IsoVideoTrack};
+pub use iso_video::{
+    DEFAULT_GIVE_WAY_SHARE, IsoImageTrack, IsoVideoStart, IsoVideoStarted, IsoVideoTrack,
+};
 pub use monitor::MonitorState;
 pub use replay::ReplaySettings;
 
@@ -1614,6 +1616,8 @@ impl Studio {
         self.note_scene_change(collection, old_main, &old_extra, old_layers);
         self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
+        // Separate tracks follow a source whose node the sync replaced.
+        self.relink_iso_video();
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
         if let Some(e) = attach_error {
             return Err(e);

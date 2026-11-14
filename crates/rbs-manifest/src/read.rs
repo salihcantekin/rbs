@@ -6,8 +6,8 @@ use rbs_core::timing::FrameRate;
 use toml::{Table, Value};
 
 use crate::{
-    Completion, FORMAT, FileTiming, KIND, ManifestFile, Marker, MarkerColor, MarkerKind, Picture,
-    RecordingManifest, Sound, SourceRef, checked_label,
+    Completion, FORMAT, FileTiming, ImageCounts, ImageEntry, KIND, ManifestFile, Marker,
+    MarkerColor, MarkerKind, Picture, RecordingManifest, Sound, SourceRef, checked_label,
 };
 
 /// Why a manifest could not be read. Messages name keys, never paths.
@@ -141,12 +141,42 @@ fn file(t: &Table) -> Result<ManifestFile, ReadError> {
             sound: sound(t)?,
         }),
     };
+    let image_counts = match u64_of(t, "coalesced")? {
+        None => None,
+        Some(coalesced) => Some(ImageCounts {
+            coalesced,
+            over_cap: need(u64_of(t, "over_cap")?, "over_cap")?,
+        }),
+    };
     Ok(ManifestFile {
         role,
         file_name,
         source: u32_of(t, "source")?.map(SourceRef::new),
         source_name: string(t, "source_name")?,
         timing,
+        images: tables(t, "images")?
+            .into_iter()
+            .map(image)
+            .collect::<Result<_, _>>()?,
+        image_counts,
+    })
+}
+
+fn image(t: &Table) -> Result<ImageEntry, ReadError> {
+    let file_name = need(string(t, "name")?, "name")?;
+    if !crate::single_file_name(&file_name) {
+        return Err(bad("name"));
+    }
+    let width = need(u32_of(t, "width")?, "width")?;
+    let height = need(u32_of(t, "height")?, "height")?;
+    if width == 0 || height == 0 {
+        return Err(bad(if width == 0 { "width" } else { "height" }));
+    }
+    Ok(ImageEntry {
+        file_name,
+        width,
+        height,
+        at_ns: need(u64_of(t, "at_ns")?, "at_ns")?,
     })
 }
 
