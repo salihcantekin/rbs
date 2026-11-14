@@ -23,9 +23,9 @@ use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordRequest,
-    RecordingUpdate, SceneList, SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats,
-    StreamRequest, StreamUpdate, StudioHost, Target, TransformOp, Update,
+    Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
+    RecordRequest, RecordingUpdate, SceneList, SourceKind, SourceRow, SourceSettingsView,
+    SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -1873,7 +1873,7 @@ impl StudioUi {
     pub fn set_source_record_separately(&mut self, id: i32, enabled: bool) {
         self.send(Command::SetRecordSeparately {
             id: SourceId::from_raw(id as u32),
-            enabled,
+            patch: RecordPatch::enabled(enabled),
         });
     }
 
@@ -5006,7 +5006,7 @@ impl StudioUi {
                 self.separate_names = list
                     .sources
                     .iter()
-                    .filter(|s| s.record_separately)
+                    .filter(|s| s.record_separately.audio)
                     .map(|s| s.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -5394,7 +5394,7 @@ impl StudioUi {
                     filters,
                     selected_filter,
                     sync_offset: r.audio.sync_offset_ms,
-                    record_separately: r.record_separately,
+                    record_separately: r.record_separately.audio,
                     global: r.global,
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,

@@ -20,8 +20,8 @@ use rbs_api::{ApiServer, TokenStore};
 use rbs_app::edit_history::EditKind;
 use rbs_app::studio_host::protection::SystemProbeFactory;
 use rbs_app::studio_host::{
-    Command, CropRegion, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
-    SourceStatus, StudioHost, Update,
+    Command, CropRegion, Fault, HostConfig, RecordPatch, RecordRequest, RecordingUpdate,
+    SourceKind, SourceRow, SourceStatus, StudioHost, Update,
 };
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
@@ -42,6 +42,7 @@ use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::protection::{Probed, SystemProbe, VolumeKey, VolumeSpace};
 use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
+use rbs_scene::model::VideoAs;
 
 /// Hang guard only: every wait ends as soon as its update arrives.
 const LIMIT: Duration = Duration::from_secs(20);
@@ -705,7 +706,7 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
         .find(|r| r.kind == Some(SourceKind::AudioInput))
         .unwrap()
         .clone();
-    assert!(rows.iter().all(|r| !r.record_separately));
+    assert!(rows.iter().all(|r| r.record_separately.is_none()));
 
     // Nothing marked: one file, as before.
     let plain = dir.join("plain.mkv");
@@ -717,10 +718,11 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
 
     host.send(Command::SetRecordSeparately {
         id: mic.id,
-        enabled: true,
+        patch: RecordPatch::enabled(true),
     });
     rows_where(&rx, |r| {
-        r.iter().any(|r| r.id == mic.id && r.record_separately)
+        r.iter()
+            .any(|r| r.id == mic.id && r.record_separately.audio)
     });
 
     // Marked, `iso` off (as `record.start_to_file` and `iso: false` ask): still one file.
@@ -806,8 +808,91 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
     // The mark is one undo step.
     host.send(Command::Undo);
     rows_where(&rx, |r| {
-        r.iter().any(|r| r.id == mic.id && !r.record_separately)
+        r.iter()
+            .any(|r| r.id == mic.id && r.record_separately.is_none())
     });
+
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR-0086 step 3.5: a screen marked to record separately gets its own video file
+/// next to the master, in the recording's container, listed in the manifest; a
+/// microphone cannot be marked for a picture, nor a screen as images.
+#[test]
+fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-iso-video-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx, display, mic) = marked(gpu, &clock, None);
+
+    for (id, patch) in [
+        (
+            mic.id,
+            RecordPatch {
+                video: Some(true),
+                ..RecordPatch::default()
+            },
+        ),
+        (
+            display.id,
+            RecordPatch {
+                video: Some(true),
+                video_as: Some(VideoAs::Image),
+                ..RecordPatch::default()
+            },
+        ),
+    ] {
+        host.send(Command::SetRecordSeparately { id, patch });
+        next(&rx, |u| match u {
+            Update::Error(why) => Some(why),
+            Update::Sources(r) => panic!("a refused mark changed the rows: {r:?}"),
+            _ => None,
+        });
+    }
+    host.send(Command::SetRecordSeparately {
+        id: display.id,
+        patch: RecordPatch::enabled(true),
+    });
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == display.id && r.record_separately.video)
+    });
+
+    let folder = dir.join("take");
+    host.send(Command::StartRecording(with_tracks(
+        dir.join("take.mkv"),
+        None,
+    )));
+    match recording(&rx) {
+        RecordingUpdate::Started { path, separate, .. } => {
+            assert_eq!(path, folder.join("master.mkv"));
+            assert_eq!(separate.len(), 2, "{separate:?}");
+            assert!(separate.contains(&display.name), "{separate:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let manifest = std::fs::read_to_string(folder.join("recording.rbs.toml")).unwrap();
+    assert!(manifest.contains("role = \"video\""), "{manifest}");
+    let videos: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "mkv"))
+        .filter(|p| p.file_stem().is_some_and(|s| s != "master"))
+        .collect();
+    assert_eq!(videos.len(), 1, "{videos:?}");
+    let name = videos[0].file_name().unwrap().to_str().unwrap().to_owned();
+    assert!(
+        manifest.contains(&format!("name = \"{name}\"")),
+        "{manifest}"
+    );
+    match stop_recording(&host, &rx, &clock) {
+        RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
+        other => panic!("{other:?}"),
+    }
+    let file = std::fs::read(&videos[0]).unwrap();
+    assert!(file.starts_with(HEADER) && file.ends_with(TRAILER));
 
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
@@ -851,10 +936,11 @@ fn marked(
     let (display, mic) = (find(SourceKind::Screen), find(SourceKind::AudioInput));
     host.send(Command::SetRecordSeparately {
         id: mic.id,
-        enabled: true,
+        patch: RecordPatch::enabled(true),
     });
     rows_where(&rx, |r| {
-        r.iter().any(|r| r.id == mic.id && r.record_separately)
+        r.iter()
+            .any(|r| r.id == mic.id && r.record_separately.audio)
     });
     (host, rx, display, mic)
 }
@@ -878,7 +964,7 @@ fn only_wav(folder: &std::path::Path) -> PathBuf {
 
 /// ADR-0086 decision 5 and ADR-0055: a start that panics after the master started
 /// leaves no track running; a master that cannot start removes the folder and the
-/// tracks; a picture source cannot be marked in 1.46; deleting the marked source
+/// tracks; a picture source cannot be marked for sound; deleting the marked source
 /// during the take ends cleanly.
 #[test]
 fn separate_files_clean_up_after_a_refused_or_panicked_start() {
@@ -888,10 +974,13 @@ fn separate_files_clean_up_after_a_refused_or_panicked_start() {
     let clock = TestClock::new();
     let (host, rx, display, mic) = marked(gpu, &clock, Some(Fault::AfterOutputStart));
 
-    // A picture source is refused and stays unmarked.
+    // A picture source has no sound of its own to mark.
     host.send(Command::SetRecordSeparately {
         id: display.id,
-        enabled: true,
+        patch: RecordPatch {
+            audio: Some(true),
+            ..RecordPatch::default()
+        },
     });
     next(&rx, |u| match u {
         Update::Error(why) => Some(why),

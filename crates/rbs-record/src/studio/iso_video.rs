@@ -81,6 +81,13 @@ pub struct IsoVideoStart {
     pub image_dir: Option<PathBuf>,
     /// `t0` on the master clock: each image's `at_ns` is its tick's time from here.
     pub t0: Timestamp,
+    /// Most video files to open ([`crate::MAX_ISO_VIDEO`] by default). Marked sources
+    /// past it, in source id order, are skipped ([`IsoSkip::Limit`]) and listed in
+    /// [`IsoVideoStarted::skipped`]. Image tracks are not counted.
+    pub max_video: usize,
+    /// Skips a marked source that has no picture yet ([`IsoSkip::NoPicture`]) instead
+    /// of refusing the start with [`IsoError::NoPicture`].
+    pub skip_no_picture: bool,
 }
 
 impl IsoVideoStart {
@@ -98,6 +105,8 @@ impl IsoVideoStart {
             include_filters: false,
             image_dir: None,
             t0: Timestamp::ZERO,
+            max_video: crate::iso::MAX_ISO_VIDEO,
+            skip_no_picture: false,
         }
     }
 }
@@ -147,6 +156,30 @@ pub struct IsoVideoStarted {
     pub tracks: Vec<IsoVideoTrack>,
     /// The image tracks of still sources, in source id order.
     pub images: Vec<IsoImageTrack>,
+    /// Marked sources left out, in source id order, with the reason.
+    pub skipped: Vec<IsoSkipped>,
+}
+
+/// A marked picture source [`super::Studio::start_iso_video`] left out.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsoSkipped {
+    /// The source.
+    pub source: SourceId,
+    /// What it would have been: [`IsoRole::Video`] or [`IsoRole::Image`].
+    pub role: IsoRole,
+    /// Why it was left out.
+    pub reason: IsoSkip,
+}
+
+/// Why a marked picture source was left out of a start.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsoSkip {
+    /// More video files than [`IsoVideoStart::max_video`].
+    Limit,
+    /// No picture yet, with [`IsoVideoStart::skip_no_picture`].
+    NoPicture,
 }
 
 pub(super) struct IsoVideoRun {
@@ -223,8 +256,10 @@ impl super::Studio {
             return Ok(IsoVideoStarted {
                 tracks: Vec::new(),
                 images: Vec::new(),
+                skipped: Vec::new(),
             });
         }
+        let mut skipped = Vec::new();
         if !marked.is_empty() && scheme_of(&start.folder_url).is_none() {
             return Err(RecordError::InvalidUrl(start.folder_url.clone()));
         }
@@ -247,12 +282,21 @@ impl super::Studio {
                 self.binder.chain_tail(track.source).map(|(node, _)| node)
             } else {
                 self.binder.source_node(track.source)
-            }
-            .ok_or_else(no_picture)?;
+            };
             let picture = self
                 .picture_size(track.source)
-                .filter(|(w, h)| *w > 0 && *h > 0)
-                .ok_or_else(no_picture)?;
+                .filter(|(w, h)| *w > 0 && *h > 0);
+            let (Some(producer), Some(picture)) = (producer, picture) else {
+                if start.skip_no_picture {
+                    skipped.push(IsoSkipped {
+                        source: track.source,
+                        role: IsoRole::Image,
+                        reason: IsoSkip::NoPicture,
+                    });
+                    continue;
+                }
+                return Err(no_picture());
+            };
             image_taps.push(Tap {
                 source: track.source,
                 producer,
@@ -272,18 +316,37 @@ impl super::Studio {
                 })
             };
             // ADR-0119 decision 1: the source's own picture unless filters are asked for.
-            let (producer, is_filter) = if start.include_filters {
+            let producer = if start.include_filters {
                 self.binder.chain_tail(track.source)
             } else {
                 self.binder
                     .source_node(track.source)
                     .map(|node| (node, false))
-            }
-            .ok_or_else(no_picture)?;
+            };
             let picture = self
                 .picture_size(track.source)
-                .filter(|(w, h)| *w > 0 && *h > 0)
-                .ok_or_else(no_picture)?;
+                .filter(|(w, h)| *w > 0 && *h > 0);
+            let (Some((producer, is_filter)), Some(picture)) = (producer, picture) else {
+                if start.skip_no_picture {
+                    skipped.push(IsoSkipped {
+                        source: track.source,
+                        role: IsoRole::Video,
+                        reason: IsoSkip::NoPicture,
+                    });
+                    continue;
+                }
+                return Err(no_picture());
+            };
+            // In source id order: the first `max_video` that can open are kept
+            // (ADR-0087 decision 5).
+            if taps.len() >= start.max_video {
+                skipped.push(IsoSkipped {
+                    source: track.source,
+                    role: IsoRole::Video,
+                    reason: IsoSkip::Limit,
+                });
+                continue;
+            }
             taps.push(Tap {
                 source: track.source,
                 producer,
@@ -291,6 +354,14 @@ impl super::Studio {
                 normalise: !is_filter,
                 picture,
                 file_name: format!("{}.{}", track.file_name, ext),
+            });
+        }
+        if taps.is_empty() && image_taps.is_empty() {
+            skipped.sort_by_key(|s| s.source);
+            return Ok(IsoVideoStarted {
+                tracks: Vec::new(),
+                images: Vec::new(),
+                skipped,
             });
         }
         let period = self.fps.frame_duration();
@@ -354,7 +425,12 @@ impl super::Studio {
         let (nodes, tracks, images, relinks) =
             self.install_video(&taps, chains, &image_taps, images, sinks.as_ref(), start)?;
         self.iso_video = Some(IsoVideoRun { nodes, relinks });
-        Ok(IsoVideoStarted { tracks, images })
+        skipped.sort_by_key(|s| s.source);
+        Ok(IsoVideoStarted {
+            tracks,
+            images,
+            skipped,
+        })
     }
 
     /// Links each running track to its source's current producer, after the binder

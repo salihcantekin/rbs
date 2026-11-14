@@ -12,7 +12,7 @@ use std::fmt;
 
 use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};
 use rbs_scene::SceneCollection;
-use rbs_scene::model::{RecordSeparately, SourceId};
+use rbs_scene::model::{RecordSeparately, SourceId, VideoAs};
 use rbs_sources::types::{SourceClass, class_of};
 
 /// Most separate video files in one recording (ADR-0086).
@@ -36,7 +36,7 @@ pub enum IsoRole {
 }
 
 impl IsoRole {
-    /// The manifest role: `"video"` or `"audio"`.
+    /// The manifest role: `"video"`, `"audio"` or `"image"`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Video => "video",
@@ -111,6 +111,14 @@ pub enum IsoError {
         /// Its display name.
         name: String,
     },
+    /// `video_as = image` was set on a source that is not still (ADR-0117 decision 1):
+    /// a moving picture written as images would be a slideshow, not a track.
+    ImageOnMovingSource {
+        /// The source.
+        source: SourceId,
+        /// Its display name.
+        name: String,
+    },
     /// `recording.rbs.toml` could not be written. The message has no path.
     Manifest,
     /// A still source is marked and the start names no folder for its images
@@ -150,6 +158,12 @@ impl fmt::Display for IsoError {
             Self::NotHeard { name, .. } => {
                 write!(f, "{name} is not in the program mix")
             }
+            Self::ImageOnMovingSource { name, .. } => {
+                write!(
+                    f,
+                    "{name} is not a still picture, so it cannot be recorded as images"
+                )
+            }
             Self::Manifest => f.write_str("the recording manifest could not be written"),
             Self::ImageFolder => f.write_str("no folder was given for the separate images"),
             Self::NoPicture { name, .. } => write!(f, "{name} has no picture yet"),
@@ -180,12 +194,17 @@ pub fn plan(collection: &SceneCollection) -> Result<IsoPlan, IsoError> {
             continue;
         }
         check_class(source.id, &source.name, &source.type_id, flag)?;
+        let picture = if flag.video {
+            picture_role(source.id, &source.name, &source.type_id, flag.video_as)?
+        } else {
+            IsoRole::Video
+        };
         let stem = safe_stem(&source.name, source.id);
         if flag.video && flag.audio {
             tracks.push(track(
                 source.id,
                 &source.name,
-                IsoRole::Video,
+                picture,
                 &take_name(&mut used, &format!("{stem}-video"), source.id),
             ));
             tracks.push(track(
@@ -195,17 +214,10 @@ pub fn plan(collection: &SceneCollection) -> Result<IsoPlan, IsoError> {
                 &take_name(&mut used, &format!("{stem}-audio"), source.id),
             ));
         } else if flag.video {
-            // ADR-0117 decisions 1 and 2 (`auto`): a still source's picture is
-            // written as images. Asked of the class, never of a type id.
-            let role = if class_of(&source.type_id) == Some(SourceClass::Still) {
-                IsoRole::Image
-            } else {
-                IsoRole::Video
-            };
             tracks.push(track(
                 source.id,
                 &source.name,
-                role,
+                picture,
                 &take_name(&mut used, &stem, source.id),
             ));
         } else {
@@ -238,6 +250,28 @@ fn track(source: SourceId, source_name: &str, role: IsoRole, file_name: &str) ->
         source_name: source_name.to_owned(),
         role,
         file_name: file_name.to_owned(),
+    }
+}
+
+/// The form of a source's picture track (ADR-0117 decisions 1 and 2): `auto` is
+/// images for a still source and a video file otherwise. Asked of the class, never of
+/// a type id.
+fn picture_role(
+    source: SourceId,
+    name: &str,
+    type_id: &rbs_graph::node::NodeTypeId,
+    video_as: VideoAs,
+) -> Result<IsoRole, IsoError> {
+    let still = class_of(type_id) == Some(SourceClass::Still);
+    match video_as {
+        VideoAs::Video => Ok(IsoRole::Video),
+        VideoAs::Image if !still => Err(IsoError::ImageOnMovingSource {
+            source,
+            name: name.to_owned(),
+        }),
+        VideoAs::Image => Ok(IsoRole::Image),
+        _ if still => Ok(IsoRole::Image),
+        _ => Ok(IsoRole::Video),
     }
 }
 
@@ -375,7 +409,7 @@ mod tests {
     use super::*;
     use rbs_graph::node::NodeTypeId;
     use rbs_scene::model::{RecordSeparately, Settings, SourceId};
-    use rbs_sources::types::{AUDIO_INPUT_SOURCE, DISPLAY_SOURCE, MEDIA_SOURCE};
+    use rbs_sources::types::{AUDIO_INPUT_SOURCE, COLOR_SOURCE, DISPLAY_SOURCE, MEDIA_SOURCE};
 
     fn source(col: &mut SceneCollection, name: &str, type_id: &str) -> SourceId {
         col.add_source(name, NodeTypeId::new(type_id), Settings::new())
@@ -464,6 +498,33 @@ mod tests {
         assert!(matches!(
             plan(&col),
             Err(IsoError::TooManyVideo { count: 17 })
+        ));
+    }
+
+    #[test]
+    fn the_picture_form_follows_video_as_and_images_need_a_still_source() {
+        let form = |type_id: &str, video_as: VideoAs| {
+            let mut col = SceneCollection::new();
+            let id = source(&mut col, "S", type_id);
+            col.set_source_record_separately(
+                id,
+                RecordSeparately::new(true, false).with_video_as(video_as),
+            )
+            .unwrap();
+            plan(&col).map(|p| p.tracks[0].role)
+        };
+        assert_eq!(form(COLOR_SOURCE, VideoAs::Auto), Ok(IsoRole::Image));
+        assert_eq!(form(COLOR_SOURCE, VideoAs::Image), Ok(IsoRole::Image));
+        assert_eq!(form(COLOR_SOURCE, VideoAs::Video), Ok(IsoRole::Video));
+        assert_eq!(form(DISPLAY_SOURCE, VideoAs::Auto), Ok(IsoRole::Video));
+        assert_eq!(form(DISPLAY_SOURCE, VideoAs::Video), Ok(IsoRole::Video));
+        assert!(matches!(
+            form(DISPLAY_SOURCE, VideoAs::Image),
+            Err(IsoError::ImageOnMovingSource { .. })
+        ));
+        assert!(matches!(
+            form(MEDIA_SOURCE, VideoAs::Image),
+            Err(IsoError::ImageOnMovingSource { .. })
         ));
     }
 

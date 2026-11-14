@@ -49,7 +49,7 @@ use rbs_record::{
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
     MasterAudio, RecordSeparately, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
-    Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
+    Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
 };
 use rbs_scene::{
     AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, SceneLevel, Undo, place_chrome,
@@ -395,8 +395,9 @@ pub struct SourceRow {
     pub show_for_ms: u32,
     /// Milliseconds left on a running Show cue; 0 when none.
     pub cue_remaining_ms: u32,
-    /// The source is marked to record separately (ADR-0086).
-    pub record_separately: bool,
+    /// Which feeds are marked to record separately, and the picture's form
+    /// (ADR-0086, ADR-0117).
+    pub record_separately: RecordSeparately,
 }
 
 impl PartialEq for SourceRow {
@@ -973,13 +974,13 @@ pub enum Command {
         /// Which part.
         region: CropRegion,
     },
-    /// Record the source as a file of its own from the next recording on, or stop
-    /// (ADR-0086, `source.set_record_separately`). One undo step.
+    /// Record the source's feeds as files of their own from the next recording on,
+    /// or stop (ADR-0086, ADR-0117, `source.set_record_separately`). One undo step.
     SetRecordSeparately {
         /// The source.
         id: SourceId,
-        /// On or off.
-        enabled: bool,
+        /// What changes.
+        patch: RecordPatch,
     },
     /// Capture region on the source (ADR-0103). One undo step; does not restart capture.
     SetSourceCaptureRegion {
@@ -1248,6 +1249,43 @@ pub struct RecordRequest {
     pub iso: bool,
 }
 
+/// A change to a source's separate-file marks (`source.set_record_separately`): an
+/// absent field keeps the source's value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecordPatch {
+    /// The main feed: the picture of a picture source, the sound otherwise.
+    pub enabled: Option<bool>,
+    /// The picture.
+    pub video: Option<bool>,
+    /// The sound.
+    pub audio: Option<bool>,
+    /// The picture's form; `Image` only for a still source.
+    pub video_as: Option<VideoAs>,
+}
+
+impl RecordPatch {
+    /// The main feed on or off (the Properties switch, protocol 1.46).
+    pub fn enabled(on: bool) -> Self {
+        Self {
+            enabled: Some(on),
+            ..Self::default()
+        }
+    }
+
+    fn from_api(p: &rbs_api::request::SetRecordSeparately) -> Self {
+        Self {
+            enabled: p.enabled,
+            video: p.video,
+            audio: p.audio,
+            video_as: p.video_as.map(|form| match form {
+                rbs_api::request::VideoAs::Auto => VideoAs::Auto,
+                rbs_api::request::VideoAs::Video => VideoAs::Video,
+                rbs_api::request::VideoAs::Image => VideoAs::Image,
+            }),
+        }
+    }
+}
+
 /// The separate files of the main recording (ADR-0086).
 #[derive(Debug, Clone)]
 struct IsoFiles {
@@ -1260,7 +1298,17 @@ struct IsoFiles {
     manifest: rbs_manifest::RecordingManifest,
     /// The recording's folder.
     folder: PathBuf,
+    /// The image tracks, whose pictures go into the manifest at stop (ADR-0117
+    /// decision 6).
+    images: Vec<rbs_record::IsoImageTrack>,
 }
+
+/// Most separate video files a recording writes beside its master (ADR-0087, the
+/// owner's choice of 2026-11-14): with the master's encoder, three 1080p60 files kept
+/// the master whole on an M4 Pro and four did not (ADR-0086 step 3.2). Marked sources
+/// past it are skipped, in source id order, and listed with the reason `limit`. Image
+/// and sound files are not counted. The ADR-0087 estimate replaces this number.
+pub const SEPARATE_VIDEO_LIMIT: usize = 3;
 
 /// The markers of a running recording and where its manifest goes (ADR-0089
 /// decisions 1 and 5). The recording's state on the control thread owns them.
@@ -1276,6 +1324,9 @@ struct RecordingMarkers {
     /// A recording folder's manifest exists from the start; a plain recording
     /// writes one only when it has markers.
     folder: bool,
+    /// The manifest changed since start for another reason than markers (the
+    /// pictures of image tracks), so the stop writes it.
+    dirty: bool,
 }
 
 impl RecordingMarkers {
@@ -1290,6 +1341,7 @@ impl RecordingMarkers {
                 dir: iso.folder.clone(),
                 name: rbs_manifest::FOLDER_MANIFEST.to_owned(),
                 folder: true,
+                dirty: false,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1304,18 +1356,50 @@ impl RecordingMarkers {
             dir: path.parent()?.to_path_buf(),
             name,
             folder: false,
+            dirty: false,
         })
     }
 
     /// Writes the manifest with the markers, at stop. Nothing to write is `Ok`.
     fn write(&mut self) -> Result<(), String> {
-        if !self.log.has_pending() || (!self.folder && self.log.markers().is_empty()) {
+        if !self.dirty
+            && (!self.log.has_pending() || (!self.folder && self.log.markers().is_empty()))
+        {
             return Ok(());
         }
         self.manifest.markers = self.log.markers().to_vec();
         rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
         self.log.mark_flushed();
+        self.dirty = false;
         Ok(())
+    }
+
+    /// Lists the pictures each image track wrote, with its counters, for the stop
+    /// write (ADR-0117 decision 6).
+    fn set_images(&mut self, tracks: &[rbs_record::IsoImageTrack]) {
+        for track in tracks {
+            let source = rbs_manifest::SourceRef::new(track.source.get());
+            let Some(file) = self
+                .manifest
+                .files
+                .iter_mut()
+                .find(|f| f.role == "image" && f.source == Some(source))
+            else {
+                continue;
+            };
+            file.images = track.files.entries();
+            file.image_counts = Some(rbs_manifest::ImageCounts {
+                coalesced: track
+                    .stats
+                    .coalesced
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                over_cap: track
+                    .stats
+                    .over_cap
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            });
+            self.dirty = true;
+        }
     }
 }
 
@@ -1554,8 +1638,8 @@ pub struct SourceEntry {
     pub global: bool,
     /// Per-source slide override (ADR-0100).
     pub glide: Option<rbs_scene::SourceGlide>,
-    /// Marked to record its sound as a file of its own (ADR-0086).
-    pub record_separately: bool,
+    /// Which feeds are marked to record as files of their own (ADR-0086).
+    pub record_separately: RecordSeparately,
 }
 
 /// The scenes and sources of the collection, as the Scenes panel and the source
@@ -3502,8 +3586,8 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text())),
             },
-            Command::SetRecordSeparately { id, enabled } => {
-                match self.set_record_separately(id, enabled) {
+            Command::SetRecordSeparately { id, patch } => {
+                match self.set_record_separately(id, patch) {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
                     Err(e) => notify(Update::Error(e.text().into())),
@@ -4299,6 +4383,9 @@ impl Host {
         if self.outs[slot(OutputCanvas::Main)].recording.is_none() {
             self.iso = None;
         }
+        if self.iso.is_none() && self.studio.iso_video_running() {
+            let _ = rbs_crash::contain(|| self.studio.stop_iso_video());
+        }
         if self.iso.is_none() && self.studio.iso_audio_running() {
             let _ = rbs_crash::contain(|| self.studio.stop_iso_audio());
         }
@@ -4410,16 +4497,18 @@ impl Host {
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()));
         }
-        if c == OutputCanvas::Main && r.iso && self.marks_separate_audio() {
+        if c == OutputCanvas::Main && r.iso && self.marks_separate() {
             return self.start_recording_with_tracks(c, r, profile);
         }
         self.start_master(c, canvas, r, &r.path, profile, None)
     }
 
-    /// A source of the collection is marked to record its sound separately. Picture
-    /// flags are kept and written by a later step of ADR-0086.
-    fn marks_separate_audio(&self) -> bool {
-        self.collection.sources().any(|s| s.record_separately.audio)
+    /// A source of the collection is marked to record its picture or its sound
+    /// separately.
+    fn marks_separate(&self) -> bool {
+        self.collection
+            .sources()
+            .any(|s| !s.record_separately.is_none())
     }
 
     /// The main recording with its separate audio files (ADR-0086 decisions 5 to 7):
@@ -4453,7 +4542,15 @@ impl Host {
             .map(|p| {
                 p.tracks
                     .iter()
-                    .map(|t| format!("{}.{}", t.file_name, container_ext(ContainerId::Wav)))
+                    .map(|t| match t.role {
+                        rbs_record::IsoRole::Audio => {
+                            format!("{}.{}", t.file_name, container_ext(ContainerId::Wav))
+                        }
+                        rbs_record::IsoRole::Image => {
+                            rbs_record::PngWriterNode::file_name(&t.file_name, 1)
+                        }
+                        _ => format!("{}.{}", t.file_name, container_ext(r.container)),
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -4492,8 +4589,11 @@ impl Host {
             })
             .collect();
         let mut manifest = started.manifest;
-        // Picture tracks are not written yet, so the manifest lists only real files.
-        manifest.files.retain(|f| f.role != "video");
+        // Picture tracks open once the master runs (sources draw only then); until
+        // then the manifest lists only the files that are open.
+        manifest
+            .files
+            .retain(|f| f.role != "video" && f.role != "image");
         if let Err(e) = rbs_record::write_manifest(&folder, &manifest) {
             self.studio.stop_iso_audio();
             remove_recording_folder(&folder, &planned);
@@ -4516,6 +4616,7 @@ impl Host {
             skipped,
             manifest: manifest.clone(),
             folder: folder.clone(),
+            images: Vec::new(),
         };
         let master = folder.join(&master_name);
         let result = self.start_master(c, canvas, r, &master, profile, Some(iso));
@@ -4526,6 +4627,99 @@ impl Host {
         result
     }
 
+    /// Opens the separate video files and image tracks of the main recording, once its
+    /// master runs (ADR-0086 step 3.5, ADR-0117). The take never fails here (ADR-0087
+    /// decision 7 for requests without the new start parameters): a source with no
+    /// picture, a file past [`SEPARATE_VIDEO_LIMIT`], a recording with no picture or
+    /// files that cannot open are listed in `skipped`, and the manifest is written
+    /// again with what is open.
+    fn start_separate_pictures(&mut self, files: &mut IsoFiles, r: &RecordRequest) {
+        let Ok(plan) = rbs_record::plan(&self.collection) else {
+            return;
+        };
+        let pictures: Vec<_> = plan
+            .tracks
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.role,
+                    rbs_record::IsoRole::Video | rbs_record::IsoRole::Image
+                )
+            })
+            .collect();
+        if pictures.is_empty() {
+            return;
+        }
+        let skip_all = |files: &mut IsoFiles, reason: api::SkipReason| {
+            for t in &pictures {
+                files.skipped.push(api::SkippedTrack {
+                    source: t.source.get(),
+                    role: api_track_role(t.role),
+                    reason,
+                });
+            }
+        };
+        // A WAV or FLAC take draws no picture and has no encoder settings to match.
+        let Some(video) = r.video.clone() else {
+            skip_all(files, api::SkipReason::AudioOnly);
+            return;
+        };
+        let mut start = rbs_record::IsoVideoStart::new(
+            rbs_transport_file::file_url(&files.folder),
+            r.container,
+            video,
+        );
+        start.image_dir = Some(files.folder.clone());
+        start.t0 = Timestamp::from_nanos(files.manifest.t0_ns);
+        start.max_video = SEPARATE_VIDEO_LIMIT;
+        start.skip_no_picture = true;
+        let started = match self.studio.start_iso_video(&self.adapters, &start) {
+            Ok(started) => started,
+            Err(_) => {
+                skip_all(files, api::SkipReason::OpenFailed);
+                return;
+            }
+        };
+        for s in &started.skipped {
+            files.skipped.push(api::SkippedTrack {
+                source: s.source.get(),
+                role: api_track_role(s.role),
+                reason: match s.reason {
+                    rbs_record::IsoSkip::Limit => api::SkipReason::Limit,
+                    _ => api::SkipReason::NoPicture,
+                },
+            });
+        }
+        let opened = started
+            .tracks
+            .iter()
+            .map(|t| (t.source, rbs_record::IsoRole::Video, t.file_name.clone()))
+            .chain(
+                started
+                    .images
+                    .iter()
+                    .map(|t| (t.source, rbs_record::IsoRole::Image, t.file_name.clone())),
+            );
+        for (source, role, file) in opened {
+            files.tracks.push(api::RecordTrack {
+                file: file.clone(),
+                role: api_track_role(role),
+                source: source.get(),
+            });
+            let mut entry = rbs_manifest::ManifestFile::listed(role.as_str(), &file);
+            entry.source = Some(rbs_manifest::SourceRef::new(source.get()));
+            entry.source_name = self.collection.source(source).map(|s| s.name.clone());
+            files.manifest.files.push(entry);
+        }
+        files.images = started.images;
+        files.tracks.sort_by_key(|t| t.source);
+        files.skipped.sort_by_key(|s| s.source);
+        // The start manifest named only the files open before the master. The same
+        // folder took that write a moment ago; if this one fails, the files are still
+        // valid and the stop write lists the image tracks.
+        let _ = rbs_record::write_manifest(&files.folder, &files.manifest);
+    }
+
     /// Starts the recording of `c` into `path` with `r`'s settings.
     fn start_master(
         &mut self,
@@ -4534,7 +4728,7 @@ impl Host {
         r: &RecordRequest,
         path: &Path,
         profile: Option<String>,
-        iso: Option<IsoFiles>,
+        mut iso: Option<IsoFiles>,
     ) -> Result<RecordingUpdate, String> {
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)
@@ -4567,6 +4761,11 @@ impl Host {
         out.size = if r.video.is_none() { None } else { r.size };
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
+        if started.is_ok()
+            && let Some(files) = iso.as_mut()
+        {
+            self.start_separate_pictures(files, r);
+        }
         let separate: Vec<String> = iso
             .as_ref()
             .map(|f| {
@@ -4855,8 +5054,14 @@ impl Host {
         };
         let report = self.studio.stop_output(id);
         // The separate files end with their master (ADR-0086 decision 5).
-        if c == OutputCanvas::Main && self.iso.take().is_some() {
+        if c == OutputCanvas::Main
+            && let Some(files) = self.iso.take()
+        {
+            self.studio.stop_iso_video();
             self.studio.stop_iso_audio();
+            if let Some(markers) = self.outs[slot(c)].markers.as_mut() {
+                markers.set_images(&files.images);
+            }
         }
         inject!(self, Fault::InRecordingStop);
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
@@ -7291,36 +7496,65 @@ impl Host {
         Ok(true)
     }
 
-    /// Marks `id` to record its sound separately from the next recording on, or clears
-    /// the mark (ADR-0086 decision 2, protocol 1.46). One undo step; `Ok(false)` when
-    /// nothing changed.
-    fn set_record_separately(&mut self, id: SourceId, enabled: bool) -> Result<bool, Refusal> {
+    /// Changes which of `id`'s feeds record separately from the next recording on
+    /// (ADR-0086 decision 2, ADR-0117 decision 1; protocol 1.46 and 1.52). One undo
+    /// step; `Ok(false)` when nothing changed.
+    fn set_record_separately(&mut self, id: SourceId, patch: RecordPatch) -> Result<bool, Refusal> {
         let source = self
             .collection
             .source(id)
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
-        // Picture files are a later step (ADR-0086 step 3) with its own minor, so 1.46
-        // marks sound only: a picture source is refused, and a source with both (a
-        // media file) records its sound. A picture mark already in the collection (saved
-        // by a later version, or edited by hand) is kept as it is when the sound mark
-        // changes, set or cleared.
-        let flag = if !enabled {
-            RecordSeparately::new(source.record_separately.video, false)
-        } else {
-            match types::class_of(&source.type_id) {
-                Some(
-                    types::SourceClass::Capture(_)
+        let class = types::class_of(&source.type_id);
+        let picture_only = matches!(
+            class,
+            Some(
+                types::SourceClass::Capture(_)
                     | types::SourceClass::Still
-                    | types::SourceClass::Browser,
-                ) => {
-                    return Err(Refusal::Invalid(
-                        "Only sound sources record separately for now; picture files come in a later version."
-                            .into(),
-                    ));
-                }
-                _ => RecordSeparately::new(source.record_separately.video, true),
+                    | types::SourceClass::Browser
+            )
+        );
+        let sound_only = matches!(class, Some(types::SourceClass::Audio(_)));
+        let mut flag = source.record_separately;
+        // `enabled` is the main feed: the picture of a picture source, the sound of
+        // anything else (a media file records its sound, as in 1.46).
+        if let Some(on) = patch.enabled {
+            if picture_only {
+                flag.video = on;
+            } else {
+                flag.audio = on;
             }
-        };
+        }
+        if let Some(on) = patch.video {
+            if on && sound_only {
+                return Err(Refusal::Invalid(format!(
+                    "{} has no picture to record separately.",
+                    source.name
+                )));
+            }
+            flag.video = on;
+        }
+        if let Some(on) = patch.audio {
+            if on && picture_only {
+                return Err(Refusal::Invalid(format!(
+                    "{} has no sound of its own to record separately.",
+                    source.name
+                )));
+            }
+            flag.audio = on;
+        }
+        if let Some(form) = patch.video_as {
+            if form == VideoAs::Image && class != Some(types::SourceClass::Still) {
+                return Err(Refusal::Invalid(format!(
+                    "{} is not a still picture, so it cannot be recorded as images.",
+                    source.name
+                )));
+            }
+            flag.video_as = form;
+        }
+        // The form is kept only while the picture is marked (scene model).
+        if !flag.video {
+            flag.video_as = VideoAs::Auto;
+        }
         if source.record_separately == flag {
             return Ok(false);
         }
@@ -7977,7 +8211,7 @@ impl Host {
                 kind: SourceKind::of(&s.type_id),
                 global: self.global_item(s.id).is_some(),
                 glide: s.glide,
-                record_separately: s.record_separately.audio,
+                record_separately: s.record_separately,
             })
             .collect();
         sources.sort_by_key(|s| s.name.to_lowercase());
@@ -8775,8 +9009,7 @@ impl Host {
                     id: s.id,
                     item: item.id,
                     companion_of: s.companion_of(),
-                    // 1.46 writes sound files only, so only a sound mark is shown as marked.
-                    record_separately: s.record_separately.audio,
+                    record_separately: s.record_separately,
                     name: s.name.clone(),
                     kind,
                     layout: kind
@@ -10233,7 +10466,7 @@ impl ApiTarget<'_> {
             }
             C::SourceSetRecordSeparately(p) => {
                 if host
-                    .set_record_separately(SourceId::from_raw(p.source), p.enabled)
+                    .set_record_separately(SourceId::from_raw(p.source), RecordPatch::from_api(&p))
                     .map_err(|e| refused(&e))?
                 {
                     host.apply(notify);
@@ -10768,6 +11001,22 @@ fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, String> {
     }
 }
 
+fn api_track_role(role: rbs_record::IsoRole) -> api::TrackRole {
+    match role {
+        rbs_record::IsoRole::Audio => api::TrackRole::Audio,
+        rbs_record::IsoRole::Image => api::TrackRole::Image,
+        _ => api::TrackRole::Video,
+    }
+}
+
+fn api_video_as(form: VideoAs) -> rbs_api::request::VideoAs {
+    match form {
+        VideoAs::Video => rbs_api::request::VideoAs::Video,
+        VideoAs::Image => rbs_api::request::VideoAs::Image,
+        _ => rbs_api::request::VideoAs::Auto,
+    }
+}
+
 fn api_source(row: &SourceRow) -> api::SourceInfo {
     api::SourceInfo {
         item: Some(row.item.get()),
@@ -10787,7 +11036,12 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         mixer_hidden: row.audio.mixer_hidden,
         monitor: monitor::api_mode(row.audio.monitor),
         companion_of: row.companion_of.map(|c| c.get()),
-        record_separately: row.record_separately,
+        record_separately: !row.record_separately.is_none(),
+        record_tracks: (!row.record_separately.is_none()).then(|| api::RecordTracks {
+            video: row.record_separately.video,
+            audio: row.record_separately.audio,
+            video_as: api_video_as(row.record_separately.video_as),
+        }),
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         glide: row.glide.map(api_glide_source),

@@ -178,16 +178,42 @@ pub struct SetSourceRegion {
     pub region: Option<[u32; 4]>,
 }
 
-/// `source.set_record_separately` (protocol 1.46, ADR-0086). One undo step. The
-/// per-track options of ADR-0086 decision 2 are later minors, so 1.46 refuses them as
-/// unknown fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `source.set_record_separately` (protocol 1.46, ADR-0086; `video`, `audio` and
+/// `video_as` 1.52, ADR-0117). One undo step. A patch: an absent field keeps the
+/// source's value. The per-track options of ADR-0086 decision 2 are later minors, so
+/// they are refused as unknown fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetRecordSeparately {
     /// The source's id.
     pub source: u32,
-    /// Record it as a file of its own from the next recording on.
-    pub enabled: bool,
+    /// Record its main feed as a file of its own from the next recording on: the
+    /// sound of a sound source or of a media file (as in 1.46), the picture of a
+    /// picture source (1.52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Record its picture separately (1.52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<bool>,
+    /// Record its sound separately (1.52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<bool>,
+    /// The picture's form (1.52, ADR-0117): `image` only for a still source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_as: Option<VideoAs>,
+}
+
+/// The form of a separate picture file (protocol 1.52, ADR-0117 decision 1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoAs {
+    /// Images for a still source, a video file otherwise.
+    #[default]
+    Auto,
+    /// A video file.
+    Video,
+    /// PNG images, one per change; a still source only.
+    Image,
 }
 
 /// A marker colour (protocol 1.50, ADR-0089 decision 2): a fixed, semantic set that

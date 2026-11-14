@@ -111,6 +111,11 @@ fn source() -> SourceInfo {
         muted: true,
         mixer_hidden: true,
         record_separately: true,
+        record_tracks: Some(rbs_api::types::RecordTracks {
+            video: true,
+            audio: false,
+            video_as: rbs_api::request::VideoAs::Image,
+        }),
         monitor: MonitorMode::Only,
         filters: vec![FilterInfo {
             id: 2,
@@ -430,7 +435,15 @@ fn every_request() -> Vec<Request> {
         c(Command::SourceGetRegion(SourceRef { source: 3 })),
         c(Command::SourceSetRecordSeparately(SetRecordSeparately {
             source: 3,
-            enabled: true,
+            enabled: Some(true),
+            ..SetRecordSeparately::default()
+        })),
+        c(Command::SourceSetRecordSeparately(SetRecordSeparately {
+            source: 3,
+            video: Some(true),
+            audio: Some(false),
+            video_as: Some(rbs_api::request::VideoAs::Image),
+            ..SetRecordSeparately::default()
         })),
         c(Command::MarkerAdd(rbs_api::request::MarkerAdd {
             label: Some("Good".into()),
@@ -1705,8 +1718,27 @@ fn separate_files_round_trip_and_later_options_are_refused() {
         ),
         Ok(Command::SourceSetRecordSeparately(SetRecordSeparately {
             source: 4,
-            enabled: true,
+            enabled: Some(true),
+            ..SetRecordSeparately::default()
         }))
+    );
+    // 1.52: the feeds and the picture's form, each optional.
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"source.set_record_separately","params":{"source":4,"video":true,"video_as":"image"}}"#
+        ),
+        Ok(Command::SourceSetRecordSeparately(SetRecordSeparately {
+            source: 4,
+            video: Some(true),
+            video_as: Some(rbs_api::request::VideoAs::Image),
+            ..SetRecordSeparately::default()
+        }))
+    );
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"source.set_record_separately","params":{"source":4,"video_as":"gif"}}"#
+        ),
+        Err(ErrorKind::InvalidParams)
     );
     // Per-track options are later minors (ADR-0086 decision 2).
     assert_eq!(
@@ -1769,13 +1801,31 @@ fn separate_files_round_trip_and_later_options_are_refused() {
     .unwrap();
     assert!(plain.get("tracks").is_none());
     let mut source = source();
-    source.record_separately = false;
-    assert!(
-        serde_json::to_value(&source)
-            .unwrap()
-            .get("record_separately")
-            .is_none()
+    let marked = serde_json::to_value(&source).unwrap();
+    assert_eq!(
+        marked["record_tracks"],
+        json!({"video": true, "video_as": "image"})
     );
+    source.record_separately = false;
+    source.record_tracks = None;
+    let plain = serde_json::to_value(&source).unwrap();
+    assert!(plain.get("record_separately").is_none());
+    assert!(plain.get("record_tracks").is_none());
+    // Roles and reasons of 1.52.
+    let started = serde_json::to_value(rbs_api::types::RecordTrack {
+        file: "Logo.png".into(),
+        role: rbs_api::types::TrackRole::Image,
+        source: 2,
+    })
+    .unwrap();
+    assert_eq!(started["role"], "image");
+    let skipped = serde_json::to_value(rbs_api::types::SkippedTrack {
+        source: 2,
+        role: rbs_api::types::TrackRole::Video,
+        reason: rbs_api::types::SkipReason::Limit,
+    })
+    .unwrap();
+    assert_eq!(skipped["reason"], "limit");
 }
 
 #[test]
