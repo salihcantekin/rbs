@@ -3568,6 +3568,9 @@ export component FeatureSection inherits VerticalLayout {
 export component SettingRow inherits Rectangle {
     in property <string> label;
     in property <string> help;
+    // The longer explanation behind an info hint after the label (ADR-0094 row
+    // anatomy); empty: no hint.
+    in property <string> hint;
     // The help is a problem (error colour), not an explanation.
     in property <bool> help-is-problem;
     // The help is a warning (warning colour). The words say so; colour is not
@@ -3585,7 +3588,7 @@ export component SettingRow inherits Rectangle {
     in property <bool> fill: true;
     // The control is under the name.
     out property <bool> stacked: root.width < Tokens.size-row-stack-below || controls.min-width > root.width / 2;
-    property <bool> has-info: root.label != "" || root.help != "";
+    property <bool> has-info: root.label != "" || root.help != "" || root.hint != "";
     property <length> column: max(controls.min-width, min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2));
     property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
     property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
@@ -3603,13 +3606,30 @@ export component SettingRow inherits Rectangle {
         y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
         height: self.preferred-height;
         spacing: Tokens.space-1;
-        if root.label != "": Text {
+        if root.label != "" && root.hint == "": Text {
             text: root.label;
             color: root.enabled ? Theme.text-primary : Theme.text-disabled;
             font-size: Tokens.type-label-size;
             font-weight: Tokens.type-label-weight;
             wrap: word-wrap;
             accessible-role: none;
+        }
+        if root.hint != "": HorizontalLayout {
+            spacing: Tokens.space-1;
+            alignment: start;
+            Text {
+                text: root.label;
+                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-label-weight;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            InfoHint {
+                label: root.label;
+                text: root.hint;
+            }
         }
         if root.help != "": Text {
             text: root.help;
