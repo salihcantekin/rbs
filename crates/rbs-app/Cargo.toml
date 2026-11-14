@@ -101,6 +101,8 @@ rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 # Stand-in media decoder until an FFmpeg adapter ships (ADR-0108 / ADR-0007).
 rbs-media-decode-test = { path = "../rbs-media-decode-test" }
+# Free disk space and memory for recording protection (ADR-0090 decision 11).
+rbs-system-probe = { path = "../rbs-system-probe" }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 # The system file dialog for importing and exporting output profiles and scene

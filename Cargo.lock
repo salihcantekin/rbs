@@ -4357,6 +4357,7 @@ dependencies = [
  "rbs-remote-settings",
  "rbs-scene",
  "rbs-sources",
+ "rbs-system-probe",
  "rbs-thread-os",
  "rbs-transport",
  "rbs-transport-file",
@@ -5048,6 +5049,14 @@ dependencies = [
  "rbs-nodes",
  "rbs-params",
  "rbs-scene",
+]
+
+[[package]]
+name = "rbs-system-probe"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

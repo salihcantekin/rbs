@@ -4413,6 +4413,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.autosave = autosave;
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
+        config.system_probe = Some(studio_host::protection::SystemProbeFactory::os());
         config.recent_dir = Some(ctx.app.borrow().config.clone());
         config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
         // The monitor device belongs to this computer (ADR-0097); a file that cannot be
