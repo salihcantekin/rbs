@@ -47,6 +47,10 @@ const MAX_FRAGMENT_BYTES: usize = 1 << 30;
 /// Samples after which a fragment ends early (a stream of equal timestamps would
 /// otherwise never end it).
 const MAX_FRAGMENT_SAMPLES: usize = 1 << 16;
+/// How far a PCM packet's dts may be from the end of the frames already in its
+/// fragment before the fragment ends at it (the frames of a fragment are laid end to
+/// end, so a larger gap or overlap would shift the audio inside it).
+const PCM_TOLERANCE_NS: i128 = 2_000_000;
 /// Largest pts - dts accepted: keeps the signed 32-bit composition offset in range at
 /// any timescale up to 384 kHz.
 const MAX_COMPOSITION_DELAY: Duration = Duration::from_secs(60);
@@ -115,9 +119,18 @@ struct Track {
     duration_at: usize,
     /// Latest presentation end seen, in master-clock nanoseconds.
     present_end: Option<i128>,
+    /// PCM: payload bytes in the fragment being collected.
+    pcm_bytes: usize,
+    /// PCM: media time (ticks) where the frames written so far end. A fragment never
+    /// starts before it, so decode time never goes back.
+    pcm_end: u64,
 }
 
 pub(crate) struct Fmp4Muxer {
+    /// MOV: `tfhd` without `default-base-is-moof` (an ISO `iso5` brand feature); the
+    /// first `traf`'s data offset is from the `moof` start and each later one's from
+    /// the end of the data before it, which every QuickTime reader follows.
+    qt: bool,
     tracks: Vec<Track>,
     has_video: bool,
     header: Vec<u8>,
@@ -542,6 +555,8 @@ impl Fmp4Muxer {
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
+                        pcm_bytes: 0,
+                        pcm_end: 0,
                     };
                     track.duration_at = trak(
                         &mut traks,
@@ -605,6 +620,8 @@ impl Fmp4Muxer {
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
+                        pcm_bytes: 0,
+                        pcm_end: 0,
                     };
                     track.duration_at = trak(
                         &mut traks,
@@ -649,6 +666,8 @@ impl Fmp4Muxer {
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
+                        pcm_bytes: 0,
+                        pcm_end: 0,
                     };
                     let asc = stream.extradata.clone();
                     track.duration_at = trak(
@@ -664,13 +683,19 @@ impl Fmp4Muxer {
                 (CodecId::Pcm, StreamParams::Audio { format, .. }) if qt => {
                     if stream.bitstream != BitstreamFormat::Raw {
                         return Err(CreateError::InvalidConfig(format!(
-                            "PCM in {:?} framing",
+                            "pcm in {:?} framing",
                             stream.bitstream
                         )));
                     }
                     let bits = pcm_bits(&stream.extradata)?;
                     let rate = format.sample_rate.hz();
                     let channels = format.channels.channels() as u16;
+                    if channels > 2 {
+                        // Needs a `chan` layout atom so QuickTime knows the speakers.
+                        return Err(CreateError::Unsupported {
+                            what: format!("pcm with {channels} channels in MOV"),
+                        });
+                    }
                     let frame_bytes = u32::from(channels) * u32::from(bits / 8);
                     let mut track = Track {
                         id,
@@ -687,6 +712,8 @@ impl Fmp4Muxer {
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
+                        pcm_bytes: 0,
+                        pcm_end: 0,
                     };
                     track.duration_at = trak(
                         &mut traks,
@@ -748,6 +775,7 @@ impl Fmp4Muxer {
         boxes::close(&mut header, moov);
 
         Ok(Self {
+            qt,
             has_video: tracks.iter().any(|t| t.kind.is_video()),
             tracks,
             header,
@@ -768,8 +796,7 @@ impl Fmp4Muxer {
     /// Media time of `t` in `timescale` units from the origin, rounded to the nearest.
     /// `write` refuses timestamps before the origin.
     fn media_time(&self, t: Timestamp, timescale: u32) -> u64 {
-        let since = nanos(t) - self.origin.unwrap_or_else(|| nanos(t));
-        ticks(u128::try_from(since).unwrap_or(0), timescale)
+        media_time(self.origin, t, timescale)
     }
 
     /// Emits the collected samples as one `moof` + `mdat` chunk. `next` is the track
@@ -816,23 +843,29 @@ impl Fmp4Muxer {
         boxes::u32(&mut chunk, self.sequence);
         boxes::close(&mut chunk, mfhd);
         let mut data_offset = moof_size + MDAT_HEADER;
+        let base_flag = if self.qt { 0 } else { DEFAULT_BASE_IS_MOOF };
+        let mut first_traf = true;
         for (index, track) in self.tracks.iter().enumerate() {
             if track.samples.is_empty() {
                 continue;
             }
+            // MOV: relative to the end of the previous `traf`'s data (see `qt`).
+            let run_offset = if self.qt && !first_traf {
+                0
+            } else {
+                data_offset
+            };
+            first_traf = false;
             let following = next.and_then(|(i, dts)| (i == index).then_some(dts));
             let traf = boxes::open(&mut chunk, b"traf");
             let base = self.media_time(track.samples[0].dts, track.timescale);
             if let Kind::Pcm { frame_bytes } = track.kind {
                 // One sample per PCM frame, all with the defaults: duration 1 tick at
                 // the sample rate, `frame_bytes` long, sync. The packets of a fragment
-                // are laid end to end from the first one's time.
-                let tfhd = boxes::open_full(
-                    &mut chunk,
-                    b"tfhd",
-                    0,
-                    DEFAULT_BASE_IS_MOOF | TFHD_PCM_DEFAULTS,
-                );
+                // are laid end to end from the first one's time (`write` ends the
+                // fragment at a gap or overlap), never before the previous end.
+                let base = base.max(track.pcm_end);
+                let tfhd = boxes::open_full(&mut chunk, b"tfhd", 0, base_flag | TFHD_PCM_DEFAULTS);
                 boxes::u32(&mut chunk, track.id);
                 boxes::u32(&mut chunk, 1);
                 boxes::u32(&mut chunk, frame_bytes);
@@ -841,17 +874,17 @@ impl Fmp4Muxer {
                 let tfdt = boxes::open_full(&mut chunk, b"tfdt", 1, 0);
                 boxes::u64(&mut chunk, base);
                 boxes::close(&mut chunk, tfdt);
-                let bytes: usize = track.samples.iter().map(|s| s.size as usize).sum();
+                let bytes = track.pcm_bytes;
                 let trun = boxes::open_full(&mut chunk, b"trun", 0, TRUN_PCM_FLAGS);
                 // Fragment payload is below MAX_FRAGMENT_BYTES, so both fit 32 bits.
                 boxes::u32(&mut chunk, (bytes / frame_bytes as usize) as u32);
-                boxes::u32(&mut chunk, data_offset as u32);
+                boxes::u32(&mut chunk, run_offset as u32);
                 boxes::close(&mut chunk, trun);
                 boxes::close(&mut chunk, traf);
                 data_offset += bytes;
                 continue;
             }
-            let tfhd = boxes::open_full(&mut chunk, b"tfhd", 0, DEFAULT_BASE_IS_MOOF);
+            let tfhd = boxes::open_full(&mut chunk, b"tfhd", 0, base_flag);
             boxes::u32(&mut chunk, track.id);
             boxes::close(&mut chunk, tfhd);
             let tfdt = boxes::open_full(&mut chunk, b"tfdt", 1, 0);
@@ -860,7 +893,7 @@ impl Fmp4Muxer {
             let trun = boxes::open_full(&mut chunk, b"trun", 1, TRUN_FLAGS);
             boxes::u32(&mut chunk, track.samples.len() as u32);
             // Below 4 GiB: see MAX_SAMPLE_BYTES and MAX_FRAGMENT_BYTES.
-            boxes::u32(&mut chunk, data_offset as u32);
+            boxes::u32(&mut chunk, run_offset as u32);
             for (i, s) in track.samples.iter().enumerate() {
                 let dts = self.media_time(s.dts, track.timescale);
                 let end_ts = sample_end(&track.samples, i, following, track.nominal);
@@ -906,7 +939,13 @@ impl Fmp4Muxer {
         } else {
             true
         };
+        let origin = self.origin;
         for track in &mut self.tracks {
+            if let (Kind::Pcm { frame_bytes }, Some(first)) = (&track.kind, track.samples.first()) {
+                let base = media_time(origin, first.dts, track.timescale).max(track.pcm_end);
+                track.pcm_end = base + (track.pcm_bytes / *frame_bytes as usize) as u64;
+            }
+            track.pcm_bytes = 0;
             track.samples.clear();
             // Keep the packet being written (after `committed`) for the next fragment.
             track.staging.copy_within(track.committed.., 0);
@@ -1067,8 +1106,20 @@ impl Muxer for Fmp4Muxer {
         // would exceed its byte or sample bound. A keyframe joins a fragment its track
         // has no samples in yet, so the fragment starts at it. Very short GOPs therefore
         // give short fragments (one per GOP); there is no minimum length.
+        // A PCM packet that does not follow the frames already in the fragment (a gap
+        // or an overlap past the tolerance) starts a new fragment at its own time.
+        let pcm_jump = match track.kind {
+            Kind::Pcm { frame_bytes } if track_has_samples => {
+                let frames = (track.pcm_bytes / frame_bytes as usize) as i128;
+                let expected = nanos(track.samples[0].dts)
+                    + frames * 1_000_000_000 / i128::from(track.timescale);
+                (nanos(dts) - expected).abs() > PCM_TOLERANCE_NS
+            }
+            _ => false,
+        };
         if let Some(start) = self.fragment_start {
             if (is_video && keyframe && track_has_samples)
+                || pcm_jump
                 || dts.saturating_since(start) >= self.fragment
                 || self.fragment_bytes + size > MAX_FRAGMENT_BYTES
                 || self.fragment_samples >= MAX_FRAGMENT_SAMPLES
@@ -1080,6 +1131,9 @@ impl Muxer for Fmp4Muxer {
             self.floor = Some(floor);
         }
         let track = &mut self.tracks[index];
+        if matches!(track.kind, Kind::Pcm { .. }) {
+            track.pcm_bytes += size;
+        }
         track.committed = track.staging.len();
         track.last_dts = Some(dts);
         track.samples.push(Sample {
@@ -1128,6 +1182,12 @@ impl Muxer for Fmp4Muxer {
         }
         Ok(())
     }
+}
+
+/// Media time of `t` in `timescale` units from `origin`, rounded to the nearest.
+fn media_time(origin: Option<i128>, t: Timestamp, timescale: u32) -> u64 {
+    let since = nanos(t) - origin.unwrap_or_else(|| nanos(t));
+    ticks(u128::try_from(since).unwrap_or(0), timescale)
 }
 
 /// Decode end of sample `i`: the next sample's dts, the packet that closed the

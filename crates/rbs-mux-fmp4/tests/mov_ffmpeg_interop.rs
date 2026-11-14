@@ -227,19 +227,19 @@ fn run(bits: u8, sample_fmt: &str, codec_name: &str, with_video: bool) {
 }
 
 #[test]
-#[ignore = "needs the ffmpeg command-line tool"]
-fn mov_with_h264_and_pcm_16_decodes_and_keeps_the_samples() {
+#[ignore = "slow: needs the ffmpeg command-line tool, about 4 s"]
+fn slow_mov_with_h264_and_pcm_16_decodes_and_keeps_the_samples() {
     run(16, "s16le", "pcm_s16le", true);
 }
 
 #[test]
-#[ignore = "needs the ffmpeg command-line tool"]
-fn mov_with_h264_and_pcm_24_decodes_and_keeps_the_samples() {
+#[ignore = "slow: needs the ffmpeg command-line tool, about 4 s"]
+fn slow_mov_with_h264_and_pcm_24_decodes_and_keeps_the_samples() {
     run(24, "s24le", "pcm_s24le", true);
 }
 
 #[test]
-#[ignore = "needs the ffmpeg command-line tool"]
-fn mov_with_pcm_float_only_decodes_and_keeps_the_samples() {
+#[ignore = "slow: needs the ffmpeg command-line tool, about 4 s"]
+fn slow_mov_with_pcm_float_only_decodes_and_keeps_the_samples() {
     run(32, "f32le", "pcm_f32le", false);
 }

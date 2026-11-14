@@ -781,6 +781,11 @@ mod tests {
         .unwrap();
         assert_eq!(a.container, ContainerId::Mp4Fragmented);
         assert_eq!(a.duration, Some(Duration::from_secs(30)));
+        assert_eq!(
+            container_of(Path::new("take.MOV")),
+            Ok(ContainerId::Mov),
+            "a .mov file is QuickTime"
+        );
         assert_eq!(a.size, Size::new(1280, 720));
         assert_eq!(a.fps, FrameRate::FPS_30);
         assert_eq!(

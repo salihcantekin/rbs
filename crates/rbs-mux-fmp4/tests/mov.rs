@@ -5,11 +5,12 @@
 
 use rbs_core::capability::CapabilityValue;
 use rbs_core::media::{
-    AudioFormat, BitstreamFormat, Bytes, ChunkKind, CodecId, ContainerId, EncodedPacket, MuxChunk,
-    StreamDescriptor, StreamIndex, StreamParams,
+    AudioFormat, BitstreamFormat, Bytes, ChannelLayout, ChunkKind, CodecId, ContainerId,
+    EncodedPacket, MuxChunk, StreamDescriptor, StreamIndex, StreamParams,
 };
 use rbs_core::registry::AdapterFactory;
 use rbs_core::time::Timestamp;
+use rbs_core::timing::SampleRate;
 use rbs_mux::conformance::{aac_stream, h264_stream};
 use rbs_mux::{CreateError, MuxError, MuxerConfig, MuxerFactory, caps};
 use rbs_mux_fmp4::Fmp4MuxerFactory;
@@ -214,7 +215,11 @@ fn pcm_fragments_have_one_sample_per_frame_and_no_rows() {
     let boxes = parse(&media[0].data);
     let traf = boxes[0].child(b"traf");
     let tfhd = traf.child(b"tfhd");
-    assert_eq!(tfhd.u32_at(0), 0x0002_0038, "base-is-moof + three defaults");
+    assert_eq!(
+        tfhd.u32_at(0),
+        0x0000_0038,
+        "three defaults, no base-is-moof"
+    );
     assert_eq!(tfhd.u32_at(4), 1, "track id");
     assert_eq!(tfhd.u32_at(8), 1, "duration 1 tick");
     assert_eq!(tfhd.u32_at(12), 4, "bytes per frame");
@@ -244,71 +249,199 @@ fn pcm_fragments_have_one_sample_per_frame_and_no_rows() {
     );
 }
 
-#[test]
-fn pcm_beside_video_shares_fragments() {
-    let config = MuxerConfig::new(
-        MOV,
-        vec![h264_stream(), pcm_stream(24, AudioFormat::STEREO_48K)],
-    );
-    let idr = |ms: u64, key: bool| {
-        let data = vec![0, 0, 0, 4, if key { 0x65 } else { 0x41 }, 1, 2, 3];
-        EncodedPacket::new(
-            CodecId::H264,
-            BitstreamFormat::LengthPrefixed { length_size: 4 },
-            at(ms),
-            at(ms),
-            key,
-            Bytes::from(data),
-        )
-        .unwrap()
+/// Two GOPs of one second with 24-bit stereo PCM in 20 ms packets, audio written up
+/// to each video packet; `pcm_first` puts the PCM stream first.
+fn video_and_pcm(pcm_first: bool) -> Vec<MuxChunk> {
+    let (video, audio) = if pcm_first {
+        (StreamIndex(1), StreamIndex(0))
+    } else {
+        (StreamIndex(0), StreamIndex(1))
     };
-    // Two GOPs of one second; 24-bit stereo audio in 20 ms packets (960 frames),
-    // written up to each video packet.
-    let mut chunks2 = Vec::new();
-    let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
-    muxer.begin(&mut chunks2).unwrap();
+    let pcm_desc = pcm_stream(24, AudioFormat::STEREO_48K);
+    let streams = if pcm_first {
+        vec![pcm_desc, h264_stream()]
+    } else {
+        vec![h264_stream(), pcm_desc]
+    };
+    let mut muxer = Fmp4MuxerFactory
+        .create(&MuxerConfig::new(MOV, streams))
+        .unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
     let mut next_audio = 0u64;
     for i in 0..60u64 {
         let ms = i * 1000 / 30;
         while next_audio <= ms {
             let p = pcm(next_audio, vec![0x11; 960 * 6]);
-            muxer.write(StreamIndex(1), &p, &mut chunks2).unwrap();
+            muxer.write(audio, &p, &mut chunks).unwrap();
             next_audio += 20;
         }
-        muxer
-            .write(StreamIndex(0), &idr(ms, i.is_multiple_of(30)), &mut chunks2)
-            .unwrap();
+        let key = i.is_multiple_of(30);
+        let p = EncodedPacket::new(
+            CodecId::H264,
+            BitstreamFormat::LengthPrefixed { length_size: 4 },
+            at(ms),
+            at(ms),
+            key,
+            Bytes::from(vec![0, 0, 0, 4, if key { 0x65 } else { 0x41 }, 1, 2, 3]),
+        )
+        .unwrap();
+        muxer.write(video, &p, &mut chunks).unwrap();
     }
-    muxer.finish(&mut chunks2).unwrap();
-    let media: Vec<&MuxChunk> = chunks2
-        .iter()
-        .filter(|c| matches!(c.kind, ChunkKind::Media { .. }))
-        .collect();
-    assert_eq!(media.len(), 2, "one fragment per GOP");
-    for chunk in media {
-        let boxes = parse(&chunk.data);
-        let moof = &boxes[0];
-        let trafs: Vec<&Box_> = moof
-            .children
+    muxer.finish(&mut chunks).unwrap();
+    chunks
+}
+
+/// Reads every run of a MOV fragment the way a reader without `default-base-is-moof`
+/// does: the first `traf`'s data from the `moof` start, each later one's from the end
+/// of the data before it. Returns (track id, bytes of each sample).
+fn mov_runs(chunk: &[u8]) -> Vec<(u32, Vec<Vec<u8>>)> {
+    let boxes = parse(chunk);
+    let moof = &boxes[0];
+    let mut implicit = 0usize;
+    let mut runs = Vec::new();
+    for traf in moof.children.iter().filter(|b| &b.kind == b"traf") {
+        let tfhd = traf.child(b"tfhd");
+        assert_eq!(
+            tfhd.u32_at(0) & 0x0002_0000,
+            0,
+            "no default-base-is-moof in MOV"
+        );
+        let trun = traf.child(b"trun");
+        let count = trun.u32_at(4) as usize;
+        let mut at = implicit + trun.u32_at(8) as usize;
+        let sizes: Vec<usize> = if tfhd.u32_at(0) & 0x10 != 0 {
+            vec![tfhd.u32_at(12) as usize; count]
+        } else {
+            (0..count)
+                .map(|i| trun.u32_at(12 + 16 * i + 4) as usize)
+                .collect()
+        };
+        let mut samples = Vec::new();
+        for size in sizes {
+            samples.push(chunk[at..at + size].to_vec());
+            at += size;
+        }
+        implicit = at;
+        runs.push((tfhd.u32_at(4), samples));
+    }
+    assert_eq!(
+        implicit,
+        chunk.len(),
+        "the last run ends at the end of mdat"
+    );
+    runs
+}
+
+#[test]
+fn pcm_beside_video_shares_fragments_in_either_order() {
+    for pcm_first in [false, true] {
+        let chunks = video_and_pcm(pcm_first);
+        let media: Vec<&MuxChunk> = chunks
             .iter()
-            .filter(|b| &b.kind == b"traf")
+            .filter(|c| matches!(c.kind, ChunkKind::Media { .. }))
             .collect();
-        assert_eq!(trafs.len(), 2);
-        let pcm_trun = trafs[1].child(b"trun");
-        assert_eq!(pcm_trun.payload.len(), 12);
-        let frames = pcm_trun.u32_at(4) as usize;
-        // Both data offsets land inside this chunk and the PCM run ends at its end.
-        let offset = pcm_trun.u32_at(8) as usize;
-        assert_eq!(offset + frames * 6, chunk.data.len());
-    }
-    rbs_mux::conformance::read_structure(MOV, &{
+        assert_eq!(media.len(), 2, "one fragment per GOP");
+        let (video_id, pcm_id) = if pcm_first { (2, 1) } else { (1, 2) };
+        for chunk in media {
+            let runs = mov_runs(&chunk.data);
+            assert_eq!(runs.len(), 2);
+            for (id, samples) in runs {
+                if id == video_id {
+                    assert_eq!(samples.len(), 30);
+                    assert!(
+                        samples
+                            .iter()
+                            .all(|s| s.len() == 8 && s[..4] == [0, 0, 0, 4])
+                    );
+                } else {
+                    assert_eq!(id, pcm_id);
+                    assert!(samples.iter().all(|s| s == &[0x11; 6]));
+                }
+            }
+        }
         let mut file = Vec::new();
-        for c in chunks2.iter().filter(|c| c.is_sequential()) {
+        for c in chunks.iter().filter(|c| c.is_sequential()) {
             file.extend_from_slice(&c.data);
         }
-        file
-    })
-    .unwrap();
+        rbs_mux::conformance::read_structure(MOV, &file).unwrap();
+    }
+}
+
+/// (tfdt, frames) of the PCM run of every fragment.
+fn pcm_timeline(packets: &[(u64, usize)]) -> Vec<(u64, u32)> {
+    let config = MuxerConfig::new(MOV, vec![pcm_stream(16, AudioFormat::STEREO_48K)]);
+    let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    for &(us, frames) in packets {
+        let t = Timestamp::from_nanos(3_000_000_000 + us * 1000);
+        let p = EncodedPacket::new(
+            CodecId::Pcm,
+            BitstreamFormat::Raw,
+            t,
+            t,
+            true,
+            Bytes::from(vec![0; frames * 4]),
+        )
+        .unwrap();
+        muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+    chunks
+        .iter()
+        .filter(|c| matches!(c.kind, ChunkKind::Media { .. }))
+        .map(|c| {
+            let boxes = parse(&c.data);
+            let traf = boxes[0].child(b"traf");
+            let tfdt = traf.child(b"tfdt");
+            let base = u64::from_be_bytes(tfdt.payload[4..12].try_into().unwrap());
+            (base, traf.child(b"trun").u32_at(4))
+        })
+        .collect()
+}
+
+#[test]
+fn a_pcm_gap_starts_a_fragment_at_its_own_time() {
+    // 10 ms packets (480 frames); a 100 ms gap after the fifth.
+    let packets: Vec<(u64, usize)> = (0..10u64)
+        .map(|i| (i * 10_000 + if i >= 5 { 100_000 } else { 0 }, 480))
+        .collect();
+    let runs = pcm_timeline(&packets);
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(runs[0].1, 2400);
+    assert_eq!(runs[1].1, 2400);
+    // The second run starts 150 ms (7200 ticks) after the first: the gap is kept.
+    assert_eq!(runs[1].0 - runs[0].0, 7200);
+}
+
+#[test]
+fn pcm_decode_time_never_goes_back() {
+    // Packets stamped 9.5 ms apart but holding 10 ms of frames: the frames run ahead
+    // of the timestamps until the overlap passes the tolerance and a fragment starts.
+    let packets: Vec<(u64, usize)> = (0..40u64).map(|i| (i * 9_500, 480)).collect();
+    let runs = pcm_timeline(&packets);
+    assert!(runs.len() > 1, "{runs:?}");
+    let mut end = 0;
+    let mut frames = 0;
+    for (base, count) in &runs {
+        assert!(
+            *base >= end,
+            "fragment at {base} starts before the end {end}"
+        );
+        end = base + u64::from(*count);
+        frames += count;
+    }
+    assert_eq!(frames, 40 * 480, "every frame is written");
+}
+
+#[test]
+fn pcm_with_small_jitter_stays_in_one_fragment() {
+    // +-0.5 ms of timestamp jitter around exact 10 ms steps.
+    let packets: Vec<(u64, usize)> = (0..50u64)
+        .map(|i| (i * 10_000 + if i % 2 == 1 { 500 } else { 0 }, 480))
+        .collect();
+    assert_eq!(pcm_timeline(&packets).len(), 1);
 }
 
 #[test]
@@ -328,6 +461,14 @@ fn refusals() {
     av1.codec = CodecId::Av1;
     av1.bitstream = BitstreamFormat::Obu;
     unsupported(MuxerConfig::new(MOV, vec![av1]));
+    // PCM beyond stereo waits for a `chan` layout atom.
+    unsupported(MuxerConfig::new(
+        MOV,
+        vec![pcm_stream(
+            24,
+            AudioFormat::new(SampleRate::HZ_48000, ChannelLayout::Surround5_1).unwrap(),
+        )],
+    ));
     // Other containers still go elsewhere.
     unsupported(MuxerConfig::new(ContainerId::Matroska, vec![aac_stream()]));
 
