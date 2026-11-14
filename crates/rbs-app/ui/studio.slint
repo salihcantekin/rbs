@@ -1146,6 +1146,8 @@ export component ScenesPanel inherits Rectangle {
         }
         rows := VerticalLayout {
             padding: Tokens.space-2;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.space-2 - flick.bar-room);
             spacing: Tokens.space-1;
             alignment: start;
             for sc in Studio.scenes: SceneRowView {
@@ -1249,6 +1251,8 @@ export component SourcesPanel inherits Rectangle {
         }
         rows := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - flick.bar-room);
             // Each entry spaces itself, so a folded global row takes no room.
             spacing: 0;
             alignment: start;
@@ -4162,6 +4166,8 @@ export component PropertiesPanel inherits Rectangle {
         }
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - props.bar-room);
             alignment: start;
             for s in Studio.sources: VerticalLayout {
                 spacing: Tokens.size-section-gap;
@@ -5322,12 +5328,14 @@ component OutputCard inherits Rectangle {
 // to its settings. Settings live in the Settings window (U17), not in this panel.
 export component OutputsPanel inherits Rectangle {
     background: Theme.surface-raised;
-    ScrollArea {
+    area := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - area.bar-room);
             spacing: Tokens.size-section-gap;
             alignment: start;
             OutputCard {
@@ -5471,6 +5479,8 @@ export component LibraryPanel inherits Rectangle {
         content-height: list.preferred-height;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - fl.bar-room);
             spacing: Tokens.size-section-gap;
             alignment: start;
             SegmentedControl {
@@ -5683,13 +5693,15 @@ export component StatsPanel inherits Rectangle {
         message: @tr("Statistics show here while you record or stream.");
     }
     // Nothing in the list takes focus, so the area is the focus stop and keys scroll it.
-    if Studio.stats.length > 0: ScrollArea {
+    if Studio.stats.length > 0: area := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
         focusable: true;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - area.bar-room);
             spacing: Tokens.size-field-gap;
             alignment: start;
             for row in Studio.stats: StatLine {
