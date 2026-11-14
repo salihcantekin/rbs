@@ -157,6 +157,39 @@ impl MeterSinkNode { pub fn new() -> Self; }
 
 Generic over the runtime; runs in the mixer's partition (no queue). `process` does nothing: the node only gives the scheduler a path to an output, so a mixer whose meters a UI shows runs while nothing records or plays. `prepare` and `release` do nothing.
 
+### Loudness meter (`rbs_audio::loudness`, ADR-0092 stage 1)
+
+```rust
+pub struct LoudnessMeter;                          // pure DSP, no graph types
+impl LoudnessMeter {
+    pub fn new(format: AudioFormat) -> Self;       // allocates (about 35 KiB)
+    pub fn process(&mut self, channels: &[&[f32]], frames: usize); // real-time safe
+    pub fn loudness(&self) -> Loudness;
+    pub fn reset(&mut self);                       // real-time safe
+    pub fn clear(&mut self);                       // reset plus the filter states
+    pub fn oversampling(&self) -> usize;
+}
+pub struct Loudness { pub momentary: f32, pub short_term: f32, pub integrated: f32,
+    pub range: f32, pub true_peak: f32, pub max_momentary: f32, pub max_short_term: f32 }
+pub const LOUDNESS_TAP_NODE_TYPE: &str = "org.rbs.audio.loudness-tap";
+pub fn loudness_tap_descriptor() -> NodeDescriptor; // Output, input "in" (Audio), no outputs
+impl LoudnessTapNode {
+    pub fn new(config: AudioGraphConfig) -> (Self, Arc<LoudnessReadout>, Arc<LoudnessTapStats>);
+}
+impl LoudnessReadout { pub fn get(&self) -> Loudness; pub fn reset(&self); }
+```
+
+ITU-R BS.1770-4 and EBU R 128 (EBU Tech 3341 "EBU Mode", Tech 3342 loudness range). Values are LUFS (momentary, short-term, integrated and their maxima), LU (range) and dBTP (true peak). A value with no data (silence, a window not yet full since the meter started or was reset) is negative infinity, never NaN.
+
+- **K-weighting.** The two biquads of BS.1770-4 (shelf: 1681.97 Hz, Q 0.7072, +4.0 dB; RLB high-pass: 38.135 Hz, Q 0.5003) derived for the graph's rate by the bilinear transform with prewarping; at 48 kHz they match the BS.1770 table to 1e-6 (unit test). Filtered in f64, one state per channel.
+- **Channels.** Weight 1.0 for mono, stereo, front and discrete channels, 1.41 for the side surrounds (`Ls`, `Rs` of 5.1 and 7.1), 0 for LFE. A mono graph is one loudspeaker: the same sine reads 3 dB lower than on a stereo pair.
+- **Windows.** The weighted sum of squares is kept per 10 ms of samples (a step; `round(rate / 100)` frames), independent of `block_frames`. Momentary is the last 40 steps (400 ms), short-term the last 300 (3 s); both are ungated and updated every step, so the maxima of Tech 3341 cases 11 and 14 read within 0.1 LU.
+- **Integrated.** Every 100 ms (every tenth step) the momentary block is a gating block (400 ms, 75 % overlap). Blocks above -70 LUFS go into a fixed histogram of 0.1 LU bins from -70 to +30 LUFS that keeps the count and the energy sum of each bin. Integrated loudness is the power mean of the blocks above the relative gate, 10 LU below the power mean of all blocks above -70; the bin holding the gate is kept when its own mean is above it. Recomputed every 100 ms by a scan of 1000 bins.
+- **Range.** Every 100 ms the short-term value goes into a second histogram of the same shape (absolute gate -70 LUFS). The range is the 95th minus the 10th percentile (nearest rank, as the Tech 3342 MATLAB code) of the values above the relative gate 20 LU below their power mean; each bin's value is the loudness of its mean energy. 0 while fewer than two values pass the gates.
+- **True peak.** Oversampling by 4 below 96 kHz, 2 from 96 kHz, 1 (the sample peak) from 192 kHz: the interpolated rate stays at least 176.4 kHz. A polyphase Kaiser-windowed sinc with 12 taps per phase (48 at 4x, as the BS.1770 example filter), each phase normalised to unity at DC. The maximum since the reset is kept.
+- **Reset.** `reset` restarts the measurement: windows, histograms, maxima and the true-peak interpolator's history; the K-weighting states continue. It allocates nothing.
+- **Tap node.** A sink in the partition of the node it reads (no queue). `process` takes a pending reset, measures the block (a block whose format is not the graph's, or longer than `block_frames`, is ignored and counted in `invalid_inputs`; no block, no measurement) and stores the values in the readout, one atomic per value: a reader may see two neighbouring blocks' values together, never a torn one. It changes nothing in the graph it reads, so adding or removing it does not affect any other consumer.
+
 ### Output node (`rbs_audio::OutputNode`, ADR-0097 decision 3)
 
 ```rust
@@ -193,11 +226,11 @@ Plays the blocks on its input on an `AudioOutput` (audio I/O port, "Audio output
 
 ## Performance requirements
 
-Hot path (audio thread, every 10 ms): no allocation, blocking, I/O or locks in `process` of the input, mixer and output nodes, the queue endpoints, `AudioOut` and `Inputs::audio`; the encoder node allocates only what its encoder's `drain` does (tested with the allocation guard in `tests/pipeline.rs` and `rbs-graph/tests/audio.rs`). Budgets on the reference VM, `cargo bench -p rbs-audio --bench nodes` ([performance budgets](performance-budgets.md)): input node at most 50 µs per block (27 µs at 48 kHz mono, 35 µs at 44.1 kHz stereo; the reference adapter's sine generation adds about 20 to 35 µs in the `adapter_*` cases); mixer of 16 stereo inputs with meters at most 30 µs (13 µs; with 4 of them monitored and the monitor read, 14.6 µs against 11.5 µs unmonitored on the cloud development container, 2026-11-10); output node from the 48 kHz stereo graph at most 50 µs (measured 32 µs to a 48 kHz and 30 µs to a 44.1 kHz stereo device on the cloud development container, 2026-11-10; the reference VM figure comes with the mixer's monitor output).
+Hot path (audio thread, every 10 ms): no allocation, blocking, I/O or locks in `process` of the input, mixer and output nodes, the queue endpoints, `AudioOut` and `Inputs::audio`; the encoder node allocates only what its encoder's `drain` does (tested with the allocation guard in `tests/pipeline.rs` and `rbs-graph/tests/audio.rs`). Budgets on the reference VM, `cargo bench -p rbs-audio --bench nodes` ([performance budgets](performance-budgets.md)): input node at most 50 µs per block (27 µs at 48 kHz mono, 35 µs at 44.1 kHz stereo; the reference adapter's sine generation adds about 20 to 35 µs in the `adapter_*` cases); mixer of 16 stereo inputs with meters at most 30 µs (13 µs; with 4 of them monitored and the monitor read, 14.6 µs against 11.5 µs unmonitored on the cloud development container, 2026-11-10); output node from the 48 kHz stereo graph at most 50 µs (measured 32 µs to a 48 kHz and 30 µs to a 44.1 kHz stereo device on the cloud development container, 2026-11-10; the reference VM figure comes with the mixer's monitor output). Loudness meter (`cargo bench -p rbs-audio --bench loudness`), at most 50 µs per 10 ms block at 48 kHz stereo (0.5 % of the block): measured 19.7 µs at 48 kHz stereo, 10.4 µs mono, 57.7 µs 5.1 and 23.3 µs at 96 kHz stereo (2x true peak) on the cloud development container, 2026-11-14; the 4x true peak is about three quarters of it. Nothing of it runs while loudness is off (no node).
 
 ## Conformance tests
 
-`crates/rbs-audio/tests/` (`input.rs`, `mixer.rs`, `monitor.rs`: modes, solo, mute and no master on the monitor, `Only` off the mix by a ramp only while the monitor is read, an unread monitor gets nothing, ramps continuing across the link swap, no allocation; `output.rs`: devices drifting by ±100 and ±1000 ppm steered with no underrun or skip after the first prime and the mean correction cancelling the drift, a mono graph on a 44.1 kHz stereo device, underrun and stalled-device recovery, volume ramp, no allocation per block; `pipeline.rs`: two reference-adapter inputs with a drifting device clock, one at 44.1 kHz, through mixer and audio queue to an encoder node, contiguous 10 ms blocks on the grid with no resync, queue overflow or fill, and no allocation per block on either partition), unit tests in `config.rs`, `meter.rs` and `resample.rs`; `crates/rbs-graph/tests/audio.rs`; `crates/rbs-engine/src/worker.rs` (`a_stream_worker_*`).
+`crates/rbs-audio/tests/` (`input.rs`, `mixer.rs`, `monitor.rs`: modes, solo, mute and no master on the monitor, `Only` off the mix by a ramp only while the monitor is read, an unread monitor gets nothing, ramps continuing across the link swap, no allocation; `output.rs`: devices drifting by ±100 and ±1000 ppm steered with no underrun or skip after the first prime and the mean correction cancelling the drift, a mono graph on a 44.1 kHz stereo device, underrun and stalled-device recovery, volume ramp, no allocation per block; `pipeline.rs`: two reference-adapter inputs with a drifting device clock, one at 44.1 kHz, through mixer and audio queue to an encoder node, contiguous 10 ms blocks on the grid with no resync, queue overflow or fill, and no allocation per block on either partition), `loudness.rs`: EBU Tech 3341 (2023) table 1 cases 1 to 6, 9, 11, 12, 14 and 15 to 23 and Tech 3342 (2023) table 1 cases 1 to 4, generated in the test from their definitions, within the documents' tolerances (M, S, I ±0.1 LU; LRA ±1 LU; true peak +0.2/-0.4 dB), with blocks of 480, 512 and 1 frame, at 44.1 and 96 kHz as well, mono, silence and reset, and no allocation in `process` or `reset`; the programme-based cases need the EBU's recordings and are not run), unit tests in `config.rs`, `meter.rs`, `resample.rs` and `loudness/`; `crates/rbs-graph/tests/audio.rs`; `crates/rbs-engine/src/worker.rs` (`a_stream_worker_*`).
 
 Hardware check (`cargo run --release -p rbs-app --example audio_graph -- <seconds>`): the default microphone and system loopback through input nodes, mixer, audio queue and the platform AAC encoder on the real engine workers. Windows (WASAPI + Media Foundation AAC, Shure MV7+ and NVIDIA HDMI loopback, 2026-11-03): 30 s idle and 60 s with all 32 cores busy both pass with no resync, read error, queue overflow, late audio tick or irregular packet, packet counts as expected, thread grant `RealTime`. Late frames occur only in the first second (before the first packets arrive). Under full load the loopback had 483 gap frames filled and the microphone's correction peaked at 409 ppm, settling within seconds.
 

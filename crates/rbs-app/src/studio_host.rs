@@ -63,6 +63,7 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
+mod loudness;
 mod monitor;
 pub mod replay;
 
@@ -2383,6 +2384,9 @@ struct Host {
     /// The monitor output: its saved device and volume, when its device opens, what
     /// the API saw last (ADR-0097).
     monitor: monitor::MonitorHost,
+    /// The main canvas's loudness meter runs (`loudness.set_enabled`; session state,
+    /// ADR-0092 stage 1).
+    loudness_on: bool,
     /// The camera as the app's settings know it; `None` until the app sent it.
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
@@ -2814,6 +2818,7 @@ fn start(
         camera: None,
         camera_due: None,
         monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
+        loudness_on: false,
         camera_setup: None,
         camera_published: None,
         replay: replay::ReplayHost::new(),
@@ -4282,6 +4287,8 @@ impl Host {
         self.restore_vertical();
         // The replay buffer keeps its place: it is armed again in the new studio.
         self.rearm_replay(&|_| {});
+        // The loudness meter measures again, from scratch, in the new studio.
+        self.restore_loudness();
         Ok(())
     }
 
@@ -8905,6 +8912,15 @@ impl ApiTarget<'_> {
             }
             C::MonitorSetSolo(p) => {
                 host.set_monitor_solo(&p.sources).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::LoudnessStatus => Ok(Response::LoudnessStatus(host.api_loudness())),
+            C::LoudnessSetEnabled(p) => {
+                host.set_loudness_enabled(p.on).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::LoudnessReset => {
+                host.reset_loudness().map_err(|e| refused(&e))?;
                 Ok(Response::Done(Empty {}))
             }
             C::SourceSetMixerHidden(p) => {

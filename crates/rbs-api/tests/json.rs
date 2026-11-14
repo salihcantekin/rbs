@@ -387,6 +387,9 @@ fn every_request() -> Vec<Request> {
         c(Command::MonitorSetSolo(SetMonitorSolo {
             sources: vec![3, 4],
         })),
+        c(Command::LoudnessStatus),
+        c(Command::LoudnessSetEnabled(SetLoudnessEnabled { on: true })),
+        c(Command::LoudnessReset),
         c(Command::ReplayArm),
         c(Command::ReplayDisarm),
         c(Command::ReplaySave(ReplaySave { seconds: None })),
@@ -1696,4 +1699,28 @@ fn separate_files_round_trip_and_later_options_are_refused() {
             .get("record_separately")
             .is_none()
     );
+}
+
+#[test]
+fn loudness_values_have_their_wire_form() {
+    let on: SetLoudnessEnabled = serde_json::from_value(json!({"on": true})).unwrap();
+    assert!(on.on);
+    assert!(serde_json::from_value::<SetLoudnessEnabled>(json!({"on": true, "x": 1})).is_err());
+    // Off: only `enabled`; values without data are left out, never NaN or infinity.
+    let off = serde_json::to_value(LoudnessStatus::default()).unwrap();
+    assert_eq!(off, json!({"enabled": false}));
+    let status = LoudnessStatus {
+        enabled: true,
+        momentary: Some(-22.5),
+        short_term: Some(-23.0),
+        integrated: Some(-23.5),
+        range: Some(4.5),
+        true_peak_max: Some(-1.5),
+        momentary_max: Some(-18.0),
+        short_term_max: Some(-20.0),
+    };
+    let v = serde_json::to_value(status).unwrap();
+    assert_eq!(v["integrated"], json!(-23.5));
+    assert_eq!(v["true_peak_max"], json!(-1.5));
+    round_trip(&status);
 }
