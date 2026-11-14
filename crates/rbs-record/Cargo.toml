@@ -27,6 +27,8 @@ rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }
 rbs-vcam = { path = "../rbs-vcam" }
+# The recording manifest model (data only; ADR-0089 decision 7).
+rbs-manifest = { path = "../rbs-manifest" }
 
 [dev-dependencies]
 # Reference adapters of the capture and audio input ports (deterministic, no devices).
