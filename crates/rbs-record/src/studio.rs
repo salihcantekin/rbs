@@ -62,10 +62,12 @@ use crate::recording::{
 use crate::select::{self, Chosen};
 
 mod iso_audio;
+mod iso_video;
 mod loudness;
 mod monitor;
 mod replay;
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
+pub use iso_video::{DEFAULT_GIVE_WAY_SHARE, IsoVideoStart, IsoVideoStarted, IsoVideoTrack};
 pub use monitor::MonitorState;
 pub use replay::ReplaySettings;
 
@@ -884,6 +886,7 @@ pub struct Studio {
     /// Separate audio files while they are open (ADR-0086). `None` adds no node and
     /// no worker. Not one of [`MAX_OUTPUTS`].
     iso_audio: Option<iso_audio::IsoAudioRun>,
+    iso_video: Option<iso_video::IsoVideoRun>,
     /// Soloed sources (session state, never saved; ADR-0097 decision 5).
     solo: BTreeSet<SourceId>,
     /// One cap of two browser helpers for every source this studio instantiates
@@ -1199,6 +1202,7 @@ impl Studio {
             monitor: None,
             loudness: None,
             iso_audio: None,
+            iso_video: None,
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
             browser_tree,

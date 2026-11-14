@@ -74,6 +74,10 @@ pub const OUTPUT_4: PartitionId = PartitionId(16);
 pub const ISO_AUDIO_ENCODER: PartitionId = PartitionId(17);
 /// Mux and transport of separate source files. One worker runs every file of the set.
 pub const ISO_OUTPUT: PartitionId = PartitionId(18);
+/// The pool of video encoders of separate source files (ADR-0086 decision 9): track
+/// `i` runs on `ISO_VIDEO_ENCODERS[i % 2]`, so a slow encoder delays at most its
+/// sibling tracks and never the master, whose encoders are not in the pool.
+pub const ISO_VIDEO_ENCODERS: [PartitionId; 2] = [PartitionId(19), PartitionId(20)];
 
 /// The ports a recording chooses adapters for.
 #[non_exhaustive]

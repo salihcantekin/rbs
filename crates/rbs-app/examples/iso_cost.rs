@@ -13,8 +13,8 @@
 //!
 //! Arguments: tracks (0 to 4), seconds (default 30), output folder (default the temp
 //! folder). The sources are colour pictures, so no device or permission is needed. Run
-//! each case a few times and compare the medians. Until video tracks are built (step
-//! 3.2), only `0` runs: it is the "before" of every later step.
+//! each case a few times and compare the medians. `0` is the "before" of every later
+//! step. The files take the master's encoder settings (decision 4).
 
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)] // A demo: setup errors end it.
 #![allow(clippy::disallowed_methods)] // A demo, not the app shell: ADR-0055 rules the shell.
@@ -25,9 +25,9 @@ use std::time::{Duration, Instant};
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
-use rbs_record::{OutputSettings, Studio, StudioSettings};
+use rbs_record::{IsoVideoStart, OutputSettings, Studio, StudioSettings};
 use rbs_scene::SceneCollection;
-use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
+use rbs_scene::model::{ItemContent, Layout, RecordSeparately, SceneScope, SettingValue, Settings};
 use rbs_sources::types::{self, keys};
 
 const MAIN: (u32, u32) = (1920, 1080);
@@ -44,10 +44,6 @@ fn main() {
         .unwrap_or_else(std::env::temp_dir);
     std::fs::create_dir_all(&dir).expect("the output folder");
     assert!(tracks <= CAMERAS, "tracks: 0 to {CAMERAS}");
-    if tracks > 0 {
-        eprintln!("separate video files come with ADR-0086 step 3.2; only 0 runs for now");
-        std::process::exit(2);
-    }
 
     let mut col = SceneCollection::new();
     let (main, _) = col
@@ -100,6 +96,10 @@ fn main() {
         .collect();
     col.set_program(main, Some(scene)).expect("program");
     let marked = &cameras[..tracks];
+    for id in marked {
+        col.set_source_record_separately(*id, RecordSeparately::new(true, false))
+            .expect("mark");
+    }
 
     let (mut adapters, notes) = rbs_app::platform::adapters();
     adapters.probe();
@@ -128,7 +128,27 @@ fn main() {
     let master = studio
         .start_output(&adapters, &out)
         .expect("the master starts");
-    println!("tracks: {} ({marked:?})", marked.len());
+    // The sources report their picture once the master draws them.
+    let warm = Instant::now();
+    while marked.iter().any(|id| studio.picture_size(*id).is_none()) {
+        assert!(warm.elapsed() < Duration::from_secs(10), "the cameras draw");
+        studio.service();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let iso = if tracks == 0 {
+        Vec::new()
+    } else {
+        let folder = format!("file://{}", dir.display());
+        let video = out.video.clone().unwrap_or_default();
+        studio
+            .start_iso_video(
+                &adapters,
+                &IsoVideoStart::new(folder, ContainerId::Matroska, video),
+            )
+            .expect("the separate files start")
+            .tracks
+    };
+    println!("tracks: {} ({marked:?})", iso.len());
 
     let cpu_start = cpu_time();
     let start = Instant::now();
@@ -178,6 +198,21 @@ fn main() {
         p.encoder_drops,
         p.late_render_ticks
     );
+    for t in &iso {
+        use std::sync::atomic::Ordering::Relaxed;
+        println!(
+            "file {} {}x{}: exported {}, encoded {}, skipped {}, gave way {}, lost {}",
+            t.file_name,
+            t.size.0,
+            t.size.1,
+            t.stats.frames.load(Relaxed),
+            t.encoder.submitted.load(Relaxed),
+            t.queue.as_ref().map_or(0, |q| q.video_drops()),
+            t.stats.gave_way.load(Relaxed),
+            t.stats.lost.load(Relaxed)
+        );
+    }
+    studio.stop_iso_video();
     let (reports, errors) = studio.shutdown();
     for (_, r) in reports {
         if let Some(f) = r.failure {
