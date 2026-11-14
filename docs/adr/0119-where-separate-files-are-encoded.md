@@ -186,3 +186,8 @@ Forces:
 
   Two nits are also applied: how `rbs-thread-os` maps `Background`, and this record. Verdict: approve. Waiting for the owner's acceptance.
 - 2026-11-14, owner (Salih) approved acceptance after the review. Status: Accepted.
+- 2026-11-14, step (a) measurement (Mac M4 Pro, `iso_cost`, 3 runs of 30 s, PR #351): decision 5's one worker per file was built and measured with every file on the master's hardware engine.
+  - 3 × 1080p60 files, two shared partitions (main): the master skipped 0–1 frames; the file sharing a partition with another skipped 102–132.
+  - One partition per file: every file skipped 1–5, but the master skipped 5. With the file encoders a quarter period after the master's, the master still skipped 4.
+  - 4 files: the engine does not keep up either way; the files give way most of the time and the master skips 9–12.
+  - Applied: files on the master's engine keep taking turns on two partitions; one worker per file comes with the encoders that do not share that engine (steps (c) and (d)). The owner chose this on 2026-11-14.

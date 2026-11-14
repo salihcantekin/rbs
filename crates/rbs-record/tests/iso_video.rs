@@ -146,9 +146,9 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
         h264(&r.log),
         r.log.headers.load(Ordering::Relaxed)
     );
-    // One encoder partition per file, and none beyond.
+    // Files on the master's engine take turns on two encoder partitions, and none beyond.
     for (i, part) in ISO_VIDEO_ENCODERS.into_iter().enumerate() {
-        assert_eq!(studio.engine().has_worker(part), i < 3, "{part:?}");
+        assert_eq!(studio.engine().has_worker(part), i < 2, "{part:?}");
     }
     assert!(studio.engine().has_worker(ISO_OUTPUT));
 

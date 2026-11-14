@@ -4,9 +4,9 @@
 //! decision 3). The file is the source's size when the recording starts, rounded up
 //! to even, at the canvas frame rate. The export runs on the render partition after
 //! the master's and gives way when the previous render tick ran long or a master
-//! encoder dropped a frame (decision 9). Each file's encoder has a partition of its
-//! own, `ISO_VIDEO_ENCODERS[i]` (ADR-0119 decision 5); the files share [`ISO_OUTPUT`]
-//! with the audio files. The files are not [`super::MAX_OUTPUTS`] outputs.
+//! encoder dropped a frame (decision 9). The encoders take turns on two partitions
+//! of [`ISO_VIDEO_ENCODERS`] while they share the master's engine (see
+//! `SHARED_ENGINE_PARTITIONS`); the files share [`ISO_OUTPUT`] with the audio files. The files are not [`super::MAX_OUTPUTS`] outputs.
 //!
 //! Not yet (later steps): a source whose size changes during the take (the export's
 //! input no longer fits and its frames are lost, counted), `size: master` and
@@ -128,6 +128,15 @@ struct Tap {
     picture: (u32, u32),
     file_name: String,
 }
+
+/// The encoder partitions shared by files encoded on the master's engine. The files
+/// take turns on the first two of [`ISO_VIDEO_ENCODERS`]: a partition per file sends
+/// the frames to that engine side by side, and the master then missed about four
+/// frames in 30 s with three 1080p60 files on an M4 Pro, where two shared partitions
+/// missed none or one (ADR-0119 step (a) measurement, its `## Review` record). A
+/// partition per file comes with encoders that do not share the master's engine
+/// (ADR-0119 steps (c) and (d)).
+const SHARED_ENGINE_PARTITIONS: usize = 2;
 
 impl super::Studio {
     /// Opens one video file per source marked for separate video. The input is that
@@ -255,22 +264,22 @@ impl super::Studio {
         true
     }
 
-    /// Adds the encoder partitions of the first `count` files that are not there yet.
+    /// Adds the encoder partitions `count` files use that are not there yet.
     fn ensure_iso_video_partitions(&mut self, count: usize) -> Result<(), RecordError> {
-        // Frame cadence half a period after the render tick, a quarter period after the
-        // master's encoders, so the master's frame reaches a shared hardware engine
-        // first on every tick (3.2/step (a) measurement: with each file on its own
-        // partition at the master's phase, the master missed about one frame in 360 at
-        // three 1080p60 files). An empty partition starts no thread (ADR-0013); a
-        // worker runs while the apply below schedules nodes on it.
+        // Paced like the master's encoders. An empty partition starts no thread
+        // (ADR-0013); a worker runs while the apply below schedules nodes on it.
         let frames = Cadence::frames(Timestamp::ZERO, self.fps);
-        for part in ISO_VIDEO_ENCODERS.iter().take(count).copied() {
+        for part in ISO_VIDEO_ENCODERS
+            .iter()
+            .take(count.min(SHARED_ENGINE_PARTITIONS))
+            .copied()
+        {
             if self.engine.worker_stats(part).is_none() {
                 self.engine.add_partition::<()>(
                     part,
                     Arc::new(()),
                     (),
-                    Pacing::cadence_after(frames, self.fps.frame_duration() / 2),
+                    Pacing::cadence_after(frames, self.fps.frame_duration() / 4),
                 )?;
             }
         }
@@ -290,8 +299,7 @@ impl super::Studio {
         let mut tracks = Vec::with_capacity(taps.len());
         let mut encoders = Vec::with_capacity(taps.len());
         for (i, (tap, (export, encoder, size))) in taps.iter().zip(chains).enumerate() {
-            // One partition per file; `iso::plan` caps the files at `MAX_ISO_VIDEO`.
-            let encoder_part = ISO_VIDEO_ENCODERS[i];
+            let encoder_part = ISO_VIDEO_ENCODERS[i % SHARED_ENGINE_PARTITIONS];
             let output = OutputNode::new(
                 vec![encoder.stream().clone()],
                 Arc::clone(transport),

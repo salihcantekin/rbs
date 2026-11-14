@@ -556,7 +556,7 @@ fn cadences() -> Vec<(PartitionId, Cadence, Duration)> {
     .chain(
         ISO_VIDEO_ENCODERS
             .into_iter()
-            .map(|p| (p, frames, FPS.frame_duration() / 2)),
+            .map(|p| (p, frames, FPS.frame_duration() / 4)),
     )
     .collect()
 }
