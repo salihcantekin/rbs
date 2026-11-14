@@ -20,6 +20,7 @@
 
 mod clip;
 mod iso;
+pub mod protection;
 mod recording;
 mod select;
 mod studio;

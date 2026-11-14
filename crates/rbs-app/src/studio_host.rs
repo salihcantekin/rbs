@@ -52,8 +52,8 @@ use rbs_scene::model::{
     Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{
-    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, Undo, place_chrome, recrop_keeping,
-    visible_size,
+    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, SceneLevel, Undo, place_chrome,
+    recrop_keeping, visible_size,
 };
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::BrowserTree;
@@ -63,7 +63,9 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
+mod loudness;
 mod monitor;
+pub mod protection;
 pub mod replay;
 
 use crate::canvas_profile::CanvasProfile;
@@ -342,6 +344,9 @@ pub struct SourceRow {
     /// The source's volume, a linear factor from 0 to 1, its mute (ADR-0059) and its
     /// sync offset (ADR-0062).
     pub audio: SourceAudio,
+    /// What the mix hears while the program scene, in Own levels, has an entry for the
+    /// source (ADR-0091); `None` when `audio` is what is heard.
+    pub heard: Option<SourceAudio>,
     /// Its filters in chain order (ADR-0062).
     pub filters: Vec<filters::FilterRow>,
     /// A global source's row (ADR-0065): its item is in the canvas's global scene.
@@ -410,6 +415,7 @@ impl PartialEq for SourceRow {
             && self.active == other.active
             && self.locked == other.locked
             && self.audio == other.audio
+            && self.heard == other.heard
             && self.filters == other.filters
             && self.global == other.global
             && self.also_in == other.also_in
@@ -1301,6 +1307,9 @@ struct CanvasOutputs {
     auto_recording: bool,
     /// The running stream: its URL, the connection last reported and its output.
     streaming: Option<(String, Link, OutputId)>,
+    /// Recording protection ended the recording (ADR-0090 decision 3): the reason for
+    /// its summary once the tail is in.
+    protection_stop: Option<String>,
     /// The recording, as the control API reports it.
     record_state: api::RecordState,
     /// The stream, as the control API reports it.
@@ -1314,6 +1323,7 @@ impl Default for CanvasOutputs {
             ending: false,
             auto_recording: false,
             streaming: None,
+            protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
         }
@@ -1446,6 +1456,8 @@ pub struct SceneRow {
     pub id: SceneId,
     /// Its name.
     pub name: String,
+    /// The scene keeps its own levels (ADR-0091).
+    pub own_audio: bool,
 }
 
 /// A source of the collection, for "Add existing source".
@@ -1911,6 +1923,9 @@ pub struct HostConfig {
     /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
     /// is opened only while a source is monitored or soloed.
     pub monitor: MonitorSettings,
+    /// Reads free disk space and memory for recording protection (ADR-0090); `None`:
+    /// disk and memory are reported unavailable and only lag is watched.
+    pub system_probe: Option<protection::SystemProbeFactory>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -1940,6 +1955,7 @@ impl HostConfig {
             recent_dir: None,
             swap_after_transition: false,
             monitor: MonitorSettings::default(),
+            system_probe: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -2383,12 +2399,17 @@ struct Host {
     /// The monitor output: its saved device and volume, when its device opens, what
     /// the API saw last (ADR-0097).
     monitor: monitor::MonitorHost,
+    /// The main canvas's loudness meter runs (`loudness.set_enabled`; session state,
+    /// ADR-0092 stage 1).
+    loudness_on: bool,
     /// The camera as the app's settings know it; `None` until the app sent it.
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
     camera_published: Option<api::VcamStatus>,
     /// The replay buffer's settings and state (ADR-0088).
     replay: replay::ReplayHost,
+    /// Recording protection while an output runs (ADR-0090).
+    protection: protection::ProtectionHost,
 }
 
 /// What the control thread is handed besides the studio configuration.
@@ -2643,6 +2664,9 @@ fn round(
     if let Some(left) = host.report_stats(now, notify) {
         wait = wait.min(left);
     }
+    if let Some(left) = host.drive_protection(now, notify) {
+        wait = wait.min(left);
+    }
     if let Some(left) = host.report_camera(now, notify) {
         wait = wait.min(left);
     }
@@ -2814,9 +2838,11 @@ fn start(
         camera: None,
         camera_due: None,
         monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
+        loudness_on: false,
         camera_setup: None,
         camera_published: None,
         replay: replay::ReplayHost::new(),
+        protection: protection::ProtectionHost::new(config.system_probe),
         keys,
         key_account: config.key_account,
         engine: Box::new(engine),
@@ -4282,6 +4308,8 @@ impl Host {
         self.restore_vertical();
         // The replay buffer keeps its place: it is armed again in the new studio.
         self.rearm_replay(&|_| {});
+        // The loudness meter measures again, from scratch, in the new studio.
+        self.restore_loudness();
         Ok(())
     }
 
@@ -4634,6 +4662,7 @@ impl Host {
         let o = &mut self.outs[slot(c)];
         o.ending = false;
         o.auto_recording = false;
+        let protected = o.protection_stop.take();
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
         // recording still tracked and ends it again (ADR-0055 decision 3).
         let Some((path, id)) = o.recording.clone() else {
@@ -4653,7 +4682,7 @@ impl Host {
                 r.failure,
             )
         });
-        let failure = failure.or(failed);
+        let failure = failure.or(failed).or(protected);
         self.set_record_state(
             c,
             api::RecordState::Idle {
@@ -7454,6 +7483,134 @@ impl Host {
         Ok(true)
     }
 
+    /// A scene the Scenes panel lists, by name, for the scene levels methods; a global
+    /// scene is never listed (ADR-0065).
+    fn levels_scene(&self, id: SceneId) -> Result<String, Refusal> {
+        self.collection
+            .scene(id)
+            .filter(|_| self.listed(id))
+            .map(|s| s.name.clone())
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))
+    }
+
+    /// Turns a scene's Own levels on (ADR-0091 decision 5), copying what every source
+    /// it places is heard at now, so nothing jumps. One undo step. `Ok(false)` when it
+    /// is in Own levels already.
+    fn scene_levels_own(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if self.collection.scene(id).is_some_and(Scene::own_levels) {
+            return Ok(false);
+        }
+        let levels = self.collection.heard_levels(self.canvas, id);
+        let undo = self
+            .collection
+            .set_scene_own_levels(id, levels)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Puts a scene back in Shared levels, discarding its entries (ADR-0091). One undo
+    /// step. `Ok(false)` when it is in Shared levels already.
+    fn scene_levels_shared(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if !self.collection.scene(id).is_some_and(Scene::own_levels) {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_scene_shared_levels(id)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Removes a scene's entry for one source (ADR-0091): one undo step. `Ok(false)`
+    /// when the scene has no entry for it (or is in Shared levels).
+    fn scene_level_reset(&mut self, id: SceneId, source: SourceId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if self.collection.source(source).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no source {}.",
+                source.get()
+            )));
+        }
+        let has = self
+            .collection
+            .scene(id)
+            .and_then(|s| s.audio.as_ref())
+            .is_some_and(|a| a.level(source).is_some());
+        if !has {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_scene_level(id, source, None)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        if self.on_air(id) {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok(true)
+    }
+
+    /// A scene's own volume or mute for a source (ADR-0091): a live control, not on
+    /// the undo stack, sent to the mixer at once while the scene is on air. A scene in
+    /// Shared levels is turned to Own levels first, as one undo step. Answers whether
+    /// that happened and whether anything changed.
+    fn scene_level_set(
+        &mut self,
+        id: SceneId,
+        source: SourceId,
+        volume: Option<f32>,
+        muted: Option<bool>,
+    ) -> Result<(bool, bool), Refusal> {
+        self.levels_scene(id)?;
+        if self.collection.source(source).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no source {}.",
+                source.get()
+            )));
+        }
+        if volume.is_none() && muted.is_none() {
+            return Err(Refusal::Invalid(
+                "Give a volume, a mute or both.".to_owned(),
+            ));
+        }
+        let level = SceneLevel::new(volume, muted);
+        if !level.is_valid() {
+            return Err(Refusal::of(&SceneError::InvalidVolume));
+        }
+        let turned_own = self.scene_levels_own(id)?;
+        let now = self
+            .collection
+            .scene(id)
+            .and_then(|s| s.audio.as_ref())
+            .and_then(|a| a.level(source).copied());
+        let base = now.unwrap_or_default();
+        let new = SceneLevel::new(volume.or(base.volume), muted.or(base.muted));
+        let changed = now != Some(new);
+        if changed {
+            // Live: the record is not kept (ADR-0059, ADR-0091 decision 5).
+            let _ = self
+                .collection
+                .set_scene_level(id, source, Some(new))
+                .map_err(|e| Refusal::of(&e))?;
+        }
+        if (changed || turned_own) && self.on_air(id) {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok((turned_own, changed || turned_own))
+    }
+
+    /// True while `id` is the studio canvas's program scene, whose levels are heard.
+    fn on_air(&self, id: SceneId) -> bool {
+        self.scene == id
+    }
+
     /// The preview scene while the canvas is in studio mode (ADR-0061).
     fn preview(&self) -> Option<SceneId> {
         self.collection.canvas(self.canvas).and_then(|c| c.preview)
@@ -7635,6 +7792,7 @@ impl Host {
                 .map(|s| SceneRow {
                     id: s.id,
                     name: s.name.clone(),
+                    own_audio: s.own_levels(),
                 })
                 .collect(),
             program: self.scene,
@@ -8441,6 +8599,11 @@ impl Host {
                     active: !s.standby(),
                     locked: item.locked,
                     audio: s.audio,
+                    heard: self
+                        .collection
+                        .program_levels(self.canvas)
+                        .and_then(|l| l.level(s.id))
+                        .map(|l| l.over(s.audio)),
                     filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
                     status,
                     global,
@@ -8794,6 +8957,73 @@ impl ApiTarget<'_> {
                 host.apply(notify);
                 Ok(Response::SceneAdded(SceneAdded { scene: id.get() }))
             }
+            C::SceneAudioGet(p) => {
+                let id = SceneId::from_raw(p.scene);
+                host.levels_scene(id).map_err(|e| refused(&e))?;
+                let audio = host.collection.scene(id).and_then(|s| s.audio.as_ref());
+                Ok(Response::SceneLevels(rbs_api::request::SceneLevels {
+                    scene: p.scene,
+                    own: audio.is_some(),
+                    levels: audio
+                        .map(|a| {
+                            a.levels
+                                .iter()
+                                .map(|(source, l)| rbs_api::request::SceneLevelInfo {
+                                    source: source.get(),
+                                    volume: l.volume,
+                                    muted: l.muted,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }))
+            }
+            C::SceneAudioSet(p) => {
+                let (turned_own, changed) = host
+                    .scene_level_set(
+                        SceneId::from_raw(p.scene),
+                        SourceId::from_raw(p.source),
+                        p.volume,
+                        p.muted,
+                    )
+                    .map_err(|e| refused(&e))?;
+                if turned_own {
+                    // An undo step: saved and on the history like any edit.
+                    host.apply(notify);
+                } else if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::SceneLevelSet(rbs_api::request::SceneLevelSet {
+                    turned_own,
+                }))
+            }
+            C::SceneAudioOwn(p) => {
+                if host
+                    .scene_levels_own(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneAudioShared(p) => {
+                if host
+                    .scene_levels_shared(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneAudioResetSource(p) => {
+                if host
+                    .scene_level_reset(SceneId::from_raw(p.scene), SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::SceneSources(p) => {
                 let id = SceneId::from_raw(p.scene);
                 if !host.listed(id) {
@@ -8905,6 +9135,15 @@ impl ApiTarget<'_> {
             }
             C::MonitorSetSolo(p) => {
                 host.set_monitor_solo(&p.sources).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::LoudnessStatus => Ok(Response::LoudnessStatus(host.api_loudness())),
+            C::LoudnessSetEnabled(p) => {
+                host.set_loudness_enabled(p.on).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::LoudnessReset => {
+                host.reset_loudness().map_err(|e| refused(&e))?;
                 Ok(Response::Done(Empty {}))
             }
             C::SourceSetMixerHidden(p) => {
@@ -9588,6 +9827,10 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::ProtectionStatus => Ok(Response::ProtectionStatus(api::Snapshot {
+                seq: host.events.seq_map([Topic::ProtectionChanged]),
+                data: host.api_protection(),
+            })),
             C::ReplayStatus => Ok(Response::ReplayStatus(api::Snapshot {
                 // The state as it is now, so the data and its `seq` match.
                 seq: {
@@ -10346,6 +10589,10 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         glide: row.glide.map(api_glide_source),
+        heard: row.heard.map(|h| api::Heard {
+            volume: h.volume,
+            muted: h.muted,
+        }),
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),
@@ -10406,6 +10653,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             .map(|s| api::SceneInfo {
                 id: s.id.get(),
                 name: s.name.clone(),
+                own_audio: s.own_audio,
             })
             .collect(),
         program: list.program.get(),
@@ -10644,7 +10892,11 @@ fn run_copy(
         })
         .collect();
     let mut scenes: Vec<Scene> = collection.scenes().cloned().collect();
-    scenes.push(held.scene.clone());
+    // Scene levels are not held (ADR-0091 decision 3): the copy on air carries the real
+    // scene's levels as they are now, like the sources' own volume and mute.
+    let mut copy = held.scene.clone();
+    copy.audio = collection.scene(held.from).and_then(|s| s.audio.clone());
+    scenes.push(copy);
     SceneCollection::from_parts(
         canvases,
         collection.sources().cloned().collect(),

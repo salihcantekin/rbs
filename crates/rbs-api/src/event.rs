@@ -7,8 +7,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Canvas, CanvasRecordState, CanvasStreamState, MonitorStatus, RecordState, ReplayStatus,
-    SceneList, Settings, SourceInfo, SourceLevels, StreamState, VcamStatus,
+    Canvas, CanvasRecordState, CanvasStreamState, MonitorStatus, ProtectionStatus, RecordState,
+    ReplayStatus, SceneList, Settings, SourceInfo, SourceLevels, StreamState, VcamStatus,
 };
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
@@ -53,11 +53,15 @@ pub enum Topic {
     /// 1.30).
     #[serde(rename = "monitor.changed")]
     MonitorChanged,
+    /// Recording protection: disks, lag, memory and alerts (state, protocol 1.49,
+    /// ADR-0090).
+    #[serde(rename = "protection.changed")]
+    ProtectionChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 12] = [
+    pub const ALL: [Topic; 13] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -70,6 +74,7 @@ impl Topic {
         Topic::RecordCanvasState,
         Topic::StreamCanvasState,
         Topic::MonitorChanged,
+        Topic::ProtectionChanged,
     ];
 
     /// Its name on the wire.
@@ -87,6 +92,7 @@ impl Topic {
             Topic::RecordCanvasState => "record.canvas_state",
             Topic::StreamCanvasState => "stream.canvas_state",
             Topic::MonitorChanged => "monitor.changed",
+            Topic::ProtectionChanged => "protection.changed",
         }
     }
 
@@ -247,6 +253,9 @@ pub enum EventPayload {
     /// The monitor output (protocol 1.30).
     #[serde(rename = "monitor.changed")]
     MonitorChanged(MonitorStatus),
+    /// Recording protection (protocol 1.49).
+    #[serde(rename = "protection.changed")]
+    ProtectionChanged(ProtectionStatus),
 }
 
 impl EventPayload {
@@ -265,6 +274,7 @@ impl EventPayload {
             EventPayload::RecordCanvasState(_) => Topic::RecordCanvasState,
             EventPayload::StreamCanvasState(_) => Topic::StreamCanvasState,
             EventPayload::MonitorChanged(_) => Topic::MonitorChanged,
+            EventPayload::ProtectionChanged(_) => Topic::ProtectionChanged,
         }
     }
 }

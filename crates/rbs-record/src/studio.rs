@@ -62,6 +62,7 @@ use crate::recording::{
 use crate::select::{self, Chosen};
 
 mod iso_audio;
+mod loudness;
 mod monitor;
 mod replay;
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
@@ -453,6 +454,14 @@ struct CameraRun {
 /// One of a studio's running outputs, from [`Studio::start_output`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(u64);
+
+#[cfg(test)]
+impl OutputId {
+    /// An id for unit tests of code that only compares ids.
+    pub(crate) const fn test(n: u64) -> Self {
+        Self(n)
+    }
+}
 
 /// The video half of a prepared output: a new export and encoder, or a running
 /// encoder chain shared with another output.
@@ -869,6 +878,9 @@ pub struct Studio {
     /// The monitor output while it plays (ADR-0097 F1); `None` otherwise, so no device,
     /// ring or node of it exists.
     monitor: Option<monitor::MonitorRun>,
+    /// The loudness tap while loudness is measured (ADR-0092 stage 1); `None`
+    /// otherwise, so nothing of the meter runs.
+    loudness: Option<loudness::LoudnessRun>,
     /// Separate audio files while they are open (ADR-0086). `None` adds no node and
     /// no worker. Not one of [`MAX_OUTPUTS`].
     iso_audio: Option<iso_audio::IsoAudioRun>,
@@ -1179,12 +1191,13 @@ impl Studio {
             audio_worker,
             pending_takes: Vec::new(),
             strips: Vec::new(),
-            mix: mix_of(collection),
+            mix: mix_of(collection, canvas_id),
             master: master_of(collection, canvas_id),
             filters: Vec::new(),
             filter_problems: Vec::new(),
             camera: None,
             monitor: None,
+            loudness: None,
             iso_audio: None,
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
@@ -1595,7 +1608,7 @@ impl Studio {
         }
         self.collection = collection.clone();
         self.note_scene_change(collection, old_main, &old_extra, old_layers);
-        self.mix = mix_of(collection);
+        self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
         if let Some(e) = attach_error {
@@ -2165,14 +2178,15 @@ impl Studio {
         self.scene_preview.is_some()
     }
 
-    /// Volume and mute only (ADR-0059, ADR-0081): takes the sources' `audio` and the
-    /// canvas's master from `collection` and sends the mixer the strips it already has
+    /// Volume and mute only (ADR-0059, ADR-0081): takes the sources' `audio` (with the
+    /// program scene's own levels over them, ADR-0091) and the canvas's master from
+    /// `collection` and sends the mixer the strips it already has
     /// at the new levels and the new master gain, without binding
     /// or applying the graph, so a fader drag stays cheap. The mixer ramps to them.
     /// Every other change goes through [`Studio::update`], which also sends the levels.
     /// Returns false if the studio has no mixer.
     pub fn set_mix(&mut self, collection: &SceneCollection) -> bool {
-        self.mix = mix_of(collection);
+        self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
         for strip in &mut self.strips {
             if let Some(audio) = self.mix.get(&strip.source) {
@@ -3456,6 +3470,7 @@ impl Studio {
         self.stop_iso_audio();
         self.stop_virtual_camera();
         self.stop_monitor();
+        self.stop_loudness();
         let ids = self.outputs();
         let (removed, errors) = self.detach_all(&ids, true);
         let reports = removed
@@ -3622,8 +3637,23 @@ fn take(engine: &mut Engine, a: Added) -> bool {
 }
 
 /// Volume and mute of every source of `collection`.
-fn mix_of(collection: &SceneCollection) -> BTreeMap<SourceId, SourceAudio> {
-    collection.sources().map(|s| (s.id, s.audio)).collect()
+/// The volume and mute the mixer of `canvas` gives each source: its own, with the
+/// program scene's entries over them while that scene is in Own levels (ADR-0091
+/// decision 3). Start, [`Studio::update`] and [`Studio::set_mix`] all build the levels
+/// here, so a scene switch sends the scene's levels and a scene in Shared levels costs
+/// one lookup.
+fn mix_of(collection: &SceneCollection, canvas: CanvasId) -> BTreeMap<SourceId, SourceAudio> {
+    let levels = collection.program_levels(canvas);
+    collection
+        .sources()
+        .map(|s| {
+            let audio = match levels {
+                Some(l) => l.heard(s.id, s.audio),
+                None => s.audio,
+            };
+            (s.id, audio)
+        })
+        .collect()
 }
 
 /// The preview scene's compositor and its picture for a UI (studio mode, ADR-0061).
