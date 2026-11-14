@@ -13,6 +13,34 @@ import { Theme, Tokens } from "tokens.slint";
 // takes focus on click accepts the first press while it has no focus, so the control
 // under it would need a second click (a Tabs bar after a click in another panel). The
 // control's own click handler calls `focus-pointer()` instead.
+// Keyboard focus that lands in a scrolled list shows the whole row holding the
+// control, its name and help too, not only the control (Slint scrolls just the
+// focused element into view). A control reports where its focus landed; the
+// `SettingRow` that contains that place reports itself; the `ScrollArea` that holds
+// the row scrolls it into view. All in window coordinates, all on events only.
+export global FocusReveal {
+    in-out property <int> serial;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <int> row-serial;
+    in-out property <length> row-x;
+    in-out property <length> row-y;
+    in-out property <length> row-w;
+    in-out property <length> row-h;
+    public function focused(x: length, y: length) {
+        self.x = x;
+        self.y = y;
+        self.serial += 1;
+    }
+    public function row(x: length, y: length, w: length, h: length) {
+        self.row-x = x;
+        self.row-y = y;
+        self.row-w = w;
+        self.row-h = h;
+        self.row-serial += 1;
+    }
+}
+
 export component RingFocus inherits FocusScope {
     out property <bool> ring: self.has-focus && !by-pointer;
     // The focus came from the keyboard and is not just back with its window: a tooltip
@@ -24,7 +52,17 @@ export component RingFocus inherits FocusScope {
         by-pointer = true;
         self.focus();
     }
-    focus-gained(reason) => { with-window = reason == FocusReason.window-activation; }
+    property <bool> by-tab;
+    focus-gained(reason) => {
+        with-window = reason == FocusReason.window-activation;
+        by-tab = reason == FocusReason.tab-navigation;
+    }
+    // Reported once Slint has scrolled the control into view, so the place is current.
+    changed has-focus => {
+        if self.has-focus && by-tab {
+            FocusReveal.focused(self.absolute-position.x, self.absolute-position.y);
+        }
+    }
     // Another window taking the focus keeps how this one got it, so a control clicked
     // with the pointer shows no focus ring when its window comes back.
     focus-lost(reason) => { if reason != FocusReason.window-activation { by-pointer = false; } }
@@ -1546,7 +1584,13 @@ export component TextField inherits Rectangle {
         edited => { root.edited(self.text); }
     }
     property <bool> focused: input.has-focus;
-    changed focused => { if !focused && !root.read-only && !root.password { root.accepted(root.text); } }
+    changed focused => {
+        if focused {
+            FocusReveal.focused(input.absolute-position.x, input.absolute-position.y);
+        } else if !root.read-only && !root.password {
+            root.accepted(root.text);
+        }
+    }
 }
 
 // ColorPicker: a swatch button that opens a popover to choose a colour by hue,
@@ -2188,7 +2232,13 @@ export component NumberField inherits Rectangle {
         }
     }
     property <bool> focused: input.has-focus;
-    changed focused => { if !focused { root.commit(); } }
+    changed focused => {
+        if focused {
+            FocusReveal.focused(input.absolute-position.x, input.absolute-position.y);
+        } else {
+            root.commit();
+        }
+    }
 }
 
 // KeyboardShortcutHint (design system): a chord shown as a key chip, for example in
@@ -2834,6 +2884,19 @@ export component ScrollArea inherits Rectangle {
     }
     public function scroll-by(dy: length) {
         flick.content-y = -clamp(root.offset + dy, 0px, root.max-offset);
+    }
+    // A row reported by FocusReveal that lies in this area's content is brought into
+    // view whole.
+    property <int> row-serial: FocusReveal.row-serial;
+    changed row-serial => {
+        let p = flick.absolute-position;
+        let top = p.y + flick.content-y;
+        // The row's middle decides the side: two areas side by side never share it.
+        let mid = FocusReveal.row-x + FocusReveal.row-w / 2;
+        if mid >= p.x && mid < p.x + flick.width
+            && FocusReveal.row-y >= top && FocusReveal.row-y + FocusReveal.row-h <= top + flick.content-height {
+            root.scroll-into-view(FocusReveal.row-y - top, FocusReveal.row-h);
+        }
     }
     flick := Flickable {
         x: 0px;
@@ -3611,6 +3674,14 @@ export component SettingRow inherits Rectangle {
     min-width: max(info.min-width, controls.min-width);
     min-height: Tokens.space-3 * 2 + root.inner;
     preferred-height: Tokens.space-3 * 2 + root.inner;
+    // Focus that lands in this row shows the whole row (FocusReveal).
+    property <int> focus-serial: FocusReveal.serial;
+    changed focus-serial => {
+        let p = self.absolute-position;
+        if FocusReveal.x >= p.x && FocusReveal.x < p.x + self.width && FocusReveal.y >= p.y && FocusReveal.y < p.y + self.height {
+            FocusReveal.row(p.x, p.y, self.width, self.height);
+        }
+    }
     if root.divider: Rectangle {
         y: 0;
         height: Tokens.size-border;
