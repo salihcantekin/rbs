@@ -3297,6 +3297,12 @@ impl Studio {
         }
     }
 
+    /// How long the render partition's ticks took to run since it first started
+    /// (ADR-0086 decision 9, P15 measurements). `None` before it runs.
+    pub fn render_tick_times(&self) -> Option<rbs_engine::TickTimes> {
+        self.render_worker.as_ref().map(|w| w.tick_times())
+    }
+
     /// [`Studio::progress`] plus a running output's counters, counted from its start
     /// (an output that joined a running encoder does not count what it encoded
     /// before). `None` when `id` does not run.
