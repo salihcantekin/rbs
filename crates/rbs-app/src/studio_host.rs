@@ -4686,7 +4686,9 @@ impl Host {
                 role: api_track_role(s.role),
                 reason: match s.reason {
                     rbs_record::IsoSkip::Limit => api::SkipReason::Limit,
-                    _ => api::SkipReason::NoPicture,
+                    rbs_record::IsoSkip::NoPicture => api::SkipReason::NoPicture,
+                    // A reason added later to the engine, not yet named here.
+                    _ => api::SkipReason::OpenFailed,
                 },
             });
         }
@@ -7516,7 +7518,18 @@ impl Host {
         let sound_only = matches!(class, Some(types::SourceClass::Audio(_)));
         let mut flag = source.record_separately;
         // `enabled` is the main feed: the picture of a picture source, the sound of
-        // anything else (a media file records its sound, as in 1.46).
+        // anything else (a media file records its sound, as in 1.46). Naming that feed
+        // twice in one call is refused, so no order between them is needed.
+        let aliased = if picture_only {
+            patch.video
+        } else {
+            patch.audio
+        };
+        if patch.enabled.is_some() && aliased.is_some() {
+            return Err(Refusal::Invalid(
+                "`enabled` and the feed it stands for cannot both be given.".into(),
+            ));
+        }
         if let Some(on) = patch.enabled {
             if picture_only {
                 flag.video = on;
@@ -7551,8 +7564,15 @@ impl Host {
             }
             flag.video_as = form;
         }
-        // The form is kept only while the picture is marked (scene model).
+        // The form is kept only while the picture is marked (scene model): a form for
+        // an unmarked picture would not be saved, so it is refused rather than lost.
         if !flag.video {
+            if patch.video_as.is_some_and(|form| form != VideoAs::Auto) {
+                return Err(Refusal::Invalid(format!(
+                    "{}'s picture is not marked, so it has no form to set.",
+                    source.name
+                )));
+            }
             flag.video_as = VideoAs::Auto;
         }
         if source.record_separately == flag {
@@ -7563,6 +7583,13 @@ impl Host {
             .collection
             .set_source_record_separately(id, flag)
             .map_err(|e| Refusal::of(&e))?;
+        // A mark the start plan would refuse (more files than it takes) is refused
+        // here, so a recording is never refused because of marks set through the
+        // app or the API.
+        if let Err(e) = rbs_record::plan(&self.collection) {
+            let _ = self.collection.undo(undo);
+            return Err(Refusal::Invalid(format!("{e}.")));
+        }
         self.history
             .record(EditKind::RecordSeparately, &name, 0, vec![undo]);
         Ok(true)
@@ -11009,11 +11036,11 @@ fn api_track_role(role: rbs_record::IsoRole) -> api::TrackRole {
     }
 }
 
-fn api_video_as(form: VideoAs) -> rbs_api::request::VideoAs {
+fn api_picture_form(form: VideoAs) -> api::PictureForm {
     match form {
-        VideoAs::Video => rbs_api::request::VideoAs::Video,
-        VideoAs::Image => rbs_api::request::VideoAs::Image,
-        _ => rbs_api::request::VideoAs::Auto,
+        VideoAs::Video => api::PictureForm::Video,
+        VideoAs::Image => api::PictureForm::Image,
+        _ => api::PictureForm::Auto,
     }
 }
 
@@ -11036,11 +11063,20 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         mixer_hidden: row.audio.mixer_hidden,
         monitor: monitor::api_mode(row.audio.monitor),
         companion_of: row.companion_of.map(|c| c.get()),
-        record_separately: !row.record_separately.is_none(),
+        // 1.46's meaning: the main feed (a picture source's picture, anything
+        // else's sound), so an older client's switch shows and clears that feed.
+        record_separately: if row
+            .kind
+            .is_some_and(|k| !k.is_audio() && k != SourceKind::Media)
+        {
+            row.record_separately.video
+        } else {
+            row.record_separately.audio
+        },
         record_tracks: (!row.record_separately.is_none()).then(|| api::RecordTracks {
             video: row.record_separately.video,
             audio: row.record_separately.audio,
-            video_as: api_video_as(row.record_separately.video_as),
+            video_as: api_picture_form(row.record_separately.video_as),
         }),
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,

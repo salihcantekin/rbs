@@ -114,7 +114,7 @@ fn source() -> SourceInfo {
         record_tracks: Some(rbs_api::types::RecordTracks {
             video: true,
             audio: false,
-            video_as: rbs_api::request::VideoAs::Image,
+            video_as: rbs_api::types::PictureForm::Image,
         }),
         monitor: MonitorMode::Only,
         filters: vec![FilterInfo {

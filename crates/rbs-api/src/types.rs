@@ -995,12 +995,31 @@ pub struct RecordTracks {
     #[serde(default, skip_serializing_if = "is_false")]
     pub audio: bool,
     /// The picture's form; `auto` when absent.
-    #[serde(default, skip_serializing_if = "is_auto")]
-    pub video_as: crate::request::VideoAs,
+    #[serde(default, skip_serializing_if = "PictureForm::is_auto")]
+    pub video_as: PictureForm,
 }
 
-fn is_auto(v: &crate::request::VideoAs) -> bool {
-    *v == crate::request::VideoAs::Auto
+/// The form of a marked picture in a source row (protocol 1.52). The request side is
+/// `request::VideoAs`; this one reads a later server's value as `other`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PictureForm {
+    /// Images for a still source, a video file otherwise.
+    #[default]
+    Auto,
+    /// A video file.
+    Video,
+    /// PNG images.
+    Image,
+    /// A form this client does not know (a later minor).
+    #[serde(other)]
+    Other,
+}
+
+impl PictureForm {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
 }
 
 /// Why a marked source has no file (protocol 1.46).

@@ -818,7 +818,8 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
 
 /// ADR-0086 step 3.5: a screen marked to record separately gets its own video file
 /// next to the master, in the recording's container, listed in the manifest; a
-/// microphone cannot be marked for a picture, nor a screen as images.
+/// microphone cannot be marked for a picture, nor a screen as images; ambiguous or
+/// unsaved patches are refused.
 #[test]
 fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
     let Some(gpu) = gpu() else { return };
@@ -840,6 +841,23 @@ fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
             RecordPatch {
                 video: Some(true),
                 video_as: Some(VideoAs::Image),
+                ..RecordPatch::default()
+            },
+        ),
+        // `enabled` stands for the picture here: both at once are refused.
+        (
+            display.id,
+            RecordPatch {
+                enabled: Some(true),
+                video: Some(false),
+                ..RecordPatch::default()
+            },
+        ),
+        // A form for a picture that is not marked would not be saved.
+        (
+            display.id,
+            RecordPatch {
+                video_as: Some(VideoAs::Video),
                 ..RecordPatch::default()
             },
         ),
