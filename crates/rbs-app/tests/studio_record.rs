@@ -1065,10 +1065,6 @@ impl ConnectionSender for ChannelSender {
 /// A same-user IPC client of the control API, in memory.
 struct Client {
     handle: ConnectionHandle,
-/// A control API connection to `host` (same-user IPC: every scope).
-struct ApiClient {
-    _api: rbs_api::ApiServer,
-    handle: rbs_api::transport::ConnectionHandle,
     rx: Receiver<serde_json::Value>,
     next: i64,
 }
@@ -1103,6 +1099,31 @@ impl Client {
             "{hello}"
         );
         (api, c)
+    }
+
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next;
+        self.next += 1;
+        let text =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.handle.push_message(text.to_string());
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an answer");
+            if v["id"] == id {
+                return v;
+            }
+        }
+    }
+}
+
+/// A control API connection to `host` (same-user IPC: every scope).
+struct ApiClient {
+    _api: rbs_api::ApiServer,
+    handle: rbs_api::transport::ConnectionHandle,
+    rx: Receiver<serde_json::Value>,
+    next: i64,
+}
+
 struct JsonSender(mpsc::Sender<serde_json::Value>);
 
 impl rbs_api::transport::ConnectionSender for JsonSender {

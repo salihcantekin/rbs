@@ -1840,6 +1840,9 @@ fn scene_levels_are_optional_fields_and_their_answers_round_trip() {
     })
     .unwrap();
     assert_eq!(set, json!({"scene": 2, "source": 3, "muted": true}));
+}
+
+#[test]
 fn markers_round_trip_and_unknown_colours_are_refused() {
     use rbs_api::request::{MarkerAdd, MarkerColor, MarkerPlaced, MarkerRemove, MarkersAdded};
     use rbs_api::types::{OutputCanvas, OutputTarget};
