@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
+import { ListBox, ScrollArea, Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -5359,48 +5359,6 @@ export component OutputsPanel inherits Rectangle {
     }
 }
 
-// One shape in Add. The cell is the button: an outline icon and the name on one row,
-// growing to a second line only when the name wraps. It fills its grid cell.
-component LibraryShape inherits Rectangle {
-    in property <string> title;
-    in property <IconName> icon;
-    callback act();
-    horizontal-stretch: 1;
-    min-width: 0px;
-    height: max(Tokens.size-control-lg, body.preferred-height);
-    border-radius: Tokens.radius-sm;
-    background: touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: button;
-    accessible-label: @tr("Add {}", title);
-    accessible-action-default => { root.act(); }
-    body := HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        padding-left: Tokens.space-1;
-        padding-right: Tokens.space-1;
-        padding-top: Tokens.space-1;
-        padding-bottom: Tokens.space-1;
-        spacing: Tokens.space-1;
-        alignment: start;
-        cross-axis-alignment: center;
-        Icon {
-            name: root.icon;
-            ink: Theme.text-primary;
-        }
-        Text {
-            horizontal-stretch: 1;
-            min-width: 0px;
-            text: root.title;
-            color: Theme.text-primary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            vertical-alignment: center;
-            wrap: word-wrap;
-        }
-    }
-    touch := TouchArea { clicked => { root.act(); } }
-}
-
 // The selected source's shape, when it is not a plain rectangle. It is the shape
 // itself, not a look: no checkbox and no remove, so turning it off cannot flatten
 // the picture back to a rectangle. A gear still opens the border and fill.
@@ -5492,6 +5450,16 @@ export component LibraryPanel inherits Rectangle {
     property <int> pick: 0;
     // 0 Background, 1 Frame.
     property <int> sample-kind: 0;
+    // The shapes Add offers, in reading order (the long name last); `stamp` is the kind `add-stamp` takes.
+    property <[{ name: string, icon: IconName, stamp: int }]> shape-list: [
+        { name: @tr("Circle"), icon: IconName.circle, stamp: 0 },
+        { name: @tr("Square"), icon: IconName.square, stamp: 1 },
+        { name: @tr("Rectangle"), icon: IconName.rectangle, stamp: 2 },
+        { name: @tr("Ellipse"), icon: IconName.ellipse, stamp: 4 },
+        { name: @tr("Triangle"), icon: IconName.triangle, stamp: 5 },
+        { name: @tr("Arrow"), icon: IconName.arrow-right, stamp: 6 },
+        { name: @tr("Rounded rectangle"), icon: IconName.rounded-rectangle, stamp: 3 },
+    ];
     // Thumbnails are made at the size the rows show them (`thumbnail.rs`).
     property <int> picture-px: Math.round(Tokens.size-row-picture-md / 1phx);
     init => { Studio.library-shown(root.picture-px); }
@@ -5499,7 +5467,7 @@ export component LibraryPanel inherits Rectangle {
     // The list has no width, and the flickable has no content-width. A `width: 100%`
     // here is the preferred width of the contents, so a short control stays short
     // (design system: filling a row). Properties uses the same shape.
-    fl := Flickable {
+    fl := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
@@ -5631,19 +5599,26 @@ export component LibraryPanel inherits Rectangle {
                     spacing: Tokens.size-section-gap;
                     alignment: start;
                     SectionTitle { title: @tr("Shapes"); }
-                    // Two equal columns. The six short names share cells; the long name
-                    // takes the row under them so it is not crushed in a narrow panel.
-                    GridLayout {
-                        width: 100%;
-                        horizontal-stretch: 1;
-                        spacing: Tokens.size-field-gap;
-                        LibraryShape { row: 0; col: 0; icon: IconName.circle; title: @tr("Circle"); act => { Studio.add-stamp(0); } }
-                        LibraryShape { row: 0; col: 1; icon: IconName.square; title: @tr("Square"); act => { Studio.add-stamp(1); } }
-                        LibraryShape { row: 1; col: 0; icon: IconName.rectangle; title: @tr("Rectangle"); act => { Studio.add-stamp(2); } }
-                        LibraryShape { row: 1; col: 1; icon: IconName.ellipse; title: @tr("Ellipse"); act => { Studio.add-stamp(4); } }
-                        LibraryShape { row: 2; col: 0; icon: IconName.triangle; title: @tr("Triangle"); act => { Studio.add-stamp(5); } }
-                        LibraryShape { row: 2; col: 1; icon: IconName.arrow-right; title: @tr("Arrow"); act => { Studio.add-stamp(6); } }
-                        LibraryShape { row: 3; col: 0; colspan: 2; icon: IconName.rounded-rectangle; title: @tr("Rounded rectangle"); act => { Studio.add-stamp(3); } }
+                    // As many columns as fit (ListBox, automatic columns); a name that
+                    // does not fit is elided and shows its tooltip.
+                    shapes := ListBox {
+                        inline: true;
+                        columns: 0;
+                        count: root.shape-list.length;
+                        row-height: Tokens.size-control-md;
+                        spacing: Tokens.space-1;
+                        for s[i] in root.shape-list: ListRow {
+                            x: shapes.cell-x(i);
+                            y: shapes.cell-y(i);
+                            width: shapes.cell-width;
+                            height: shapes.row-height;
+                            has-icon: true;
+                            icon: s.icon;
+                            name: s.name;
+                            selectable: false;
+                            accessible-name: @tr("Add {}", s.name);
+                            activated => { Studio.add-stamp(s.stamp); }
+                        }
                     }
                 }
             }
