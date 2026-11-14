@@ -95,6 +95,47 @@ pub fn client_top(top: i32, maximized: bool, frame: i32) -> i32 {
     if maximized { top + frame } else { top }
 }
 
+/// One `WM_WINDOWPOSCHANGING` of the main window, as far as its size is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SizeChange {
+    /// The window keeps its position (`SWP_NOMOVE`).
+    pub keeps_position: bool,
+    /// The window keeps its size (`SWP_NOSIZE`).
+    pub keeps_size: bool,
+    /// The user is moving or sizing the window (between `WM_ENTERSIZEMOVE` and
+    /// `WM_EXITSIZEMOVE`): the OS computes that size from the real frame.
+    pub user_sizing: bool,
+    /// The window is maximized or minimized: the OS sets that size.
+    pub zoomed_or_iconic: bool,
+}
+
+/// How many physical pixels a size change asked for is too tall.
+///
+/// winit turns a requested client size into a window size with `AdjustWindowRectEx`
+/// for the window's style, which still has the caption, so it adds the caption and the
+/// top frame (`top_inset`). With the caption removed the client area starts at the
+/// window's top (`client_top`), so that window would be `top_inset` taller inside than
+/// asked. winit asks for the current client size again whenever the minimum or maximum
+/// size changes (Slint sends them on every layout change, a density change among them),
+/// and without this correction the window grew by `top_inset` each time.
+///
+/// Only a program's resize of a window in its normal state is corrected: a pure size
+/// change, outside the user's own move or size loop. Maximize, restore, snap, a DPI
+/// change and the user's drags all move the window or run inside that loop.
+pub fn excess_height(c: SizeChange, top_inset: i32) -> i32 {
+    if c.keeps_size || !c.keeps_position || c.user_sizing || c.zoomed_or_iconic {
+        0
+    } else {
+        top_inset.max(0)
+    }
+}
+
+/// The window height for `height` asked by winit, without the caption it counted
+/// (see [`excess_height`]); never below one pixel.
+pub fn corrected_height(height: i32, excess: i32) -> i32 {
+    (height - excess).max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +204,54 @@ mod tests {
     fn a_maximized_client_area_starts_inside_the_screen() {
         assert_eq!(client_top(-8, true, 8), 0);
         assert_eq!(client_top(120, false, 8), 120);
+    }
+
+    const PROGRAM: SizeChange = SizeChange {
+        keeps_position: true,
+        keeps_size: false,
+        user_sizing: false,
+        zoomed_or_iconic: false,
+    };
+
+    #[test]
+    fn a_program_resize_loses_the_caption_winit_added() {
+        assert_eq!(excess_height(PROGRAM, 39), 39);
+        assert_eq!(corrected_height(800 + 39, excess_height(PROGRAM, 39)), 800);
+    }
+
+    #[test]
+    fn asking_for_the_same_client_size_again_keeps_the_window_height() {
+        // winit asks for the current client size whenever the size limits change.
+        let mut client = 900;
+        for _ in 0..10 {
+            let outer = client + 39;
+            client = corrected_height(outer, excess_height(PROGRAM, 39));
+        }
+        assert_eq!(client, 900);
+    }
+
+    #[test]
+    fn moves_user_drags_and_maximize_are_left_alone() {
+        let moved = SizeChange {
+            keeps_position: false,
+            ..PROGRAM
+        };
+        let dragged = SizeChange {
+            user_sizing: true,
+            ..PROGRAM
+        };
+        let zoomed = SizeChange {
+            zoomed_or_iconic: true,
+            ..PROGRAM
+        };
+        let only_moved = SizeChange {
+            keeps_size: true,
+            ..PROGRAM
+        };
+        for c in [moved, dragged, zoomed, only_moved] {
+            assert_eq!(excess_height(c, 39), 0, "{c:?}");
+        }
+        assert_eq!(excess_height(PROGRAM, -3), 0);
+        assert_eq!(corrected_height(10, 39), 1);
     }
 }
