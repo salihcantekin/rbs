@@ -70,9 +70,11 @@ export component RingFocus inherits FocusScope {
 
 export component FocusRing inherits Rectangle {
     in property <bool> show;
+    // The control's own corner radius (a round icon button passes half its height).
+    in property <length> radius: Tokens.radius-sm;
     border-width: show ? Tokens.size-focus-ring : 0px;
     border-color: Theme.border-focus;
-    border-radius: Tokens.radius-sm;
+    border-radius: root.radius;
 }
 
 // The RBS mark (docs/specs/ui-design-system.md, "Brand mark"): a scene frame with a round
@@ -457,27 +459,30 @@ export component Button inherits Rectangle {
     property <int> tip-owner;
     height: dense ? Tokens.size-control-sm : Tokens.size-control-md;
     min-width: max(root.height, content.preferred-width + (text == "" ? 0px : 2 * Tokens.space-3));
-    border-radius: Tokens.radius-sm;
-    // A secondary button keeps a sunken fill and an outline at rest, so it reads as a
-    // button in every theme before the pointer reaches it. Ghost stays quiet unless
-    // `framed`. A filled kind keeps its colour; the hairline below is its only edge.
+    // Tint look (owner decision 2026-11-14): soft corners; a button with only an icon is
+    // round. A secondary button is a quiet tinted fill with no outline, so it reads as a
+    // button without a box drawn round it; ghost has no fill until the pointer comes.
+    // High contrast keeps an outline on every unfilled kind.
+    property <bool> round: root.text == "";
+    border-radius: root.round ? root.height / 2 : Tokens.radius-button;
     property <bool> filled: kind == "primary" || kind == "live";
-    property <bool> outlined: enabled && (kind == "secondary" || framed);
+    property <bool> outlined: enabled && !filled && (Theme.high-contrast ? kind != "ghost" || framed || checked : checked);
     background: !enabled ? transparent
-        : kind == "primary" ? (touch.has-hover && !touch.pressed ? Theme.accent-hover : Theme.accent)
+        : kind == "primary" ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live
-        : checked ? Theme.accent-subtle
-        : touch.pressed ? Theme.surface-sunken
-        : touch.has-hover ? Theme.surface-overlay
-        : kind == "secondary" ? Theme.surface-sunken
+        : kind == "danger" ? (touch.has-hover ? Theme.state-error-subtle-hover : Theme.state-error-subtle)
+        : checked ? (touch.has-hover ? Theme.accent-subtle-hover : Theme.accent-subtle)
+        : touch.pressed ? Theme.button-pressed
+        : touch.has-hover ? Theme.button-hover
+        : kind == "secondary" || framed ? Theme.button-fill
         : transparent;
     border-width: outlined ? Tokens.size-border : 0px;
     border-color: checked ? Theme.accent : Theme.border-strong;
     // A one-pixel lip along the top of a filled button, inset past the corners.
-    if root.enabled && root.filled && !touch.has-hover && !touch.pressed: Rectangle {
+    if root.enabled && root.filled && !root.round && !touch.has-hover && !touch.pressed: Rectangle {
         y: 0px;
-        x: Tokens.radius-sm;
-        width: parent.width - 2 * Tokens.radius-sm;
+        x: root.border-radius;
+        width: parent.width - 2 * root.border-radius;
         height: Tokens.size-border;
         background: root.kind == "live" ? Theme.text-on-live : Theme.accent-hover;
     }
@@ -511,7 +516,19 @@ export component Button inherits Rectangle {
     content := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-1 + Tokens.space-1 / 2;
-        if root.shown-lead != IconName.none: VerticalLayout {
+        // With text beside it, the lead icon of an unfilled button sits on its own small
+        // chip, so a row of commands scans by icon (Tint look).
+        if root.shown-lead != IconName.none && root.text != "" && !root.filled: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-button-chip;
+                height: Tokens.size-button-chip;
+                border-radius: Tokens.radius-md;
+                background: !root.enabled ? transparent : root.kind == "danger" ? Theme.state-error-subtle-hover : Theme.button-chip;
+                Icon { name: root.shown-lead; ink: !root.enabled ? root.ink : root.kind == "danger" ? Theme.state-error : root.lead-ink == root.ink ? Theme.accent : root.lead-ink; }
+            }
+        }
+        if root.shown-lead != IconName.none && (root.text == "" || root.filled): VerticalLayout {
             alignment: center;
             Icon { name: root.shown-lead; ink: root.enabled ? root.lead-ink : root.ink; }
         }
@@ -551,7 +568,7 @@ export component Button inherits Rectangle {
             if root.alt-click && root.alt-held { root.alt-clicked(); } else { root.clicked(); }
         }
     }
-    FocusRing { show: focus.ring; }
+    FocusRing { show: focus.ring; radius: root.border-radius; }
 }
 
 // Split button: a command and, behind a divider at its right edge, a ▾ part that opens
