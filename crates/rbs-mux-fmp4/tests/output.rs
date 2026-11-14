@@ -181,6 +181,13 @@ fn is_key(chunk: &MuxChunk) -> bool {
     matches!(chunk.kind, ChunkKind::Media { keyframe: true, .. })
 }
 
+/// Media chunks only. `finish` appends duration patches after them.
+fn fragments(chunks: &[MuxChunk]) -> impl Iterator<Item = &MuxChunk> {
+    chunks
+        .iter()
+        .filter(|c| matches!(c.kind, ChunkKind::Media { .. }))
+}
+
 #[test]
 fn header_is_ftyp_and_moov_with_sample_entries() {
     let config = MuxerConfig::new(MP4, vec![h264_stream(), aac_stream()]);
@@ -262,12 +269,17 @@ fn fragments_start_at_keyframes_with_times_and_offsets() {
     muxer.write(StreamIndex(0), &next_key, &mut chunks).unwrap();
     assert_eq!(chunks.len(), 2, "a video keyframe ends the fragment");
     muxer.finish(&mut chunks).unwrap();
-    assert_eq!(
-        chunks.len(),
-        3,
-        "finish flushes the last fragment, no trailer"
-    );
-    assert!(chunks[1..].iter().all(is_key));
+    let media = chunks
+        .iter()
+        .filter(|c| matches!(c.kind, ChunkKind::Media { .. }))
+        .count();
+    let patches = chunks
+        .iter()
+        .filter(|c| matches!(c.kind, ChunkKind::Patch { .. }))
+        .count();
+    assert_eq!(media, 2, "finish flushes the last fragment");
+    assert_eq!(patches, 3, "movie duration and both track durations");
+    assert!(chunks[1..=2].iter().all(is_key));
     assert_eq!(
         chunks[1].kind,
         ChunkKind::Media {
@@ -308,6 +320,64 @@ fn fragments_start_at_keyframes_with_times_and_offsets() {
     assert_eq!(runs[0].base, (934 + 66) * 90);
     assert_eq!(runs[0].samples, [(3000, 6, 0x0200_0000, 100 * 90)]);
     assert_eq!(mdat, [0, 0, 0, 2, 0x65, 7]);
+}
+
+#[test]
+fn finish_patches_the_movie_and_track_duration() {
+    let config = MuxerConfig::new(MP4, vec![h264_stream()]);
+    let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    let frame = video(0, 0, true, vec![0, 0, 0, 2, 0x65, 1], LP4);
+    muxer.write(StreamIndex(0), &frame, &mut chunks).unwrap();
+    muxer.finish(&mut chunks).unwrap();
+
+    let mut bytes = Vec::new();
+    let mut patches = Vec::new();
+    for chunk in &chunks {
+        if chunk.is_sequential() {
+            bytes.extend_from_slice(&chunk.data);
+        } else if let ChunkKind::Patch { offset } = chunk.kind {
+            patches.push((offset, chunk.data.clone()));
+        }
+    }
+    assert_eq!(patches.len(), 2, "one track and the movie");
+    let moov = parse(&bytes, 0)
+        .into_iter()
+        .find(|b| &b.kind == b"moov")
+        .unwrap();
+    assert_eq!(
+        moov.child(b"mvhd").u32_at(16),
+        0,
+        "a crash leaves the length unknown"
+    );
+    assert_eq!(
+        moov.child(b"trak").child(b"tkhd").u32_at(20),
+        0,
+        "a crash leaves the track length unknown"
+    );
+    assert_eq!(
+        moov.child(b"trak").child(b"mdia").child(b"mdhd").u32_at(16),
+        0,
+        "the media header duration stays unknown"
+    );
+    for (offset, data) in &patches {
+        let at = usize::try_from(*offset).unwrap();
+        assert_eq!(data.len(), 4);
+        bytes[at..at + 4].copy_from_slice(data);
+    }
+    let moov = parse(&bytes, 0)
+        .into_iter()
+        .find(|b| &b.kind == b"moov")
+        .unwrap();
+    // The one frame sits 1 s after media time 0 (the interleaving bound), and lasts
+    // one 30 fps frame (33_333_333 ns). 1_033_333_333 ns rounds to 1033 ms.
+    assert_eq!(moov.child(b"mvhd").u32_at(16), 1033);
+    assert_eq!(moov.child(b"trak").child(b"tkhd").u32_at(20), 1033);
+    assert_eq!(
+        moov.child(b"trak").child(b"mdia").child(b"mdhd").u32_at(16),
+        0
+    );
 }
 
 #[test]
@@ -384,9 +454,10 @@ fn long_gops_are_split_at_the_fragment_duration() {
             .unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
-    let keys: Vec<bool> = chunks[1..].iter().map(is_key).collect();
+    let media: Vec<_> = fragments(&chunks).collect();
+    let keys: Vec<bool> = media.iter().copied().map(is_key).collect();
     assert_eq!(keys, [true, false, false]);
-    let counts: Vec<usize> = chunks[1..]
+    let counts: Vec<usize> = media
         .iter()
         .map(|c| fragment(&c.data).1[0].samples.len())
         .collect();
@@ -411,7 +482,11 @@ fn streams_arriving_out_of_order_keep_their_timestamps() {
         muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
-    assert_eq!(chunks.len(), 2, "one fragment: the keyframe arrived first");
+    assert_eq!(
+        fragments(&chunks).count(),
+        1,
+        "one fragment: the keyframe arrived first"
+    );
     // Fragment timestamp is the earliest dts in it.
     assert_eq!(
         chunks[1].kind,
@@ -496,8 +571,9 @@ fn audio_only_output_has_keyframe_fragments() {
             .unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
-    assert!(chunks.len() > 2, "fragments by duration");
-    assert!(chunks[1..].iter().all(is_key));
+    let media: Vec<_> = fragments(&chunks).collect();
+    assert!(media.len() > 1, "fragments by duration");
+    assert!(media.iter().copied().all(is_key));
 }
 
 #[test]
@@ -638,8 +714,7 @@ fn changed_parameter_sets_and_bad_annexb_leave_no_output() {
             )
             .unwrap();
         muxer.finish(&mut chunks).unwrap();
-        let samples: Vec<usize> = chunks[1..]
-            .iter()
+        let samples: Vec<usize> = fragments(&chunks)
             .map(|c| fragment(&c.data).1[0].samples.len())
             .collect();
         assert_eq!(samples, [1, 1], "only the good packets, one per fragment");
@@ -704,7 +779,7 @@ fn rounded_positions_give_exact_durations_and_continuous_fragments() {
 
     let mut next_base = [None, None];
     let mut durations = [Vec::new(), Vec::new()];
-    for c in &chunks[1..] {
+    for c in fragments(&chunks) {
         for run in fragment(&c.data).1 {
             let t = run.track as usize - 1;
             if let Some(expected) = next_base[t] {

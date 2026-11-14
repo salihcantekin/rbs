@@ -17,6 +17,8 @@ use rbs_mux::{CreateError, MuxError, Muxer, MuxerConfig};
 use crate::boxes;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
+/// Movie header timescale. A 32-bit duration at this rate covers about 49 days.
+const MOVIE_TIMESCALE: u32 = 1000;
 /// `trun` flags: data offset, and per-sample duration, size, flags and composition
 /// time offset.
 const TRUN_FLAGS: u32 = 0x0000_0f01;
@@ -88,6 +90,10 @@ struct Track {
     /// a changed set would make the rest of the file undecodable.
     parameter_sets: Vec<Vec<u8>>,
     last_dts: Option<Timestamp>,
+    /// File offset of this track's 4-byte `tkhd` duration, patched at `finish`.
+    duration_at: usize,
+    /// Latest presentation end seen, in master-clock nanoseconds.
+    present_end: Option<i128>,
 }
 
 pub(crate) struct Fmp4Muxer {
@@ -108,6 +114,8 @@ pub(crate) struct Fmp4Muxer {
     fragment_samples: usize,
     sequence: u32,
     last_chunk: Option<Timestamp>,
+    /// File offset of the 4-byte `mvhd` duration, patched at `finish`.
+    movie_duration_at: usize,
     began: bool,
     finished: bool,
 }
@@ -287,13 +295,24 @@ fn mp4a_entry(out: &mut Vec<u8>, channels: u16, rate: u32, asc: &[u8]) {
     boxes::close(out, entry);
 }
 
-fn trak(out: &mut Vec<u8>, track: &Track, entry: &dyn Fn(&mut Vec<u8>), width: u16, height: u16) {
+/// Writes one `trak` and returns the file-relative offset of its `tkhd` duration
+/// within `out` (the caller adds where `out` itself is placed).
+fn trak(
+    out: &mut Vec<u8>,
+    track: &Track,
+    entry: &dyn Fn(&mut Vec<u8>),
+    width: u16,
+    height: u16,
+) -> usize {
     let video = track.kind.is_video();
     let trak = boxes::open(out, b"trak");
     let tkhd = boxes::open_full(out, b"tkhd", 0, 3); // enabled, in movie
     boxes::zeros(out, 8); // creation, modification
     boxes::u32(out, track.id);
-    boxes::zeros(out, 4 + 4 + 8); // reserved, duration, reserved
+    boxes::u32(out, 0); // reserved
+    let duration_at = out.len();
+    boxes::u32(out, 0); // duration, patched at finish
+    boxes::zeros(out, 8); // reserved
     boxes::u16(out, 0); // layer
     boxes::u16(out, 0); // alternate_group
     boxes::u16(out, if video { 0 } else { 0x0100 }); // volume
@@ -311,7 +330,9 @@ fn trak(out: &mut Vec<u8>, track: &Track, entry: &dyn Fn(&mut Vec<u8>), width: u
     let mdhd = boxes::open_full(out, b"mdhd", 0, 0);
     boxes::zeros(out, 8);
     boxes::u32(out, track.timescale);
-    boxes::u32(out, 0); // duration: fragmented
+    // Left at 0. A 32-bit field at 90 kHz overflows past about 13 hours, which would
+    // make a player that trusts it stop early. Fragments carry each sample's duration.
+    boxes::u32(out, 0);
     boxes::u16(out, 0x55c4); // language "und"
     boxes::u16(out, 0);
     boxes::close(out, mdhd);
@@ -358,6 +379,7 @@ fn trak(out: &mut Vec<u8>, track: &Track, entry: &dyn Fn(&mut Vec<u8>), width: u
     boxes::close(out, minf);
     boxes::close(out, mdia);
     boxes::close(out, trak);
+    duration_at
 }
 
 impl Fmp4Muxer {
@@ -420,7 +442,7 @@ impl Fmp4Muxer {
                     ) else {
                         return Err(CreateError::InvalidConfig("picture size".into()));
                     };
-                    let track = Track {
+                    let mut track = Track {
                         id,
                         codec,
                         bitstream: stream.bitstream,
@@ -432,8 +454,10 @@ impl Fmp4Muxer {
                         committed: 0,
                         parameter_sets,
                         last_dts: None,
+                        duration_at: 0,
+                        present_end: None,
                     };
-                    trak(
+                    track.duration_at = trak(
                         &mut traks,
                         &track,
                         &|out| {
@@ -475,7 +499,7 @@ impl Fmp4Muxer {
                     ) else {
                         return Err(CreateError::InvalidConfig("picture size".into()));
                     };
-                    let track = Track {
+                    let mut track = Track {
                         id,
                         codec: CodecId::Av1,
                         bitstream: BitstreamFormat::Obu,
@@ -487,8 +511,10 @@ impl Fmp4Muxer {
                         committed: 0,
                         parameter_sets: Vec::new(),
                         last_dts: None,
+                        duration_at: 0,
+                        present_end: None,
                     };
-                    trak(
+                    track.duration_at = trak(
                         &mut traks,
                         &track,
                         &|out| visual_entry(out, b"av01", b"av1C", width, height, &config_record),
@@ -516,7 +542,7 @@ impl Fmp4Muxer {
                     }
                     let rate = format.sample_rate.hz();
                     let channels = format.channels.channels() as u16;
-                    let track = Track {
+                    let mut track = Track {
                         id,
                         codec: CodecId::Aac,
                         bitstream: BitstreamFormat::Raw,
@@ -528,9 +554,11 @@ impl Fmp4Muxer {
                         committed: 0,
                         parameter_sets: Vec::new(),
                         last_dts: None,
+                        duration_at: 0,
+                        present_end: None,
                     };
                     let asc = stream.extradata.clone();
-                    trak(
+                    track.duration_at = trak(
                         &mut traks,
                         &track,
                         &|out| mp4a_entry(out, channels, rate, &asc),
@@ -556,8 +584,9 @@ impl Fmp4Muxer {
         let moov = boxes::open(&mut header, b"moov");
         let mvhd = boxes::open_full(&mut header, b"mvhd", 0, 0);
         boxes::zeros(&mut header, 8);
-        boxes::u32(&mut header, 1000);
-        boxes::u32(&mut header, 0);
+        boxes::u32(&mut header, MOVIE_TIMESCALE);
+        let movie_duration_at = header.len();
+        boxes::u32(&mut header, 0); // duration, patched at finish
         boxes::u32(&mut header, 0x0001_0000); // rate
         boxes::u16(&mut header, 0x0100); // volume
         boxes::zeros(&mut header, 10);
@@ -565,7 +594,11 @@ impl Fmp4Muxer {
         boxes::zeros(&mut header, 24);
         boxes::u32(&mut header, tracks.len() as u32 + 1);
         boxes::close(&mut header, mvhd);
+        let trak_at = header.len();
         header.extend_from_slice(&traks);
+        for track in &mut tracks {
+            track.duration_at += trak_at;
+        }
         let mvex = boxes::open(&mut header, b"mvex");
         for track in &tracks {
             let trex = boxes::open_full(&mut header, b"trex", 0, 0);
@@ -589,6 +622,7 @@ impl Fmp4Muxer {
             fragment_samples: 0,
             sequence: 1,
             last_chunk: None,
+            movie_duration_at,
             began: false,
             finished: false,
         })
@@ -664,16 +698,8 @@ impl Fmp4Muxer {
             boxes::u32(&mut chunk, data_offset as u32);
             for (i, s) in track.samples.iter().enumerate() {
                 let dts = self.media_time(s.dts, track.timescale);
-                let end = match track.samples.get(i + 1) {
-                    Some(next) => self.media_time(next.dts, track.timescale),
-                    None => match following {
-                        Some(dts) => self.media_time(dts, track.timescale),
-                        None => self.media_time(
-                            s.dts + s.duration.unwrap_or(track.nominal),
-                            track.timescale,
-                        ),
-                    },
-                };
+                let end_ts = sample_end(&track.samples, i, following, track.nominal);
+                let end = self.media_time(end_ts, track.timescale);
                 // pts >= dts (packet invariant) and pts - dts <= MAX_COMPOSITION_DELAY
                 // (checked in `write`), so the offset is non-negative and fits an i32.
                 let pts = self.media_time(s.pts, track.timescale);
@@ -702,6 +728,7 @@ impl Fmp4Muxer {
         }
         boxes::close(&mut chunk, mdat);
         debug_assert_eq!(chunk.len(), chunk.capacity());
+        note_present_ends(&mut self.tracks, next);
 
         // An entry point for every stream: audio samples all are, and there is at most
         // one video track (checked at create), whose first sample must be a keyframe.
@@ -893,6 +920,78 @@ impl Muxer for Fmp4Muxer {
         }
         self.flush(None, out);
         self.finished = true;
+        // Seekable outputs get the length (players and file browsers show it). Others
+        // keep a valid live file whose duration fields stay 0.
+        let Some(origin) = self.origin else {
+            return Ok(());
+        };
+        let mut movie_end: Option<i128> = None;
+        for track in &self.tracks {
+            let Some(end) = track.present_end else {
+                continue;
+            };
+            movie_end = Some(movie_end.map_or(end, |m| m.max(end)));
+            out.push(duration_patch(
+                track.duration_at,
+                movie_duration(end, origin),
+            ));
+        }
+        if let Some(end) = movie_end {
+            out.push(duration_patch(
+                self.movie_duration_at,
+                movie_duration(end, origin),
+            ));
+        }
         Ok(())
     }
+}
+
+/// Decode end of sample `i`: the next sample's dts, the packet that closed the
+/// fragment, or this sample's own duration.
+fn sample_end(
+    samples: &[Sample],
+    i: usize,
+    following: Option<Timestamp>,
+    nominal: Duration,
+) -> Timestamp {
+    match samples.get(i + 1) {
+        Some(next) => next.dts,
+        None => {
+            following.unwrap_or_else(|| samples[i].dts + samples[i].duration.unwrap_or(nominal))
+        }
+    }
+}
+
+/// One max per sample, on timestamps `flush` already holds. No allocation.
+fn note_present_ends(tracks: &mut [Track], next: Option<(usize, Timestamp)>) {
+    for (index, track) in tracks.iter_mut().enumerate() {
+        let following = next.and_then(|(i, dts)| (i == index).then_some(dts));
+        let mut shown = track.present_end;
+        for (i, s) in track.samples.iter().enumerate() {
+            let end_ts = sample_end(&track.samples, i, following, track.nominal);
+            let delta = nanos(end_ts).saturating_sub(nanos(s.dts));
+            let at = nanos(s.pts).saturating_add(delta);
+            shown = Some(shown.map_or(at, |e| e.max(at)));
+        }
+        track.present_end = shown;
+    }
+}
+
+/// `end - origin` in the movie timescale, saturating at the 32-bit field.
+fn movie_duration(end: i128, origin: i128) -> u32 {
+    let since = end - origin;
+    if since <= 0 {
+        return 0;
+    }
+    let ticks = ticks(since as u128, MOVIE_TIMESCALE);
+    u32::try_from(ticks).unwrap_or(u32::MAX)
+}
+
+fn duration_patch(offset: usize, ticks: u32) -> MuxChunk {
+    MuxChunk::new(
+        ChunkKind::Patch {
+            offset: offset as u64,
+        },
+        Bytes::copy_from_slice(&ticks.to_be_bytes()),
+    )
 }

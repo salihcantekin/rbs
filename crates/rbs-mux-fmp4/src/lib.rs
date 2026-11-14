@@ -15,7 +15,15 @@
 //!   each video keyframe, so fragments start at entry points (`keyframe` set), or once
 //!   it spans `MuxerConfig::fragment_duration` (1 s by default), which bounds how long
 //!   media is held back, or at 1 GiB or 65 536 samples. Very short GOPs give short
-//!   fragments. `finish` emits the last fragment; there is no `mfra` index.
+//!   fragments. `finish` emits the last fragment, then `Patch` chunks (`mux.patches`)
+//!   that fill the movie and track durations (`mvhd` and `tkhd`, timescale 1000) over
+//!   the zeros the header reserved. Each track keeps only its latest presentation
+//!   end, updated from the timestamps a fragment already walks, so a recording holds
+//!   nothing extra for the length. Outputs that cannot seek ignore the patches, and
+//!   a crash never applies them: the fields stay 0 and the fragments stay playable.
+//!   The media-header duration (`mdhd`) stays 0, because a 32-bit field at 90 kHz
+//!   overflows past about 13 hours and the fragments already carry each sample's
+//!   duration. There is no `mfra` index.
 //! - At most one video stream: a keyframe chunk must be an entry point for every
 //!   stream, which two independent GOP structures would rarely give.
 //! - A failed `write` emits nothing and changes nothing.
@@ -80,7 +88,8 @@ impl AdapterFactory for Fmp4MuxerFactory {
                     "mp4.fragmented.aac",
                 ]),
             )
-            .with(caps::LIVE, CapabilityValue::Flag(true)))
+            .with(caps::LIVE, CapabilityValue::Flag(true))
+            .with(caps::PATCHES, CapabilityValue::Flag(true)))
     }
 }
 

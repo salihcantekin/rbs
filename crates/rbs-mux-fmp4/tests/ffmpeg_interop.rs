@@ -10,7 +10,8 @@ use std::process::Command;
 
 use rbs_core::media::{
     AudioFormat, BitstreamFormat, Bytes, ChunkKind, CodecId, ColorSpace, ContainerId,
-    EncodedPacket, PixelFormat, Size, StreamDescriptor, StreamIndex, StreamParams, VideoFormat,
+    EncodedPacket, MuxChunk, PixelFormat, Size, StreamDescriptor, StreamIndex, StreamParams,
+    VideoFormat,
 };
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate, SampleRate};
@@ -68,6 +69,23 @@ fn ffmpeg_decodes_annexb_input_without_errors() {
 #[ignore = "needs the ffmpeg command-line tool"]
 fn ffmpeg_decodes_length_prefixed_input_without_errors() {
     run(true);
+}
+
+/// The file a seekable output writes: sequential chunks, then duration patches.
+fn file_bytes(chunks: &[MuxChunk]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for chunk in chunks {
+        if chunk.is_sequential() {
+            bytes.extend_from_slice(&chunk.data);
+        }
+    }
+    for chunk in chunks {
+        if let ChunkKind::Patch { offset } = chunk.kind {
+            let at = usize::try_from(offset).unwrap();
+            bytes[at..at + chunk.data.len()].copy_from_slice(&chunk.data);
+        }
+    }
+    bytes
 }
 
 fn run(length_prefixed: bool) {
@@ -194,8 +212,7 @@ fn run(length_prefixed: bool) {
     assert_eq!(keyframes, 4, "one fragment per GOP");
 
     let out = dir.join("out.mp4");
-    let bytes: Vec<u8> = chunks.iter().flat_map(|c| c.data.iter().copied()).collect();
-    std::fs::write(&out, bytes).unwrap();
+    std::fs::write(&out, file_bytes(&chunks)).unwrap();
     let decoded = ffmpeg(&["-i", &path(&out), "-f", "null", "-"]);
     assert!(decoded.status.success());
     assert!(
