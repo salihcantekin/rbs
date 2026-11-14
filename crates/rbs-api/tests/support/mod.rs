@@ -290,6 +290,7 @@ impl FakeTarget {
                 video_encoder: "Test".into(),
                 audio_encoder: None,
                 tracks: vec![],
+                skipped: vec![],
             }
         } else {
             RecordState::Idle { last: None }

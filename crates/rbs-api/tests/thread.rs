@@ -126,6 +126,7 @@ impl ControlTarget for Studio {
                         video_encoder: "Test".into(),
                         audio_encoder: None,
                         tracks: vec![],
+                        skipped: vec![],
                     })
                 });
                 Ok(Response::RecordStarted(RecordStarted {

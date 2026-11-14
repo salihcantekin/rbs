@@ -346,7 +346,7 @@ fn every_request() -> Vec<Request> {
         c(Command::RecordStart(RecordStart {
             profile: "default".into(),
             canvas: None,
-            iso: None,
+            iso: Some(false),
         })),
         c(Command::RecordStart(RecordStart {
             profile: "default".into(),
@@ -769,6 +769,7 @@ fn every_result_and_event_type_round_trips() {
             video_encoder: "VT".into(),
             audio_encoder: None,
             tracks: vec![],
+            skipped: vec![],
         }),
         EventPayload::CanvasChanged(canvas()),
         EventPayload::SettingsChanged(Settings {
@@ -967,6 +968,7 @@ fn canvas_states_are_the_main_object_with_canvas_added() {
                 video_encoder: "NVENC".into(),
                 audio_encoder: None,
                 tracks: vec![],
+                skipped: vec![],
             },
         }),
     };
@@ -1652,6 +1654,11 @@ fn separate_files_round_trip_and_later_options_are_refused() {
             role: TrackRole::Audio,
             source: 4,
         }],
+        skipped: vec![SkippedTrack {
+            source: 5,
+            role: TrackRole::Audio,
+            reason: SkipReason::NotHeard,
+        }],
     };
     round_trip(&running);
     let value = serde_json::to_value(&running).unwrap();
@@ -1659,12 +1666,25 @@ fn separate_files_round_trip_and_later_options_are_refused() {
         value["tracks"],
         json!([{"file": "Microphone.wav", "role": "audio", "source": 4}])
     );
+    assert_eq!(
+        value["skipped"],
+        json!([{"source": 5, "role": "audio", "reason": "not_heard"}])
+    );
+    // A later minor's role or reason reads as `other`.
+    let later: SkippedTrack =
+        serde_json::from_value(json!({"source": 1, "role": "caption", "reason": "disk_full"}))
+            .unwrap();
+    assert_eq!(
+        (later.role, later.reason),
+        (TrackRole::Other, SkipReason::Other)
+    );
     // A recording without separate files reads as it did in 1.45.
     let plain = serde_json::to_value(RecordState::Recording {
         profile: None,
         video_encoder: "VT".into(),
         audio_encoder: None,
         tracks: vec![],
+        skipped: vec![],
     })
     .unwrap();
     assert!(plain.get("tracks").is_none());

@@ -413,6 +413,7 @@ fn events_reach_subscribers_with_seq_and_coalesce_while_blocked() {
                 video_encoder: "Test".into(),
                 audio_encoder: None,
                 tracks: vec![],
+                skipped: vec![],
             }
         } else {
             RecordState::Idle { last: None }

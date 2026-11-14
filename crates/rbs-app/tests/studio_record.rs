@@ -704,7 +704,7 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
         r.iter().any(|r| r.id == mic.id && r.record_separately)
     });
 
-    // Marked, `iso` off (`record.start_to_file`): still one file.
+    // Marked, `iso` off (as `record.start_to_file` and `iso: false` ask): still one file.
     let single = dir.join("single.mkv");
     host.send(Command::StartRecording(request(single.clone(), None)));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
@@ -762,6 +762,7 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
         "{stopped:?}"
     );
     let wav = std::fs::read(&track).unwrap();
+    assert!(wav_data_len(&wav) > 0, "the WAV holds sound");
     assert!(
         wav.starts_with(b"RIFF") || wav.starts_with(b"RF64"),
         "{:?}",
@@ -781,6 +782,145 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
     rows_where(&rx, |r| {
         r.iter().any(|r| r.id == mic.id && !r.record_separately)
     });
+
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Bytes after the header of a WAV file's `data` chunk, as written.
+fn wav_data_len(wav: &[u8]) -> usize {
+    let mut at = 12;
+    while at + 8 <= wav.len() {
+        let size = u32::from_le_bytes(wav[at + 4..at + 8].try_into().unwrap()) as usize;
+        if &wav[at..at + 4] == b"data" {
+            return wav.len() - (at + 8);
+        }
+        at += 8 + size + (size & 1);
+    }
+    0
+}
+
+/// A host with a display and a microphone, the microphone marked to record separately.
+fn marked(
+    gpu: Arc<GpuContext>,
+    clock: &TestClock,
+    fault: Option<Fault>,
+) -> (StudioHost, Receiver<Update>, SourceRow, SourceRow) {
+    let (host, rx) = host_with(gpu, clock, fault);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    for kind in [SourceKind::Screen, SourceKind::AudioInput] {
+        host.send(Command::ListTargets(kind));
+        let target = next(&rx, |u| match u {
+            Update::Targets(k, t) if k == kind => Some(t[0].clone()),
+            _ => None,
+        });
+        host.send(Command::AddSource { kind, target });
+    }
+    let rows = rows_where(&rx, |r| r.len() == 2);
+    let find = |k: SourceKind| rows.iter().find(|r| r.kind == Some(k)).unwrap().clone();
+    let (display, mic) = (find(SourceKind::Screen), find(SourceKind::AudioInput));
+    host.send(Command::SetRecordSeparately {
+        id: mic.id,
+        enabled: true,
+    });
+    rows_where(&rx, |r| {
+        r.iter().any(|r| r.id == mic.id && r.record_separately)
+    });
+    (host, rx, display, mic)
+}
+
+fn with_tracks(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
+    let mut r = request(path, encoder);
+    r.iso = true;
+    r
+}
+
+/// The one WAV in `folder`.
+fn only_wav(folder: &std::path::Path) -> PathBuf {
+    let wavs: Vec<PathBuf> = std::fs::read_dir(folder)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "wav"))
+        .collect();
+    assert_eq!(wavs.len(), 1, "{wavs:?}");
+    wavs[0].clone()
+}
+
+/// ADR-0086 decision 5 and ADR-0055: a start that panics after the master started
+/// leaves no track running; a master that cannot start removes the folder and the
+/// tracks; a picture source cannot be marked in 1.46; deleting the marked source
+/// during the take ends cleanly.
+#[test]
+fn separate_files_clean_up_after_a_refused_or_panicked_start() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-iso-fail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx, display, mic) = marked(gpu, &clock, Some(Fault::AfterOutputStart));
+
+    // A picture source is refused and stays unmarked.
+    host.send(Command::SetRecordSeparately {
+        id: display.id,
+        enabled: true,
+    });
+    next(&rx, |u| match u {
+        Update::Error(why) => Some(why),
+        _ => None,
+    });
+
+    // The start panics once the master runs (the fault fires once): recovery stops
+    // the master and the track, so later takes with tracks start (no "already
+    // running"). A crash may leave that take's files; they are not cleaned.
+    host.send(Command::StartRecording(with_tracks(
+        dir.join("lost.mkv"),
+        None,
+    )));
+    match recording(&rx) {
+        RecordingUpdate::NotStarted(why) => assert_eq!(why, rbs_crash::CAUGHT_TEXT),
+        other => panic!("{other:?}"),
+    }
+    next(&rx, |u| match u {
+        Update::Recovered { .. } => Some(()),
+        _ => None,
+    });
+
+    // The master's only encoder cannot open: nothing is left behind.
+    host.send(Command::StartRecording(with_tracks(
+        dir.join("broken.mkv"),
+        Some(BROKEN),
+    )));
+    assert!(matches!(recording(&rx), RecordingUpdate::NotStarted(_)));
+    assert!(!dir.join("broken").exists());
+
+    let folder = dir.join("take");
+    host.send(Command::StartRecording(with_tracks(
+        dir.join("take.mkv"),
+        None,
+    )));
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert_eq!(path, folder.join("master.mkv")),
+        other => panic!("{other:?}"),
+    }
+
+    // The marked microphone is deleted during the take: the take goes on and stops
+    // cleanly, and both files are complete.
+    host.send(Command::DeleteSource(mic.id));
+    rows_where(&rx, |r| r.len() == 1);
+    match stop_recording(&host, &rx, &clock) {
+        RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
+        other => panic!("{other:?}"),
+    }
+    let wav = std::fs::read(only_wav(&folder)).unwrap();
+    assert!(wav.starts_with(b"RIFF") || wav.starts_with(b"RF64"));
+    assert!(
+        std::fs::read(folder.join("master.mkv"))
+            .unwrap()
+            .ends_with(TRAILER)
+    );
 
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);

@@ -913,7 +913,33 @@ pub enum RecordState {
         /// absent when there are none.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tracks: Vec<RecordTrack>,
+        /// Marked sources whose file was not written (protocol 1.46); absent when
+        /// none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped: Vec<SkippedTrack>,
     },
+}
+
+/// A marked source that has no file in a running recording (protocol 1.46).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedTrack {
+    /// The source (`source.list`).
+    pub source: u32,
+    /// The feed that was not written.
+    pub role: TrackRole,
+    /// Why.
+    pub reason: SkipReason,
+}
+
+/// Why a marked source has no file (protocol 1.46).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    /// The program mix does not hear the source when the recording starts.
+    NotHeard,
+    /// A reason this client does not know (a later minor).
+    #[serde(other)]
+    Other,
 }
 
 /// One separate file of a running recording (protocol 1.46, ADR-0086).
@@ -935,6 +961,9 @@ pub enum TrackRole {
     Video,
     /// The source's sound.
     Audio,
+    /// A role this client does not know (a later minor).
+    #[serde(other)]
+    Other,
 }
 
 /// The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).

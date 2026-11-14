@@ -1247,10 +1247,9 @@ pub struct RecordRequest {
 struct IsoFiles {
     /// The tracks, as `record.status` lists them.
     tracks: Vec<api::RecordTrack>,
+    /// Marked sources left out, as `record.status` lists them.
+    skipped: Vec<api::SkippedTrack>,
 }
-
-/// Name of the recording manifest inside a recording's folder (ADR-0086 decision 6).
-const MANIFEST_FILE: &str = "recording.rbs.toml";
 
 /// The canvas an output records or streams (ADR-0093 decision 6).
 pub use rbs_api::types::OutputCanvas;
@@ -4186,7 +4185,11 @@ impl Host {
                 stopped += 1;
             }
         }
-        // Separate files the host no longer tracks (a start that panicked half-way).
+        // Separate files without their master: a start that panicked half-way, or a
+        // master that is no longer tracked.
+        if self.outs[slot(OutputCanvas::Main)].recording.is_none() {
+            self.iso = None;
+        }
         if self.iso.is_none() && self.studio.iso_audio_running() {
             let _ = rbs_crash::contain(|| self.studio.stop_iso_audio());
         }
@@ -4299,7 +4302,7 @@ impl Host {
         if c == OutputCanvas::Main && r.iso && self.marks_separate_audio() {
             return self.start_recording_with_tracks(c, r, profile);
         }
-        self.start_master(c, canvas, r, &r.path, profile)
+        self.start_master(c, canvas, r, &r.path, profile, None)
     }
 
     /// A source of the collection is marked to record its sound separately. Picture
@@ -4310,8 +4313,11 @@ impl Host {
 
     /// The main recording with its separate audio files (ADR-0086 decisions 5 to 7):
     /// one folder named like the file would be, holding `master.<ext>`, one file per
-    /// track and `recording.rbs.toml`. The tracks open first; any failure stops what
-    /// was opened, removes the files this start made and refuses the recording.
+    /// track and `recording.rbs.toml`. The folder is made here and must not exist, so
+    /// nothing outside it is touched. The tracks open first; any failure stops what
+    /// was opened, removes the files this start may have made and refuses the
+    /// recording. A marked source the program mix does not hear is left out and
+    /// listed in `skipped` (keeping it running is decision 8, a later step).
     fn start_recording_with_tracks(
         &mut self,
         c: OutputCanvas,
@@ -4320,18 +4326,27 @@ impl Host {
     ) -> Result<RecordingUpdate, String> {
         let canvas = self.output_canvas(c)?;
         let folder = r.path.with_extension("");
-        if folder.exists() {
-            return Err(format!("{} already exists.", folder.display()));
+        if let Some(parent) = folder.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot make the folder {}: {e}", parent.display()))?;
         }
-        let ext = r
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("mkv")
-            .to_owned();
-        let master_name = format!("master.{ext}");
-        std::fs::create_dir_all(&folder)
-            .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
+        // `create_dir`, not `create_dir_all`: it fails when the folder exists, so a
+        // folder RBS did not make is never written into or cleaned up.
+        std::fs::create_dir(&folder).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("{} already exists.", folder.display()),
+            _ => format!("Cannot make the folder {}: {e}", folder.display()),
+        })?;
+        let master_name = format!("{}.{}", rbs_record::MASTER_STEM, container_ext(r.container));
+        // Every name this start may write, for the cleanup of a refused start.
+        let mut planned: Vec<String> = rbs_record::plan(&self.collection)
+            .map(|p| {
+                p.tracks
+                    .iter()
+                    .map(|t| format!("{}.{}", t.file_name, container_ext(ContainerId::Wav)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        planned.push(master_name.clone());
         let t0_ns = self.clock.now().as_nanos();
         let t0_utc = chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -4348,21 +4363,30 @@ impl Host {
         start.audio.codec = CodecId::Pcm;
         start.audio.bitrate_bps = 0;
         start.audio.bit_depth = Some(24);
+        start.skip_unheard = true;
         let started = match self.studio.start_iso_audio(&self.adapters, &start) {
             Ok(started) => started,
             Err(e) => {
-                remove_recording_folder(&folder, &[]);
+                remove_recording_folder(&folder, &planned);
                 return Err(format!("The separate files could not start: {e}"));
             }
         };
+        let skipped: Vec<api::SkippedTrack> = started
+            .not_heard
+            .iter()
+            .map(|(source, _)| api::SkippedTrack {
+                source: source.get(),
+                role: api::TrackRole::Audio,
+                reason: api::SkipReason::NotHeard,
+            })
+            .collect();
         let mut manifest = started.manifest;
         // Picture tracks are not written yet, so the manifest lists only real files.
         manifest.files.retain(|f| f.role != "video");
-        let names: Vec<String> = manifest.files.iter().map(|f| f.file_name.clone()).collect();
-        if let Err(e) = write_manifest(&folder, &manifest.to_toml()) {
+        if let Err(e) = rbs_record::write_manifest(&folder, &manifest) {
             self.studio.stop_iso_audio();
-            remove_recording_folder(&folder, &names);
-            return Err(format!("The recording manifest could not be written: {e}"));
+            remove_recording_folder(&folder, &planned);
+            return Err(format!("{e}."));
         }
         let tracks = manifest
             .files
@@ -4376,13 +4400,12 @@ impl Host {
                 })
             })
             .collect();
-        self.iso = Some(IsoFiles { tracks });
+        let iso = IsoFiles { tracks, skipped };
         let master = folder.join(&master_name);
-        let result = self.start_master(c, canvas, r, &master, profile);
+        let result = self.start_master(c, canvas, r, &master, profile, Some(iso));
         if result.is_err() {
             self.studio.stop_iso_audio();
-            self.iso = None;
-            remove_recording_folder(&folder, &names);
+            remove_recording_folder(&folder, &planned);
         }
         result
     }
@@ -4395,6 +4418,7 @@ impl Host {
         r: &RecordRequest,
         path: &Path,
         profile: Option<String>,
+        iso: Option<IsoFiles>,
     ) -> Result<RecordingUpdate, String> {
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)
@@ -4447,20 +4471,23 @@ impl Host {
         )) = &started
         {
             self.outs[slot(c)].recording = Some((path.to_path_buf(), *id));
+            // Tracked together with the master, after the last panic point of the
+            // start, so recovery never finds files without their master (ADR-0055).
+            let (tracks, skipped) = iso
+                .as_ref()
+                .map(|f| (f.tracks.clone(), f.skipped.clone()))
+                .unwrap_or_default();
+            if c == OutputCanvas::Main {
+                self.iso = iso;
+            }
             self.set_record_state(
                 c,
                 api::RecordState::Recording {
                     profile,
                     video_encoder: video_encoder.clone(),
                     audio_encoder: audio_encoder.clone(),
-                    tracks: match c {
-                        OutputCanvas::Main => self
-                            .iso
-                            .as_ref()
-                            .map(|iso| iso.tracks.clone())
-                            .unwrap_or_default(),
-                        OutputCanvas::Vertical => Vec::new(),
-                    },
+                    tracks,
+                    skipped,
                 },
             );
         } else if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
@@ -7039,26 +7066,33 @@ impl Host {
         Ok(true)
     }
 
-    /// Marks `id` to record separately from the next recording on, or clears it
-    /// (ADR-0086 decision 2, protocol 1.46). The switch follows the source's media: a
-    /// sound source records its sound, a picture source its picture, and a source
-    /// with both (a media file) both. One undo step; `Ok(false)` when nothing changed.
+    /// Marks `id` to record its sound separately from the next recording on, or clears
+    /// the mark (ADR-0086 decision 2, protocol 1.46). One undo step; `Ok(false)` when
+    /// nothing changed.
     fn set_record_separately(&mut self, id: SourceId, enabled: bool) -> Result<bool, Refusal> {
         let source = self
             .collection
             .source(id)
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        // Picture files are a later step (ADR-0086 step 3) with its own minor, so 1.46
+        // marks sound only: a picture source is refused, and a source with both (a
+        // media file) records its sound. A picture mark already in the collection is
+        // kept as it is when the sound mark changes.
         let flag = if !enabled {
             RecordSeparately::default()
         } else {
             match types::class_of(&source.type_id) {
-                Some(types::SourceClass::Audio(_)) => RecordSeparately::new(false, true),
                 Some(
                     types::SourceClass::Capture(_)
                     | types::SourceClass::Still
                     | types::SourceClass::Browser,
-                ) => RecordSeparately::new(true, false),
-                _ => RecordSeparately::new(true, true),
+                ) => {
+                    return Err(Refusal::Invalid(
+                        "Only sound sources record separately for now; picture files come in a later version."
+                            .into(),
+                    ));
+                }
+                _ => RecordSeparately::new(source.record_separately.video, true),
             }
         };
         if source.record_separately == flag {
@@ -10628,18 +10662,23 @@ fn run_copy_or(
     run_copy(collection, canvas, held?)
 }
 
-/// Writes the recording manifest into `folder` under a temporary name, then renames
-/// it, so a reader never sees half a file (ADR-0051).
-fn write_manifest(folder: &Path, text: &str) -> std::io::Result<()> {
-    let tmp = folder.join(format!(".{MANIFEST_FILE}.tmp"));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, folder.join(MANIFEST_FILE))
+/// Removes what a refused start left in the recording folder it made: the named files,
+/// the manifest and its temporary file, then the folder when nothing else is in it.
+/// A container's file extension.
+fn container_ext(container: ContainerId) -> &'static str {
+    match container {
+        ContainerId::Matroska => "mkv",
+        ContainerId::Mp4Fragmented => "mp4",
+        ContainerId::MpegTs => "ts",
+        ContainerId::Flv => "flv",
+        ContainerId::Wav => "wav",
+        ContainerId::Flac => "flac",
+        _ => "bin",
+    }
 }
 
-/// Removes what a refused start left in a recording folder it made: the named files,
-/// the manifest and its temporary file, then the folder when nothing else is in it.
-/// A file somebody else put there stays, and so does the folder.
 fn remove_recording_folder(folder: &Path, names: &[String]) {
+    const MANIFEST_FILE: &str = "recording.rbs.toml";
     for name in names
         .iter()
         .map(String::as_str)
