@@ -5,8 +5,9 @@
 //! `system` mode they hold the appearance's `dark` and `light` themes, in `fixed` mode
 //! both hold its `theme`. A user theme that cannot be used falls back to the built-in
 //! theme of its base, so a high-contrast user keeps high contrast. `RBS_TOKENS=<file>`
-//! (another complete token file) and `RBS_THEME=<dark|light|high-contrast>` are
-//! development aids that win over the appearance choice.
+//! (another complete token file), `RBS_THEME=<dark|light|high-contrast>` and
+//! `RBS_EFFECTS=<calm|vivid|tactile>` (both slots' effects, for the UI measure mode,
+//! ADR-0120 decision 13) are development aids that win over the appearance choice.
 
 use std::path::Path;
 
@@ -175,6 +176,11 @@ pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Opti
         resolve(&file, data, dark, Base::Dark, &mut notes),
         resolve(&file, data, light, Base::Light, &mut notes),
     ];
+    if let Some(setting) = dev_effects() {
+        for t in &mut themes {
+            force_effects(&file, t, setting);
+        }
+    }
     pack(&mut themes, &appearance);
     let fonts = [
         choose_font(&themes[0].font_family, fonts, SAMPLE_TEXT),
@@ -252,6 +258,28 @@ fn read(path: &Path) -> Result<TokenFile, String> {
         .map_err(|e| format!("The token file {} cannot be read: {e}", path.display()))?;
     TokenFile::parse(&text)
         .map_err(|e| format!("The token file {} is not used: {e}", path.display()))
+}
+
+/// The effects `RBS_EFFECTS` asks for.
+pub fn dev_effects() -> Option<rbs_ui::tokens::Effects> {
+    std::env::var("RBS_EFFECTS")
+        .ok()
+        .and_then(|n| rbs_ui::tokens::Effects::from_name(&n))
+}
+
+/// Gives `theme` the effects `setting` (a development aid): high contrast stays calm, and
+/// a token file without effect tables gives calm.
+fn force_effects(file: &TokenFile, theme: &mut ResolvedTheme, setting: rbs_ui::tokens::Effects) {
+    let values = match &file.effects {
+        Some(t) if !theme.high_contrast() => t.values(setting),
+        _ => rbs_ui::tokens::EffectValues::default(),
+    };
+    theme.effects = if values.is_calm() {
+        rbs_ui::tokens::Effects::Calm
+    } else {
+        setting
+    };
+    theme.effect_values = values;
 }
 
 /// The theme `RBS_THEME` asks for.

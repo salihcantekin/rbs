@@ -23,6 +23,7 @@ mod context_menu;
 mod entry;
 mod icons;
 mod look;
+mod measure_ui;
 mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
@@ -4744,6 +4745,9 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     main.show()?;
     #[cfg(windows)]
     title_bar::attach_after_show(&main);
+    if let Some(seconds) = measure_ui::requested() {
+        measure_ui::install(&main, seconds);
+    }
     slint::run_event_loop_until_quit()?;
     let _ = main.hide();
     // The layer's frames go back before the studio and its publisher stop.
