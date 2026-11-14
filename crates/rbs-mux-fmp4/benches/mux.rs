@@ -6,7 +6,10 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use rbs_core::media::{BitstreamFormat, Bytes, CodecId, ContainerId, EncodedPacket, StreamIndex};
+use rbs_core::media::{
+    AudioFormat, BitstreamFormat, Bytes, CodecId, ContainerId, EncodedPacket, StreamDescriptor,
+    StreamIndex, StreamParams,
+};
 use rbs_core::time::Timestamp;
 use rbs_mux::conformance::{aac_stream, h264_stream};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory};
@@ -121,6 +124,54 @@ fn bench_write(c: &mut Criterion) {
             );
         });
     }
+    // The same second in MOV with 24-bit stereo PCM in 10 ms packets (100 packets of
+    // 2880 bytes) instead of AAC.
+    let lp_packets: Vec<(StreamIndex, EncodedPacket)> = gop(lp)
+        .into_iter()
+        .filter(|(s, _)| s.0 == 0)
+        .chain((0..100u64).map(|i| {
+            let t = Timestamp::from_nanos(1_000_000_000 + i * 10_000_000);
+            let p = EncodedPacket::new(
+                CodecId::Pcm,
+                BitstreamFormat::Raw,
+                t,
+                t,
+                true,
+                Bytes::from(vec![0x21; 480 * 6]),
+            );
+            (StreamIndex(1), p.unwrap())
+        }))
+        .collect();
+    let mut packets = lp_packets;
+    packets.sort_by_key(|(s, p)| (p.dts(), *s));
+    let bytes: usize = packets.iter().map(|(_, p)| p.data().len()).sum();
+    group.throughput(Throughput::Bytes(bytes as u64));
+    group.bench_function("mov_gop_1s_pcm24", |b| {
+        b.iter_batched(
+            || {
+                let pcm = StreamDescriptor::new(
+                    CodecId::Pcm,
+                    BitstreamFormat::Raw,
+                    Bytes::from_static(&[24]),
+                    StreamParams::audio(AudioFormat::STEREO_48K, 480),
+                );
+                let mut video = h264_stream();
+                video.bitstream = lp;
+                let config = MuxerConfig::new(ContainerId::Mov, vec![video, pcm]);
+                let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
+                muxer.begin(&mut Vec::new()).unwrap();
+                (muxer, Vec::with_capacity(2))
+            },
+            |(mut muxer, mut out)| {
+                for (stream, packet) in &packets {
+                    muxer.write(*stream, black_box(packet), &mut out).unwrap();
+                }
+                muxer.finish(&mut out).unwrap();
+                black_box(out)
+            },
+            BatchSize::SmallInput,
+        );
+    });
     group.finish();
 }
 
