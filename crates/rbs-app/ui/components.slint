@@ -13,6 +13,34 @@ import { Theme, Tokens } from "tokens.slint";
 // takes focus on click accepts the first press while it has no focus, so the control
 // under it would need a second click (a Tabs bar after a click in another panel). The
 // control's own click handler calls `focus-pointer()` instead.
+// Keyboard focus that lands in a scrolled list shows the whole row holding the
+// control, its name and help too, not only the control (Slint scrolls just the
+// focused element into view). A control reports where its focus landed; the
+// `SettingRow` that contains that place reports itself; the `ScrollArea` that holds
+// the row scrolls it into view. All in window coordinates, all on events only.
+export global FocusReveal {
+    in-out property <int> serial;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <int> row-serial;
+    in-out property <length> row-x;
+    in-out property <length> row-y;
+    in-out property <length> row-w;
+    in-out property <length> row-h;
+    public function focused(x: length, y: length) {
+        self.x = x;
+        self.y = y;
+        self.serial += 1;
+    }
+    public function row(x: length, y: length, w: length, h: length) {
+        self.row-x = x;
+        self.row-y = y;
+        self.row-w = w;
+        self.row-h = h;
+        self.row-serial += 1;
+    }
+}
+
 export component RingFocus inherits FocusScope {
     out property <bool> ring: self.has-focus && !by-pointer;
     // The focus came from the keyboard and is not just back with its window: a tooltip
@@ -24,7 +52,17 @@ export component RingFocus inherits FocusScope {
         by-pointer = true;
         self.focus();
     }
-    focus-gained(reason) => { with-window = reason == FocusReason.window-activation; }
+    property <bool> by-tab;
+    focus-gained(reason) => {
+        with-window = reason == FocusReason.window-activation;
+        by-tab = reason == FocusReason.tab-navigation;
+    }
+    // Reported once Slint has scrolled the control into view, so the place is current.
+    changed has-focus => {
+        if self.has-focus && by-tab {
+            FocusReveal.focused(self.absolute-position.x, self.absolute-position.y);
+        }
+    }
     // Another window taking the focus keeps how this one got it, so a control clicked
     // with the pointer shows no focus ring when its window comes back.
     focus-lost(reason) => { if reason != FocusReason.window-activation { by-pointer = false; } }
@@ -32,9 +70,11 @@ export component RingFocus inherits FocusScope {
 
 export component FocusRing inherits Rectangle {
     in property <bool> show;
+    // The control's own corner radius (a round icon button passes half its height).
+    in property <length> radius: Tokens.radius-sm;
     border-width: show ? Tokens.size-focus-ring : 0px;
     border-color: Theme.border-focus;
-    border-radius: Tokens.radius-sm;
+    border-radius: root.radius;
 }
 
 // The RBS mark (docs/specs/ui-design-system.md, "Brand mark"): a scene frame with a round
@@ -176,6 +216,10 @@ export enum IconName {
     rounded-rectangle,
     ellipse,
     triangle,
+    key,
+    wand,
+    eraser,
+    ban,
 }
 
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
@@ -235,7 +279,7 @@ export component Icon inherits Rectangle {
         : name == IconName.layout ? "M 2.67 2.67 M 2.67 4 C 2.67 3.77 2.73 3.54 2.85 3.33 C 2.96 3.13 3.13 2.96 3.33 2.85 C 3.54 2.73 3.77 2.67 4 2.67 L 5.33 2.67 C 5.57 2.67 5.8 2.73 6 2.85 C 6.2 2.96 6.37 3.13 6.49 3.33 C 6.61 3.54 6.67 3.77 6.67 4 L 6.67 4.67 C 6.67 4.9 6.61 5.13 6.49 5.33 C 6.37 5.54 6.2 5.7 6 5.82 C 5.8 5.94 5.57 6 5.33 6 L 4 6 C 3.77 6 3.54 5.94 3.33 5.82 C 3.13 5.7 2.96 5.54 2.85 5.33 C 2.73 5.13 2.67 4.9 2.67 4.67 Z M 2.67 8.67 M 2.67 10 C 2.67 9.77 2.73 9.54 2.85 9.33 C 2.96 9.13 3.13 8.96 3.33 8.85 C 3.54 8.73 3.77 8.67 4 8.67 L 5.33 8.67 C 5.57 8.67 5.8 8.73 6 8.85 C 6.2 8.96 6.37 9.13 6.49 9.33 C 6.61 9.54 6.67 9.77 6.67 10 L 6.67 12 C 6.67 12.23 6.61 12.46 6.49 12.67 C 6.37 12.87 6.2 13.04 6 13.15 C 5.8 13.27 5.57 13.33 5.33 13.33 L 4 13.33 C 3.77 13.33 3.54 13.27 3.33 13.15 C 3.13 13.04 2.96 12.87 2.85 12.67 C 2.73 12.46 2.67 12.23 2.67 12 Z M 9.33 2.67 M 9.33 4 C 9.33 3.77 9.39 3.54 9.51 3.33 C 9.63 3.13 9.8 2.96 10 2.85 C 10.2 2.73 10.43 2.67 10.67 2.67 L 12 2.67 C 12.23 2.67 12.46 2.73 12.67 2.85 C 12.87 2.96 13.04 3.13 13.15 3.33 C 13.27 3.54 13.33 3.77 13.33 4 L 13.33 6 C 13.33 6.23 13.27 6.46 13.15 6.67 C 13.04 6.87 12.87 7.04 12.67 7.15 C 12.46 7.27 12.23 7.33 12 7.33 L 10.67 7.33 C 10.43 7.33 10.2 7.27 10 7.15 C 9.8 7.04 9.63 6.87 9.51 6.67 C 9.39 6.46 9.33 6.23 9.33 6 Z M 9.33 10 M 9.33 11.33 C 9.33 11.1 9.39 10.87 9.51 10.67 C 9.63 10.46 9.8 10.3 10 10.18 C 10.2 10.06 10.43 10 10.67 10 L 12 10 C 12.23 10 12.46 10.06 12.67 10.18 C 12.87 10.3 13.04 10.46 13.15 10.67 C 13.27 10.87 13.33 11.1 13.33 11.33 L 13.33 12 C 13.33 12.23 13.27 12.46 13.15 12.67 C 13.04 12.87 12.87 13.04 12.67 13.15 C 12.46 13.27 12.23 13.33 12 13.33 L 10.67 13.33 C 10.43 13.33 10.2 13.27 10 13.15 C 9.8 13.04 9.63 12.87 9.51 12.67 C 9.39 12.46 9.33 12.23 9.33 12 Z"
         : name == IconName.panel-all ? "M 2.67 2.67 M 2.67 4 C 2.67 3.77 2.73 3.54 2.85 3.33 C 2.96 3.13 3.13 2.96 3.33 2.85 C 3.54 2.73 3.77 2.67 4 2.67 L 12 2.67 C 12.23 2.67 12.46 2.73 12.67 2.85 C 12.87 2.96 13.04 3.13 13.15 3.33 C 13.27 3.54 13.33 3.77 13.33 4 L 13.33 12 C 13.33 12.23 13.27 12.46 13.15 12.67 C 13.04 12.87 12.87 13.04 12.67 13.15 C 12.46 13.27 12.23 13.33 12 13.33 L 4 13.33 C 3.77 13.33 3.54 13.27 3.33 13.15 C 3.13 13.04 2.96 12.87 2.85 12.67 C 2.73 12.46 2.67 12.23 2.67 12 Z M 2.67 8 L 8 8 M 8 10 L 13.33 10 M 8 6 L 13.33 6 M 8 2.67 L 8 13.33"
         : name == IconName.panel-none ? "M 5.33 2.67 C 5.57 2.67 5.8 2.73 6 2.85 C 6.2 2.96 6.37 3.13 6.49 3.33 C 6.61 3.54 6.67 3.77 6.67 4 M 5.89 5.88 C 5.72 5.96 5.53 6 5.33 6 L 4 6 C 3.77 6 3.54 5.94 3.33 5.82 C 3.13 5.7 2.96 5.54 2.85 5.33 C 2.73 5.13 2.67 4.9 2.67 4.67 L 2.67 4 C 2.67 3.63 2.81 3.3 3.05 3.06 M 2.67 8.67 M 2.67 10 C 2.67 9.77 2.73 9.54 2.85 9.33 C 2.96 9.13 3.13 8.96 3.33 8.85 C 3.54 8.73 3.77 8.67 4 8.67 L 5.33 8.67 C 5.57 8.67 5.8 8.73 6 8.85 C 6.2 8.96 6.37 9.13 6.49 9.33 C 6.61 9.54 6.67 9.77 6.67 10 L 6.67 12 C 6.67 12.23 6.61 12.46 6.49 12.67 C 6.37 12.87 6.2 13.04 6 13.15 C 5.8 13.27 5.57 13.33 5.33 13.33 L 4 13.33 C 3.77 13.33 3.54 13.27 3.33 13.15 C 3.13 13.04 2.96 12.87 2.85 12.67 C 2.73 12.46 2.67 12.23 2.67 12 Z M 9.33 6.67 L 9.33 4 C 9.33 3.77 9.39 3.54 9.51 3.33 C 9.63 3.13 9.8 2.96 10 2.85 C 10.2 2.73 10.43 2.67 10.67 2.67 L 12 2.67 C 12.23 2.67 12.46 2.73 12.67 2.85 C 12.87 2.96 13.04 3.13 13.15 3.33 C 13.27 3.54 13.33 3.77 13.33 4 L 13.33 10.67 M 12.94 12.95 C 12.81 13.07 12.67 13.17 12.51 13.23 C 12.35 13.3 12.17 13.33 12 13.33 L 10.67 13.33 C 10.43 13.33 10.2 13.27 10 13.15 C 9.8 13.04 9.63 12.87 9.51 12.67 C 9.39 12.46 9.33 12.23 9.33 12 L 9.33 9.33 M 2 2 L 14 14"
-        : name == IconName.reset ? "M 2.04 8.67 C 2.15 9.64 2.49 10.56 3.04 11.37 C 3.59 12.18 4.32 12.84 5.18 13.3 C 6.04 13.75 7 14 7.98 14 C 8.95 14 9.92 13.77 10.78 13.32 C 11.64 12.87 12.39 12.21 12.94 11.41 C 13.49 10.61 13.84 9.68 13.96 8.71 C 14.08 7.75 13.95 6.76 13.61 5.85 C 13.26 4.94 12.69 4.13 11.96 3.49 C 11.23 2.85 10.35 2.39 9.4 2.16 C 8.45 1.94 7.46 1.95 6.52 2.19 C 5.57 2.43 4.7 2.9 3.98 3.55 C 3.25 4.21 2.7 5.03 2.37 5.94 M 2 2.67 L 2 6 L 5.33 6 M 8 8 M 7.33 8 C 7.33 8.12 7.36 8.23 7.42 8.33 C 7.48 8.43 7.57 8.52 7.67 8.58 C 7.77 8.64 7.88 8.67 8 8.67 C 8.12 8.67 8.23 8.64 8.33 8.58 C 8.43 8.52 8.52 8.43 8.58 8.33 C 8.64 8.23 8.67 8.12 8.67 8 C 8.67 7.88 8.64 7.77 8.58 7.67 C 8.52 7.57 8.43 7.48 8.33 7.42 C 8.23 7.36 8.12 7.33 8 7.33 C 7.88 7.33 7.77 7.36 7.67 7.42 C 7.57 7.48 7.48 7.57 7.42 7.67 C 7.36 7.77 7.33 7.88 7.33 8"
+        : name == IconName.reset ? "M 2.04 8.67 C 2.15 9.64 2.49 10.56 3.04 11.37 C 3.59 12.18 4.32 12.84 5.18 13.3 C 6.04 13.75 7 14 7.98 14 C 8.95 14 9.92 13.77 10.78 13.32 C 11.64 12.87 12.39 12.21 12.94 11.41 C 13.49 10.61 13.84 9.68 13.96 8.71 C 14.08 7.75 13.95 6.76 13.61 5.85 C 13.26 4.94 12.69 4.13 11.96 3.49 C 11.23 2.85 10.35 2.39 9.4 2.16 C 8.45 1.94 7.46 1.95 6.52 2.19 C 5.57 2.43 4.7 2.9 3.98 3.55 C 3.25 4.21 2.7 5.03 2.37 5.94 M 2 2.67 L 2 6 L 5.33 6"
         : name == IconName.refresh ? "M 13.33 7.33 C 13.2 6.4 12.83 5.51 12.25 4.77 C 11.67 4.02 10.91 3.44 10.03 3.08 C 9.16 2.72 8.21 2.6 7.27 2.72 C 6.33 2.85 5.45 3.22 4.7 3.79 C 3.95 4.37 3.36 5.13 3 6 M 2.67 3.33 L 2.67 6 L 5.33 6 M 2.67 8.67 C 2.8 9.6 3.17 10.49 3.75 11.23 C 4.33 11.98 5.09 12.56 5.97 12.92 C 6.84 13.28 7.79 13.4 8.73 13.28 C 9.67 13.15 10.55 12.78 11.3 12.21 C 12.05 11.63 12.64 10.87 13 10 M 13.33 12.67 L 13.33 10 L 10.67 10"
         : name == IconName.image ? "M 10 5.33 L 10.01 5.33 M 2 4 C 2 3.65 2.09 3.3 2.27 3 C 2.44 2.7 2.7 2.44 3 2.27 C 3.3 2.09 3.65 2 4 2 L 12 2 C 12.35 2 12.7 2.09 13 2.27 C 13.3 2.44 13.56 2.7 13.73 3 C 13.91 3.3 14 3.65 14 4 L 14 12 C 14 12.35 13.91 12.7 13.73 13 C 13.56 13.3 13.3 13.56 13 13.73 C 12.7 13.91 12.35 14 12 14 L 4 14 C 3.65 14 3.3 13.91 3 13.73 C 2.7 13.56 2.44 13.3 2.27 13 C 2.09 12.7 2 12.35 2 12 L 2 4 Z M 2 10.67 L 5.33 7.33 C 5.95 6.74 6.71 6.74 7.33 7.33 L 10.67 10.67 M 9.33 9.33 L 10 8.67 C 10.62 8.07 11.38 8.07 12 8.67 L 14 10.67"
         : name == IconName.pencil ? "M 2.67 13.33 L 5.33 13.33 L 12.33 6.33 C 12.53 6.13 12.69 5.89 12.78 5.62 C 12.87 5.36 12.91 5.07 12.87 4.79 C 12.84 4.51 12.75 4.24 12.6 4 C 12.45 3.76 12.24 3.55 12 3.4 C 11.76 3.25 11.49 3.16 11.21 3.13 C 10.93 3.09 10.64 3.13 10.38 3.22 C 10.11 3.31 9.87 3.47 9.67 3.67 L 2.67 10.67 L 2.67 13.33 M 9 4.33 L 11.67 7"
@@ -274,6 +318,10 @@ export component Icon inherits Rectangle {
         : name == IconName.rounded-rectangle ? "M 4 4.5 L 12 4.5 a 1.5 1.5 0 0 1 1.5 1.5 L 13.5 10 a 1.5 1.5 0 0 1 -1.5 1.5 L 4 11.5 a 1.5 1.5 0 0 1 -1.5 -1.5 L 2.5 6 a 1.5 1.5 0 0 1 1.5 -1.5 Z"
         : name == IconName.ellipse ? "M 2 8 a 6 4 0 1 0 12 0 a 6 4 0 1 0 -12 0 Z"
         : name == IconName.triangle ? "M 8 2.5 L 13.5 13.5 L 2.5 13.5 Z"
+        : name == IconName.key ? "M 11.04 2.56 L 13.44 4.96 C 13.62 5.14 13.76 5.35 13.85 5.59 C 13.95 5.82 14 6.07 14 6.32 C 14 6.57 13.95 6.82 13.85 7.05 C 13.76 7.29 13.62 7.5 13.44 7.68 L 11.68 9.44 C 11.5 9.62 11.29 9.76 11.05 9.85 C 10.82 9.95 10.57 10 10.32 10 C 10.07 10 9.82 9.95 9.59 9.85 C 9.35 9.76 9.14 9.62 8.96 9.44 L 8.76 9.24 L 4.39 13.61 C 4.28 13.72 4.15 13.81 4.01 13.87 C 3.87 13.94 3.72 13.98 3.56 13.99 L 3.45 14 L 2.67 14 C 2.56 14 2.45 13.97 2.36 13.92 C 2.26 13.87 2.18 13.8 2.12 13.71 C 2.06 13.62 2.02 13.52 2 13.41 L 2 13.33 L 2 12.55 C 2 12.4 2.03 12.24 2.08 12.1 C 2.13 11.95 2.21 11.82 2.31 11.7 L 2.39 11.61 L 2.67 11.33 L 4 11.33 L 4 10 L 5.33 10 L 5.33 8.67 L 6.76 7.24 L 6.56 7.04 C 6.38 6.86 6.24 6.65 6.15 6.41 C 6.05 6.18 6 5.93 6 5.68 C 6 5.43 6.05 5.18 6.15 4.95 C 6.24 4.71 6.38 4.5 6.56 4.32 L 8.32 2.56 C 8.5 2.38 8.71 2.24 8.95 2.15 C 9.18 2.05 9.43 2 9.68 2 C 9.93 2 10.18 2.05 10.41 2.15 C 10.65 2.24 10.86 2.38 11.04 2.56 Z M 10 6 L 10.01 6"
+        : name == IconName.wand ? "M 4 14 L 14 4 L 12 2 L 2 12 L 4 14 M 10 4 L 12 6 M 6 2 C 6 2.23 6.06 2.46 6.18 2.67 C 6.3 2.87 6.46 3.04 6.67 3.15 C 6.87 3.27 7.1 3.33 7.33 3.33 C 7.1 3.33 6.87 3.39 6.67 3.51 C 6.46 3.63 6.3 3.8 6.18 4 C 6.06 4.2 6 4.43 6 4.67 C 6 4.43 5.94 4.2 5.82 4 C 5.7 3.8 5.54 3.63 5.33 3.51 C 5.13 3.39 4.9 3.33 4.67 3.33 C 4.9 3.33 5.13 3.27 5.33 3.15 C 5.54 3.04 5.7 2.87 5.82 2.67 C 5.94 2.46 6 2.23 6 2 M 12.67 8.67 C 12.67 8.9 12.73 9.13 12.85 9.33 C 12.96 9.54 13.13 9.7 13.33 9.82 C 13.54 9.94 13.77 10 14 10 C 13.77 10 13.54 10.06 13.33 10.18 C 13.13 10.3 12.96 10.46 12.85 10.67 C 12.73 10.87 12.67 11.1 12.67 11.33 C 12.67 11.1 12.61 10.87 12.49 10.67 C 12.37 10.46 12.2 10.3 12 10.18 C 11.8 10.06 11.57 10 11.33 10 C 11.57 10 11.8 9.94 12 9.82 C 12.2 9.7 12.37 9.54 12.49 9.33 C 12.61 9.13 12.67 8.9 12.67 8.67"
+        : name == IconName.eraser ? "M 12.67 13.33 L 5.67 13.33 L 2.86 10.47 C 2.78 10.38 2.72 10.28 2.69 10.17 C 2.66 10.06 2.66 9.94 2.69 9.82 C 2.72 9.71 2.78 9.61 2.86 9.53 L 9.53 2.86 C 9.61 2.78 9.71 2.72 9.82 2.69 C 9.94 2.66 10.06 2.66 10.17 2.69 C 10.28 2.72 10.38 2.78 10.47 2.86 L 13.8 6.19 C 13.88 6.28 13.94 6.38 13.97 6.49 C 14 6.6 14 6.72 13.97 6.84 C 13.94 6.95 13.88 7.05 13.8 7.13 L 7.67 13.33 M 12 8.87 L 7.8 4.67"
+        : name == IconName.ban ? "M 8 8 M 2 8 C 2 9.05 2.28 10.09 2.8 11 C 3.33 11.91 4.09 12.67 5 13.2 C 5.91 13.72 6.95 14 8 14 C 9.05 14 10.09 13.72 11 13.2 C 11.91 12.67 12.67 11.91 13.2 11 C 13.72 10.09 14 9.05 14 8 C 14 6.95 13.72 5.91 13.2 5 C 12.67 4.09 11.91 3.33 11 2.8 C 10.09 2.28 9.05 2 8 2 C 6.95 2 5.91 2.28 5 2.8 C 4.09 3.33 3.33 4.09 2.8 5 C 2.28 5.91 2 6.95 2 8 M 3.8 3.8 L 12.2 12.2"
         : "";
     width: Tokens.size-icon-box;
     height: Tokens.size-icon-box;
@@ -381,13 +429,17 @@ export global Icons {
         : name == "rounded-rectangle" ? IconName.rounded-rectangle
         : name == "ellipse" ? IconName.ellipse
         : name == "triangle" ? IconName.triangle
+        : name == "key" ? IconName.key
+        : name == "wand" ? IconName.wand
+        : name == "eraser" ? IconName.eraser
+        : name == "ban" ? IconName.ban
         : IconName.none;
     }
 }
 // END generated icon set
 
-// Button: kinds "primary", "secondary", "ghost", "danger" (outlined, with the trash icon,
-// ADR-0076), and "live" (only for stopping a live
+// Button (Tint look, ADR-0118): kinds "primary", "secondary", "ghost", "danger" (a
+// destructive tint with the trash icon, ADR-0076), and "live" (only for stopping a live
 // or recording output: the fixed live colour, rule U12). Activated by click, Enter or
 // Space.
 export component Button inherits Rectangle {
@@ -402,8 +454,25 @@ export component Button inherits Rectangle {
     // Optional icon before the text (toolbar commands), in `lead-ink` when set.
     in property <IconName> lead;
     in property <color> lead-ink: ink;
+    // `lead-ink` is a signal colour (Record's live dot, a running output's stop square):
+    // the icon sits in a `surface.sunken` well, where its contrast rule holds.
+    in property <bool> lead-signal: false;
     // A ghost button that must read as a button at rest (the mixer mute).
     in property <bool> framed: false;
+    // Menu form (ADR-0118 decision 9): a short name before the text in `text.secondary`
+    // ("Workspace" before the current one's name), and a hint after it in `text.secondary`
+    // at caption size (a bound shortcut).
+    in property <string> caption;
+    in property <string> hint;
+    // The app's mark before the text, on the button's own fill (the RBS button).
+    in property <bool> brand: false;
+    // Text at caption size and weight, for a dense ghost button among caption text
+    // (the status bar's pickers).
+    in property <bool> small: false;
+    // The button opens a menu: Down opens it too, as Return and Space do.
+    in property <bool> menu: false;
+    // What the button does, for screen readers, when the tooltip does not say it.
+    in property <string> description: tooltip;
     // The short name or reason shown as a tooltip while the pointer rests on the button or
     // it has the keyboard focus (ADR-0094, one host per window: OverlayHost).
     in property <string> tooltip;
@@ -419,36 +488,45 @@ export component Button inherits Rectangle {
     property <int> tip-owner;
     height: dense ? Tokens.size-control-sm : Tokens.size-control-md;
     min-width: max(root.height, content.preferred-width + (text == "" ? 0px : 2 * Tokens.space-3));
-    border-radius: Tokens.radius-sm;
-    // A secondary button keeps a sunken fill and an outline at rest, so it reads as a
-    // button in every theme before the pointer reaches it. Ghost stays quiet unless
-    // `framed`. A filled kind keeps its colour; the hairline below is its only edge.
+    // A button keeps its own width in a row; a caller that wants it to fill sets this.
+    horizontal-stretch: 0;
+    // Tint look (ADR-0118): soft corners; a button with only an icon is round. A
+    // secondary or danger button is a quiet tinted fill; it keeps a `border.subtle`
+    // outline only while that fill is too close to a surface (`Theme.button-outline`).
+    // Ghost has no fill until the pointer comes. High contrast outlines every unfilled
+    // kind but a plain ghost; a checked button always has its accent outline.
+    property <bool> round: root.text == "";
+    border-radius: root.round ? min(root.width, root.height) / 2 : Tokens.radius-button;
     property <bool> filled: kind == "primary" || kind == "live";
-    property <bool> outlined: enabled && (kind == "secondary" || framed);
+    // An icon-only danger button (a row's delete) rests bare, like a ghost, so a list
+    // of rows does not carry a tinted disc each.
+    property <bool> rests-filled: kind == "secondary" || (kind == "danger" && !round) || framed;
+    property <bool> outlined: enabled && !filled && (checked || (Theme.high-contrast ? (kind != "ghost" && !(kind == "danger" && round)) || framed : Theme.button-outline && rests-filled));
     background: !enabled ? transparent
-        : kind == "primary" ? (touch.has-hover && !touch.pressed ? Theme.accent-hover : Theme.accent)
+        : kind == "primary" ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live
-        : checked ? Theme.accent-subtle
-        : touch.pressed ? Theme.surface-sunken
-        : touch.has-hover ? Theme.surface-overlay
-        : kind == "secondary" ? Theme.surface-sunken
+        : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.action-destructive-subtle-hover : root.round ? transparent : Theme.action-destructive-subtle)
+        : checked ? (touch.has-hover || touch.pressed ? Theme.accent-subtle-hover : Theme.accent-subtle)
+        : touch.pressed ? Theme.button-pressed
+        : touch.has-hover ? Theme.button-hover
+        : kind == "secondary" || framed ? Theme.button-fill
         : transparent;
     border-width: outlined ? Tokens.size-border : 0px;
-    border-color: checked ? Theme.accent : Theme.border-strong;
+    border-color: checked ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
     // A one-pixel lip along the top of a filled button, inset past the corners.
-    if root.enabled && root.filled && !touch.has-hover && !touch.pressed: Rectangle {
+    if root.enabled && root.kind == "primary" && !root.round && !touch.has-hover && !touch.pressed: Rectangle {
         y: 0px;
-        x: Tokens.radius-sm;
-        width: parent.width - 2 * Tokens.radius-sm;
+        x: root.border-radius;
+        width: parent.width - 2 * root.border-radius;
         height: Tokens.size-border;
-        background: root.kind == "live" ? Theme.text-on-live : Theme.accent-hover;
+        background: Theme.accent-hover;
     }
     accessible-role: button;
     accessible-label: accessible-name;
     accessible-checked: checked;
     accessible-enabled: enabled;
     accessible-action-default => { if enabled { clicked(); } }
-    accessible-description: root.tooltip;
+    accessible-description: root.description;
     forward-focus: focus;
     // The pointer is over the button, or it has the keyboard focus: an icon-only
     // control uses it to show its name beside itself.
@@ -469,19 +547,58 @@ export component Button inherits Rectangle {
     }
     out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : Theme.text-primary;
     // A danger button always shows the trash icon (ADR-0076): it is never bare coloured text.
-    property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" ? IconName.trash : IconName.none;
+    property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" && root.icon == IconName.none ? IconName.trash : IconName.none;
     content := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-1 + Tokens.space-1 / 2;
-        if root.shown-lead != IconName.none: VerticalLayout {
+        // With text beside it, the lead icon of an unfilled button sits on its own small
+        // chip, so a row of commands scans by icon (Tint look): `accent` on `button.chip`,
+        // or the caller's `lead-ink` when it set one (a caller that passes the ink itself
+        // gets the accent like one that passes nothing). A signal icon (`lead-signal`)
+        // sits in a `surface.sunken` well, with or without text.
+        if root.shown-lead != IconName.none && !root.filled && (root.text != "" || root.lead-signal): VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-button-chip;
+                height: Tokens.size-button-chip;
+                border-radius: root.text == "" ? Tokens.size-button-chip / 2 : Tokens.radius-md;
+                background: !root.enabled ? transparent : root.lead-signal ? Theme.surface-sunken : root.kind == "danger" ? Theme.surface-raised : Theme.button-chip;
+                Icon { name: root.shown-lead; ink: !root.enabled ? root.ink : root.lead-signal ? root.lead-ink : root.kind == "danger" ? Theme.state-error : root.lead-ink == root.ink ? Theme.accent : root.lead-ink; }
+            }
+        }
+        if root.shown-lead != IconName.none && (root.filled || (root.text == "" && !root.lead-signal)): VerticalLayout {
             alignment: center;
             Icon { name: root.shown-lead; ink: root.enabled ? root.lead-ink : root.ink; }
+        }
+        // The app's mark sits on a `surface.raised` chip, like a lead icon, where its
+        // 3:1 rule holds whatever the button's fill.
+        if root.brand: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-button-chip;
+                height: Tokens.size-button-chip;
+                border-radius: Tokens.radius-md;
+                background: Theme.surface-raised;
+                BrandMark { ground: Theme.surface-raised; }
+            }
+        }
+        if root.caption != "": Text {
+            text: root.caption;
+            color: root.enabled && !root.filled ? Theme.text-secondary : root.ink;
+            font-size: root.small ? Tokens.type-caption-size : Tokens.type-label-size;
+            vertical-alignment: center;
         }
         if root.text != "": Text {
             text: root.text;
             color: root.ink;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
+            font-size: root.small ? Tokens.type-caption-size : Tokens.type-label-size;
+            font-weight: root.small ? Tokens.type-caption-weight : Tokens.type-label-weight;
+            vertical-alignment: center;
+        }
+        if root.hint != "": Text {
+            text: root.hint;
+            color: root.enabled && !root.filled ? Theme.text-secondary : root.ink;
+            font-size: Tokens.type-caption-size;
             vertical-alignment: center;
         }
         if root.icon != IconName.none: VerticalLayout {
@@ -493,7 +610,7 @@ export component Button inherits Rectangle {
         focus-on-click: false;
         enabled: root.enabled;
         key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            if e.text == Key.Return || e.text == " " || (root.menu && e.text == Key.DownArrow) { root.clicked(); return accept; }
             if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
             reject
         }
@@ -513,7 +630,7 @@ export component Button inherits Rectangle {
             if root.alt-click && root.alt-held { root.alt-clicked(); } else { root.clicked(); }
         }
     }
-    FocusRing { show: focus.ring; }
+    FocusRing { show: focus.ring; radius: root.border-radius; }
 }
 
 // Split button: a command and, behind a divider at its right edge, a ▾ part that opens
@@ -529,6 +646,8 @@ export component SplitButton inherits Rectangle {
     in property <bool> checked: false;
     in property <IconName> lead;
     in property <color> lead-ink: ink;
+    // As Button: `lead-ink` is a signal colour, drawn in a `surface.sunken` well.
+    in property <bool> lead-signal: false;
     // The ▾ part's accessible name and tooltip, such as "Vertical stream".
     in property <string> menu-name;
     in property <string> menu-text;
@@ -540,13 +659,18 @@ export component SplitButton inherits Rectangle {
     out property <color> ink: !enabled ? Theme.text-disabled : part-ink;
     // The ▾ part stays usable while the command is disabled: its own ink and fill.
     property <color> part-ink: kind == "primary" && enabled ? Theme.text-inverse : Theme.text-primary;
-    // A disabled primary loses its accent fill (as a disabled Button), so a dimmed
-    // Go live does not keep a bright ▾ half.
-    property <color> rest: kind == "primary" && !enabled ? Theme.surface-raised
+    // Tint look as Button (ADR-0118). A disabled primary loses its accent fill (as a
+    // disabled Button), so a dimmed Go live does not keep a bright ▾ half.
+    property <color> rest: kind == "primary" && !enabled ? Theme.button-fill
         : kind == "primary" ? Theme.accent
         : checked && enabled ? Theme.accent-subtle
-        : Theme.surface-raised;
-    property <color> hover: kind == "primary" && enabled ? Theme.accent-hover : Theme.surface-overlay;
+        : Theme.button-fill;
+    property <color> hover: kind == "primary" && enabled ? Theme.accent-hover
+        : checked && enabled ? Theme.accent-subtle-hover
+        : Theme.button-hover;
+    property <color> pressed: kind == "primary" && enabled ? Theme.accent-pressed
+        : checked && enabled ? Theme.accent-subtle-hover
+        : Theme.button-pressed;
     property <int> tip-owner;
     height: Tokens.size-control-md;
     min-width: shape.min-width;
@@ -554,18 +678,20 @@ export component SplitButton inherits Rectangle {
     // The shape clips its parts to the rounded corners; the focus rings are drawn
     // around it, on what the button sits on (a ring on the primary fill would not show).
     shape := Rectangle {
-    border-radius: Tokens.radius-sm;
+    border-radius: Tokens.radius-button;
     clip: true;
     background: root.rest;
-    border-width: root.kind == "primary" && root.enabled ? 0px : Tokens.size-border;
-    border-color: Theme.border-subtle;
+    border-width: root.kind == "primary" && root.enabled ? 0px
+        : (root.checked && root.enabled) || Theme.high-contrast || Theme.button-outline ? Tokens.size-border
+        : 0px;
+    border-color: root.checked && root.enabled ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
     HorizontalLayout {
         main := Rectangle {
             min-width: main-row.preferred-width + 2 * Tokens.space-3;
             // Disabled: the command part has no fill (as a disabled Button); checked
             // wins over hover (as in Button).
             background: !root.enabled ? Theme.surface-base
-                : root.checked && root.kind != "primary" ? transparent
+                : main-touch.pressed ? root.pressed
                 : main-touch.has-hover ? root.hover : transparent;
             accessible-role: button;
             accessible-label: root.text;
@@ -575,9 +701,21 @@ export component SplitButton inherits Rectangle {
             main-row := HorizontalLayout {
                 alignment: center;
                 spacing: Tokens.space-1 + Tokens.space-1 / 2;
-                if root.lead != IconName.none: VerticalLayout {
+                // The lead icon as in Button: a chip on a secondary button, a well for a
+                // signal colour, bare on the primary fill.
+                if root.lead != IconName.none && (root.kind != "primary" || root.lead-signal): VerticalLayout {
                     alignment: center;
-                    Icon { name: root.lead; ink: root.enabled ? root.lead-ink : root.ink; }
+                    Rectangle {
+                        width: Tokens.size-button-chip;
+                        height: Tokens.size-button-chip;
+                        border-radius: Tokens.radius-md;
+                        background: !root.enabled ? transparent : root.lead-signal ? Theme.surface-sunken : Theme.button-chip;
+                        Icon { name: root.lead; ink: !root.enabled ? root.ink : root.lead-signal ? root.lead-ink : Theme.accent; }
+                    }
+                }
+                if root.lead != IconName.none && root.kind == "primary" && !root.lead-signal: VerticalLayout {
+                    alignment: center;
+                    Icon { name: root.lead; ink: root.ink; }
                 }
                 Text {
                     text: root.text;
@@ -606,7 +744,7 @@ export component SplitButton inherits Rectangle {
         }
         part := Rectangle {
             min-width: part-row.preferred-width + 2 * Tokens.space-1;
-            background: part-touch.has-hover ? root.hover : transparent;
+            background: part-touch.pressed ? root.pressed : part-touch.has-hover ? root.hover : transparent;
             accessible-role: button;
             accessible-label: root.menu-name;
             accessible-description: root.menu-description;
@@ -656,6 +794,7 @@ export component SplitButton inherits Rectangle {
         width: main.width + 2 * Tokens.size-focus-ring;
         height: root.height + 2 * Tokens.size-focus-ring;
         show: main-focus.ring;
+        radius: Tokens.radius-button;
     }
     FocusRing {
         x: part.x - Tokens.size-focus-ring;
@@ -663,6 +802,7 @@ export component SplitButton inherits Rectangle {
         width: part.width + 2 * Tokens.size-focus-ring;
         height: root.height + 2 * Tokens.size-focus-ring;
         show: part-focus.ring;
+        radius: Tokens.radius-button;
     }
 }
 
@@ -868,6 +1008,8 @@ export component EmptyState inherits Rectangle {
     in property <string> message;
     // The next action as a button (rule U10); none when empty.
     in property <string> action;
+    // The action's icon (every command button shows one, owner 2026-11-14).
+    in property <IconName> action-icon: IconName.plus;
     callback act();
     VerticalLayout {
         alignment: center;
@@ -890,7 +1032,7 @@ export component EmptyState inherits Rectangle {
         }
         if root.action != "": HorizontalLayout {
             alignment: center;
-            Button { text: root.action; kind: "primary"; clicked => { root.act(); } }
+            Button { lead: root.action-icon; text: root.action; kind: "primary"; clicked => { root.act(); } }
         }
     }
 }
@@ -1307,7 +1449,8 @@ export component SegmentedControl inherits Rectangle {
     // Same as Tabs: the track takes the row, and the options share it. A width
     // binding would turn this stretch off and leave the track as wide as its labels.
     horizontal-stretch: 1;
-    min-width: 0px;
+    // Never narrower than its labels: a squeezed track clips the last option.
+    min-width: track.min-width;
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-md;
     border-width: Tokens.size-border;
@@ -1318,7 +1461,7 @@ export component SegmentedControl inherits Rectangle {
     // `parent.width`, not stretch alone: this layout is inside a rectangle, so it
     // stays as wide as the labels until it is given the track's width. The options
     // then share it (design system: filling a row).
-    HorizontalLayout {
+    track := HorizontalLayout {
         width: parent.width;
         height: parent.height;
         padding: Tokens.size-focus-ring;
@@ -1545,7 +1688,13 @@ export component TextField inherits Rectangle {
         edited => { root.edited(self.text); }
     }
     property <bool> focused: input.has-focus;
-    changed focused => { if !focused && !root.read-only && !root.password { root.accepted(root.text); } }
+    changed focused => {
+        if focused {
+            FocusReveal.focused(input.absolute-position.x, input.absolute-position.y);
+        } else if !root.read-only && !root.password {
+            root.accepted(root.text);
+        }
+    }
 }
 
 // ColorPicker: a swatch button that opens a popover to choose a colour by hue,
@@ -2033,9 +2182,11 @@ component StepButton inherits Rectangle {
     in property <bool> enabled: true;
     callback step();
     property <bool> repeating;
+    // The Tint look's button colours (ADR-0118). It stays a part of the field, not a
+    // Button: a Button takes the focus, and the stepper must leave it in the field.
     background: !root.enabled ? transparent
-        : touch.pressed ? Theme.surface-raised
-        : touch.has-hover ? Theme.surface-overlay : transparent;
+        : touch.pressed ? Theme.button-pressed
+        : touch.has-hover ? Theme.button-hover : transparent;
     accessible-role: none;
     Icon {
         width: Tokens.size-icon-box * 0.75;
@@ -2069,6 +2220,9 @@ export component NumberField inherits Rectangle {
     // A short visible label inside the field, before the value (X, Y, W, H...); the
     // value is then right-aligned. `label` stays the accessible name.
     in property <string> prefix;
+    // A unit after the value, inside the field (ms, px): it reads as "400 ms", and
+    // the value is then right-aligned next to it.
+    in property <string> unit;
     in property <float> value;
     in property <float> step: 1;
     in property <bool> enabled: true;
@@ -2107,9 +2261,11 @@ export component NumberField inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-increment => { step-by(1); }
     accessible-action-decrement => { step-by(-1); }
-    // Never narrower than the prefix, the value and the steppers side by side, so a
-    // narrow panel does not run "Bottom" into its value (U11).
-    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + steppers.width;
+    // Room the unit takes at the value's trailing end, with its gap.
+    property <length> unit-room: root.unit != "" ? post.preferred-width + Tokens.space-1 : 0px;
+    // Never narrower than the prefix, the value, the unit and the steppers side by
+    // side, so a narrow panel does not run "Bottom" into its value (U11).
+    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + root.unit-room + steppers.width;
     pre := Text {
         x: Tokens.space-2;
         height: parent.height;
@@ -2121,13 +2277,13 @@ export component NumberField inherits Rectangle {
     }
     input := TextInput {
         x: Tokens.space-2;
-        width: parent.width - 2 * Tokens.space-2 - steppers.width;
+        width: parent.width - 2 * Tokens.space-2 - steppers.width - root.unit-room;
         height: parent.height;
         text: shown(root.value);
         enabled: root.enabled;
         single-line: true;
         vertical-alignment: center;
-        horizontal-alignment: root.prefix != "" ? right : left;
+        horizontal-alignment: root.prefix != "" || root.unit != "" ? right : left;
         color: root.enabled ? Theme.text-primary : Theme.text-disabled;
         font-size: Tokens.type-body-size;
         // The caret is drawn in the selection colour (Slint 1.18 on macOS): accent,
@@ -2143,6 +2299,84 @@ export component NumberField inherits Rectangle {
         }
         accepted => { root.commit(); }
         edited => { root.typed(self.text); }
+    }
+    post := Text {
+        x: parent.width - Tokens.space-2 - steppers.width - self.width;
+        width: self.preferred-width;
+        height: parent.height;
+        text: root.unit;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    // Drag to change (design system NumberField): right or up raises the value, one
+    // step per `size.field.drag-step` of travel, ten with Shift. The field shows the
+    // dragged value and calls `edited` once, on release; Escape puts it back. A press
+    // that moves less than one step is a click: the field takes the focus to type.
+    property <bool> dragging;
+    property <bool> drag-cancelled;
+    property <float> drag-from;
+    property <float> drag-value;
+    function end-drag(apply: bool) {
+        root.dragging = false;
+        drag-keys.clear-focus();
+        if apply && root.drag-value != root.value {
+            root.edited(root.drag-value);
+        }
+        input.text = shown(root.value);
+    }
+    drag := TouchArea {
+        x: 0;
+        width: parent.width - steppers.width;
+        height: parent.height;
+        // While typing, the pointer edits the text; a drag that took the focus keeps
+        // its press.
+        enabled: root.enabled && (!input.has-focus || self.pressed);
+        mouse-cursor: ew-resize;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.dragging = false;
+                root.drag-cancelled = false;
+                root.drag-from = input.text.is-float() ? input.text.to-float() : root.value;
+                root.drag-value = root.drag-from;
+            } else if e.kind == PointerEventKind.move && self.pressed && !root.drag-cancelled {
+                let travel = (self.mouse-x - self.pressed-x) - (self.mouse-y - self.pressed-y);
+                if !root.dragging && abs(travel) < Tokens.size-field-drag-step {
+                    return;
+                }
+                if !root.dragging {
+                    root.dragging = true;
+                    drag-keys.focus();
+                }
+                root.drag-value = root.drag-from + round(travel / Tokens.size-field-drag-step) * root.step * (e.modifiers.shift ? 10 : 1);
+                input.text = shown(root.drag-value);
+            } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                if root.dragging {
+                    root.end-drag(true);
+                } else if !root.drag-cancelled {
+                    input.focus();
+                    input.select-all();
+                }
+            } else if e.kind == PointerEventKind.cancel && root.dragging {
+                root.end-drag(false);
+            }
+        }
+    }
+    // Takes the keys during a drag, for Escape; never a Tab stop of its own.
+    drag-keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(e) => {
+            if e.text == Key.Escape && root.dragging {
+                root.drag-cancelled = true;
+                root.end-drag(false);
+                return accept;
+            }
+            reject
+        }
     }
     // The stepper column: the arrow keys' up and down as buttons, so the field shows
     // that it steps (U2). A divider line separates it from the value.
@@ -2172,7 +2406,13 @@ export component NumberField inherits Rectangle {
         }
     }
     property <bool> focused: input.has-focus;
-    changed focused => { if !focused { root.commit(); } }
+    changed focused => {
+        if focused {
+            FocusReveal.focused(input.absolute-position.x, input.absolute-position.y);
+        } else {
+            root.commit();
+        }
+    }
 }
 
 // KeyboardShortcutHint (design system): a chord shown as a key chip, for example in
@@ -2413,6 +2653,8 @@ export component InfoHint inherits Rectangle {
     property <int> owner: -1;
     property <bool> open: Overlays.hint-open && Overlays.hint-owner == root.owner;
     out property <bool> focused: focus.has-focus;
+    // Its popover is open.
+    out property <bool> showing: root.open;
     public function take-focus() { focus.focus(); }
     width: Tokens.size-control-sm;
     height: Tokens.size-control-sm;
@@ -2468,6 +2710,27 @@ export component ListRow inherits Rectangle {
     in property <IconName> icon;
     // A Checkbox before the name for the item's on/off state, where that state is
     // what the list is about (a filter; owner decision 2026-11-13, ADR-0114 review).
+    // A picture at the start instead of an icon (a sample's thumbnail), in a 16:9
+    // well `picture-height` high (one of the `size.row.picture.*` tokens; zero for
+    // none). The row grows to hold it.
+    in property <image> picture;
+    in property <length> picture-height;
+    // A pattern behind the picture, so transparent parts (a frame's inside, a PNG
+    // with alpha) read as transparent instead of as the well. Opaque pictures cover it.
+    in property <bool> picture-checker;
+    // Room kept at the start for a picture the owner draws over the row (a theme's
+    // swatch); zero for none.
+    in property <length> lead-space;
+    // Off for a list whose items are not chosen (the Shortcuts commands): no
+    // selection for screen readers and no focus stop of its own.
+    in property <bool> selectable: true;
+    // Off: the name is in the disabled colour and the row takes no input.
+    in property <bool> enabled: true;
+    // The row sits on `surface.overlay` (a menu): the chosen row takes the accent's
+    // subtle fill, because the usual overlay plate would not show there.
+    in property <bool> on-overlay;
+    // The icon's colour when it is not the name's (a checked menu item's check).
+    in property <color> icon-ink: root.ink;
     in property <bool> has-check;
     in property <bool> checked;
     in property <string> check-label;
@@ -2518,23 +2781,44 @@ export component ListRow inherits Rectangle {
     public function focus-pointer() { focus.focus-pointer(); }
     property <bool> drop-here: drop.has-drag && root.drop-enabled && root.taking;
     property <bool> taking;
-    property <color> ink: root.dimmed ? Theme.text-disabled : Theme.text-primary;
+    property <color> ink: root.dimmed || !root.enabled ? Theme.text-disabled : Theme.text-primary;
     changed confirm => { if root.confirm { focus.focus(); } }
-    height: root.note != "" && !root.note-beside ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md;
+    height: max(root.note != "" && !root.note-beside ? Tokens.size-control-md + Tokens.type-caption-line : Tokens.size-control-md,
+        root.picture-height > 0 ? root.picture-height + 2 * Tokens.space-1 : 0px);
     border-radius: Tokens.radius-sm;
     border-width: root.selected ? Tokens.size-border : 0px;
     border-color: Theme.accent;
-    background: root.selected || touch.has-hover ? Theme.surface-overlay : transparent;
+    background: root.on-overlay ? (root.selected ? (root.dimmed ? Theme.surface-raised : Theme.accent-subtle) : transparent)
+        : root.selected || (touch.has-hover && root.enabled) ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: root.accessible-name != "" ? root.accessible-name : root.name;
     accessible-description: root.accessible-hint;
-    accessible-item-selectable: true;
+    accessible-item-selectable: root.selectable;
     accessible-item-selected: root.selected;
-    accessible-action-default => { root.activated(); }
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.activated(); } }
+    forward-focus: focus;
+    // An elided name shows whole as a tooltip under the pointer or keyboard focus
+    // (owner decision 2026-11-14); a name that fits shows none.
+    // Set by the name's Text, which sits inside a conditional layout.
+    property <bool> name-elided;
+    property <int> tip-owner;
+    property <bool> tip-wanted: root.name-elided && !root.editing && !root.confirm && (touch.has-hover || focus.keyed);
+    changed tip-wanted => {
+        if root.tip-wanted {
+            // Never at once on focus: moving through a list must not open a tooltip
+            // on every row, so focus waits `delay.tooltip` as the pointer does.
+            root.tip-owner = Overlays.tip-enter(root.name, root.absolute-position.x, root.absolute-position.y, root.width, root.height, false);
+        } else {
+            Overlays.tip-leave(root.tip-owner);
+        }
+    }
     focus := RingFocus {
         focus-on-click: false;
+        enabled: root.selectable && root.enabled;
         key-pressed(e) => {
             if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
+            if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
             if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
                 root.confirmed();
                 return accept;
@@ -2568,7 +2852,7 @@ export component ListRow inherits Rectangle {
         data: root.drag-data;
         changed dragging => { root.dragging(self.dragging); }
         touch := TouchArea {
-            enabled: !root.confirm;
+            enabled: !root.confirm && root.enabled;
             clicked => { focus.focus-pointer(); root.activated(); }
             double-clicked => { root.double-clicked(); }
             pointer-event(e) => {
@@ -2581,6 +2865,41 @@ export component ListRow inherits Rectangle {
                 padding-left: Tokens.space-2;
                 padding-right: Tokens.space-1;
                 spacing: Tokens.space-2;
+                if root.lead-space > 0: Rectangle { width: root.lead-space; }
+                if root.picture-height > 0: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: root.picture-height * 16 / 9;
+                        height: root.picture-height;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        background: Theme.surface-sunken;
+                        clip: true;
+                        if root.picture-checker: Rectangle {
+                            property <length> cell: Tokens.size-row-picture-check;
+                            property <int> cols: Math.ceil(self.width / self.cell);
+                            property <int> rows: Math.ceil(self.height / self.cell);
+                            for i in self.cols * self.rows: Rectangle {
+                                property <int> cx: Math.mod(i, parent.cols);
+                                property <int> cy: Math.floor(i / parent.cols);
+                                x: self.cx * parent.cell;
+                                y: self.cy * parent.cell;
+                                width: parent.cell;
+                                height: parent.cell;
+                                visible: Math.mod(self.cx + self.cy, 2) == 1;
+                                background: Theme.surface-checker;
+                            }
+                        }
+                        Image {
+                            source: root.picture;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: contain;
+                            accessible-role: none;
+                        }
+                    }
+                }
                 if root.lead != "": Text {
                     min-width: Tokens.size-icon-box;
                     text: root.lead;
@@ -2591,7 +2910,7 @@ export component ListRow inherits Rectangle {
                 }
                 if root.lead == "" && root.has-icon: VerticalLayout {
                     alignment: center;
-                    Icon { name: root.icon; ink: root.ink; }
+                    Icon { name: root.icon; ink: root.icon-ink; }
                 }
                 if root.has-check: VerticalLayout {
                     alignment: center;
@@ -2626,6 +2945,9 @@ export component ListRow inherits Rectangle {
                             Icon { name: IconName.warning; ink: Theme.state-warning; }
                         }
                         Text {
+                            init => { root.name-elided = self.preferred-width > self.width; }
+                            changed width => { root.name-elided = self.preferred-width > self.width; }
+                            changed preferred-width => { root.name-elided = self.preferred-width > self.width; }
                             text: root.name;
                             color: root.warning ? Theme.text-disabled : root.ink;
                             font-size: Tokens.type-body-size;
@@ -2706,6 +3028,202 @@ export component ListRow inherits Rectangle {
         background: Theme.accent;
     }
     FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
+}
+
+// The one vertical scrolling surface (design system, ScrollArea). The trailing
+// `size.scrollbar.hit` is always kept for the bar, so the content's width never
+// depends on its height. The bar shows while the content is taller than the area:
+// thin when idle, wider on a track under the pointer, no animation and no timer.
+export component ScrollArea inherits Rectangle {
+    // The content's height (the owner's layout's preferred height).
+    in property <length> content-height;
+    // A focus stop for content with none of its own (Stats): the arrow, Page and
+    // Home/End keys scroll it.
+    in property <bool> focusable;
+    // Off for lists whose rows have buttons: a list that pans on a drag holds a
+    // press briefly, so a quick click would not arrive. The wheel still scrolls.
+    in property <bool> drag-pan: true;
+    // Off only for content that never scrolls itself (an inline ListBox): no room kept.
+    in property <bool> reserve-bar: true;
+    out property <length> offset: -flick.content-y;
+    out property <length> view-height: flick.height;
+    out property <length> bar-room: root.reserve-bar ? Tokens.size-scrollbar-hit : 0px;
+    property <length> max-offset: max(0px, root.content-height - flick.height);
+    property <bool> overflows: root.max-offset > 0px;
+    // Brings `y` to `y + h` of the content into view with the least movement.
+    public function scroll-into-view(y: length, h: length) {
+        if y < root.offset {
+            flick.content-y = -max(0px, y);
+        } else if y + h > root.offset + flick.height {
+            flick.content-y = -min(root.max-offset, y + h - flick.height);
+        }
+    }
+    public function scroll-by(dy: length) {
+        flick.content-y = -clamp(root.offset + dy, 0px, root.max-offset);
+    }
+    // A row reported by FocusReveal that lies in this area's content is brought into
+    // view whole.
+    property <int> row-serial: FocusReveal.row-serial;
+    changed row-serial => {
+        let p = flick.absolute-position;
+        let top = p.y + flick.content-y;
+        // The row's middle decides the side: two areas side by side never share it.
+        let mid = FocusReveal.row-x + FocusReveal.row-w / 2;
+        if mid >= p.x && mid < p.x + flick.width
+            && FocusReveal.row-y >= top && FocusReveal.row-y + FocusReveal.row-h <= top + flick.content-height {
+            root.scroll-into-view(FocusReveal.row-y - top, FocusReveal.row-h);
+        }
+    }
+    flick := Flickable {
+        x: 0px;
+        y: 0px;
+        width: root.width - root.bar-room;
+        height: root.height;
+        content-height: max(root.content-height, self.height);
+        mouse-drag-pan-enabled: root.drag-pan;
+        @children
+    }
+    if root.overflows && root.reserve-bar: bar := Rectangle {
+        x: root.width - self.width;
+        width: Tokens.size-scrollbar-hit;
+        height: root.height;
+        property <bool> hot: track.has-hover || track.dragging;
+        property <length> thumb-h: min(self.height, max(Tokens.size-scrollbar-thumb-min, self.height * flick.height / root.content-height));
+        property <length> thumb-y: (self.height - self.thumb-h) * root.offset / root.max-offset;
+        background: self.hot ? Theme.surface-overlay : transparent;
+        border-radius: self.width / 2;
+        accessible-role: none;
+        Rectangle {
+            width: bar.hot ? Tokens.size-scrollbar-thumb-hot : Tokens.size-scrollbar-thumb;
+            x: (parent.width - self.width) / 2;
+            y: bar.thumb-y;
+            height: bar.thumb-h;
+            border-radius: self.width / 2;
+            background: bar.hot ? Theme.scrollbar-thumb-hot : Theme.scrollbar-thumb;
+        }
+        track := TouchArea {
+            in-out property <bool> dragging;
+            property <length> grab-offset;
+            pointer-event(e) => {
+                if e.button != PointerEventButton.left { return; }
+                if e.kind == PointerEventKind.down {
+                    if self.mouse-y >= bar.thumb-y && self.mouse-y <= bar.thumb-y + bar.thumb-h {
+                        self.dragging = true;
+                        self.grab-offset = root.offset;
+                    } else if self.mouse-y < bar.thumb-y {
+                        root.scroll-by(-flick.height);
+                    } else {
+                        root.scroll-by(flick.height);
+                    }
+                } else if e.kind == PointerEventKind.up {
+                    self.dragging = false;
+                }
+            }
+            moved => {
+                if self.dragging && bar.height > bar.thumb-h {
+                    flick.content-y = -clamp(self.grab-offset + (self.mouse-y - self.pressed-y) * root.max-offset / (bar.height - bar.thumb-h), 0px, root.max-offset);
+                }
+            }
+        }
+    }
+    if root.focusable: Rectangle {
+        width: root.width;
+        height: root.height;
+        FocusRing { show: keys.ring; }
+        keys := RingFocus {
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        key-pressed(e) => {
+            if e.text == Key.UpArrow { root.scroll-by(-Tokens.size-control-md); return accept; }
+            if e.text == Key.DownArrow { root.scroll-by(Tokens.size-control-md); return accept; }
+            if e.text == Key.PageUp { root.scroll-by(-flick.height); return accept; }
+            if e.text == Key.PageDown { root.scroll-by(flick.height); return accept; }
+            if e.text == Key.Home { flick.content-y = 0px; return accept; }
+            if e.text == Key.End { flick.content-y = -root.max-offset; return accept; }
+            reject
+        }
+        }
+    }
+}
+
+// The geometry and keys of a list of ListRow items on a ScrollArea (design system,
+// ListBox). Slint cannot count or place @children, so the owner writes its own `for`,
+// places row `i` at `cell-x(i)`, `cell-y(i)`, `cell-width` wide and `row-height` high,
+// and forwards each row's `key` to `key(event)`. In `current-changed` the owner sets
+// its current item and focuses that row.
+export component ListBox inherits Rectangle {
+    in property <int> count;
+    in property <length> row-height;
+    // 1: one row per line. 0: as many columns as fit `size.list.cell-min-w` cells.
+    in property <int> columns: 1;
+    // 0 fills the space given; above 0 the box grows up to that many lines, then scrolls.
+    in property <int> max-rows;
+    // Between lines and between cells: a token from the owner.
+    in property <length> spacing;
+    // Only the rows in view, plus a page above and below, are built (fixed row height).
+    in property <bool> virtual;
+    // Inside a scrolling panel: all lines shown, no bar room; the panel scrolls.
+    in property <bool> inline;
+    in property <bool> drag-pan: true;
+    in property <int> current: -1;
+    callback current-changed(int);
+    out property <int> columns-shown: root.columns > 0 ? root.columns
+        : max(1, Math.floor((area.width - area.bar-room + root.spacing) / (Tokens.size-list-cell-min-w + root.spacing)));
+    out property <length> cell-width: (area.width - area.bar-room - (root.columns-shown - 1) * root.spacing) / root.columns-shown;
+    property <int> lines: Math.ceil(root.count / root.columns-shown);
+    property <length> pitch: root.row-height + root.spacing;
+    property <length> content-h: max(0px, root.lines * root.pitch - root.spacing);
+    property <int> lines-in-view: max(1, Math.floor((area.height + root.spacing) / root.pitch));
+    // The rows to build: all of them, or with `virtual` the ones in view and a page around.
+    out property <int> first-shown: !root.virtual ? 0
+        : max(0, (Math.floor(area.offset / root.pitch) - root.lines-in-view) * root.columns-shown);
+    out property <int> shown-count: !root.virtual ? root.count
+        : min(root.count - root.first-shown, (3 * root.lines-in-view + 1) * root.columns-shown);
+    preferred-height: root.inline ? root.content-h
+        : root.max-rows > 0 ? max(0px, min(root.lines, root.max-rows) * root.pitch - root.spacing) : root.content-h;
+    min-height: root.inline ? root.content-h : 0px;
+    vertical-stretch: root.max-rows > 0 || root.inline ? 0 : 1;
+    pure public function cell-x(i: int) -> length {
+        Math.mod(i, root.columns-shown) * (root.cell-width + root.spacing)
+    }
+    pure public function cell-y(i: int) -> length {
+        Math.floor(i / root.columns-shown) * root.pitch
+    }
+    public function show(i: int) {
+        area.scroll-into-view(root.cell-y(i), root.row-height);
+    }
+    function go(i: int) {
+        if root.count <= 0 { return; }
+        let to = clamp(i, 0, root.count - 1);
+        root.show(to);
+        root.current-changed(to);
+    }
+    public function key(e: KeyEvent) -> EventResult {
+        let at = max(root.current, 0);
+        if e.text == Key.UpArrow { root.go(at - root.columns-shown); return accept; }
+        if e.text == Key.DownArrow { root.go(root.current < 0 ? 0 : at + root.columns-shown); return accept; }
+        if root.columns-shown > 1 && e.text == Key.LeftArrow { root.go(at - 1); return accept; }
+        if root.columns-shown > 1 && e.text == Key.RightArrow { root.go(at + 1); return accept; }
+        if e.text == Key.Home { root.go(0); return accept; }
+        if e.text == Key.End { root.go(root.count - 1); return accept; }
+        if e.text == Key.PageUp { root.go(at - root.lines-in-view * root.columns-shown); return accept; }
+        if e.text == Key.PageDown { root.go(at + root.lines-in-view * root.columns-shown); return accept; }
+        reject
+    }
+    accessible-role: list;
+    area := ScrollArea {
+        width: root.width;
+        height: root.height;
+        content-height: root.content-h;
+        drag-pan: root.drag-pan;
+        reserve-bar: !root.inline;
+        Rectangle {
+            width: root.cell-width * root.columns-shown + (root.columns-shown - 1) * root.spacing;
+            height: root.content-h;
+            @children
+        }
+    }
 }
 
 // Draws the open overlays above everything else in the window. Put one as the last
@@ -2969,6 +3487,7 @@ export component OverlayHost inherits Rectangle {
                         clicked => { Overlays.vertical-cancelled(); }
                     }
                     if Overlays.vertical-exists: Button {
+                        lead: IconName.trash;
                         text: @tr("Remove");
                         kind: "primary";
                         clicked => { Overlays.vertical-removed(); }
@@ -3099,7 +3618,7 @@ export component OverlayHost inherits Rectangle {
                         font-size: Tokens.type-body-size;
                         vertical-alignment: center;
                         accessible-label: @tr("Filter");
-                        edited => { Overlays.picker-current = 0; picker-list.content-y = 0px; Overlays.picker-filtered(self.text); }
+                        edited => { Overlays.picker-current = 0; picker-list.scroll-into-view(0px, 0px); Overlays.picker-filtered(self.text); }
                         accepted => {
                             if Overlays.picker-rows.length > 0 {
                                 Overlays.picker-chosen(Overlays.picker-rows[min(Overlays.picker-current, Overlays.picker-rows.length - 1)].index);
@@ -3109,12 +3628,12 @@ export component OverlayHost inherits Rectangle {
                             if e.text == Key.Escape { Overlays.picker-cancelled(); return accept; }
                             if e.text == Key.DownArrow && Overlays.picker-rows.length > 0 {
                                 Overlays.picker-current = min(Overlays.picker-current + 1, Overlays.picker-rows.length - 1);
-                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
                                 return accept;
                             }
                             if e.text == Key.UpArrow && Overlays.picker-rows.length > 0 {
                                 Overlays.picker-current = max(Overlays.picker-current - 1, 0);
-                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
                                 return accept;
                             }
                             reject
@@ -3138,7 +3657,7 @@ export component OverlayHost inherits Rectangle {
                     border-color: Theme.border-subtle;
                     background: Theme.surface-base;
                     clip: true;
-                picker-list := Flickable {
+                picker-list := ScrollArea {
                     y: Tokens.size-border;
                     x: Tokens.size-border;
                     width: parent.width - 2 * Tokens.size-border;
@@ -3304,7 +3823,17 @@ export component FeatureSection inherits VerticalLayout {
 // `@children` cannot sit under an `if`.
 export component SettingRow inherits Rectangle {
     in property <string> label;
+    // A few words under the name saying what the setting does, one line (owner
+    // decision 2026-11-14): with `hint`, the usual pair for a short setting.
+    in property <string> summary;
+    // A longer text under the name: a problem, a warning, or an explanation that does
+    // not fit in a summary and the hint.
     in property <string> help;
+    // The longer explanation behind an info hint after the name (ADR-0094 row
+    // anatomy); empty: no hint. The (i) shows only while the pointer is over the row,
+    // it has the focus or its popover is open, so a page of settings shows no column
+    // of identical buttons; screen readers always get it.
+    in property <string> hint;
     // The help is a problem (error colour), not an explanation.
     in property <bool> help-is-problem;
     // The help is a warning (warning colour). The words say so; colour is not
@@ -3320,48 +3849,117 @@ export component SettingRow inherits Rectangle {
     // width at the column's right edge (toggles, segmented controls, buttons), or at
     // the left edge when stacked.
     in property <bool> fill: true;
+    // The value differs from its default (owner decision 2026-11-14): a reset button
+    // shows just before the control while the row has room for it (not stacked), and
+    // a double-click on the name resets too. Only rows whose default is known set it.
+    in property <bool> changed;
+    // The default in words, for the reset button's name ("Reset to 400 ms").
+    in property <string> default-text;
+    callback reset();
+    out property <bool> reset-shown: root.changed && !root.stacked;
+    property <length> reset-room: root.reset-shown ? Tokens.size-control-sm : 0px;
     // The control is under the name.
     out property <bool> stacked: root.width < Tokens.size-row-stack-below || controls.min-width > root.width / 2;
-    property <bool> has-info: root.label != "" || root.help != "";
+    property <bool> has-info: root.label != "" || root.summary != "" || root.help != "" || root.hint != "";
+    property <bool> hint-focused;
+    property <bool> hint-open;
+    out property <bool> hint-shown: root.hint != "" && (hover.has-hover || root.hint-focused || root.hint-open);
     property <length> column: max(controls.min-width, min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2));
     property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
     property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
     min-width: max(info.min-width, controls.min-width);
     min-height: Tokens.space-3 * 2 + root.inner;
     preferred-height: Tokens.space-3 * 2 + root.inner;
+    // Focus that lands in this row shows the whole row (FocusReveal).
+    property <int> focus-serial: FocusReveal.serial;
+    changed focus-serial => {
+        let p = self.absolute-position;
+        if FocusReveal.x >= p.x && FocusReveal.x < p.x + self.width && FocusReveal.y >= p.y && FocusReveal.y < p.y + self.height {
+            FocusReveal.row(p.x, p.y, self.width, self.height);
+        }
+    }
     if root.divider: Rectangle {
         y: 0;
         height: Tokens.size-border;
         background: Theme.border-subtle;
     }
-    info := VerticalLayout {
-        x: 0;
-        width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap);
-        y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
-        height: self.preferred-height;
-        spacing: Tokens.space-1;
-        if root.label != "": Text {
-            text: root.label;
-            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            wrap: word-wrap;
-            accessible-role: none;
+    // Holds the row's content, so the pointer anywhere on it, also over the
+    // control, shows the (i): a TouchArea under the content would lose the hover to
+    // the control.
+    hover := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        // A double-click on the name or its summary resets a changed value.
+        double-clicked => {
+            if root.changed && (root.stacked || self.mouse-x < info.width) {
+                root.reset();
+            }
         }
-        if root.help != "": Text {
-            text: root.help;
-            color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            wrap: word-wrap;
+        info := VerticalLayout {
+            x: 0;
+            width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap - root.reset-room);
+            y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
+            height: self.preferred-height;
+            spacing: Tokens.space-1;
+            // The name, and after it the (i). The (i) is placed, not laid out, so its
+            // button (taller than the text) does not make the name line taller; it
+            // always keeps its place, so showing it moves nothing.
+            Rectangle {
+                min-height: name.min-height;
+                preferred-height: name.preferred-height;
+                name := Text {
+                    x: 0;
+                    width: min(self.preferred-width, parent.width - (root.hint != "" ? Tokens.size-control-sm + Tokens.space-1 : 0px));
+                    height: parent.height;
+                    text: root.label;
+                    color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                    font-size: Tokens.type-label-size;
+                    font-weight: Tokens.type-label-weight;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                // Opacity, not `visible`: a hidden (i) stays a focus stop and in the
+                // accessibility tree.
+                if root.hint != "": InfoHint {
+                    x: name.width + Tokens.space-1;
+                    y: (parent.height - self.height) / 2;
+                    opacity: root.hint-shown ? 1 : 0;
+                    label: root.label;
+                    text: root.hint;
+                    changed focused => { root.hint-focused = self.focused; }
+                    changed showing => { root.hint-open = self.showing; }
+                }
+            }
+            if root.summary != "": Text {
+                text: root.summary;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
+                accessible-role: none;
+            }
+            if root.help != "": Text {
+                text: root.help;
+                color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
         }
-    }
-    controls := HorizontalLayout {
-        width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
-        x: root.stacked ? 0px : root.width - self.width;
-        y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
-        height: self.preferred-height;
-        alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
-        spacing: Tokens.space-2;
-        @children
+        if root.reset-shown: IconButton {
+            x: controls.x - self.width;
+            y: controls.y + (controls.height - self.height) / 2;
+            icon: IconName.reset;
+            name: root.default-text != "" ? @tr("Reset to {}", root.default-text) : @tr("Reset to the default");
+            clicked => { root.reset(); }
+        }
+        controls := HorizontalLayout {
+            width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
+            x: root.stacked ? 0px : root.width - self.width;
+            y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
+            height: self.preferred-height;
+            alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
+            spacing: Tokens.space-2;
+            @children
+        }
     }
 }

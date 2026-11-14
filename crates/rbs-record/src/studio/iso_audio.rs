@@ -19,12 +19,13 @@ use rbs_scene::model::SourceId;
 use rbs_transport::{TransportConfig, TransportInput};
 
 use super::{AUDIO_ENCODER_PACKETS, Added};
-use crate::iso::{self, IsoError, IsoRole, RecordingManifest};
+use crate::iso::{self, IsoError, IsoRole};
 use crate::recording::{
     AudioSettings, ISO_AUDIO_ENCODER, ISO_OUTPUT, RecordAdapters, RecordError, StartFailure,
     add_active,
 };
 use crate::select::{self, scheme_of};
+use rbs_manifest::RecordingManifest;
 
 /// What [`super::Studio::start_iso_audio`] opens. Audio defaults to AAC at 160 kbit/s,
 /// the master's usual audio settings.
@@ -48,6 +49,10 @@ pub struct IsoAudioStart {
     pub t0_ns: u64,
     /// When set, `recording.rbs.toml` is written here after the audio files are open.
     pub manifest_dir: Option<PathBuf>,
+    /// A marked source the program mix does not hear is left out and listed in
+    /// [`IsoAudioStarted::not_heard`] instead of failing the start with
+    /// [`IsoError::NotHeard`]. False by default.
+    pub skip_unheard: bool,
 }
 
 impl IsoAudioStart {
@@ -67,6 +72,7 @@ impl IsoAudioStart {
             t0_utc: t0_utc.into(),
             t0_ns,
             manifest_dir: None,
+            skip_unheard: false,
         }
     }
 }
@@ -83,11 +89,18 @@ pub struct IsoAudioStarted {
     pub audio_tracks: usize,
     /// Video flags named in the manifest and not opened.
     pub video_pending: usize,
+    /// Marked sources left out because the program mix does not hear them (only
+    /// with [`IsoAudioStart::skip_unheard`]), with their display names. They are not
+    /// in the manifest.
+    pub not_heard: Vec<(SourceId, String)>,
 }
 
 pub(super) struct IsoAudioRun {
     nodes: Vec<Added>,
 }
+
+/// Marked sources the program mix does not hear, with their display names.
+type Unheard = Vec<(SourceId, String)>;
 
 /// A source the program mix is hearing, and the file this step opens for it.
 struct Tap {
@@ -115,7 +128,7 @@ impl super::Studio {
         }
         let planned = iso::plan(&self.collection).map_err(RecordError::Iso)?;
         let mut manifest =
-            RecordingManifest::at_start(&planned, &start.master_name, &start.t0_utc, start.t0_ns)
+            iso::manifest_at_start(&planned, &start.master_name, &start.t0_utc, start.t0_ns)
                 .map_err(RecordError::Iso)?;
         let video_pending = planned
             .tracks
@@ -133,13 +146,28 @@ impl super::Studio {
                 manifest,
                 audio_tracks: 0,
                 video_pending,
+                not_heard: Vec::new(),
             });
         }
-        let taps = self.taps(&audio, start.container)?;
+        let (taps, not_heard) = self.taps(&audio, start.container, start.skip_unheard)?;
+        manifest.files.retain(|file| {
+            file.role != "audio"
+                || file
+                    .source
+                    .is_none_or(|source| !not_heard.iter().any(|(id, _)| id.get() == source.get()))
+        });
+        if taps.is_empty() {
+            return Ok(IsoAudioStarted {
+                manifest,
+                audio_tracks: 0,
+                video_pending,
+                not_heard,
+            });
+        }
         for file in &mut manifest.files {
             if file.role == "audio"
                 && let Some(source) = file.source
-                && let Some(tap) = taps.iter().find(|tap| tap.source == source)
+                && let Some(tap) = taps.iter().find(|tap| tap.source.get() == source.get())
             {
                 file.file_name.clone_from(&tap.file_name);
             }
@@ -170,6 +198,7 @@ impl super::Studio {
             manifest,
             audio_tracks: taps.len(),
             video_pending,
+            not_heard,
         })
     }
 
@@ -197,29 +226,36 @@ impl super::Studio {
         true
     }
 
-    /// The program mix must already be hearing each marked source.
+    /// The program mix must already be hearing each marked source; with `skip`, one it
+    /// does not hear is returned in the second list instead.
     fn taps(
         &self,
         audio: &[crate::iso::IsoTrack],
         container: ContainerId,
-    ) -> Result<Vec<Tap>, RecordError> {
+        skip: bool,
+    ) -> Result<(Vec<Tap>, Unheard), RecordError> {
         let mixer = self
             .bound_mixer
             .as_ref()
             .ok_or(RecordError::NotBound("mixer"))?;
         let ext = extension(container);
         let mut taps = Vec::with_capacity(audio.len());
+        let mut not_heard = Vec::new();
         for track in audio {
-            let input = mixer
+            let Some(input) = mixer
                 .inputs
                 .iter()
                 .find(|input| input.source == track.source)
-                .ok_or_else(|| {
-                    RecordError::Iso(IsoError::NotHeard {
-                        source: track.source,
-                        name: track.source_name.clone(),
-                    })
-                })?;
+            else {
+                if skip {
+                    not_heard.push((track.source, track.source_name.clone()));
+                    continue;
+                }
+                return Err(RecordError::Iso(IsoError::NotHeard {
+                    source: track.source,
+                    name: track.source_name.clone(),
+                }));
+            };
             let pin = audio_pin(&self.graph, input.producer)?;
             taps.push(Tap {
                 source: track.source,
@@ -228,10 +264,10 @@ impl super::Studio {
                 file_name: format!("{}.{}", track.file_name, ext),
             });
         }
-        Ok(taps)
+        Ok((taps, not_heard))
     }
 
-    fn ensure_iso_partitions(&mut self) -> Result<(), RecordError> {
+    pub(super) fn ensure_iso_partitions(&mut self) -> Result<(), RecordError> {
         // An empty partition starts no thread (ADR-0013). A worker starts when the
         // apply below schedules nodes, and stops when [`Self::stop_iso_audio`] removes them.
         if self.engine.worker_stats(ISO_AUDIO_ENCODER).is_none() {
@@ -351,7 +387,7 @@ impl super::Studio {
     }
 
     /// Instances adopted before the graph was applied.
-    fn abandon(&mut self, adopted: Vec<Added>) {
+    pub(super) fn abandon(&mut self, adopted: Vec<Added>) {
         for node in adopted {
             if !super::take(&mut self.engine, node) {
                 self.pending_takes.push((node, None));
@@ -360,7 +396,7 @@ impl super::Studio {
     }
 
     /// The apply installed these nodes and one of them did not join.
-    fn remove_added(&mut self, nodes: &[Added]) {
+    pub(super) fn remove_added(&mut self, nodes: &[Added]) {
         for node in nodes {
             let _ = self.graph.set_state(node.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(node.node);
@@ -387,7 +423,7 @@ fn audio_pin(graph: &GraphDescription, node: NodeId) -> Result<String, RecordErr
         .ok_or(RecordError::NotBound("audio source"))
 }
 
-fn extension(container: ContainerId) -> &'static str {
+pub(super) fn extension(container: ContainerId) -> &'static str {
     match container {
         ContainerId::Matroska => "mkv",
         ContainerId::Mp4Fragmented => "mp4",
@@ -395,12 +431,13 @@ fn extension(container: ContainerId) -> &'static str {
         ContainerId::Flv => "flv",
         ContainerId::Wav => "wav",
         ContainerId::Flac => "flac",
+        ContainerId::Mov => "mov",
         _ => "bin",
     }
 }
 
 /// `{folder}/{name}` with a space, `%`, `#` or `?` in the name escaped.
-fn track_url(folder: &str, file_name: &str) -> String {
+pub(super) fn track_url(folder: &str, file_name: &str) -> String {
     let folder = folder.trim_end_matches('/');
     let mut name = String::new();
     for c in file_name.chars() {

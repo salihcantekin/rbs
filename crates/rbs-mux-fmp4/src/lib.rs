@@ -44,7 +44,18 @@
 //!   lengths without AUD, SPS and PPS, which live in the sample entry. Annex B input
 //!   needs SPS and PPS in the extradata.
 //!
-//! Limitations: H.264, HEVC, AV1 (OBU samples, an `av01` entry) and AAC (Opus to come);
+//! MOV (QuickTime, ADR-0085) is the same writer with a QuickTime header: brand
+//! `qt  `, `mhlr` handler components with Pascal-string names and an `alis` data
+//! reference. It carries H.264, HEVC, AAC and PCM (no AV1). PCM uses the version 2
+//! `lpcm` sound description (interleaved, little-endian, packed; 16-bit or 24-bit
+//! signed integer or 32-bit float, from the one-byte extradata of `rbs-codec-pcm`);
+//! every PCM frame is one sample of duration 1 at the sample rate, so a PCM `trun`
+//! takes the `tfhd` defaults and has no per-sample rows, and the packets of a
+//! fragment are laid end to end from the first one's time. Fragments, durations,
+//! patches and crash safety are as for fragmented MP4.
+//!
+//! Limitations: H.264, HEVC, AV1 (OBU samples, an `av01` entry, fragmented MP4 only),
+//! AAC and PCM (MOV only) (Opus to come);
 //! no `sidx` or `mfra`;
 //! an in-band SPS or PPS that differs from the extradata is refused (`InvalidPacket`),
 //! since a fragmented file has one sample entry: a format change needs a new output.
@@ -70,7 +81,7 @@ impl AdapterFactory for Fmp4MuxerFactory {
     }
 
     fn display_name(&self) -> &str {
-        "Fragmented MP4"
+        "Fragmented MP4 and MOV"
     }
 
     fn probe(&self) -> Result<CapabilitySet, ProbeError> {
@@ -78,7 +89,13 @@ impl AdapterFactory for Fmp4MuxerFactory {
             CapabilityValue::Set(values.iter().map(|v| (*v).to_owned()).collect())
         };
         Ok(CapabilitySet::new()
-            .with(caps::CONTAINER, set(&[ContainerId::Mp4Fragmented.as_str()]))
+            .with(
+                caps::CONTAINER,
+                set(&[
+                    ContainerId::Mp4Fragmented.as_str(),
+                    ContainerId::Mov.as_str(),
+                ]),
+            )
             .with(
                 caps::CODECS,
                 set(&[
@@ -86,6 +103,10 @@ impl AdapterFactory for Fmp4MuxerFactory {
                     "mp4.fragmented.hevc",
                     "mp4.fragmented.av1",
                     "mp4.fragmented.aac",
+                    "mov.h264",
+                    "mov.hevc",
+                    "mov.aac",
+                    "mov.pcm",
                 ]),
             )
             .with(caps::LIVE, CapabilityValue::Flag(true))
@@ -95,10 +116,13 @@ impl AdapterFactory for Fmp4MuxerFactory {
 
 impl MuxerFactory for Fmp4MuxerFactory {
     fn create(&self, config: &MuxerConfig) -> Result<Box<dyn Muxer>, CreateError> {
-        if config.container != ContainerId::Mp4Fragmented {
+        if !matches!(
+            config.container,
+            ContainerId::Mp4Fragmented | ContainerId::Mov
+        ) {
             return Err(CreateError::Unsupported {
                 what: format!(
-                    "container {} (this adapter writes mp4.fragmented)",
+                    "container {} (this adapter writes mp4.fragmented and mov)",
                     config.container
                 ),
             });

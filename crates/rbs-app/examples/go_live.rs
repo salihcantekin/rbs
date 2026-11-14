@@ -210,6 +210,7 @@ fn main() -> ExitCode {
                         audio_bitrate_bps: e.audio_bps(),
                         bit_depth: None,
                         size: None,
+                        iso: true,
                     }));
                     record_state = Some(1);
                 }

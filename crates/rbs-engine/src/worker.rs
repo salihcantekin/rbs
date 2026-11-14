@@ -111,6 +111,54 @@ pub struct WorkerStats {
     /// The last worker's grant: 0 no policy, else `grant_code`.
     grant: AtomicU8,
     policy_errors: AtomicU64,
+    /// How long cadence ticks took to run, from the clock: the last one, the longest,
+    /// their sum, and how many fell in each share of the cadence period
+    /// ([`TickTimes::buckets`]). One clock read and a few relaxed atomics per tick.
+    busy_last_ns: AtomicU64,
+    busy_max_ns: AtomicU64,
+    busy_sum_ns: AtomicU64,
+    busy_buckets: [AtomicU64; TICK_BUCKETS],
+}
+
+/// How many shares of the cadence period [`TickTimes::buckets`] counts.
+pub const TICK_BUCKETS: usize = 5;
+
+/// How long a cadence worker's ticks took to run ([`WorkerStats::tick_times`]): the time
+/// from the tick's start to the end of its nodes, read from the worker's clock. Ticks
+/// run while draining are not counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TickTimes {
+    /// Ticks measured.
+    pub ticks: u64,
+    /// The last tick's time.
+    pub last: Duration,
+    /// The longest tick.
+    pub max: Duration,
+    /// All ticks together (`sum / ticks` is the mean).
+    pub sum: Duration,
+    /// Ticks under 25 %, 50 %, 75 % and 100 % of the cadence period, and at or over it
+    /// (a tick that long makes the next one late).
+    pub buckets: [u64; TICK_BUCKETS],
+}
+
+impl TickTimes {
+    /// The smallest share of the period (25, 50, 75, 100 or 125 for "over") that at
+    /// least `fraction` of the ticks stayed under: a coarse percentile. 0 with no
+    /// ticks.
+    pub fn share_under(&self, fraction: f64) -> u32 {
+        let total: u64 = self.buckets.iter().sum();
+        if total == 0 {
+            return 0;
+        }
+        let mut seen = 0u64;
+        for (i, n) in self.buckets.iter().enumerate() {
+            seen += n;
+            if seen as f64 >= fraction * total as f64 {
+                return 25 * (i as u32 + 1);
+            }
+        }
+        125
+    }
 }
 
 fn grant_code(grant: ThreadGrant) -> u8 {
@@ -184,6 +232,32 @@ impl WorkerStats {
     /// default class).
     pub fn policy_errors(&self) -> u64 {
         self.policy_errors.load(Ordering::Relaxed)
+    }
+
+    /// How long the cadence ticks took to run (ADR-0086 decision 9: the ISO exports
+    /// judge lateness from the previous tick's time; measurements, P15).
+    pub fn tick_times(&self) -> TickTimes {
+        let ns = |a: &AtomicU64| Duration::from_nanos(a.load(Ordering::Relaxed));
+        let buckets = std::array::from_fn(|i| self.busy_buckets[i].load(Ordering::Relaxed));
+        TickTimes {
+            ticks: buckets.iter().sum(),
+            last: ns(&self.busy_last_ns),
+            max: ns(&self.busy_max_ns),
+            sum: ns(&self.busy_sum_ns),
+            buckets,
+        }
+    }
+
+    /// Notes one cadence tick that took `busy` of a `period`. Lock-free, no allocation.
+    fn ran(&self, busy: Duration, period: Duration) {
+        let busy_ns = u64::try_from(busy.as_nanos()).unwrap_or(u64::MAX);
+        let period_ns = u64::try_from(period.as_nanos()).unwrap_or(u64::MAX).max(1);
+        self.busy_last_ns.store(busy_ns, Ordering::Relaxed);
+        self.busy_max_ns.fetch_max(busy_ns, Ordering::Relaxed);
+        self.busy_sum_ns.fetch_add(busy_ns, Ordering::Relaxed);
+        // Quarters of the period; the last bucket holds every tick at or over it.
+        let quarter = (busy_ns.saturating_mul(4) / period_ns).min(TICK_BUCKETS as u64 - 1);
+        self.busy_buckets[quarter as usize].fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -441,6 +515,10 @@ pub(crate) fn run<X: Runtime>(
         } => {
             // The cadence time a tick that is due at `t` carries.
             let index_due = |t: Timestamp| cadence.index_at_or_before(t - offset);
+            let period = cadence.time_of(1).saturating_since(cadence.time_of(0));
+            // How long the tick before took, for the nodes that give way (ADR-0086
+            // decision 9). Zero after a start.
+            let mut previous_busy = Duration::ZERO;
             // Start at the current tick, or later if an earlier worker got further.
             if let Some(now_index) = index_due(clock.now()) {
                 next = next.max(now_index);
@@ -492,7 +570,9 @@ pub(crate) fn run<X: Runtime>(
                     stats.late.fetch_add(newest - next, Ordering::Relaxed);
                     newest
                 };
-                executor.run_tick(Tick::of(&cadence, run));
+                executor.run_tick(Tick::of(&cadence, run).after(previous_busy));
+                previous_busy = clock.now().saturating_since(now);
+                stats.ran(previous_busy, period);
                 stats.ticks.fetch_add(1, Ordering::Relaxed);
                 next = run.saturating_add(1);
             }
@@ -588,6 +668,8 @@ mod tests {
         step: Duration,
         step_every: u64,
         bell: Option<Arc<Doorbell>>,
+        /// The sum of `previous_busy` over the ticks it saw, in nanoseconds.
+        previous_busy: Arc<AtomicU64>,
     }
 
     impl Node<()> for Driver {
@@ -606,6 +688,8 @@ mod tests {
                 self.indices_ok.fetch_add(1, Ordering::Relaxed);
             }
             self.last = Some(index);
+            let previous = u64::try_from(ctx.tick().previous_busy.as_nanos()).unwrap_or(u64::MAX);
+            self.previous_busy.fetch_add(previous, Ordering::Relaxed);
             if let Some(clock) = &self.clock {
                 if (n - 1).is_multiple_of(self.step_every) {
                     clock.advance(self.step);
@@ -655,6 +739,7 @@ mod tests {
     struct Run {
         ticks: Arc<AtomicU64>,
         indices_ok: Arc<AtomicU64>,
+        previous_busy: Arc<AtomicU64>,
         allocations: u64,
         stats: WorkerStats,
     }
@@ -695,6 +780,7 @@ mod tests {
         let signals = Arc::new(signals);
         let ticks = Arc::new(AtomicU64::new(0));
         let indices_ok = Arc::new(AtomicU64::new(0));
+        let previous_busy = Arc::new(AtomicU64::new(0));
         let desc = NodeDescriptor::new(
             NodeTypeId::new("org.rbs.test.driver"),
             NodeKind::Output,
@@ -719,6 +805,7 @@ mod tests {
             step: step.0,
             step_every: step.1.max(1),
             bell: bell.clone(),
+            previous_busy: Arc::clone(&previous_busy),
         };
         let (mut controller, mut executor) = channel::<()>(Arc::new(()), ());
         let mut graph = GraphDescription::new();
@@ -788,6 +875,7 @@ mod tests {
         Run {
             ticks,
             indices_ok,
+            previous_busy,
             allocations: info.count_total,
             stats,
         }
@@ -834,6 +922,39 @@ mod tests {
         assert_eq!(run.stats.late(), 0);
         // Each jump of three frames leaves two ticks to run behind their time.
         assert_eq!(run.stats.caught_up(), 20);
+    }
+
+    #[test]
+    fn tick_times_count_how_long_each_tick_ran() {
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        // Every third tick takes three frames (the driver moves the clock while it
+        // runs); the two after it take no time.
+        let clock = TestClock::new();
+        let run = run_stepping(
+            Pacing::stream(cadence, 2),
+            Arc::new(clock.clone()),
+            Some(clock),
+            (FRAME * 3, 3),
+            None,
+            End::StopAfter(30),
+        );
+        assert_eq!(run.allocations, 0, "measuring the tick allocated");
+        let t = run.stats.tick_times();
+        let three = FRAME * 3;
+        assert_eq!(t.ticks, 30);
+        assert_eq!(t.buckets, [20, 0, 0, 0, 10]);
+        assert_eq!(t.max, three);
+        assert_eq!(t.sum, three * 10);
+        // The 30th tick is the last of a group of three: no time.
+        assert_eq!(t.last, Duration::ZERO);
+        // Each tick carries the one before's time: ticks 1 to 29 are seen by the next.
+        assert_eq!(
+            run.previous_busy.load(Ordering::Relaxed),
+            u64::try_from((three * 10).as_nanos()).unwrap()
+        );
+        assert_eq!(t.share_under(0.5), 25);
+        assert_eq!(t.share_under(0.9), 125);
+        assert_eq!(TickTimes::default().share_under(0.5), 0);
     }
 
     #[test]

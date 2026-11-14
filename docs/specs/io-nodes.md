@@ -37,7 +37,10 @@ impl VideoExportNode {                                        // Node<GpuRuntime
     // `width` x `height` is the encoded picture (ADR-0102). Equal to the canvas: 1:1.
     pub fn frame_format(&self) -> VideoFormat;                // the encoder config's input format
     pub fn kernel(&self) -> ScaleKernel;                      // after prepare, the download's kernel; before, scale_kernel of the sizes
-    pub fn stats(&self) -> Arc<ExportNodeStats>;              // frames, busy, lost
+    pub fn give_way_after(self, budget: Duration) -> Self;   // ADR-0086 decision 9; default never
+    pub fn yield_to(self, master_drops: MasterDrops, hold_ticks: u64) -> Self; // ADR-0086 decision 9
+    pub fn every_tick(self) -> Self;                          // ADR-0086: every tick, stamped with the tick
+    pub fn stats(&self) -> Arc<ExportNodeStats>;              // frames, busy, lost, gave_way
     pub fn end(&self) -> Arc<ExportEnd>;                      // ADR-0045
 }
 impl ExportEnd {                                              // shared with the control thread
@@ -114,11 +117,23 @@ Invariants:
 | Call | Does |
 | --- | --- |
 | `prepare` | Nothing |
-| `warm` | Uploads the picture with `SourceUpload` into a pool texture (not real time) |
+| `warm` | Uploads the picture with `SourceUpload` into a pool texture (not real time); the frame's sequence is a new generation (`rbs_core::media::next_generation()`, ADR-0117 decision 4), so each upload has a key no earlier frame had, though the timestamp is always zero |
 | `process` | Publishes the uploaded frame once; every later tick returns at once and the output slot keeps the frame (P13) |
 | `cool`, `release` | Drop the frame and give the textures back |
 
-Counters are those of the capture node: `picture_size` is known from construction, `uploaded` and `frames` count one per warm-up. Test: `crates/rbs-nodes/tests/still_gpu.rs` (one upload and one publication over many ticks; the exported canvas shows the picture).
+Counters are those of the capture node: `picture_size` is known from construction, `uploaded` and `frames` count one per warm-up. Test: `crates/rbs-nodes/tests/still_gpu.rs` (one upload and one publication over many ticks; the exported canvas shows the picture; an upload after Standby has a new generation).
+
+### Image track node (ADR-0117)
+
+`rbs_nodes::ImageTrackNode` (`org.rbs.image-track`, kind `VideoFilter`, input "picture", output "video", render partition) writes a still source's picture as images, one readback per change. `new(width, height)` sizes its `RgbaDownload`; `give_way_after(budget)` and `yield_to(master_drops)` set the ADR-0086 decision 9 rules.
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Creates the `RgbaDownload`; forgets the last picture taken |
+| `process` | 1. A completed readback goes on "video" (`System`, `Rgba8`, sRGB, straight alpha, stamped with the tick's time and index of the submit). 2. The input's `(timestamp, sequence)` equal to the last taken: nothing more (one compare). 3. Otherwise, at `MAX_IMAGES_PER_TRACK` (1 000) taken: counted in `over_cap`, not taken. 4. Inside `MIN_IMAGE_INTERVAL` (100 ms of tick time) of the last taken, with a readback in flight, or giving way (the previous render tick over the budget, or `master_drops` grew): the change waits for a later tick, counted once in `coalesced` (`gave_way` counts the ticks it gave way); a newer change replaces it. 5. Otherwise `submit_at` with the tick's time and index (`taken`). A failed conversion is counted in `failed` and not retried for that picture |
+| `release` | A readback still in flight is counted in `failed` |
+
+Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (an unchanged picture is taken once over 30 ticks; a change on every tick for one second at 60 fps gives one image per interval, each change in between waits and is counted, images stamped at least 100 ms apart, bytes copied as published).
 
 ### Video export node
 
@@ -126,7 +141,7 @@ Counters are those of the capture node: `picture_size` is known from constructio
 | --- | --- |
 | `prepare` | Creates a `YuvDownload` for the output size and format (converter, plane textures, staging ring, frame buffers). Output size equal to the canvas: `with_tone` (1:1 `textureLoad`). A different size: `scaled_tone` from the canvas size to the output size, one pass (ADR-0102) |
 | `prepare` (again) | Clears `ExportEnd::ended`; the end time stays |
-| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. On a tick past the end with no readback in flight, `ended` is set. Every delivered frame's time is stored in `ExportNodeStats::last_frame` |
+| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. On a tick past the end with no readback in flight, `ended` is set. Every delivered frame's time is stored in `ExportNodeStats::last_frame`. Giving way (`give_way_after`, only the separate video files set it): when `Tick::previous_busy` is over the budget, step 2 does not submit the canvas and counts `gave_way`; readbacks still go on "video". Yielding (`yield_to`, the separate video files): when the master's drop count (`MasterDrops`, read once per tick, atomics only) has grown since the last tick, step 2 is skipped for that tick and the rest of the hold, counted in `gave_way`. The hold is `hold_ticks`; a drop within `hold_ticks` after a hold ended doubles it, up to eight times `hold_ticks`, and a later drop starts again from `hold_ticks`. Every tick (`every_tick`, the separate video files): step 2 takes the canvas on each tick, even when it did not change, and the frame read back carries the tick's time and index (`YuvDownload::submit_at`), so a still or slower source gives one frame per tick. The default budget is never reached and the default takes each canvas once with its own time, so the master's export makes one branch (it has no track rules) and no other change |
 | `release` | Counts readbacks still in flight in `lost`, then drops the download |
 
 Invariants:

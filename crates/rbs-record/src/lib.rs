@@ -20,6 +20,8 @@
 
 mod clip;
 mod iso;
+mod png_writer;
+pub mod protection;
 mod recording;
 mod select;
 mod studio;
@@ -27,23 +29,27 @@ mod timed_show;
 
 pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_clip};
 pub use iso::{
-    IsoError, IsoPlan, IsoRole, IsoTrack, MAX_ISO_AUDIO, MAX_ISO_VIDEO, ManifestFile,
-    RecordingManifest, plan,
+    IsoError, IsoPlan, IsoRole, IsoTrack, MASTER_STEM, MAX_ISO_AUDIO, MAX_ISO_IMAGES,
+    MAX_ISO_VIDEO, manifest_at_start, plan, write_manifest,
 };
+pub use png_writer::{ImageFiles, PNG_WRITER_NODE_TYPE, PngWriterNode};
+/// The recording manifest model (ADR-0086, ADR-0089), owned by `rbs-manifest`.
+pub use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
 pub use rbs_nodes::replay_node::{ReplayStatus, RequestError as ReplayRequestError};
 pub use recording::{
     AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, AudioSettings,
-    FinishReport, ISO_AUDIO_ENCODER, ISO_OUTPUT, OUTPUT, OUTPUT_2, OUTPUT_3, OUTPUT_4,
-    OutputPartitions, Partitions, Port, Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING,
-    REPLAY_VIDEO_ENCODER, RecordAdapters, RecordError, RecordSettings, Recording, SourceProgress,
-    SourceState, StartFailure, StartReport, VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3,
-    VIDEO_ENCODER_4, VideoSettings,
+    FinishReport, ISO_AUDIO_ENCODER, ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT, OUTPUT_2, OUTPUT_3,
+    OUTPUT_4, OutputPartitions, Partitions, Port, Progress, RENDER, REPLAY_AUDIO_ENCODER,
+    REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters, RecordError, RecordSettings, Recording,
+    SourceProgress, SourceState, StartFailure, StartReport, VIDEO_ENCODER, VIDEO_ENCODER_2,
+    VIDEO_ENCODER_3, VIDEO_ENCODER_4, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
-    END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE, FilterSettingsAdjusted, IsoAudioStart,
-    IsoAudioStarted, Link, MAX_CANVASES, MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS,
-    MonitorState, OutputId, OutputSettings, ReplaySettings, Studio, StudioSettings, Updated,
-    VirtualCameraSettings, VirtualCameraState,
+    DEFAULT_GIVE_WAY_SHARE, END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE,
+    FilterSettingsAdjusted, IsoAudioStart, IsoAudioStarted, IsoImageTrack, IsoVideoStart,
+    IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_LAYERS, MAX_OUTPUTS,
+    MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings, ReplaySettings, Studio,
+    StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
 };

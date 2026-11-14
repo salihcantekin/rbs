@@ -42,6 +42,10 @@ pub struct ExportNodeStats {
     /// Timestamp in nanoseconds plus one of the last frame put on "video"; 0 before
     /// the first (ADR-0045: the studio compares it with the encoder's).
     pub last_frame: AtomicU64,
+    /// Canvas frames not converted because the previous render tick ran longer than
+    /// the export's budget ([`VideoExportNode::give_way_after`], ADR-0086 decision 9).
+    /// Each is a gap in the file, never a shifted timestamp.
+    pub gave_way: AtomicU64,
 }
 
 /// Ends a video export's input at a master-clock time (ADR-0045); shared between the
@@ -114,6 +118,58 @@ pub struct VideoExportNode {
     seen: DownloadStats,
     stats: Arc<ExportNodeStats>,
     end: Arc<ExportEnd>,
+    /// An ISO track's rules (ADR-0086); `None` for the master's export, which then
+    /// pays one branch per tick for them.
+    track: Option<Box<Track>>,
+}
+
+/// How an ISO track's export differs from the master's (ADR-0086 decisions 3 and 9).
+/// How far a track's hold grows when the master keeps dropping frames.
+const MAX_HOLD_FACTOR: u64 = 8;
+
+/// Reads how many frames the master's encoders dropped so far.
+pub type MasterDrops = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+#[derive(Default)]
+struct Track {
+    /// Nanoseconds of render tick time after which a canvas is skipped; `u64::MAX`
+    /// never skips.
+    give_way_ns: u64,
+    /// Takes the canvas on every tick, stamped with the tick.
+    every_tick: bool,
+    /// The frames the master's encoders dropped so far (an only-growing count): when
+    /// it grows, this track skips canvases for `hold_ticks` ticks.
+    master_drops: Option<MasterDrops>,
+    hold_ticks: u64,
+    /// The hold now: `hold_ticks`, doubled (up to `MAX_HOLD_FACTOR` times) each time
+    /// the master drops again within `hold_ticks` of the last hold's end, so a track
+    /// that keeps pushing shared hardware past its limit backs off further.
+    hold: u64,
+    /// The masters' drops seen so far, and the first tick index converted again.
+    seen_drops: u64,
+    hold_until: u64,
+}
+
+impl Track {
+    /// Whether this tick gives way: after a long tick, or while the master's encoder
+    /// lately dropped a frame. Atomics only; no allocation.
+    fn gives_way(&mut self, tick: &rbs_graph::runtime::Tick) -> bool {
+        let previous_ns = u64::try_from(tick.previous_busy.as_nanos()).unwrap_or(u64::MAX);
+        if let Some(master_drops) = &self.master_drops {
+            let drops = master_drops();
+            if drops > self.seen_drops {
+                self.seen_drops = drops;
+                let soon = tick.index < self.hold_until.saturating_add(self.hold_ticks);
+                self.hold = if soon && self.hold_until > 0 {
+                    (self.hold * 2).min(self.hold_ticks * MAX_HOLD_FACTOR)
+                } else {
+                    self.hold_ticks
+                };
+                self.hold_until = tick.index.saturating_add(self.hold);
+            }
+        }
+        previous_ns > self.give_way_ns || tick.index < self.hold_until
+    }
 }
 
 impl VideoExportNode {
@@ -189,7 +245,58 @@ impl VideoExportNode {
             seen: DownloadStats::default(),
             stats: Arc::default(),
             end: Arc::default(),
+            track: None,
         }
+    }
+
+    fn track(&mut self) -> &mut Track {
+        self.track.get_or_insert_with(|| {
+            Box::new(Track {
+                give_way_ns: u64::MAX,
+                ..Track::default()
+            })
+        })
+    }
+
+    /// An export that gives way to the master (ADR-0086 decision 9): when the render
+    /// partition's previous tick ran longer than `budget`, this tick's canvas is not
+    /// converted and [`ExportNodeStats::gave_way`] counts it. Frames already read back
+    /// are still passed on. For ISO tracks only; the master never gives way.
+    #[must_use]
+    pub fn give_way_after(mut self, budget: std::time::Duration) -> Self {
+        self.track().give_way_ns = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
+        self
+    }
+
+    /// An export that also gives way while the master's encoders fall behind (ADR-0086
+    /// decision 9): when `master_drops` (frames dropped on the way into the master's
+    /// video encoders so far, for example the sum of their queues'
+    /// `QueueStats::video_drops`) grows, this export skips its canvases for the next
+    /// `hold_ticks` ticks, counted in [`ExportNodeStats::gave_way`]. A drop within
+    /// `hold_ticks` after a hold ended doubles the next hold, up to eight times
+    /// `hold_ticks`; a drop later starts again from `hold_ticks`. Encoders that
+    /// share hardware (one media engine for every session) then lose frames on the
+    /// ISO tracks first. Drops before this call do not count. Called once per tick on
+    /// the render thread: it must only read atomics.
+    #[must_use]
+    pub fn yield_to(mut self, master_drops: MasterDrops, hold_ticks: u64) -> Self {
+        let track = self.track();
+        track.seen_drops = master_drops();
+        track.master_drops = Some(master_drops);
+        track.hold_ticks = hold_ticks;
+        track.hold = hold_ticks;
+        self
+    }
+
+    /// An export that converts its input on every tick and stamps the frame with the
+    /// tick's time and index, so a picture that does not change (a still, a paused
+    /// source, a 30 fps camera on a 60 fps canvas) still gives one frame per tick
+    /// (ADR-0086: a separate file at the canvas frame rate). For ISO tracks only: the
+    /// master's canvas is new on every tick anyway.
+    #[must_use]
+    pub fn every_tick(mut self) -> Self {
+        self.track().every_tick = true;
+        self
     }
 
     /// The format of the frames on "video": the encoder's input format (the output size).
@@ -271,7 +378,13 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let ctx_time = ctx.tick().time.as_nanos();
+        let tick = ctx.tick();
+        let ctx_time = tick.time.as_nanos();
+        // The master's export: one branch, then neither rule applies.
+        let (give_way, every_tick) = match self.track.as_deref_mut() {
+            None => (false, false),
+            Some(track) => (track.gives_way(&tick), track.every_tick),
+        };
         let gpu = ctx.shared();
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
@@ -299,10 +412,20 @@ impl Node<GpuRuntime> for VideoExportNode {
         }
 
         if let Some(canvas) = inputs.video(CANVAS_PIN, 0) {
-            let key = (canvas.timestamp(), canvas.sequence());
-            if self.last != Some(key) && canvas.timestamp().as_nanos() <= end {
+            // An ISO track stamps the tick, so it takes the same picture again.
+            let key = if every_tick {
+                (tick.time, tick.index)
+            } else {
+                (canvas.timestamp(), canvas.sequence())
+            };
+            if self.last != Some(key) && key.0.as_nanos() <= end {
                 self.last = Some(key);
-                if download.submit(gpu, &local.pool, canvas).is_err() {
+                if give_way {
+                    self.stats.gave_way.fetch_add(1, Ordering::Relaxed);
+                } else if download
+                    .submit_at(gpu, &local.pool, canvas, key.0, key.1)
+                    .is_err()
+                {
                     result = Err(NodeError::Backend("video export conversion failed"));
                 }
             }
@@ -340,6 +463,48 @@ impl Node<GpuRuntime> for VideoExportNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rbs_graph::runtime::Tick;
+    use std::time::Duration;
+
+    #[test]
+    #[allow(clippy::expect_used)] // Tests fail by panicking.
+    fn a_track_gives_way_after_a_long_tick_and_while_the_master_drops() {
+        let drops = Arc::new(AtomicU64::new(5));
+        let read = Arc::clone(&drops);
+        let export = VideoExportNode::new(YuvFormat::Nv12, 16, 8, 16, 8)
+            .give_way_after(Duration::from_millis(8))
+            .yield_to(Arc::new(move || read.load(Ordering::Relaxed)), 3);
+        let mut track = export.track.expect("an ISO track");
+        let at = |index: u64, busy_ms: u64| {
+            Tick::new(index, Timestamp::from_nanos(index * 1_000))
+                .after(Duration::from_millis(busy_ms))
+        };
+        // Drops before `yield_to` do not count; a tick at the budget converts.
+        assert!(!track.gives_way(&at(0, 8)));
+        assert!(track.gives_way(&at(1, 9)), "after a long tick");
+        assert!(!track.gives_way(&at(2, 0)));
+        drops.fetch_add(1, Ordering::Relaxed);
+        // A master drop seen on tick 3 holds ticks 3, 4 and 5.
+        assert!(track.gives_way(&at(3, 0)));
+        assert!(track.gives_way(&at(4, 0)));
+        assert!(track.gives_way(&at(5, 0)));
+        assert!(!track.gives_way(&at(6, 0)));
+        // Dropping again soon after (within 3 ticks of the end) doubles the hold.
+        drops.fetch_add(1, Ordering::Relaxed);
+        assert!(track.gives_way(&at(7, 0)));
+        assert!(track.gives_way(&at(12, 0)));
+        assert!(!track.gives_way(&at(13, 0)), "held 6 ticks: 7 to 12");
+        // A drop long after starts again from 3.
+        drops.fetch_add(1, Ordering::Relaxed);
+        assert!(track.gives_way(&at(100, 0)));
+        assert!(track.gives_way(&at(102, 0)));
+        assert!(!track.gives_way(&at(103, 0)));
+        assert!(
+            VideoExportNode::new(YuvFormat::Nv12, 16, 8, 16, 8)
+                .track
+                .is_none()
+        );
+    }
 
     #[test]
     fn the_default_tag_is_bt709_and_screen_is_srgb_video() {

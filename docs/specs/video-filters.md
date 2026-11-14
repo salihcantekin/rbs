@@ -168,7 +168,7 @@ The Filters tab of the Properties panel (ADR-0062 decision 9; `ui-design-system.
 1. Schema invariants of "Filter types" above, and every pass compiled with the prelude through naga (`wgpu::naga`), without a GPU.
 2. `Values::from_pairs` refuses unknown keys, wrong kinds, out-of-range and non-finite numbers, and fills defaults; `to_pairs` round-trips.
 3. `uniforms` gives finite numbers for the defaults, every field at its `min` and at its `max`.
-4. Output size equals input size; output is `Rgba16Float`, linear, timestamped like the input.
+4. Output size equals input size; output is `Rgba16Float`, linear, timestamped like the input, with a new generation as its sequence (item 12).
 5. A fully transparent input stays fully transparent (no colour where alpha is 0).
 6. The input is never published: on a size change the node publishes the filtered frame of the new size at once (the input's texture id never appears on its output), and counts the resize.
 7. Allocations per frame at a steady size are bounded and do not grow (counting allocator, own test binary).
@@ -176,7 +176,7 @@ The Filters tab of the Properties panel (ADR-0062 decision 9; `ui-design-system.
 9. Odd input sizes (7x3) give an output of that size (half-size intermediates round up).
 10. A chain of two filters: both publish at the input's size, also after a size change, with no frame missing.
 11. Memory: after a filter is disabled, `TexturePool::allocated` drops by its textures within a few ticks, also while another node acquires the same description every tick; during a 120-frame resize sweep (a new size every frame) under a chain of two filters, it stays within the steady set plus 4 textures and no frame fails.
-12. An unchanged input (same frame, same values) is not filtered again and the output stays; new values filter it again.
+12. An unchanged input (same frame, same values) is not filtered again and the output stays; new values filter it again, and that frame's `(timestamp, sequence)` key differs from the one before (ADR-0117 decision 4: every render takes its sequence from `rbs_core::media::next_generation()`, so a still input's new picture is seen though its timestamp stays).
 
 Outside this crate: the scene model tests `set_filter_settings` (undo, `UnknownFilter`) and that `set_source_volume` / `set_source_muted` keep `sync_offset_ms`; the binder tests `changed_filters` and that a disabled-then-enabled filter keeps its settings and node; the user-data tests a format 3 document loading as format 4 and the offset round trip; `rbs-sources` tests `filter_values_lenient`; `rbs-api` tests the 1.8 methods, the `filter.set_settings` patch semantics (on the lenient values; a stored out-of-range key does not refuse a patch of another key; the full set is written), `invalid_params` for settings of an unknown type and that a 1.7 client sees `method_not_found` for them; `rbs-app` tests that a cancelled drag restores the model's values.
 

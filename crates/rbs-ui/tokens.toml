@@ -17,6 +17,9 @@ format = 2
 "color.surface.raised" = "#1c1d21"
 "color.surface.overlay" = "#27282d"
 "color.surface.sunken" = "#0f1012"
+"color.surface.checker" = "#1e2025"
+"color.scrollbar.thumb" = "#6e7683"
+"color.scrollbar.thumb-hot" = "#a8afbb"
 # Notice card: a blue fill and a light edge, so it does not blend into the grey panels.
 "color.toast.surface" = "#1a2030"
 "color.toast.edge" = "#d6e4ff"
@@ -30,6 +33,14 @@ format = 2
 "color.accent" = "#5b9cff"
 "color.accent.hover" = "#7fb2ff"
 "color.accent.subtle" = "#1d2b44"
+"color.button.fill" = "#33353b"
+"color.button.hover" = "#3d3f46"
+"color.button.pressed" = "#404249"
+"color.button.chip" = "#2c3e5e"
+"color.accent.pressed" = "#4a86e0"
+"color.accent.subtle.hover" = "#26385a"
+"color.action.destructive.subtle" = "#38303f"
+"color.action.destructive.subtle.hover" = "#3f3548"
 "color.brand" = "#8a63ff"
 "color.state.warning" = "#e3b341"
 "color.state.healthy" = "#3fb950"
@@ -45,6 +56,9 @@ format = 2
 "color.surface.raised" = "#ffffff"
 "color.surface.overlay" = "#e0e1e7"
 "color.surface.sunken" = "#f1f1f4"
+"color.surface.checker" = "#d6d7de"
+"color.scrollbar.thumb" = "#767c86"
+"color.scrollbar.thumb-hot" = "#4f555e"
 "color.toast.surface" = "#ffffff"
 "color.toast.edge" = "#0a4db8"
 "color.text.primary" = "#15171a"
@@ -57,6 +71,14 @@ format = 2
 "color.accent" = "#1f6feb"
 "color.accent.hover" = "#1a5fcc"
 "color.accent.subtle" = "#dbe7fd"
+"color.button.fill" = "#eff0f3"
+"color.button.hover" = "#e3e5ea"
+"color.button.pressed" = "#d7dae0"
+"color.button.chip" = "#d2e2fc"
+"color.accent.pressed" = "#1752b0"
+"color.accent.subtle.hover" = "#c9dbfb"
+"color.action.destructive.subtle" = "#f4ecf8"
+"color.action.destructive.subtle.hover" = "#efe3f5"
 "color.brand" = "#5326d9"
 "color.state.warning" = "#9a6700"
 "color.state.healthy" = "#1a7f37"
@@ -72,6 +94,9 @@ format = 2
 "color.surface.raised" = "#0a0a0a"
 "color.surface.overlay" = "#141414"
 "color.surface.sunken" = "#000000"
+"color.surface.checker" = "#262626"
+"color.scrollbar.thumb" = "#b0b0b0"
+"color.scrollbar.thumb-hot" = "#ffffff"
 "color.toast.surface" = "#0a0a0a"
 "color.toast.edge" = "#8ad4ff"
 "color.text.primary" = "#ffffff"
@@ -84,6 +109,14 @@ format = 2
 "color.accent" = "#4cc2ff"
 "color.accent.hover" = "#8ad8ff"
 "color.accent.subtle" = "#00314d"
+"color.button.fill" = "#1a1a1a"
+"color.button.hover" = "#2a2a2a"
+"color.button.pressed" = "#333333"
+"color.button.chip" = "#003d5f"
+"color.accent.pressed" = "#2fa8e6"
+"color.accent.subtle.hover" = "#004266"
+"color.action.destructive.subtle" = "#1f0f26"
+"color.action.destructive.subtle.hover" = "#2e1638"
 "color.brand" = "#a98bff"
 "color.state.warning" = "#ffd60a"
 "color.state.healthy" = "#5cff7a"
@@ -109,6 +142,9 @@ format = 2
 "size.field.gap" = 8
 # Short NumberField for insets and bar thickness (about four digits plus steppers).
 "size.field.compact" = 96
+# Pointer travel for one step when a NumberField value is dragged; less than one
+# step is a click.
+"size.field.drag-step" = 4
 # Thickness of the chosen tab's underline.
 "size.tab.indicator" = 2
 "size.control.sm" = 24
@@ -119,6 +155,8 @@ format = 2
 "radius.sm" = 4
 "radius.md" = 6
 "radius.lg" = 12
+"radius.button" = 8
+"size.button.chip" = 20
 "size.border" = 1
 "size.focus-ring" = 2
 "size.icon.box" = 16
@@ -127,6 +165,20 @@ format = 2
 "size.menu.md" = 300
 # A setting row narrower than this puts its control under its name (ADR-0114).
 "size.row.stack-below" = 280
+# Height of a picture at the start of a ListRow (16:9 well): small, medium, large.
+"size.row.picture.sm" = 24
+"size.row.picture.md" = 36
+"size.row.picture.lg" = 54
+# Square of the pattern behind a picture's transparent parts.
+"size.row.picture.check" = 6
+# ScrollArea: the thumb idle and under the pointer, the room always kept for the
+# bar (also its track), and the shortest thumb.
+"size.scrollbar.thumb" = 4
+"size.scrollbar.thumb-hot" = 8
+"size.scrollbar.hit" = 12
+"size.scrollbar.thumb-min" = 24
+# ListBox in automatic columns: the narrowest a cell may be.
+"size.list.cell-min-w" = 120
 "size.select.list-h" = 320
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165
@@ -181,11 +233,6 @@ format = 2
 "size.transition.type-min" = 72
 "size.transition.duration" = 88
 "size.transition.compact" = 600
-# Library panel: a sample picture's thumbnail (16:9).
-# Add-grid picture: at most this wide and this tall, so two columns fit a narrow
-# panel and a long grid stays short (16:9, capped).
-"size.library.thumb-w" = 96
-"size.library.thumb-h" = 48
 # Source tab: a window or display's picture in front of its name in the target list (16:9).
 "size.target.thumb-w" = 96
 "size.target.thumb-h" = 54

@@ -8,6 +8,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Source | Something that produces video or audio (screen capture, window capture, camera, image, text, media, browser, audio device), as placed in a scene with its position, size and crop. The panel listing them is "Sources" | Input, layer, element, item | Source node; placement is a scene item |
 | Look | A preset of a source's shape, border and filters, copied onto the selected source in one undoable step. Later edits to the source do not change the look | Preset, style, theme | `Look` |
 | Library | The panel that applies looks to the selected source and adds backgrounds, frames, a PNG file and shapes. It is not the folder of saved themes, workspaces and scene collections (ADR-0051), which the UI never calls a library | Assets, templates | `rbs.library` |
+| Effects (theme) | How lively a theme's controls look: Calm, Vivid or Tactile. Only the theme editor's label; a filter or transition is never an effect | Style | `effects` key of a theme |
 | Filter | An effect applied to a source or audio | Effect, plugin | Filter node |
 | Transition | How the view changes from one scene to another | Effect | Transition node |
 | Canvas | The pixel grid and frame rate a scene is drawn on, for example horizontal 1920x1080 or vertical 1080x1920. Scene items are placed in these pixels | Resolution, Output size | Canvas |
@@ -16,17 +17,18 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Output | A destination: a streaming service, a recording, a virtual camera | Target | Output node |
 | Go live / End stream | Start / stop streaming to the selected outputs | Start stream, Stop live | - |
 | Record | Save the program to a file. "Capture" is used only in source type names (Screen capture, Window capture) | Save, Capture (as a verb for recording) | Recording output |
-| Audio recording | A recording of the mix with no picture, an output of its own beside the recording; the verb is "Record audio" (ADR-0116) | Audio-only mode, sound recording, podcast mode | Audio-only output |
 | Preview / Program | What you are preparing / what viewers see (studio mode) | - | - |
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
 | Automatic, Rows, Columns | Mixer layouts: follow the panel's shape, sources stacked top to bottom, or side by side | Horizontal, Vertical, Auto | Orientation (in UI text) |
 | Workspace | A saved arrangement of panels, floating windows and projectors. It never holds scenes, sources or output settings | Profile, layout, scene collection | UI workspace file |
+| Scene levels | A scene's own volume and mute for the sources it chooses (Own levels), heard while it is on air; Shared levels uses the sources' own (ADR-0091) | Scene mix, snapshot | `SceneAudio` |
 | Scene collection | A set of scenes and sources saved together. It holds no panel layout and no output settings | Project, workspace | Scene document |
 | Global source | A source shown and heard in every scene of a canvas, kept in Settings › Global sources | Global audio device, shared source | Item of the canvas's global scene (ADR-0065) |
 | Remove from scene / Delete source | Remove the source from this scene only / remove it from every scene | Delete (for removing from one scene) | Scene item removal / source removal |
 | Studio mode | Separate preview and program, with transitions between them | Two-pane mode | - |
 | Projector | A full-screen or window view of a canvas, scene or source on any display | External view | - |
 | Track | One of the audio mixes written to a recording or sent to an output | Channel | Audio bus output |
+| Separate files / Record separately | Files a recording writes beside its main file, one per marked source, in a folder named like the recording; a source is marked with Record separately | ISO (in UI text), iso track | ISO recording (ADR-0086) |
 | Monitor | Listening to a source locally without sending it to outputs | Cue | Monitoring send |
 | Monitor off / Monitor and output / Monitor only | A source's monitor modes: not on the monitor; on the monitor and the outputs; on the monitor only, off the outputs while the monitor plays | Cue, Listen | `SourceMonitor::Off` / `Also` / `Only` |
 | Solo in monitor | While any source is soloed, the monitor plays only soloed sources; the outputs are unchanged | Cue, PFL | Monitor solo (session state) |

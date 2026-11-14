@@ -108,13 +108,19 @@ fn field_data(
                     step,
                     unit,
                     curve,
+                    default,
                     ..
                 },
                 Value::Number(n),
             ) => {
                 let log = log_scaled(min, curve);
                 let span = (max - min).max(f32::EPSILON);
+                // Compared as shown, so a value on the default's step reads as the default.
+                let shown = number_text(n, step, unit);
+                let default_text = number_text(default, step, unit);
                 FilterFieldData {
+                    changed: shown != default_text,
+                    default_text: default_text.into(),
                     label: f.label.into(),
                     help: f.help.into(),
                     log,
@@ -130,7 +136,9 @@ fn field_data(
                     ..FilterFieldData::default()
                 }
             }
-            (FieldKind::Color { .. }, Value::Color(c)) => FilterFieldData {
+            (FieldKind::Color { default }, Value::Color(c)) => FilterFieldData {
+                changed: c != default,
+                default_text: color_text(default).into(),
                 label: f.label.into(),
                 help: f.help.into(),
                 kind: 1,
@@ -156,6 +164,8 @@ fn field_data(
                         .chain(others.iter().map(|s| s.1.as_str().into()))
                         .collect();
                 FilterFieldData {
+                    changed: id.is_some(),
+                    default_text: "None".into(),
                     label: f.label.into(),
                     help: f.help.into(),
                     kind: 3,
@@ -455,6 +465,23 @@ impl StudioUi {
             return;
         };
         if let Ok(values) = values.with(&ty, [(f.key, Value::Color(colour))]) {
+            self.deleted.clear();
+            self.send(Command::SetFilterValues {
+                filter: FilterId::from_raw(filter as u32),
+                values,
+            });
+        }
+    }
+
+    /// Puts one field of a filter back to its schema default (one change).
+    pub fn reset_filter_field(&mut self, filter: i32, field: i32) {
+        let Some((ty, values)) = self.filter_values(filter) else {
+            return;
+        };
+        let Some(f) = ty.fields().get(field as usize) else {
+            return;
+        };
+        if let Ok(values) = values.with(&ty, [(f.key, f.kind.default_value())]) {
             self.deleted.clear();
             self.send(Command::SetFilterValues {
                 filter: FilterId::from_raw(filter as u32),

@@ -258,6 +258,8 @@ pub fn push(app: &App) {
     }
     g.set_size(page.settings.size_index() as i32);
     g.set_rate(page.settings.rate_index() as i32);
+    g.set_size_default(VcamSettings::default().size_index() as i32);
+    g.set_rate_default(VcamSettings::default().rate_index() as i32);
     g.set_can_format(v.can_format);
     g.set_format_help(v.format_help.into());
     g.set_sending(page.sending.is_some());

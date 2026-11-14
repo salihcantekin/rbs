@@ -708,6 +708,7 @@ fn show(ctx: &Ctx, app: &App) {
     });
     g.set_follow_system(ui.choice.mode == AppearanceMode::System);
     g.set_density(density_index(ui.choice.density));
+    g.set_density_default(density_index(rbs_user_data::Appearance::default().density));
     g.set_compact_steps(i32::from(ui.choice.compact_steps));
     g.set_dark_index(pos(&ui.choice.dark, Base::Dark));
     g.set_light_index(pos(&ui.choice.light, Base::Light));

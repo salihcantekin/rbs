@@ -4345,6 +4345,7 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-manifest",
  "rbs-media-decode-test",
  "rbs-mux",
  "rbs-mux-flac",
@@ -4357,6 +4358,7 @@ dependencies = [
  "rbs-remote-settings",
  "rbs-scene",
  "rbs-sources",
+ "rbs-system-probe",
  "rbs-thread-os",
  "rbs-transport",
  "rbs-transport-file",
@@ -4838,6 +4840,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-manifest"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "rbs-mcp"
 version = "0.0.1"
 dependencies = [
@@ -4981,9 +4991,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-project"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-manifest",
+]
+
+[[package]]
 name = "rbs-record"
 version = "0.0.1"
 dependencies = [
+ "png",
  "rbs-audio",
  "rbs-audio-filters",
  "rbs-audio-io",
@@ -4997,6 +5016,7 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-manifest",
  "rbs-media-decode-test",
  "rbs-mux",
  "rbs-nodes",
@@ -5050,6 +5070,14 @@ dependencies = [
  "rbs-nodes",
  "rbs-params",
  "rbs-scene",
+]
+
+[[package]]
+name = "rbs-system-probe"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

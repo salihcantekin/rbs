@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
+import { ListBox, ScrollArea, Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -18,12 +18,12 @@ import { ReplayControls, ReplaySettings } from "replay.slint";
 // there, `value-text` the value with its unit; `min`, `max`, `snap` (the value's step),
 // `decimals` and `suffix` (the unit with its space) for the text while dragging), 1 a colour (`colour` as #rrggbb or
 // #rrggbbaa, `swatch` the same colour).
-export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color }
+export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color, changed: bool, default-text: string }
 // One filter of a source's chain: `known` false for a type this version lacks (it can
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterLevels { input: float, reduction: float }
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool }
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
 // by name; `in-globals`: it is a global source too; `places`: how many items place it.
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
@@ -33,7 +33,7 @@ export struct SceneData { id: int, name: string, live: bool, preview: bool, numb
 // A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
 // picture: `frame` is true for a frame (transparent in the middle), `thumb` its picture.
 export struct LookData { id: string, name: string, group: int }
-export struct SampleData { id: string, name: string, frame: bool, slot: int, thumb: image }
+export struct SampleData { id: string, name: string, frame: bool, thumb: image }
 export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
@@ -94,6 +94,9 @@ export struct EncoderData {
     delivery: int,
     // Lifts only the darkest tones. Shown while Colour is Video.
     open-shadows: bool,
+    // The default of each field, by its `set` code (an index into that field's
+    // options), or -1 when the default is not one of them or the field has none.
+    defaults: [int],
 }
 // One access token in the Remote control section: its name and what it allows.
 export struct TokenRow { name: string, access: string }
@@ -222,6 +225,13 @@ export global Studio {
     // Lock a source so the picture panel does not move it (ADR-0059).
     callback set-source-locked(int /* id */, bool /* locked */);
     // A source's sound: mute, and the volume as a fader position from 0 to 1.
+    // Separate files (ADR-0086): mark a source to record its sound as its own file.
+    callback set-source-record-separately(int, bool);
+    // The marked sources by name, for Settings › Recording; empty when none.
+    in property <string> rec-separate-names;
+    // The running recording's separate files in words, for the Outputs card; empty
+    // when it writes one file.
+    in property <string> out-separate;
     callback set-source-muted(int /* id */, bool /* muted */);
     callback set-source-mixer-hidden(int /* id */, bool /* hidden */);
     // The monitor output (ADR-0097): a source's mode (0 off, 1 monitor and output,
@@ -259,6 +269,9 @@ export global Studio {
     // Collection glide defaults (ADR-0100): duration ms and easing 0 linear / 1 ease-in-out.
     in property <int> glide-duration: 400;
     in property <int> glide-easing: 1;
+    // The collection glide's defaults, for the reset buttons.
+    in property <int> glide-default-duration: 400;
+    in property <int> glide-default-easing: 1;
     callback set-glide(int /* duration_ms */, int /* easing */);
     // Per-source slide override (ADR-0100). `custom` false clears it.
     callback set-source-glide(int /* id */, bool /* custom */, int /* duration_ms */, int /* easing */);
@@ -269,7 +282,8 @@ export global Studio {
     in property <[LookData]> library-looks;
     in property <[string]> library-look-names;
     in property <[SampleData]> library-samples;
-    callback library-shown();
+    // The argument is the physical pixel height a sample's picture is shown at.
+    callback library-shown(int /* picture_px */);
     callback apply-look(string /* look id */);
     callback apply-look-at(int /* index in library-looks */);
     callback add-sample(string /* sample id */);
@@ -296,6 +310,8 @@ export global Studio {
     // puts the stored values back.
     callback preview-filter(int /* filter */, int /* field */, float /* position */);
     callback commit-filter(int /* filter */);
+    // Puts one field of a filter back to its default (one change).
+    callback reset-filter-field(int /* filter */, int /* field */);
     callback cancel-filter(int /* filter */);
     callback set-filter-colour(int /* filter */, int /* field */, string /* colour */);
     callback reset-filter(int /* filter */);
@@ -434,6 +450,8 @@ export global Studio {
     in property <bool> out-flac;
     in property <[string]> out-pcm-widths;
     in property <int> out-bit-depth;
+    // The default sample width as an index into out-pcm-widths.
+    in property <int> out-bit-depth-default;
     // The main recording is audio only, so Record works with no video encoder.
     in property <bool> rec-audio-only;
     // The vertical canvas's next recording is audio only.
@@ -560,6 +578,8 @@ export global Studio {
     in property <string> canvas-label;
     in property <[string]> canvas-rates;
     in property <int> canvas-rate;
+    // The default frame rate as an index into canvas-rates.
+    in property <int> canvas-rate-default;
     // The studio restarts with a new canvas; true until it runs again.
     in property <bool> canvas-restarting;
     // A problem with the canvas or its file; empty when none.
@@ -590,6 +610,8 @@ export global Studio {
     in property <bool> rc-enabled;
     // The port field's text; set by Rust on load and when a typed port is refused.
     in property <string> rc-port;
+    // The port remote control uses by default, for the reset button.
+    in property <string> rc-default-port;
     // Bumped by Rust when `rc-port` is set from outside the field.
     in property <int> rc-port-serial;
     // Where apps connect, or why remote control is not running; `rc-status-bad` marks a
@@ -710,7 +732,10 @@ export component ProgramPanel inherits Rectangle {
         : vertical ? @tr("The live picture of the vertical canvas")
         : scene ? @tr("The picture of the preview scene, the next to go on air")
         : @tr("The live picture of the scene on air");
-    // The native picture starts below this strip (the same height, Tokens.size-control-md).
+    // The native picture, the presses and the selection marks start below this strip
+    // (`below_strip` in main.rs: none on a panel too short to keep both).
+    property <length> strip: root.audio-only && root.height > 2 * Tokens.size-control-md
+        ? Tokens.size-control-md : 0;
     if root.audio-only: AudioOnlyStrip {
         y: 0;
         width: parent.width;
@@ -780,6 +805,8 @@ export component ProgramPanel inherits Rectangle {
             + "&x=" + round(root.menu-at.x / 1px) + "&y=" + round(root.menu-at.y / 1px);
     }
     touch := TouchArea {
+        y: root.strip;
+        height: root.height - root.strip;
         enabled: editable;
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { root.release(); return; }
@@ -793,7 +820,9 @@ export component ProgramPanel inherits Rectangle {
                     keys.focus();
                     root.menu-at = { x: self.mouse-x, y: self.mouse-y };
                     Studio.preview-menu-opened(self.mouse-x / 1px, self.mouse-y / 1px);
-                    menu.open(root.menu-at);
+                    // `menu-at` is in the picture's (touch area's) coordinates; the
+                    // menu element covers the whole panel.
+                    menu.open({ x: root.menu-at.x, y: root.menu-at.y + root.strip });
                 }
                 return;
             }
@@ -821,6 +850,8 @@ export component ProgramPanel inherits Rectangle {
     // Where no layer shows the picture, the toolkit draws the selection itself, clipped
     // to the panel like the layer's marks.
     if shown != 0 && editable: Rectangle {
+        y: root.strip;
+        height: root.height - root.strip;
         clip: true;
         for m in vertical ? Studio.vertical-marks : Studio.marks: Rectangle {
             x: m.x;
@@ -1123,17 +1154,17 @@ export component ScenesPanel inherits Rectangle {
         title: @tr("No scenes yet");
         message: Studio.state == 0 ? @tr("The studio is starting.") : @tr("The studio is not running.");
     }
-    if Studio.scenes.length > 0: flick := Flickable {
+    if Studio.scenes.length > 0: flick := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: max(rows.preferred-height, self.height);
         // A list that can pan holds a press briefly, so a quick click on a confirm
         // button never arrives and the next one does. The wheel still scrolls.
-        mouse-drag-pan-enabled: false;
+        drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
         TouchArea {
-            width: flick.content-width;
-            height: flick.content-height;
+            width: parent.width;
+            height: max(rows.preferred-height, flick.view-height);
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     panel-menu.open({
@@ -1145,6 +1176,8 @@ export component ScenesPanel inherits Rectangle {
         }
         rows := VerticalLayout {
             padding: Tokens.space-2;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.space-2 - flick.bar-room);
             spacing: Tokens.space-1;
             alignment: start;
             for sc in Studio.scenes: SceneRowView {
@@ -1225,18 +1258,18 @@ export component SourcesPanel inherits Rectangle {
         action: Studio.state == 1 ? @tr("Add source") : "";
         act => { add-menu.open({ x: self.x + self.width / 2, y: self.y + self.height / 2 }); }
     }
-    if Studio.sources.length > 0: flick := Flickable {
+    if Studio.sources.length > 0: flick := ScrollArea {
         y: header;
         width: parent.width;
         height: parent.height - header;
         content-height: max(rows.preferred-height, self.height);
         // A list that can pan holds a press briefly, so a quick click on a confirm
         // button never arrives and the next one does. The wheel still scrolls.
-        mouse-drag-pan-enabled: false;
+        drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
         TouchArea {
-            width: flick.content-width;
-            height: flick.content-height;
+            width: parent.width;
+            height: max(rows.preferred-height, flick.view-height);
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     panel-menu.open({
@@ -1248,6 +1281,8 @@ export component SourcesPanel inherits Rectangle {
         }
         rows := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - flick.bar-room);
             // Each entry spaces itself, so a folded global row takes no room.
             spacing: 0;
             alignment: start;
@@ -1407,6 +1442,7 @@ component MonitorRow inherits VerticalLayout {
     if Studio.monitor-solo != "": HorizontalLayout {
         alignment: start;
         Button {
+            lead: IconName.headphones;
             dense: true;
             text: @tr("Solo: {}", Studio.monitor-solo);
             icon: IconName.close;
@@ -1487,6 +1523,7 @@ component MonitorBox inherits VerticalLayout {
     if Studio.monitor-solo != "": HorizontalLayout {
         alignment: start;
         Button {
+            lead: IconName.headphones;
             dense: true;
             text: @tr("Solo: {}", Studio.monitor-solo);
             icon: IconName.close;
@@ -2362,6 +2399,8 @@ export component TransitionPanel inherits Rectangle {
             accessible-role: none;
         }
         if root.can: Button {
+            // "Go" in a short panel has no room for the icon.
+            lead: root.width < Tokens.size-transition-short ? IconName.none : IconName.transition;
             text: root.width < Tokens.size-transition-short ? @tr("Go") : @tr("Transition");
             kind: "primary";
             accessible-name: @tr("Transition: put the preview scene on air");
@@ -2401,6 +2440,7 @@ export component LiveControlsPanel inherits Rectangle {
             spacing: Tokens.space-2;
             alignment: start;
             Button {
+                lead: live || Studio.st-state == 3 ? IconName.stop : IconName.bolt;
                 // While the stream ends the button says so (disabled) until the
                 // output closed, so it never offers Go live too early.
                 text: Studio.st-state == 3 ? @tr("Ending…") : live ? @tr("End stream") : @tr("Go live");
@@ -2418,6 +2458,11 @@ export component LiveControlsPanel inherits Rectangle {
                     : recording ? (Studio.rec-button-audio ? @tr("Stop audio recording") : @tr("Stop recording"))
                     : Studio.rec-button-audio ? @tr("Record audio") : @tr("Record");
                 kind: recording || Studio.rec-state == 3 ? "live" : "secondary";
+                // Record's dot in the live colour, in its well; the stop square on the
+                // live fill (ADR-0118).
+                lead: recording || Studio.rec-state == 3 ? IconName.stop : IconName.dot;
+                lead-ink: recording || Studio.rec-state == 3 || !self.enabled ? self.ink : Theme.state-live;
+                lead-signal: !recording && Studio.rec-state != 3 && self.enabled;
                 enabled: Studio.state == 1
                     && (Studio.rec-unavailable == "" || Studio.rec-audio-only)
                     && (recording || Studio.rec-state == 0);
@@ -2473,6 +2518,7 @@ export component LiveControlsPanel inherits Rectangle {
         if Studio.st-needs-setup && Studio.st-state == 0: HorizontalLayout {
             alignment: start;
             Button {
+                lead: IconName.gear;
                 text: @tr("Stream settings");
                 clicked => { Studio.open-stream-settings(); }
             }
@@ -2501,6 +2547,7 @@ export component LiveControlsPanel inherits Rectangle {
         if Studio.vcam-shown: HorizontalLayout {
             alignment: start;
             Button {
+                lead: Studio.vcam-on ? IconName.stop : IconName.camera;
                 text: Studio.vcam-on ? @tr("Stop virtual camera") : @tr("Start virtual camera");
                 kind: Studio.vcam-on ? "live" : "secondary";
                 enabled: Studio.vcam-can;
@@ -2575,6 +2622,12 @@ component Section inherits VerticalLayout {
     // The explanation behind an info button at the end of the header (ADR-0094 rule A1);
     // empty draws no button.
     in property <string> hint;
+    // A section with one value and a known default (owner decision 2026-11-14, ADR-0114
+    // decision 4): while the value differs, a reset button sits at the trailing end of
+    // the header, before the info button. `default-text` names the default.
+    in property <bool> changed;
+    in property <string> default-text;
+    callback reset();
     property <bool> closed: Sections.closed(root.id, Sections.rev);
     spacing: Tokens.size-field-gap;
     HorizontalLayout {
@@ -2585,6 +2638,11 @@ component Section inherits VerticalLayout {
             collapsible: true;
             open: !root.closed;
             toggled(o) => { Sections.set-closed(root.id, !o); }
+        }
+        if root.changed && !root.closed: IconButton {
+            icon: IconName.reset;
+            name: @tr("Reset {} to {}", root.title, root.default-text);
+            clicked => { root.reset(); }
         }
         if root.hint != "" && !root.closed: InfoHint {
             label: root.title;
@@ -2636,6 +2694,9 @@ component EncoderFields inherits VerticalLayout {
     // Advanced settings (U2): shown with the button below, in the same place.
     property <bool> advanced: false;
     SettingRow {
+        changed: root.idle && root.data.defaults[11] >= 0 && root.data.codec != root.data.defaults[11];
+        default-text: root.data.codecs[root.data.defaults[11]];
+        reset => { root.set(11, root.data.defaults[11]); }
         label: @tr("Video codec");
         help: root.stream
             ? @tr("A stream uses H.264. RTMP does not carry HEVC yet.")
@@ -2650,6 +2711,9 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        changed: root.idle && root.data.defaults[12] >= 0 && root.data.delivery != root.data.defaults[12];
+        default-text: [@tr("Video"), @tr("Screen")][root.data.defaults[12]];
+        reset => { root.set(12, root.data.defaults[12]); }
         label: @tr("Colour");
         help: root.data.delivery == 0
             ? @tr("Rec. 709 limited range, for YouTube, TV and streams.")
@@ -2682,8 +2746,12 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        changed: root.idle && root.data.defaults[0] >= 0 && root.data.encoder != root.data.defaults[0];
+        default-text: root.data.encoders[root.data.defaults[0]];
+        reset => { root.set(0, root.data.defaults[0]); }
         label: @tr("Video encoder");
-        help: @tr("Automatic picks the best one this computer has.");
+        summary: @tr("Automatic picks this computer's best");
+        hint: @tr("Automatic picks the best one this computer has.");
         enabled: root.idle;
         encoder := Select {
             label: @tr("Video encoder");
@@ -2698,6 +2766,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.data.rate-kind != 2;
         gap: 0;
         SettingRow {
+            changed: root.idle && root.data.defaults[1] >= 0 && root.data.video-rate != root.data.defaults[1];
+            default-text: root.data.video-rates[root.data.defaults[1]];
+            reset => { root.set(1, root.data.defaults[1]); }
             label: root.data.bitrate-label;
             help: root.data.recommended-kbps > 0
                 ? @tr("{} kbit/s is below the {} kbit/s recommended for this output size ({} x {} at {} fps).", root.data.video-kbps, root.data.recommended-kbps, root.data.out-width, root.data.out-height, root.data.out-fps)
@@ -2720,8 +2791,11 @@ component EncoderFields inherits VerticalLayout {
         shown: root.data.rate-kind == 2;
         gap: 0;
         SettingRow {
+            changed: root.idle && root.data.defaults[5] >= 0 && root.data.quality != root.data.defaults[5];
+            default-text: root.data.qualities[root.data.defaults[5]];
+            reset => { root.set(5, root.data.defaults[5]); }
             label: @tr("Quality level");
-            help: @tr("Lower is better quality and larger files.");
+            summary: @tr("Lower is better quality, larger files");
             enabled: root.idle;
             quality := Select {
                 label: @tr("Quality level");
@@ -2733,8 +2807,12 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        changed: root.idle && root.data.defaults[2] >= 0 && root.data.audio-rate != root.data.defaults[2];
+        default-text: root.data.audio-rates[root.data.defaults[2]];
+        reset => { root.set(2, root.data.defaults[2]); }
         label: @tr("Audio bitrate");
-        help: @tr("AAC. 160 kbit/s suits most voices and music.");
+        summary: @tr("160 kbit/s suits most voices and music");
+        hint: @tr("AAC. 160 kbit/s suits most voices and music.");
         enabled: root.idle;
         audio := Select {
             label: @tr("Audio bitrate");
@@ -2746,9 +2824,11 @@ component EncoderFields inherits VerticalLayout {
     }
     SettingRow {
         label: @tr("Advanced settings");
-        help: @tr("Rate control, keyframes, preset, profile and B-frames. The defaults suit most uses.");
+        summary: @tr("Rate control, keyframes and more");
+        hint: @tr("Rate control, keyframes, preset, profile and B-frames. The defaults suit most uses.");
         fill: false;
         Button {
+            lead: root.advanced ? IconName.eye-off : IconName.eye;
             text: root.advanced ? @tr("Hide") : @tr("Show");
             accessible-name: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
             kind: "secondary";
@@ -2761,6 +2841,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.advanced;
         gap: 0;
         SettingRow {
+            changed: root.idle && root.data.defaults[3] >= 0 && root.data.rate-mode != root.data.defaults[3];
+            default-text: root.data.rate-modes[root.data.defaults[3]];
+            reset => { root.set(3, root.data.defaults[3]); }
             label: @tr("Rate control");
             help: root.data.rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
                 : root.data.rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum. CBR is the default.")
@@ -2778,8 +2861,12 @@ component EncoderFields inherits VerticalLayout {
             shown: root.data.rate-kind == 1;
             gap: 0;
             SettingRow {
+                changed: root.idle && root.data.defaults[4] >= 0 && root.data.peak != root.data.defaults[4];
+                default-text: root.data.peaks[root.data.defaults[4]];
+                reset => { root.set(4, root.data.defaults[4]); }
                 label: @tr("Maximum bitrate");
-                help: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate.");
+                summary: @tr("Short peaks above the target");
+                hint: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate.");
                 enabled: root.idle;
                 peak := Select {
                     label: @tr("Maximum bitrate");
@@ -2809,6 +2896,9 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[7] >= 0 && root.data.keyframe != root.data.defaults[7];
+            default-text: root.data.keyframes[root.data.defaults[7]];
+            reset => { root.set(7, root.data.defaults[7]); }
             label: @tr("Keyframe interval");
             help: root.stream
                 ? @tr("How often a full picture is sent. Most streaming services require 2 s, the default.")
@@ -2823,8 +2913,12 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[8] >= 0 && root.data.preset != root.data.defaults[8];
+            default-text: root.data.presets[root.data.defaults[8]];
+            reset => { root.set(8, root.data.defaults[8]); }
             label: @tr("Encoder preset");
-            help: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default.");
+            summary: @tr("Quality or speed");
+            hint: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default.");
             enabled: root.idle;
             fill: false;
             SegmentedControl {
@@ -2836,8 +2930,12 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[9] >= 0 && root.data.profile != root.data.defaults[9];
+            default-text: root.data.profiles[root.data.defaults[9]];
+            reset => { root.set(9, root.data.defaults[9]); }
             label: @tr("Profile");
-            help: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices.");
+            summary: @tr("Which devices can play it");
+            hint: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices.");
             enabled: root.idle;
             profile := Select {
                 label: @tr("Profile");
@@ -2848,6 +2946,9 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[10] >= 0 && root.data.b-frame != root.data.defaults[10];
+            default-text: root.data.b-frames[root.data.defaults[10]];
+            reset => { root.set(10, root.data.defaults[10]); }
             label: @tr("B-frames");
             help: root.data.b-frames-note != "" ? root.data.b-frames-note
                 : @tr("More B-frames save bits and add a little delay. 0 is the default.");
@@ -3480,8 +3581,12 @@ component FilterFieldView inherits VerticalLayout {
     property <string> colour-text: data.colour;
     changed colour-text => { colour.text = colour-text; }
     spacing: Tokens.space-1;
+    // The label line: name, (i), and at its right end the reset button while the value
+    // differs from the default (owner decision 2026-11-14). The line keeps the button's
+    // height either way, so the field does not move when the button comes and goes.
     HorizontalLayout {
         spacing: Tokens.space-1;
+        min-height: Tokens.size-control-sm;
         Text {
             text: data.label;
             color: Theme.text-secondary;
@@ -3490,6 +3595,12 @@ component FilterFieldView inherits VerticalLayout {
             accessible-role: none;
         }
         if data.help != "": InfoHint { label: data.label; text: data.help; }
+        Rectangle { horizontal-stretch: 1; }
+        if data.changed && filter.known: IconButton {
+            icon: IconName.reset;
+            name: @tr("Reset {} to {}", data.label, data.default-text);
+            clicked => { root.dragged = -1; Studio.reset-filter-field(filter.id, index); }
+        }
     }
     if data.kind == 0: HorizontalLayout {
         spacing: Tokens.space-2;
@@ -3687,6 +3798,7 @@ component FiltersFields inherits VerticalLayout {
                 HorizontalLayout {
                     alignment: start;
                     Button {
+                        lead: IconName.reset;
                         text: @tr("Reset to defaults");
                         kind: "secondary";
                         accessible-name: @tr("Reset {} to defaults", f.name);
@@ -3707,6 +3819,10 @@ component AudioFields inherits VerticalLayout {
     Section {
         title: @tr("Sound");
         id: "properties.sound";
+        // Position 1 is 0 dB, the top of the fader and the default.
+        changed: data.volume < 1;
+        default-text: @tr("0 dB");
+        reset => { Studio.set-source-volume(data.id, 1); }
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             alignment: stretch;
@@ -3742,6 +3858,9 @@ component AudioFields inherits VerticalLayout {
     Section {
         title: @tr("Sync offset");
         id: "properties.sync";
+        changed: data.sync-offset != 0;
+        default-text: @tr("0 ms");
+        reset => { Studio.set-source-sync-offset(data.id, 0); }
         hint: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
@@ -3749,17 +3868,29 @@ component AudioFields inherits VerticalLayout {
                 horizontal-stretch: 1;
                 preferred-width: 0;
                 label: @tr("Sync offset of {} in milliseconds", data.name);
+                unit: @tr("ms");
                 value: data.sync-offset;
                 step: 10;
                 edited(v) => { Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
             }
-            Text {
-                text: @tr("ms");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-                accessible-role: none;
-            }
+        }
+    }
+    // Separate files (ADR-0086): 1.46 writes sound only, so the row is on the Audio tab.
+    Section {
+        title: @tr("Recording");
+        id: "properties.recording";
+        hint: @tr("Writes this source's sound to its own WAV file, in a folder with the recording. Changes apply to the next recording.");
+        Toggle {
+            label: @tr("Record {} separately", data.name);
+            text: @tr("Record separately");
+            checked: data.record-separately;
+            toggled(v) => { Studio.set-source-record-separately(data.id, v); }
+        }
+        if Studio.rec-state == 2 && data.record-separately: Text {
+            text: @tr("Applies to the next recording.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
         }
     }
     // Audio filters belong to a source with only sound (ADR-0082).
@@ -3796,12 +3927,14 @@ component SourceFields inherits VerticalLayout {
         spacing: Tokens.size-field-gap;
         alignment: start;
         Button {
+            lead: IconName.refresh;
             text: @tr("Reload");
             accessible-name: @tr("Reload {}", data.name);
             dense: true;
             clicked => { Studio.reload-source(data.id); }
         }
         Button {
+            lead: IconName.refresh;
             text: @tr("Refresh list");
             dense: true;
             clicked => { Studio.list-source-targets(data.id); }
@@ -3811,6 +3944,7 @@ component SourceFields inherits VerticalLayout {
     if data.kind-code >= 0 && data.kind-code <= 2: HorizontalLayout {
         alignment: start;
         Button {
+            lead: IconName.sliders;
             text: @tr("Source settings…");
             accessible-name: @tr("Open the source settings of {}", data.name);
             dense: true;
@@ -4041,20 +4175,15 @@ component SourceProperties inherits VerticalLayout {
                 horizontal-stretch: 1;
                 preferred-width: 0;
                 label: @tr("Show duration of {} in milliseconds", data.name);
+                unit: @tr("ms");
                 value: data.show-for-ms;
                 edited(v) => { Studio.set-item-show-for(data.item-id, max(0, min(600000, round(v)))); }
-            }
-            Text {
-                text: @tr("ms");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-                accessible-role: none;
             }
         }
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             Button {
+                lead: IconName.eye;
                 text: @tr("Show now");
                 kind: "primary";
                 dense: true;
@@ -4062,6 +4191,7 @@ component SourceProperties inherits VerticalLayout {
                 clicked => { Studio.show-item(data.item-id); }
             }
             Button {
+                lead: IconName.eraser;
                 text: @tr("Clear");
                 dense: true;
                 enabled: data.show-for-ms > 0;
@@ -4108,7 +4238,7 @@ component SourceProperties inherits VerticalLayout {
                 label: @tr("Duration");
                 NumberField {
                     label: @tr("Glide duration of {} in milliseconds", data.name);
-                    prefix: @tr("ms");
+                    unit: @tr("ms");
                     value: data.glide-duration;
                     edited(v) => {
                         Studio.set-source-glide(data.id, true, max(0, min(5000, round(v))), data.glide-easing);
@@ -4143,13 +4273,13 @@ export component PropertiesPanel inherits Rectangle {
         title: @tr("Nothing selected");
         message: @tr("Select a source in the Sources panel to see its properties.");
     }
-    if any: props := Flickable {
+    if any: props := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
         // A list that can pan holds a press briefly, so a quick click on a confirm
         // button never arrives and the next one does. The wheel still scrolls.
-        mouse-drag-pan-enabled: false;
+        drag-pan: false;
         property <int> anchor: Studio.look-anchor-serial;
         // The gear's section has just reported its place: move it on screen.
         changed anchor => {
@@ -4157,14 +4287,12 @@ export component PropertiesPanel inherits Rectangle {
             let margin = Tokens.space-2;
             let y = Studio.look-anchor-y - list.absolute-position.y;
             let h = Tokens.size-control-lg * 4;
-            if y + props.content-y < margin {
-                props.content-y = min(0px, margin - y);
-            } else if y + h + props.content-y > props.height - margin {
-                props.content-y = min(0px, props.height - margin - y - h);
-            }
+            props.scroll-into-view(y - margin, h + 2 * margin);
         }
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - props.bar-room);
             alignment: start;
             for s in Studio.sources: VerticalLayout {
                 spacing: Tokens.size-section-gap;
@@ -4224,7 +4352,8 @@ export component RecordingSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Folder");
-                help: @tr("Each recording gets a new file named by its date and time; a file is never replaced.");
+                summary: @tr("Where recordings are saved");
+                hint: @tr("Each recording gets a new file named by its date and time; a file is never replaced.");
                 enabled: idle;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 folder := TextField {
@@ -4236,7 +4365,8 @@ export component RecordingSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Format");
-                help: @tr("Video carries the picture. Audio is the mix, with no picture. WAV is uncompressed. FLAC is lossless and smaller.");
+                summary: @tr("Video, or only the sound");
+                hint: @tr("Video carries the picture. Audio is the mix, with no picture. MOV opens in QuickTime and Final Cut. WAV is uncompressed. FLAC is lossless and smaller.");
                 enabled: idle;
                 fill: false;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm;
@@ -4261,14 +4391,38 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
         }
+        // Separate files (ADR-0086). No switch yet: the profile setting comes with
+        // the `recording.iso` section; marks are set on each source.
+        SettingsCard {
+            title: @tr("Separate files");
+            id: "settings.recording.separate";
+            description: @tr("Sources marked Record separately also write their sound to their own file.");
+            SettingRow {
+                divider: false;
+                label: @tr("Sources");
+                help: Studio.rec-separate-names == "" ? @tr("None yet. Turn on Record separately in a source's Audio tab.") : @tr("Each is a 24-bit WAV file beside master in a folder named like the recording.");
+                hint: @tr("Only the main canvas's recording writes them. Picture files and the choice of format come in a later version.");
+                Text {
+                    text: Studio.rec-separate-names == "" ? @tr("None") : Studio.rec-separate-names;
+                    color: Studio.rec-separate-names == "" ? Theme.text-secondary : Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
         SettingsCard {
             title: @tr("Encoding");
             id: "settings.recording.encoding";
             if Studio.out-audio-only && !Studio.out-flac: SettingRow {
                 divider: false;
                 label: @tr("PCM");
-                help: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording. 32-bit float does not clip.");
+                summary: @tr("16-bit is the usual choice");
+                hint: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording. 32-bit float does not clip.");
                 enabled: idle;
+                changed: idle && Studio.out-bit-depth != Studio.out-bit-depth-default;
+                default-text: Studio.out-pcm-widths[Studio.out-bit-depth-default];
+                reset => { Studio.set-bit-depth(Studio.out-bit-depth-default); }
                 fill: false;
                 SegmentedControl {
                     label: @tr("PCM");
@@ -4281,8 +4435,12 @@ export component RecordingSettings inherits Rectangle {
             if Studio.out-flac: SettingRow {
                 divider: false;
                 label: @tr("Width");
-                help: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording.");
+                summary: @tr("16-bit is the usual choice");
+                hint: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording.");
                 enabled: idle;
+                changed: idle && Studio.out-bit-depth != Studio.out-bit-depth-default;
+                default-text: Studio.out-pcm-widths[Studio.out-bit-depth-default];
+                reset => { Studio.set-bit-depth(Studio.out-bit-depth-default); }
                 fill: false;
                 SegmentedControl {
                     label: @tr("Width");
@@ -4377,7 +4535,8 @@ export component StreamSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Server");
-                help: @tr("The address your streaming service gives you, starting with rtmp:// or srt://.");
+                summary: @tr("From your streaming service");
+                hint: @tr("The address your streaming service gives you, starting with rtmp:// or srt://.");
                 enabled: idle;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 server := TextField {
@@ -4400,6 +4559,7 @@ export component StreamSettings inherits Rectangle {
                     accepted(t) => { Studio.save-key(t); }
                 }
                 Button {
+                    lead: IconName.save;
                     horizontal-stretch: 0;
                     text: @tr("Save key");
                     kind: "secondary";
@@ -4421,6 +4581,7 @@ export component StreamSettings inherits Rectangle {
                     horizontal-stretch: 1;
                 }
                 if Studio.st-key-saved: Button {
+                    lead: IconName.trash;
                     text: @tr("Remove key");
                     kind: "ghost";
                     dense: true;
@@ -4435,7 +4596,8 @@ export component StreamSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Reconnect when the connection drops");
-                help: @tr("Tries up to 10 times, waiting longer each time. On by default.");
+                summary: @tr("Up to 10 tries");
+                hint: @tr("Tries up to 10 times, waiting longer each time. On by default.");
                 enabled: idle;
                 fill: false;
                 Toggle {
@@ -4450,8 +4612,13 @@ export component StreamSettings inherits Rectangle {
                 gap: 0;
                 SettingRow {
                     label: @tr("SRT latency");
-                    help: @tr("More latency survives a worse network; viewers see the picture a little later.");
+                    summary: @tr("More survives a worse network");
+                    hint: @tr("More latency survives a worse network; viewers see the picture a little later.");
                     enabled: idle;
+                    // The first choice is the protocol's own default.
+                    changed: idle && Studio.st-srt && Studio.st-latency != 0;
+                    default-text: Studio.st-latencies[0];
+                    reset => { Studio.set-latency(0); }
                     latency := Select {
                         label: @tr("SRT latency");
                         options: Studio.st-latencies;
@@ -4468,7 +4635,8 @@ export component StreamSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Record when the stream starts");
-                help: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
+                summary: @tr("Uses the Recording settings");
+                hint: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
                 enabled: idle;
                 fill: false;
                 Toggle {
@@ -4618,8 +4786,11 @@ export component VideoSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Frame rate");
-                help: @tr("Frames per second.");
+                summary: @tr("Frames per second");
                 enabled: can-change;
+                changed: can-change && Studio.canvas-rate != Studio.canvas-rate-default;
+                default-text: @tr("{} fps", Studio.canvas-rates[Studio.canvas-rate-default]);
+                reset => { Studio.set-canvas-rate(Studio.canvas-rate-default); }
                 fill: false;
                 SegmentedControl {
                     label: @tr("Frame rate");
@@ -4687,7 +4858,8 @@ export component GeneralSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Swap scenes after a transition");
-                help: @tr("After Transition, Preview shows the scene that was on air. Off: Preview keeps the scene that went on air.");
+                summary: @tr("Preview shows what was on air");
+                hint: @tr("After Transition, Preview shows the scene that was on air. Off: Preview keeps the scene that went on air.");
                 fill: false;
                 Toggle {
                     label: @tr("Swap scenes after a transition");
@@ -4702,7 +4874,8 @@ export component GeneralSettings inherits Rectangle {
             description: @tr("How shared sources move when the program scene changes, including outside studio mode.");
             SettingRow {
                 label: @tr("Glide");
-                help: @tr("Shared sources slide to their new place; new sources fade in. Off: every scene change is instant.");
+                summary: @tr("Shared sources slide between scenes");
+                hint: @tr("Shared sources slide to their new place; new sources fade in. Off: every scene change is instant.");
                 fill: false;
                 Toggle {
                     label: @tr("Glide");
@@ -4714,11 +4887,14 @@ export component GeneralSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Duration");
-                help: @tr("Milliseconds. 0 is the same as turning Glide off.");
+                summary: @tr("0 turns Glide off");
                 enabled: Studio.glide-duration > 0;
+                changed: Studio.glide-duration > 0 && Studio.glide-duration != Studio.glide-default-duration;
+                default-text: @tr("{} ms", Studio.glide-default-duration);
+                reset => { Studio.set-glide(Studio.glide-default-duration, Studio.glide-easing); }
                 NumberField {
                     label: @tr("Glide duration in milliseconds");
-                    prefix: @tr("ms");
+                    unit: @tr("ms");
                     value: Studio.glide-duration;
                     enabled: Studio.glide-duration > 0;
                     edited(v) => {
@@ -4729,8 +4905,12 @@ export component GeneralSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Easing");
-                help: @tr("How a slide eases. Fade-ins stay linear.");
+                summary: @tr("How a slide starts and stops");
+                hint: @tr("How a slide eases. Fade-ins stay linear.");
                 enabled: Studio.glide-duration > 0;
+                changed: Studio.glide-duration > 0 && Studio.glide-easing != Studio.glide-default-easing;
+                default-text: Studio.glide-default-easing == 0 ? @tr("Linear") : @tr("Ease in-out");
+                reset => { Studio.set-glide(Studio.glide-duration, Studio.glide-default-easing); }
                 fill: false;
                 SegmentedControl {
                     label: @tr("Glide easing");
@@ -4783,6 +4963,7 @@ export component GlobalSourcesSettings inherits Rectangle {
                     help: s.kind;
                     fill: false;
                     Button {
+                        lead: IconName.trash;
                         text: @tr("Remove");
                         accessible-name: @tr("Remove {} from global sources", s.name);
                         dense: true;
@@ -4823,7 +5004,7 @@ export component GlobalSourcesSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Kind");
-                help: @tr("What kind of source to add.");
+                summary: @tr("What kind of source to add");
                 enabled: running;
                 Select {
                     label: @tr("Kind");
@@ -4854,6 +5035,7 @@ export component GlobalSourcesSettings inherits Rectangle {
                 label: "";
                 fill: false;
                 Button {
+                    lead: IconName.plus;
                     text: @tr("Add");
                     accessible-name: @tr("Add as a global source");
                     kind: "primary";
@@ -4888,7 +5070,8 @@ export component RemoteControlSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Allow remote control");
-                help: @tr("Lets apps on this computer, such as Stream Deck or your own scripts, control RBS. Off by default.");
+                summary: @tr("Stream Deck, panels and scripts");
+                hint: @tr("Lets apps on this computer, such as Stream Deck or your own scripts, control RBS. Off by default.");
                 fill: false;
                 Toggle {
                     label: @tr("Allow remote control");
@@ -4902,7 +5085,11 @@ export component RemoteControlSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Port");
-                help: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default.");
+                summary: @tr("{} is the default", Studio.rc-default-port);
+                changed: Studio.rc-default-port != "" && Studio.rc-port != Studio.rc-default-port;
+                default-text: Studio.rc-default-port;
+                reset => { Studio.set-rc-port(Studio.rc-default-port); }
+                hint: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default.");
                 control-width: Tokens.size-menu-sm / 2;
                 port := TextField {
                     label: @tr("Port");
@@ -4969,6 +5156,7 @@ export component RemoteControlSettings inherits Rectangle {
                         alignment: center;
                         horizontal-stretch: 0;
                         Button {
+                            lead: IconName.copy;
                             text: @tr("Copy");
                             accessible-name: @tr("Copy key pin");
                             icon: IconName.copy;
@@ -5012,6 +5200,7 @@ export component RemoteControlSettings inherits Rectangle {
                         alignment: center;
                         horizontal-stretch: 0;
                         Button {
+                            lead: IconName.copy;
                             text: @tr("Copy");
                             accessible-name: @tr("Copy certificate fingerprint");
                             icon: IconName.copy;
@@ -5022,7 +5211,8 @@ export component RemoteControlSettings inherits Rectangle {
             }
             if Studio.rc-network: SettingRow {
                 label: @tr("Allow remote admin");
-                help: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps.");
+                summary: @tr("Full control from other computers");
+                hint: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps.");
                 fill: false;
                 Toggle {
                     label: @tr("Allow remote admin");
@@ -5049,7 +5239,7 @@ export component RemoteControlSettings inherits Rectangle {
             if Studio.rc-network && root.cert-source == 1: VerticalLayout {
                 SettingRow {
                     label: @tr("Certificate file");
-                    help: @tr("A full path.");
+                    summary: @tr("A full path");
                     control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                     own-cert := TextField {
                         label: @tr("Certificate file");
@@ -5058,7 +5248,8 @@ export component RemoteControlSettings inherits Rectangle {
                 }
                 SettingRow {
                     label: @tr("Key file");
-                    help: @tr("A full path. On macOS and Linux the key file must be readable by you only.");
+                    summary: @tr("A full path");
+                    hint: @tr("A full path. On macOS and Linux the key file must be readable by you only.");
                     control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                     own-key := TextField {
                         label: @tr("Key file");
@@ -5069,6 +5260,7 @@ export component RemoteControlSettings inherits Rectangle {
                     divider: false;
                     fill: false;
                     Button {
+                        lead: IconName.check;
                         text: @tr("Use these files");
                         kind: "primary";
                         clicked => { Studio.rc-use-own(own-cert.text, own-key.text); }
@@ -5081,9 +5273,11 @@ export component RemoteControlSettings inherits Rectangle {
             }
             if Studio.rc-network && root.cert-source == 0 && !root.confirming: SettingRow {
                 label: @tr("New key");
-                help: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin.");
+                summary: @tr("If the key may have been copied");
+                hint: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin.");
                 fill: false;
                 Button {
+                    lead: IconName.key;
                     text: @tr("New key…");
                     clicked => { root.confirming = true; }
                 }
@@ -5137,6 +5331,7 @@ export component RemoteControlSettings inherits Rectangle {
                         spacing: Tokens.space-2;
                         alignment: start;
                         Button {
+                            lead: IconName.copy;
                             text: @tr("Copy");
                             kind: "primary";
                             icon: IconName.copy;
@@ -5151,7 +5346,7 @@ export component RemoteControlSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Name");
-                help: @tr("The app the token is for, such as Stream Deck.");
+                summary: @tr("The app it is for, such as Stream Deck");
                 name := TextField {
                     label: @tr("Name");
                 }
@@ -5171,6 +5366,7 @@ export component RemoteControlSettings inherits Rectangle {
                 divider: false;
                 fill: false;
                 Button {
+                    lead: IconName.key;
                     text: @tr("Create access token");
                     kind: "primary";
                     icon: IconName.plus;
@@ -5190,6 +5386,7 @@ export component RemoteControlSettings inherits Rectangle {
                         horizontal-stretch: 1;
                     }
                     Button {
+                        lead: IconName.undo;
                         horizontal-stretch: 0;
                         text: @tr("Undo");
                         accessible-name: @tr("Undo revoking {}", Studio.rc-revoked);
@@ -5236,6 +5433,7 @@ export component RemoteControlSettings inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 Button {
+                                    lead: IconName.ban;
                                     text: @tr("Revoke");
                                     accessible-name: @tr("Revoke {}", t.name);
                                     kind: "ghost";
@@ -5283,6 +5481,8 @@ component OutputFact inherits HorizontalLayout {
 
 // One output: a title, its facts, and the button that opens its settings.
 component OutputCard inherits Rectangle {
+    // The files written beside the recording (ADR-0086); empty: no line.
+    in property <string> separate;
     in property <string> title;
     in property <string> kind;
     in property <string> encoder;
@@ -5311,6 +5511,7 @@ component OutputCard inherits Rectangle {
         if encoder != "": OutputFact { label: @tr("Encoder"); value: encoder; }
         if video != "": OutputFact { label: @tr("Video"); value: video; }
         OutputFact { label: @tr("Audio"); value: audio; }
+        if separate != "": OutputFact { label: @tr("Separate files"); value: separate; }
         OutputFact { label: where-label; value: where; }
         HorizontalLayout {
             alignment: start;
@@ -5323,12 +5524,14 @@ component OutputCard inherits Rectangle {
 // to its settings. Settings live in the Settings window (U17), not in this panel.
 export component OutputsPanel inherits Rectangle {
     background: Theme.surface-raised;
-    Flickable {
+    area := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - area.bar-room);
             spacing: Tokens.size-section-gap;
             alignment: start;
             OutputCard {
@@ -5339,6 +5542,7 @@ export component OutputsPanel inherits Rectangle {
                 audio: Studio.out-audio-line;
                 where: Studio.out-where;
                 where-label: @tr("Folder");
+                separate: Studio.out-separate;
                 action: @tr("Recording settings");
                 open => { Studio.open-settings(); }
             }
@@ -5356,48 +5560,6 @@ export component OutputsPanel inherits Rectangle {
             }
         }
     }
-}
-
-// One shape in Add. The cell is the button: an outline icon and the name on one row,
-// growing to a second line only when the name wraps. It fills its grid cell.
-component LibraryShape inherits Rectangle {
-    in property <string> title;
-    in property <IconName> icon;
-    callback act();
-    horizontal-stretch: 1;
-    min-width: 0px;
-    height: max(Tokens.size-control-lg, body.preferred-height);
-    border-radius: Tokens.radius-sm;
-    background: touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: button;
-    accessible-label: @tr("Add {}", title);
-    accessible-action-default => { root.act(); }
-    body := HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        padding-left: Tokens.space-1;
-        padding-right: Tokens.space-1;
-        padding-top: Tokens.space-1;
-        padding-bottom: Tokens.space-1;
-        spacing: Tokens.space-1;
-        alignment: start;
-        cross-axis-alignment: center;
-        Icon {
-            name: root.icon;
-            ink: Theme.text-primary;
-        }
-        Text {
-            horizontal-stretch: 1;
-            min-width: 0px;
-            text: root.title;
-            color: Theme.text-primary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            vertical-alignment: center;
-            wrap: word-wrap;
-        }
-    }
-    touch := TouchArea { clicked => { root.act(); } }
 }
 
 // The selected source's shape, when it is not a plain rectangle. It is the shape
@@ -5448,84 +5610,29 @@ component AppliedShape inherits Rectangle {
     }
 }
 
-// One sample in the Add grid. The picture stays at most the library thumb size and
-// never wider than the column, so two columns fit a narrow panel.
-component LibraryCell inherits Rectangle {
-    in property <string> title;
-    in property <image> thumb;
-    callback act();
-    border-radius: Tokens.radius-sm;
-    background: touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: button;
-    accessible-label: @tr("Add {}", title);
-    accessible-action-default => { root.act(); }
-    VerticalLayout {
-        padding: Tokens.space-1;
-        spacing: Tokens.space-1;
-        alignment: start;
-        well := Rectangle {
-            // A fixed height, not a ratio of the width: the column's width depends on
-            // the grid's height, so a height taken from the width would loop.
-            width: 100%;
-            max-width: Tokens.size-library-thumb-w;
-            height: Tokens.size-library-thumb-h;
-            x: (parent.width - self.width) / 2;
-            border-radius: Tokens.radius-sm;
-            border-width: Tokens.size-border;
-            border-color: Theme.border-subtle;
-            background: Theme.surface-sunken;
-            clip: true;
-            Image {
-                source: root.thumb;
-                width: 100%;
-                height: 100%;
-                image-fit: contain;
-                accessible-role: none;
-            }
-        }
-        Text {
-            text: root.title;
-            color: Theme.text-primary;
-            font-size: Tokens.type-caption-size;
-            overflow: elide;
-            horizontal-alignment: center;
-        }
-    }
-    touch := TouchArea { clicked => { root.act(); } }
-}
-
-// Two columns of one kind of sample. A hidden kind adds no row.
-component SampleGrid inherits HorizontalLayout {
+// One kind of sample as a list: a ListRow per sample with its picture at the start
+// (owner decision 2026-11-13, medium picture). A hidden kind adds no row.
+component SampleGrid inherits VerticalLayout {
     in property <bool> frames;
-    spacing: Tokens.size-field-gap;
     // Spacing stays 0: a sample of the other kind is an empty layout and must not
-    // open a gap. A shown cell pads itself.
-    VerticalLayout {
-        horizontal-stretch: 1;
-        spacing: 0px;
-        alignment: start;
-        for s in Studio.library-samples: VerticalLayout {
-            if s.frame == root.frames && s.id != "lower-third" && Math.mod(s.slot, 2) == 0: VerticalLayout {
-                padding-bottom: Tokens.space-1;
-                LibraryCell {
-                    title: s.name;
-                    thumb: s.thumb;
-                    act => { Studio.add-sample(s.id); }
-                }
-            }
-        }
-    }
-    VerticalLayout {
-        horizontal-stretch: 1;
-        spacing: 0px;
-        alignment: start;
-        for s in Studio.library-samples: VerticalLayout {
-            if s.frame == root.frames && s.id != "lower-third" && Math.mod(s.slot, 2) == 1: VerticalLayout {
-                padding-bottom: Tokens.space-1;
-                LibraryCell {
-                    title: s.name;
-                    thumb: s.thumb;
-                    act => { Studio.add-sample(s.id); }
+    // open a gap.
+    spacing: 0px;
+    alignment: start;
+    for s in Studio.library-samples: VerticalLayout {
+        if s.frame == root.frames && s.id != "lower-third": ListRow {
+            name: s.name;
+            picture: s.thumb;
+            picture-height: Tokens.size-row-picture-md;
+            picture-checker: true;
+            selectable: false;
+            accessible-name: @tr("Add {}", s.name);
+            activated => { Studio.add-sample(s.id); }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: IconName.plus;
+                    name: @tr("Add {}", s.name);
+                    clicked => { Studio.add-sample(s.id); }
                 }
             }
         }
@@ -5546,16 +5653,31 @@ export component LibraryPanel inherits Rectangle {
     property <int> pick: 0;
     // 0 Background, 1 Frame.
     property <int> sample-kind: 0;
-    init => { Studio.library-shown(); }
+    // The shapes Add offers, in reading order (the long name last); `stamp` is the kind `add-stamp` takes.
+    property <[{ name: string, icon: IconName, stamp: int }]> shape-list: [
+        { name: @tr("Circle"), icon: IconName.circle, stamp: 0 },
+        { name: @tr("Square"), icon: IconName.square, stamp: 1 },
+        { name: @tr("Rectangle"), icon: IconName.rectangle, stamp: 2 },
+        { name: @tr("Ellipse"), icon: IconName.ellipse, stamp: 4 },
+        { name: @tr("Triangle"), icon: IconName.triangle, stamp: 5 },
+        { name: @tr("Arrow"), icon: IconName.arrow-right, stamp: 6 },
+        { name: @tr("Rounded rectangle"), icon: IconName.rounded-rectangle, stamp: 3 },
+    ];
+    // Thumbnails are made at the size the rows show them (`thumbnail.rs`).
+    property <int> picture-px: Math.round(Tokens.size-row-picture-md / 1phx);
+    init => { Studio.library-shown(root.picture-px); }
+    changed picture-px => { Studio.library-shown(root.picture-px); }
     // The list has no width, and the flickable has no content-width. A `width: 100%`
     // here is the preferred width of the contents, so a short control stays short
     // (design system: filling a row). Properties uses the same shape.
-    fl := Flickable {
+    fl := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - fl.bar-room);
             spacing: Tokens.size-section-gap;
             alignment: start;
             SegmentedControl {
@@ -5594,6 +5716,7 @@ export component LibraryPanel inherits Rectangle {
                             selected(i) => { root.pick = i; }
                         }
                         Button {
+                            lead: IconName.plus;
                             text: @tr("Add");
                             accessible-name: @tr("Add the selected look");
                             clicked => { Studio.apply-look-at(root.pick); }
@@ -5655,6 +5778,7 @@ export component LibraryPanel inherits Rectangle {
                     spacing: Tokens.size-section-gap;
                     alignment: start;
                     Button {
+                        lead: IconName.folder;
                         width: 100%;
                         horizontal-stretch: 1;
                         text: @tr("Choose a PNG file…");
@@ -5682,19 +5806,26 @@ export component LibraryPanel inherits Rectangle {
                     spacing: Tokens.size-section-gap;
                     alignment: start;
                     SectionTitle { title: @tr("Shapes"); }
-                    // Two equal columns. The six short names share cells; the long name
-                    // takes the row under them so it is not crushed in a narrow panel.
-                    GridLayout {
-                        width: 100%;
-                        horizontal-stretch: 1;
-                        spacing: Tokens.size-field-gap;
-                        LibraryShape { row: 0; col: 0; icon: IconName.circle; title: @tr("Circle"); act => { Studio.add-stamp(0); } }
-                        LibraryShape { row: 0; col: 1; icon: IconName.square; title: @tr("Square"); act => { Studio.add-stamp(1); } }
-                        LibraryShape { row: 1; col: 0; icon: IconName.rectangle; title: @tr("Rectangle"); act => { Studio.add-stamp(2); } }
-                        LibraryShape { row: 1; col: 1; icon: IconName.ellipse; title: @tr("Ellipse"); act => { Studio.add-stamp(4); } }
-                        LibraryShape { row: 2; col: 0; icon: IconName.triangle; title: @tr("Triangle"); act => { Studio.add-stamp(5); } }
-                        LibraryShape { row: 2; col: 1; icon: IconName.arrow-right; title: @tr("Arrow"); act => { Studio.add-stamp(6); } }
-                        LibraryShape { row: 3; col: 0; colspan: 2; icon: IconName.rounded-rectangle; title: @tr("Rounded rectangle"); act => { Studio.add-stamp(3); } }
+                    // As many columns as fit (ListBox, automatic columns); a name that
+                    // does not fit is elided and shows its tooltip.
+                    shapes := ListBox {
+                        inline: true;
+                        columns: 0;
+                        count: root.shape-list.length;
+                        row-height: Tokens.size-control-md;
+                        spacing: Tokens.space-1;
+                        for s[i] in root.shape-list: ListRow {
+                            x: shapes.cell-x(i);
+                            y: shapes.cell-y(i);
+                            width: shapes.cell-width;
+                            height: shapes.row-height;
+                            has-icon: true;
+                            icon: s.icon;
+                            name: s.name;
+                            selectable: false;
+                            accessible-name: @tr("Add {}", s.name);
+                            activated => { Studio.add-stamp(s.stamp); }
+                        }
                     }
                 }
             }
@@ -5760,12 +5891,16 @@ export component StatsPanel inherits Rectangle {
         title: @tr("Nothing to measure yet");
         message: @tr("Statistics show here while you record or stream.");
     }
-    if Studio.stats.length > 0: Flickable {
+    // Nothing in the list takes focus, so the area is the focus stop and keys scroll it.
+    if Studio.stats.length > 0: area := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
+        focusable: true;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - area.bar-room);
             spacing: Tokens.size-field-gap;
             alignment: start;
             for row in Studio.stats: StatLine {

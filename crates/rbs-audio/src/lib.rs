@@ -14,6 +14,8 @@
 //! - [`OutputNode`] plays a partition's blocks on an
 //!   [`AudioOutput`](rbs_audio_io::AudioOutput) (monitoring), resampled to the
 //!   device's rate and steered against its clock.
+//! - [`LoudnessTapNode`] measures loudness after BS.1770-4 / EBU R 128 on a block it
+//!   reads, while loudness is shown ([`loudness`], ADR-0092).
 //! - [`MeterSinkNode`] keeps a mixer scheduled for its meters while nothing records.
 //!
 //! Every block of a partition has the graph's format and length and the timestamp
@@ -22,6 +24,7 @@
 mod config;
 mod encoder;
 mod input;
+pub mod loudness;
 mod meter;
 mod mixer;
 mod output;
@@ -33,6 +36,10 @@ pub use encoder::{ENCODER_NODE_TYPE, EncoderNode, encoder_descriptor};
 pub use input::{
     INPUT_NODE_TYPE, InputCounters, InputNode, InputParams, InputStats, MAP_TOLERANCE,
     MAX_CORRECTION, MAX_PACKET, RESYNC_THRESHOLD, STEER_GAIN, input_descriptor,
+};
+pub use loudness::{
+    LOUDNESS_TAP_NODE_TYPE, Loudness, LoudnessMeter, LoudnessReadout, LoudnessTapNode,
+    LoudnessTapStats, loudness_tap_descriptor,
 };
 pub use meter::{LevelMeter, Levels};
 pub use mixer::{

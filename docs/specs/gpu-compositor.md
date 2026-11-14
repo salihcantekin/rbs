@@ -280,6 +280,32 @@ impl YuvDownload {
 - Every delivered frame increments `GpuMetrics::frames_cpu_copied` (P4).
 - A map failure frees the slot and returns `GpuError::Readback` once.
 
+### Image download (RGBA8)
+
+`rbs_gpu::RgbaDownload` (ADR-0117 decision 5) reads one picture of a still source back for an image file: once per picture change, never on a steady tick.
+
+```rust
+impl RgbaDownload {
+    pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Result<Self, GpuError>;
+    pub fn submit_at(&mut self, ctx: &GpuContext, pool: &TexturePool, picture: &VideoFrame,
+        timestamp: Timestamp, sequence: u64) -> Result<bool, GpuError>;
+    pub fn take(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>;
+    pub fn in_flight(&self) -> bool;
+    pub fn stats(&self) -> RgbaStats; // converted, copied, delivered, busy, grown, failed
+}
+```
+
+- `new` builds one pass (`shaders/rgba.wgsl`, `fs_rgba`) and one mappable staging buffer for a `width x height` picture (rows padded to `COPY_BYTES_PER_ROW_ALIGNMENT`). Not real time.
+- `submit_at` takes a pool texture frame:
+  - `Rgba16Float` (a filter's or the normalisation pass's output: linear, premultiplied) goes through the pass. It un-premultiplies (a pixel with zero alpha keeps no colour), encodes sRGB and writes `Rgba8Unorm` codes, pixel for pixel (`textureLoad`), into the top-left corner of a target as large as the largest such picture so far.
+  - `Rgba8` frames in an `Rgba8Unorm` or `Rgba8UnormSrgb` texture with `COPY_SRC` (a still source's upload: sRGB, straight alpha) are copied as they are, with no pass.
+  - Any other format is `GpuError::TargetMismatch`.
+  - One readback at a time: while the previous one is in flight or not yet taken, the call returns `Ok(false)` and counts `busy`; the caller keeps the change for a later tick.
+  - A picture larger than the staging buffer or the target replaces it on that call (`grown`; the ADR-0062 decision 5 exception, once per growth); a smaller one reuses it.
+  - The copy is submitted and the buffer mapped without waiting.
+- `take`, after `GpuContext::poll`: the completed picture as a `System` frame of its size, `Rgba8`, `ColorSpace::SRGB`, straight alpha, rows packed tightly, with the stamps given to `submit_at`. The rows are copied into a new buffer (one allocation per picture change, not per tick). Every delivered frame increments `GpuMetrics::frames_cpu_copied` (P4; ADR-0038's readback exception, widened by ADR-0117 to once per picture change for image tracks). A map failure frees the buffer and returns `GpuError::Readback` once.
+- Tests: `crates/rbs-gpu/tests/rgba_download.rs` (premultiplied to straight sRGB within one code, transparent stays zero, straight `Rgba8` copied byte for byte, growth once and reuse, other formats refused, one readback at a time).
+
 ### Native export
 
 Implements [ADR-0025](../adr/0025-encoder-surface-export.md): encoders get the converted frame as a native frame they are the only consumer of, and never depend on `rbs-gpu`. Lives in `rbs_gpu::export`, a marked low-level module (P11). macOS only so far.

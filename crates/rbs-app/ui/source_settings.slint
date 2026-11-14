@@ -4,7 +4,7 @@
 // keeps the window; OK sends it and closes; Cancel closes. The choice is a draft until
 // then. The preview and the main window stay usable while it is open.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Select, Toggle, OverlayHost, NumberField, SettingRow } from "components.slint";
+import { Button, IconName, Select, Toggle, OverlayHost, NumberField, SettingRow } from "components.slint";
 import { SettingsCard } from "settings.slint";
 import { Studio, SourceSettingsData } from "studio.slint";
 
@@ -328,7 +328,8 @@ export component SourceSettingsWindow inherits Window {
                     description: @tr("Mode, frame rate and cursor for this capture.");
                     if camera: SettingRow {
                         label: @tr("Mode");
-                        help: @tr("Resolution and colour mode listed by the camera.");
+                        summary: @tr("Resolution and colour mode");
+                        hint: @tr("Resolution and colour mode listed by the camera.");
                         divider: false;
                         Select {
                             label: @tr("Mode");
@@ -344,7 +345,7 @@ export component SourceSettingsWindow inherits Window {
                     }
                     SettingRow {
                         label: @tr("Frame rate");
-                        help: @tr("How often a new picture is taken.");
+                        summary: @tr("How often a new picture is taken");
                         divider: camera;
                         Select {
                             label: @tr("Frame rate");
@@ -356,7 +357,7 @@ export component SourceSettingsWindow inherits Window {
                     }
                     if d.has-cursor: SettingRow {
                         label: @tr("Show the cursor");
-                        help: @tr("Draw the pointer in the captured picture.");
+                        summary: @tr("Draw the pointer in the picture");
                         fill: false;
                         Toggle {
                             label: @tr("Show the cursor");
@@ -386,7 +387,8 @@ export component SourceSettingsWindow inherits Window {
                         }
                         SettingRow {
                             label: @tr("Use a region");
-                            help: @tr("Crop the capture to a rectangle. Turns off Hide taskbar. Apply fits it on the canvas and does not restart capture.");
+                            summary: @tr("Crop the capture to a rectangle");
+                            hint: @tr("Crop the capture to a rectangle. Turns off Hide taskbar. Apply fits it on the canvas and does not restart capture.");
                             divider: false;
                             fill: false;
                             Toggle {
@@ -554,6 +556,7 @@ export component SourceSettingsWindow inherits Window {
                             VerticalLayout {
                                 alignment: center;
                                 Button {
+                                    lead: IconName.eraser;
                                     text: @tr("Clear");
                                     dense: true;
                                     kind: "ghost";
@@ -577,7 +580,8 @@ export component SourceSettingsWindow inherits Window {
                     description: @tr("Cut taskbar or Dock insets from the capture without restarting it.");
                     SettingRow {
                         label: @tr("Hide taskbar and Dock");
-                        help: @tr("Choose the edge and thickness in capture pixels. Turns off Use a region.");
+                        summary: @tr("Cut the bar off the capture");
+                        hint: @tr("Choose the edge and thickness in capture pixels. Turns off Use a region.");
                         divider: false;
                         fill: false;
                         Toggle {
@@ -598,7 +602,8 @@ export component SourceSettingsWindow inherits Window {
                     }
                     if root.chrome-on: SettingRow {
                         label: @tr("Bar edge");
-                        help: @tr("Which edge holds the bar. Bottom is usual on Windows.");
+                        summary: @tr("Which edge holds the bar");
+                        hint: @tr("Which edge holds the bar. Bottom is usual on Windows.");
                         Select {
                             preferred-width: Tokens.size-transition-short;
                             label: @tr("Bar edge");
@@ -609,25 +614,21 @@ export component SourceSettingsWindow inherits Window {
                     }
                     if root.chrome-on: SettingRow {
                         label: @tr("Thickness");
-                        help: @tr("Height or width of the bar in capture pixels.");
+                        summary: @tr("Height or width of the bar");
+                        hint: @tr("Height or width of the bar in capture pixels.");
                         fill: false;
                         NumberField {
                             preferred-width: Tokens.size-field-compact;
                             label: @tr("Bar thickness of {} in pixels", d.name);
+                            unit: @tr("px");
                             value: root.chrome-thickness;
                             edited(v) => { root.chrome-thickness = max(1, round(v)); }
-                        }
-                        Text {
-                            text: @tr("px");
-                            color: Theme.text-secondary;
-                            font-size: Tokens.type-body-size;
-                            vertical-alignment: center;
-                            accessible-role: none;
                         }
                     }
                     if root.chrome-on: SettingRow {
                         label: @tr("Place the work area");
-                        help: @tr("Cover fills the item box; Fit keeps the cut area's shape.");
+                        summary: @tr("How the cut area fills the box");
+                        hint: @tr("Cover fills the item box; Fit keeps the cut area's shape.");
                         Select {
                             preferred-width: Tokens.size-transition-short;
                             label: @tr("Place the work area");
@@ -638,20 +639,24 @@ export component SourceSettingsWindow inherits Window {
                     }
                     if root.chrome-on: SettingRow {
                         label: @tr("Chrome actions");
-                        help: @tr("Apply writes the cut. Fit places the item. Reset uses the system work area.");
+                        summary: @tr("Apply, fit or reset the cut");
+                        hint: @tr("Apply writes the cut. Fit places the item. Reset uses the system work area.");
                         fill: false;
                         Button {
+                            lead: IconName.check;
                             text: @tr("Apply");
                             dense: true;
                             kind: "primary";
                             clicked => { root.apply-region-chrome(); }
                         }
                         Button {
+                            lead: IconName.fit;
                             text: @tr("Fit item");
                             dense: true;
                             clicked => { Studio.fit-display-chrome(d.id); }
                         }
                         Button {
+                            lead: IconName.reset;
                             text: @tr("Reset");
                             dense: true;
                             kind: "ghost";

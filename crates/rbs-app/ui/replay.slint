@@ -17,8 +17,13 @@ export global ReplayBuffer {
     // The length slider, 0 to 1 on a log scale, and its text ("2 min").
     in property <float> length;
     in property <string> length-text;
+    // The saved length differs from the default, which reads as `length-default-text`.
+    in property <bool> length-changed;
+    in property <string> length-default-text;
     in property <[string]> memories;
     in property <int> memory;
+    // The default memory limit as an index into `memories`, or -1 when not offered.
+    in property <int> memory-default: -1;
     in property <string> folder;
     // Bumped when Rust changes the folder, so the field takes the new text.
     in property <int> folder-serial;
@@ -40,6 +45,7 @@ export global ReplayBuffer {
     callback set-audio(bool);
     callback length-moved(float);
     callback length-released();
+    callback reset-length();
     callback set-memory(int);
     callback set-folder(string);
     callback save();
@@ -59,7 +65,8 @@ export component ReplaySettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Keep the past");
-                help: @tr("Armed, the buffer encodes the program like your recordings and keeps only the newest part. It uses memory and a second encode while it runs.");
+                summary: @tr("Keeps the last minutes ready to save");
+                hint: @tr("Armed, the buffer encodes the program like your recordings and keeps only the newest part. It uses memory and a second encode while it runs.");
                 enabled: ReplayBuffer.can-arm;
                 fill: false;
                 Toggle {
@@ -75,7 +82,11 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Length");
-                help: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
+                summary: @tr("How much past to keep");
+                hint: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
+                changed: ReplayBuffer.length-changed;
+                default-text: ReplayBuffer.length-default-text;
+                reset => { root.drag = -1; ReplayBuffer.reset-length(); }
                 Slider {
                     horizontal-stretch: 1;
                     label: @tr("Length");
@@ -84,12 +95,16 @@ export component ReplaySettings inherits Rectangle {
                     moved(v) => { root.drag = v; ReplayBuffer.length-moved(v); }
                     released => { ReplayBuffer.length-released(); root.drag = -1; }
                     cancelled => { root.drag = -1; }
+                    reset => { root.drag = -1; ReplayBuffer.reset-length(); }
                 }
                 ValueReadout { text: ReplayBuffer.length-text; }
             }
             SettingRow {
                 label: @tr("Memory limit");
                 help: ReplayBuffer.estimate;
+                changed: ReplayBuffer.memory-default >= 0 && ReplayBuffer.memory != ReplayBuffer.memory-default;
+                default-text: ReplayBuffer.memory-default >= 0 ? ReplayBuffer.memories[ReplayBuffer.memory-default] : "";
+                reset => { ReplayBuffer.set-memory(ReplayBuffer.memory-default); }
                 fill: false;
                 Select {
                     label: @tr("Memory limit");
@@ -100,7 +115,7 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Include sound");
-                help: @tr("Keeps the program's audio with the picture.");
+                summary: @tr("Keeps the program's audio with the picture");
                 fill: false;
                 Toggle {
                     label: @tr("Include sound");
@@ -110,7 +125,7 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Arm when RBS starts");
-                help: @tr("Starts keeping the past as soon as the studio is ready.");
+                summary: @tr("Starts as soon as the studio is ready");
                 fill: false;
                 Toggle {
                     label: @tr("Arm when RBS starts");
@@ -120,7 +135,8 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Folder");
-                help: @tr("Clips are named by date and time; a file is never replaced. Empty uses the recording folder.");
+                summary: @tr("Where clips are saved");
+                hint: @tr("Clips are named by date and time; a file is never replaced. Empty uses the recording folder.");
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 folder := TextField {
                     label: @tr("Folder");
@@ -184,6 +200,7 @@ export component ReplayControls inherits VerticalLayout {
             vertical-alignment: center;
         }
         Button {
+            lead: IconName.folder;
             horizontal-stretch: 0;
             text: @tr("Show in folder");
             kind: "ghost";

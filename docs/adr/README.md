@@ -95,12 +95,12 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0084](0084-source-transform-commands-and-source-context-menu.md) | Source transform commands (flip, rotate, fit, align) and a categorized source context menu | Accepted |
 | [0085](0085-more-containers-codecs-and-advanced-encoder-settings.md) | More containers and codecs, and advanced video and audio encoder settings | Accepted |
 | [0086](0086-recording-sources-separately-iso.md) | Record sources separately (ISO recording) next to the master recording | Accepted |
-| [0087](0087-output-cost-estimate-and-hardware-limits.md) | Show the cost of outputs before they start, and the limits of this hardware | Proposed |
+| [0087](0087-output-cost-estimate-and-hardware-limits.md) | Show the cost of outputs before they start, and the limits of this hardware | Accepted |
 | [0088](0088-replay-buffer-and-retroactive-recording.md) | Replay buffer: keep the last minutes in memory, save a clip, or turn the buffer into a recording | Accepted |
-| [0089](0089-recording-markers-and-editor-project-export.md) | Recording markers and an editor project (FCPXML) written from the recording manifest | Proposed |
-| [0090](0090-recording-protection-disk-lag-and-adaptive-bitrate.md) | Recording protection: early warnings for disk and encoder trouble, ordered load shedding, and adaptive bitrate | Proposed |
-| [0091](0091-per-scene-audio-levels.md) | Per-scene audio levels: a scene can remember its own volumes and mutes | Proposed |
-| [0092](0092-loudness-metering-and-leveling.md) | Loudness: BS.1770 metering first, then a slow leveler, and gain advice for editing | Proposed |
+| [0089](0089-recording-markers-and-editor-project-export.md) | Recording markers and an editor project (FCPXML) written from the recording manifest | Accepted |
+| [0090](0090-recording-protection-disk-lag-and-adaptive-bitrate.md) | Recording protection: early warnings for disk and encoder trouble, ordered load shedding, and adaptive bitrate | Accepted |
+| [0091](0091-per-scene-audio-levels.md) | Per-scene audio levels: a scene can remember its own volumes and mutes | Accepted |
+| [0092](0092-loudness-metering-and-leveling.md) | Loudness: BS.1770 metering first, then a slow leveler, and gain advice for editing | Accepted |
 | [0093](0093-vertical-second-canvas-from-the-same-sources.md) | A vertical (9:16) second canvas running at the same time as the main one | Accepted |
 | [0094](0094-ui-interaction-patterns-and-tabler-icon-set.md) | UI interaction patterns (info hints, feature sections, one menu system) and the Tabler icon set | Accepted |
 | [0095](0095-audio-ducker-and-key-tap.md) | Audio ducker as a filter with a pre-fader key tap from another source | Accepted |
@@ -120,8 +120,12 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
 | [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Accepted |
 | [0111](0111-vertical-outputs-start-with-the-main-ones.md) | Vertical outputs start and stop with the main ones, and each output shows its own state | Accepted |
-| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted |
+| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted; decision 6 superseded in part by ADR-0120 |
 | [0113](0113-experience-level-and-first-run.md) | An experience level and the first-run choice | Accepted |
 | [0114](0114-screen-grammar.md) | One screen grammar: row, list row, section marks, held edits, one home | Accepted |
 | [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Accepted |
-| [0116](0116-audio-only-recording.md) | Audio recording, an output that writes the mix without a picture | Accepted |
+| [0116](0116-audio-only-recording.md) | Audio recording, an output that writes the mix without a picture | Closed: shipped as WAV/FLAC recording formats instead |
+| [0117](0117-still-sources-as-images.md) | Still sources are recorded separately as PNG images, not video | Accepted |
+| [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted |
+| [0119](0119-where-separate-files-are-encoded.md) | Separate files take the cheapest path per source, and the user picks where the rest is encoded | Accepted |
+| [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted |

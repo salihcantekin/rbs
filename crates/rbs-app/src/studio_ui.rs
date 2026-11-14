@@ -235,6 +235,8 @@ pub struct StudioUi {
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
     library_samples: Rc<VecModel<SampleData>>,
+    /// The physical pixel height the sample thumbnails were made for.
+    library_thumb_height: u32,
     /// The selected source's id (-1 none). The Sources rows follow this.
     pub selected: i32,
     /// The source Properties last showed. It stays when the selection is cleared,
@@ -407,6 +409,10 @@ pub struct StudioUi {
     pub st_state: i32,
     /// The file being recorded has no picture. Set when recording starts.
     rec_file_audio: bool,
+    /// The sources the running recording writes as files of their own (ADR-0086).
+    rec_separate: Vec<String>,
+    /// The sources marked to record separately, by name, for Settings › Recording.
+    separate_names: String,
     /// The vertical canvas's recording and stream (ADR-0093 decision 6): the frame's
     /// Record and Go live menus start and stop them, and an output profile switch
     /// waits for them as for the main ones.
@@ -524,6 +530,7 @@ impl StudioUi {
             picker_dirty: false,
             library_looks: Rc::new(VecModel::from(library_looks())),
             library_samples: Rc::new(VecModel::default()),
+            library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
             selected: -1,
             inspected: Cell::new(-1),
@@ -583,6 +590,8 @@ impl StudioUi {
             next_redo: None,
             rec_state: rec_state::OFF,
             rec_file_audio: false,
+            rec_separate: Vec::new(),
+            separate_names: String::new(),
             rec_file: None,
             rec_note: String::new(),
             rec_note_bad: false,
@@ -695,6 +704,13 @@ impl StudioUi {
         } else {
             1
         });
+        let glide_default = rbs_scene::CollectionGlide::default();
+        g.set_glide_default_duration(glide_default.duration_ms as i32);
+        g.set_glide_default_easing(if glide_default.easing == rbs_scene::GlideEasing::Linear {
+            0
+        } else {
+            1
+        });
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -712,6 +728,8 @@ impl StudioUi {
         g.set_collection_name(self.user.collection_name.as_str().into());
         g.set_switching(self.switching.is_some());
         g.set_rec_state(self.rec_state);
+        g.set_rec_separate_names(self.separate_names.as_str().into());
+        g.set_out_separate(separate_line(&self.rec_separate).into());
         g.set_rec_file(
             self.rec_file
                 .as_ref()
@@ -752,6 +770,13 @@ impl StudioUi {
                 .widths()
                 .iter()
                 .position(|b| *b == p.bit_depth)
+                .unwrap_or(0) as i32,
+        );
+        g.set_out_bit_depth_default(
+            p.format
+                .widths()
+                .iter()
+                .position(|b| *b == RecordProfile::default().bit_depth)
                 .unwrap_or(0) as i32,
         );
         g.set_out_pcm_widths(strings(
@@ -840,6 +865,12 @@ impl StudioUi {
                 .position(|r| *r == self.canvas.fps)
                 .unwrap_or(0) as i32,
         );
+        g.set_canvas_rate_default(
+            RATES
+                .iter()
+                .position(|r| *r == CanvasProfile::new().fps)
+                .unwrap_or(0) as i32,
+        );
         g.set_canvas_restarting(self.canvas_restarting);
         g.set_canvas_note(self.canvas_note.as_str().into());
         self.push_remote(g);
@@ -874,6 +905,7 @@ impl StudioUi {
     fn push_remote(&self, g: &Studio<'_>) {
         let r = &self.remote;
         g.set_rc_enabled(r.enabled);
+        g.set_rc_default_port(remote_profile::DEFAULT_PORT.to_string().into());
         if g.get_rc_port_serial() != self.remote_port_serial as i32 {
             g.set_rc_port(self.remote_port_text.as_str().into());
             g.set_rc_port_serial(self.remote_port_serial as i32);
@@ -1833,6 +1865,15 @@ impl StudioUi {
             op: TransformOp::SetAngle(degrees),
             gesture: gesture.max(0) as u64,
             canvas: self.props_target(id),
+        });
+    }
+
+    /// Mark a source to record its sound as a file of its own, or clear the mark
+    /// (Properties' Record separately, ADR-0086).
+    pub fn set_source_record_separately(&mut self, id: i32, enabled: bool) {
+        self.send(Command::SetRecordSeparately {
+            id: SourceId::from_raw(id as u32),
+            enabled,
         });
     }
 
@@ -2887,7 +2928,9 @@ impl StudioUi {
         let codecs = self.video_codecs(out, &e);
         let codec_index = codecs.iter().position(|c| *c == e.video_codec).unwrap_or(0);
         let (out_w, out_h) = self.resolved_output_size(out);
+        let defaults = Self::encoder_defaults(out, &form, &video, &codecs);
         EncoderData {
+            defaults,
             codecs: strings(codecs.iter().map(|c| c.label().to_owned())),
             codec: codec_index as i32,
             encoders: strings(encoders),
@@ -2933,6 +2976,53 @@ impl StudioUi {
             },
             open_shadows: e.open_shadows,
         }
+    }
+
+    /// The default option of each encoder field of an [`output`], by its
+    /// [`enc_field`] code, as an index into the options the window shows now; -1
+    /// where that default is not offered or the field is on/off (owner decision
+    /// 2026-11-14: a changed value shows a reset button).
+    fn encoder_defaults(
+        out: i32,
+        form: &EncoderForm,
+        video: &[u32],
+        codecs: &[VideoCodec],
+    ) -> ModelRc<i32> {
+        let d = if out == output::STREAM {
+            StreamProfile::new().encoding
+        } else {
+            RecordProfile::default().encoding()
+        };
+        fn at<T: PartialEq>(items: &[(String, T)], v: &T) -> i32 {
+            items
+                .iter()
+                .position(|(_, x)| x == v)
+                .map_or(-1, |i| i32::try_from(i).unwrap_or(-1))
+        }
+        fn pos<T: PartialEq>(items: &[T], v: &T) -> i32 {
+            items
+                .iter()
+                .position(|x| x == v)
+                .map_or(-1, |i| i32::try_from(i).unwrap_or(-1))
+        }
+        let mut v = vec![-1; 14];
+        // Automatic is always the first encoder.
+        v[enc_field::ENCODER as usize] = if d.encoder.is_none() { 0 } else { -1 };
+        v[enc_field::VIDEO_RATE as usize] = pos(video, &d.video_kbps);
+        v[enc_field::AUDIO_RATE as usize] = pos(&AUDIO_KBPS, &d.audio_kbps);
+        v[enc_field::RATE_MODE as usize] = at(&form.rate_modes.items, &d.rate_control);
+        v[enc_field::PEAK as usize] = at(&form.peaks.items, &d.max_video_kbps);
+        v[enc_field::QUALITY as usize] = at(&form.qualities.items, &d.quality);
+        v[enc_field::KEYFRAME as usize] = at(&form.keyframes.items, &d.keyframe_seconds);
+        v[enc_field::PRESET as usize] = at(&form.presets.items, &d.preset);
+        v[enc_field::PROFILE as usize] = at(&form.profiles.items, &d.profile);
+        v[enc_field::B_FRAMES as usize] = at(&form.b_frames.items, &d.b_frames);
+        v[enc_field::VIDEO_CODEC as usize] = pos(codecs, &d.video_codec);
+        v[enc_field::DELIVERY as usize] = match d.delivery {
+            Delivery::Video => 0,
+            Delivery::Screen => 1,
+        };
+        ModelRc::new(VecModel::from(v))
     }
 
     /// An encoder field of an [`output`] was picked ([`enc_field`] codes); the
@@ -4006,10 +4096,14 @@ impl StudioUi {
     }
 
     /// Reads the output profiles and scene collections for the menus again.
-    /// The Library panel shows: makes the sample thumbnails the first time.
-    pub fn library_shown(&mut self) {
-        if self.library_samples.row_count() == 0 {
-            self.library_samples.set_vec(library_samples());
+    /// The Library panel shows: makes the sample thumbnails at `picture_px`, the
+    /// physical pixel height a row shows them at, the first time and whenever that
+    /// height changes (another spacing or screen scale).
+    pub fn library_shown(&mut self, picture_px: i32) {
+        let height = u32::try_from(picture_px).unwrap_or(0).clamp(1, 1024);
+        if self.library_samples.row_count() == 0 || self.library_thumb_height != height {
+            self.library_thumb_height = height;
+            self.library_samples.set_vec(library_samples(height));
         }
     }
 
@@ -4909,6 +5003,13 @@ impl StudioUi {
                     self.vedit.reset();
                     self.refresh_marks();
                 }
+                self.separate_names = list
+                    .sources
+                    .iter()
+                    .filter(|s| s.record_separately)
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 self.scene_list = Some(list);
                 self.refresh_existing();
                 self.refresh_global_existing();
@@ -5131,6 +5232,7 @@ impl StudioUi {
                 path,
                 video_encoder,
                 audio_encoder,
+                separate,
             } => {
                 log(&format!(
                     "recording to {} (video: {video_encoder}, audio: {})",
@@ -5139,6 +5241,7 @@ impl StudioUi {
                 ));
                 self.rec_state = rec_state::RECORDING;
                 self.rec_file = Some((path, Instant::now()));
+                self.rec_separate = separate;
                 self.rec_file_audio = self.profile.format.is_audio_only();
                 if !self.rec_file_audio {
                     self.set_note(format!("Video encoder: {video_encoder}"), false);
@@ -5153,6 +5256,7 @@ impl StudioUi {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 self.rec_file_audio = false;
+                self.rec_separate.clear();
                 self.set_note(format!("The recording did not start: {why}"), true);
             }
             RecordingUpdate::Stopped {
@@ -5165,6 +5269,7 @@ impl StudioUi {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 self.rec_file_audio = false;
+                self.rec_separate.clear();
                 log(&format!(
                     "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
                 ));
@@ -5289,6 +5394,7 @@ impl StudioUi {
                     filters,
                     selected_filter,
                     sync_offset: r.audio.sync_offset_ms,
+                    record_separately: r.record_separately,
                     global: r.global,
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
@@ -5837,6 +5943,7 @@ fn request_of(
         audio_bitrate_bps: start.audio_bitrate_bps,
         bit_depth: start.bit_depth,
         size: start.size,
+        iso: true,
     }
 }
 
@@ -6079,42 +6186,30 @@ fn library_looks() -> Vec<LookData> {
         .collect()
 }
 
-/// Pixels of a sample picture's thumbnail, in the aspect of the canvas it is for.
-const THUMB: (u32, u32) = (288, 162);
-
 /// How many rows of the Source tab's list get a picture, and the size asked for (twice the
 /// token size, so it stays sharp on a high-density screen).
 const THUMBS_PER_LIST: usize = 24;
 const THUMB_REQUEST: (u32, u32) = (192, 108);
 
-/// The sample pictures with their thumbnails (made once, when the Library first shows).
-fn library_samples() -> Vec<SampleData> {
-    let mut background = 0i32;
-    let mut frame = 0i32;
+/// The sample pictures with their thumbnails, `height` physical pixels high: drawn
+/// larger and averaged down, so a thin frame line stays visible (`thumbnail`).
+fn library_samples(height: u32) -> Vec<SampleData> {
+    use rbs_app::thumbnail::{OVERSAMPLE, shrink_rgba, wide_size};
+    let (w, h) = wide_size(height);
     rbs_sources::still::SAMPLES
         .iter()
         .filter_map(|s| {
-            let px = rbs_sources::still::sample_picture(s.id, THUMB.0, THUMB.1)?;
-            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                &px, THUMB.0, THUMB.1,
-            );
+            let big = rbs_sources::still::sample_picture(s.id, w * OVERSAMPLE, h * OVERSAMPLE)?;
+            let px = shrink_rgba(&big, w * OVERSAMPLE, h * OVERSAMPLE, w, h);
+            if px.is_empty() {
+                return None;
+            }
+            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&px, w, h);
             let is_frame = s.kind == rbs_sources::still::SampleKind::Frame;
-            // Place within its own kind, so the two columns stay even when the
-            // other kind is hidden.
-            let slot = if is_frame {
-                let n = frame;
-                frame += 1;
-                n
-            } else {
-                let n = background;
-                background += 1;
-                n
-            };
             Some(SampleData {
                 id: s.id.into(),
                 name: s.name.into(),
                 frame: is_frame,
-                slot,
                 thumb: slint::Image::from_rgba8(buffer),
             })
         })
@@ -6165,7 +6260,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// scene, 16 look applied, 17 source pointed at another target, 18 source settings
 /// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing,
 /// 21 how long Show draws a hidden item (the cue itself is not an undo step),
-/// 22 the source's capture region.
+/// 22 the source's capture region, 23 the source's Record separately mark, 24 a
+/// scene's levels (ADR-0091; the name is the scene's).
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -6193,6 +6289,8 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Glide => 20,
                 EditKind::ShowFor => 21,
                 EditKind::Region => 22,
+                EditKind::RecordSeparately => 23,
+                EditKind::SceneLevels => 24,
             },
             s.name.as_str(),
         ),
@@ -6455,10 +6553,30 @@ fn properties_source(selected: i32, remembered: i32, ids: &[i32]) -> i32 {
     ids.first().copied().unwrap_or(-1)
 }
 
+/// The Outputs card's line for the files a recording writes beside its master
+/// (ADR-0086): empty when there are none.
+fn separate_line(names: &[String]) -> String {
+    match names.len() {
+        0 => String::new(),
+        1 => format!("1 sound file: {}", names[0]),
+        n => format!("{n} sound files: {}", names.join(", ")),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_outputs_card_names_the_separate_files() {
+        assert_eq!(separate_line(&[]), "");
+        assert_eq!(separate_line(&["Mic".into()]), "1 sound file: Mic");
+        assert_eq!(
+            separate_line(&["Mic".into(), "Music".into()]),
+            "2 sound files: Mic, Music"
+        );
+    }
 
     fn window(name: &str, app: Option<&str>) -> Target {
         Target {
@@ -6825,6 +6943,7 @@ mod tests {
             path: path.clone(),
             video_encoder: "x".into(),
             audio_encoder: None,
+            separate: Vec::new(),
         }));
         ui.apply(Update::Recording(RecordingUpdate::NotStarted(
             "A recording is already running.".into(),
@@ -7489,6 +7608,7 @@ mod tests {
             path: d.join("v.mkv"),
             video_encoder: "x".into(),
             audio_encoder: None,
+            separate: Vec::new(),
         }));
         assert_eq!(ui.vertical_rec, VerticalOut::On);
         // Each running vertical output has its chip (ADR-0111 decision 6): the stream

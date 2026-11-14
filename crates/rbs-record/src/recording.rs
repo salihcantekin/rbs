@@ -74,6 +74,22 @@ pub const OUTPUT_4: PartitionId = PartitionId(16);
 pub const ISO_AUDIO_ENCODER: PartitionId = PartitionId(17);
 /// Mux and transport of separate source files. One worker runs every file of the set.
 pub const ISO_OUTPUT: PartitionId = PartitionId(18);
+/// The video encoder partitions of separate source files (ADR-0086 decision 9,
+/// ADR-0119 decision 5), partitions 19 to 34, never the master's. Files encoded on
+/// the master's engine take turns on the first two; the rest are for encoders that do
+/// not share that engine (ADR-0119 steps (c) and (d)). A partition has a worker only
+/// while a file on it is open.
+pub const ISO_VIDEO_ENCODERS: [PartitionId; crate::iso::MAX_ISO_VIDEO] = iso_video_encoders();
+
+const fn iso_video_encoders() -> [PartitionId; crate::iso::MAX_ISO_VIDEO] {
+    let mut parts = [PartitionId(0); crate::iso::MAX_ISO_VIDEO];
+    let mut i = 0;
+    while i < parts.len() {
+        parts[i] = PartitionId(19 + i as u32);
+        i += 1;
+    }
+    parts
+}
 
 /// The ports a recording chooses adapters for.
 #[non_exhaustive]

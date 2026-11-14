@@ -177,6 +177,12 @@ pub const THEMEABLE: &[Themeable] = &[
     colour("color.surface.raised", "Panel background"),
     colour("color.surface.overlay", "Menu and popover background"),
     colour("color.surface.sunken", "Well background"),
+    colour(
+        "color.surface.checker",
+        "Pattern behind transparent pictures",
+    ),
+    colour("color.scrollbar.thumb", "Scrollbar"),
+    colour("color.scrollbar.thumb-hot", "Scrollbar under the pointer"),
     colour("color.toast.surface", "Notice background"),
     colour("color.toast.edge", "Notice outline"),
     colour("color.text.primary", "Text"),
@@ -189,10 +195,21 @@ pub const THEMEABLE: &[Themeable] = &[
     colour("color.accent", "Accent"),
     colour("color.accent.hover", "Accent under the pointer"),
     colour("color.accent.subtle", "Selection background"),
+    colour("color.accent.subtle.hover", "Selection under the pointer"),
+    colour("color.accent.pressed", "Accent while pressed"),
+    colour("color.button.fill", "Button"),
+    colour("color.button.hover", "Button under the pointer"),
+    colour("color.button.pressed", "Button while pressed"),
+    colour("color.button.chip", "Button icon chip"),
     colour("color.brand", "Logo accent"),
     colour("color.state.warning", "Warning"),
     colour("color.state.healthy", "Healthy"),
     colour("color.state.error", "Error"),
+    colour("color.action.destructive.subtle", "Danger button"),
+    colour(
+        "color.action.destructive.subtle.hover",
+        "Danger button under the pointer",
+    ),
     colour("color.action.destructive", "Destructive action"),
     colour("color.meter.low", "Meter, low level"),
     colour("color.meter.mid", "Meter, middle level"),
@@ -252,6 +269,42 @@ pub const THEMEABLE: &[Themeable] = &[
         64.0,
     ),
     length("size.icon.box", "Icon size", SpacingAndSize, 12.0, 32.0),
+    // Disjoint bounds keep thumb <= thumb-hot <= hit in every theme.
+    length(
+        "size.scrollbar.thumb",
+        "Scrollbar width",
+        SpacingAndSize,
+        2.0,
+        6.0,
+    ),
+    length(
+        "size.scrollbar.thumb-hot",
+        "Scrollbar width under the pointer",
+        SpacingAndSize,
+        6.0,
+        10.0,
+    ),
+    length(
+        "size.scrollbar.hit",
+        "Scrollbar room",
+        SpacingAndSize,
+        10.0,
+        16.0,
+    ),
+    length(
+        "size.scrollbar.thumb-min",
+        "Shortest scrollbar",
+        SpacingAndSize,
+        16.0,
+        48.0,
+    ),
+    length(
+        "size.list.cell-min-w",
+        "Narrowest list cell",
+        SpacingAndSize,
+        80.0,
+        240.0,
+    ),
     length(
         "size.icon.stroke",
         "Icon line width",
@@ -298,6 +351,8 @@ pub const THEMEABLE: &[Themeable] = &[
     length("radius.sm", "Small corner radius", Shapes, 0.0, 32.0),
     length("radius.md", "Corner radius", Shapes, 0.0, 32.0),
     length("radius.lg", "Large corner radius", Shapes, 0.0, 32.0),
+    length("radius.button", "Button corner radius", Shapes, 0.0, 32.0),
+    length("size.button.chip", "Button icon chip", Shapes, 12.0, 32.0),
     length("size.border", "Border width", Shapes, 1.0, 4.0),
     length("size.focus-ring", "Focus ring width", Shapes, 2.0, 6.0),
     length(
@@ -748,6 +803,38 @@ impl ResolvedTheme {
             _ => true,
         }
     }
+
+    /// True when secondary and danger buttons draw their `color.border.subtle` outline:
+    /// a resting fill ([`BUTTON_FILLS`]) is closer than [`PANEL_OUTLINE_BELOW`] to one of
+    /// the surfaces a button sits on, so the fill alone would not show the button's edge
+    /// (ADR-0118). Also true when a colour is missing.
+    pub fn button_outline(&self) -> bool {
+        let get = |n: &str| self.colors.get(n).copied();
+        BUTTON_FILLS.iter().any(|f| match get(f) {
+            Some(fill) => BUTTON_SURFACES
+                .iter()
+                .map(|n| get(n))
+                .any(|s| s.is_none_or(|s| button_outline(fill, s))),
+            None => true,
+        })
+    }
+}
+
+/// The resting fills of buttons that may draw an outline: secondary and danger.
+pub const BUTTON_FILLS: [&str; 2] = ["color.button.fill", "color.action.destructive.subtle"];
+
+/// The surfaces a button sits on: the window ground, panels, wells and popups.
+pub const BUTTON_SURFACES: [&str; 4] = [
+    "color.surface.base",
+    "color.surface.raised",
+    "color.surface.sunken",
+    "color.surface.overlay",
+];
+
+/// Whether a button filled with `fill` on a surface of colour `surface` needs its outline
+/// (ADR-0118, the same threshold as a panel's, ADR-0112 decision 3).
+pub fn button_outline(fill: Color, surface: Color) -> bool {
+    fill.contrast(surface) < PANEL_OUTLINE_BELOW
 }
 
 /// Below this contrast between a panel and the window ground, the panel keeps its outline
@@ -1072,6 +1159,11 @@ impl Look<'_> {
             &len,
         );
         ascending(&["size.field.gap", "size.section.gap"], &len);
+        // A button's icon fits its chip, and the chip fits a dense button (ADR-0118).
+        ascending(
+            &["size.icon.box", "size.button.chip", "size.control.sm"],
+            &len,
+        );
         ascending(&["radius.sm", "radius.md", "radius.lg"], &len);
         ascending(
             &["type.caption", "type.body", "type.title", "type.heading"],
@@ -1084,6 +1176,14 @@ impl Look<'_> {
             p.push(ThemeProblem::at(
                 "size.focus-ring",
                 format!("size.focus-ring must not be wider than space.1 ({space})"),
+            ));
+        }
+        if let (Some(r), Some(sm)) = (len("radius.button"), len("size.control.sm"))
+            && r > sm / 2.0
+        {
+            p.push(ThemeProblem::at(
+                "radius.button",
+                format!("radius.button must not be more than half of size.control.sm ({sm})"),
             ));
         }
     }

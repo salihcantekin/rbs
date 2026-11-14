@@ -11,7 +11,7 @@
 //! state key. With no API attached this costs a counter increment per change.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -43,17 +43,17 @@ use rbs_gpu::GpuContext;
 use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_needed};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, ExtraCanvas, Link, OutputId, OutputSettings, Progress, RecordAdapters,
-    RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
+    AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, Progress,
+    RecordAdapters, RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
-    MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape,
-    Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
+    MasterAudio, RecordSeparately, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
+    Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{
-    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, Undo, place_chrome, recrop_keeping,
-    visible_size,
+    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, SceneLevel, Undo, place_chrome,
+    recrop_keeping, visible_size,
 };
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::BrowserTree;
@@ -63,7 +63,9 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
+mod loudness;
 mod monitor;
+pub mod protection;
 pub mod replay;
 
 use crate::canvas_profile::CanvasProfile;
@@ -342,6 +344,9 @@ pub struct SourceRow {
     /// The source's volume, a linear factor from 0 to 1, its mute (ADR-0059) and its
     /// sync offset (ADR-0062).
     pub audio: SourceAudio,
+    /// What the mix hears while the program scene, in Own levels, has an entry for the
+    /// source (ADR-0091); `None` when `audio` is what is heard.
+    pub heard: Option<SourceAudio>,
     /// Its filters in chain order (ADR-0062).
     pub filters: Vec<filters::FilterRow>,
     /// A global source's row (ADR-0065): its item is in the canvas's global scene.
@@ -390,6 +395,8 @@ pub struct SourceRow {
     pub show_for_ms: u32,
     /// Milliseconds left on a running Show cue; 0 when none.
     pub cue_remaining_ms: u32,
+    /// The source is marked to record separately (ADR-0086).
+    pub record_separately: bool,
 }
 
 impl PartialEq for SourceRow {
@@ -402,11 +409,13 @@ impl PartialEq for SourceRow {
             && self.vertical_layout == other.vertical_layout
             && self.item == other.item
             && self.companion_of == other.companion_of
+            && self.record_separately == other.record_separately
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
             && self.locked == other.locked
             && self.audio == other.audio
+            && self.heard == other.heard
             && self.filters == other.filters
             && self.global == other.global
             && self.also_in == other.also_in
@@ -964,6 +973,14 @@ pub enum Command {
         /// Which part.
         region: CropRegion,
     },
+    /// Record the source as a file of its own from the next recording on, or stop
+    /// (ADR-0086, `source.set_record_separately`). One undo step.
+    SetRecordSeparately {
+        /// The source.
+        id: SourceId,
+        /// On or off.
+        enabled: bool,
+    },
     /// Capture region on the source (ADR-0103). One undo step; does not restart capture.
     SetSourceCaptureRegion {
         /// The source.
@@ -1226,6 +1243,93 @@ pub struct RecordRequest {
     pub bit_depth: Option<u16>,
     /// Encoded picture size (ADR-0102). `None`: this output's canvas.
     pub size: Option<(u32, u32)>,
+    /// Write the separate files of the sources marked to record separately
+    /// (ADR-0086). Only the main canvas's recording has them.
+    pub iso: bool,
+}
+
+/// The separate files of the main recording (ADR-0086).
+#[derive(Debug, Clone)]
+struct IsoFiles {
+    /// The tracks, as `record.status` lists them.
+    tracks: Vec<api::RecordTrack>,
+    /// Marked sources left out, as `record.status` lists them.
+    skipped: Vec<api::SkippedTrack>,
+    /// The manifest written at start, and its folder; markers are added to it at stop
+    /// (ADR-0089 decision 5).
+    manifest: rbs_manifest::RecordingManifest,
+    /// The recording's folder.
+    folder: PathBuf,
+}
+
+/// The markers of a running recording and where its manifest goes (ADR-0089
+/// decisions 1 and 5). The recording's state on the control thread owns them.
+#[derive(Debug, Clone)]
+struct RecordingMarkers {
+    log: rbs_manifest::MarkerLog,
+    /// The manifest to write: the start manifest of a recording folder, or the
+    /// master alone for a plain recording.
+    manifest: rbs_manifest::RecordingManifest,
+    /// Its folder and file name.
+    dir: PathBuf,
+    name: String,
+    /// A recording folder's manifest exists from the start; a plain recording
+    /// writes one only when it has markers.
+    folder: bool,
+}
+
+impl RecordingMarkers {
+    /// The markers' state for a recording that started at `t0_ns` into `path`, or into
+    /// the recording folder of `iso`.
+    fn new(path: &Path, t0_ns: u64, t0_utc: String, iso: Option<&IsoFiles>) -> Option<Self> {
+        let log = rbs_manifest::MarkerLog::new(t0_ns, std::time::Duration::ZERO).ok()?;
+        if let Some(iso) = iso {
+            return Some(Self {
+                log,
+                manifest: iso.manifest.clone(),
+                dir: iso.folder.clone(),
+                name: rbs_manifest::FOLDER_MANIFEST.to_owned(),
+                folder: true,
+            });
+        }
+        let file = path.file_name()?.to_str()?;
+        let name = rbs_manifest::manifest_name_for(file)?;
+        let mut manifest = rbs_manifest::RecordingManifest::new(&t0_utc, t0_ns);
+        manifest
+            .files
+            .push(rbs_manifest::ManifestFile::listed("master", file));
+        Some(Self {
+            log,
+            manifest,
+            dir: path.parent()?.to_path_buf(),
+            name,
+            folder: false,
+        })
+    }
+
+    /// Writes the manifest with the markers, at stop. Nothing to write is `Ok`.
+    fn write(&mut self) -> Result<(), String> {
+        if !self.log.has_pending() || (!self.folder && self.log.markers().is_empty()) {
+            return Ok(());
+        }
+        self.manifest.markers = self.log.markers().to_vec();
+        rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
+        self.log.mark_flushed();
+        Ok(())
+    }
+}
+
+fn marker_color(c: Option<rbs_api::request::MarkerColor>) -> Option<rbs_manifest::MarkerColor> {
+    use rbs_api::request::MarkerColor as A;
+    use rbs_manifest::MarkerColor as M;
+    c.map(|c| match c {
+        A::Blue => M::Blue,
+        A::Red => M::Red,
+        A::Orange => M::Orange,
+        A::Yellow => M::Yellow,
+        A::Green => M::Green,
+        A::Purple => M::Purple,
+    })
 }
 
 /// The canvas an output records or streams (ADR-0093 decision 6).
@@ -1278,10 +1382,15 @@ struct CanvasOutputs {
     auto_recording: bool,
     /// The running stream: its URL, the connection last reported and its output.
     streaming: Option<(String, Link, OutputId)>,
+    /// Recording protection ended the recording (ADR-0090 decision 3): the reason for
+    /// its summary once the tail is in.
+    protection_stop: Option<String>,
     /// The recording, as the control API reports it.
     record_state: api::RecordState,
     /// The stream, as the control API reports it.
     stream_state: api::StreamState,
+    /// The running recording's markers (ADR-0089); `None` while nothing records.
+    markers: Option<RecordingMarkers>,
 }
 
 impl Default for CanvasOutputs {
@@ -1291,8 +1400,10 @@ impl Default for CanvasOutputs {
             ending: false,
             auto_recording: false,
             streaming: None,
+            protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
+            markers: None,
         }
     }
 }
@@ -1315,6 +1426,9 @@ pub enum RecordingUpdate {
         video_encoder: String,
         /// The audio encoder's name, when audio is recorded.
         audio_encoder: Option<String>,
+        /// The names of the sources written as files of their own (ADR-0086), in
+        /// track order; empty for a recording of one file.
+        separate: Vec<String>,
     },
     /// It could not start, in words; nothing records.
     NotStarted(String),
@@ -1423,6 +1537,8 @@ pub struct SceneRow {
     pub id: SceneId,
     /// Its name.
     pub name: String,
+    /// The scene keeps its own levels (ADR-0091).
+    pub own_audio: bool,
 }
 
 /// A source of the collection, for "Add existing source".
@@ -1438,6 +1554,8 @@ pub struct SourceEntry {
     pub global: bool,
     /// Per-source slide override (ADR-0100).
     pub glide: Option<rbs_scene::SourceGlide>,
+    /// Marked to record its sound as a file of its own (ADR-0086).
+    pub record_separately: bool,
 }
 
 /// The scenes and sources of the collection, as the Scenes panel and the source
@@ -1888,6 +2006,9 @@ pub struct HostConfig {
     /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
     /// is opened only while a source is monitored or soloed.
     pub monitor: MonitorSettings,
+    /// Reads free disk space and memory for recording protection (ADR-0090); `None`:
+    /// disk and memory are reported unavailable and only lag is watched.
+    pub system_probe: Option<protection::SystemProbeFactory>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -1917,6 +2038,7 @@ impl HostConfig {
             recent_dir: None,
             swap_after_transition: false,
             monitor: MonitorSettings::default(),
+            system_probe: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -2292,6 +2414,8 @@ struct Host {
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
+    /// The main recording's separate files while it runs (ADR-0086).
+    iso: Option<IsoFiles>,
     /// Where the stream key is kept.
     keys: Arc<dyn KeyStore>,
     /// The account of the output profile in use.
@@ -2358,12 +2482,17 @@ struct Host {
     /// The monitor output: its saved device and volume, when its device opens, what
     /// the API saw last (ADR-0097).
     monitor: monitor::MonitorHost,
+    /// The main canvas's loudness meter runs (`loudness.set_enabled`; session state,
+    /// ADR-0092 stage 1).
+    loudness_on: bool,
     /// The camera as the app's settings know it; `None` until the app sent it.
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
     camera_published: Option<api::VcamStatus>,
     /// The replay buffer's settings and state (ADR-0088).
     replay: replay::ReplayHost,
+    /// Recording protection while an output runs (ADR-0090).
+    protection: protection::ProtectionHost,
 }
 
 /// What the control thread is handed besides the studio configuration.
@@ -2618,6 +2747,9 @@ fn round(
     if let Some(left) = host.report_stats(now, notify) {
         wait = wait.min(left);
     }
+    if let Some(left) = host.drive_protection(now, notify) {
+        wait = wait.min(left);
+    }
     if let Some(left) = host.report_camera(now, notify) {
         wait = wait.min(left);
     }
@@ -2782,15 +2914,18 @@ fn start(
         history_shown: (None, None),
         waiting: false,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
+        iso: None,
         stats_due: None,
         clock,
         camera_factory: config.virtual_camera.map(|f| f.0),
         camera: None,
         camera_due: None,
         monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
+        loudness_on: false,
         camera_setup: None,
         camera_published: None,
         replay: replay::ReplayHost::new(),
+        protection: protection::ProtectionHost::new(config.system_probe),
         keys,
         key_account: config.key_account,
         engine: Box::new(engine),
@@ -3367,6 +3502,13 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text())),
             },
+            Command::SetRecordSeparately { id, enabled } => {
+                match self.set_record_separately(id, enabled) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
             Command::SetSourceCaptureRegion { id, region } => {
                 match self.set_capture_region(id, region) {
                     Ok(true) => self.apply(notify),
@@ -4152,6 +4294,14 @@ impl Host {
                 stopped += 1;
             }
         }
+        // Separate files without their master: a start that panicked half-way, or a
+        // master that is no longer tracked.
+        if self.outs[slot(OutputCanvas::Main)].recording.is_none() {
+            self.iso = None;
+        }
+        if self.iso.is_none() && self.studio.iso_audio_running() {
+            let _ = rbs_crash::contain(|| self.studio.stop_iso_audio());
+        }
         #[cfg(feature = "fault-injection")]
         notify(Update::Recovered { stopped });
         let _ = stopped;
@@ -4241,6 +4391,8 @@ impl Host {
         self.restore_vertical();
         // The replay buffer keeps its place: it is armed again in the new studio.
         self.rearm_replay(&|_| {});
+        // The loudness meter measures again, from scratch, in the new studio.
+        self.restore_loudness();
         Ok(())
     }
 
@@ -4258,14 +4410,140 @@ impl Host {
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()));
         }
-        if let Some(folder) = r.path.parent() {
+        if c == OutputCanvas::Main && r.iso && self.marks_separate_audio() {
+            return self.start_recording_with_tracks(c, r, profile);
+        }
+        self.start_master(c, canvas, r, &r.path, profile, None)
+    }
+
+    /// A source of the collection is marked to record its sound separately. Picture
+    /// flags are kept and written by a later step of ADR-0086.
+    fn marks_separate_audio(&self) -> bool {
+        self.collection.sources().any(|s| s.record_separately.audio)
+    }
+
+    /// The main recording with its separate audio files (ADR-0086 decisions 5 to 7):
+    /// one folder named like the file would be, holding `master.<ext>`, one file per
+    /// track and `recording.rbs.toml`. The folder is made here and must not exist, so
+    /// nothing outside it is touched. The tracks open first; any failure stops what
+    /// was opened, removes the files this start may have made and refuses the
+    /// recording. A marked source the program mix does not hear is left out and
+    /// listed in `skipped` (keeping it running is decision 8, a later step).
+    fn start_recording_with_tracks(
+        &mut self,
+        c: OutputCanvas,
+        r: &RecordRequest,
+        profile: Option<String>,
+    ) -> Result<RecordingUpdate, String> {
+        let canvas = self.output_canvas(c)?;
+        let folder = r.path.with_extension("");
+        if let Some(parent) = folder.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot make the folder {}: {e}", parent.display()))?;
+        }
+        // `create_dir`, not `create_dir_all`: it fails when the folder exists, so a
+        // folder RBS did not make is never written into or cleaned up.
+        std::fs::create_dir(&folder).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("{} already exists.", folder.display()),
+            _ => format!("Cannot make the folder {}: {e}", folder.display()),
+        })?;
+        let master_name = format!("{}.{}", rbs_record::MASTER_STEM, container_ext(r.container));
+        // Every name this start may write, for the cleanup of a refused start.
+        let mut planned: Vec<String> = rbs_record::plan(&self.collection)
+            .map(|p| {
+                p.tracks
+                    .iter()
+                    .map(|t| format!("{}.{}", t.file_name, container_ext(ContainerId::Wav)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        planned.push(master_name.clone());
+        let t0_ns = self.clock.now().as_nanos();
+        let t0_utc = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let mut start = IsoAudioStart::new(
+            rbs_transport_file::file_url(&folder),
+            ContainerId::Wav,
+            master_name.clone(),
+            t0_utc,
+            t0_ns,
+        );
+        // WAV, 24-bit PCM: an editor's format with no generation loss. A profile
+        // section for it comes with the Separate files card (ADR-0086 decision 4).
+        start.audio.codec = CodecId::Pcm;
+        start.audio.bitrate_bps = 0;
+        start.audio.bit_depth = Some(24);
+        start.skip_unheard = true;
+        let started = match self.studio.start_iso_audio(&self.adapters, &start) {
+            Ok(started) => started,
+            Err(e) => {
+                remove_recording_folder(&folder, &planned);
+                return Err(format!("The separate files could not start: {e}"));
+            }
+        };
+        let skipped: Vec<api::SkippedTrack> = started
+            .not_heard
+            .iter()
+            .map(|(source, _)| api::SkippedTrack {
+                source: source.get(),
+                role: api::TrackRole::Audio,
+                reason: api::SkipReason::NotHeard,
+            })
+            .collect();
+        let mut manifest = started.manifest;
+        // Picture tracks are not written yet, so the manifest lists only real files.
+        manifest.files.retain(|f| f.role != "video");
+        if let Err(e) = rbs_record::write_manifest(&folder, &manifest) {
+            self.studio.stop_iso_audio();
+            remove_recording_folder(&folder, &planned);
+            return Err(format!("{e}."));
+        }
+        let tracks = manifest
+            .files
+            .iter()
+            .filter(|f| f.role == "audio")
+            .filter_map(|f| {
+                f.source.map(|source| api::RecordTrack {
+                    file: f.file_name.clone(),
+                    role: api::TrackRole::Audio,
+                    source: source.get(),
+                })
+            })
+            .collect();
+        let iso = IsoFiles {
+            tracks,
+            skipped,
+            manifest: manifest.clone(),
+            folder: folder.clone(),
+        };
+        let master = folder.join(&master_name);
+        let result = self.start_master(c, canvas, r, &master, profile, Some(iso));
+        if result.is_err() {
+            self.studio.stop_iso_audio();
+            remove_recording_folder(&folder, &planned);
+        }
+        result
+    }
+
+    /// Starts the recording of `c` into `path` with `r`'s settings.
+    fn start_master(
+        &mut self,
+        c: OutputCanvas,
+        canvas: Option<CanvasId>,
+        r: &RecordRequest,
+        path: &Path,
+        profile: Option<String>,
+        iso: Option<IsoFiles>,
+    ) -> Result<RecordingUpdate, String> {
+        if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)
                 .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
         }
-        if r.path.exists() {
-            return Err(format!("{} already exists.", r.path.display()));
+        if path.exists() {
+            return Err(format!("{} already exists.", path.display()));
         }
-        let mut out = OutputSettings::new(rbs_transport_file::file_url(&r.path), r.container);
+        let mut out = OutputSettings::new(rbs_transport_file::file_url(path), r.container);
         out.canvas = canvas;
         out.video = r.video.clone();
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
@@ -4289,13 +4567,27 @@ impl Host {
         out.size = if r.video.is_none() { None } else { r.size };
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
+        let separate: Vec<String> = iso
+            .as_ref()
+            .map(|f| {
+                f.tracks
+                    .iter()
+                    .filter_map(|t| {
+                        self.collection
+                            .source(SourceId::from_raw(t.source))
+                            .map(|s| s.name.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let started = started.map(|(id, video_encoder, audio_encoder)| {
             (
                 id,
                 RecordingUpdate::Started {
-                    path: r.path.clone(),
+                    path: path.to_path_buf(),
                     video_encoder,
                     audio_encoder,
+                    separate,
                 },
             )
         });
@@ -4308,18 +4600,42 @@ impl Host {
             },
         )) = &started
         {
-            self.outs[slot(c)].recording = Some((r.path.clone(), *id));
+            self.outs[slot(c)].recording = Some((path.to_path_buf(), *id));
+            // Markers count from the separate files' `t0`, or from now for one file.
+            let (t0_ns, t0_utc) = iso.as_ref().map_or_else(
+                || {
+                    (
+                        self.clock.now().as_nanos(),
+                        chrono::Utc::now()
+                            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                            .to_string(),
+                    )
+                },
+                |f| (f.manifest.t0_ns, f.manifest.t0_utc.clone()),
+            );
+            self.outs[slot(c)].markers = RecordingMarkers::new(path, t0_ns, t0_utc, iso.as_ref());
+            // Tracked together with the master, after the last panic point of the
+            // start, so recovery never finds files without their master (ADR-0055).
+            let (tracks, skipped) = iso
+                .as_ref()
+                .map(|f| (f.tracks.clone(), f.skipped.clone()))
+                .unwrap_or_default();
+            if c == OutputCanvas::Main {
+                self.iso = iso;
+            }
             self.set_record_state(
                 c,
                 api::RecordState::Recording {
                     profile,
                     video_encoder: video_encoder.clone(),
                     audio_encoder: audio_encoder.clone(),
+                    tracks,
+                    skipped,
                 },
             );
-        } else if std::fs::metadata(&r.path).is_ok_and(|m| m.len() == 0) {
+        } else if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
             // The output may have made the file before a later node failed.
-            let _ = std::fs::remove_file(&r.path);
+            let _ = std::fs::remove_file(path);
         }
         started.map(|(_, update)| update)
     }
@@ -4364,6 +4680,76 @@ impl Host {
             ));
         }
         Ok(c)
+    }
+
+    /// `marker.add` (ADR-0089 decisions 1 and 11): a manual marker in every running
+    /// recording `p.canvas` names (absent: all). Checked on every target before any
+    /// marker is added, so a refusal adds none.
+    fn add_marker(
+        &mut self,
+        p: &rbs_api::request::MarkerAdd,
+    ) -> Result<rbs_api::request::MarkersAdded, ApiError> {
+        let label = rbs_manifest::checked_label(p.label.as_deref())
+            .map_err(|e| ApiError::new(ErrorKind::InvalidParams, e.to_string()))?;
+        let targets: Vec<OutputCanvas> = match p.canvas.unwrap_or(api::OutputTarget::All).single() {
+            Some(one) => vec![self.api_canvas_of(Some(one))?],
+            None => OutputCanvas::ALL.to_vec(),
+        };
+        let running: Vec<OutputCanvas> = targets
+            .into_iter()
+            .filter(|c| self.outs[slot(*c)].markers.is_some())
+            .collect();
+        if running.is_empty() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "no recording is running, so there is nothing to mark",
+            ));
+        }
+        if running.iter().any(|c| {
+            self.outs[slot(*c)]
+                .markers
+                .as_ref()
+                .is_some_and(|m| m.log.markers().len() >= rbs_manifest::MAX_MARKERS)
+        }) {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                rbs_manifest::MarkerError::Full.to_string(),
+            ));
+        }
+        let now = self.clock.now().as_nanos();
+        let color = marker_color(p.color);
+        let mut markers = Vec::with_capacity(running.len());
+        for c in running {
+            let Some(state) = self.outs[slot(c)].markers.as_mut() else {
+                continue;
+            };
+            let m = state
+                .log
+                .add_manual(now, label.as_deref(), color)
+                .map_err(|e| ApiError::new(ErrorKind::Conflict, e.to_string()))?;
+            markers.push(rbs_api::request::MarkerPlaced {
+                canvas: c,
+                index: m.index,
+                t_ns: m.t_ns,
+            });
+        }
+        Ok(rbs_api::request::MarkersAdded { markers })
+    }
+
+    /// `marker.remove` (ADR-0089 decision 11).
+    fn remove_marker(&mut self, c: OutputCanvas, index: u32) -> Result<(), ApiError> {
+        let c = self.api_canvas_of(Some(c))?;
+        let Some(state) = self.outs[slot(c)].markers.as_mut() else {
+            return Err(ApiError::new(ErrorKind::Conflict, "nothing records"));
+        };
+        if state.log.remove(index) {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("the recording has no marker {index}"),
+            ))
+        }
     }
 
     /// The `seq` map of `c`'s key on a per-canvas topic.
@@ -4461,12 +4847,17 @@ impl Host {
         let o = &mut self.outs[slot(c)];
         o.ending = false;
         o.auto_recording = false;
+        let protected = o.protection_stop.take();
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
         // recording still tracked and ends it again (ADR-0055 decision 3).
         let Some((path, id)) = o.recording.clone() else {
             return;
         };
         let report = self.studio.stop_output(id);
+        // The separate files end with their master (ADR-0086 decision 5).
+        if c == OutputCanvas::Main && self.iso.take().is_some() {
+            self.studio.stop_iso_audio();
+        }
         inject!(self, Fault::InRecordingStop);
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
             (
@@ -4476,7 +4867,18 @@ impl Host {
                 r.failure,
             )
         });
-        let failure = failure.or(failed);
+        let mut failure = failure.or(failed).or(protected);
+        // The markers go into the manifest once the media is closed (ADR-0089
+        // decision 5); a failure there does not touch the media.
+        if let Some(mut markers) = self.outs[slot(c)].markers.take()
+            && let Err(e) = markers.write()
+        {
+            let why = format!("The markers could not be saved: {e}.");
+            failure = Some(match failure {
+                Some(f) => format!("{f} {why}"),
+                None => why,
+            });
+        }
         self.set_record_state(
             c,
             api::RecordState::Idle {
@@ -4533,6 +4935,7 @@ impl Host {
             audio_bitrate_bps: start.audio_bitrate_bps,
             bit_depth: start.bit_depth,
             size: start.size,
+            iso: true,
         })
     }
 
@@ -6888,6 +7291,49 @@ impl Host {
         Ok(true)
     }
 
+    /// Marks `id` to record its sound separately from the next recording on, or clears
+    /// the mark (ADR-0086 decision 2, protocol 1.46). One undo step; `Ok(false)` when
+    /// nothing changed.
+    fn set_record_separately(&mut self, id: SourceId, enabled: bool) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        // Picture files are a later step (ADR-0086 step 3) with its own minor, so 1.46
+        // marks sound only: a picture source is refused, and a source with both (a
+        // media file) records its sound. A picture mark already in the collection (saved
+        // by a later version, or edited by hand) is kept as it is when the sound mark
+        // changes, set or cleared.
+        let flag = if !enabled {
+            RecordSeparately::new(source.record_separately.video, false)
+        } else {
+            match types::class_of(&source.type_id) {
+                Some(
+                    types::SourceClass::Capture(_)
+                    | types::SourceClass::Still
+                    | types::SourceClass::Browser,
+                ) => {
+                    return Err(Refusal::Invalid(
+                        "Only sound sources record separately for now; picture files come in a later version."
+                            .into(),
+                    ));
+                }
+                _ => RecordSeparately::new(source.record_separately.video, true),
+            }
+        };
+        if source.record_separately == flag {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_source_record_separately(id, flag)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::RecordSeparately, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     /// Places the edited scene's item for `id` using the visible picture size
     /// (region ∩ crop). `None` when size or canvas is unknown.
     fn fit_item_to_visible(
@@ -7233,6 +7679,134 @@ impl Host {
         Ok(true)
     }
 
+    /// A scene the Scenes panel lists, by name, for the scene levels methods; a global
+    /// scene is never listed (ADR-0065).
+    fn levels_scene(&self, id: SceneId) -> Result<String, Refusal> {
+        self.collection
+            .scene(id)
+            .filter(|_| self.listed(id))
+            .map(|s| s.name.clone())
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))
+    }
+
+    /// Turns a scene's Own levels on (ADR-0091 decision 5), copying what every source
+    /// it places is heard at now, so nothing jumps. One undo step. `Ok(false)` when it
+    /// is in Own levels already.
+    fn scene_levels_own(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if self.collection.scene(id).is_some_and(Scene::own_levels) {
+            return Ok(false);
+        }
+        let levels = self.collection.heard_levels(self.canvas, id);
+        let undo = self
+            .collection
+            .set_scene_own_levels(id, levels)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Puts a scene back in Shared levels, discarding its entries (ADR-0091). One undo
+    /// step. `Ok(false)` when it is in Shared levels already.
+    fn scene_levels_shared(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if !self.collection.scene(id).is_some_and(Scene::own_levels) {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_scene_shared_levels(id)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Removes a scene's entry for one source (ADR-0091): one undo step. `Ok(false)`
+    /// when the scene has no entry for it (or is in Shared levels).
+    fn scene_level_reset(&mut self, id: SceneId, source: SourceId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if self.collection.source(source).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no source {}.",
+                source.get()
+            )));
+        }
+        let has = self
+            .collection
+            .scene(id)
+            .and_then(|s| s.audio.as_ref())
+            .is_some_and(|a| a.level(source).is_some());
+        if !has {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_scene_level(id, source, None)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        if self.on_air(id) {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok(true)
+    }
+
+    /// A scene's own volume or mute for a source (ADR-0091): a live control, not on
+    /// the undo stack, sent to the mixer at once while the scene is on air. A scene in
+    /// Shared levels is turned to Own levels first, as one undo step. Answers whether
+    /// that happened and whether anything changed.
+    fn scene_level_set(
+        &mut self,
+        id: SceneId,
+        source: SourceId,
+        volume: Option<f32>,
+        muted: Option<bool>,
+    ) -> Result<(bool, bool), Refusal> {
+        self.levels_scene(id)?;
+        if self.collection.source(source).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no source {}.",
+                source.get()
+            )));
+        }
+        if volume.is_none() && muted.is_none() {
+            return Err(Refusal::Invalid(
+                "Give a volume, a mute or both.".to_owned(),
+            ));
+        }
+        let level = SceneLevel::new(volume, muted);
+        if !level.is_valid() {
+            return Err(Refusal::of(&SceneError::InvalidVolume));
+        }
+        let turned_own = self.scene_levels_own(id)?;
+        let now = self
+            .collection
+            .scene(id)
+            .and_then(|s| s.audio.as_ref())
+            .and_then(|a| a.level(source).copied());
+        let base = now.unwrap_or_default();
+        let new = SceneLevel::new(volume.or(base.volume), muted.or(base.muted));
+        let changed = now != Some(new);
+        if changed {
+            // Live: the record is not kept (ADR-0059, ADR-0091 decision 5).
+            let _ = self
+                .collection
+                .set_scene_level(id, source, Some(new))
+                .map_err(|e| Refusal::of(&e))?;
+        }
+        if (changed || turned_own) && self.on_air(id) {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok((turned_own, changed || turned_own))
+    }
+
+    /// True while `id` is the studio canvas's program scene, whose levels are heard.
+    fn on_air(&self, id: SceneId) -> bool {
+        self.scene == id
+    }
+
     /// The preview scene while the canvas is in studio mode (ADR-0061).
     fn preview(&self) -> Option<SceneId> {
         self.collection.canvas(self.canvas).and_then(|c| c.preview)
@@ -7403,6 +7977,7 @@ impl Host {
                 kind: SourceKind::of(&s.type_id),
                 global: self.global_item(s.id).is_some(),
                 glide: s.glide,
+                record_separately: s.record_separately.audio,
             })
             .collect();
         sources.sort_by_key(|s| s.name.to_lowercase());
@@ -7414,6 +7989,7 @@ impl Host {
                 .map(|s| SceneRow {
                     id: s.id,
                     name: s.name.clone(),
+                    own_audio: s.own_levels(),
                 })
                 .collect(),
             program: self.scene,
@@ -8199,6 +8775,8 @@ impl Host {
                     id: s.id,
                     item: item.id,
                     companion_of: s.companion_of(),
+                    // 1.46 writes sound files only, so only a sound mark is shown as marked.
+                    record_separately: s.record_separately.audio,
                     name: s.name.clone(),
                     kind,
                     layout: kind
@@ -8218,6 +8796,11 @@ impl Host {
                     active: !s.standby(),
                     locked: item.locked,
                     audio: s.audio,
+                    heard: self
+                        .collection
+                        .program_levels(self.canvas)
+                        .and_then(|l| l.level(s.id))
+                        .map(|l| l.over(s.audio)),
                     filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
                     status,
                     global,
@@ -8571,6 +9154,73 @@ impl ApiTarget<'_> {
                 host.apply(notify);
                 Ok(Response::SceneAdded(SceneAdded { scene: id.get() }))
             }
+            C::SceneAudioGet(p) => {
+                let id = SceneId::from_raw(p.scene);
+                host.levels_scene(id).map_err(|e| refused(&e))?;
+                let audio = host.collection.scene(id).and_then(|s| s.audio.as_ref());
+                Ok(Response::SceneLevels(rbs_api::request::SceneLevels {
+                    scene: p.scene,
+                    own: audio.is_some(),
+                    levels: audio
+                        .map(|a| {
+                            a.levels
+                                .iter()
+                                .map(|(source, l)| rbs_api::request::SceneLevelInfo {
+                                    source: source.get(),
+                                    volume: l.volume,
+                                    muted: l.muted,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }))
+            }
+            C::SceneAudioSet(p) => {
+                let (turned_own, changed) = host
+                    .scene_level_set(
+                        SceneId::from_raw(p.scene),
+                        SourceId::from_raw(p.source),
+                        p.volume,
+                        p.muted,
+                    )
+                    .map_err(|e| refused(&e))?;
+                if turned_own {
+                    // An undo step: saved and on the history like any edit.
+                    host.apply(notify);
+                } else if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::SceneLevelSet(rbs_api::request::SceneLevelSet {
+                    turned_own,
+                }))
+            }
+            C::SceneAudioOwn(p) => {
+                if host
+                    .scene_levels_own(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneAudioShared(p) => {
+                if host
+                    .scene_levels_shared(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneAudioResetSource(p) => {
+                if host
+                    .scene_level_reset(SceneId::from_raw(p.scene), SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::SceneSources(p) => {
                 let id = SceneId::from_raw(p.scene);
                 if !host.listed(id) {
@@ -8682,6 +9332,15 @@ impl ApiTarget<'_> {
             }
             C::MonitorSetSolo(p) => {
                 host.set_monitor_solo(&p.sources).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::LoudnessStatus => Ok(Response::LoudnessStatus(host.api_loudness())),
+            C::LoudnessSetEnabled(p) => {
+                host.set_loudness_enabled(p.on).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::LoudnessReset => {
+                host.reset_loudness().map_err(|e| refused(&e))?;
                 Ok(Response::Done(Empty {}))
             }
             C::SourceSetMixerHidden(p) => {
@@ -9218,9 +9877,9 @@ impl ApiTarget<'_> {
                     Some(one) => {
                         let c = host.api_canvas_of(Some(one))?;
                         let path = host.recording_file(c);
-                        self.record(c, path, false)
+                        self.record(c, path, false, p.iso.unwrap_or(true))
                     }
-                    None => self.start_all(api::OutputKind::Record),
+                    None => self.start_all(api::OutputKind::Record, p.iso.unwrap_or(true)),
                 }
             }
             C::RecordStartToFile(p) => {
@@ -9233,7 +9892,7 @@ impl ApiTarget<'_> {
                         format!("{} is not a full path", p.path),
                     ));
                 }
-                self.record(c, path, true)
+                self.record(c, path, true, false)
             }
             C::RecordStop(p) => {
                 let Some(one) = p.target().single() else {
@@ -9245,6 +9904,11 @@ impl ApiTarget<'_> {
                 }
                 host.stop_recording(c, None, notify);
                 host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::MarkerAdd(p) => host.add_marker(&p).map(Response::MarkersAdded),
+            C::MarkerRemove(p) => {
+                host.remove_marker(p.canvas, p.index)?;
                 Ok(Response::Done(Empty {}))
             }
             C::RecordStatus(p) => {
@@ -9266,7 +9930,7 @@ impl ApiTarget<'_> {
             }
             C::StreamStart(p) => {
                 let Some(one) = p.target().single() else {
-                    return self.start_all(api::OutputKind::Stream);
+                    return self.start_all(api::OutputKind::Stream, false);
                 };
                 let c = host.api_canvas_of(Some(one))?;
                 self.stream(c)
@@ -9365,6 +10029,10 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::ProtectionStatus => Ok(Response::ProtectionStatus(api::Snapshot {
+                seq: host.events.seq_map([Topic::ProtectionChanged]),
+                data: host.api_protection(),
+            })),
             C::ReplayStatus => Ok(Response::ReplayStatus(api::Snapshot {
                 // The state as it is now, so the data and its `seq` match.
                 seq: {
@@ -9563,6 +10231,15 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceSetRecordSeparately(p) => {
+                if host
+                    .set_record_separately(SourceId::from_raw(p.source), p.enabled)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::SourceGetRegion(p) => {
                 let source = host
                     .collection
@@ -9658,6 +10335,7 @@ impl ApiTarget<'_> {
         c: OutputCanvas,
         path: PathBuf,
         explicit: bool,
+        iso: bool,
     ) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
@@ -9684,10 +10362,11 @@ impl ApiTarget<'_> {
                 "a recording is already running",
             ));
         }
-        let request = host.profile_request(c, path).map_err(|why| match c {
+        let mut request = host.profile_request(c, path).map_err(|why| match c {
             OutputCanvas::Main => failed(why),
             OutputCanvas::Vertical => failed(format!("the vertical recording: {why}")),
         })?;
+        request.iso = iso;
         let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
         let result = host.start_recording(c, &request, profile);
         host.publish(notify);
@@ -9717,7 +10396,7 @@ impl ApiTarget<'_> {
     /// `record.start` or `stream.start` with `canvas: "all"` (ADR-0111 decision 3): the
     /// main canvas first, whose refusal fails the call; then the vertical one, whose
     /// refusal is only its entry. One step on the control thread.
-    fn start_all(&mut self, kind: api::OutputKind) -> Result<Response, ApiError> {
+    fn start_all(&mut self, kind: api::OutputKind, iso: bool) -> Result<Response, ApiError> {
         let mut outputs = Vec::new();
         for c in self.host.output_canvases() {
             let out = &self.host.outs[slot(c)];
@@ -9760,7 +10439,7 @@ impl ApiTarget<'_> {
             let started = match kind {
                 api::OutputKind::Record => {
                     let path = self.host.recording_file(c);
-                    self.record(c, path, false)
+                    self.record(c, path, false, iso)
                 }
                 api::OutputKind::Stream => self.stream(c),
             };
@@ -10108,9 +10787,14 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         mixer_hidden: row.audio.mixer_hidden,
         monitor: monitor::api_mode(row.audio.monitor),
         companion_of: row.companion_of.map(|c| c.get()),
+        record_separately: row.record_separately,
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         glide: row.glide.map(api_glide_source),
+        heard: row.heard.map(|h| api::Heard {
+            volume: h.volume,
+            muted: h.muted,
+        }),
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),
@@ -10171,6 +10855,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             .map(|s| api::SceneInfo {
                 id: s.id.get(),
                 name: s.name.clone(),
+                own_audio: s.own_audio,
             })
             .collect(),
         program: list.program.get(),
@@ -10409,7 +11094,11 @@ fn run_copy(
         })
         .collect();
     let mut scenes: Vec<Scene> = collection.scenes().cloned().collect();
-    scenes.push(held.scene.clone());
+    // Scene levels are not held (ADR-0091 decision 3): the copy on air carries the real
+    // scene's levels as they are now, like the sources' own volume and mute.
+    let mut copy = held.scene.clone();
+    copy.audio = collection.scene(held.from).and_then(|s| s.audio.clone());
+    scenes.push(copy);
     SceneCollection::from_parts(
         canvases,
         collection.sources().cloned().collect(),
@@ -10427,6 +11116,35 @@ fn run_copy_or(
     held: Option<&Held>,
 ) -> Option<SceneCollection> {
     run_copy(collection, canvas, held?)
+}
+
+/// A container's file extension.
+fn container_ext(container: ContainerId) -> &'static str {
+    match container {
+        ContainerId::Matroska => "mkv",
+        ContainerId::Mp4Fragmented => "mp4",
+        ContainerId::MpegTs => "ts",
+        ContainerId::Flv => "flv",
+        ContainerId::Wav => "wav",
+        ContainerId::Flac => "flac",
+        ContainerId::Mov => "mov",
+        _ => "bin",
+    }
+}
+
+/// Removes what a refused start left in the recording folder it made: the named files,
+/// the manifest and its temporary file, then the folder when nothing else is in it.
+/// A delete that fails is left for the user (the start already answers `failed`).
+fn remove_recording_folder(folder: &Path, names: &[String]) {
+    const MANIFEST_FILE: &str = "recording.rbs.toml";
+    for name in names
+        .iter()
+        .map(String::as_str)
+        .chain([MANIFEST_FILE, &format!(".{MANIFEST_FILE}.tmp")])
+    {
+        let _ = std::fs::remove_file(folder.join(name));
+    }
+    let _ = std::fs::remove_dir(folder);
 }
 
 #[cfg(test)]

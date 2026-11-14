@@ -467,6 +467,17 @@ impl SceneBinder {
         self.state.sources.get(&id).map(|b| b.source.node)
     }
 
+    /// The last node of a bound source's chain: its last enabled filter, or the source
+    /// node itself when it has none, and whether that node is a filter. A filter
+    /// publishes the canvas format (ADR-0062 decision 4); a source node may publish an
+    /// 8-bit RGB picture. Separate video files read from here (ADR-0086 decision 3).
+    pub fn chain_tail(&self, id: SourceId) -> Option<(NodeId, bool)> {
+        self.state
+            .sources
+            .get(&id)
+            .map(|b| (b.tail().node, !b.chain.is_empty()))
+    }
+
     /// The node of a bound filter.
     pub fn filter_node(&self, source: SourceId, id: FilterId) -> Option<NodeId> {
         self.state

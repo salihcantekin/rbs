@@ -5,7 +5,7 @@
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
-import { BrandMark, Icon, IconName, Icons, MenuSurface, FocusRing, RingFocus, OverlayCover } from "components.slint";
+import { ScrollArea, Button, Icon, IconName, Icons, ListRow, MenuSurface, OverlayCover } from "components.slint";
 
 // One row of the item column. kind: 1 command, 2 section heading, 3 separator,
 // 4 picker (opens its choices), 5 back (from a picker's choices).
@@ -90,89 +90,48 @@ component CategoryRow inherits Rectangle {
     }
 }
 
-// A row of the item column.
+// A row of the item column: a ListRow on the menu's overlay surface (owner decision
+// 2026-11-13). The menu moves the current row with the keys, so the row takes no
+// focus of its own.
 component ItemRow inherits Rectangle {
     in property <AppMenuRow> data;
     in property <bool> current;
     callback hovered();
     callback activated();
-    property <color> ink: !data.enabled ? Theme.text-disabled : current ? Theme.text-inverse : Theme.text-primary;
-    property <color> soft: !data.enabled ? Theme.text-disabled : current ? Theme.text-inverse : Theme.text-secondary;
-    height: Tokens.size-control-md;
-    border-radius: Tokens.radius-sm;
-    // A disabled row can be the current one (its reason shows below): a quieter fill.
-    background: !current ? transparent : data.enabled ? Theme.accent : Theme.surface-raised;
-    accessible-role: button;
-    accessible-label: data.kind == 4 && data.value != "" ? @tr("{}: {}", data.title, data.value) : data.title;
-    accessible-description: data.reason;
-    accessible-checkable: data.checkable;
-    accessible-checked: data.checked;
-    accessible-enabled: data.enabled;
-    accessible-action-default => { if data.enabled { activated(); } }
-    // Enabled even for a disabled row: hovering makes it current, so its reason shows.
-    TouchArea {
-        changed has-hover => { if self.has-hover { root.hovered(); } }
-        clicked => { if data.enabled { root.activated(); } }
-    }
-    HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
-        spacing: Tokens.space-2;
+    height: row.height;
+    row := ListRow {
+        width: parent.width;
+        selectable: false;
+        on-overlay: true;
+        has-icon: true;
+        // A checked item shows its checkmark in its icon's place (spec, "Icons").
+        icon: data.kind == 5 ? IconName.chevron-left : data.checked ? IconName.check : Icons.named(data.icon);
+        icon-ink: !data.enabled ? Theme.text-disabled : data.checked ? Theme.accent : Theme.text-primary;
+        name: data.title;
+        note: data.value != "" ? data.value : data.shortcut;
+        note-beside: true;
+        // A disabled row can still be the current one (its reason shows below), so it
+        // keeps the pointer: hovering makes it current.
+        dimmed: !data.enabled;
+        selected: root.current;
+        accessible-name: data.kind == 4 && data.value != "" ? @tr("{}: {}", data.title, data.value) : data.title;
+        accessible-hint: data.reason;
+        changed hovered => { if self.hovered { root.hovered(); } }
+        activated => { if data.enabled { root.activated(); } }
         VerticalLayout {
             alignment: center;
             width: Tokens.size-icon-box;
-            // A checked item shows its checkmark in its icon's place (spec, "Icons").
-            Icon {
-                name: data.kind == 5 ? IconName.chevron-left : data.checked ? IconName.check : Icons.named(data.icon);
-                ink: data.checked && !current && data.enabled ? Theme.accent : root.ink;
-            }
-        }
-        Text {
-            text: data.title;
-            color: root.ink;
-            font-size: Tokens.type-body-size;
-            vertical-alignment: center;
-            overflow: elide;
-            horizontal-stretch: 1;
-        }
-        if data.value != "" || data.shortcut != "": Text {
-            text: data.value != "" ? data.value : data.shortcut;
-            color: root.soft;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-        }
-        VerticalLayout {
-            alignment: center;
-            width: Tokens.size-icon-box;
-            Icon { name: data.kind == 4 ? IconName.chevron-right : IconName.none; ink: root.soft; }
+            Icon { name: data.kind == 4 ? IconName.chevron-right : IconName.none; ink: Theme.text-secondary; }
         }
     }
 }
 
-// A chip in the bottom row: an Output profile.
-component Chip inherits Rectangle {
-    in property <string> text;
+// A chip in the bottom row: an Output profile, a dense Button checked while in use.
+component Chip inherits Button {
     in property <bool> current;
-    callback clicked();
-    height: Tokens.size-control-sm;
-    width: label.preferred-width + 2 * Tokens.space-2;
-    border-radius: self.height / 2;
-    border-width: Tokens.size-border;
-    border-color: current ? Theme.accent : Theme.border-strong;
-    background: touch.has-hover ? Theme.surface-raised : transparent;
-    accessible-role: button;
-    accessible-label: @tr("Output profile {}", text);
-    accessible-checked: current;
-    accessible-action-default => { clicked(); }
-    touch := TouchArea { clicked => { root.clicked(); } }
-    label := Text {
-        text: root.text;
-        color: root.current ? Theme.text-primary : Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        font-weight: Tokens.type-label-weight;
-        vertical-alignment: center;
-        horizontal-alignment: center;
-    }
+    dense: true;
+    checked: current;
+    accessible-name: @tr("Output profile {}", self.text);
 }
 
 // The flyout. The owner places it under the RBS button and shows it.
@@ -219,11 +178,7 @@ export component AppMenu inherits Rectangle {
     }
     // Scrolls the item column so a row at `y` (`h` high) is in view.
     function reveal(y: length, h: length) {
-        if y + item-list.content-y < 0 {
-            item-list.content-y = -y;
-        } else if y + h + item-list.content-y > item-list.height {
-            item-list.content-y = item-list.height - y - h;
-        }
+        item-list.scroll-into-view(y, h);
     }
     function move(step: int) {
         if column == 1 {
@@ -350,11 +305,13 @@ export component AppMenu inherits Rectangle {
                         }
                     }
                     if query.text == "": Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
-                    item-list := Flickable {
+                    item-list := ScrollArea {
                         height: min(rows.preferred-height, Tokens.size-app-menu-list-h);
                         content-height: rows.preferred-height;
                         rows := VerticalLayout {
                             padding: Tokens.space-1;
+                            // The bar sits in the trailing padding (ScrollArea).
+                            padding-right: max(0px, Tokens.space-1 - item-list.bar-room);
                             spacing: Tokens.size-border;
                             alignment: start;
                             accessible-role: list;
@@ -428,26 +385,15 @@ export component AppMenu inherits Rectangle {
                         }
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    settings := Rectangle {
-                        width: srow.preferred-width;
-                        border-radius: Tokens.radius-sm;
-                        background: stouch.has-hover ? Theme.surface-raised : transparent;
-                        accessible-role: button;
-                        accessible-label: @tr("Settings");
-                        accessible-action-default => { AppMenus.run("ui.settings.open"); AppMenus.open = false; }
-                        stouch := TouchArea { clicked => { AppMenus.run("ui.settings.open"); AppMenus.open = false; } }
-                        srow := HorizontalLayout {
-                            padding-left: Tokens.space-2;
-                            padding-right: Tokens.space-2;
-                            spacing: Tokens.space-2;
-                            VerticalLayout { alignment: center; Icon { name: IconName.gear; ink: Theme.text-secondary; } }
-                            Text { text: @tr("Settings"); color: Theme.text-secondary; font-size: Tokens.type-caption-size; vertical-alignment: center; }
-                            if AppMenus.settings-shortcut != "": Text {
-                                text: AppMenus.settings-shortcut;
-                                color: Theme.text-secondary;
-                                font-size: Tokens.type-caption-size;
-                                vertical-alignment: center;
-                            }
+                    VerticalLayout {
+                        alignment: center;
+                        Button {
+                            kind: "ghost";
+                            dense: true;
+                            lead: IconName.gear;
+                            text: @tr("Settings");
+                            hint: AppMenus.settings-shortcut;
+                            clicked => { AppMenus.run("ui.settings.open"); AppMenus.open = false; }
                         }
                     }
                 }
@@ -456,39 +402,12 @@ export component AppMenu inherits Rectangle {
     }
 }
 
-// The RBS button at the start of the toolbar row: opens the RBS menu.
-export component AppMenuButton inherits Rectangle {
-    callback clicked();
-    width: row.preferred-width;
-    height: Tokens.size-control-md;
-    border-radius: Tokens.radius-sm;
-    border-width: Tokens.size-border;
-    border-color: Theme.border-subtle;
-    background: touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
-    accessible-role: button;
-    accessible-label: @tr("RBS menu");
-    accessible-description: @tr("Every command, with search");
-    accessible-action-default => { clicked(); }
-    forward-focus: focus;
-    focus := RingFocus {
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { root.clicked(); return accept; }
-            reject
-        }
-    }
-    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
-    row := HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-3;
-        spacing: Tokens.space-2;
-        VerticalLayout { alignment: center; BrandMark { ground: touch.has-hover ? Theme.surface-overlay : Theme.surface-raised; } }
-        Text {
-            text: "RBS";
-            color: Theme.text-primary;
-            font-size: Tokens.type-body-size;
-            font-weight: Tokens.type-title-weight;
-            vertical-alignment: center;
-        }
-    }
-    FocusRing { show: focus.ring; }
+// The RBS button at the start of the toolbar row: opens the RBS menu (a library
+// Button in its menu form, with the app's mark).
+export component AppMenuButton inherits Button {
+    brand: true;
+    menu: true;
+    text: "RBS";
+    accessible-name: @tr("RBS menu");
+    description: @tr("Every command, with search");
 }

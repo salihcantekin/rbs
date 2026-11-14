@@ -372,3 +372,170 @@ fn a_clicked_button_does_not_keep_its_tooltip() {
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
     assert!(!o.get_tip_shown() && !o.get_tip_waiting());
 }
+
+#[test]
+fn tab_into_a_row_below_the_view_shows_the_whole_row() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::FocusRevealProbe::new().expect("the probe window");
+    p.show().expect("show");
+    p.invoke_focus_first();
+    settle();
+    assert_eq!(p.get_offset(), 0.0, "the first row is in view");
+    let s: slint::SharedString = Key::Tab.into();
+    p.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: s.clone() });
+    p.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: s });
+    settle();
+    let shown_to = p.get_offset() + p.get_view_height();
+    assert!(
+        shown_to >= p.get_row_bottom(),
+        "the row's help is in view: shown to {shown_to}, row ends at {}",
+        p.get_row_bottom()
+    );
+}
+
+#[test]
+fn a_setting_rows_hint_shows_only_while_the_pointer_is_over_the_row_or_it_has_focus() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::SettingRowProbe::new().expect("the probe window");
+    p.show().expect("show");
+    let at = |x: f32, y: f32| {
+        p.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(x, y),
+        });
+        settle();
+    };
+    assert!(!p.get_hint_shown(), "no (i) before the pointer comes");
+    at(20.0, 20.0);
+    assert!(p.get_hint_shown(), "over the name");
+    at(385.0, 28.0);
+    assert!(p.get_hint_shown(), "over the switch at the other end");
+    at(200.0, 180.0);
+    assert!(!p.get_hint_shown(), "gone once the pointer leaves the row");
+    // Tab reaches the (i) though it is not drawn, and then shows it.
+    let s: slint::SharedString = Key::Tab.into();
+    p.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: s.clone() });
+    p.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: s });
+    settle();
+    assert!(p.get_hint_shown(), "keyboard focus on the (i)");
+}
+
+fn number_probe() -> rbs_app_ui::NumberFieldProbe {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::NumberFieldProbe::new().expect("the probe window");
+    p.show().expect("show");
+    p
+}
+
+fn press(w: &slint::Window, x: f32, y: f32) {
+    w.dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(x, y),
+    });
+    w.dispatch_event(WindowEvent::PointerPressed {
+        position: slint::LogicalPosition::new(x, y),
+        button: slint::platform::PointerEventButton::Left,
+    });
+}
+
+fn drag_to(w: &slint::Window, x: f32, y: f32) {
+    w.dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(x, y),
+    });
+}
+
+fn release(w: &slint::Window, x: f32, y: f32) {
+    w.dispatch_event(WindowEvent::PointerReleased {
+        position: slint::LogicalPosition::new(x, y),
+        button: slint::platform::PointerEventButton::Left,
+    });
+    settle();
+}
+
+#[test]
+fn dragging_a_number_field_changes_it_once_on_release() {
+    let p = number_probe();
+    let w = p.window();
+    press(w, 50.0, 14.0);
+    // 20 px right and 4 px up at 4 px a step: six steps.
+    drag_to(w, 60.0, 12.0);
+    drag_to(w, 70.0, 10.0);
+    assert_eq!(p.get_edits(), 0, "nothing applies during the drag");
+    release(w, 70.0, 10.0);
+    assert_eq!(p.get_edits(), 1, "one change for the whole drag");
+    assert_eq!(p.get_value(), 16.0);
+    // Left lowers it.
+    press(w, 50.0, 14.0);
+    drag_to(w, 42.0, 14.0);
+    release(w, 42.0, 14.0);
+    assert_eq!(p.get_value(), 14.0);
+}
+
+#[test]
+fn escape_during_a_drag_keeps_the_value() {
+    let p = number_probe();
+    let w = p.window();
+    press(w, 50.0, 14.0);
+    drag_to(w, 90.0, 14.0);
+    key_on(w, Key::Escape);
+    drag_to(w, 120.0, 14.0);
+    release(w, 120.0, 14.0);
+    assert_eq!(p.get_edits(), 0);
+    assert_eq!(p.get_value(), 10.0);
+}
+
+#[test]
+fn a_click_without_moving_types_instead_of_dragging() {
+    let p = number_probe();
+    let w = p.window();
+    press(w, 50.0, 14.0);
+    drag_to(w, 51.0, 14.0);
+    release(w, 51.0, 14.0);
+    assert_eq!(p.get_edits(), 0);
+    // The value is selected: typing replaces it, Return applies it.
+    w.dispatch_event(WindowEvent::KeyPressed { text: "7".into() });
+    w.dispatch_event(WindowEvent::KeyReleased { text: "7".into() });
+    key_on(w, Key::Return);
+    assert_eq!(p.get_edits(), 1);
+    assert_eq!(p.get_value(), 7.0);
+}
+
+fn key_on(w: &slint::Window, k: Key) {
+    let s: slint::SharedString = k.into();
+    w.dispatch_event(WindowEvent::KeyPressed { text: s.clone() });
+    w.dispatch_event(WindowEvent::KeyReleased { text: s });
+    settle();
+}
+
+#[test]
+fn a_changed_setting_resets_from_its_button_or_a_double_click_on_the_name() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::SettingRowProbe::new().expect("the probe window");
+    p.show().expect("show");
+    let w = p.window();
+    assert!(!p.get_reset_shown(), "no reset at the default");
+    p.set_changed(true);
+    settle();
+    assert!(p.get_reset_shown(), "a changed value shows it");
+    // The button sits just before the switch at the trailing end.
+    let click = |x: f32, y: f32| {
+        press(w, x, y);
+        release(w, x, y);
+    };
+    click(345.0, 28.0);
+    assert_eq!(p.get_resets(), 1, "the reset button");
+    assert!(!p.get_reset_shown());
+    // A double-click on the name resets too.
+    p.set_changed(true);
+    settle();
+    click(20.0, 20.0);
+    click(20.0, 20.0);
+    assert_eq!(p.get_resets(), 2, "a double-click on the name");
+    // Too narrow for the button: none, the double-click still works.
+    p.set_row_width(200.0);
+    p.set_changed(true);
+    settle();
+    assert!(!p.get_reset_shown(), "no room in a stacked row");
+}

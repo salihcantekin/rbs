@@ -350,6 +350,22 @@ fn rules_across_tokens() {
         fails_at(&theme, "size.section.gap"),
         "field gap <= section gap"
     );
+    // ADR-0118: the icon fits the button chip, the chip a dense button, and the button
+    // corner at most half a dense button.
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme.length.insert("size.button.chip".into(), 12.0);
+    assert!(fails_at(&theme, "size.button.chip"), "icon box <= chip");
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme.length.insert("size.button.chip".into(), 30.0);
+    assert!(fails_at(&theme, "size.control.sm"), "chip <= control.sm");
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme.length.insert("radius.button".into(), 20.0);
+    assert!(
+        fails_at(&theme, "radius.button"),
+        "radius <= control.sm / 2"
+    );
+    theme.length.insert("radius.button".into(), 12.0);
+    assert!(problems(&theme).is_empty(), "{:?}", problems(&theme));
     // The tab indicator is not themeable.
     let mut theme = ThemeBody::new(Base::Dark);
     theme.length.insert("size.tab.indicator".into(), 3.0);
@@ -678,4 +694,14 @@ fn only_contrast_warnings_have_a_suggested_colour() {
             assert_eq!(c.a, 255, "{name}");
         }
     }
+}
+
+#[test]
+fn secondary_buttons_keep_an_outline_where_the_fill_does_not_separate() {
+    // ADR-0118: the Dark fill stands apart from every surface; Light and High contrast
+    // fills are too close to theirs, so those buttons keep the outline.
+    let t = tokens();
+    assert!(!t.built_in_theme(Base::Dark).button_outline());
+    assert!(t.built_in_theme(Base::Light).button_outline());
+    assert!(t.built_in_theme(Base::HighContrast).button_outline());
 }

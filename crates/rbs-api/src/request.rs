@@ -11,10 +11,10 @@ use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
     Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, FilterTypeList, Library,
-    MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputKind, OutputProfile,
-    OutputTarget, OutputsResult, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap,
-    Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
-    VcamStatus,
+    LoudnessStatus, MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputKind,
+    OutputProfile, OutputTarget, OutputsResult, ProtectionStatus, RecordState, RecordingProfile,
+    ReplayStatus, SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind,
+    StreamSettingsPatch, StreamState, StudioInfo, VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -178,6 +178,83 @@ pub struct SetSourceRegion {
     pub region: Option<[u32; 4]>,
 }
 
+/// `source.set_record_separately` (protocol 1.46, ADR-0086). One undo step. The
+/// per-track options of ADR-0086 decision 2 are later minors, so 1.46 refuses them as
+/// unknown fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetRecordSeparately {
+    /// The source's id.
+    pub source: u32,
+    /// Record it as a file of its own from the next recording on.
+    pub enabled: bool,
+}
+
+/// A marker colour (protocol 1.50, ADR-0089 decision 2): a fixed, semantic set that
+/// mirrors the recording manifest's. The app draws each from a theme token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerColor {
+    /// The default.
+    #[default]
+    Blue,
+    /// Red.
+    Red,
+    /// Orange.
+    Orange,
+    /// Yellow.
+    Yellow,
+    /// Green.
+    Green,
+    /// Purple.
+    Purple,
+}
+
+/// `marker.add` (protocol 1.50, ADR-0089): a manual marker in the running
+/// recordings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkerAdd {
+    /// One line of at most 200 characters; absent or blank is "Marker N".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Absent is `blue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<MarkerColor>,
+    /// `main`, `vertical` or `all`; absent is `all` (every running recording).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputTarget>,
+}
+
+/// `marker.remove` (protocol 1.50, ADR-0089): takes one marker back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkerRemove {
+    /// The recording's canvas.
+    pub canvas: OutputCanvas,
+    /// The marker's `index` from `marker.add`.
+    pub index: u32,
+}
+
+/// One marker `marker.add` placed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkerPlaced {
+    /// The recording's canvas.
+    pub canvas: OutputCanvas,
+    /// 1-based, in the order the recording's markers were added.
+    pub index: u32,
+    /// Position from the recording's start (`t0`), after the reaction-time offset, in
+    /// nanoseconds.
+    pub t_ns: u64,
+}
+
+/// `marker.add`'s answer: one entry per recording that got the marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkersAdded {
+    /// Main canvas first.
+    pub markers: Vec<MarkerPlaced>,
+}
+
 /// `source.get_region`'s answer (protocol 1.41).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRegionInfo {
@@ -185,6 +262,69 @@ pub struct SourceRegionInfo {
     pub source: u32,
     /// The region, or `null` for the whole picture.
     pub region: Option<[u32; 4]>,
+}
+
+/// `scene.audio.reset_source` (protocol 1.48, ADR-0091): a scene and one of the
+/// sources it may set a level for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneSourceRef {
+    /// The scene's id.
+    pub scene: u32,
+    /// The source's id.
+    pub source: u32,
+}
+
+/// `scene.audio.set` (protocol 1.48, ADR-0091): the scene's own level for a source.
+/// At least one of `volume` and `muted`; a field left out keeps what the scene has.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSceneLevel {
+    /// The scene's id.
+    pub scene: u32,
+    /// The source's id.
+    pub source: u32,
+    /// A linear factor from 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f32>,
+    /// Muted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+}
+
+/// One entry of a scene's own levels (protocol 1.48, ADR-0091); a field left out uses
+/// the source's own value.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneLevelInfo {
+    /// The source's id.
+    pub source: u32,
+    /// The scene's volume for it, a linear factor from 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f32>,
+    /// The scene's mute for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+}
+
+/// `scene.audio.get`'s answer (protocol 1.48, ADR-0091).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneLevels {
+    /// The scene's id.
+    pub scene: u32,
+    /// Own levels (`true`) or Shared levels.
+    pub own: bool,
+    /// Its entries by source id; empty in Shared levels.
+    #[serde(default)]
+    pub levels: Vec<SceneLevelInfo>,
+}
+
+/// `scene.audio.set`'s answer (protocol 1.48).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneLevelSet {
+    /// The scene was in Shared levels and this call turned it to Own levels (one undo
+    /// step, copying what was heard).
+    #[serde(default)]
+    pub turned_own: bool,
 }
 
 /// `source.set_chrome` (protocol 1.41, ADR-0104). Writes the insets and the region
@@ -530,6 +670,15 @@ pub struct SetMonitorVolume {
 pub struct SetMonitorSolo {
     /// The soloed sources; empty ends solo.
     pub sources: Vec<u32>,
+}
+
+/// `loudness.set_enabled` (protocol 1.47, ADR-0092): starts or stops the main canvas's
+/// loudness meter. Session state: a restart of the app starts with it off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetLoudnessEnabled {
+    /// Measure (true) or not.
+    pub on: bool,
 }
 
 /// `source.set_mixer_hidden` (protocol 1.14, ADR-0080).
@@ -924,6 +1073,11 @@ pub struct RecordStart {
     /// `all` records every canvas, main first (protocol 1.42).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<OutputTarget>,
+    /// Write the separate files of the sources marked to record separately (protocol
+    /// 1.46, ADR-0086). Absent or `null` is `true`. Only the main canvas's recording
+    /// has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iso: Option<bool>,
 }
 
 /// `record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every
@@ -1194,6 +1348,8 @@ pub enum Command {
     OutputSetWithVertical(SetWithVertical),
     /// `replay.status` (protocol 1.27).
     ReplayStatus,
+    /// `protection.status` (protocol 1.49, ADR-0090).
+    ProtectionStatus,
     /// `source.set_monitor` (protocol 1.30).
     SourceSetMonitor(SetSourceMonitor),
     /// `monitor.status` (protocol 1.30).
@@ -1206,6 +1362,12 @@ pub enum Command {
     MonitorSetVolume(SetMonitorVolume),
     /// `monitor.set_solo` (protocol 1.30).
     MonitorSetSolo(SetMonitorSolo),
+    /// `loudness.status` (protocol 1.47, ADR-0092).
+    LoudnessStatus,
+    /// `loudness.set_enabled` (protocol 1.47).
+    LoudnessSetEnabled(SetLoudnessEnabled),
+    /// `loudness.reset` (protocol 1.47).
+    LoudnessReset,
     /// `replay.arm` (protocol 1.27).
     ReplayArm,
     /// `replay.disarm` (protocol 1.27).
@@ -1236,6 +1398,12 @@ pub enum Command {
     SourceSetGlide(SetSourceGlide),
     /// `source.set_region` (protocol 1.41, ADR-0103).
     SourceSetRegion(SetSourceRegion),
+    /// `source.set_record_separately` (protocol 1.46, ADR-0086).
+    SourceSetRecordSeparately(SetRecordSeparately),
+    /// `marker.add` (protocol 1.50, ADR-0089).
+    MarkerAdd(MarkerAdd),
+    /// `marker.remove` (protocol 1.50, ADR-0089).
+    MarkerRemove(MarkerRemove),
     /// `source.get_region` (protocol 1.41).
     SourceGetRegion(SourceRef),
     /// `source.set_chrome` (protocol 1.41, ADR-0104).
@@ -1247,6 +1415,16 @@ pub enum Command {
     /// `source.reset_chrome` (protocol 1.41): copies insets from `work_rect`.
     /// A no-op when the adapter did not report one.
     SourceResetChrome(SourceRef),
+    /// `scene.audio.get` (protocol 1.48, ADR-0091).
+    SceneAudioGet(SceneRef),
+    /// `scene.audio.set` (protocol 1.48).
+    SceneAudioSet(SetSceneLevel),
+    /// `scene.audio.own` (protocol 1.48): Own levels, copying what is heard.
+    SceneAudioOwn(SceneRef),
+    /// `scene.audio.shared` (protocol 1.48): Shared levels, discarding the entries.
+    SceneAudioShared(SceneRef),
+    /// `scene.audio.reset_source` (protocol 1.48): removes one entry.
+    SceneAudioResetSource(SceneSourceRef),
     /// `events.subscribe`: answered on the control thread with the `seq` of the topics'
     /// state keys, read after the subscriber mask was set. The target never sees it.
     EventsSubscribe(Subscribe),
@@ -1335,12 +1513,16 @@ impl Command {
             Command::OutputSetWithVertical(_) => "output.set_with_vertical",
             Command::StreamStatus(_) => "stream.status",
             Command::ReplayStatus => "replay.status",
+            Command::ProtectionStatus => "protection.status",
             Command::SourceSetMonitor(_) => "source.set_monitor",
             Command::MonitorStatus => "monitor.status",
             Command::MonitorDevices => "monitor.devices",
             Command::MonitorSetDevice(_) => "monitor.set_device",
             Command::MonitorSetVolume(_) => "monitor.set_volume",
             Command::MonitorSetSolo(_) => "monitor.set_solo",
+            Command::LoudnessStatus => "loudness.status",
+            Command::LoudnessSetEnabled(_) => "loudness.set_enabled",
+            Command::LoudnessReset => "loudness.reset",
             Command::ReplayArm => "replay.arm",
             Command::ReplayDisarm => "replay.disarm",
             Command::ReplaySave(_) => "replay.save",
@@ -1356,11 +1538,19 @@ impl Command {
             Command::CollectionSetGlide(_) => "collection.set_glide",
             Command::SourceSetGlide(_) => "source.set_glide",
             Command::SourceSetRegion(_) => "source.set_region",
+            Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
+            Command::MarkerAdd(_) => "marker.add",
+            Command::MarkerRemove(_) => "marker.remove",
             Command::SourceGetRegion(_) => "source.get_region",
             Command::SourceSetChrome(_) => "source.set_chrome",
             Command::SourceGetChrome(_) => "source.get_chrome",
             Command::SourceFitChrome(_) => "source.fit_chrome",
             Command::SourceResetChrome(_) => "source.reset_chrome",
+            Command::SceneAudioGet(_) => "scene.audio.get",
+            Command::SceneAudioSet(_) => "scene.audio.set",
+            Command::SceneAudioOwn(_) => "scene.audio.own",
+            Command::SceneAudioShared(_) => "scene.audio.shared",
+            Command::SceneAudioResetSource(_) => "scene.audio.reset_source",
             Command::EventsSubscribe(_) => "events.subscribe",
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
@@ -1490,12 +1680,16 @@ pub const METHODS: &[MethodInfo] = &[
     m("stream.status", Some(Scope::Read)),
     m("output.set_with_vertical", Some(Scope::Control)),
     m("replay.status", Some(Scope::Read)),
+    m("protection.status", Some(Scope::Read)),
     m("source.set_monitor", Some(Scope::Control)),
     m("monitor.status", Some(Scope::Read)),
     m("monitor.devices", Some(Scope::Read)),
     m("monitor.set_device", Some(Scope::Admin)),
     m("monitor.set_volume", Some(Scope::Control)),
     m("monitor.set_solo", Some(Scope::Control)),
+    m("loudness.status", Some(Scope::Read)),
+    m("loudness.set_enabled", Some(Scope::Control)),
+    m("loudness.reset", Some(Scope::Control)),
     m("replay.arm", Some(Scope::Control)),
     m("replay.disarm", Some(Scope::Control)),
     m("replay.save", Some(Scope::Control)),
@@ -1511,11 +1705,19 @@ pub const METHODS: &[MethodInfo] = &[
     m("collection.set_glide", Some(Scope::Control)),
     m("source.set_glide", Some(Scope::Control)),
     m("source.set_region", Some(Scope::Control)),
+    m("source.set_record_separately", Some(Scope::Control)),
+    m("marker.add", Some(Scope::Control)),
+    m("marker.remove", Some(Scope::Control)),
     m("source.get_region", Some(Scope::Control)),
     m("source.set_chrome", Some(Scope::Control)),
     m("source.get_chrome", Some(Scope::Control)),
     m("source.fit_chrome", Some(Scope::Control)),
     m("source.reset_chrome", Some(Scope::Control)),
+    m("scene.audio.get", Some(Scope::Read)),
+    m("scene.audio.set", Some(Scope::Control)),
+    m("scene.audio.own", Some(Scope::Control)),
+    m("scene.audio.shared", Some(Scope::Control)),
+    m("scene.audio.reset_source", Some(Scope::Control)),
     m("events.subscribe", Some(Scope::Read)),
     m("events.unsubscribe", Some(Scope::Read)),
     m("tokens.list", Some(Scope::Tokens)),
@@ -1755,6 +1957,8 @@ enum WireRequest {
     OutputSetWithVertical(SetWithVertical),
     #[serde(rename = "replay.status")]
     ReplayStatus(Empty),
+    #[serde(rename = "protection.status")]
+    ProtectionStatus(Empty),
     #[serde(rename = "source.set_monitor")]
     SourceSetMonitor(SetSourceMonitor),
     #[serde(rename = "monitor.status")]
@@ -1767,6 +1971,12 @@ enum WireRequest {
     MonitorSetVolume(SetMonitorVolume),
     #[serde(rename = "monitor.set_solo")]
     MonitorSetSolo(SetMonitorSolo),
+    #[serde(rename = "loudness.status")]
+    LoudnessStatus(Empty),
+    #[serde(rename = "loudness.set_enabled")]
+    LoudnessSetEnabled(SetLoudnessEnabled),
+    #[serde(rename = "loudness.reset")]
+    LoudnessReset(Empty),
     #[serde(rename = "replay.arm")]
     ReplayArm(Empty),
     #[serde(rename = "replay.disarm")]
@@ -1797,6 +2007,12 @@ enum WireRequest {
     SourceSetGlide(SetSourceGlide),
     #[serde(rename = "source.set_region")]
     SourceSetRegion(SetSourceRegion),
+    #[serde(rename = "source.set_record_separately")]
+    SourceSetRecordSeparately(SetRecordSeparately),
+    #[serde(rename = "marker.add")]
+    MarkerAdd(MarkerAdd),
+    #[serde(rename = "marker.remove")]
+    MarkerRemove(MarkerRemove),
     #[serde(rename = "source.get_region")]
     SourceGetRegion(SourceRef),
     #[serde(rename = "source.set_chrome")]
@@ -1807,6 +2023,16 @@ enum WireRequest {
     SourceFitChrome(SourceRef),
     #[serde(rename = "source.reset_chrome")]
     SourceResetChrome(SourceRef),
+    #[serde(rename = "scene.audio.get")]
+    SceneAudioGet(SceneRef),
+    #[serde(rename = "scene.audio.set")]
+    SceneAudioSet(SetSceneLevel),
+    #[serde(rename = "scene.audio.own")]
+    SceneAudioOwn(SceneRef),
+    #[serde(rename = "scene.audio.shared")]
+    SceneAudioShared(SceneRef),
+    #[serde(rename = "scene.audio.reset_source")]
+    SceneAudioResetSource(SceneSourceRef),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(Subscribe),
     #[serde(rename = "events.unsubscribe")]
@@ -1904,12 +2130,16 @@ impl From<WireRequest> for Request {
             WireRequest::StreamStatus(p) => Request::Command(C::StreamStatus(p)),
             WireRequest::OutputSetWithVertical(p) => Request::Command(C::OutputSetWithVertical(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
+            WireRequest::ProtectionStatus(_) => Request::Command(C::ProtectionStatus),
             WireRequest::SourceSetMonitor(p) => Request::Command(C::SourceSetMonitor(p)),
             WireRequest::MonitorStatus(_) => Request::Command(C::MonitorStatus),
             WireRequest::MonitorDevices(_) => Request::Command(C::MonitorDevices),
             WireRequest::MonitorSetDevice(p) => Request::Command(C::MonitorSetDevice(p)),
             WireRequest::MonitorSetVolume(p) => Request::Command(C::MonitorSetVolume(p)),
             WireRequest::MonitorSetSolo(p) => Request::Command(C::MonitorSetSolo(p)),
+            WireRequest::LoudnessStatus(_) => Request::Command(C::LoudnessStatus),
+            WireRequest::LoudnessSetEnabled(p) => Request::Command(C::LoudnessSetEnabled(p)),
+            WireRequest::LoudnessReset(_) => Request::Command(C::LoudnessReset),
             WireRequest::ReplayArm(_) => Request::Command(C::ReplayArm),
             WireRequest::ReplayDisarm(_) => Request::Command(C::ReplayDisarm),
             WireRequest::ReplaySave(p) => Request::Command(C::ReplaySave(p)),
@@ -1925,11 +2155,21 @@ impl From<WireRequest> for Request {
             WireRequest::CollectionSetGlide(p) => Request::Command(C::CollectionSetGlide(p)),
             WireRequest::SourceSetGlide(p) => Request::Command(C::SourceSetGlide(p)),
             WireRequest::SourceSetRegion(p) => Request::Command(C::SourceSetRegion(p)),
+            WireRequest::SourceSetRecordSeparately(p) => {
+                Request::Command(C::SourceSetRecordSeparately(p))
+            }
+            WireRequest::MarkerAdd(p) => Request::Command(C::MarkerAdd(p)),
+            WireRequest::MarkerRemove(p) => Request::Command(C::MarkerRemove(p)),
             WireRequest::SourceGetRegion(p) => Request::Command(C::SourceGetRegion(p)),
             WireRequest::SourceSetChrome(p) => Request::Command(C::SourceSetChrome(p)),
             WireRequest::SourceGetChrome(p) => Request::Command(C::SourceGetChrome(p)),
             WireRequest::SourceFitChrome(p) => Request::Command(C::SourceFitChrome(p)),
             WireRequest::SourceResetChrome(p) => Request::Command(C::SourceResetChrome(p)),
+            WireRequest::SceneAudioGet(p) => Request::Command(C::SceneAudioGet(p)),
+            WireRequest::SceneAudioSet(p) => Request::Command(C::SceneAudioSet(p)),
+            WireRequest::SceneAudioOwn(p) => Request::Command(C::SceneAudioOwn(p)),
+            WireRequest::SceneAudioShared(p) => Request::Command(C::SceneAudioShared(p)),
+            WireRequest::SceneAudioResetSource(p) => Request::Command(C::SceneAudioResetSource(p)),
             WireRequest::EventsSubscribe(p) => Request::Command(C::EventsSubscribe(p)),
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
@@ -2020,12 +2260,16 @@ impl From<Request> for WireRequest {
                 C::StreamStatus(p) => WireRequest::StreamStatus(p),
                 C::OutputSetWithVertical(p) => WireRequest::OutputSetWithVertical(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
+                C::ProtectionStatus => WireRequest::ProtectionStatus(Empty {}),
                 C::SourceSetMonitor(p) => WireRequest::SourceSetMonitor(p),
                 C::MonitorStatus => WireRequest::MonitorStatus(Empty {}),
                 C::MonitorDevices => WireRequest::MonitorDevices(Empty {}),
                 C::MonitorSetDevice(p) => WireRequest::MonitorSetDevice(p),
                 C::MonitorSetVolume(p) => WireRequest::MonitorSetVolume(p),
                 C::MonitorSetSolo(p) => WireRequest::MonitorSetSolo(p),
+                C::LoudnessStatus => WireRequest::LoudnessStatus(Empty {}),
+                C::LoudnessSetEnabled(p) => WireRequest::LoudnessSetEnabled(p),
+                C::LoudnessReset => WireRequest::LoudnessReset(Empty {}),
                 C::ReplayArm => WireRequest::ReplayArm(Empty {}),
                 C::ReplayDisarm => WireRequest::ReplayDisarm(Empty {}),
                 C::ReplaySave(p) => WireRequest::ReplaySave(p),
@@ -2041,11 +2285,19 @@ impl From<Request> for WireRequest {
                 C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
                 C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
                 C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
+                C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
+                C::MarkerAdd(p) => WireRequest::MarkerAdd(p),
+                C::MarkerRemove(p) => WireRequest::MarkerRemove(p),
                 C::SourceGetRegion(p) => WireRequest::SourceGetRegion(p),
                 C::SourceSetChrome(p) => WireRequest::SourceSetChrome(p),
                 C::SourceGetChrome(p) => WireRequest::SourceGetChrome(p),
                 C::SourceFitChrome(p) => WireRequest::SourceFitChrome(p),
                 C::SourceResetChrome(p) => WireRequest::SourceResetChrome(p),
+                C::SceneAudioGet(p) => WireRequest::SceneAudioGet(p),
+                C::SceneAudioSet(p) => WireRequest::SceneAudioSet(p),
+                C::SceneAudioOwn(p) => WireRequest::SceneAudioOwn(p),
+                C::SceneAudioShared(p) => WireRequest::SceneAudioShared(p),
+                C::SceneAudioResetSource(p) => WireRequest::SceneAudioResetSource(p),
                 C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
@@ -2265,6 +2517,10 @@ pub enum Response {
     SourceSettings(SourceSettingsInfo),
     /// `source.get_region` (protocol 1.41).
     SourceRegion(SourceRegionInfo),
+    /// `scene.audio.get` (protocol 1.48).
+    SceneLevels(SceneLevels),
+    /// `scene.audio.set` (protocol 1.48).
+    SceneLevelSet(SceneLevelSet),
     /// `source.get_chrome` (protocol 1.41).
     SourceChrome(SourceChromeInfo),
     /// `look.list` (protocol 1.34).
@@ -2273,6 +2529,8 @@ pub enum Response {
     BoxPlaced(BoxPlaced),
     /// `canvas.auto_layout` (protocol 1.44).
     AutoLayoutDone(AutoLayoutDone),
+    /// `marker.add` (protocol 1.50).
+    MarkersAdded(MarkersAdded),
     /// `item.remove`, `global.remove` (protocol 1.10).
     ItemRemoved(ItemRemoved),
     /// `output.profiles`.
@@ -2296,10 +2554,14 @@ pub enum Response {
     VcamStatus(Snapshot<VcamStatus>),
     /// `replay.status` (protocol 1.27).
     ReplayStatus(Snapshot<ReplayStatus>),
+    /// `protection.status` (protocol 1.49).
+    ProtectionStatus(Snapshot<ProtectionStatus>),
     /// `monitor.status` (protocol 1.30).
     MonitorStatus(Snapshot<MonitorStatus>),
     /// `monitor.devices` (protocol 1.30).
     MonitorDevices(MonitorDeviceList),
+    /// `loudness.status` (protocol 1.47).
+    LoudnessStatus(LoudnessStatus),
     /// `settings.get`, `settings.set`.
     Settings(Snapshot<Settings>),
     /// `profile.list`, `collection.list` (protocol 1.4).
@@ -2311,7 +2573,7 @@ pub enum Response {
     /// `tokens.create`.
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, the `monitor.set_*` methods, `source.set_monitor`, `events.unsubscribe`, `tokens.revoke`,
+    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, the `monitor.set_*` methods, `source.set_monitor`, `marker.remove`, `events.unsubscribe`, `tokens.revoke`,
     /// `profile.switch`, `collection.switch`, and the protocol 1.6 edits other than
     /// `scene.add` and `item.add`.
     Done(Empty),

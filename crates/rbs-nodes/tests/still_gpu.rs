@@ -205,3 +205,72 @@ fn a_still_is_uploaded_once_and_stays_on_the_canvas() {
     assert_eq!(stats.uploaded.load(Ordering::Relaxed), 2);
     assert_eq!(stats.frames.load(Ordering::Relaxed), 2);
 }
+
+#[test]
+fn every_upload_has_a_new_generation() {
+    let Some(ctx) = gpu() else { return };
+    let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
+    let mut ctl: Controller<GpuRuntime> = ctl;
+    let mut exec: Executor<GpuRuntime> = exec;
+    let mut graph = GraphDescription::new();
+    let still = StillSourceNode::new(2, 2, vec![255; 16]).unwrap();
+    let still_id = graph
+        .add_node(Arc::new(still.descriptor().clone()))
+        .unwrap();
+    graph.set_state(still_id, Lifecycle::Standby).unwrap();
+    graph.set_state(still_id, Lifecycle::Active).unwrap();
+    ctl.adopt(still_id, Box::new(still)).unwrap();
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let probe = Probe {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.probe"),
+            NodeKind::Output,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![],
+        ),
+        frames: Arc::clone(&frames),
+        last: None,
+    };
+    let probe_id = graph
+        .add_node(Arc::new(probe.descriptor().clone()))
+        .unwrap();
+    graph.set_state(probe_id, Lifecycle::Standby).unwrap();
+    graph.set_state(probe_id, Lifecycle::Active).unwrap();
+    ctl.adopt(probe_id, Box::new(probe)).unwrap();
+    graph.connect(still_id, "video", probe_id, "in").unwrap();
+
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let mut next = 0;
+    let mut run = |graph: &GraphDescription, ticks: u64| {
+        let report = ctl.apply(graph).unwrap();
+        assert!(report.failed.is_empty(), "{report:?}");
+        exec.swap_pending();
+        let _ = ctl.collect();
+        for _ in 0..ticks {
+            exec.run_tick(Tick::of(&cadence, next));
+            next += 1;
+            ctx.wait_idle().unwrap();
+            ctx.poll();
+            let _ = ctl.collect();
+        }
+    };
+    run(&graph, 3);
+    // Standby and back: a new upload of the same pixels, with a new generation, so a
+    // reader keyed on (timestamp, sequence) sees a new picture (ADR-0117 decision 4).
+    graph.set_state(still_id, Lifecycle::Standby).unwrap();
+    run(&graph, 1);
+    graph.set_state(still_id, Lifecycle::Active).unwrap();
+    run(&graph, 3);
+
+    let frames = frames.lock().unwrap();
+    let keys: Vec<_> = frames
+        .iter()
+        .map(|f| (f.timestamp(), f.sequence()))
+        .collect();
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    assert!(
+        keys.iter().all(|(t, s)| *t == Timestamp::ZERO && *s != 0),
+        "{keys:?}"
+    );
+    assert_ne!(keys[0].1, keys[1].1, "{keys:?}");
+}

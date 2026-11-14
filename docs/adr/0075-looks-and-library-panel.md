@@ -63,3 +63,5 @@ Concerns:
 Smaller notes: the workspace view test now asserts that the Library edge tab is present; the owned twin of `Look` for user-saved looks is noted in Consequences.
 
 Round 2: same reviewer session, at 239ad75: all nine concerns addressed, approved. Two nits (the Apply note must name the every-scene scope and must not name Colour correction for Shape looks) fixed after the round. The owner confirmed the U20 exception in decision 7 on 2026-11-08, and the ADR is Accepted.
+
+2026-11-13: The sample thumbnails are now drawn by the library `ListRow` picture at `size.row.picture.md`; the tokens `size.library.thumb-w` and `size.library.thumb-h` named in decision 5 are removed (owner decision recorded in ADR-0114's review).
