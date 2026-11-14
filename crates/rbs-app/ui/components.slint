@@ -2479,6 +2479,8 @@ export component InfoHint inherits Rectangle {
     property <int> owner: -1;
     property <bool> open: Overlays.hint-open && Overlays.hint-owner == root.owner;
     out property <bool> focused: focus.has-focus;
+    // Its popover is open.
+    out property <bool> showing: root.open;
     public function take-focus() { focus.focus(); }
     width: Tokens.size-control-sm;
     height: Tokens.size-control-sm;
@@ -3646,9 +3648,16 @@ export component FeatureSection inherits VerticalLayout {
 // `@children` cannot sit under an `if`.
 export component SettingRow inherits Rectangle {
     in property <string> label;
+    // A few words under the name saying what the setting does, one line (owner
+    // decision 2026-11-14): with `hint`, the usual pair for a short setting.
+    in property <string> summary;
+    // A longer text under the name: a problem, a warning, or an explanation that does
+    // not fit in a summary and the hint.
     in property <string> help;
-    // The longer explanation behind an info hint after the label (ADR-0094 row
-    // anatomy); empty: no hint.
+    // The longer explanation behind an info hint after the name (ADR-0094 row
+    // anatomy); empty: no hint. The (i) shows only while the pointer is over the row,
+    // it has the focus or its popover is open, so a page of settings shows no column
+    // of identical buttons; screen readers always get it.
     in property <string> hint;
     // The help is a problem (error colour), not an explanation.
     in property <bool> help-is-problem;
@@ -3667,7 +3676,10 @@ export component SettingRow inherits Rectangle {
     in property <bool> fill: true;
     // The control is under the name.
     out property <bool> stacked: root.width < Tokens.size-row-stack-below || controls.min-width > root.width / 2;
-    property <bool> has-info: root.label != "" || root.help != "" || root.hint != "";
+    property <bool> has-info: root.label != "" || root.summary != "" || root.help != "" || root.hint != "";
+    property <bool> hint-focused;
+    property <bool> hint-open;
+    out property <bool> hint-shown: root.hint != "" && (hover.has-hover || root.hint-focused || root.hint-open);
     property <length> column: max(controls.min-width, min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2));
     property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
     property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
@@ -3687,51 +3699,70 @@ export component SettingRow inherits Rectangle {
         height: Tokens.size-border;
         background: Theme.border-subtle;
     }
-    info := VerticalLayout {
-        x: 0;
-        width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap);
-        y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
-        height: self.preferred-height;
-        spacing: Tokens.space-1;
-        if root.label != "" && root.hint == "": Text {
-            text: root.label;
-            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            wrap: word-wrap;
-            accessible-role: none;
-        }
-        if root.hint != "": HorizontalLayout {
+    // Holds the row's content, so the pointer anywhere on it, also over the
+    // control, shows the (i): a TouchArea under the content would lose the hover to
+    // the control.
+    hover := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        info := VerticalLayout {
+            x: 0;
+            width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap);
+            y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
+            height: self.preferred-height;
             spacing: Tokens.space-1;
-            alignment: start;
-            Text {
-                text: root.label;
-                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-                font-size: Tokens.type-label-size;
-                font-weight: Tokens.type-label-weight;
-                wrap: word-wrap;
-                vertical-alignment: center;
+            // The name, and after it the (i). The (i) is placed, not laid out, so its
+            // button (taller than the text) does not make the name line taller; it
+            // always keeps its place, so showing it moves nothing.
+            Rectangle {
+                min-height: name.min-height;
+                preferred-height: name.preferred-height;
+                name := Text {
+                    x: 0;
+                    width: min(self.preferred-width, parent.width - (root.hint != "" ? Tokens.size-control-sm + Tokens.space-1 : 0px));
+                    height: parent.height;
+                    text: root.label;
+                    color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                    font-size: Tokens.type-label-size;
+                    font-weight: Tokens.type-label-weight;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                // Opacity, not `visible`: a hidden (i) stays a focus stop and in the
+                // accessibility tree.
+                if root.hint != "": InfoHint {
+                    x: name.width + Tokens.space-1;
+                    y: (parent.height - self.height) / 2;
+                    opacity: root.hint-shown ? 1 : 0;
+                    label: root.label;
+                    text: root.hint;
+                    changed focused => { root.hint-focused = self.focused; }
+                    changed showing => { root.hint-open = self.showing; }
+                }
+            }
+            if root.summary != "": Text {
+                text: root.summary;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
                 accessible-role: none;
             }
-            InfoHint {
-                label: root.label;
-                text: root.hint;
+            if root.help != "": Text {
+                text: root.help;
+                color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
             }
         }
-        if root.help != "": Text {
-            text: root.help;
-            color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            wrap: word-wrap;
+        controls := HorizontalLayout {
+            width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
+            x: root.stacked ? 0px : root.width - self.width;
+            y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
+            height: self.preferred-height;
+            alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
+            spacing: Tokens.space-2;
+            @children
         }
-    }
-    controls := HorizontalLayout {
-        width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
-        x: root.stacked ? 0px : root.width - self.width;
-        y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
-        height: self.preferred-height;
-        alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
-        spacing: Tokens.space-2;
-        @children
     }
 }

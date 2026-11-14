@@ -59,7 +59,8 @@ export component ReplaySettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Keep the past");
-                help: @tr("Armed, the buffer encodes the program like your recordings and keeps only the newest part. It uses memory and a second encode while it runs.");
+                summary: @tr("Keeps the last minutes ready to save");
+                hint: @tr("Armed, the buffer encodes the program like your recordings and keeps only the newest part. It uses memory and a second encode while it runs.");
                 enabled: ReplayBuffer.can-arm;
                 fill: false;
                 Toggle {
@@ -75,7 +76,8 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Length");
-                help: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
+                summary: @tr("How much past to keep");
+                hint: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
                 Slider {
                     horizontal-stretch: 1;
                     label: @tr("Length");
@@ -100,7 +102,7 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Include sound");
-                help: @tr("Keeps the program's audio with the picture.");
+                summary: @tr("Keeps the program's audio with the picture");
                 fill: false;
                 Toggle {
                     label: @tr("Include sound");
@@ -110,7 +112,7 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Arm when RBS starts");
-                help: @tr("Starts keeping the past as soon as the studio is ready.");
+                summary: @tr("Starts as soon as the studio is ready");
                 fill: false;
                 Toggle {
                     label: @tr("Arm when RBS starts");
@@ -120,7 +122,8 @@ export component ReplaySettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Folder");
-                help: @tr("Clips are named by date and time; a file is never replaced. Empty uses the recording folder.");
+                summary: @tr("Where clips are saved");
+                hint: @tr("Clips are named by date and time; a file is never replaced. Empty uses the recording folder.");
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 folder := TextField {
                     label: @tr("Folder");

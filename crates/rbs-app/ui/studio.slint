@@ -2697,7 +2697,8 @@ component EncoderFields inherits VerticalLayout {
     }
     SettingRow {
         label: @tr("Video encoder");
-        help: @tr("Automatic picks the best one this computer has.");
+        summary: @tr("Automatic picks this computer's best");
+        hint: @tr("Automatic picks the best one this computer has.");
         enabled: root.idle;
         encoder := Select {
             label: @tr("Video encoder");
@@ -2735,7 +2736,7 @@ component EncoderFields inherits VerticalLayout {
         gap: 0;
         SettingRow {
             label: @tr("Quality level");
-            help: @tr("Lower is better quality and larger files.");
+            summary: @tr("Lower is better quality, larger files");
             enabled: root.idle;
             quality := Select {
                 label: @tr("Quality level");
@@ -2748,7 +2749,8 @@ component EncoderFields inherits VerticalLayout {
     }
     SettingRow {
         label: @tr("Audio bitrate");
-        help: @tr("AAC. 160 kbit/s suits most voices and music.");
+        summary: @tr("160 kbit/s suits most voices and music");
+        hint: @tr("AAC. 160 kbit/s suits most voices and music.");
         enabled: root.idle;
         audio := Select {
             label: @tr("Audio bitrate");
@@ -2760,7 +2762,8 @@ component EncoderFields inherits VerticalLayout {
     }
     SettingRow {
         label: @tr("Advanced settings");
-        help: @tr("Rate control, keyframes, preset, profile and B-frames. The defaults suit most uses.");
+        summary: @tr("Rate control, keyframes and more");
+        hint: @tr("Rate control, keyframes, preset, profile and B-frames. The defaults suit most uses.");
         fill: false;
         Button {
             text: root.advanced ? @tr("Hide") : @tr("Show");
@@ -2793,7 +2796,8 @@ component EncoderFields inherits VerticalLayout {
             gap: 0;
             SettingRow {
                 label: @tr("Maximum bitrate");
-                help: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate.");
+                summary: @tr("Short peaks above the target");
+                hint: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate.");
                 enabled: root.idle;
                 peak := Select {
                     label: @tr("Maximum bitrate");
@@ -2838,7 +2842,8 @@ component EncoderFields inherits VerticalLayout {
         }
         SettingRow {
             label: @tr("Encoder preset");
-            help: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default.");
+            summary: @tr("Quality or speed");
+            hint: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default.");
             enabled: root.idle;
             fill: false;
             SegmentedControl {
@@ -2851,7 +2856,8 @@ component EncoderFields inherits VerticalLayout {
         }
         SettingRow {
             label: @tr("Profile");
-            help: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices.");
+            summary: @tr("Which devices can play it");
+            hint: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices.");
             enabled: root.idle;
             profile := Select {
                 label: @tr("Profile");
@@ -4224,7 +4230,8 @@ export component RecordingSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Folder");
-                help: @tr("Each recording gets a new file named by its date and time; a file is never replaced.");
+                summary: @tr("Where recordings are saved");
+                hint: @tr("Each recording gets a new file named by its date and time; a file is never replaced.");
                 enabled: idle;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 folder := TextField {
@@ -4236,7 +4243,7 @@ export component RecordingSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Format");
-                help: @tr("Audio records the mix with no picture.");
+                summary: @tr("Video, or only the sound");
                 hint: @tr("Video carries the picture. Audio is the mix, with no picture. WAV is uncompressed. FLAC is lossless and smaller.");
                 enabled: idle;
                 fill: false;
@@ -4268,7 +4275,7 @@ export component RecordingSettings inherits Rectangle {
             if Studio.out-audio-only && !Studio.out-flac: SettingRow {
                 divider: false;
                 label: @tr("PCM");
-                help: @tr("16-bit is the usual choice.");
+                summary: @tr("16-bit is the usual choice");
                 hint: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording. 32-bit float does not clip.");
                 enabled: idle;
                 fill: false;
@@ -4283,7 +4290,8 @@ export component RecordingSettings inherits Rectangle {
             if Studio.out-flac: SettingRow {
                 divider: false;
                 label: @tr("Width");
-                help: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording.");
+                summary: @tr("16-bit is the usual choice");
+                hint: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording.");
                 enabled: idle;
                 fill: false;
                 SegmentedControl {
@@ -4379,7 +4387,8 @@ export component StreamSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Server");
-                help: @tr("The address your streaming service gives you, starting with rtmp:// or srt://.");
+                summary: @tr("From your streaming service");
+                hint: @tr("The address your streaming service gives you, starting with rtmp:// or srt://.");
                 enabled: idle;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 server := TextField {
@@ -4437,7 +4446,8 @@ export component StreamSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Reconnect when the connection drops");
-                help: @tr("Tries up to 10 times, waiting longer each time. On by default.");
+                summary: @tr("Up to 10 tries");
+                hint: @tr("Tries up to 10 times, waiting longer each time. On by default.");
                 enabled: idle;
                 fill: false;
                 Toggle {
@@ -4452,7 +4462,8 @@ export component StreamSettings inherits Rectangle {
                 gap: 0;
                 SettingRow {
                     label: @tr("SRT latency");
-                    help: @tr("More latency survives a worse network; viewers see the picture a little later.");
+                    summary: @tr("More survives a worse network");
+                    hint: @tr("More latency survives a worse network; viewers see the picture a little later.");
                     enabled: idle;
                     latency := Select {
                         label: @tr("SRT latency");
@@ -4470,7 +4481,8 @@ export component StreamSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Record when the stream starts");
-                help: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
+                summary: @tr("Uses the Recording settings");
+                hint: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
                 enabled: idle;
                 fill: false;
                 Toggle {
@@ -4620,7 +4632,7 @@ export component VideoSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Frame rate");
-                help: @tr("Frames per second.");
+                summary: @tr("Frames per second");
                 enabled: can-change;
                 fill: false;
                 SegmentedControl {
@@ -4689,7 +4701,8 @@ export component GeneralSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Swap scenes after a transition");
-                help: @tr("After Transition, Preview shows the scene that was on air. Off: Preview keeps the scene that went on air.");
+                summary: @tr("Preview shows what was on air");
+                hint: @tr("After Transition, Preview shows the scene that was on air. Off: Preview keeps the scene that went on air.");
                 fill: false;
                 Toggle {
                     label: @tr("Swap scenes after a transition");
@@ -4704,7 +4717,8 @@ export component GeneralSettings inherits Rectangle {
             description: @tr("How shared sources move when the program scene changes, including outside studio mode.");
             SettingRow {
                 label: @tr("Glide");
-                help: @tr("Shared sources slide to their new place; new sources fade in. Off: every scene change is instant.");
+                summary: @tr("Shared sources slide between scenes");
+                hint: @tr("Shared sources slide to their new place; new sources fade in. Off: every scene change is instant.");
                 fill: false;
                 Toggle {
                     label: @tr("Glide");
@@ -4716,7 +4730,7 @@ export component GeneralSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Duration");
-                help: @tr("Milliseconds. 0 is the same as turning Glide off.");
+                summary: @tr("0 turns Glide off");
                 enabled: Studio.glide-duration > 0;
                 NumberField {
                     label: @tr("Glide duration in milliseconds");
@@ -4731,7 +4745,8 @@ export component GeneralSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Easing");
-                help: @tr("How a slide eases. Fade-ins stay linear.");
+                summary: @tr("How a slide starts and stops");
+                hint: @tr("How a slide eases. Fade-ins stay linear.");
                 enabled: Studio.glide-duration > 0;
                 fill: false;
                 SegmentedControl {
@@ -4825,7 +4840,7 @@ export component GlobalSourcesSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Kind");
-                help: @tr("What kind of source to add.");
+                summary: @tr("What kind of source to add");
                 enabled: running;
                 Select {
                     label: @tr("Kind");
@@ -4890,7 +4905,8 @@ export component RemoteControlSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Allow remote control");
-                help: @tr("Lets apps on this computer, such as Stream Deck or your own scripts, control RBS. Off by default.");
+                summary: @tr("Stream Deck, panels and scripts");
+                hint: @tr("Lets apps on this computer, such as Stream Deck or your own scripts, control RBS. Off by default.");
                 fill: false;
                 Toggle {
                     label: @tr("Allow remote control");
@@ -4904,7 +4920,8 @@ export component RemoteControlSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Port");
-                help: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default.");
+                summary: @tr("4456 is the default");
+                hint: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default.");
                 control-width: Tokens.size-menu-sm / 2;
                 port := TextField {
                     label: @tr("Port");
@@ -5024,7 +5041,8 @@ export component RemoteControlSettings inherits Rectangle {
             }
             if Studio.rc-network: SettingRow {
                 label: @tr("Allow remote admin");
-                help: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps.");
+                summary: @tr("Full control from other computers");
+                hint: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps.");
                 fill: false;
                 Toggle {
                     label: @tr("Allow remote admin");
@@ -5051,7 +5069,7 @@ export component RemoteControlSettings inherits Rectangle {
             if Studio.rc-network && root.cert-source == 1: VerticalLayout {
                 SettingRow {
                     label: @tr("Certificate file");
-                    help: @tr("A full path.");
+                    summary: @tr("A full path");
                     control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                     own-cert := TextField {
                         label: @tr("Certificate file");
@@ -5060,7 +5078,8 @@ export component RemoteControlSettings inherits Rectangle {
                 }
                 SettingRow {
                     label: @tr("Key file");
-                    help: @tr("A full path. On macOS and Linux the key file must be readable by you only.");
+                    summary: @tr("A full path");
+                    hint: @tr("A full path. On macOS and Linux the key file must be readable by you only.");
                     control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                     own-key := TextField {
                         label: @tr("Key file");
@@ -5083,7 +5102,8 @@ export component RemoteControlSettings inherits Rectangle {
             }
             if Studio.rc-network && root.cert-source == 0 && !root.confirming: SettingRow {
                 label: @tr("New key");
-                help: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin.");
+                summary: @tr("If the key may have been copied");
+                hint: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin.");
                 fill: false;
                 Button {
                     text: @tr("New key…");
@@ -5153,7 +5173,7 @@ export component RemoteControlSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Name");
-                help: @tr("The app the token is for, such as Stream Deck.");
+                summary: @tr("The app it is for, such as Stream Deck");
                 name := TextField {
                     label: @tr("Name");
                 }

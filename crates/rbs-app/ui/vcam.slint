@@ -49,7 +49,8 @@ export component VirtualCameraSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Virtual camera");
-                help: @tr("Off by default. Turning it off removes the camera from the apps' camera lists.");
+                summary: @tr("Off by default");
+                hint: @tr("Off by default. Turning it off removes the camera from the apps' camera lists.");
                 enabled: VirtualCamera.can-toggle;
                 fill: false;
                 Toggle {
@@ -122,7 +123,8 @@ export component VirtualCameraSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Frame rate");
-                help: @tr("Frames per second. RBS sends at the canvas rate when that is lower.");
+                summary: @tr("Frames per second");
+                hint: @tr("Frames per second. RBS sends at the canvas rate when that is lower.");
                 enabled: VirtualCamera.can-format;
                 fill: false;
                 SegmentedControl {

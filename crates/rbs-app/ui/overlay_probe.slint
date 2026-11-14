@@ -90,3 +90,25 @@ export component FocusRevealProbe inherits Window {
     // literal-end
     public function focus-first() { t1.focus(); }
 }
+
+// A window for tests/overlays.rs: a setting row shows its (i) only while the pointer
+// is over the row or the (i) has the focus.
+export component SettingRowProbe inherits Window {
+    // literal-begin: a test window; its size and the row's place are test data
+    width: 400px;
+    height: 200px;
+    out property <bool> hint-shown: row.hint-shown;
+    row := SettingRow {
+        x: 0px;
+        y: 0px;
+        width: 400px;
+        height: self.preferred-height;
+        divider: false;
+        label: "Glide";
+        summary: "Shared sources slide between scenes";
+        hint: "Shared sources slide to their new place; new sources fade in.";
+        fill: false;
+        Toggle { label: "Glide"; }
+    }
+    // literal-end
+}
