@@ -43,6 +43,10 @@ export component AudioSettings inherits Rectangle {
                 summary: @tr("Only what you hear");
                 hint: @tr("The monitor's own level. It does not change the stream or the recording.");
                 enabled: Studio.monitor-available;
+                // Position 1 is 0 dB, the top of the fader and the default.
+                changed: Studio.monitor-available && Studio.monitor-volume < 1;
+                default-text: @tr("0 dB");
+                reset => { root.drag = -1; Studio.set-monitor-volume(1); }
                 HorizontalLayout {
                     spacing: Tokens.space-2;
                     Slider {

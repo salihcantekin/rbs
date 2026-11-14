@@ -3713,6 +3713,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.set_filter_source(filter, field, option);
         }
     );
+    on!(on_reset_filter_field, |app, filter: i32, field: i32| {
+        app.studio.reset_filter_field(filter, field);
+    });
     on!(on_commit_filter, |app, filter: i32| {
         app.studio.commit_filter(filter);
     });

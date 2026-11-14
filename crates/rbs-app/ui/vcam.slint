@@ -21,6 +21,9 @@ export global VirtualCamera {
     in property <int> size;
     in property <[string]> rates;
     in property <int> rate;
+    // The default size and frame rate as indexes into `sizes` and `rates`.
+    in property <int> size-default;
+    in property <int> rate-default;
     in property <bool> can-format;
     in property <string> format-help;
     in property <bool> sending;
@@ -113,6 +116,9 @@ export component VirtualCameraSettings inherits Rectangle {
                 label: @tr("Size");
                 help: VirtualCamera.format-help;
                 enabled: VirtualCamera.can-format;
+                changed: VirtualCamera.can-format && VirtualCamera.size != VirtualCamera.size-default;
+                default-text: VirtualCamera.sizes[VirtualCamera.size-default];
+                reset => { VirtualCamera.set-size(VirtualCamera.size-default); }
                 Select {
                     label: @tr("Size");
                     options: VirtualCamera.sizes;
@@ -126,6 +132,9 @@ export component VirtualCameraSettings inherits Rectangle {
                 summary: @tr("Frames per second");
                 hint: @tr("Frames per second. RBS sends at the canvas rate when that is lower.");
                 enabled: VirtualCamera.can-format;
+                changed: VirtualCamera.can-format && VirtualCamera.rate != VirtualCamera.rate-default;
+                default-text: VirtualCamera.rates[VirtualCamera.rate-default];
+                reset => { VirtualCamera.set-rate(VirtualCamera.rate-default); }
                 fill: false;
                 SegmentedControl {
                     label: @tr("Frame rate");

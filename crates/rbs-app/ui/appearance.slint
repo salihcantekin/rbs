@@ -52,6 +52,8 @@ export global Appearance {
     in property <int> density: 0;
     // Stops 1, 2 and 3. Kept while compact is off.
     in property <int> compact-steps: 1;
+    // The default spacing, as an index like `density`.
+    in property <int> density-default: 0;
     // Positions in `usable-names`.
     in property <int> dark-index;
     in property <int> light-index;
@@ -790,6 +792,9 @@ export component AppearanceSettings inherits Rectangle {
                 label: @tr("Spacing");
                 summary: @tr("How tightly controls are packed");
                 hint: @tr("Compact packs more in; roomy gives larger controls. Applies to every theme.");
+                changed: Appearance.density != Appearance.density-default;
+                default-text: Appearance.density-default == 1 ? @tr("Compact") : Appearance.density-default == 2 ? @tr("Roomy") : @tr("Regular");
+                reset => { Appearance.set-density(Appearance.density-default); }
                 SegmentedControl {
                     label: @tr("Spacing");
                     options: [@tr("Regular"), @tr("Compact"), @tr("Roomy")];
@@ -800,6 +805,10 @@ export component AppearanceSettings inherits Rectangle {
             if Appearance.density == 1: SettingRow {
                 label: @tr("Amount");
                 summary: @tr("How compact");
+                // Stop 1 is the default (the same value the slider's double-click restores).
+                changed: Appearance.compact-steps != 1;
+                default-text: root.compact-text(1);
+                reset => { root.compact-drag = -1; Appearance.set-compact-steps(1); }
                 hint: @tr("1 is the next smaller step. 3 is as tight as these tokens can go.");
                 HorizontalLayout {
                     spacing: Tokens.space-2;
