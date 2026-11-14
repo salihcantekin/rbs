@@ -25,6 +25,7 @@ use rbs_graph::node::LinkKind;
 use rbs_graph::runtime::Node;
 use rbs_nodes::OutputNode;
 use rbs_nodes::VideoEncoderNode;
+use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::export::{ExportNodeStats, VideoExportNode};
 use rbs_scene::model::SourceId;
 use rbs_transport::{TransportConfig, TransportInput};
@@ -88,6 +89,8 @@ pub struct IsoVideoTrack {
     pub size: (u32, u32),
     /// The track's export counters: frames, canvases skipped to give way, losses.
     pub stats: Arc<ExportNodeStats>,
+    /// The track's encoder counters: `submitted` is the frames in the file.
+    pub encoder: Arc<EncoderNodeStats>,
 }
 
 /// What [`super::Studio::start_iso_video`] opened. Empty when nothing is marked for
@@ -170,6 +173,19 @@ impl super::Studio {
         }
         let period = self.fps.frame_duration();
         let budget = Duration::from_secs_f64(period.as_secs_f64() * start.give_way_share.max(0.0));
+        // The queues into the running master encoders: a drop there makes every
+        // track skip canvases for a second (decision 9), so shared encoder hardware
+        // loses ISO frames first.
+        let queues: Vec<_> = self
+            .chains
+            .video
+            .iter()
+            .flatten()
+            .filter_map(|chain| chain.queue.clone())
+            .collect();
+        let masters: rbs_nodes::export::MasterDrops =
+            Arc::new(move || queues.iter().map(|q| q.video_drops()).sum());
+        let hold = (Duration::from_secs(1).as_nanos() / period.as_nanos().max(1)) as u64;
         let mut chains = Vec::with_capacity(taps.len());
         for tap in &taps {
             let size = even(tap.picture);
@@ -183,6 +199,7 @@ impl super::Studio {
                 start.video.open_shadows,
             )
             .give_way_after(budget)
+            .yield_to(masters.clone(), hold)
             .every_tick();
             let config = super::video_encoder_config(&start.video, export.frame_format(), self.fps);
             let (encoder, _) = select::video_encoder(&adapters.video_encoders, &config)?;
@@ -262,6 +279,7 @@ impl super::Studio {
             )
             .with_muxer(Arc::clone(muxer), start.container, None);
             let stats = export.stats();
+            let encoder_stats = encoder.stats();
             let step = self.add_track(
                 &mut graph,
                 &mut adopted,
@@ -280,6 +298,7 @@ impl super::Studio {
                 file_name: tap.file_name.clone(),
                 size,
                 stats,
+                encoder: encoder_stats,
             });
         }
         match self.engine.apply(&graph) {
