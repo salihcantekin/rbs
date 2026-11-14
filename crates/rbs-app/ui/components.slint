@@ -2556,11 +2556,27 @@ export component ListRow inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.activated(); } }
     forward-focus: focus;
+    // An elided name shows whole as a tooltip under the pointer or keyboard focus
+    // (owner decision 2026-11-14); a name that fits shows none.
+    // Set by the name's Text, which sits inside a conditional layout.
+    property <bool> name-elided;
+    property <int> tip-owner;
+    property <bool> tip-wanted: root.name-elided && !root.editing && !root.confirm && (touch.has-hover || focus.keyed);
+    changed tip-wanted => {
+        if root.tip-wanted {
+            // Never at once on focus: moving through a list must not open a tooltip
+            // on every row, so focus waits `delay.tooltip` as the pointer does.
+            root.tip-owner = Overlays.tip-enter(root.name, root.absolute-position.x, root.absolute-position.y, root.width, root.height, false);
+        } else {
+            Overlays.tip-leave(root.tip-owner);
+        }
+    }
     focus := RingFocus {
         focus-on-click: false;
         enabled: root.selectable && root.enabled;
         key-pressed(e) => {
             if root.confirm && e.text == Key.Escape { root.confirm = false; return accept; }
+            if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
             if root.confirm && (e.text == Key.Return || e.text == Key.Delete || e.text == Key.Backspace) {
                 root.confirmed();
                 return accept;
@@ -2687,6 +2703,9 @@ export component ListRow inherits Rectangle {
                             Icon { name: IconName.warning; ink: Theme.state-warning; }
                         }
                         Text {
+                            init => { root.name-elided = self.preferred-width > self.width; }
+                            changed width => { root.name-elided = self.preferred-width > self.width; }
+                            changed preferred-width => { root.name-elided = self.preferred-width > self.width; }
                             text: root.name;
                             color: root.warning ? Theme.text-disabled : root.ink;
                             font-size: Tokens.type-body-size;
@@ -2767,6 +2786,189 @@ export component ListRow inherits Rectangle {
         background: Theme.accent;
     }
     FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
+}
+
+// The one vertical scrolling surface (design system, ScrollArea). The trailing
+// `size.scrollbar.hit` is always kept for the bar, so the content's width never
+// depends on its height. The bar shows while the content is taller than the area:
+// thin when idle, wider on a track under the pointer, no animation and no timer.
+export component ScrollArea inherits Rectangle {
+    // The content's height (the owner's layout's preferred height).
+    in property <length> content-height;
+    // A focus stop for content with none of its own (Stats): the arrow, Page and
+    // Home/End keys scroll it.
+    in property <bool> focusable;
+    // Off for lists whose rows have buttons: a list that pans on a drag holds a
+    // press briefly, so a quick click would not arrive. The wheel still scrolls.
+    in property <bool> drag-pan: true;
+    // Off only for content that never scrolls itself (an inline ListBox): no room kept.
+    in property <bool> reserve-bar: true;
+    out property <length> offset: -flick.content-y;
+    out property <length> view-height: flick.height;
+    out property <length> bar-room: root.reserve-bar ? Tokens.size-scrollbar-hit : 0px;
+    property <length> max-offset: max(0px, root.content-height - flick.height);
+    property <bool> overflows: root.max-offset > 0px;
+    // Brings `y` to `y + h` of the content into view with the least movement.
+    public function scroll-into-view(y: length, h: length) {
+        if y < root.offset {
+            flick.content-y = -max(0px, y);
+        } else if y + h > root.offset + flick.height {
+            flick.content-y = -min(root.max-offset, y + h - flick.height);
+        }
+    }
+    public function scroll-by(dy: length) {
+        flick.content-y = -clamp(root.offset + dy, 0px, root.max-offset);
+    }
+    flick := Flickable {
+        x: 0px;
+        y: 0px;
+        width: root.width - root.bar-room;
+        height: root.height;
+        content-height: max(root.content-height, self.height);
+        mouse-drag-pan-enabled: root.drag-pan;
+        @children
+    }
+    if root.overflows && root.reserve-bar: bar := Rectangle {
+        x: root.width - self.width;
+        width: Tokens.size-scrollbar-hit;
+        height: root.height;
+        property <bool> hot: track.has-hover || track.dragging;
+        property <length> thumb-h: min(self.height, max(Tokens.size-scrollbar-thumb-min, self.height * flick.height / root.content-height));
+        property <length> thumb-y: (self.height - self.thumb-h) * root.offset / root.max-offset;
+        background: self.hot ? Theme.surface-overlay : transparent;
+        border-radius: self.width / 2;
+        accessible-role: none;
+        Rectangle {
+            width: bar.hot ? Tokens.size-scrollbar-thumb-hot : Tokens.size-scrollbar-thumb;
+            x: (parent.width - self.width) / 2;
+            y: bar.thumb-y;
+            height: bar.thumb-h;
+            border-radius: self.width / 2;
+            background: bar.hot ? Theme.scrollbar-thumb-hot : Theme.scrollbar-thumb;
+        }
+        track := TouchArea {
+            in-out property <bool> dragging;
+            property <length> grab-offset;
+            pointer-event(e) => {
+                if e.button != PointerEventButton.left { return; }
+                if e.kind == PointerEventKind.down {
+                    if self.mouse-y >= bar.thumb-y && self.mouse-y <= bar.thumb-y + bar.thumb-h {
+                        self.dragging = true;
+                        self.grab-offset = root.offset;
+                    } else if self.mouse-y < bar.thumb-y {
+                        root.scroll-by(-flick.height);
+                    } else {
+                        root.scroll-by(flick.height);
+                    }
+                } else if e.kind == PointerEventKind.up {
+                    self.dragging = false;
+                }
+            }
+            moved => {
+                if self.dragging && bar.height > bar.thumb-h {
+                    flick.content-y = -clamp(self.grab-offset + (self.mouse-y - self.pressed-y) * root.max-offset / (bar.height - bar.thumb-h), 0px, root.max-offset);
+                }
+            }
+        }
+    }
+    if root.focusable: Rectangle {
+        width: root.width;
+        height: root.height;
+        FocusRing { show: keys.ring; }
+        keys := RingFocus {
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        key-pressed(e) => {
+            if e.text == Key.UpArrow { root.scroll-by(-Tokens.size-control-md); return accept; }
+            if e.text == Key.DownArrow { root.scroll-by(Tokens.size-control-md); return accept; }
+            if e.text == Key.PageUp { root.scroll-by(-flick.height); return accept; }
+            if e.text == Key.PageDown { root.scroll-by(flick.height); return accept; }
+            if e.text == Key.Home { flick.content-y = 0px; return accept; }
+            if e.text == Key.End { flick.content-y = -root.max-offset; return accept; }
+            reject
+        }
+        }
+    }
+}
+
+// The geometry and keys of a list of ListRow items on a ScrollArea (design system,
+// ListBox). Slint cannot count or place @children, so the owner writes its own `for`,
+// places row `i` at `cell-x(i)`, `cell-y(i)`, `cell-width` wide and `row-height` high,
+// and forwards each row's `key` to `key(event)`. In `current-changed` the owner sets
+// its current item and focuses that row.
+export component ListBox inherits Rectangle {
+    in property <int> count;
+    in property <length> row-height;
+    // 1: one row per line. 0: as many columns as fit `size.list.cell-min-w` cells.
+    in property <int> columns: 1;
+    // 0 fills the space given; above 0 the box grows up to that many lines, then scrolls.
+    in property <int> max-rows;
+    // Between lines and between cells: a token from the owner.
+    in property <length> spacing;
+    // Only the rows in view, plus a page above and below, are built (fixed row height).
+    in property <bool> virtual;
+    // Inside a scrolling panel: all lines shown, no bar room; the panel scrolls.
+    in property <bool> inline;
+    in property <bool> drag-pan: true;
+    in property <int> current: -1;
+    callback current-changed(int);
+    out property <int> columns-shown: root.columns > 0 ? root.columns
+        : max(1, Math.floor((area.width - area.bar-room + root.spacing) / (Tokens.size-list-cell-min-w + root.spacing)));
+    out property <length> cell-width: (area.width - area.bar-room - (root.columns-shown - 1) * root.spacing) / root.columns-shown;
+    property <int> lines: Math.ceil(root.count / root.columns-shown);
+    property <length> pitch: root.row-height + root.spacing;
+    property <length> content-h: max(0px, root.lines * root.pitch - root.spacing);
+    property <int> lines-in-view: max(1, Math.floor((area.height + root.spacing) / root.pitch));
+    // The rows to build: all of them, or with `virtual` the ones in view and a page around.
+    out property <int> first-shown: !root.virtual ? 0
+        : max(0, (Math.floor(area.offset / root.pitch) - root.lines-in-view) * root.columns-shown);
+    out property <int> shown-count: !root.virtual ? root.count
+        : min(root.count - root.first-shown, (3 * root.lines-in-view + 1) * root.columns-shown);
+    preferred-height: root.inline ? root.content-h
+        : root.max-rows > 0 ? max(0px, min(root.lines, root.max-rows) * root.pitch - root.spacing) : root.content-h;
+    min-height: root.inline ? root.content-h : 0px;
+    vertical-stretch: root.max-rows > 0 || root.inline ? 0 : 1;
+    pure public function cell-x(i: int) -> length {
+        Math.mod(i, root.columns-shown) * (root.cell-width + root.spacing)
+    }
+    pure public function cell-y(i: int) -> length {
+        Math.floor(i / root.columns-shown) * root.pitch
+    }
+    public function show(i: int) {
+        area.scroll-into-view(root.cell-y(i), root.row-height);
+    }
+    function go(i: int) {
+        if root.count <= 0 { return; }
+        let to = clamp(i, 0, root.count - 1);
+        root.show(to);
+        root.current-changed(to);
+    }
+    public function key(e: KeyEvent) -> EventResult {
+        let at = max(root.current, 0);
+        if e.text == Key.UpArrow { root.go(at - root.columns-shown); return accept; }
+        if e.text == Key.DownArrow { root.go(root.current < 0 ? 0 : at + root.columns-shown); return accept; }
+        if root.columns-shown > 1 && e.text == Key.LeftArrow { root.go(at - 1); return accept; }
+        if root.columns-shown > 1 && e.text == Key.RightArrow { root.go(at + 1); return accept; }
+        if e.text == Key.Home { root.go(0); return accept; }
+        if e.text == Key.End { root.go(root.count - 1); return accept; }
+        if e.text == Key.PageUp { root.go(at - root.lines-in-view * root.columns-shown); return accept; }
+        if e.text == Key.PageDown { root.go(at + root.lines-in-view * root.columns-shown); return accept; }
+        reject
+    }
+    accessible-role: list;
+    area := ScrollArea {
+        width: root.width;
+        height: root.height;
+        content-height: root.content-h;
+        drag-pan: root.drag-pan;
+        reserve-bar: !root.inline;
+        Rectangle {
+            width: root.cell-width * root.columns-shown + (root.columns-shown - 1) * root.spacing;
+            height: root.content-h;
+            @children
+        }
+    }
 }
 
 // Draws the open overlays above everything else in the window. Put one as the last

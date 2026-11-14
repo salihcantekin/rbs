@@ -18,6 +18,8 @@ format = 2
 "color.surface.overlay" = "#27282d"
 "color.surface.sunken" = "#0f1012"
 "color.surface.checker" = "#1e2025"
+"color.scrollbar.thumb" = "#6e7683"
+"color.scrollbar.thumb-hot" = "#a8afbb"
 # Notice card: a blue fill and a light edge, so it does not blend into the grey panels.
 "color.toast.surface" = "#1a2030"
 "color.toast.edge" = "#d6e4ff"
@@ -47,6 +49,8 @@ format = 2
 "color.surface.overlay" = "#e0e1e7"
 "color.surface.sunken" = "#f1f1f4"
 "color.surface.checker" = "#d6d7de"
+"color.scrollbar.thumb" = "#767c86"
+"color.scrollbar.thumb-hot" = "#4f555e"
 "color.toast.surface" = "#ffffff"
 "color.toast.edge" = "#0a4db8"
 "color.text.primary" = "#15171a"
@@ -75,6 +79,8 @@ format = 2
 "color.surface.overlay" = "#141414"
 "color.surface.sunken" = "#000000"
 "color.surface.checker" = "#262626"
+"color.scrollbar.thumb" = "#b0b0b0"
+"color.scrollbar.thumb-hot" = "#ffffff"
 "color.toast.surface" = "#0a0a0a"
 "color.toast.edge" = "#8ad4ff"
 "color.text.primary" = "#ffffff"
@@ -136,6 +142,14 @@ format = 2
 "size.row.picture.lg" = 54
 # Square of the pattern behind a picture's transparent parts.
 "size.row.picture.check" = 6
+# ScrollArea: the thumb idle and under the pointer, the room always kept for the
+# bar (also its track), and the shortest thumb.
+"size.scrollbar.thumb" = 4
+"size.scrollbar.thumb-hot" = 8
+"size.scrollbar.hit" = 12
+"size.scrollbar.thumb-min" = 24
+# ListBox in automatic columns: the narrowest a cell may be.
+"size.list.cell-min-w" = 120
 "size.select.list-h" = 320
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165

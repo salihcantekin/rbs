@@ -25,6 +25,8 @@ pub const THEME_COLORS: &[&str] = &[
     "color.surface.overlay",
     "color.surface.sunken",
     "color.surface.checker",
+    "color.scrollbar.thumb",
+    "color.scrollbar.thumb-hot",
     "color.toast.surface",
     "color.toast.edge",
     "color.text.primary",
@@ -105,6 +107,11 @@ pub const LENGTHS: &[&str] = &[
     "size.row.picture.md",
     "size.row.picture.lg",
     "size.row.picture.check",
+    "size.scrollbar.thumb",
+    "size.scrollbar.thumb-hot",
+    "size.scrollbar.hit",
+    "size.scrollbar.thumb-min",
+    "size.list.cell-min-w",
     "size.select.list-h",
     "size.app-menu.w",
     "size.app-menu.categories",
@@ -319,6 +326,14 @@ fn valid_name(n: &str) -> bool {
 
 /// Contrast rules of rule U7: (foreground, background, minimum ratio, high-contrast minimum).
 pub const CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
+    ("color.scrollbar.thumb", "color.surface.raised", 3.0, 3.0),
+    ("color.scrollbar.thumb", "color.surface.base", 3.0, 3.0),
+    (
+        "color.scrollbar.thumb-hot",
+        "color.surface.overlay",
+        3.0,
+        3.0,
+    ),
     ("color.text.primary", "color.surface.base", 4.5, 7.0),
     ("color.text.primary", "color.surface.raised", 4.5, 7.0),
     ("color.text.primary", "color.surface.overlay", 4.5, 7.0),
