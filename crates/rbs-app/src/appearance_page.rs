@@ -190,6 +190,9 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
                         value: f32| {
         edited(page.ui.set_number(&file, &name, value))
     });
+    on!(on_set_effects, |_app, page, file, index: i32| {
+        edited(page.ui.set_effects(&file, index.max(0) as usize))
+    });
     on!(on_set_style, |_app,
                        page,
                        file,
@@ -859,6 +862,11 @@ fn row(r: crate::appearance::TokenRow) -> ThemeTokenRow {
         RowValue::Fonts(f) => {
             out.kind = 3;
             out.fonts = f.into();
+        }
+        RowValue::Effects { choice, disabled } => {
+            out.kind = 4;
+            out.choice = i32::try_from(choice).unwrap_or(0);
+            out.disabled = disabled.into();
         }
     }
     out

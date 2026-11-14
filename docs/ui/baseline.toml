@@ -2,10 +2,11 @@
 # A lower count is written down with `cargo xtask check-ui --lower`.
 # A count rises only through docs/ui/exceptions.toml, after the owner approves.
 
-# Files that hold library components. They are not counted by `touch` and `help`.
+# Files that hold library components. They are not counted by `touch`, `help` and `effects`.
 library = ["components.slint"]
 
 [baseline]
 touch = 26
 duplicate = 7
 help = 10
+effects = 0

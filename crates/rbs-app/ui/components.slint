@@ -519,9 +519,10 @@ export component Button inherits Rectangle {
     // disabled one. Calm (`Theme.effects-on` false) adds no drawn item.
     property <bool> fx: Theme.effects-on && enabled
         && (kind == "primary" || kind == "live" || kind == "secondary" || (kind == "danger" && !round) || framed || (checked && kind != "danger"));
-    // The glow is under the main action only, and off while the keyboard focus ring shows.
+    // The glow is under the main action only. The glow and the sheen are off while the
+    // keyboard focus ring shows, so nothing of an effect lies under or beside the ring.
     property <bool> fx-glow: fx && kind == "primary" && !checked && !focus.ring;
-    property <bool> fx-sheen: fx && !checked && (kind == "primary" || kind == "secondary" || (kind == "ghost" && framed));
+    property <bool> fx-sheen: fx && !checked && !focus.ring && (kind == "primary" || kind == "secondary" || (kind == "ghost" && framed));
     // The key edge: the rest fill of the kind, darker. Live has none (rule U12).
     property <length> fx-edge: kind == "live" ? 0px : Theme.effects-key-edge;
     property <color> fx-key: kind == "live" ? Theme.state-live
@@ -719,6 +720,9 @@ export component SplitButton inherits Rectangle {
     callback clicked();
     // The ▾ part was activated, at this window x (its left edge).
     callback open-menu(length);
+    // Keyboard focus on the command or on the ▾ part, as Tab gives it (its ring shows).
+    public function focus-command() { main-focus.focus(); }
+    public function focus-menu() { part-focus.focus(); }
     out property <color> ink: !enabled ? Theme.text-disabled : part-ink;
     // The ▾ part stays usable while the command is disabled: its own ink and fill.
     property <color> part-ink: kind == "primary" && enabled ? Theme.text-inverse : Theme.text-primary;

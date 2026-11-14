@@ -21,7 +21,9 @@ export struct ThemeOption {
 }
 
 // One token in the editor. `kind`: 0 colour, 1 number (`unit` px or ms), 2 text style,
-// 3 font family. `overridden`: the theme sets it (Reset removes it).
+// 3 font family, 4 the theme's effects (ADR-0120: `choice` Calm, Vivid or Tactile;
+// `disabled` says why they cannot apply). `overridden`: the theme sets it (Reset removes
+// it).
 export struct ThemeTokenRow {
     name: string,
     label: string,
@@ -34,6 +36,8 @@ export struct ThemeTokenRow {
     line: float,
     weight: float,
     fonts: string,
+    choice: int,
+    disabled: string,
     overridden: bool,
     problem: string,
     // Colour warnings in words (ADR-0072): shown, never blocking.
@@ -139,6 +143,8 @@ export global Appearance {
     callback set-color(string, string);
     callback set-number(string, float);
     callback set-style(string, int, float);
+    // The theme's effects: 0 Calm, 1 Vivid, 2 Tactile (ADR-0120).
+    callback set-effects(int);
     callback set-fonts(string);
     callback reset(string);
     // Moves a colour to the nearest lightness that clears its warnings.
@@ -429,6 +435,9 @@ component TokenEditorRow inherits Rectangle {
                 accessible-role: none;
             }
             if item.kind == 2: Hint { text: @tr("Size, line height, weight"); }
+            if item.kind == 4: Hint {
+                text: item.disabled != "" ? item.disabled : @tr("How lively buttons look: flat, with soft shadows and a glow, or with a raised edge and a press");
+            }
             if item.kind == 3: Hint {
                 text: Appearance.font-in-use == "" ? @tr("Type names separated by commas, or pick one with Add font; the first one this computer has is used. In use: the system font.") : @tr("Type names separated by commas, or pick one with Add font; the first one this computer has is used. In use: {}.", Appearance.font-in-use);
             }
@@ -511,6 +520,17 @@ component TokenEditorRow inherits Rectangle {
                         Appearance.pending-kind = -1;
                         Appearance.set-number(item.name, v);
                     }
+                }
+            }
+            if item.kind == 4: VerticalLayout {
+                alignment: center;
+                SegmentedControl {
+                    width: Tokens.size-menu-sm;
+                    label: item.label;
+                    options: [@tr("Calm"), @tr("Vivid"), @tr("Tactile")];
+                    index: item.choice;
+                    enabled: item.disabled == "";
+                    selected(i) => { Appearance.set-effects(i); }
                 }
             }
             if item.kind == 2: VerticalLayout {
