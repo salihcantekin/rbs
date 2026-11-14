@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.9">
+    <resources>
+        <format id="r1" frameDuration="1/30s" width="1080" height="1920"/>
+        <asset id="r2" name="Konuşma 1" start="0s" duration="10s" hasVideo="1" format="r1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="44100">
+            <media-rep kind="original-media" src="file:///Users/salih/Movies/RBS/Konu%C5%9Fma/Konu%C5%9Fma%201.mp4"/>
+        </asset>
+        <asset id="r3" name="Mikrofon" start="0s" duration="1009/100s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="44100">
+            <media-rep kind="original-media" src="file:///Users/salih/Movies/RBS/Konu%C5%9Fma/Mikrofon.wav"/>
+        </asset>
+    </resources>
+    <library>
+        <event name="Konuşma">
+            <project name="Konuşma">
+                <sequence format="r1" duration="101/10s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="44.1k">
+                    <spine>
+                        <gap name="Gap" offset="0s" start="0s" duration="1/10s">
+                            <asset-clip ref="r3" lane="-1" offset="1/30s" name="Mikrofon" start="7/300s" duration="151/15s" tcFormat="NDF"/>
+                            <marker start="1/30s" duration="1/30s" value="Before the picture"/>
+                        </gap>
+                        <asset-clip ref="r2" offset="1/10s" name="Konuşma 1" start="0s" duration="10s" format="r1" tcFormat="NDF">
+                            <chapter-marker start="49/10s" duration="1/30s" value="Outro" posterOffset="0s"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

@@ -64,6 +64,8 @@ rbs-params = { path = "../rbs-params" }
 # CaptureError::Cancelled from OS pickers.
 rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }
+# The recording manifest and its markers (ADR-0089).
+rbs-manifest = { path = "../rbs-manifest" }
 rbs-browser-runner = { path = "../rbs-browser-runner" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-thread-os = { path = "../rbs-thread-os" }

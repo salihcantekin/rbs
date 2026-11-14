@@ -1249,6 +1249,81 @@ struct IsoFiles {
     tracks: Vec<api::RecordTrack>,
     /// Marked sources left out, as `record.status` lists them.
     skipped: Vec<api::SkippedTrack>,
+    /// The manifest written at start, and its folder; markers are added to it at stop
+    /// (ADR-0089 decision 5).
+    manifest: rbs_manifest::RecordingManifest,
+    /// The recording's folder.
+    folder: PathBuf,
+}
+
+/// The markers of a running recording and where its manifest goes (ADR-0089
+/// decisions 1 and 5). The recording's state on the control thread owns them.
+#[derive(Debug, Clone)]
+struct RecordingMarkers {
+    log: rbs_manifest::MarkerLog,
+    /// The manifest to write: the start manifest of a recording folder, or the
+    /// master alone for a plain recording.
+    manifest: rbs_manifest::RecordingManifest,
+    /// Its folder and file name.
+    dir: PathBuf,
+    name: String,
+    /// A recording folder's manifest exists from the start; a plain recording
+    /// writes one only when it has markers.
+    folder: bool,
+}
+
+impl RecordingMarkers {
+    /// The markers' state for a recording that started at `t0_ns` into `path`, or into
+    /// the recording folder of `iso`.
+    fn new(path: &Path, t0_ns: u64, t0_utc: String, iso: Option<&IsoFiles>) -> Option<Self> {
+        let log = rbs_manifest::MarkerLog::new(t0_ns, std::time::Duration::ZERO).ok()?;
+        if let Some(iso) = iso {
+            return Some(Self {
+                log,
+                manifest: iso.manifest.clone(),
+                dir: iso.folder.clone(),
+                name: rbs_manifest::FOLDER_MANIFEST.to_owned(),
+                folder: true,
+            });
+        }
+        let file = path.file_name()?.to_str()?;
+        let name = rbs_manifest::manifest_name_for(file)?;
+        let mut manifest = rbs_manifest::RecordingManifest::new(&t0_utc, t0_ns);
+        manifest
+            .files
+            .push(rbs_manifest::ManifestFile::listed("master", file));
+        Some(Self {
+            log,
+            manifest,
+            dir: path.parent()?.to_path_buf(),
+            name,
+            folder: false,
+        })
+    }
+
+    /// Writes the manifest with the markers, at stop. Nothing to write is `Ok`.
+    fn write(&mut self) -> Result<(), String> {
+        if !self.log.has_pending() || (!self.folder && self.log.markers().is_empty()) {
+            return Ok(());
+        }
+        self.manifest.markers = self.log.markers().to_vec();
+        rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
+        self.log.mark_flushed();
+        Ok(())
+    }
+}
+
+fn marker_color(c: Option<rbs_api::request::MarkerColor>) -> Option<rbs_manifest::MarkerColor> {
+    use rbs_api::request::MarkerColor as A;
+    use rbs_manifest::MarkerColor as M;
+    c.map(|c| match c {
+        A::Blue => M::Blue,
+        A::Red => M::Red,
+        A::Orange => M::Orange,
+        A::Yellow => M::Yellow,
+        A::Green => M::Green,
+        A::Purple => M::Purple,
+    })
 }
 
 /// The canvas an output records or streams (ADR-0093 decision 6).
@@ -1305,6 +1380,8 @@ struct CanvasOutputs {
     record_state: api::RecordState,
     /// The stream, as the control API reports it.
     stream_state: api::StreamState,
+    /// The running recording's markers (ADR-0089); `None` while nothing records.
+    markers: Option<RecordingMarkers>,
 }
 
 impl Default for CanvasOutputs {
@@ -1316,6 +1393,7 @@ impl Default for CanvasOutputs {
             streaming: None,
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
+            markers: None,
         }
     }
 }
@@ -4400,7 +4478,12 @@ impl Host {
                 })
             })
             .collect();
-        let iso = IsoFiles { tracks, skipped };
+        let iso = IsoFiles {
+            tracks,
+            skipped,
+            manifest: manifest.clone(),
+            folder: folder.clone(),
+        };
         let master = folder.join(&master_name);
         let result = self.start_master(c, canvas, r, &master, profile, Some(iso));
         if result.is_err() {
@@ -4471,6 +4554,19 @@ impl Host {
         )) = &started
         {
             self.outs[slot(c)].recording = Some((path.to_path_buf(), *id));
+            // Markers count from the separate files' `t0`, or from now for one file.
+            let (t0_ns, t0_utc) = iso.as_ref().map_or_else(
+                || {
+                    (
+                        self.clock.now().as_nanos(),
+                        chrono::Utc::now()
+                            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                            .to_string(),
+                    )
+                },
+                |f| (f.manifest.t0_ns, f.manifest.t0_utc.clone()),
+            );
+            self.outs[slot(c)].markers = RecordingMarkers::new(path, t0_ns, t0_utc, iso.as_ref());
             // Tracked together with the master, after the last panic point of the
             // start, so recovery never finds files without their master (ADR-0055).
             let (tracks, skipped) = iso
@@ -4537,6 +4633,76 @@ impl Host {
             ));
         }
         Ok(c)
+    }
+
+    /// `marker.add` (ADR-0089 decisions 1 and 11): a manual marker in every running
+    /// recording `p.canvas` names (absent: all). Checked on every target before any
+    /// marker is added, so a refusal adds none.
+    fn add_marker(
+        &mut self,
+        p: &rbs_api::request::MarkerAdd,
+    ) -> Result<rbs_api::request::MarkersAdded, ApiError> {
+        let label = rbs_manifest::checked_label(p.label.as_deref())
+            .map_err(|e| ApiError::new(ErrorKind::InvalidParams, e.to_string()))?;
+        let targets: Vec<OutputCanvas> = match p.canvas.unwrap_or(api::OutputTarget::All).single() {
+            Some(one) => vec![self.api_canvas_of(Some(one))?],
+            None => OutputCanvas::ALL.to_vec(),
+        };
+        let running: Vec<OutputCanvas> = targets
+            .into_iter()
+            .filter(|c| self.outs[slot(*c)].markers.is_some())
+            .collect();
+        if running.is_empty() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "no recording is running, so there is nothing to mark",
+            ));
+        }
+        if running.iter().any(|c| {
+            self.outs[slot(*c)]
+                .markers
+                .as_ref()
+                .is_some_and(|m| m.log.markers().len() >= rbs_manifest::MAX_MARKERS)
+        }) {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                rbs_manifest::MarkerError::Full.to_string(),
+            ));
+        }
+        let now = self.clock.now().as_nanos();
+        let color = marker_color(p.color);
+        let mut markers = Vec::with_capacity(running.len());
+        for c in running {
+            let Some(state) = self.outs[slot(c)].markers.as_mut() else {
+                continue;
+            };
+            let m = state
+                .log
+                .add_manual(now, label.as_deref(), color)
+                .map_err(|e| ApiError::new(ErrorKind::Conflict, e.to_string()))?;
+            markers.push(rbs_api::request::MarkerPlaced {
+                canvas: c,
+                index: m.index,
+                t_ns: m.t_ns,
+            });
+        }
+        Ok(rbs_api::request::MarkersAdded { markers })
+    }
+
+    /// `marker.remove` (ADR-0089 decision 11).
+    fn remove_marker(&mut self, c: OutputCanvas, index: u32) -> Result<(), ApiError> {
+        let c = self.api_canvas_of(Some(c))?;
+        let Some(state) = self.outs[slot(c)].markers.as_mut() else {
+            return Err(ApiError::new(ErrorKind::Conflict, "nothing records"));
+        };
+        if state.log.remove(index) {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("the recording has no marker {index}"),
+            ))
+        }
     }
 
     /// The `seq` map of `c`'s key on a per-canvas topic.
@@ -4653,7 +4819,18 @@ impl Host {
                 r.failure,
             )
         });
-        let failure = failure.or(failed);
+        let mut failure = failure.or(failed);
+        // The markers go into the manifest once the media is closed (ADR-0089
+        // decision 5); a failure there does not touch the media.
+        if let Some(mut markers) = self.outs[slot(c)].markers.take()
+            && let Err(e) = markers.write()
+        {
+            let why = format!("The markers could not be saved: {e}.");
+            failure = Some(match failure {
+                Some(f) => format!("{f} {why}"),
+                None => why,
+            });
+        }
         self.set_record_state(
             c,
             api::RecordState::Idle {
@@ -9468,6 +9645,11 @@ impl ApiTarget<'_> {
                 }
                 host.stop_recording(c, None, notify);
                 host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::MarkerAdd(p) => host.add_marker(&p).map(Response::MarkersAdded),
+            C::MarkerRemove(p) => {
+                host.remove_marker(p.canvas, p.index)?;
                 Ok(Response::Done(Empty {}))
             }
             C::RecordStatus(p) => {
