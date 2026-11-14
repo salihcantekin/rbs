@@ -25,6 +25,7 @@ pub mod param;
 pub mod queue;
 
 use std::fmt;
+use std::time::Duration;
 
 use rbs_core::time::Timestamp;
 use rbs_core::timing::Cadence;
@@ -110,6 +111,11 @@ pub struct Tick {
     /// the end of the input; packet and video readers give no such guarantee. Part of
     /// `Tick` equality.
     pub draining: bool,
+    /// How long this partition's previous tick took to run, from its worker's clock
+    /// (zero for the first tick and where the worker does not measure). A node that
+    /// may give way to others judges lateness from it (ADR-0086 decision 9: the ISO
+    /// exports skip a tick after a long one). Part of `Tick` equality.
+    pub previous_busy: Duration,
 }
 
 impl Tick {
@@ -119,6 +125,7 @@ impl Tick {
             index,
             time,
             draining: false,
+            previous_busy: Duration::ZERO,
         }
     }
 
@@ -132,6 +139,13 @@ impl Tick {
     #[must_use]
     pub const fn draining(mut self) -> Self {
         self.draining = true;
+        self
+    }
+
+    /// The same tick, carrying how long the previous one took.
+    #[must_use]
+    pub const fn after(mut self, previous_busy: Duration) -> Self {
+        self.previous_busy = previous_busy;
         self
     }
 }

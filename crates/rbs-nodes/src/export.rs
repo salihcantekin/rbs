@@ -42,6 +42,10 @@ pub struct ExportNodeStats {
     /// Timestamp in nanoseconds plus one of the last frame put on "video"; 0 before
     /// the first (ADR-0045: the studio compares it with the encoder's).
     pub last_frame: AtomicU64,
+    /// Canvas frames not converted because the previous render tick ran longer than
+    /// the export's budget ([`VideoExportNode::give_way_after`], ADR-0086 decision 9).
+    /// Each is a gap in the file, never a shifted timestamp.
+    pub gave_way: AtomicU64,
 }
 
 /// Ends a video export's input at a master-clock time (ADR-0045); shared between the
@@ -114,6 +118,9 @@ pub struct VideoExportNode {
     seen: DownloadStats,
     stats: Arc<ExportNodeStats>,
     end: Arc<ExportEnd>,
+    /// Nanoseconds of render tick time after which this export skips a canvas;
+    /// `u64::MAX` (every export but an ISO track's) never skips.
+    give_way_ns: u64,
 }
 
 impl VideoExportNode {
@@ -189,7 +196,18 @@ impl VideoExportNode {
             seen: DownloadStats::default(),
             stats: Arc::default(),
             end: Arc::default(),
+            give_way_ns: u64::MAX,
         }
+    }
+
+    /// An export that gives way to the master (ADR-0086 decision 9): when the render
+    /// partition's previous tick ran longer than `budget`, this tick's canvas is not
+    /// converted and [`ExportNodeStats::gave_way`] counts it. Frames already read back
+    /// are still passed on. For ISO tracks only; the master never gives way.
+    #[must_use]
+    pub fn give_way_after(mut self, budget: std::time::Duration) -> Self {
+        self.give_way_ns = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
+        self
     }
 
     /// The format of the frames on "video": the encoder's input format (the output size).
@@ -272,6 +290,9 @@ impl Node<GpuRuntime> for VideoExportNode {
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         let ctx_time = ctx.tick().time.as_nanos();
+        // `u64::MAX` (every export but an ISO track's): one compare that never holds.
+        let previous_ns = u64::try_from(ctx.tick().previous_busy.as_nanos()).unwrap_or(u64::MAX);
+        let give_way = previous_ns > self.give_way_ns;
         let gpu = ctx.shared();
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
@@ -302,7 +323,9 @@ impl Node<GpuRuntime> for VideoExportNode {
             let key = (canvas.timestamp(), canvas.sequence());
             if self.last != Some(key) && canvas.timestamp().as_nanos() <= end {
                 self.last = Some(key);
-                if download.submit(gpu, &local.pool, canvas).is_err() {
+                if give_way {
+                    self.stats.gave_way.fetch_add(1, Ordering::Relaxed);
+                } else if download.submit(gpu, &local.pool, canvas).is_err() {
                     result = Err(NodeError::Backend("video export conversion failed"));
                 }
             }

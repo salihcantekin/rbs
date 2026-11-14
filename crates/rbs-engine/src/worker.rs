@@ -516,6 +516,9 @@ pub(crate) fn run<X: Runtime>(
             // The cadence time a tick that is due at `t` carries.
             let index_due = |t: Timestamp| cadence.index_at_or_before(t - offset);
             let period = cadence.time_of(1).saturating_since(cadence.time_of(0));
+            // How long the tick before took, for the nodes that give way (ADR-0086
+            // decision 9). Zero after a start.
+            let mut previous_busy = Duration::ZERO;
             // Start at the current tick, or later if an earlier worker got further.
             if let Some(now_index) = index_due(clock.now()) {
                 next = next.max(now_index);
@@ -567,8 +570,9 @@ pub(crate) fn run<X: Runtime>(
                     stats.late.fetch_add(newest - next, Ordering::Relaxed);
                     newest
                 };
-                executor.run_tick(Tick::of(&cadence, run));
-                stats.ran(clock.now().saturating_since(now), period);
+                executor.run_tick(Tick::of(&cadence, run).after(previous_busy));
+                previous_busy = clock.now().saturating_since(now);
+                stats.ran(previous_busy, period);
                 stats.ticks.fetch_add(1, Ordering::Relaxed);
                 next = run.saturating_add(1);
             }
@@ -664,6 +668,8 @@ mod tests {
         step: Duration,
         step_every: u64,
         bell: Option<Arc<Doorbell>>,
+        /// The sum of `previous_busy` over the ticks it saw, in nanoseconds.
+        previous_busy: Arc<AtomicU64>,
     }
 
     impl Node<()> for Driver {
@@ -682,6 +688,8 @@ mod tests {
                 self.indices_ok.fetch_add(1, Ordering::Relaxed);
             }
             self.last = Some(index);
+            let previous = u64::try_from(ctx.tick().previous_busy.as_nanos()).unwrap_or(u64::MAX);
+            self.previous_busy.fetch_add(previous, Ordering::Relaxed);
             if let Some(clock) = &self.clock {
                 if (n - 1).is_multiple_of(self.step_every) {
                     clock.advance(self.step);
@@ -731,6 +739,7 @@ mod tests {
     struct Run {
         ticks: Arc<AtomicU64>,
         indices_ok: Arc<AtomicU64>,
+        previous_busy: Arc<AtomicU64>,
         allocations: u64,
         stats: WorkerStats,
     }
@@ -771,6 +780,7 @@ mod tests {
         let signals = Arc::new(signals);
         let ticks = Arc::new(AtomicU64::new(0));
         let indices_ok = Arc::new(AtomicU64::new(0));
+        let previous_busy = Arc::new(AtomicU64::new(0));
         let desc = NodeDescriptor::new(
             NodeTypeId::new("org.rbs.test.driver"),
             NodeKind::Output,
@@ -795,6 +805,7 @@ mod tests {
             step: step.0,
             step_every: step.1.max(1),
             bell: bell.clone(),
+            previous_busy: Arc::clone(&previous_busy),
         };
         let (mut controller, mut executor) = channel::<()>(Arc::new(()), ());
         let mut graph = GraphDescription::new();
@@ -864,6 +875,7 @@ mod tests {
         Run {
             ticks,
             indices_ok,
+            previous_busy,
             allocations: info.count_total,
             stats,
         }
@@ -935,6 +947,11 @@ mod tests {
         assert_eq!(t.sum, three * 10);
         // The 30th tick is the last of a group of three: no time.
         assert_eq!(t.last, Duration::ZERO);
+        // Each tick carries the one before's time: ticks 1 to 29 are seen by the next.
+        assert_eq!(
+            run.previous_busy.load(Ordering::Relaxed),
+            u64::try_from((three * 10).as_nanos()).unwrap()
+        );
         assert_eq!(t.share_under(0.5), 25);
         assert_eq!(t.share_under(0.9), 125);
         assert_eq!(TickTimes::default().share_under(0.5), 0);
