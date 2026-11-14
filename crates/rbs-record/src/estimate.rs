@@ -26,6 +26,28 @@ pub const HEAVY_SHARE: f64 = 0.7;
 /// (ADR-0087 decision 1).
 pub const DEFAULT_PLANNED_DURATION: Duration = Duration::from_secs(3600);
 
+/// Separate video files allowed while what an encoder can take is not known: a
+/// hardware encoder's session limit neither measured nor declared, or a software
+/// encoder's load not measured (owner's choice, 2026-11-14, ADR-0087 Review). Three
+/// 1080p60 files kept the master whole on an M4 Pro; four did not.
+pub const UNKNOWN_SESSIONS_VIDEO_LIMIT: usize = 3;
+
+/// How many separate video files a start may open, from its estimate: the
+/// estimate's "at most N", and at most [`UNKNOWN_SESSIONS_VIDEO_LIMIT`] while
+/// `encoder_sessions` or `cpu_load` is unknown (ADR-0087 Review, 2026-11-14).
+pub fn separate_video_limit(estimate: &Estimate) -> usize {
+    let max = &estimate.max_video;
+    let count = max.count.map(|c| c as usize);
+    if max.unknown.contains(&Resource::EncoderSessions) || max.unknown.contains(&Resource::CpuLoad)
+    {
+        count.map_or(UNKNOWN_SESSIONS_VIDEO_LIMIT, |c| {
+            c.min(UNKNOWN_SESSIONS_VIDEO_LIMIT)
+        })
+    } else {
+        count.unwrap_or(UNKNOWN_SESSIONS_VIDEO_LIMIT)
+    }
+}
+
 /// What a row measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Resource {
