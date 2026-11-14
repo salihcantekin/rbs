@@ -27,11 +27,13 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.48 adds recording markers (ADR-0089): `marker.add` and `marker.remove`. The
+/// number is provisional: it is renumbered at merge so that no minor is skipped.
 /// 1.46 adds separate files (ADR-0086): `source.set_record_separately`, `iso` on
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.46";
+pub const PROTOCOL_VERSION: &str = "1.48";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -55,6 +57,9 @@ pub struct Limits {
     pub request_rate: u32,
     /// Requests in a burst.
     pub request_burst: u32,
+    /// `marker.add` calls per second per session, also the burst (protocol 1.48,
+    /// ADR-0089 decision 11); more is `rate_limited`.
+    pub marker_add_rate: u32,
     /// Requests waiting behind the one in flight (`busy` beyond).
     pub queue_len: usize,
     /// Answers waiting while the connection does not take messages; beyond, the
@@ -83,6 +88,7 @@ impl Default for Limits {
             max_message_bytes: 1024 * 1024,
             request_rate: 50,
             request_burst: 100,
+            marker_add_rate: 2,
             queue_len: 16,
             max_pending_answers: 64,
             inbox_quota: 8,
@@ -233,6 +239,22 @@ struct Bucket {
     at: Timestamp,
 }
 
+/// Refills `bucket` at `rate` per second up to `burst`, then takes one request.
+fn refill_and_take(bucket: &mut Bucket, now: Timestamp, rate: u32, burst: u32) -> bool {
+    let elapsed = now.saturating_since(bucket.at);
+    let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+    let refill = nanos.saturating_mul(u64::from(rate)) / 1000;
+    let cap = u64::from(burst) * MICRO;
+    bucket.level = bucket.level.saturating_add(refill).min(cap);
+    bucket.at = now;
+    if bucket.level >= MICRO {
+        bucket.level -= MICRO;
+        true
+    } else {
+        false
+    }
+}
+
 #[derive(Default)]
 struct Outgoing {
     blocked: bool,
@@ -258,6 +280,8 @@ struct Session {
     queue: VecDeque<Queued>,
     in_flight: bool,
     bucket: Bucket,
+    /// `marker.add` only (protocol 1.48).
+    marker_bucket: Bucket,
     out: Outgoing,
     topics: TopicSet,
     sampled: BTreeMap<Topic, Sampling>,
@@ -522,6 +546,10 @@ impl Server {
                     level: u64::from(limits.request_burst) * MICRO,
                     at: now,
                 },
+                marker_bucket: Bucket {
+                    level: u64::from(limits.marker_add_rate) * MICRO,
+                    at: now,
+                },
                 out: Outgoing::default(),
                 topics: TopicSet::EMPTY,
                 sampled: BTreeMap::new(),
@@ -558,6 +586,18 @@ impl Server {
         };
         if !self.take_request(conn, now) {
             let e = ApiError::new(ErrorKind::RateLimited, "too many requests");
+            self.send_now(conn, id.as_ref(), Err(e));
+            return;
+        }
+        let marker = matches!(
+            &decoded,
+            Ok(i) if matches!(i.request, Request::Command(Command::MarkerAdd(_)))
+        );
+        if marker && !self.take_marker(conn, now) {
+            let e = ApiError::new(
+                ErrorKind::RateLimited,
+                "too many markers: at most 2 a second",
+            );
             self.send_now(conn, id.as_ref(), Err(e));
             return;
         }
@@ -727,18 +767,21 @@ impl Server {
         let Some(s) = self.sessions.get_mut(&conn) else {
             return false;
         };
-        let elapsed = now.saturating_since(s.bucket.at);
-        let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-        let refill = nanos.saturating_mul(u64::from(limits.request_rate)) / 1000;
-        let cap = u64::from(limits.request_burst) * MICRO;
-        s.bucket.level = s.bucket.level.saturating_add(refill).min(cap);
-        s.bucket.at = now;
-        if s.bucket.level >= MICRO {
-            s.bucket.level -= MICRO;
-            true
-        } else {
-            false
-        }
+        refill_and_take(
+            &mut s.bucket,
+            now,
+            limits.request_rate,
+            limits.request_burst,
+        )
+    }
+
+    /// One `marker.add` from the session's own bucket (ADR-0089 decision 11).
+    fn take_marker(&mut self, conn: ConnectionId, now: Timestamp) -> bool {
+        let rate = self.config.limits.marker_add_rate;
+        let Some(s) = self.sessions.get_mut(&conn) else {
+            return false;
+        };
+        refill_and_take(&mut s.marker_bucket, now, rate, rate)
     }
 
     fn authenticate(&mut self, conn: ConnectionId, id: RequestId, token: &str, now: Timestamp) {

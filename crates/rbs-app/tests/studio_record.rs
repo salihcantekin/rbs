@@ -925,3 +925,214 @@ fn separate_files_clean_up_after_a_refused_or_panicked_start() {
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A control API connection to `host` (same-user IPC: every scope).
+struct ApiClient {
+    _api: rbs_api::ApiServer,
+    handle: rbs_api::transport::ConnectionHandle,
+    rx: Receiver<serde_json::Value>,
+    next: i64,
+}
+
+struct JsonSender(mpsc::Sender<serde_json::Value>);
+
+impl rbs_api::transport::ConnectionSender for JsonSender {
+    fn try_send(&mut self, text: &Arc<str>) -> Result<(), rbs_api::transport::SendError> {
+        self.0
+            .send(serde_json::from_str(text).unwrap())
+            .map_err(|_| rbs_api::transport::SendError::Closed)
+    }
+
+    fn close(&mut self, _reason: rbs_api::transport::CloseReason) {}
+}
+
+impl ApiClient {
+    fn attach(host: &StudioHost) -> Self {
+        let server =
+            rbs_api::session::ServerConfig::new(rbs_api::request::ClientInfo::new("rbs", "test"))
+                .unwrap();
+        let (api, endpoint) = rbs_api::ApiServer::start(
+            server,
+            rbs_api::TokenStore::new(),
+            rbs_api::thread::ApiOptions::new(host.api_waker()),
+        )
+        .unwrap();
+        host.attach_api(endpoint, None);
+        let (handle, rx) = Self::connect(&api);
+        let mut c = Self {
+            _api: api,
+            handle,
+            rx,
+            next: 1,
+        };
+        c.hello();
+        c
+    }
+
+    fn connect(
+        api: &rbs_api::ApiServer,
+    ) -> (
+        rbs_api::transport::ConnectionHandle,
+        Receiver<serde_json::Value>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let handle = api
+            .inbox()
+            .connect(
+                rbs_api::transport::PeerInfo::same_user_ipc(),
+                Box::new(JsonSender(tx)),
+                Box::new(|| {}),
+            )
+            .unwrap();
+        (handle, rx)
+    }
+
+    fn hello(&mut self) {
+        self.call(
+            "session.hello",
+            serde_json::json!({"protocols": ["1.48"], "client": {"name": "test", "version": "1"}}),
+        );
+    }
+
+    /// A new session on the same server, with its own `marker.add` budget.
+    fn reconnect(&mut self) {
+        let (handle, rx) = Self::connect(&self._api);
+        self.handle = handle;
+        self.rx = rx;
+        self.hello();
+    }
+
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next;
+        self.next += 1;
+        let text =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.handle.push_message(text.to_string());
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an answer");
+            if v["id"] == id {
+                return v;
+            }
+        }
+    }
+}
+
+fn error_kind(answer: &serde_json::Value) -> &serde_json::Value {
+    &answer["error"]["data"]["kind"]
+}
+
+/// ADR-0089 first slice: `marker.add` and `marker.remove` on the running recording;
+/// the markers go into `<stem>.rbs.toml` beside a plain recording, and into the
+/// recording folder's `recording.rbs.toml`, when it stops. No marker, no sidecar.
+#[test]
+fn markers_go_into_the_manifest_when_the_recording_stops() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-markers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx, _display, mic) = marked(gpu, &clock, None);
+    let mut api = ApiClient::attach(&host);
+
+    let idle = api.call("marker.add", serde_json::json!({}));
+    assert_eq!(error_kind(&idle), "conflict", "{idle}");
+    // Every `marker.add` counts toward the session's two a second.
+    api.reconnect();
+
+    // A plain recording (`iso` off).
+    let plain = dir.join("plain.mkv");
+    host.send(Command::StartRecording(request(plain.clone(), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(3));
+    let added = api.call(
+        "marker.add",
+        serde_json::json!({"label": "Good take", "color": "green"}),
+    );
+    assert_eq!(
+        added["result"],
+        serde_json::json!({"markers": [{"canvas": "main", "index": 1, "t_ns": 3_000_000_000u64}]}),
+        "{added}"
+    );
+    let bad = api.call("marker.add", serde_json::json!({"color": "pink"}));
+    assert_eq!(error_kind(&bad), "invalid_params", "{bad}");
+    clock.advance(Duration::from_secs(1));
+    let second = api.call("marker.add", serde_json::json!({}));
+    assert_eq!(second["result"]["markers"][0]["index"], 2, "{second}");
+    let removed = api.call(
+        "marker.remove",
+        serde_json::json!({"canvas": "main", "index": 2}),
+    );
+    assert!(removed.get("error").is_none(), "{removed}");
+    let again = api.call(
+        "marker.remove",
+        serde_json::json!({"canvas": "main", "index": 2}),
+    );
+    assert_eq!(error_kind(&again), "not_found", "{again}");
+    let vertical = api.call(
+        "marker.remove",
+        serde_json::json!({"canvas": "vertical", "index": 1}),
+    );
+    assert_eq!(
+        error_kind(&vertical),
+        "not_found",
+        "no vertical canvas: {vertical}"
+    );
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+    let text = std::fs::read_to_string(dir.join("plain.rbs.toml")).unwrap();
+    let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(manifest.files[0].file_name, "plain.mkv");
+    assert_eq!(manifest.markers.len(), 1, "{text}");
+    let m = &manifest.markers[0];
+    assert_eq!(
+        (m.index, m.t_ns, m.label.as_str(), m.color),
+        (
+            1,
+            3_000_000_000,
+            "Good take",
+            rbs_manifest::MarkerColor::Green
+        )
+    );
+    assert!(
+        !text.contains(&dir.display().to_string()),
+        "no path: {text}"
+    );
+    assert!(!manifest.is_complete(), "the stop rewrite is a later step");
+
+    // No marker: no sidecar.
+    let quiet = dir.join("quiet.mkv");
+    host.send(Command::StartRecording(request(quiet.clone(), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    stop_recording(&host, &rx, &clock);
+    assert!(quiet.is_file());
+    assert!(!dir.join("quiet.rbs.toml").exists());
+
+    // A recording folder: the markers join the start manifest.
+    api.reconnect();
+    let take = dir.join("take.mkv");
+    host.send(Command::StartRecording(with_tracks(take, None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(2));
+    let added = api.call("marker.add", serde_json::json!({"canvas": "main"}));
+    assert_eq!(added["result"]["markers"][0]["index"], 1, "{added}");
+    stop_recording(&host, &rx, &clock);
+    let text = std::fs::read_to_string(dir.join("take").join("recording.rbs.toml")).unwrap();
+    let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    assert_eq!(manifest.markers.len(), 1, "{text}");
+    assert_eq!(manifest.markers[0].label, "Marker 1");
+    assert!(
+        manifest
+            .files
+            .iter()
+            .any(|f| f.source_name.as_deref() == Some(mic.name.as_str())),
+        "{text}"
+    );
+    assert!(manifest.markers[0].t_ns >= 2_000_000_000, "{text}");
+
+    drop(api);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}

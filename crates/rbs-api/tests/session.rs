@@ -319,6 +319,38 @@ fn requests_beyond_the_rate_are_refused() {
 }
 
 #[test]
+fn markers_beyond_two_a_second_are_refused_at_once() {
+    let mut h = Harness::new();
+    let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    let mut placed = 0;
+    for _ in 0..2 {
+        h.call(conn, "marker.add", json!({}));
+        let f = h.forwarded.pop().unwrap();
+        h.reply(
+            &f,
+            Ok(rbs_api::Response::MarkersAdded(
+                rbs_api::request::MarkersAdded { markers: vec![] },
+            )),
+        );
+        placed += 1;
+        assert!(h.one(conn)["result"]["markers"].is_array());
+    }
+    assert_eq!(placed, 2);
+    h.call(conn, "marker.add", json!({"label": "third"}));
+    assert!(h.forwarded.is_empty(), "the third is not forwarded");
+    assert_eq!(error_kind(&h.one(conn)), "rate_limited");
+    // Other methods are not limited by the marker bucket.
+    h.call(conn, "marker.remove", json!({"canvas": "main", "index": 1}));
+    assert_eq!(h.forwarded.len(), 1);
+    let f = h.forwarded.pop().unwrap();
+    h.reply(&f, Ok(rbs_api::Response::Done(rbs_api::request::Empty {})));
+    h.take(conn);
+    h.advance(Duration::from_millis(500));
+    h.call(conn, "marker.add", json!({}));
+    assert_eq!(h.forwarded.len(), 1, "one more after half a second");
+}
+
+#[test]
 fn one_request_in_flight_answers_in_order_and_busy_beyond_the_queue() {
     let mut h = Harness::with_config(|c| c.limits.queue_len = 2);
     let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);

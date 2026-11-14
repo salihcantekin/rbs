@@ -4345,6 +4345,7 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-manifest",
  "rbs-media-decode-test",
  "rbs-mux",
  "rbs-mux-flac",

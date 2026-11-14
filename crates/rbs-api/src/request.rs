@@ -190,6 +190,71 @@ pub struct SetRecordSeparately {
     pub enabled: bool,
 }
 
+/// A marker colour (protocol 1.48, ADR-0089 decision 2): a fixed, semantic set that
+/// mirrors the recording manifest's. The app draws each from a theme token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerColor {
+    /// The default.
+    #[default]
+    Blue,
+    /// Red.
+    Red,
+    /// Orange.
+    Orange,
+    /// Yellow.
+    Yellow,
+    /// Green.
+    Green,
+    /// Purple.
+    Purple,
+}
+
+/// `marker.add` (protocol 1.48, ADR-0089): a manual marker in the running
+/// recordings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkerAdd {
+    /// One line of at most 200 characters; absent or blank is "Marker N".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Absent is `blue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<MarkerColor>,
+    /// `main`, `vertical` or `all`; absent is `all` (every running recording).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputTarget>,
+}
+
+/// `marker.remove` (protocol 1.48, ADR-0089): takes one marker back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkerRemove {
+    /// The recording's canvas.
+    pub canvas: OutputCanvas,
+    /// The marker's `index` from `marker.add`.
+    pub index: u32,
+}
+
+/// One marker `marker.add` placed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkerPlaced {
+    /// The recording's canvas.
+    pub canvas: OutputCanvas,
+    /// 1-based, in the order the recording's markers were added.
+    pub index: u32,
+    /// Position from the recording's start (`t0`), after the reaction-time offset, in
+    /// nanoseconds.
+    pub t_ns: u64,
+}
+
+/// `marker.add`'s answer: one entry per recording that got the marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkersAdded {
+    /// Main canvas first.
+    pub markers: Vec<MarkerPlaced>,
+}
+
 /// `source.get_region`'s answer (protocol 1.41).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRegionInfo {
@@ -1255,6 +1320,10 @@ pub enum Command {
     SourceSetRegion(SetSourceRegion),
     /// `source.set_record_separately` (protocol 1.46, ADR-0086).
     SourceSetRecordSeparately(SetRecordSeparately),
+    /// `marker.add` (protocol 1.48, ADR-0089).
+    MarkerAdd(MarkerAdd),
+    /// `marker.remove` (protocol 1.48, ADR-0089).
+    MarkerRemove(MarkerRemove),
     /// `source.get_region` (protocol 1.41).
     SourceGetRegion(SourceRef),
     /// `source.set_chrome` (protocol 1.41, ADR-0104).
@@ -1376,6 +1445,8 @@ impl Command {
             Command::SourceSetGlide(_) => "source.set_glide",
             Command::SourceSetRegion(_) => "source.set_region",
             Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
+            Command::MarkerAdd(_) => "marker.add",
+            Command::MarkerRemove(_) => "marker.remove",
             Command::SourceGetRegion(_) => "source.get_region",
             Command::SourceSetChrome(_) => "source.set_chrome",
             Command::SourceGetChrome(_) => "source.get_chrome",
@@ -1532,6 +1603,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_glide", Some(Scope::Control)),
     m("source.set_region", Some(Scope::Control)),
     m("source.set_record_separately", Some(Scope::Control)),
+    m("marker.add", Some(Scope::Control)),
+    m("marker.remove", Some(Scope::Control)),
     m("source.get_region", Some(Scope::Control)),
     m("source.set_chrome", Some(Scope::Control)),
     m("source.get_chrome", Some(Scope::Control)),
@@ -1820,6 +1893,10 @@ enum WireRequest {
     SourceSetRegion(SetSourceRegion),
     #[serde(rename = "source.set_record_separately")]
     SourceSetRecordSeparately(SetRecordSeparately),
+    #[serde(rename = "marker.add")]
+    MarkerAdd(MarkerAdd),
+    #[serde(rename = "marker.remove")]
+    MarkerRemove(MarkerRemove),
     #[serde(rename = "source.get_region")]
     SourceGetRegion(SourceRef),
     #[serde(rename = "source.set_chrome")]
@@ -1951,6 +2028,8 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetRecordSeparately(p) => {
                 Request::Command(C::SourceSetRecordSeparately(p))
             }
+            WireRequest::MarkerAdd(p) => Request::Command(C::MarkerAdd(p)),
+            WireRequest::MarkerRemove(p) => Request::Command(C::MarkerRemove(p)),
             WireRequest::SourceGetRegion(p) => Request::Command(C::SourceGetRegion(p)),
             WireRequest::SourceSetChrome(p) => Request::Command(C::SourceSetChrome(p)),
             WireRequest::SourceGetChrome(p) => Request::Command(C::SourceGetChrome(p)),
@@ -2068,6 +2147,8 @@ impl From<Request> for WireRequest {
                 C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
                 C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
                 C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
+                C::MarkerAdd(p) => WireRequest::MarkerAdd(p),
+                C::MarkerRemove(p) => WireRequest::MarkerRemove(p),
                 C::SourceGetRegion(p) => WireRequest::SourceGetRegion(p),
                 C::SourceSetChrome(p) => WireRequest::SourceSetChrome(p),
                 C::SourceGetChrome(p) => WireRequest::SourceGetChrome(p),
@@ -2300,6 +2381,8 @@ pub enum Response {
     BoxPlaced(BoxPlaced),
     /// `canvas.auto_layout` (protocol 1.44).
     AutoLayoutDone(AutoLayoutDone),
+    /// `marker.add` (protocol 1.48).
+    MarkersAdded(MarkersAdded),
     /// `item.remove`, `global.remove` (protocol 1.10).
     ItemRemoved(ItemRemoved),
     /// `output.profiles`.
@@ -2338,7 +2421,7 @@ pub enum Response {
     /// `tokens.create`.
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, the `monitor.set_*` methods, `source.set_monitor`, `events.unsubscribe`, `tokens.revoke`,
+    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, the `monitor.set_*` methods, `source.set_monitor`, `marker.remove`, `events.unsubscribe`, `tokens.revoke`,
     /// `profile.switch`, `collection.switch`, and the protocol 1.6 edits other than
     /// `scene.add` and `item.add`.
     Done(Empty),

@@ -182,7 +182,8 @@ pub struct MarkerLog {
     lead_ns: u64,
     markers: Vec<Marker>,
     manual: u32,
-    flushed: usize,
+    next_index: u32,
+    pending: bool,
 }
 
 impl MarkerLog {
@@ -199,7 +200,8 @@ impl MarkerLog {
             lead_ns,
             markers: Vec::new(),
             manual: 0,
-            flushed: 0,
+            next_index: 1,
+            pending: false,
         })
     }
 
@@ -262,14 +264,25 @@ impl MarkerLog {
         &self.markers
     }
 
-    /// Whether markers were added since the last [`MarkerLog::mark_flushed`].
-    pub fn has_pending(&self) -> bool {
-        self.flushed < self.markers.len()
+    /// Removes the marker with `index` (`marker.remove`). The others keep their
+    /// index, and a later marker never reuses it. `false` when there is none.
+    pub fn remove(&mut self, index: u32) -> bool {
+        let Some(at) = self.markers.iter().position(|m| m.index == index) else {
+            return false;
+        };
+        self.markers.remove(at);
+        self.pending = true;
+        true
     }
 
-    /// Records that every marker so far is in the manifest on disk.
+    /// Whether the markers changed since the last [`MarkerLog::mark_flushed`].
+    pub fn has_pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Records that the markers as they are now are in the manifest on disk.
     pub fn mark_flushed(&mut self) {
-        self.flushed = self.markers.len();
+        self.pending = false;
     }
 
     fn room(&self) -> Result<(), MarkerError> {
@@ -281,8 +294,9 @@ impl MarkerLog {
     }
 
     fn push(&mut self, mut marker: Marker) -> &Marker {
-        // At most MAX_MARKERS (10 000), so the index fits in u32.
-        marker.index = u32::try_from(self.markers.len() + 1).unwrap_or(u32::MAX);
+        marker.index = self.next_index;
+        self.next_index = self.next_index.saturating_add(1);
+        self.pending = true;
         self.markers.push(marker);
         let last = self.markers.len() - 1;
         &self.markers[last]
@@ -373,6 +387,23 @@ mod tests {
         assert!(log.has_pending());
         log.mark_flushed();
         assert!(!log.has_pending());
+        assert!(log.remove(1));
+        assert!(log.has_pending(), "a removal is written too");
+    }
+
+    #[test]
+    fn removed_markers_leave_the_other_indexes_alone() {
+        let mut log = MarkerLog::new(0, Duration::ZERO).unwrap();
+        for _ in 0..3 {
+            let _ = log.add_manual(S, None, None);
+        }
+        assert!(log.remove(2));
+        assert!(!log.remove(2), "already gone");
+        assert!(!log.remove(9));
+        let m = log.add_manual(S, None, None).unwrap();
+        assert_eq!((m.index, m.label.as_str()), (4, "Marker 4"));
+        let left: Vec<u32> = log.markers().iter().map(|m| m.index).collect();
+        assert_eq!(left, vec![1, 3, 4]);
     }
 
     #[test]
