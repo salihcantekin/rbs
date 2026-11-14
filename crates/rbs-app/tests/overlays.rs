@@ -394,3 +394,31 @@ fn tab_into_a_row_below_the_view_shows_the_whole_row() {
         p.get_row_bottom()
     );
 }
+
+#[test]
+fn a_setting_rows_hint_shows_only_while_the_pointer_is_over_the_row_or_it_has_focus() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::SettingRowProbe::new().expect("the probe window");
+    p.show().expect("show");
+    let at = |x: f32, y: f32| {
+        p.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(x, y),
+        });
+        settle();
+    };
+    assert!(!p.get_hint_shown(), "no (i) before the pointer comes");
+    at(20.0, 20.0);
+    assert!(p.get_hint_shown(), "over the name");
+    at(385.0, 28.0);
+    assert!(p.get_hint_shown(), "over the switch at the other end");
+    at(200.0, 180.0);
+    assert!(!p.get_hint_shown(), "gone once the pointer leaves the row");
+    // Tab reaches the (i) though it is not drawn, and then shows it.
+    let s: slint::SharedString = Key::Tab.into();
+    p.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: s.clone() });
+    p.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: s });
+    settle();
+    assert!(p.get_hint_shown(), "keyboard focus on the (i)");
+}

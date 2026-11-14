@@ -776,7 +776,8 @@ export component AppearanceSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Use the system appearance");
-                help: @tr("Dark while the system is dark, Light while it is light. Choosing a theme below keeps that theme instead.");
+                summary: @tr("Follows the system's dark and light mode");
+                hint: @tr("Dark while the system is dark, Light while it is light. Choosing a theme below keeps that theme instead.");
                 fill: false;
                 Toggle {
                     label: @tr("Use the system appearance");
@@ -787,7 +788,8 @@ export component AppearanceSettings inherits Rectangle {
             SettingRow {
                 divider: false;
                 label: @tr("Spacing");
-                help: @tr("Compact packs more in; roomy gives larger controls. Applies to every theme.");
+                summary: @tr("How tightly controls are packed");
+                hint: @tr("Compact packs more in; roomy gives larger controls. Applies to every theme.");
                 SegmentedControl {
                     label: @tr("Spacing");
                     options: [@tr("Regular"), @tr("Compact"), @tr("Roomy")];
@@ -797,7 +799,8 @@ export component AppearanceSettings inherits Rectangle {
             }
             if Appearance.density == 1: SettingRow {
                 label: @tr("Amount");
-                help: @tr("1 is the next smaller step. 3 is as tight as these tokens can go.");
+                summary: @tr("How compact");
+                hint: @tr("1 is the next smaller step. 3 is as tight as these tokens can go.");
                 HorizontalLayout {
                     spacing: Tokens.space-2;
                     Slider {
