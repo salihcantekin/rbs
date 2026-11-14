@@ -1048,6 +1048,10 @@ pub enum Command {
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// output profile saved them. Sent at start and after each change.
     SetVerticalFlags(VerticalFlags),
+    /// Whether Record and `record.start` without `iso` write the separate files
+    /// (Settings › Recording › Separate files, ADR-0086 decision 4). Sent at start
+    /// and after each change.
+    SetSeparateFiles(bool),
     /// The vertical canvas's panel shows (`true`) or not (ADR-0093 decision 7): its
     /// picture runs only while it shows, so a closed panel costs nothing. Kept while
     /// there is no vertical canvas, for the next one.
@@ -1303,12 +1307,13 @@ struct IsoFiles {
     images: Vec<rbs_record::IsoImageTrack>,
 }
 
-/// Most separate video files a recording writes beside its master (ADR-0087, the
-/// owner's choice of 2026-11-14): with the master's encoder, three 1080p60 files kept
-/// the master whole on an M4 Pro and four did not (ADR-0086 step 3.2). Marked sources
-/// past it are skipped, in source id order, and listed with the reason `limit`. Image
-/// and sound files are not counted. The ADR-0087 estimate replaces this number.
-pub const SEPARATE_VIDEO_LIMIT: usize = 3;
+/// Separate video files a take may open while the encoder session limit of this
+/// computer is not known (neither measured nor declared): the owner's choice of
+/// 2026-11-14 in ADR-0087's Review. With a known limit the estimate decides
+/// ([`rbs_record::estimate::separate_video_limit`]). Marked sources past the limit are
+/// skipped, in source id order, and listed with the reason `limit`. Image and sound
+/// files are not counted.
+pub const SEPARATE_VIDEO_LIMIT: usize = rbs_record::estimate::UNKNOWN_SESSIONS_VIDEO_LIMIT;
 
 /// The markers of a running recording and where its manifest goes (ADR-0089
 /// decisions 1 and 5). The recording's state on the control thread owns them.
@@ -2481,6 +2486,8 @@ struct Host {
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// UI last sent them.
     vertical_flags: VerticalFlags,
+    /// The output profile's Separate files switch (ADR-0086 decision 4).
+    separate_files: bool,
     /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
     vertical_shared: Vec<SceneId>,
     vertical_sent: Option<Option<VerticalState>>,
@@ -2990,6 +2997,7 @@ fn start(
         vertical: None,
         vertical_restore_error: None,
         vertical_flags: VerticalFlags::default(),
+        separate_files: true,
         vertical_shared: Vec::new(),
         vertical_sent: None,
         master_sent: None,
@@ -3663,6 +3671,7 @@ impl Host {
                     self.settings_changed();
                 }
             }
+            Command::SetSeparateFiles(on) => self.separate_files = on,
             Command::SetVerticalPicture(on) => {
                 // Turning the picture off cannot leave anything to report: the node
                 // goes with the next update at the latest.
@@ -4630,7 +4639,8 @@ impl Host {
     /// Opens the separate video files and image tracks of the main recording, once its
     /// master runs (ADR-0086 step 3.5, ADR-0117). The take never fails here (ADR-0087
     /// decision 7 for requests without the new start parameters): a source with no
-    /// picture, a file past [`SEPARATE_VIDEO_LIMIT`], a recording with no picture or
+    /// picture, a file past the estimate's limit ([`SEPARATE_VIDEO_LIMIT`] while the
+    /// session limit is unknown), a recording with no picture or
     /// files that cannot open are listed in `skipped`, and the manifest is written
     /// again with what is open.
     fn start_separate_pictures(&mut self, files: &mut IsoFiles, r: &RecordRequest) {
@@ -4671,7 +4681,17 @@ impl Host {
         );
         start.image_dir = Some(files.folder.clone());
         start.t0 = Timestamp::from_nanos(files.manifest.t0_ns);
-        start.max_video = SEPARATE_VIDEO_LIMIT;
+        // The estimate of what runs now plus these files (ADR-0087). Not calibrated yet
+        // (step D): the declared session limit, else SEPARATE_VIDEO_LIMIT.
+        let (estimate_plan, declared) =
+            self.studio
+                .separate_video_plan(&self.adapters, &self.collection, &start);
+        let limits = rbs_record::estimate::Limits {
+            adapters: declared,
+            ..rbs_record::estimate::Limits::default()
+        };
+        let estimate = rbs_record::estimate::estimate(&estimate_plan, &limits);
+        start.max_video = rbs_record::estimate::separate_video_limit(&estimate);
         start.skip_no_picture = true;
         let started = match self.studio.start_iso_video(&self.adapters, &start) {
             Ok(started) => started,
@@ -4774,9 +4794,14 @@ impl Host {
                 f.tracks
                     .iter()
                     .filter_map(|t| {
+                        let what = match t.role {
+                            api::TrackRole::Video => "video",
+                            api::TrackRole::Image => "images",
+                            _ => "sound",
+                        };
                         self.collection
                             .source(SourceId::from_raw(t.source))
-                            .map(|s| s.name.clone())
+                            .map(|s| format!("{} ({what})", s.name))
                     })
                     .collect()
             })
@@ -5142,7 +5167,7 @@ impl Host {
             audio_bitrate_bps: start.audio_bitrate_bps,
             bit_depth: start.bit_depth,
             size: start.size,
-            iso: true,
+            iso: self.separate_files,
         })
     }
 
@@ -10137,9 +10162,13 @@ impl ApiTarget<'_> {
                     Some(one) => {
                         let c = host.api_canvas_of(Some(one))?;
                         let path = host.recording_file(c);
-                        self.record(c, path, false, p.iso.unwrap_or(true))
+                        let iso = p.iso.unwrap_or(host.separate_files);
+                        self.record(c, path, false, iso)
                     }
-                    None => self.start_all(api::OutputKind::Record, p.iso.unwrap_or(true)),
+                    None => {
+                        let iso = p.iso.unwrap_or(host.separate_files);
+                        self.start_all(api::OutputKind::Record, iso)
+                    }
                 }
             }
             C::RecordStartToFile(p) => {

@@ -3724,6 +3724,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.set_source_record_separately(id, enabled);
         }
     );
+    on!(on_set_source_record_form, |app, id: i32, form: i32| {
+        app.studio.set_source_record_form(id, form);
+    });
+    on!(on_set_separate_files, |app, on: bool| {
+        app.studio.set_separate_files(on);
+    });
     on!(on_set_source_mixer_hidden, |app, id: i32, hidden: bool| {
         app.studio.set_source_mixer_hidden(id, hidden);
     });

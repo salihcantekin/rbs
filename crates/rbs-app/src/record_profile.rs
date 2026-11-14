@@ -772,6 +772,45 @@ impl Encoding {
     }
 }
 
+/// The output profile section of the Separate files settings (ADR-0086 decision 4),
+/// kept apart from `recording` so an older build keeps reading that one.
+pub const SEPARATE_FILES_SECTION: &str = "recording.iso";
+
+/// The section's own format version; a higher one was written by a newer RBS.
+pub const SEPARATE_FILES_FORMAT: u32 = 1;
+
+/// Separate files settings of the main recording (Settings › Recording › Separate
+/// files). Only the switch for now; quality, container and the encoder choice come
+/// with later steps of ADR-0086 and ADR-0119.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SeparateFiles {
+    /// The section's format version.
+    pub format_version: u32,
+    /// Record and `record.start` without `iso` write the marked sources' files.
+    pub enabled: bool,
+}
+
+impl Default for SeparateFiles {
+    fn default() -> Self {
+        Self {
+            format_version: SEPARATE_FILES_FORMAT,
+            enabled: true,
+        }
+    }
+}
+
+impl SeparateFiles {
+    /// The settings a saved section gives: the defaults when it is absent, does not
+    /// load, or was written by a newer RBS.
+    pub fn from_section<E>(saved: Result<Option<Self>, E>) -> Self {
+        match saved {
+            Ok(Some(s)) if s.format_version <= SEPARATE_FILES_FORMAT => s,
+            _ => Self::default(),
+        }
+    }
+}
+
 /// What [`RecordProfile::recording_start`] asks a recording to open.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordingStart {

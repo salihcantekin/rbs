@@ -15,17 +15,18 @@ use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{
-    AUDIO_KBPS, Delivery, Encoding, Format, OutputSize, RateMode, RecordProfile, VIDEO_KBPS,
-    VideoCodec, audio_fact, fit_output_size, output_choice_copy, output_size_options,
-    recommended_video_kbps, vertical_recording_from_main,
+    AUDIO_KBPS, Delivery, Encoding, Format, OutputSize, RateMode, RecordProfile,
+    SEPARATE_FILES_SECTION, SeparateFiles, VIDEO_KBPS, VideoCodec, audio_fact, fit_output_size,
+    output_choice_copy, output_size_options, recommended_video_kbps, vertical_recording_from_main,
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
-    RecordRequest, RecordingUpdate, SceneList, SourceKind, SourceRow, SourceSettingsView,
-    SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, TransformOp, Update,
+    RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind, SourceRow,
+    SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target,
+    TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -37,7 +38,7 @@ use rbs_record::Link;
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::{
     Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Shape, SourceId,
-    SourceRegion,
+    SourceRegion, VideoAs,
 };
 use rbs_transport::Secret;
 use rbs_ui::fader;
@@ -413,6 +414,12 @@ pub struct StudioUi {
     rec_separate: Vec<String>,
     /// The sources marked to record separately, by name, for Settings › Recording.
     separate_names: String,
+    /// What they write, for Settings › Recording: "1 video · 1 image · 1 sound".
+    separate_counts: String,
+    /// How many video files they would write (before the limit).
+    separate_videos: usize,
+    /// The output profile's Separate files settings (ADR-0086 decision 4).
+    pub separate_files: SeparateFiles,
     /// The vertical canvas's recording and stream (ADR-0093 decision 6): the frame's
     /// Record and Go live menus start and stop them, and an output profile switch
     /// waits for them as for the main ones.
@@ -496,6 +503,8 @@ impl StudioUi {
         canvas: (rbs_core::media::Size, rbs_core::timing::FrameRate),
     ) -> Self {
         let (profile, why) = section(&user, RECORDING, RecordProfile::new, RecordProfile::problem);
+        let separate_files =
+            SeparateFiles::from_section(user.section::<SeparateFiles>(SEPARATE_FILES_SECTION));
         let (mut stream, stream_why) =
             section(&user, STREAM, StreamProfile::new, StreamProfile::problem);
         // A key kept only in memory is gone after a restart.
@@ -592,6 +601,9 @@ impl StudioUi {
             rec_file_audio: false,
             rec_separate: Vec::new(),
             separate_names: String::new(),
+            separate_counts: String::new(),
+            separate_videos: 0,
+            separate_files,
             rec_file: None,
             rec_note: String::new(),
             rec_note_bad: false,
@@ -729,6 +741,10 @@ impl StudioUi {
         g.set_switching(self.switching.is_some());
         g.set_rec_state(self.rec_state);
         g.set_rec_separate_names(self.separate_names.as_str().into());
+        g.set_rec_separate_counts(self.separate_counts.as_str().into());
+        g.set_rec_separate_videos(self.separate_videos as i32);
+        g.set_rec_separate_limit(SEPARATE_VIDEO_LIMIT as i32);
+        g.set_rec_separate_on(self.separate_files.enabled);
         g.set_out_separate(separate_line(&self.rec_separate).into());
         g.set_rec_file(
             self.rec_file
@@ -1868,13 +1884,52 @@ impl StudioUi {
         });
     }
 
-    /// Mark a source to record its sound as a file of its own, or clear the mark
-    /// (Properties' Record separately, ADR-0086).
+    /// Mark a source to record as files of its own, or clear the marks (Properties'
+    /// Record separately, ADR-0086): a sound source's sound, a picture source's
+    /// picture, and both feeds of a media file.
     pub fn set_source_record_separately(&mut self, id: i32, enabled: bool) {
-        self.send(Command::SetRecordSeparately {
-            id: SourceId::from_raw(id as u32),
-            patch: RecordPatch::enabled(enabled),
-        });
+        let id = SourceId::from_raw(id as u32);
+        let media = self
+            .rows
+            .iter()
+            .any(|r| r.id == id && r.kind == Some(SourceKind::Media));
+        let patch = if media {
+            RecordPatch {
+                video: Some(enabled),
+                audio: Some(enabled),
+                ..RecordPatch::default()
+            }
+        } else {
+            RecordPatch::enabled(enabled)
+        };
+        self.send(Command::SetRecordSeparately { id, patch });
+    }
+
+    /// The form of a marked source (Properties' Recording dropdown, ADR-0117): for a
+    /// still source 0 automatic, 1 images, 2 a video file; for a media file 0 picture
+    /// and sound, 1 picture, 2 sound.
+    pub fn set_source_record_form(&mut self, id: i32, form: i32) {
+        let id = SourceId::from_raw(id as u32);
+        let Some(kind) = self.rows.iter().find(|r| r.id == id).and_then(|r| r.kind) else {
+            return;
+        };
+        let patch = match kind {
+            SourceKind::Media => RecordPatch {
+                video: Some(form != 2),
+                audio: Some(form != 1),
+                ..RecordPatch::default()
+            },
+            SourceKind::Image | SourceKind::Color => RecordPatch {
+                video_as: Some(match form {
+                    1 => VideoAs::Image,
+                    2 => VideoAs::Video,
+                    _ => VideoAs::Auto,
+                }),
+                ..RecordPatch::default()
+            },
+            _ => return,
+        };
+        self.send(Command::SetRecordSeparately { id, patch });
     }
 
     /// Mute or unmute a source's sound (the Mixer row's speaker, Properties' Mute).
@@ -4491,6 +4546,8 @@ impl StudioUi {
             self.user
                 .section::<VerticalFlags>(vertical_outputs::SECTION),
         );
+        self.separate_files =
+            SeparateFiles::from_section(self.user.section::<SeparateFiles>(SEPARATE_FILES_SECTION));
         self.vertical_stream = self
             .user
             .section::<StreamProfile>(STREAM_VERTICAL)
@@ -4523,6 +4580,19 @@ impl StudioUi {
     /// Hands the vertical canvas's saved recording and stream settings to the studio
     /// (ADR-0093 decision 6). A section that does not load counts as not saved; one
     /// that loads with a problem is sent as it is, so a start says it cannot be used.
+    /// Keeps and saves the Separate files switch (Settings › Recording), and tells
+    /// the host.
+    pub fn set_separate_files(&mut self, on: bool) {
+        self.separate_files.enabled = on;
+        if let Err(why) = self
+            .user
+            .set_section(SEPARATE_FILES_SECTION, &self.separate_files)
+        {
+            self.profile_note = format!("The Separate files choice was not saved: {why}");
+        }
+        self.send(Command::SetSeparateFiles(on));
+    }
+
     /// Keeps and saves whether Record and Go live also act on the vertical outputs
     /// (ADR-0111), and tells the host.
     pub fn set_vertical_flags(&mut self, flags: VerticalFlags) {
@@ -4534,6 +4604,7 @@ impl StudioUi {
     }
 
     fn send_vertical_profiles(&self) {
+        self.send(Command::SetSeparateFiles(self.separate_files.enabled));
         self.send(Command::SetVerticalFlags(self.vertical_flags));
         self.send(Command::SetVerticalProfile(self.vertical_profile.clone()));
         self.send(Command::SetVerticalStreamProfile(
@@ -5003,13 +5074,36 @@ impl StudioUi {
                     self.vedit.reset();
                     self.refresh_marks();
                 }
-                self.separate_names = list
+                let marked: Vec<_> = list
                     .sources
                     .iter()
-                    .filter(|s| s.record_separately.audio)
+                    .filter(|s| !s.record_separately.is_none())
+                    .collect();
+                self.separate_names = marked
+                    .iter()
                     .map(|s| s.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
+                let (mut videos, mut images, mut sounds) = (0, 0, 0);
+                for s in &marked {
+                    let mark = s.record_separately;
+                    if mark.video {
+                        let still = matches!(s.kind, Some(SourceKind::Image | SourceKind::Color));
+                        if still && mark.video_as != VideoAs::Video {
+                            images += 1;
+                        } else {
+                            videos += 1;
+                        }
+                    }
+                    sounds += usize::from(mark.audio);
+                }
+                self.separate_videos = videos;
+                self.separate_counts = [(videos, "video"), (images, "image"), (sounds, "sound")]
+                    .iter()
+                    .filter(|(n, _)| *n > 0)
+                    .map(|(n, what)| format!("{n} {what}"))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
                 self.scene_list = Some(list);
                 self.refresh_existing();
                 self.refresh_global_existing();
@@ -5394,7 +5488,13 @@ impl StudioUi {
                     filters,
                     selected_filter,
                     sync_offset: r.audio.sync_offset_ms,
-                    record_separately: r.record_separately.audio,
+                    record_separately: record_shown(r),
+                    record_choice: match r.kind {
+                        Some(SourceKind::Image | SourceKind::Color) => 1,
+                        Some(SourceKind::Media) => 2,
+                        _ => 0,
+                    },
+                    record_form: record_form(r),
                     global: r.global,
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
@@ -6378,18 +6478,33 @@ fn rates_between(min: u32, max: u32, stored: Option<u32>) -> Vec<u32> {
     rates
 }
 
+/// A camera's modes as the Source settings window lists them: each picture size once,
+/// largest first (ties: the wider one), with every rate any of its modes runs at. A
+/// camera reports one mode per size, pixel format and rate range, and the port picks
+/// the pixel format itself, so listing those separately only repeats the same size.
+fn camera_sizes(modes: &[rbs_sources::SourceMode]) -> Vec<((u32, u32), Vec<u32>)> {
+    let mut sizes: Vec<((u32, u32), Vec<u32>)> = Vec::new();
+    for m in modes {
+        let rates = rates_between(m.min_fps, m.max_fps, None);
+        match sizes.iter_mut().find(|(s, _)| *s == (m.width, m.height)) {
+            Some((_, have)) => {
+                have.extend(rates);
+                have.sort_unstable();
+                have.dedup();
+            }
+            None => sizes.push(((m.width, m.height), rates)),
+        }
+    }
+    sizes.sort_by(|((aw, ah), _), ((bw, bh), _)| {
+        (u64::from(*bw) * u64::from(*bh), *bw).cmp(&(u64::from(*aw) * u64::from(*ah), *aw))
+    });
+    sizes
+}
+
 fn source_settings_data(view: &SourceSettingsView) -> (SourceSettingsData, SettingsChoices) {
     let camera = view.kind == SourceKind::Camera;
     let (modes, rates): (Vec<(u32, u32)>, Vec<Vec<u32>>) = if camera {
-        view.modes
-            .iter()
-            .map(|m| {
-                (
-                    (m.width, m.height),
-                    rates_between(m.min_fps, m.max_fps, None),
-                )
-            })
-            .unzip()
+        camera_sizes(&view.modes).into_iter().unzip()
     } else {
         (Vec::new(), vec![rates_between(15, 60, view.fps)])
     };
@@ -6555,11 +6670,37 @@ fn properties_source(selected: i32, remembered: i32, ids: &[i32]) -> i32 {
 
 /// The Outputs card's line for the files a recording writes beside its master
 /// (ADR-0086): empty when there are none.
+/// The Outputs card's Separate files line: each file's source and kind, as the host
+/// names them ("Camera (video)").
 fn separate_line(names: &[String]) -> String {
-    match names.len() {
-        0 => String::new(),
-        1 => format!("1 sound file: {}", names[0]),
-        n => format!("{n} sound files: {}", names.join(", ")),
+    names.join(", ")
+}
+
+/// Whether Properties' Record separately switch is on: a picture source's picture,
+/// a media file's picture or sound, anything else's sound (ADR-0086).
+fn record_shown(r: &SourceRow) -> bool {
+    let mark = r.record_separately;
+    match r.kind {
+        Some(SourceKind::Media) => !mark.is_none(),
+        Some(k) if !k.is_audio() => mark.video,
+        _ => mark.audio,
+    }
+}
+
+/// The Recording dropdown's index for `r` (see `set_source_record_form`).
+fn record_form(r: &SourceRow) -> i32 {
+    let mark = r.record_separately;
+    match r.kind {
+        Some(SourceKind::Media) => match (mark.video, mark.audio) {
+            (true, false) => 1,
+            (false, true) => 2,
+            _ => 0,
+        },
+        _ => match mark.video_as {
+            VideoAs::Image => 1,
+            VideoAs::Video => 2,
+            _ => 0,
+        },
     }
 }
 
@@ -6571,10 +6712,9 @@ mod tests {
     #[test]
     fn the_outputs_card_names_the_separate_files() {
         assert_eq!(separate_line(&[]), "");
-        assert_eq!(separate_line(&["Mic".into()]), "1 sound file: Mic");
         assert_eq!(
-            separate_line(&["Mic".into(), "Music".into()]),
-            "2 sound files: Mic, Music"
+            separate_line(&["Camera (video)".into(), "Mic (sound)".into()]),
+            "Camera (video), Mic (sound)"
         );
     }
 
@@ -6673,6 +6813,35 @@ mod tests {
         assert_eq!(patch["height"], 1080);
         assert_eq!(patch["fps"], 30);
         assert!(!patch.contains_key("cursor"));
+    }
+
+    #[test]
+    fn a_camera_lists_each_size_once_largest_first_with_all_its_rates() {
+        let mode = |width, height, min_fps, max_fps| rbs_sources::SourceMode {
+            width,
+            height,
+            min_fps,
+            max_fps,
+        };
+        let mut view = camera_view(Some((1920, 1080)), Some(60));
+        // The same sizes in two pixel formats with different rate ranges, smallest first.
+        view.modes = vec![
+            mode(640, 480, 30, 30),
+            mode(1920, 1080, 30, 30),
+            mode(640, 480, 30, 30),
+            mode(1920, 1080, 60, 60),
+            mode(1280, 720, 5, 10),
+            mode(1280, 960, 30, 30),
+        ];
+        let (data, choices) = source_settings_data(&view);
+        assert_eq!(
+            choices.modes,
+            [(1920, 1080), (1280, 960), (1280, 720), (640, 480)]
+        );
+        assert_eq!(choices.rates[0], [30, 60]);
+        assert_eq!(choices.rates[2], [5, 10]);
+        assert_eq!(data.mode_labels.row_count(), 4);
+        assert_eq!((data.mode_index, data.rate_index), (0, 1));
     }
 
     #[test]
