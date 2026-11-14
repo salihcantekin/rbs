@@ -711,7 +711,10 @@ export component ProgramPanel inherits Rectangle {
         : vertical ? @tr("The live picture of the vertical canvas")
         : scene ? @tr("The picture of the preview scene, the next to go on air")
         : @tr("The live picture of the scene on air");
-    // The native picture starts below this strip (the same height, Tokens.size-control-md).
+    // The native picture, the presses and the selection marks start below this strip
+    // (`below_strip` in main.rs: none on a panel too short to keep both).
+    property <length> strip: root.audio-only && root.height > 2 * Tokens.size-control-md
+        ? Tokens.size-control-md : 0;
     if root.audio-only: AudioOnlyStrip {
         y: 0;
         width: parent.width;
@@ -781,6 +784,8 @@ export component ProgramPanel inherits Rectangle {
             + "&x=" + round(root.menu-at.x / 1px) + "&y=" + round(root.menu-at.y / 1px);
     }
     touch := TouchArea {
+        y: root.strip;
+        height: root.height - root.strip;
         enabled: editable;
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { root.release(); return; }
@@ -794,7 +799,9 @@ export component ProgramPanel inherits Rectangle {
                     keys.focus();
                     root.menu-at = { x: self.mouse-x, y: self.mouse-y };
                     Studio.preview-menu-opened(self.mouse-x / 1px, self.mouse-y / 1px);
-                    menu.open(root.menu-at);
+                    // `menu-at` is in the picture's (touch area's) coordinates; the
+                    // menu element covers the whole panel.
+                    menu.open({ x: root.menu-at.x, y: root.menu-at.y + root.strip });
                 }
                 return;
             }
@@ -822,6 +829,8 @@ export component ProgramPanel inherits Rectangle {
     // Where no layer shows the picture, the toolkit draws the selection itself, clipped
     // to the panel like the layer's marks.
     if shown != 0 && editable: Rectangle {
+        y: root.strip;
+        height: root.height - root.strip;
         clip: true;
         for m in vertical ? Studio.vertical-marks : Studio.marks: Rectangle {
             x: m.x;

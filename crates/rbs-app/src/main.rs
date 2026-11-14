@@ -1838,6 +1838,18 @@ impl Ctx {
             picture_main
         };
         let vertical_main = in_main(studio_ui::VERTICAL_PANEL);
+        // An audio-only recording puts a strip over the top of its pictures: the native
+        // picture, the presses and the selection marks all start below it, so they share
+        // one picture area (the strip's height is `size.control.md`).
+        let strip = t.get_size_control_md();
+        let main_audio = app.studio.records_audio(studio_host::OutputCanvas::Main);
+        let vertical_audio = app
+            .studio
+            .records_audio(studio_host::OutputCanvas::Vertical);
+        let picture_main = picture_main.map(|a| below_strip(a, main_audio, strip));
+        let scene_main = scene_main.map(|a| below_strip(a, main_audio, strip));
+        let edit_main = edit_main.map(|a| below_strip(a, main_audio, strip));
+        let vertical_main = vertical_main.map(|a| below_strip(a, vertical_audio, strip));
         if let Some([_, _, w, h]) = edit_main {
             app.studio.set_picture_size(w, h);
         }
@@ -1928,23 +1940,9 @@ impl Ctx {
         #[cfg(any(target_os = "macos", windows))]
         {
             use preview::Picture;
-            let banner = t.get_size_control_md();
-            let inset = |area: Option<[f32; 4]>, on: bool| {
-                area.map(|[x, y, w, h]| {
-                    if !on || h <= banner * 2.0 {
-                        [x, y, w, h]
-                    } else {
-                        [x, y + banner, w, h - banner]
-                    }
-                })
-            };
-            let main_audio = app.studio.records_audio(studio_host::OutputCanvas::Main);
-            let vertical_audio = app
-                .studio
-                .records_audio(studio_host::OutputCanvas::Vertical);
-            preview::set_area(Picture::Program, inset(picture_main, main_audio));
-            preview::set_area(Picture::Scene, inset(scene_main, main_audio));
-            preview::set_area(Picture::Vertical, inset(vertical_main, vertical_audio));
+            preview::set_area(Picture::Program, picture_main);
+            preview::set_area(Picture::Scene, scene_main);
+            preview::set_area(Picture::Vertical, vertical_main);
             // The handles go on the edited scene's picture only.
             let (marked, other) = if studio_mode {
                 (Picture::Scene, Picture::Program)
@@ -4092,6 +4090,19 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     }
 }
 
+/// The picture area of a panel `[x, y, w, h]`: below the audio-only strip of
+/// height `strip` when `audio_only`, unless the panel is too short to keep both (then
+/// the strip sits over the picture). The Slint panel uses the same rule
+/// (`ProgramPanel.strip`), so presses, marks and the native picture line up.
+fn below_strip(area: [f32; 4], audio_only: bool, strip: f32) -> [f32; 4] {
+    let [x, y, w, h] = area;
+    if !audio_only || h <= strip * 2.0 {
+        area
+    } else {
+        [x, y + strip, w, h - strip]
+    }
+}
+
 /// The name of the graphics API Slint renders with, for the log.
 #[cfg(any(target_os = "macos", windows))]
 fn graphics_api(api: &slint::GraphicsAPI<'_>) -> &'static str {
@@ -4648,5 +4659,30 @@ mod section_tests {
         let mut listed: Vec<String> = SETTINGS_SECTIONS.iter().map(|s| (*s).to_owned()).collect();
         listed.sort();
         assert_eq!(found, listed);
+    }
+}
+
+#[cfg(test)]
+mod picture_area_tests {
+    use super::below_strip;
+
+    #[test]
+    fn audio_only_picture_starts_below_the_strip() {
+        assert_eq!(
+            below_strip([10.0, 20.0, 400.0, 700.0], true, 32.0),
+            [10.0, 52.0, 400.0, 668.0]
+        );
+    }
+
+    #[test]
+    fn video_picture_keeps_the_whole_panel() {
+        let area = [10.0, 20.0, 400.0, 700.0];
+        assert_eq!(below_strip(area, false, 32.0), area);
+    }
+
+    #[test]
+    fn short_panel_keeps_the_whole_panel() {
+        let area = [0.0, 0.0, 400.0, 64.0];
+        assert_eq!(below_strip(area, true, 32.0), area);
     }
 }
