@@ -372,3 +372,25 @@ fn a_clicked_button_does_not_keep_its_tooltip() {
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
     assert!(!o.get_tip_shown() && !o.get_tip_waiting());
 }
+
+#[test]
+fn tab_into_a_row_below_the_view_shows_the_whole_row() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::FocusRevealProbe::new().expect("the probe window");
+    p.show().expect("show");
+    p.invoke_focus_first();
+    settle();
+    assert_eq!(p.get_offset(), 0.0, "the first row is in view");
+    let s: slint::SharedString = Key::Tab.into();
+    p.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: s.clone() });
+    p.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: s });
+    settle();
+    let shown_to = p.get_offset() + p.get_view_height();
+    assert!(
+        shown_to >= p.get_row_bottom(),
+        "the row's help is in view: shown to {shown_to}, row ends at {}",
+        p.get_row_bottom()
+    );
+}
