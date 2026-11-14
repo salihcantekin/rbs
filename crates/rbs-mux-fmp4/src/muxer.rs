@@ -297,18 +297,32 @@ fn visual_entry(
     boxes::close(out, entry);
 }
 
-/// `mp4a` sample entry with its `esds` box.
-fn mp4a_entry(out: &mut Vec<u8>, channels: u16, rate: u32, asc: &[u8]) {
+/// `mp4a` sample entry with its `esds` box. In MOV (`qt`) it is a QuickTime sound
+/// description version 1 (compression id -2, samples per packet = the AAC frame
+/// size): AVFoundation finds no AAC samples in a fragmented MOV whose entry is
+/// version 0 (macOS, 2026-11-14); ISO BMFF keeps version 0.
+fn mp4a_entry(out: &mut Vec<u8>, channels: u16, rate: u32, asc: &[u8], qt: Option<u32>) {
     let entry = boxes::open(out, b"mp4a");
     boxes::zeros(out, 6);
     boxes::u16(out, 1);
-    boxes::zeros(out, 8);
+    boxes::u16(out, u16::from(qt.is_some())); // version
+    boxes::zeros(out, 6); // revision level, vendor
     boxes::u16(out, channels);
     boxes::u16(out, 16); // samplesize
-    boxes::u32(out, 0); // pre_defined, reserved
+    match qt {
+        // compression id -2 (variable), packet size 0.
+        Some(_) => boxes::u32(out, 0xfffe_0000),
+        None => boxes::u32(out, 0), // pre_defined, reserved
+    }
     // 16.16 fixed point; rates above 65535 Hz do not fit, and decoders take the rate
     // from the AudioSpecificConfig.
     boxes::u32(out, if rate <= 0xffff { rate << 16 } else { 0 });
+    if let Some(samples_per_packet) = qt {
+        boxes::u32(out, samples_per_packet);
+        boxes::u32(out, 0); // bytes per packet (variable)
+        boxes::u32(out, 0); // bytes per frame (variable)
+        boxes::u32(out, 2); // bytes per sample
+    }
     let esds = boxes::open_full(out, b"esds", 0, 0);
     // ES_Descriptor > DecoderConfigDescriptor > DecoderSpecificInfo, SLConfigDescriptor.
     // Lengths fit one byte: the AudioSpecificConfig is a few bytes (checked at create).
@@ -670,7 +684,7 @@ impl Fmp4Muxer {
                         &mut traks,
                         container,
                         &track,
-                        &|out| mp4a_entry(out, channels, rate, &asc),
+                        &|out| mp4a_entry(out, channels, rate, &asc, qt.then_some(frame_size)),
                         0,
                         0,
                     );

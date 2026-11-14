@@ -504,6 +504,35 @@ fn refusals() {
 }
 
 #[test]
+fn aac_in_mov_is_a_version_1_sound_description() {
+    let entry_of = |container| {
+        let boxes = header(&MuxerConfig::new(container, vec![aac_stream()]));
+        let stsd = boxes[1].path(&[b"trak", b"mdia", b"minf", b"stbl", b"stsd"]);
+        assert_eq!(&stsd.children[0].kind, b"mp4a");
+        stsd.children[0].payload.clone()
+    };
+    let mov = entry_of(MOV);
+    assert_eq!(u16::from_be_bytes([mov[8], mov[9]]), 1, "version 1");
+    assert_eq!(
+        u16::from_be_bytes([mov[20], mov[21]]),
+        0xfffe,
+        "compression id -2"
+    );
+    assert_eq!(u16::from_be_bytes([mov[22], mov[23]]), 0, "packet size");
+    let field = |at: usize| u32::from_be_bytes(mov[at..at + 4].try_into().unwrap());
+    assert_eq!(field(24), 48_000 << 16);
+    assert_eq!(field(28), 1024, "samples per packet");
+    assert_eq!(field(32), 0);
+    assert_eq!(field(36), 0);
+    assert_eq!(field(40), 2, "bytes per sample");
+    assert_eq!(&mov[48..52], b"esds", "esds follows the version 1 fields");
+    // Fragmented MP4 keeps the ISO version 0 entry.
+    let mp4 = entry_of(ContainerId::Mp4Fragmented);
+    assert_eq!(u16::from_be_bytes([mp4[8], mp4[9]]), 0);
+    assert_eq!(&mp4[32..36], b"esds");
+}
+
+#[test]
 fn mp4_header_is_unchanged() {
     let config = MuxerConfig::new(
         ContainerId::Mp4Fragmented,
