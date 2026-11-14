@@ -11,7 +11,7 @@ use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, CollectionGlide, Crop, DisplayChrome, Fallback, GlideEasing, ItemContent, ItemStyle,
     Layout, RecordSeparately, SceneScope, SettingValue, Settings, Shadow, Shape, SourceGlide,
-    SourceMonitor, SourceRegion,
+    SourceMonitor, SourceRegion, VideoAs,
 };
 use rbs_scene::{SceneAudio, SceneCollection, SceneLevel};
 use rbs_user_data::document;
@@ -766,6 +766,59 @@ fn a_source_recorded_separately_raises_the_format_and_an_older_file_refuses_it()
         Err(DataError::Invalid(why)) => assert!(why.contains("record_separately"), "{why}"),
         other => panic!("expected Invalid, got {other:?}"),
     }
+}
+
+#[test]
+fn a_picture_form_raises_the_format_to_18_and_an_older_file_refuses_it() {
+    let mut col = SceneCollection::new();
+    let (logo, _) = col
+        .add_source("Logo", ty("image"), Settings::new())
+        .unwrap();
+    col.set_source_record_separately(logo, RecordSeparately::new(true, false))
+        .unwrap();
+    // Automatic is the default and is not written: the format stays 16.
+    let auto = document::render(&col, Some("Show")).unwrap();
+    assert!(auto.contains("format = 16"), "{auto}");
+    assert!(!auto.contains("video_as"), "{auto}");
+
+    col.set_source_record_separately(
+        logo,
+        RecordSeparately::new(true, false).with_video_as(VideoAs::Video),
+    )
+    .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 18"), "{text}");
+    assert!(text.contains("video_as = \"video\""), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(
+        back.source(logo).unwrap().record_separately,
+        RecordSeparately::new(true, false).with_video_as(VideoAs::Video)
+    );
+
+    // A form without the picture switch is not written.
+    col.set_source_record_separately(
+        logo,
+        RecordSeparately::new(false, true).with_video_as(VideoAs::Image),
+    )
+    .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(!text.contains("video_as"), "{text}");
+
+    let body = "kind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"Logo\"\ntype = \"org.rbs.source.image\"\nrecord_separately = { video = true, video_as = \"image\" }\n";
+    match document::parse::<SceneCollection>(&format!("format = 17\n{body}")) {
+        Err(DataError::Invalid(why)) => assert!(why.contains("video_as"), "{why}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    let ok = document::parse::<SceneCollection>(&format!("format = 18\n{body}"))
+        .unwrap()
+        .document;
+    let source = ok.sources().next().unwrap();
+    assert_eq!(source.record_separately.video_as, VideoAs::Image);
+    let bad = "format = 18\nkind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"Logo\"\ntype = \"org.rbs.source.image\"\nrecord_separately = { video = true, video_as = \"gif\" }\n";
+    assert!(matches!(
+        document::parse::<SceneCollection>(bad),
+        Err(DataError::Invalid(_))
+    ));
 }
 
 #[test]

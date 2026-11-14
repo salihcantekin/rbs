@@ -13,10 +13,10 @@ use std::sync::atomic::Ordering;
 use rbs_core::media::{CodecId, ContainerId};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    ISO_OUTPUT, ISO_VIDEO_ENCODERS, IsoError, IsoVideoStart, OutputSettings, RecordError, Studio,
-    StudioSettings, VideoSettings,
+    ISO_OUTPUT, ISO_VIDEO_ENCODERS, IsoError, IsoRole, IsoSkip, IsoVideoStart, OutputSettings,
+    RecordError, Studio, StudioSettings, VideoSettings,
 };
-use rbs_scene::model::{ItemContent, Layout, RecordSeparately, SettingValue, Settings};
+use rbs_scene::model::{ItemContent, Layout, RecordSeparately, SettingValue, Settings, VideoAs};
 use rbs_sources::types::{self, keys};
 use support::*;
 
@@ -254,6 +254,82 @@ fn a_marked_source_with_no_picture_yet_adds_nothing() {
     for part in ISO_VIDEO_ENCODERS {
         assert!(!studio.engine().has_worker(part));
     }
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn files_past_the_limit_and_sources_without_a_picture_are_skipped_when_asked() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    // Not on any scene: never drawn, so it has no picture.
+    let (spare, _) = col
+        .add_source(
+            "Spare",
+            NodeTypeId::new_static(types::COLOR_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    col.set_source_record_separately(
+        spare,
+        RecordSeparately::new(true, false).with_video_as(VideoAs::Video),
+    )
+    .unwrap();
+    let mut marked = Vec::new();
+    for name in ["Display", "Camera"] {
+        let id = col.sources().find(|s| s.name == name).unwrap().id;
+        col.set_source_record_separately(id, RecordSeparately::new(true, false))
+            .unwrap();
+        marked.push(id);
+    }
+    marked.sort();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let master = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://master", ContainerId::Matroska),
+        )
+        .unwrap();
+    let reached = run_until(&mut studio, &clock, |s| {
+        marked.iter().all(|id| s.picture_size(*id).is_some())
+    });
+    assert!(reached, "{:?}", studio.progress());
+
+    let mut request = start_request();
+    request.max_video = 1;
+    let err = studio.start_iso_video(&r.adapters, &request).unwrap_err();
+    assert!(
+        matches!(err, RecordError::Iso(IsoError::NoPicture { source, .. }) if source == spare),
+        "{err:?}"
+    );
+    assert!(!studio.iso_video_running());
+
+    request.skip_no_picture = true;
+    let started = studio.start_iso_video(&r.adapters, &request).unwrap();
+    assert_eq!(started.tracks.len(), 1);
+    assert_eq!(started.tracks[0].source, marked[0]);
+    let mut expected = vec![
+        (marked[1], IsoRole::Video, IsoSkip::Limit),
+        (spare, IsoRole::Video, IsoSkip::NoPicture),
+    ];
+    expected.sort_by_key(|e| e.0);
+    let skipped: Vec<_> = started
+        .skipped
+        .iter()
+        .map(|s| (s.source, s.role, s.reason))
+        .collect();
+    assert_eq!(skipped, expected);
+    assert!(studio.stop_iso_video());
+    studio.stop_output(master).unwrap();
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }

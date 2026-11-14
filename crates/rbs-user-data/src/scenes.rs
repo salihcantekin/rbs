@@ -39,6 +39,7 @@
 //! # region = [0, 40, 0, 80]   # full-picture insets, left top right bottom (format 14, ADR-0103)
 //! # chrome = { top = 40, bottom = 80, fill = "cover" }  # display only (format 14, ADR-0104)
 //! # record_separately = { video = true, audio = true }  # format 16, ADR-0086; absent: neither
+//! # record_separately = { video = true, video_as = "image" }  # "image" or "video" (format 18, ADR-0117); absent: automatic
 //!
 //! [[scenes]]
 //! id = 0
@@ -72,7 +73,7 @@ use rbs_scene::model::{
     Border, Canvas, CanvasId, CollectionGlide, Crop, Fallback, Filter, FilterId, GlideEasing,
     ItemContent, ItemId, ItemStyle, Layout, MasterAudio, RecordSeparately, Scene, SceneAudio,
     SceneId, SceneItem, SceneLevel, SceneScope, SettingValue, Settings, Shadow, Shape, Source,
-    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
+    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, VideoAs,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, SceneCollection};
@@ -317,6 +318,10 @@ struct RecordSeparatelyDoc {
     video: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     audio: bool,
+    /// The picture's form (format 18, ADR-0117): `"image"` or `"video"`. Absent:
+    /// automatic. Written only with `video`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_as: Option<String>,
 }
 
 impl RecordSeparatelyDoc {
@@ -324,11 +329,22 @@ impl RecordSeparatelyDoc {
         Self {
             video: flag.video,
             audio: flag.audio,
+            video_as: (flag.video && flag.video_as != VideoAs::Auto)
+                .then(|| flag.video_as.as_str().to_owned()),
         }
     }
 
-    fn flag(&self) -> RecordSeparately {
-        RecordSeparately::new(self.video, self.audio)
+    fn flag(&self) -> Result<RecordSeparately, String> {
+        let video_as = match self.video_as.as_deref() {
+            None => VideoAs::Auto,
+            Some(text) => {
+                VideoAs::parse(text).ok_or_else(|| format!("unknown `video_as` value {text:?}"))?
+            }
+        };
+        if video_as != VideoAs::Auto && !self.video {
+            return Err("`video_as` needs `video = true`".to_owned());
+        }
+        Ok(RecordSeparately::new(self.video, self.audio).with_video_as(video_as))
     }
 }
 
@@ -765,10 +781,15 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 17;
+    const FORMAT: u32 = 18;
 
     fn write_format(&self) -> u32 {
-        if self.scenes().any(Scene::own_levels) {
+        if self
+            .sources()
+            .any(|s| s.record_separately.video && s.record_separately.video_as != VideoAs::Auto)
+        {
+            18
+        } else if self.scenes().any(Scene::own_levels) {
             17
         } else if self.sources().any(|s| !s.record_separately.is_none()) {
             16
@@ -801,10 +822,12 @@ impl Document for SceneCollection {
     /// body is a format 16 body without it. A file is written as 16 only when a
     /// source has the flag ([`Document::write_format`]). Format 17 adds the optional
     /// scene `audio` (ADR-0091); a format 16 body is a format 17 body without it, and a
-    /// file is written as 17 only when a scene has it.
+    /// file is written as 17 only when a scene has it. Format 18 adds the optional
+    /// `record_separately.video_as` (ADR-0117); a format 17 body is a format 18 body
+    /// without it, and a file is written as 18 only when a source has it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=16 => {
+            1..=17 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -911,6 +934,20 @@ impl Document for SceneCollection {
                     .any(|s| s.contains_key("audio"));
                 if from < 17 && levels {
                     return Err(format!("format {from} has no scene `audio` (format 17)"));
+                }
+                let video_as = body
+                    .get("sources")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .filter_map(|s| s.get("record_separately"))
+                    .filter_map(toml::Value::as_table)
+                    .any(|r| r.contains_key("video_as"));
+                if video_as {
+                    return Err(format!(
+                        "format {from} has no `record_separately.video_as` (format 18)"
+                    ));
                 }
                 Ok(())
             }
@@ -1124,7 +1161,7 @@ impl Document for SceneCollection {
                 source.record_separately = s
                     .record_separately
                     .as_ref()
-                    .map_or(RecordSeparately::default(), RecordSeparatelyDoc::flag);
+                    .map_or(Ok(RecordSeparately::default()), RecordSeparatelyDoc::flag)?;
                 Ok(source)
             })
             .collect::<Result<Vec<_>, String>>()?;
