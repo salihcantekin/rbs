@@ -234,7 +234,7 @@ The forces are those of ADR-0120:
      - Beside a SplitButton, the zone is `halo-clear + size.focus-ring`, because its rings sit outside its shape.
    - **A halo only where the layout opts in.**
      - Button and SplitButton get the property `halo-room: bool`, false by default. A primary draws its halo only when the setting has one **and** its instance sets `halo-room: true`.
-     - A library container that holds a primary passes the property through, also false by default: `ToolbarCell`, `DialogActions` and `EmptyState`. It opts in per instance, never for every instance.
+     - A library container that holds a primary passes the property through, also false by default: `ToolbarCell` now, and `DialogActions` in its own PR. EmptyState gets the pass-through only once a fixed-size EmptyState exists. It opts in per instance, never for every instance.
      - Every other primary looks exactly as in calm, apart from its shadow. It needs no zone, and no layout around it changes.
      - The choice is made by layout, in the app files. Nothing is decided per frame.
    - **A position that opts in reserves the zone.**
@@ -245,8 +245,11 @@ The forces are those of ADR-0120:
      - Two adjacent opted-in primaries share one zone between them, and their halos may overlap on the ground.
    - **The first positions to opt in:**
      - **The frame bar's Go live,** a Button or a SplitButton through `ToolbarCell`.
-       - **Height.** In Glow the frame bar grows from `size.control.md + 2·space.1 + size.border` to `size.control.md + 2·(halo-clear + size.focus-ring) + size.border`. That is about 22 px more (59 px instead of 37). The ADR-0071 caption regions follow `root.height`, as they do today.
-       - **Horizontal.** The end group keeps `space.2` between its items. Go live gets its own spacing on each side: toward the item before it, toward Record (a SplitButton, whose dot is the fixed live colour), and toward the end of the row. That spacing is `halo-clear + size.focus-ring` in Glow, so about 7 px more on each side, and it is unchanged otherwise.
+       - **Height.** In Glow the frame bar grows from `size.control.md + 2·space.1 + size.border` to `size.control.md + 2·(halo-clear + size.focus-ring) + size.border`. That is about 22 px more (59 px instead of 37).
+       - **Caption regions.** Today FrameBar republishes its caption regions (ADR-0071) only when `lead-end`, `end-start`, `max-x` or `caption-on` change, so a height change alone would leave Windows with a stale caption row. FrameBar therefore also calls `publish-regions()` on `changed height`. A test switches Glow → Calm on a narrow window and checks the published row height.
+       - **Other items keep their size.** Every other frame bar item keeps today's size, centred in the taller row. The toolbar separator gets a fixed height, `size.control.md − 2·space.1`, instead of stretching.
+       - **Horizontal.** The end group keeps `space.2` between its items. Go live's own cell gets side padding of `max(space.2, halo-clear + size.focus-ring) − space.2` (0 outside Glow). That is about 7 px more on each side, toward the item before it and toward Record (a SplitButton whose dot is the fixed live colour).
+       - **Which cell opts in.** `ToolbarCell` opts in with `halo-room: item.id == "stream.toggle"`, so Record's cell is not padded. `FIXED_COMMANDS` keeps Go live before Record, and the chips and the LiveIndicator come after Record, outside the zone.
        - **Fit.** `the_frame_row_fits_1280_by_720_in_every_density` gains Glow (U11).
      - **DialogActions in held-edit windows,** once DialogActions is implemented (ADR-0114). A window opts in only if its minimum size includes the zone. Inline confirmations in panels never opt in: Delete source, Remove global source, Make new key.
 
@@ -295,12 +298,17 @@ The forces are those of ADR-0120:
       - It renders Dark and Light, regular and compact, in each setting.
       - Its rule becomes: every ring pixel keeps at least min(3, its calm ratio) against the ground pixel beside it in the same render.
       - For the halo, each opted-in position is also rendered in Glow with **every effect of the primary off**, keeping `halo-clear`. In that render, every pixel within the primary's box plus `halo-clear` and outside the box must equal the ground. The only exceptions are a neighbour's own effects, within the extent of that neighbour's box. This tests that nothing else lies in the zone.
-      - The halo test runs on the real FrameBar through `MainWindow`, as `the_frame_row_fits_1280_by_720_in_every_density` already does, and not on a copy.
+      - The halo tests run on the real FrameBar through `MainWindow`, built from hand-made toolbar data in `effects_render.rs` (Skia, one platform per process), not on a copy.
+      - **The halo against a focus ring:**
+        - The test renders Glow with the halo on, both as plain Buttons and as `vertical-menu` SplitButtons.
+        - It focuses each neighbour of Go live in turn: the item before it, Record and Record ▾.
+        - It applies the ring rule to each ring.
+        - The zone check uses `halo-clear + size.focus-ring` beside a SplitButton.
       - `effects_never_change_the_layout` becomes: sizes are identical in every setting, except at opted-in positions in Glow, which grow by exactly the zone.
       - Text is not measured from anti-aliased pixels. The test samples the face colour at the ink band's ends next to the label and computes the ratio against the known ink colour.
       - Its rows are the ones it has today, plus a checked button.
       - The DialogActions row waits for DialogActions to be implemented.
-      - `EffectsProbe` grows to fit the new rows. Its fixed window size is test data.
+      - `EffectsProbe` grows to fit the new rows and gains one opted-in row, so that the layout exception is exercised. Its fixed window size is test data.
     - **`drawn.rs`:**
       - It keeps reading `Theme.effects-*` atoms as calm.
       - Its face test becomes: the gradient stops are chosen by the same kind and state branches as `face-fill`.
@@ -337,7 +345,7 @@ The forces are those of ADR-0120:
 - **Glow changes layout at the opted-in positions.** The frame bar grows by about 22 px, and Go live gets about 7 px more on each side. Later, held-edit dialog actions get more room around the primary. A switch to or from Glow re-lays them out once. This is a first: until now a theme never changed a layout beyond density.
 - The check grows from "derived colours far from live" to every button pair at the ink band, for every kind, state, size and density. This adds work in `resolve`, still well under 1 ms.
 - **On acceptance:**
-  - ADR-0120's Review gets the pointer "decisions 1, 5, 6, 7, 8, 9, 10, 11 and 16 superseded in part by ADR-0122".
+  - ADR-0120's Review gets the pointer "decisions 1, 5, 6, 7, 8, 9, 10, 11 and 16 superseded in part by ADR-0122; Vivid is renamed Glow throughout".
   - ADR-0118's Review gets "decision 3 superseded in part for Glow".
   - `docs/adr/README.md` updates the rows.
 - **Follow-up (the implementing PRs):**
@@ -352,7 +360,7 @@ The forces are those of ADR-0120:
     - `effects.rs`: `Effects::ALL`, `LIVELY`, `index`, `draw(density)` and `check`;
     - `build.rs`: the slot fields and `halo-clear`;
     - Button, IconButton and SplitButton drawing;
-    - the `halo-room` property on Button and SplitButton, its pass-through on `ToolbarCell`, `DialogActions` and `EmptyState`, and the frame bar's opted-in Go live;
+    - the `halo-room` property on Button and SplitButton, its pass-through on `ToolbarCell`, and the frame bar's opted-in Go live, separator height and `changed height => publish-regions()`;
     - `effects_render.rs` grows from Dark and compact step 1 to Dark and Light, regular and compact;
     - the editor's labels and hint;
     - the `EffectsProbe` rows;
@@ -510,4 +518,19 @@ Revision 6 answers:
 | Optional a to c and e | Taken |
 | Optional d | Cosmetic |
 
-Round 6 is pending.
+### Round 6 (independent AI session, architecture-review, 2026-11-14)
+
+Verdict: accept with changes. Every answer from round 5 holds in the code: the pass-through, the frame bar arithmetic, the order of `FIXED_COMMANDS`, the forced-calm high contrast, Tactile's values, and the real FrameBar being testable. Three small required changes:
+
+1. **Caption regions:** they are not republished when only the height changes.
+2. **Toolbar separator:** it stretched with the taller bar.
+3. **Neighbour rings:** no test checked a neighbour's ring against a lit halo.
+
+Revision 7 answers them in decisions 8 and 10. It also takes the optional suggestions:
+
+- Go live's cell padding, and opting in by item id;
+- where the halo test lives;
+- no EmptyState pass-through for now;
+- DialogActions in its own PR;
+- the Vivid rename in the ADR-0120 pointer;
+- an opted-in row in `EffectsProbe`.
