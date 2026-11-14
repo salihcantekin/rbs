@@ -127,10 +127,6 @@ struct Track {
 }
 
 pub(crate) struct Fmp4Muxer {
-    /// MOV: `tfhd` without `default-base-is-moof` (an ISO `iso5` brand feature); the
-    /// first `traf`'s data offset is from the `moof` start and each later one's from
-    /// the end of the data before it, which every QuickTime reader follows.
-    qt: bool,
     tracks: Vec<Track>,
     has_video: bool,
     header: Vec<u8>,
@@ -775,7 +771,6 @@ impl Fmp4Muxer {
         boxes::close(&mut header, moov);
 
         Ok(Self {
-            qt,
             has_video: tracks.iter().any(|t| t.kind.is_video()),
             tracks,
             header,
@@ -843,19 +838,15 @@ impl Fmp4Muxer {
         boxes::u32(&mut chunk, self.sequence);
         boxes::close(&mut chunk, mfhd);
         let mut data_offset = moof_size + MDAT_HEADER;
-        let base_flag = if self.qt { 0 } else { DEFAULT_BASE_IS_MOOF };
-        let mut first_traf = true;
+        // Every `traf` sets `default-base-is-moof`, so each data offset counts from the
+        // `moof` start. MOV too: AVFoundation (QuickTime Player, Final Cut) does not
+        // follow the ISO implicit offset of a second `traf` without it; it drops that
+        // track and stops after the first fragment (checked on macOS, 2026-11-14).
+        let base_flag = DEFAULT_BASE_IS_MOOF;
         for (index, track) in self.tracks.iter().enumerate() {
             if track.samples.is_empty() {
                 continue;
             }
-            // MOV: relative to the end of the previous `traf`'s data (see `qt`).
-            let run_offset = if self.qt && !first_traf {
-                0
-            } else {
-                data_offset
-            };
-            first_traf = false;
             let following = next.and_then(|(i, dts)| (i == index).then_some(dts));
             let traf = boxes::open(&mut chunk, b"traf");
             let base = self.media_time(track.samples[0].dts, track.timescale);
@@ -878,7 +869,7 @@ impl Fmp4Muxer {
                 let trun = boxes::open_full(&mut chunk, b"trun", 0, TRUN_PCM_FLAGS);
                 // Fragment payload is below MAX_FRAGMENT_BYTES, so both fit 32 bits.
                 boxes::u32(&mut chunk, (bytes / frame_bytes as usize) as u32);
-                boxes::u32(&mut chunk, run_offset as u32);
+                boxes::u32(&mut chunk, data_offset as u32);
                 boxes::close(&mut chunk, trun);
                 boxes::close(&mut chunk, traf);
                 data_offset += bytes;
@@ -893,7 +884,7 @@ impl Fmp4Muxer {
             let trun = boxes::open_full(&mut chunk, b"trun", 1, TRUN_FLAGS);
             boxes::u32(&mut chunk, track.samples.len() as u32);
             // Below 4 GiB: see MAX_SAMPLE_BYTES and MAX_FRAGMENT_BYTES.
-            boxes::u32(&mut chunk, run_offset as u32);
+            boxes::u32(&mut chunk, data_offset as u32);
             for (i, s) in track.samples.iter().enumerate() {
                 let dts = self.media_time(s.dts, track.timescale);
                 let end_ts = sample_end(&track.samples, i, following, track.nominal);

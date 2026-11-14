@@ -215,11 +215,7 @@ fn pcm_fragments_have_one_sample_per_frame_and_no_rows() {
     let boxes = parse(&media[0].data);
     let traf = boxes[0].child(b"traf");
     let tfhd = traf.child(b"tfhd");
-    assert_eq!(
-        tfhd.u32_at(0),
-        0x0000_0038,
-        "three defaults, no base-is-moof"
-    );
+    assert_eq!(tfhd.u32_at(0), 0x0002_0038, "base-is-moof + three defaults");
     assert_eq!(tfhd.u32_at(4), 1, "track id");
     assert_eq!(tfhd.u32_at(8), 1, "duration 1 tick");
     assert_eq!(tfhd.u32_at(12), 4, "bytes per frame");
@@ -292,24 +288,27 @@ fn video_and_pcm(pcm_first: bool) -> Vec<MuxChunk> {
     chunks
 }
 
-/// Reads every run of a MOV fragment the way a reader without `default-base-is-moof`
-/// does: the first `traf`'s data from the `moof` start, each later one's from the end
-/// of the data before it. Returns (track id, bytes of each sample).
+/// Reads every run of a MOV fragment. Every `tfhd` sets `default-base-is-moof`
+/// (AVFoundation needs it on a second `traf`), so each data offset counts from the
+/// `moof` start; the runs follow each other through `mdat` with no gap. Returns
+/// (track id, bytes of each sample).
 fn mov_runs(chunk: &[u8]) -> Vec<(u32, Vec<Vec<u8>>)> {
     let boxes = parse(chunk);
     let moof = &boxes[0];
-    let mut implicit = 0usize;
+    // The first run starts right after the `mdat` header.
+    let mut implicit = moof.payload.len() + 16;
     let mut runs = Vec::new();
     for traf in moof.children.iter().filter(|b| &b.kind == b"traf") {
         let tfhd = traf.child(b"tfhd");
-        assert_eq!(
+        assert_ne!(
             tfhd.u32_at(0) & 0x0002_0000,
             0,
-            "no default-base-is-moof in MOV"
+            "default-base-is-moof in every traf"
         );
         let trun = traf.child(b"trun");
         let count = trun.u32_at(4) as usize;
-        let mut at = implicit + trun.u32_at(8) as usize;
+        let mut at = trun.u32_at(8) as usize;
+        assert_eq!(at, implicit, "each run starts where the one before ended");
         let sizes: Vec<usize> = if tfhd.u32_at(0) & 0x10 != 0 {
             vec![tfhd.u32_at(12) as usize; count]
         } else {
