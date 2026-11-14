@@ -431,6 +431,7 @@ fn extension(container: ContainerId) -> &'static str {
         ContainerId::Flv => "flv",
         ContainerId::Wav => "wav",
         ContainerId::Flac => "flac",
+        ContainerId::Mov => "mov",
         _ => "bin",
     }
 }
