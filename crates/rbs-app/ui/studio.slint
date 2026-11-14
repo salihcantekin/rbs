@@ -1442,6 +1442,7 @@ component MonitorRow inherits VerticalLayout {
     if Studio.monitor-solo != "": HorizontalLayout {
         alignment: start;
         Button {
+            lead: IconName.headphones;
             dense: true;
             text: @tr("Solo: {}", Studio.monitor-solo);
             icon: IconName.close;
@@ -1522,6 +1523,7 @@ component MonitorBox inherits VerticalLayout {
     if Studio.monitor-solo != "": HorizontalLayout {
         alignment: start;
         Button {
+            lead: IconName.headphones;
             dense: true;
             text: @tr("Solo: {}", Studio.monitor-solo);
             icon: IconName.close;
@@ -2397,6 +2399,8 @@ export component TransitionPanel inherits Rectangle {
             accessible-role: none;
         }
         if root.can: Button {
+            // "Go" in a short panel has no room for the icon.
+            lead: root.width < Tokens.size-transition-short ? IconName.none : IconName.transition;
             text: root.width < Tokens.size-transition-short ? @tr("Go") : @tr("Transition");
             kind: "primary";
             accessible-name: @tr("Transition: put the preview scene on air");
@@ -2436,6 +2440,7 @@ export component LiveControlsPanel inherits Rectangle {
             spacing: Tokens.space-2;
             alignment: start;
             Button {
+                lead: live || Studio.st-state == 3 ? IconName.stop : IconName.bolt;
                 // While the stream ends the button says so (disabled) until the
                 // output closed, so it never offers Go live too early.
                 text: Studio.st-state == 3 ? @tr("Ending…") : live ? @tr("End stream") : @tr("Go live");
@@ -2453,6 +2458,11 @@ export component LiveControlsPanel inherits Rectangle {
                     : recording ? (Studio.rec-button-audio ? @tr("Stop audio recording") : @tr("Stop recording"))
                     : Studio.rec-button-audio ? @tr("Record audio") : @tr("Record");
                 kind: recording || Studio.rec-state == 3 ? "live" : "secondary";
+                // Record's dot in the live colour, in its well; the stop square on the
+                // live fill (ADR-0118).
+                lead: recording || Studio.rec-state == 3 ? IconName.stop : IconName.dot;
+                lead-ink: recording || Studio.rec-state == 3 || !self.enabled ? self.ink : Theme.state-live;
+                lead-signal: !recording && Studio.rec-state != 3 && self.enabled;
                 enabled: Studio.state == 1
                     && (Studio.rec-unavailable == "" || Studio.rec-audio-only)
                     && (recording || Studio.rec-state == 0);
@@ -2508,6 +2518,7 @@ export component LiveControlsPanel inherits Rectangle {
         if Studio.st-needs-setup && Studio.st-state == 0: HorizontalLayout {
             alignment: start;
             Button {
+                lead: IconName.gear;
                 text: @tr("Stream settings");
                 clicked => { Studio.open-stream-settings(); }
             }
@@ -2536,6 +2547,7 @@ export component LiveControlsPanel inherits Rectangle {
         if Studio.vcam-shown: HorizontalLayout {
             alignment: start;
             Button {
+                lead: Studio.vcam-on ? IconName.stop : IconName.camera;
                 text: Studio.vcam-on ? @tr("Stop virtual camera") : @tr("Start virtual camera");
                 kind: Studio.vcam-on ? "live" : "secondary";
                 enabled: Studio.vcam-can;
@@ -2816,6 +2828,7 @@ component EncoderFields inherits VerticalLayout {
         hint: @tr("Rate control, keyframes, preset, profile and B-frames. The defaults suit most uses.");
         fill: false;
         Button {
+            lead: root.advanced ? IconName.eye-off : IconName.eye;
             text: root.advanced ? @tr("Hide") : @tr("Show");
             accessible-name: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
             kind: "secondary";
@@ -3785,6 +3798,7 @@ component FiltersFields inherits VerticalLayout {
                 HorizontalLayout {
                     alignment: start;
                     Button {
+                        lead: IconName.reset;
                         text: @tr("Reset to defaults");
                         kind: "secondary";
                         accessible-name: @tr("Reset {} to defaults", f.name);
@@ -3913,12 +3927,14 @@ component SourceFields inherits VerticalLayout {
         spacing: Tokens.size-field-gap;
         alignment: start;
         Button {
+            lead: IconName.refresh;
             text: @tr("Reload");
             accessible-name: @tr("Reload {}", data.name);
             dense: true;
             clicked => { Studio.reload-source(data.id); }
         }
         Button {
+            lead: IconName.refresh;
             text: @tr("Refresh list");
             dense: true;
             clicked => { Studio.list-source-targets(data.id); }
@@ -3928,6 +3944,7 @@ component SourceFields inherits VerticalLayout {
     if data.kind-code >= 0 && data.kind-code <= 2: HorizontalLayout {
         alignment: start;
         Button {
+            lead: IconName.sliders;
             text: @tr("Source settings…");
             accessible-name: @tr("Open the source settings of {}", data.name);
             dense: true;
@@ -4166,6 +4183,7 @@ component SourceProperties inherits VerticalLayout {
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             Button {
+                lead: IconName.eye;
                 text: @tr("Show now");
                 kind: "primary";
                 dense: true;
@@ -4173,6 +4191,7 @@ component SourceProperties inherits VerticalLayout {
                 clicked => { Studio.show-item(data.item-id); }
             }
             Button {
+                lead: IconName.eraser;
                 text: @tr("Clear");
                 dense: true;
                 enabled: data.show-for-ms > 0;
@@ -4540,6 +4559,7 @@ export component StreamSettings inherits Rectangle {
                     accepted(t) => { Studio.save-key(t); }
                 }
                 Button {
+                    lead: IconName.save;
                     horizontal-stretch: 0;
                     text: @tr("Save key");
                     kind: "secondary";
@@ -4561,6 +4581,7 @@ export component StreamSettings inherits Rectangle {
                     horizontal-stretch: 1;
                 }
                 if Studio.st-key-saved: Button {
+                    lead: IconName.trash;
                     text: @tr("Remove key");
                     kind: "ghost";
                     dense: true;
@@ -4942,6 +4963,7 @@ export component GlobalSourcesSettings inherits Rectangle {
                     help: s.kind;
                     fill: false;
                     Button {
+                        lead: IconName.trash;
                         text: @tr("Remove");
                         accessible-name: @tr("Remove {} from global sources", s.name);
                         dense: true;
@@ -5013,6 +5035,7 @@ export component GlobalSourcesSettings inherits Rectangle {
                 label: "";
                 fill: false;
                 Button {
+                    lead: IconName.plus;
                     text: @tr("Add");
                     accessible-name: @tr("Add as a global source");
                     kind: "primary";
@@ -5133,6 +5156,7 @@ export component RemoteControlSettings inherits Rectangle {
                         alignment: center;
                         horizontal-stretch: 0;
                         Button {
+                            lead: IconName.copy;
                             text: @tr("Copy");
                             accessible-name: @tr("Copy key pin");
                             icon: IconName.copy;
@@ -5176,6 +5200,7 @@ export component RemoteControlSettings inherits Rectangle {
                         alignment: center;
                         horizontal-stretch: 0;
                         Button {
+                            lead: IconName.copy;
                             text: @tr("Copy");
                             accessible-name: @tr("Copy certificate fingerprint");
                             icon: IconName.copy;
@@ -5235,6 +5260,7 @@ export component RemoteControlSettings inherits Rectangle {
                     divider: false;
                     fill: false;
                     Button {
+                        lead: IconName.check;
                         text: @tr("Use these files");
                         kind: "primary";
                         clicked => { Studio.rc-use-own(own-cert.text, own-key.text); }
@@ -5251,6 +5277,7 @@ export component RemoteControlSettings inherits Rectangle {
                 hint: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin.");
                 fill: false;
                 Button {
+                    lead: IconName.key;
                     text: @tr("New key…");
                     clicked => { root.confirming = true; }
                 }
@@ -5304,6 +5331,7 @@ export component RemoteControlSettings inherits Rectangle {
                         spacing: Tokens.space-2;
                         alignment: start;
                         Button {
+                            lead: IconName.copy;
                             text: @tr("Copy");
                             kind: "primary";
                             icon: IconName.copy;
@@ -5338,6 +5366,7 @@ export component RemoteControlSettings inherits Rectangle {
                 divider: false;
                 fill: false;
                 Button {
+                    lead: IconName.key;
                     text: @tr("Create access token");
                     kind: "primary";
                     icon: IconName.plus;
@@ -5357,6 +5386,7 @@ export component RemoteControlSettings inherits Rectangle {
                         horizontal-stretch: 1;
                     }
                     Button {
+                        lead: IconName.undo;
                         horizontal-stretch: 0;
                         text: @tr("Undo");
                         accessible-name: @tr("Undo revoking {}", Studio.rc-revoked);
@@ -5403,6 +5433,7 @@ export component RemoteControlSettings inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 Button {
+                                    lead: IconName.ban;
                                     text: @tr("Revoke");
                                     accessible-name: @tr("Revoke {}", t.name);
                                     kind: "ghost";
@@ -5685,6 +5716,7 @@ export component LibraryPanel inherits Rectangle {
                             selected(i) => { root.pick = i; }
                         }
                         Button {
+                            lead: IconName.plus;
                             text: @tr("Add");
                             accessible-name: @tr("Add the selected look");
                             clicked => { Studio.apply-look-at(root.pick); }
@@ -5746,6 +5778,7 @@ export component LibraryPanel inherits Rectangle {
                     spacing: Tokens.size-section-gap;
                     alignment: start;
                     Button {
+                        lead: IconName.folder;
                         width: 100%;
                         horizontal-stretch: 1;
                         text: @tr("Choose a PNG file…");

@@ -3,7 +3,7 @@
 // Rust (`vcam_page`) pushes state into the `VirtualCamera` global and handles its
 // callbacks; the texts it pushes come from `rbs_app::vcam_settings::Page::view`.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
+import { Button, IconName, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsCallout, RevealOnShow } from "settings.slint";
 
 export global VirtualCamera {
@@ -155,6 +155,7 @@ export component VirtualCameraSettings inherits Rectangle {
                 enabled: VirtualCamera.can-send;
                 fill: false;
                 Button {
+                    lead: VirtualCamera.sending ? IconName.stop : IconName.camera;
                     text: VirtualCamera.sending ? @tr("Stop virtual camera") : @tr("Start virtual camera");
                     kind: VirtualCamera.sending ? "secondary" : "primary";
                     enabled: VirtualCamera.can-send;
@@ -172,6 +173,7 @@ export component VirtualCameraSettings inherits Rectangle {
                 enabled: VirtualCamera.can-remove-all;
                 fill: false;
                 Button {
+                    lead: IconName.trash;
                     text: @tr("Remove completely");
                     enabled: VirtualCamera.can-remove-all;
                     clicked => { VirtualCamera.remove-all(); }

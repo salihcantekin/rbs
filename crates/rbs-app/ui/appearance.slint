@@ -253,6 +253,7 @@ component KeepLook inherits Rectangle {
 // only the button that opened the picker (`font-owner`) reports it with `picked`; the
 // row puts it first in the family list.
 component FontMenu inherits Button {
+    lead: IconName.plus;
     in property <string> for-label;
     callback picked(string);
     property <int> serial: Appearance.font-picked-serial;
@@ -461,6 +462,7 @@ component TokenEditorRow inherits Rectangle {
                             }
                         }
                         Button {
+                            lead: IconName.reset;
                             horizontal-stretch: 0;
                             text: @tr("Reset");
                             accessible-name: @tr("Reset {}", item.label);
@@ -482,6 +484,7 @@ component TokenEditorRow inherits Rectangle {
             if item.fixable: VerticalLayout {
                 alignment: center;
                 Button {
+                    lead: IconName.wand;
                     text: @tr("Fix");
                     accessible-name: @tr("Fix the colour of {}", item.label);
                     dense: true;
@@ -550,6 +553,7 @@ component TokenEditorRow inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 Button {
+                    lead: IconName.reset;
                     text: @tr("Reset");
                     accessible-name: @tr("Reset {}", item.label);
                     kind: "ghost";
@@ -932,6 +936,7 @@ export component AppearanceSettings inherits Rectangle {
                                 spacing: Tokens.space-2;
                                 alignment: start;
                                 Button {
+                                    lead: IconName.trash;
                                     text: @tr("Delete");
                                     kind: "primary";
                                     clicked => {

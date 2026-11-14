@@ -4,7 +4,7 @@
 // keeps the window; OK sends it and closes; Cancel closes. The choice is a draft until
 // then. The preview and the main window stay usable while it is open.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Select, Toggle, OverlayHost, NumberField, SettingRow } from "components.slint";
+import { Button, IconName, Select, Toggle, OverlayHost, NumberField, SettingRow } from "components.slint";
 import { SettingsCard } from "settings.slint";
 import { Studio, SourceSettingsData } from "studio.slint";
 
@@ -556,6 +556,7 @@ export component SourceSettingsWindow inherits Window {
                             VerticalLayout {
                                 alignment: center;
                                 Button {
+                                    lead: IconName.eraser;
                                     text: @tr("Clear");
                                     dense: true;
                                     kind: "ghost";
@@ -642,17 +643,20 @@ export component SourceSettingsWindow inherits Window {
                         hint: @tr("Apply writes the cut. Fit places the item. Reset uses the system work area.");
                         fill: false;
                         Button {
+                            lead: IconName.check;
                             text: @tr("Apply");
                             dense: true;
                             kind: "primary";
                             clicked => { root.apply-region-chrome(); }
                         }
                         Button {
+                            lead: IconName.fit;
                             text: @tr("Fit item");
                             dense: true;
                             clicked => { Studio.fit-display-chrome(d.id); }
                         }
                         Button {
+                            lead: IconName.reset;
                             text: @tr("Reset");
                             dense: true;
                             kind: "ghost";
