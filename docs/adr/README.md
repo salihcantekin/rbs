@@ -126,7 +126,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Accepted |
 | [0116](0116-audio-only-recording.md) | Audio recording, an output that writes the mix without a picture | Closed: shipped as WAV/FLAC recording formats instead |
 | [0117](0117-still-sources-as-images.md) | Still sources are recorded separately as PNG images, not video | Accepted |
-| [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted |
+| [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted; decision 3 superseded in part by ADR-0122 |
 | [0119](0119-where-separate-files-are-encoded.md) | Separate files take the cheapest path per source, and the user picks where the rest is encoded | Accepted |
-| [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted |
-| [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Proposed |
+| [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted; superseded in part by ADR-0122 |
+| [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Accepted |

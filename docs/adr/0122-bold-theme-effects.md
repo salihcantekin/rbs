@@ -1,6 +1,6 @@
 # ADR-0122: Bold theme effects: Glow, Glass and a deeper Tactile
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-14
 - Deciders: Salih (owner)
 - Builds on: [ADR-0120](0120-theme-effects.md) (theme effects), [ADR-0118](0118-tint-buttons.md) (Tint buttons), [ADR-0057](0057-user-themes-and-appearance-settings.md), [ADR-0072](0072-theme-colour-rules-warn.md), [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0015](0015-ui-design-rules.md)
@@ -546,4 +546,8 @@ Verdict: accept with one small change. All three round-6 items are fixed and bui
   - the opt-in binding sits at the `Shell.toolbar-fixed` instance;
   - the growth is stated as "up to the zone".
 
-The review is complete. ADR-0122 waits for the owner's approval.
+The review is complete.
+
+### Owner approval
+
+2026-11-14 23:20: owner approval (Salih: "merge et. onaylıyorum"). Status Accepted.
