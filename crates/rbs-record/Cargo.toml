@@ -29,6 +29,9 @@ rbs-transport = { path = "../rbs-transport" }
 rbs-vcam = { path = "../rbs-vcam" }
 # The recording manifest model (data only; ADR-0089 decision 7).
 rbs-manifest = { path = "../rbs-manifest" }
+# PNG encoding of image tracks (ADR-0117 decision 5); already in the tree for image
+# sources (ADR-0074). Pure Rust, no OS code.
+png = "0.18"
 
 [dev-dependencies]
 # Reference adapters of the capture and audio input ports (deterministic, no devices).

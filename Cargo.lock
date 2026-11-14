@@ -5000,6 +5000,7 @@ dependencies = [
 name = "rbs-record"
 version = "0.0.1"
 dependencies = [
+ "png",
  "rbs-audio",
  "rbs-audio-filters",
  "rbs-audio-io",
