@@ -1,6 +1,7 @@
-//! Separate video files (ADR-0086 step 3.2): one file per source marked for video,
-//! from that source's chain tail, encoded on the two ISO encoder partitions and
-//! written on the ISO output partition. Reference adapters on a `TestClock`, as in
+//! Separate video files (ADR-0086 step 3.2, ADR-0119): one file per source marked for
+//! video, from the source's own picture (or its chain tail when filters are asked
+//! for), each encoded on a partition of its own and written on the ISO output
+//! partition. Reference adapters on a `TestClock`, as in
 //! `studio.rs`. Waits are for packet counts, never for a duration.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
@@ -145,8 +146,9 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
         h264(&r.log),
         r.log.headers.load(Ordering::Relaxed)
     );
-    for part in ISO_VIDEO_ENCODERS {
-        assert!(studio.engine().has_worker(part), "{part:?}");
+    // Files on the master's engine take turns on two encoder partitions, and none beyond.
+    for (i, part) in ISO_VIDEO_ENCODERS.into_iter().enumerate() {
+        assert_eq!(studio.engine().has_worker(part), i < 2, "{part:?}");
     }
     assert!(studio.engine().has_worker(ISO_OUTPUT));
 
@@ -199,6 +201,61 @@ fn a_marked_source_with_no_picture_yet_adds_nothing() {
     for part in ISO_VIDEO_ENCODERS {
         assert!(!studio.engine().has_worker(part));
     }
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_filtered_source_is_recorded_without_its_filters_unless_asked() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let display = col.sources().find(|s| s.name == "Display").unwrap().id;
+    col.add_filter(
+        display,
+        NodeTypeId::new_static(rbs_filters::catalogue::BLUR),
+        Settings::new(),
+    )
+    .unwrap();
+    col.set_source_record_separately(display, RecordSeparately::new(true, false))
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let master = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://master", ContainerId::Matroska),
+        )
+        .unwrap();
+    assert!(run_until(&mut studio, &clock, |s| s
+        .picture_size(display)
+        .is_some()));
+
+    // The default reads the source's own picture; `include_filters` reads its chain
+    // tail. Both give a file at the canvas frame rate.
+    for include_filters in [false, true] {
+        let mut request = start_request();
+        request.include_filters = include_filters;
+        let started = studio.start_iso_video(&r.adapters, &request).unwrap();
+        assert_eq!(started.tracks.len(), 1);
+        let track = &started.tracks[0];
+        let reached = run_until(&mut studio, &clock, |_| {
+            track.stats.frames.load(Ordering::Relaxed) >= 5
+        });
+        assert!(reached, "include_filters {include_filters}: {track:?}");
+        assert_eq!(track.stats.lost.load(Ordering::Relaxed), 0, "{track:?}");
+        assert!(studio.stop_iso_video());
+    }
+
+    let report = studio.stop_output(master).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
