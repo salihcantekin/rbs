@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
+import { ScrollArea, Sections, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader, SettingsScroll } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -2727,12 +2727,13 @@ export component SettingsWindow inherits Window {
                     }
                 }
             }
-            flick := Flickable {
+            flick := ScrollArea {
                 horizontal-stretch: 1;
                 content-height: page.preferred-height;
-                content-width: self.width;
                 page := VerticalLayout {
                     padding: Tokens.space-6;
+                    // The bar sits in the trailing padding, so both sides look alike.
+                    padding-right: max(0px, Tokens.space-6 - flick.bar-room);
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
@@ -2772,10 +2773,6 @@ export component SettingsWindow inherits Window {
         let margin = Tokens.space-4;
         let y = SettingsScroll.y - page.absolute-position.y;
         let h = SettingsScroll.h;
-        if y + flick.content-y < margin {
-            flick.content-y = min(0px, margin - y);
-        } else if y + h + flick.content-y > flick.height - margin {
-            flick.content-y = min(0px, flick.height - margin - y - h);
-        }
+        flick.scroll-into-view(y - margin, h + 2 * margin);
     }
 }

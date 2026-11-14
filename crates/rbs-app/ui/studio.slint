@@ -1124,17 +1124,17 @@ export component ScenesPanel inherits Rectangle {
         title: @tr("No scenes yet");
         message: Studio.state == 0 ? @tr("The studio is starting.") : @tr("The studio is not running.");
     }
-    if Studio.scenes.length > 0: flick := Flickable {
+    if Studio.scenes.length > 0: flick := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: max(rows.preferred-height, self.height);
         // A list that can pan holds a press briefly, so a quick click on a confirm
         // button never arrives and the next one does. The wheel still scrolls.
-        mouse-drag-pan-enabled: false;
+        drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
         TouchArea {
-            width: flick.content-width;
-            height: flick.content-height;
+            width: parent.width;
+            height: max(rows.preferred-height, flick.view-height);
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     panel-menu.open({
@@ -1146,6 +1146,8 @@ export component ScenesPanel inherits Rectangle {
         }
         rows := VerticalLayout {
             padding: Tokens.space-2;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.space-2 - flick.bar-room);
             spacing: Tokens.space-1;
             alignment: start;
             for sc in Studio.scenes: SceneRowView {
@@ -1226,18 +1228,18 @@ export component SourcesPanel inherits Rectangle {
         action: Studio.state == 1 ? @tr("Add source") : "";
         act => { add-menu.open({ x: self.x + self.width / 2, y: self.y + self.height / 2 }); }
     }
-    if Studio.sources.length > 0: flick := Flickable {
+    if Studio.sources.length > 0: flick := ScrollArea {
         y: header;
         width: parent.width;
         height: parent.height - header;
         content-height: max(rows.preferred-height, self.height);
         // A list that can pan holds a press briefly, so a quick click on a confirm
         // button never arrives and the next one does. The wheel still scrolls.
-        mouse-drag-pan-enabled: false;
+        drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
         TouchArea {
-            width: flick.content-width;
-            height: flick.content-height;
+            width: parent.width;
+            height: max(rows.preferred-height, flick.view-height);
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     panel-menu.open({
@@ -1249,6 +1251,8 @@ export component SourcesPanel inherits Rectangle {
         }
         rows := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - flick.bar-room);
             // Each entry spaces itself, so a folded global row takes no room.
             spacing: 0;
             alignment: start;
@@ -4144,13 +4148,13 @@ export component PropertiesPanel inherits Rectangle {
         title: @tr("Nothing selected");
         message: @tr("Select a source in the Sources panel to see its properties.");
     }
-    if any: props := Flickable {
+    if any: props := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
         // A list that can pan holds a press briefly, so a quick click on a confirm
         // button never arrives and the next one does. The wheel still scrolls.
-        mouse-drag-pan-enabled: false;
+        drag-pan: false;
         property <int> anchor: Studio.look-anchor-serial;
         // The gear's section has just reported its place: move it on screen.
         changed anchor => {
@@ -4158,14 +4162,12 @@ export component PropertiesPanel inherits Rectangle {
             let margin = Tokens.space-2;
             let y = Studio.look-anchor-y - list.absolute-position.y;
             let h = Tokens.size-control-lg * 4;
-            if y + props.content-y < margin {
-                props.content-y = min(0px, margin - y);
-            } else if y + h + props.content-y > props.height - margin {
-                props.content-y = min(0px, props.height - margin - y - h);
-            }
+            props.scroll-into-view(y - margin, h + 2 * margin);
         }
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - props.bar-room);
             alignment: start;
             for s in Studio.sources: VerticalLayout {
                 spacing: Tokens.size-section-gap;
@@ -5326,12 +5328,14 @@ component OutputCard inherits Rectangle {
 // to its settings. Settings live in the Settings window (U17), not in this panel.
 export component OutputsPanel inherits Rectangle {
     background: Theme.surface-raised;
-    Flickable {
+    area := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - area.bar-room);
             spacing: Tokens.size-section-gap;
             alignment: start;
             OutputCard {
@@ -5475,6 +5479,8 @@ export component LibraryPanel inherits Rectangle {
         content-height: list.preferred-height;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - fl.bar-room);
             spacing: Tokens.size-section-gap;
             alignment: start;
             SegmentedControl {
@@ -5686,12 +5692,16 @@ export component StatsPanel inherits Rectangle {
         title: @tr("Nothing to measure yet");
         message: @tr("Statistics show here while you record or stream.");
     }
-    if Studio.stats.length > 0: Flickable {
+    // Nothing in the list takes focus, so the area is the focus stop and keys scroll it.
+    if Studio.stats.length > 0: area := ScrollArea {
         width: parent.width;
         height: parent.height;
         content-height: list.preferred-height;
+        focusable: true;
         list := VerticalLayout {
             padding: Tokens.size-panel-pad;
+            // The bar sits in the trailing padding, so both sides look alike.
+            padding-right: max(0px, Tokens.size-panel-pad - area.bar-room);
             spacing: Tokens.size-field-gap;
             alignment: start;
             for row in Studio.stats: StatLine {
