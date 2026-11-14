@@ -17,21 +17,26 @@ use windows_sys::Win32::Graphics::Dwm::{
 };
 use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::UI::Controls::MARGINS;
-use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+use windows_sys::Win32::UI::HiDpi::{
+    AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, HTCAPTION, HTCLIENT, HTMAXBUTTON, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsZoomed,
-    NCCALCSIZE_PARAMS, PostMessageW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
-    SM_CXPADDEDBORDER, SM_CYFRAME, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowPos, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST,
-    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SIZE,
-    WM_SYSCOMMAND,
+    GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongW, HTCAPTION, HTCLIENT, HTMAXBUTTON, HTTOP,
+    HTTOPLEFT, HTTOPRIGHT, IsIconic, IsZoomed, MINMAXINFO, NCCALCSIZE_PARAMS, PostMessageW,
+    SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SM_CXPADDEDBORDER, SM_CYFRAME,
+    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    WINDOWPOS, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_MOUSEMOVE, WM_NCCALCSIZE,
+    WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SIZE, WM_SYSCOMMAND, WM_WINDOWPOSCHANGING,
 };
 
-use crate::caption::{Hit, Probe, Regions, client_top, hit, to_client};
+use crate::caption::{
+    Hit, Probe, Regions, SizeChange, client_top, corrected_height, excess_height, hit, to_client,
+};
 
 /// What the window tells the UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +68,8 @@ struct State {
     regions: Regions,
     hover: bool,
     pressed: bool,
+    /// The user is moving or sizing the window (`WM_ENTERSIZEMOVE` to `WM_EXITSIZEMOVE`).
+    user_sizing: bool,
     /// The UI's side: sent hover, pressed and maximized changes.
     sink: Rc<dyn Fn(Event)>,
     /// Whether a popup is open in the window now.
@@ -100,6 +107,7 @@ pub fn install(
                     regions: Regions::default(),
                     hover: false,
                     pressed: false,
+                    user_sizing: false,
                     sink,
                     popup_open,
                 });
@@ -200,6 +208,58 @@ fn frame_px(hwnd: HWND) -> (i32, f32) {
         GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
     };
     (frame, dpi as f32 / 96.0)
+}
+
+/// The caption and top frame `AdjustWindowRectEx` adds above the client area for the
+/// window's style at its DPI, in physical pixels: what winit counts on top of a client
+/// size it asks for, though the caption is gone (see [`excess_height`]).
+fn top_inset(hwnd: HWND) -> i32 {
+    // SAFETY: reads the live window's styles and DPI; a stale handle answers 0.
+    let (style, ex_style, dpi) = unsafe {
+        (
+            GetWindowLongW(hwnd, GWL_STYLE) as u32,
+            GetWindowLongW(hwnd, GWL_EXSTYLE) as u32,
+            GetDpiForWindow(hwnd).max(96),
+        )
+    };
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: `rect` is a valid RECT this function owns; the window has no menu bar.
+    if unsafe { AdjustWindowRectExForDpi(&mut rect, style, 0, ex_style, dpi) } == 0 {
+        return 0;
+    }
+    -rect.top
+}
+
+/// Sets whether the user is moving or sizing the window.
+fn set_user_sizing(on: bool) {
+    STATE.with(|s| {
+        if let Ok(mut s) = s.try_borrow_mut()
+            && let Some(s) = s.as_mut()
+        {
+            s.user_sizing = on;
+        }
+    });
+}
+
+/// Whether the user is moving or sizing the window.
+fn user_sizing() -> bool {
+    STATE.with(|s| {
+        s.try_borrow()
+            .ok()
+            .and_then(|s| s.as_ref().map(|s| s.user_sizing))
+            .unwrap_or(false)
+    })
+}
+
+/// Whether the window is maximized or minimized.
+fn zoomed_or_iconic(hwnd: HWND) -> bool {
+    // SAFETY: only reads the live window's state.
+    unsafe { IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 }
 }
 
 /// Tells the UI, outside the state's borrow (the UI may send regions back).
@@ -316,6 +376,42 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
             // SAFETY: as above; the default procedure has set the side and bottom edges,
             // and only the top is put back.
             unsafe { (*params).rgrc[0].top = client_top(top, zoomed, frame) };
+            result
+        }
+        WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE => {
+            set_user_sizing(msg == WM_ENTERSIZEMOVE);
+            pass()
+        }
+        // winit sizes the window for a client size as if it had its caption; take that
+        // height off again, or the window grows each time Slint's size limits change.
+        WM_WINDOWPOSCHANGING => {
+            let pos = lparam as *mut WINDOWPOS;
+            // SAFETY: lparam points at the WINDOWPOS Windows owns for this call.
+            let flags = unsafe { (*pos).flags };
+            let change = SizeChange {
+                keeps_position: flags & SWP_NOMOVE != 0,
+                keeps_size: flags & SWP_NOSIZE != 0,
+                user_sizing: user_sizing(),
+                zoomed_or_iconic: zoomed_or_iconic(hwnd),
+            };
+            let excess = excess_height(change, top_inset(hwnd));
+            if excess > 0 {
+                // SAFETY: as above; only the height is changed, before winit sees it.
+                unsafe { (*pos).cy = corrected_height((*pos).cy, excess) };
+            }
+            pass()
+        }
+        // The same for the minimum size winit gives the OS for the user's drags.
+        WM_GETMINMAXINFO => {
+            let result = pass();
+            if !zoomed_or_iconic(hwnd) {
+                let info = lparam as *mut MINMAXINFO;
+                let inset = top_inset(hwnd);
+                // SAFETY: lparam points at the MINMAXINFO Windows owns for this call.
+                unsafe {
+                    (*info).ptMinTrackSize.y = corrected_height((*info).ptMinTrackSize.y, inset)
+                };
+            }
             result
         }
         WM_NCHITTEST => {
