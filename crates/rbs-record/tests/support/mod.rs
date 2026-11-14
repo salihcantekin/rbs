@@ -537,7 +537,7 @@ impl Driven for Studio {
 }
 
 /// The cadence partitions: id, cadence, offset.
-fn cadences() -> [(PartitionId, Cadence, Duration); 9] {
+fn cadences() -> Vec<(PartitionId, Cadence, Duration)> {
     let frames = Cadence::frames(Timestamp::ZERO, FPS);
     [
         (RENDER, frames, Duration::ZERO),
@@ -546,14 +546,19 @@ fn cadences() -> [(PartitionId, Cadence, Duration); 9] {
         (VIDEO_ENCODER_3, frames, FPS.frame_duration() / 4),
         (VIDEO_ENCODER_4, frames, FPS.frame_duration() / 4),
         (REPLAY_VIDEO_ENCODER, frames, FPS.frame_duration() / 4),
-        (ISO_VIDEO_ENCODERS[0], frames, FPS.frame_duration() / 4),
-        (ISO_VIDEO_ENCODERS[1], frames, FPS.frame_duration() / 4),
         (
             AUDIO,
             AudioGraphConfig::default().cadence(START),
             Duration::ZERO,
         ),
     ]
+    .into_iter()
+    .chain(
+        ISO_VIDEO_ENCODERS
+            .into_iter()
+            .map(|p| (p, frames, FPS.frame_duration() / 4)),
+    )
+    .collect()
 }
 
 /// Moves the clock in `STEP`s, waking every worker, until `done` or the hang guard.
@@ -587,9 +592,10 @@ pub fn run_until<T: Driven>(
         REPLAY_RING,
         ISO_AUDIO_ENCODER,
         ISO_OUTPUT,
-        ISO_VIDEO_ENCODERS[0],
-        ISO_VIDEO_ENCODERS[1],
-    ];
+    ]
+    .into_iter()
+    .chain(ISO_VIDEO_ENCODERS)
+    .collect::<Vec<_>>();
     let gpu = gpu().expect("run_until needs the GPU the studio runs on");
     let wall = Instant::now();
     let catch_up = |driven: &T| {
@@ -612,7 +618,7 @@ pub fn run_until<T: Driven>(
             return true;
         }
         clock.advance(STEP);
-        for p in all {
+        for &p in &all {
             driven.engine().wake(p);
         }
         catch_up(driven);

@@ -1,14 +1,16 @@
-//! Separate video files (ADR-0086 step 3.2). One file per source marked for video,
-//! with that source's own picture after its filters (decision 3), at the source's size
-//! when the recording starts, rounded up to even, and at the canvas frame rate. The
-//! export runs on the render partition after the master's and gives way when the
-//! previous render tick ran long (decision 9). The encoders run on a pool of two
-//! partitions, [`ISO_VIDEO_ENCODERS`]; the files share [`ISO_OUTPUT`] with the audio
-//! files. The files are not [`super::MAX_OUTPUTS`] outputs.
+//! Separate video files (ADR-0086 step 3.2, ADR-0119). One file per source marked for
+//! video, with that source's own picture: without its filters by default (ADR-0119
+//! decision 1), or after them when [`IsoVideoStart::include_filters`] is set (ADR-0086
+//! decision 3). The file is the source's size when the recording starts, rounded up
+//! to even, at the canvas frame rate. The export runs on the render partition after
+//! the master's and gives way when the previous render tick ran long or a master
+//! encoder dropped a frame (decision 9). Each file's encoder has a partition of its
+//! own, `ISO_VIDEO_ENCODERS[i]` (ADR-0119 decision 5); the files share [`ISO_OUTPUT`]
+//! with the audio files. The files are not [`super::MAX_OUTPUTS`] outputs.
 //!
 //! Not yet (later steps): a source whose size changes during the take (the export's
 //! input no longer fits and its frames are lost, counted), `size: master` and
-//! `max_height`, *Exclude filters*, off-air sources, offsets from `t0`.
+//! `max_height`, a per-source filter choice, off-air sources, offsets from `t0`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,6 +62,9 @@ pub struct IsoVideoStart {
     /// Share of the frame period after which a track skips a canvas
     /// ([`DEFAULT_GIVE_WAY_SHARE`]).
     pub give_way_share: f64,
+    /// Records each source after its filters (ADR-0086 decision 3) instead of its
+    /// own picture (ADR-0119 decision 1, the default).
+    pub include_filters: bool,
 }
 
 impl IsoVideoStart {
@@ -74,6 +79,7 @@ impl IsoVideoStart {
             container,
             video,
             give_way_share: DEFAULT_GIVE_WAY_SHARE,
+            include_filters: false,
         }
     }
 }
@@ -159,10 +165,15 @@ impl super::Studio {
                     name: track.source_name.clone(),
                 })
             };
-            let (producer, is_filter) = self
-                .binder
-                .chain_tail(track.source)
-                .ok_or_else(no_picture)?;
+            // ADR-0119 decision 1: the source's own picture unless filters are asked for.
+            let (producer, is_filter) = if start.include_filters {
+                self.binder.chain_tail(track.source)
+            } else {
+                self.binder
+                    .source_node(track.source)
+                    .map(|node| (node, false))
+            }
+            .ok_or_else(no_picture)?;
             let picture = self
                 .picture_size(track.source)
                 .filter(|(w, h)| *w > 0 && *h > 0)
@@ -214,7 +225,7 @@ impl super::Studio {
         let input = TransportInput::Container(start.container);
         let (transport, _) = select::transport(&adapters.transports, &start.folder_url, input)?;
         self.ensure_iso_partitions()?;
-        self.ensure_iso_video_partitions()?;
+        self.ensure_iso_video_partitions(taps.len())?;
         let (nodes, tracks) = self.install_video(&taps, chains, &transport, &muxer, start)?;
         self.iso_video = Some(IsoVideoRun { nodes });
         Ok(IsoVideoStarted { tracks })
@@ -244,11 +255,12 @@ impl super::Studio {
         true
     }
 
-    fn ensure_iso_video_partitions(&mut self) -> Result<(), RecordError> {
+    /// Adds the encoder partitions of the first `count` files that are not there yet.
+    fn ensure_iso_video_partitions(&mut self, count: usize) -> Result<(), RecordError> {
         // Paced like the master's encoders. An empty partition starts no thread
         // (ADR-0013); a worker runs while the apply below schedules nodes on it.
         let frames = Cadence::frames(Timestamp::ZERO, self.fps);
-        for part in ISO_VIDEO_ENCODERS {
+        for part in ISO_VIDEO_ENCODERS.iter().take(count).copied() {
             if self.engine.worker_stats(part).is_none() {
                 self.engine.add_partition::<()>(
                     part,
@@ -274,7 +286,8 @@ impl super::Studio {
         let mut tracks = Vec::with_capacity(taps.len());
         let mut encoders = Vec::with_capacity(taps.len());
         for (i, (tap, (export, encoder, size))) in taps.iter().zip(chains).enumerate() {
-            let encoder_part = ISO_VIDEO_ENCODERS[i % ISO_VIDEO_ENCODERS.len()];
+            // One partition per file; `iso::plan` caps the files at `MAX_ISO_VIDEO`.
+            let encoder_part = ISO_VIDEO_ENCODERS[i];
             let output = OutputNode::new(
                 vec![encoder.stream().clone()],
                 Arc::clone(transport),
