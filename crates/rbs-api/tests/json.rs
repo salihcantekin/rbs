@@ -125,6 +125,10 @@ fn source() -> SourceInfo {
         }],
         sync_offset_ms: -40,
         glide: None,
+        heard: Some(Heard {
+            volume: 1.0,
+            muted: false,
+        }),
     }
 }
 
@@ -134,10 +138,12 @@ fn scenes() -> SceneList {
             SceneInfo {
                 id: 0,
                 name: "Talk".into(),
+                own_audio: true,
             },
             SceneInfo {
                 id: 2,
                 name: "Game".into(),
+                own_audio: false,
             },
         ],
         program: 2,
@@ -373,6 +379,7 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::StreamStatus(OnCanvas::default())),
         c(Command::ReplayStatus),
+        c(Command::ProtectionStatus),
         c(Command::SourceSetMonitor(SetSourceMonitor {
             source: 3,
             monitor: MonitorMode::Also,
@@ -387,6 +394,9 @@ fn every_request() -> Vec<Request> {
         c(Command::MonitorSetSolo(SetMonitorSolo {
             sources: vec![3, 4],
         })),
+        c(Command::LoudnessStatus),
+        c(Command::LoudnessSetEnabled(SetLoudnessEnabled { on: true })),
+        c(Command::LoudnessReset),
         c(Command::ReplayArm),
         c(Command::ReplayDisarm),
         c(Command::ReplaySave(ReplaySave { seconds: None })),
@@ -422,6 +432,15 @@ fn every_request() -> Vec<Request> {
             source: 3,
             enabled: true,
         })),
+        c(Command::MarkerAdd(rbs_api::request::MarkerAdd {
+            label: Some("Good".into()),
+            color: Some(rbs_api::request::MarkerColor::Red),
+            canvas: Some(rbs_api::types::OutputTarget::All),
+        })),
+        c(Command::MarkerRemove(rbs_api::request::MarkerRemove {
+            canvas: rbs_api::types::OutputCanvas::Vertical,
+            index: 2,
+        })),
         c(Command::SourceSetChrome(SetSourceChrome {
             source: 3,
             chrome: Some(ChromeSpec {
@@ -435,6 +454,19 @@ fn every_request() -> Vec<Request> {
         c(Command::SourceGetChrome(SourceRef { source: 3 })),
         c(Command::SourceFitChrome(SourceRef { source: 3 })),
         c(Command::SourceResetChrome(SourceRef { source: 3 })),
+        c(Command::SceneAudioGet(SceneRef { scene: 2 })),
+        c(Command::SceneAudioSet(SetSceneLevel {
+            scene: 2,
+            source: 3,
+            volume: Some(0.25),
+            muted: None,
+        })),
+        c(Command::SceneAudioOwn(SceneRef { scene: 2 })),
+        c(Command::SceneAudioShared(SceneRef { scene: 2 })),
+        c(Command::SceneAudioResetSource(SceneSourceRef {
+            scene: 2,
+            source: 3,
+        })),
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
             canvas: Some(canvas()),
@@ -797,6 +829,8 @@ fn every_result_and_event_type_round_trips() {
         }),
         EventPayload::ReplayChanged(replay_status()),
         EventPayload::MonitorChanged(monitor_status()),
+        EventPayload::ProtectionChanged(protection_status()),
+        EventPayload::ProtectionChanged(ProtectionStatus::idle()),
         EventPayload::RecordCanvasState(CanvasRecordState {
             canvas: OutputCanvas::Vertical,
             state: RecordState::Idle { last: None },
@@ -866,6 +900,52 @@ fn monitor_values_have_their_wire_form() {
             is_default: true,
         }],
     });
+}
+
+fn protection_status() -> ProtectionStatus {
+    ProtectionStatus {
+        guarded: true,
+        level: ProtectionLevel::Warning,
+        disks: vec![ProtectionDisk {
+            level: ProtectionLevel::Warning,
+            free_bytes: Some(3 << 30),
+            seconds_left: Some(120),
+            recordings: vec![OutputCanvas::Main],
+        }],
+        outputs: vec![ProtectionOutput {
+            canvas: OutputCanvas::Main,
+            output: OutputKind::Record,
+            level: ProtectionLevel::Ok,
+        }],
+        render: ProtectionLevel::Ok,
+        audio: ProtectionLevel::Ok,
+        memory: ProtectionMemory {
+            level: ProtectionLevel::Unavailable,
+            available_bytes: None,
+        },
+        alerts: vec![ProtectionAlert {
+            kind: ProtectionKind::Disk,
+            level: ProtectionLevel::Warning,
+            text: "Recording will stop in about 2 minutes: the disk is almost full.".into(),
+            canvas: None,
+            output: None,
+        }],
+    }
+}
+
+#[test]
+fn protection_status_has_the_wire_shape_of_the_spec() {
+    let v = serde_json::to_value(protection_status()).unwrap();
+    assert_eq!(v["level"], "warning");
+    assert_eq!(v["disks"][0]["recordings"][0], "main");
+    assert_eq!(v["outputs"][0]["output"], "record");
+    assert_eq!(v["memory"]["level"], "unavailable");
+    assert!(v["memory"].get("available_bytes").is_none());
+    assert!(v["alerts"][0].get("canvas").is_none());
+    assert_eq!(v["alerts"][0]["kind"], "disk");
+    let idle = serde_json::to_value(ProtectionStatus::idle()).unwrap();
+    assert_eq!(idle["guarded"], false);
+    assert_eq!(idle["level"], "ok");
 }
 
 fn replay_status() -> ReplayStatus {
@@ -1695,5 +1775,136 @@ fn separate_files_round_trip_and_later_options_are_refused() {
             .unwrap()
             .get("record_separately")
             .is_none()
+    );
+}
+
+#[test]
+fn loudness_values_have_their_wire_form() {
+    let on: SetLoudnessEnabled = serde_json::from_value(json!({"on": true})).unwrap();
+    assert!(on.on);
+    assert!(serde_json::from_value::<SetLoudnessEnabled>(json!({"on": true, "x": 1})).is_err());
+    // Off: only `enabled`; values without data are left out, never NaN or infinity.
+    let off = serde_json::to_value(LoudnessStatus::default()).unwrap();
+    assert_eq!(off, json!({"enabled": false}));
+    let status = LoudnessStatus {
+        enabled: true,
+        momentary: Some(-22.5),
+        short_term: Some(-23.0),
+        integrated: Some(-23.5),
+        range: Some(4.5),
+        true_peak_max: Some(-1.5),
+        momentary_max: Some(-18.0),
+        short_term_max: Some(-20.0),
+    };
+    let v = serde_json::to_value(status).unwrap();
+    assert_eq!(v["integrated"], json!(-23.5));
+    assert_eq!(v["true_peak_max"], json!(-1.5));
+    round_trip(&status);
+}
+
+#[test]
+fn scene_levels_are_optional_fields_and_their_answers_round_trip() {
+    // Protocol 1.48 (ADR-0091): a row without an entry and a scene in Shared levels
+    // look as they did before.
+    let row = serde_json::to_value(SourceInfo {
+        heard: None,
+        ..source()
+    })
+    .unwrap();
+    assert!(row.get("heard").is_none());
+    assert_eq!(
+        serde_json::to_value(source()).unwrap()["heard"],
+        json!({"volume": 1.0, "muted": false})
+    );
+    let list = serde_json::to_value(scenes()).unwrap();
+    assert_eq!(list["scenes"][0]["own_audio"], true);
+    assert!(list["scenes"][1].get("own_audio").is_none());
+    let older: SceneInfo = serde_json::from_value(json!({"id": 1, "name": "A"})).unwrap();
+    assert!(!older.own_audio);
+    round_trip(&SceneLevels {
+        scene: 2,
+        own: true,
+        levels: vec![SceneLevelInfo {
+            source: 3,
+            volume: None,
+            muted: Some(true),
+        }],
+    });
+    round_trip(&SceneLevelSet { turned_own: true });
+    // Only the given fields are sent.
+    let set = serde_json::to_value(SetSceneLevel {
+        scene: 2,
+        source: 3,
+        volume: None,
+        muted: Some(true),
+    })
+    .unwrap();
+    assert_eq!(set, json!({"scene": 2, "source": 3, "muted": true}));
+}
+
+#[test]
+fn markers_round_trip_and_unknown_colours_are_refused() {
+    use rbs_api::request::{MarkerAdd, MarkerColor, MarkerPlaced, MarkerRemove, MarkersAdded};
+    use rbs_api::types::{OutputCanvas, OutputTarget};
+    let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
+        Ok(Request::Command(c)) => Ok(c),
+        Ok(other) => panic!("not a command: {other:?}"),
+        Err(e) => Err(e.error.kind),
+    };
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"marker.add","params":{}}"#),
+        Ok(Command::MarkerAdd(MarkerAdd::default()))
+    );
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"marker.add"}"#),
+        Ok(Command::MarkerAdd(MarkerAdd::default())),
+        "params may be left out"
+    );
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"marker.add","params":{"label":"Good take","color":"green","canvas":"vertical"}}"#
+        ),
+        Ok(Command::MarkerAdd(MarkerAdd {
+            label: Some("Good take".into()),
+            color: Some(MarkerColor::Green),
+            canvas: Some(OutputTarget::Vertical),
+        }))
+    );
+    for bad in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"marker.add","params":{"color":"pink"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"marker.add","params":{"note":"x"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"marker.remove","params":{"canvas":"all","index":1}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"marker.remove","params":{"canvas":"main"}}"#,
+    ] {
+        assert_eq!(decode(bad), Err(ErrorKind::InvalidParams), "{bad}");
+    }
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"marker.remove","params":{"canvas":"main","index":3}}"#
+        ),
+        Ok(Command::MarkerRemove(MarkerRemove {
+            canvas: OutputCanvas::Main,
+            index: 3,
+        }))
+    );
+    let added = MarkersAdded {
+        markers: vec![MarkerPlaced {
+            canvas: OutputCanvas::Main,
+            index: 1,
+            t_ns: 12_500_000_000,
+        }],
+    };
+    round_trip(&added);
+    assert_eq!(
+        serde_json::to_value(&added).unwrap(),
+        json!({"markers": [{"canvas": "main", "index": 1, "t_ns": 12_500_000_000u64}]})
+    );
+    assert_eq!(
+        rbs_api::request::method_scope("marker.add"),
+        Some(Some(rbs_api::Scope::Control))
+    );
+    assert_eq!(
+        rbs_api::request::method_scope("marker.remove"),
+        Some(Some(rbs_api::Scope::Control))
     );
 }

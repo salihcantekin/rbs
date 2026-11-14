@@ -106,7 +106,7 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 
 Shared by the mux and transport ports ([output ports](output-ports.md), ADR-0019), which may depend only on `rbs-core`.
 
-- `ContainerId` (non-exhaustive): `Mp4Fragmented`, `Matroska`, `MpegTs`, `Flv`, `Wav`, `Flac`; `as_str()` gives `mux.container` values (`mp4.fragmented`, `matroska`, `mpegts`, `flv`, `wav`, `flac`) and `transport_input()` gives `transport.input` values (`container.<name>`). `Flac` is a native FLAC stream (`rbs-mux-flac`): STREAMINFO with unknown length, then the encoder's frames, and no size patch.
+- `ContainerId` (non-exhaustive): `Mp4Fragmented`, `Matroska`, `MpegTs`, `Flv`, `Wav`, `Flac`, `Mov`; `as_str()` gives `mux.container` values (`mp4.fragmented`, `matroska`, `mpegts`, `flv`, `wav`, `flac`, `mov`) and `transport_input()` gives `transport.input` values (`container.<name>`). `Flac` is a native FLAC stream (`rbs-mux-flac`): STREAMINFO with unknown length, then the encoder's frames, and no size patch. `Mov` is a QuickTime movie written fragmented like `Mp4Fragmented` (ADR-0085), so a crash leaves a playable file.
 - `StreamIndex(u16)`: position of a stream in the descriptor list of one output.
 - `MuxChunk { kind: ChunkKind, data: Bytes }` with `ChunkKind::Header`, `Media { keyframe, timestamp }`, `Trailer` or `Patch { offset }`. `keyframe` means an entry point for every stream of the output: a reader starting at this chunk can decode all of them (video from a keyframe; in an audio-only output every chunk can be one). Patches overwrite earlier bytes and are applied only by seekable transports; `is_sequential()` is false for them.
 
