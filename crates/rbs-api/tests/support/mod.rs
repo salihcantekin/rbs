@@ -289,6 +289,7 @@ impl FakeTarget {
                 profile: Some("default".into()),
                 video_encoder: "Test".into(),
                 audio_encoder: None,
+                tracks: vec![],
             }
         } else {
             RecordState::Idle { last: None }

@@ -11,7 +11,7 @@
 //! state key. With no API attached this costs a counter increment per change.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -43,13 +43,13 @@ use rbs_gpu::GpuContext;
 use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_needed};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, ExtraCanvas, Link, OutputId, OutputSettings, Progress, RecordAdapters,
-    RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
+    AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, Progress,
+    RecordAdapters, RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
-    MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape,
-    Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
+    MasterAudio, RecordSeparately, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
+    Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{
     AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, Undo, place_chrome, recrop_keeping,
@@ -390,6 +390,8 @@ pub struct SourceRow {
     pub show_for_ms: u32,
     /// Milliseconds left on a running Show cue; 0 when none.
     pub cue_remaining_ms: u32,
+    /// The source is marked to record separately (ADR-0086).
+    pub record_separately: bool,
 }
 
 impl PartialEq for SourceRow {
@@ -402,6 +404,7 @@ impl PartialEq for SourceRow {
             && self.vertical_layout == other.vertical_layout
             && self.item == other.item
             && self.companion_of == other.companion_of
+            && self.record_separately == other.record_separately
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -964,6 +967,14 @@ pub enum Command {
         /// Which part.
         region: CropRegion,
     },
+    /// Record the source as a file of its own from the next recording on, or stop
+    /// (ADR-0086, `source.set_record_separately`). One undo step.
+    SetRecordSeparately {
+        /// The source.
+        id: SourceId,
+        /// On or off.
+        enabled: bool,
+    },
     /// Capture region on the source (ADR-0103). One undo step; does not restart capture.
     SetSourceCaptureRegion {
         /// The source.
@@ -1226,7 +1237,20 @@ pub struct RecordRequest {
     pub bit_depth: Option<u16>,
     /// Encoded picture size (ADR-0102). `None`: this output's canvas.
     pub size: Option<(u32, u32)>,
+    /// Write the separate files of the sources marked to record separately
+    /// (ADR-0086). Only the main canvas's recording has them.
+    pub iso: bool,
 }
+
+/// The separate files of the main recording (ADR-0086).
+#[derive(Debug, Clone)]
+struct IsoFiles {
+    /// The tracks, as `record.status` lists them.
+    tracks: Vec<api::RecordTrack>,
+}
+
+/// Name of the recording manifest inside a recording's folder (ADR-0086 decision 6).
+const MANIFEST_FILE: &str = "recording.rbs.toml";
 
 /// The canvas an output records or streams (ADR-0093 decision 6).
 pub use rbs_api::types::OutputCanvas;
@@ -2292,6 +2316,8 @@ struct Host {
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
+    /// The main recording's separate files while it runs (ADR-0086).
+    iso: Option<IsoFiles>,
     /// Where the stream key is kept.
     keys: Arc<dyn KeyStore>,
     /// The account of the output profile in use.
@@ -2782,6 +2808,7 @@ fn start(
         history_shown: (None, None),
         waiting: false,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
+        iso: None,
         stats_due: None,
         clock,
         camera_factory: config.virtual_camera.map(|f| f.0),
@@ -3367,6 +3394,13 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text())),
             },
+            Command::SetRecordSeparately { id, enabled } => {
+                match self.set_record_separately(id, enabled) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
             Command::SetSourceCaptureRegion { id, region } => {
                 match self.set_capture_region(id, region) {
                     Ok(true) => self.apply(notify),
@@ -4152,6 +4186,10 @@ impl Host {
                 stopped += 1;
             }
         }
+        // Separate files the host no longer tracks (a start that panicked half-way).
+        if self.iso.is_none() && self.studio.iso_audio_running() {
+            let _ = rbs_crash::contain(|| self.studio.stop_iso_audio());
+        }
         #[cfg(feature = "fault-injection")]
         notify(Update::Recovered { stopped });
         let _ = stopped;
@@ -4258,14 +4296,114 @@ impl Host {
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()));
         }
-        if let Some(folder) = r.path.parent() {
+        if c == OutputCanvas::Main && r.iso && self.marks_separate_audio() {
+            return self.start_recording_with_tracks(c, r, profile);
+        }
+        self.start_master(c, canvas, r, &r.path, profile)
+    }
+
+    /// A source of the collection is marked to record its sound separately. Picture
+    /// flags are kept and written by a later step of ADR-0086.
+    fn marks_separate_audio(&self) -> bool {
+        self.collection.sources().any(|s| s.record_separately.audio)
+    }
+
+    /// The main recording with its separate audio files (ADR-0086 decisions 5 to 7):
+    /// one folder named like the file would be, holding `master.<ext>`, one file per
+    /// track and `recording.rbs.toml`. The tracks open first; any failure stops what
+    /// was opened, removes the files this start made and refuses the recording.
+    fn start_recording_with_tracks(
+        &mut self,
+        c: OutputCanvas,
+        r: &RecordRequest,
+        profile: Option<String>,
+    ) -> Result<RecordingUpdate, String> {
+        let canvas = self.output_canvas(c)?;
+        let folder = r.path.with_extension("");
+        if folder.exists() {
+            return Err(format!("{} already exists.", folder.display()));
+        }
+        let ext = r
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mkv")
+            .to_owned();
+        let master_name = format!("master.{ext}");
+        std::fs::create_dir_all(&folder)
+            .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
+        let t0_ns = self.clock.now().as_nanos();
+        let t0_utc = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let mut start = IsoAudioStart::new(
+            rbs_transport_file::file_url(&folder),
+            ContainerId::Wav,
+            master_name.clone(),
+            t0_utc,
+            t0_ns,
+        );
+        // WAV, 24-bit PCM: an editor's format with no generation loss. A profile
+        // section for it comes with the Separate files card (ADR-0086 decision 4).
+        start.audio.codec = CodecId::Pcm;
+        start.audio.bitrate_bps = 0;
+        start.audio.bit_depth = Some(24);
+        let started = match self.studio.start_iso_audio(&self.adapters, &start) {
+            Ok(started) => started,
+            Err(e) => {
+                remove_recording_folder(&folder, &[]);
+                return Err(format!("The separate files could not start: {e}"));
+            }
+        };
+        let mut manifest = started.manifest;
+        // Picture tracks are not written yet, so the manifest lists only real files.
+        manifest.files.retain(|f| f.role != "video");
+        let names: Vec<String> = manifest.files.iter().map(|f| f.file_name.clone()).collect();
+        if let Err(e) = write_manifest(&folder, &manifest.to_toml()) {
+            self.studio.stop_iso_audio();
+            remove_recording_folder(&folder, &names);
+            return Err(format!("The recording manifest could not be written: {e}"));
+        }
+        let tracks = manifest
+            .files
+            .iter()
+            .filter(|f| f.role == "audio")
+            .filter_map(|f| {
+                f.source.map(|source| api::RecordTrack {
+                    file: f.file_name.clone(),
+                    role: api::TrackRole::Audio,
+                    source: source.get(),
+                })
+            })
+            .collect();
+        self.iso = Some(IsoFiles { tracks });
+        let master = folder.join(&master_name);
+        let result = self.start_master(c, canvas, r, &master, profile);
+        if result.is_err() {
+            self.studio.stop_iso_audio();
+            self.iso = None;
+            remove_recording_folder(&folder, &names);
+        }
+        result
+    }
+
+    /// Starts the recording of `c` into `path` with `r`'s settings.
+    fn start_master(
+        &mut self,
+        c: OutputCanvas,
+        canvas: Option<CanvasId>,
+        r: &RecordRequest,
+        path: &Path,
+        profile: Option<String>,
+    ) -> Result<RecordingUpdate, String> {
+        if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)
                 .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
         }
-        if r.path.exists() {
-            return Err(format!("{} already exists.", r.path.display()));
+        if path.exists() {
+            return Err(format!("{} already exists.", path.display()));
         }
-        let mut out = OutputSettings::new(rbs_transport_file::file_url(&r.path), r.container);
+        let mut out = OutputSettings::new(rbs_transport_file::file_url(path), r.container);
         out.canvas = canvas;
         out.video = r.video.clone();
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
@@ -4293,7 +4431,7 @@ impl Host {
             (
                 id,
                 RecordingUpdate::Started {
-                    path: r.path.clone(),
+                    path: path.to_path_buf(),
                     video_encoder,
                     audio_encoder,
                 },
@@ -4308,18 +4446,26 @@ impl Host {
             },
         )) = &started
         {
-            self.outs[slot(c)].recording = Some((r.path.clone(), *id));
+            self.outs[slot(c)].recording = Some((path.to_path_buf(), *id));
             self.set_record_state(
                 c,
                 api::RecordState::Recording {
                     profile,
                     video_encoder: video_encoder.clone(),
                     audio_encoder: audio_encoder.clone(),
+                    tracks: match c {
+                        OutputCanvas::Main => self
+                            .iso
+                            .as_ref()
+                            .map(|iso| iso.tracks.clone())
+                            .unwrap_or_default(),
+                        OutputCanvas::Vertical => Vec::new(),
+                    },
                 },
             );
-        } else if std::fs::metadata(&r.path).is_ok_and(|m| m.len() == 0) {
+        } else if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
             // The output may have made the file before a later node failed.
-            let _ = std::fs::remove_file(&r.path);
+            let _ = std::fs::remove_file(path);
         }
         started.map(|(_, update)| update)
     }
@@ -4467,6 +4613,10 @@ impl Host {
             return;
         };
         let report = self.studio.stop_output(id);
+        // The separate files end with their master (ADR-0086 decision 5).
+        if c == OutputCanvas::Main && self.iso.take().is_some() {
+            self.studio.stop_iso_audio();
+        }
         inject!(self, Fault::InRecordingStop);
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
             (
@@ -4533,6 +4683,7 @@ impl Host {
             audio_bitrate_bps: start.audio_bitrate_bps,
             bit_depth: start.bit_depth,
             size: start.size,
+            iso: true,
         })
     }
 
@@ -6888,6 +7039,41 @@ impl Host {
         Ok(true)
     }
 
+    /// Marks `id` to record separately from the next recording on, or clears it
+    /// (ADR-0086 decision 2, protocol 1.46). The switch follows the source's media: a
+    /// sound source records its sound, a picture source its picture, and a source
+    /// with both (a media file) both. One undo step; `Ok(false)` when nothing changed.
+    fn set_record_separately(&mut self, id: SourceId, enabled: bool) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let flag = if !enabled {
+            RecordSeparately::default()
+        } else {
+            match types::class_of(&source.type_id) {
+                Some(types::SourceClass::Audio(_)) => RecordSeparately::new(false, true),
+                Some(
+                    types::SourceClass::Capture(_)
+                    | types::SourceClass::Still
+                    | types::SourceClass::Browser,
+                ) => RecordSeparately::new(true, false),
+                _ => RecordSeparately::new(true, true),
+            }
+        };
+        if source.record_separately == flag {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_source_record_separately(id, flag)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::RecordSeparately, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     /// Places the edited scene's item for `id` using the visible picture size
     /// (region ∩ crop). `None` when size or canvas is unknown.
     fn fit_item_to_visible(
@@ -8199,6 +8385,7 @@ impl Host {
                     id: s.id,
                     item: item.id,
                     companion_of: s.companion_of(),
+                    record_separately: !s.record_separately.is_none(),
                     name: s.name.clone(),
                     kind,
                     layout: kind
@@ -9218,9 +9405,9 @@ impl ApiTarget<'_> {
                     Some(one) => {
                         let c = host.api_canvas_of(Some(one))?;
                         let path = host.recording_file(c);
-                        self.record(c, path, false)
+                        self.record(c, path, false, p.iso.unwrap_or(true))
                     }
-                    None => self.start_all(api::OutputKind::Record),
+                    None => self.start_all(api::OutputKind::Record, p.iso.unwrap_or(true)),
                 }
             }
             C::RecordStartToFile(p) => {
@@ -9233,7 +9420,7 @@ impl ApiTarget<'_> {
                         format!("{} is not a full path", p.path),
                     ));
                 }
-                self.record(c, path, true)
+                self.record(c, path, true, false)
             }
             C::RecordStop(p) => {
                 let Some(one) = p.target().single() else {
@@ -9266,7 +9453,7 @@ impl ApiTarget<'_> {
             }
             C::StreamStart(p) => {
                 let Some(one) = p.target().single() else {
-                    return self.start_all(api::OutputKind::Stream);
+                    return self.start_all(api::OutputKind::Stream, false);
                 };
                 let c = host.api_canvas_of(Some(one))?;
                 self.stream(c)
@@ -9563,6 +9750,15 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceSetRecordSeparately(p) => {
+                if host
+                    .set_record_separately(SourceId::from_raw(p.source), p.enabled)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::SourceGetRegion(p) => {
                 let source = host
                     .collection
@@ -9658,6 +9854,7 @@ impl ApiTarget<'_> {
         c: OutputCanvas,
         path: PathBuf,
         explicit: bool,
+        iso: bool,
     ) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
@@ -9684,10 +9881,11 @@ impl ApiTarget<'_> {
                 "a recording is already running",
             ));
         }
-        let request = host.profile_request(c, path).map_err(|why| match c {
+        let mut request = host.profile_request(c, path).map_err(|why| match c {
             OutputCanvas::Main => failed(why),
             OutputCanvas::Vertical => failed(format!("the vertical recording: {why}")),
         })?;
+        request.iso = iso;
         let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
         let result = host.start_recording(c, &request, profile);
         host.publish(notify);
@@ -9717,7 +9915,7 @@ impl ApiTarget<'_> {
     /// `record.start` or `stream.start` with `canvas: "all"` (ADR-0111 decision 3): the
     /// main canvas first, whose refusal fails the call; then the vertical one, whose
     /// refusal is only its entry. One step on the control thread.
-    fn start_all(&mut self, kind: api::OutputKind) -> Result<Response, ApiError> {
+    fn start_all(&mut self, kind: api::OutputKind, iso: bool) -> Result<Response, ApiError> {
         let mut outputs = Vec::new();
         for c in self.host.output_canvases() {
             let out = &self.host.outs[slot(c)];
@@ -9760,7 +9958,7 @@ impl ApiTarget<'_> {
             let started = match kind {
                 api::OutputKind::Record => {
                     let path = self.host.recording_file(c);
-                    self.record(c, path, false)
+                    self.record(c, path, false, iso)
                 }
                 api::OutputKind::Stream => self.stream(c),
             };
@@ -10108,6 +10306,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         mixer_hidden: row.audio.mixer_hidden,
         monitor: monitor::api_mode(row.audio.monitor),
         companion_of: row.companion_of.map(|c| c.get()),
+        record_separately: row.record_separately,
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         glide: row.glide.map(api_glide_source),
@@ -10427,6 +10626,28 @@ fn run_copy_or(
     held: Option<&Held>,
 ) -> Option<SceneCollection> {
     run_copy(collection, canvas, held?)
+}
+
+/// Writes the recording manifest into `folder` under a temporary name, then renames
+/// it, so a reader never sees half a file (ADR-0051).
+fn write_manifest(folder: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = folder.join(format!(".{MANIFEST_FILE}.tmp"));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, folder.join(MANIFEST_FILE))
+}
+
+/// Removes what a refused start left in a recording folder it made: the named files,
+/// the manifest and its temporary file, then the folder when nothing else is in it.
+/// A file somebody else put there stays, and so does the folder.
+fn remove_recording_folder(folder: &Path, names: &[String]) {
+    for name in names
+        .iter()
+        .map(String::as_str)
+        .chain([MANIFEST_FILE, &format!(".{MANIFEST_FILE}.tmp")])
+    {
+        let _ = std::fs::remove_file(folder.join(name));
+    }
+    let _ = std::fs::remove_dir(folder);
 }
 
 #[cfg(test)]

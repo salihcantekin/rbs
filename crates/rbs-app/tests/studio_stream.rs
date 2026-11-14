@@ -447,6 +447,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         audio_bitrate_bps: 128_000,
         bit_depth: None,
         size: None,
+        iso: false,
     }));
     let recording = |rx: &_| {
         next(rx, |u| match u {
@@ -756,6 +757,7 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
         audio_bitrate_bps: 128_000,
         bit_depth: None,
         size: None,
+        iso: false,
     }));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     host.send(Command::StartStream(request()));

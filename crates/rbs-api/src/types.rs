@@ -194,6 +194,10 @@ pub struct SourceInfo {
     /// defaults apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glide: Option<Glide>,
+    /// The source is marked to record separately (protocol 1.46, ADR-0086); absent
+    /// when it is not.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub record_separately: bool,
 }
 
 /// Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).
@@ -905,7 +909,32 @@ pub enum RecordState {
         video_encoder: String,
         /// The audio encoder's name, when audio is recorded.
         audio_encoder: Option<String>,
+        /// The separate files written next to the master (protocol 1.46, ADR-0086);
+        /// absent when there are none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tracks: Vec<RecordTrack>,
     },
+}
+
+/// One separate file of a running recording (protocol 1.46, ADR-0086).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordTrack {
+    /// The file's name inside the recording's folder. No directory.
+    pub file: String,
+    /// What it carries. Only `audio` in 1.46.
+    pub role: TrackRole,
+    /// The source it records (`source.list`).
+    pub source: u32,
+}
+
+/// What a separate file carries (protocol 1.46).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackRole {
+    /// The source's picture (not written in 1.46).
+    Video,
+    /// The source's sound.
+    Audio,
 }
 
 /// The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).

@@ -69,6 +69,8 @@ pub enum EditKind {
     ShowFor,
     /// A source's capture region changed (ADR-0103). Distinct from [`Self::Crop`].
     Region,
+    /// A source was marked to record separately, or the mark was cleared (ADR-0086).
+    RecordSeparately,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

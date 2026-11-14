@@ -125,6 +125,7 @@ impl ControlTarget for Studio {
                         profile: Some("default".into()),
                         video_encoder: "Test".into(),
                         audio_encoder: None,
+                        tracks: vec![],
                     })
                 });
                 Ok(Response::RecordStarted(RecordStarted {

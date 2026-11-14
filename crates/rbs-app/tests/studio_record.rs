@@ -232,6 +232,13 @@ fn host_with(
                 .register(Arc::new(FakeAacFactory::new()))
                 .unwrap();
             a.muxers.register(Arc::new(FakeMuxerFactory)).unwrap();
+            // Separate audio files are 24-bit PCM in WAV (ADR-0086).
+            a.audio_encoders
+                .register(Arc::new(rbs_codec_pcm::PcmEncoderFactory))
+                .unwrap();
+            a.muxers
+                .register(Arc::new(rbs_mux_wav::WavMuxerFactory))
+                .unwrap();
             a.transports
                 .register(Arc::new(rbs_transport_file::FileTransportFactory))
                 .unwrap();
@@ -312,6 +319,7 @@ fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
         audio_bitrate_bps: 128_000,
         bit_depth: None,
         size: None,
+        iso: false,
     }
 }
 
@@ -645,6 +653,135 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
         "{half:?}"
     );
     stop_recording(&host, &rx, &clock);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR-0086: a microphone marked to record separately gets its own WAV next to the
+/// master, in one folder with the manifest; `iso: false` and an unmarked collection
+/// record one file as before, and the mark is one undo step.
+#[test]
+fn a_marked_microphone_records_its_own_file_next_to_the_master() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-iso-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    for kind in [SourceKind::Screen, SourceKind::AudioInput] {
+        host.send(Command::ListTargets(kind));
+        let target = next(&rx, |u| match u {
+            Update::Targets(k, t) if k == kind => Some(t[0].clone()),
+            _ => None,
+        });
+        host.send(Command::AddSource { kind, target });
+    }
+    let rows = rows_where(&rx, |r| r.len() == 2);
+    let mic = rows
+        .iter()
+        .find(|r| r.kind == Some(SourceKind::AudioInput))
+        .unwrap()
+        .clone();
+    assert!(rows.iter().all(|r| !r.record_separately));
+
+    // Nothing marked: one file, as before.
+    let plain = dir.join("plain.mkv");
+    host.send(Command::StartRecording(request(plain.clone(), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    stop_recording(&host, &rx, &clock);
+    assert!(plain.is_file());
+    assert!(!dir.join("plain").exists());
+
+    host.send(Command::SetRecordSeparately {
+        id: mic.id,
+        enabled: true,
+    });
+    rows_where(&rx, |r| {
+        r.iter().any(|r| r.id == mic.id && r.record_separately)
+    });
+
+    // Marked, `iso` off (`record.start_to_file`): still one file.
+    let single = dir.join("single.mkv");
+    host.send(Command::StartRecording(request(single.clone(), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    stop_recording(&host, &rx, &clock);
+    assert!(single.is_file());
+
+    // Marked and `iso` on: a folder with the master, the microphone and the manifest.
+    let take = dir.join("take.mkv");
+    let folder = dir.join("take");
+    let mut with_tracks = request(take.clone(), None);
+    with_tracks.iso = true;
+    host.send(Command::StartRecording(with_tracks.clone()));
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert_eq!(path, folder.join("master.mkv")),
+        other => panic!("{other:?}"),
+    }
+    let manifest = std::fs::read_to_string(folder.join("recording.rbs.toml")).unwrap();
+    assert!(
+        manifest.contains("kind = \"recording-manifest\""),
+        "{manifest}"
+    );
+    assert!(manifest.contains("name = \"master.mkv\""), "{manifest}");
+    assert!(
+        manifest.contains(&format!("source_name = \"{}\"", mic.name)),
+        "{manifest}"
+    );
+    // The file is named after the source, made safe for the file system.
+    let wavs: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "wav"))
+        .collect();
+    assert_eq!(wavs.len(), 1, "{wavs:?}");
+    let track = wavs[0].clone();
+    let track_name = track.file_name().unwrap().to_str().unwrap();
+    assert!(
+        manifest.contains(&format!("name = \"{track_name}\"")),
+        "{manifest}"
+    );
+    assert!(
+        !manifest.contains(&dir.display().to_string()),
+        "no path: {manifest}"
+    );
+    host.send(Command::StopRecording);
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+    let wav = std::fs::read(&track).unwrap();
+    assert!(
+        wav.starts_with(b"RIFF") || wav.starts_with(b"RF64"),
+        "{:?}",
+        &wav[..wav.len().min(8)]
+    );
+    let master = std::fs::read(folder.join("master.mkv")).unwrap();
+    assert!(master.starts_with(HEADER) && master.ends_with(TRAILER));
+    // The same name again: the folder exists, so nothing starts and nothing is replaced.
+    host.send(Command::StartRecording(with_tracks));
+    match recording(&rx) {
+        RecordingUpdate::NotStarted(why) => assert!(why.contains("already exists"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+
+    // The mark is one undo step.
+    host.send(Command::Undo);
+    rows_where(&rx, |r| {
+        r.iter().any(|r| r.id == mic.id && !r.record_separately)
+    });
+
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }
