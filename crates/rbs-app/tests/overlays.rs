@@ -508,3 +508,34 @@ fn key_on(w: &slint::Window, k: Key) {
     w.dispatch_event(WindowEvent::KeyReleased { text: s });
     settle();
 }
+
+#[test]
+fn a_changed_setting_resets_from_its_button_or_a_double_click_on_the_name() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::SettingRowProbe::new().expect("the probe window");
+    p.show().expect("show");
+    let w = p.window();
+    assert!(!p.get_reset_shown(), "no reset at the default");
+    p.set_changed(true);
+    settle();
+    assert!(p.get_reset_shown(), "a changed value shows it");
+    // The button sits just before the switch at the trailing end.
+    let click = |x: f32, y: f32| {
+        press(w, x, y);
+        release(w, x, y);
+    };
+    click(345.0, 28.0);
+    assert_eq!(p.get_resets(), 1, "the reset button");
+    assert!(!p.get_reset_shown());
+    // A double-click on the name resets too.
+    p.set_changed(true);
+    settle();
+    click(20.0, 20.0);
+    click(20.0, 20.0);
+    assert_eq!(p.get_resets(), 2, "a double-click on the name");
+    // Too narrow for the button: none, the double-click still works.
+    p.set_row_width(200.0);
+    p.set_changed(true);
+    settle();
+    assert!(!p.get_reset_shown(), "no room in a stacked row");
+}
