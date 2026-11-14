@@ -127,10 +127,6 @@ struct Track {
 }
 
 pub(crate) struct Fmp4Muxer {
-    /// MOV: `tfhd` without `default-base-is-moof` (an ISO `iso5` brand feature); the
-    /// first `traf`'s data offset is from the `moof` start and each later one's from
-    /// the end of the data before it, which every QuickTime reader follows.
-    qt: bool,
     tracks: Vec<Track>,
     has_video: bool,
     header: Vec<u8>,
@@ -301,18 +297,32 @@ fn visual_entry(
     boxes::close(out, entry);
 }
 
-/// `mp4a` sample entry with its `esds` box.
-fn mp4a_entry(out: &mut Vec<u8>, channels: u16, rate: u32, asc: &[u8]) {
+/// `mp4a` sample entry with its `esds` box. In MOV (`qt`) it is a QuickTime sound
+/// description version 1 (compression id -2, samples per packet = the AAC frame
+/// size): AVFoundation finds no AAC samples in a fragmented MOV whose entry is
+/// version 0 (macOS, 2026-11-14); ISO BMFF keeps version 0.
+fn mp4a_entry(out: &mut Vec<u8>, channels: u16, rate: u32, asc: &[u8], qt: Option<u32>) {
     let entry = boxes::open(out, b"mp4a");
     boxes::zeros(out, 6);
     boxes::u16(out, 1);
-    boxes::zeros(out, 8);
+    boxes::u16(out, u16::from(qt.is_some())); // version
+    boxes::zeros(out, 6); // revision level, vendor
     boxes::u16(out, channels);
     boxes::u16(out, 16); // samplesize
-    boxes::u32(out, 0); // pre_defined, reserved
+    match qt {
+        // compression id -2 (variable), packet size 0.
+        Some(_) => boxes::u32(out, 0xfffe_0000),
+        None => boxes::u32(out, 0), // pre_defined, reserved
+    }
     // 16.16 fixed point; rates above 65535 Hz do not fit, and decoders take the rate
     // from the AudioSpecificConfig.
     boxes::u32(out, if rate <= 0xffff { rate << 16 } else { 0 });
+    if let Some(samples_per_packet) = qt {
+        boxes::u32(out, samples_per_packet);
+        boxes::u32(out, 0); // bytes per packet (variable)
+        boxes::u32(out, 0); // bytes per frame (variable)
+        boxes::u32(out, 2); // bytes per sample
+    }
     let esds = boxes::open_full(out, b"esds", 0, 0);
     // ES_Descriptor > DecoderConfigDescriptor > DecoderSpecificInfo, SLConfigDescriptor.
     // Lengths fit one byte: the AudioSpecificConfig is a few bytes (checked at create).
@@ -674,7 +684,7 @@ impl Fmp4Muxer {
                         &mut traks,
                         container,
                         &track,
-                        &|out| mp4a_entry(out, channels, rate, &asc),
+                        &|out| mp4a_entry(out, channels, rate, &asc, qt.then_some(frame_size)),
                         0,
                         0,
                     );
@@ -775,7 +785,6 @@ impl Fmp4Muxer {
         boxes::close(&mut header, moov);
 
         Ok(Self {
-            qt,
             has_video: tracks.iter().any(|t| t.kind.is_video()),
             tracks,
             header,
@@ -843,19 +852,15 @@ impl Fmp4Muxer {
         boxes::u32(&mut chunk, self.sequence);
         boxes::close(&mut chunk, mfhd);
         let mut data_offset = moof_size + MDAT_HEADER;
-        let base_flag = if self.qt { 0 } else { DEFAULT_BASE_IS_MOOF };
-        let mut first_traf = true;
+        // Every `traf` sets `default-base-is-moof`, so each data offset counts from the
+        // `moof` start. MOV too: AVFoundation (QuickTime Player, Final Cut) does not
+        // follow the ISO implicit offset of a second `traf` without it; it drops that
+        // track and stops after the first fragment (checked on macOS, 2026-11-14).
+        let base_flag = DEFAULT_BASE_IS_MOOF;
         for (index, track) in self.tracks.iter().enumerate() {
             if track.samples.is_empty() {
                 continue;
             }
-            // MOV: relative to the end of the previous `traf`'s data (see `qt`).
-            let run_offset = if self.qt && !first_traf {
-                0
-            } else {
-                data_offset
-            };
-            first_traf = false;
             let following = next.and_then(|(i, dts)| (i == index).then_some(dts));
             let traf = boxes::open(&mut chunk, b"traf");
             let base = self.media_time(track.samples[0].dts, track.timescale);
@@ -878,7 +883,7 @@ impl Fmp4Muxer {
                 let trun = boxes::open_full(&mut chunk, b"trun", 0, TRUN_PCM_FLAGS);
                 // Fragment payload is below MAX_FRAGMENT_BYTES, so both fit 32 bits.
                 boxes::u32(&mut chunk, (bytes / frame_bytes as usize) as u32);
-                boxes::u32(&mut chunk, run_offset as u32);
+                boxes::u32(&mut chunk, data_offset as u32);
                 boxes::close(&mut chunk, trun);
                 boxes::close(&mut chunk, traf);
                 data_offset += bytes;
@@ -893,7 +898,7 @@ impl Fmp4Muxer {
             let trun = boxes::open_full(&mut chunk, b"trun", 1, TRUN_FLAGS);
             boxes::u32(&mut chunk, track.samples.len() as u32);
             // Below 4 GiB: see MAX_SAMPLE_BYTES and MAX_FRAGMENT_BYTES.
-            boxes::u32(&mut chunk, run_offset as u32);
+            boxes::u32(&mut chunk, data_offset as u32);
             for (i, s) in track.samples.iter().enumerate() {
                 let dts = self.media_time(s.dts, track.timescale);
                 let end_ts = sample_end(&track.samples, i, following, track.nominal);

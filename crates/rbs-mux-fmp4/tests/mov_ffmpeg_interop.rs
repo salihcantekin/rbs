@@ -3,6 +3,10 @@
 //! unchanged. Ignored by default because CI has no `ffmpeg`; run with
 //! `cargo test -p rbs-mux-fmp4 --test mov_ffmpeg_interop -- --ignored` where it is
 //! installed. The tool only makes and checks test data; the muxer does not use FFmpeg.
+//!
+//! With `RBS_MOV_SAMPLES_DIR` set, each test also copies its file there under a name
+//! that says what it holds, so the same files can be opened in QuickTime Player and
+//! editors on a Mac (ADR-0085 decision 6).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
@@ -17,7 +21,7 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate, SampleRate};
 use rbs_media_format::avc::AvcConfig;
-use rbs_media_format::nal::{self, h264};
+use rbs_media_format::nal::{self, h264, hevc};
 use rbs_mux::{MuxerConfig, MuxerFactory};
 use rbs_mux_fmp4::Fmp4MuxerFactory;
 
@@ -92,6 +96,15 @@ fn h264_units(dir: &Path) -> Vec<(bool, Vec<u8>)> {
         au.1.extend_from_slice(unit);
     }
     units
+}
+
+/// Copies `file` into `RBS_MOV_SAMPLES_DIR` as `name`, when that is set.
+fn keep_sample(file: &Path, name: &str) {
+    if let Some(dir) = std::env::var_os("RBS_MOV_SAMPLES_DIR") {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(file, dir.join(name)).unwrap();
+    }
 }
 
 fn file_bytes(chunks: &[MuxChunk]) -> Vec<u8> {
@@ -223,7 +236,224 @@ fn run(bits: u8, sample_fmt: &str, codec_name: &str, with_video: bool) {
         &path(&back),
     ]);
     assert!(std::fs::read(&back).unwrap() == pcm, "PCM changed");
+    let video = if with_video { "h264_" } else { "" };
+    keep_sample(&out, &format!("{video}pcm{bits}.mov"));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Splits an ADTS stream into raw AAC frames.
+fn adts_frames(mut stream: &[u8]) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    while stream.len() >= 7 {
+        assert_eq!(stream[0], 0xff);
+        let len = (usize::from(stream[3] & 0x3) << 11)
+            | (usize::from(stream[4]) << 3)
+            | usize::from(stream[5] >> 5);
+        let header = if stream[1] & 1 == 0 { 9 } else { 7 };
+        frames.push(stream[header..len].to_vec());
+        stream = &stream[len..];
+    }
+    frames
+}
+
+/// The payload of the first box of `kind` found by walking `bytes` (containers given
+/// in `path` are entered, everything else skipped).
+fn find_box<'a>(bytes: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+    const ENTER: [&[u8; 4]; 7] = [
+        b"moov", b"trak", b"mdia", b"minf", b"stbl", b"hvc1", b"stsd",
+    ];
+    let mut pos = 0;
+    while pos + 8 <= bytes.len() {
+        let size = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let name: [u8; 4] = bytes[pos + 4..pos + 8].try_into().unwrap();
+        if size < 8 || pos + size > bytes.len() {
+            return None;
+        }
+        let payload = &bytes[pos + 8..pos + size];
+        if &name == kind {
+            return Some(payload);
+        }
+        // Skip the fixed fields before the children: stsd 8, hvc1 78.
+        let skip = match &name {
+            b"stsd" => 8,
+            b"hvc1" => 78,
+            _ => 0,
+        };
+        if ENTER.contains(&&name) {
+            if let Some(found) = find_box(&payload[skip..], kind) {
+                return Some(found);
+            }
+        }
+        pos += size;
+    }
+    None
+}
+
+/// HEVC from libx265 as length-prefixed access units and its hvcC record.
+fn hevc_units(dir: &Path) -> (Vec<u8>, Vec<(bool, Vec<u8>)>) {
+    let mp4 = dir.join("in-hevc.mp4");
+    ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=30:duration=3",
+        "-c:v",
+        "libx265",
+        "-x265-params",
+        "bframes=0:keyint=30:min-keyint=30:aud=1:log-level=error",
+        "-tag:v",
+        "hvc1",
+        &path(&mp4),
+    ]);
+    let hvcc = find_box(&std::fs::read(&mp4).unwrap(), b"hvcC")
+        .expect("hvcC in FFmpeg's file")
+        .to_vec();
+    let annexb = dir.join("in.hevc");
+    ffmpeg(&[
+        "-i",
+        &path(&mp4),
+        "-c:v",
+        "copy",
+        "-f",
+        "hevc",
+        &path(&annexb),
+    ]);
+    let mut units: Vec<(bool, Vec<u8>)> = Vec::new();
+    for unit in nal::annexb_units(&std::fs::read(&annexb).unwrap()) {
+        let kind = nal::hevc_type(unit);
+        if kind == Some(hevc::AUD) || units.is_empty() {
+            units.push((false, Vec::new()));
+        }
+        // IDR_W_RADL (19) or IDR_N_LP (20).
+        let au = units.last_mut().unwrap();
+        au.0 |= matches!(kind, Some(19 | 20));
+        au.1.extend_from_slice(&(unit.len() as u32).to_be_bytes());
+        au.1.extend_from_slice(unit);
+    }
+    (hvcc, units)
+}
+
+/// H.264 or HEVC with AAC, the streams a VideoToolbox or NVENC recording gives.
+fn run_with_aac(hevc_video: bool) {
+    let name = if hevc_video { "hevc_aac" } else { "h264_aac" };
+    let dir = scratch(name);
+    let aac = dir.join("in.aac");
+    ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=3",
+        "-ac",
+        "2",
+        "-c:a",
+        "aac",
+        &path(&aac),
+    ]);
+    let format = VideoFormat::new(
+        Size::new(320, 240),
+        PixelFormat::Nv12,
+        ColorSpace::BT709_LIMITED,
+    );
+    let origin = Timestamp::from_nanos(5_000_000_000);
+    let frames = Cadence::frames(origin, FrameRate::FPS_30);
+    let mut packets: Vec<(StreamIndex, EncodedPacket)> = Vec::new();
+    let (codec, bitstream, extradata, units) = if hevc_video {
+        let (hvcc, units) = hevc_units(&dir);
+        (
+            CodecId::Hevc,
+            BitstreamFormat::LengthPrefixed { length_size: 4 },
+            hvcc,
+            units,
+        )
+    } else {
+        let units = h264_units(&dir);
+        let mut avcc = Vec::new();
+        AvcConfig::from_annexb(&units[0].1, &mut avcc)
+            .unwrap()
+            .unwrap();
+        (CodecId::H264, BitstreamFormat::AnnexB, avcc, units)
+    };
+    let video_count = units.len();
+    for (i, (key, au)) in units.into_iter().enumerate() {
+        let t = frames.time_of(i as u64);
+        let p = EncodedPacket::new(codec, bitstream, t, t, key, Bytes::from(au));
+        packets.push((StreamIndex(0), p.unwrap()));
+    }
+    let rate = SampleRate::HZ_48000;
+    for (i, frame) in adts_frames(&std::fs::read(&aac).unwrap())
+        .into_iter()
+        .enumerate()
+    {
+        let t = origin + rate.duration_of(i as u64 * 1024);
+        let p = EncodedPacket::new(
+            CodecId::Aac,
+            BitstreamFormat::Raw,
+            t,
+            t,
+            true,
+            Bytes::from(frame),
+        );
+        packets.push((StreamIndex(1), p.unwrap()));
+    }
+    packets.sort_by_key(|(s, p)| (p.dts(), *s));
+    let streams = vec![
+        StreamDescriptor::new(
+            codec,
+            bitstream,
+            Bytes::from(extradata),
+            StreamParams::video(format, FrameRate::FPS_30),
+        ),
+        StreamDescriptor::new(
+            CodecId::Aac,
+            BitstreamFormat::Raw,
+            Bytes::from_static(&[0x11, 0x90]),
+            StreamParams::audio(AudioFormat::STEREO_48K, 1024),
+        ),
+    ];
+    let mut muxer = Fmp4MuxerFactory
+        .create(&MuxerConfig::new(ContainerId::Mov, streams))
+        .unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    for (stream, packet) in &packets {
+        muxer.write(*stream, packet, &mut chunks).unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+    let out = dir.join("out.mov");
+    std::fs::write(&out, file_bytes(&chunks)).unwrap();
+
+    assert_eq!(probe(&out, "format_tags=major_brand", None), "qt");
+    let video_name = if hevc_video { "hevc" } else { "h264" };
+    assert_eq!(probe(&out, "stream=codec_name", Some("v:0")), video_name);
+    assert_eq!(probe(&out, "stream=codec_name", Some("a:0")), "aac");
+    let duration: f64 = probe(&out, "format=duration", None).parse().unwrap();
+    assert!((duration - 3.0).abs() < 0.05, "duration {duration}");
+    ffmpeg(&["-i", &path(&out), "-f", "null", "-"]);
+    let counted = Command::new("ffprobe")
+        .args(["-v", "error", "-count_frames", "-select_streams", "v:0"])
+        .args(["-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let read: usize = String::from_utf8_lossy(&counted.stdout)
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(read, video_count, "every picture decodes");
+    keep_sample(&out, &format!("{name}.mov"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+#[ignore = "slow: needs the ffmpeg command-line tool, about 4 s"]
+fn slow_mov_with_h264_and_aac_decodes() {
+    run_with_aac(false);
+}
+
+#[test]
+#[ignore = "slow: needs the ffmpeg command-line tool with libx265, about 6 s"]
+fn slow_mov_with_hevc_and_aac_decodes() {
+    run_with_aac(true);
 }
 
 #[test]
