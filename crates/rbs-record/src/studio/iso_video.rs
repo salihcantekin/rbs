@@ -257,8 +257,12 @@ impl super::Studio {
 
     /// Adds the encoder partitions of the first `count` files that are not there yet.
     fn ensure_iso_video_partitions(&mut self, count: usize) -> Result<(), RecordError> {
-        // Paced like the master's encoders. An empty partition starts no thread
-        // (ADR-0013); a worker runs while the apply below schedules nodes on it.
+        // Frame cadence half a period after the render tick, a quarter period after the
+        // master's encoders, so the master's frame reaches a shared hardware engine
+        // first on every tick (3.2/step (a) measurement: with each file on its own
+        // partition at the master's phase, the master missed about one frame in 360 at
+        // three 1080p60 files). An empty partition starts no thread (ADR-0013); a
+        // worker runs while the apply below schedules nodes on it.
         let frames = Cadence::frames(Timestamp::ZERO, self.fps);
         for part in ISO_VIDEO_ENCODERS.iter().take(count).copied() {
             if self.engine.worker_stats(part).is_none() {
@@ -266,7 +270,7 @@ impl super::Studio {
                     part,
                     Arc::new(()),
                     (),
-                    Pacing::cadence_after(frames, self.fps.frame_duration() / 4),
+                    Pacing::cadence_after(frames, self.fps.frame_duration() / 2),
                 )?;
             }
         }
