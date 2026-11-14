@@ -3,9 +3,9 @@
 //! [`plan`] names each track from the sources marked in the collection and opens
 //! nothing. [`RecordingManifest::at_start`] is the manifest written when a recording
 //! starts. Audio files are opened by [`crate::Studio::start_iso_audio`] in the
-//! caller's container and codec (AAC, or PCM in WAV). Flac is named and has no
-//! writer yet. Video files are named
-//! and not opened yet. Offsets and drop counters are filled when the recording stops.
+//! caller's container and codec. PCM and FLAC pass `bit_depth` when it is set;
+//! absent is 16-bit. Video files are named and not opened yet. Offsets and drop
+//! counters are filled when the recording stops.
 
 use std::collections::BTreeSet;
 use std::fmt;

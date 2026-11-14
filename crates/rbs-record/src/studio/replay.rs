@@ -122,11 +122,7 @@ impl Studio {
         let mut streams = vec![encoder.stream().clone()];
         let audio = match &settings.audio {
             Some(a) => {
-                let config = AudioEncoderConfig::new(
-                    a.codec,
-                    self.settings.audio_graph.format,
-                    a.bitrate_bps,
-                );
+                let config = a.encoder_config(self.settings.audio_graph.format);
                 let (session, chosen) = select::audio_encoder(&adapters.audio_encoders, &config)?;
                 streams.push(session.stream().clone());
                 Some((EncoderNode::new(session, AUDIO_ENCODER_PACKETS), chosen))

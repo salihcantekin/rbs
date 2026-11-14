@@ -1,12 +1,13 @@
-//! Separate audio files (ADR-0086 step 2). One AAC file per source marked for audio,
-//! in the caller's container, tapped after that source's filters and before the fader.
-//! Wav and Flac wait for ADR-0085. The files are not [`super::MAX_OUTPUTS`] outputs.
+//! Separate audio files (ADR-0086). One file per source marked for audio, in the
+//! caller's container and codec, tapped after that source's filters and before the
+//! fader. PCM and FLAC pass `bit_depth` when it is set. The files are not
+//! [`super::MAX_OUTPUTS`] outputs.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use rbs_audio::EncoderNode;
-use rbs_codec::{AudioEncoder, AudioEncoderConfig};
+use rbs_codec::AudioEncoder;
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::ContainerId;
 use rbs_engine::{DEFAULT_DOORBELL_TIMER, Pacing};
@@ -33,9 +34,10 @@ pub struct IsoAudioStart {
     /// Folder URL the files are written under, for example `file:///C:/Videos/take`
     /// or `mem://iso`. No trailing name: each file is `{folder}/{name}.{ext}`.
     pub folder_url: String,
-    /// The master's container. AAC is carried in it; Wav and Flac are not this step.
+    /// Container each file is written in.
     pub container: ContainerId,
-    /// Codec and bitrate. A lossy codec (AAC) is what this step can open.
+    /// Codec, bitrate and, for PCM and FLAC, sample width. AAC at 160 kbit/s is
+    /// the default.
     pub audio: AudioSettings,
     /// Master file name in the manifest. One name, not a path. This call does not
     /// open that file.
@@ -145,11 +147,7 @@ impl super::Studio {
         if scheme_of(&start.folder_url).is_none() {
             return Err(RecordError::InvalidUrl(start.folder_url.clone()));
         }
-        let ext_config = AudioEncoderConfig::new(
-            start.audio.codec,
-            self.settings.audio_graph.format,
-            start.audio.bitrate_bps,
-        );
+        let ext_config = start.audio.encoder_config(self.settings.audio_graph.format);
         let mut sessions = Vec::with_capacity(taps.len());
         for _ in &taps {
             let (session, _) = select::audio_encoder(&adapters.audio_encoders, &ext_config)?;

@@ -15,9 +15,9 @@ use rbs_audio::{
 use rbs_audio_filters::{
     AudioFilterNode, AudioFilterStats, AudioFilterType, DspSetup, FilterMeter,
 };
-use rbs_codec::{AudioEncoderConfig, EncoderTuning, VideoEncoderConfig};
+use rbs_codec::{EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{CodecId, ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
+use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
@@ -593,13 +593,7 @@ impl Prepared {
         };
         let audio = match &out.audio {
             Some(a) => {
-                let mut config =
-                    AudioEncoderConfig::new(a.codec, audio_graph.format, a.bitrate_bps);
-                if matches!(a.codec, CodecId::Pcm | CodecId::Flac)
-                    && let Some(bits) = a.bit_depth
-                {
-                    config = config.with_adapter_option("bit_depth", bits.to_string());
-                }
+                let config = a.encoder_config(audio_graph.format);
                 let shared = running.audio.iter().enumerate().find_map(|(i, c)| {
                     let c = c.as_ref()?;
                     (c.settings == *a

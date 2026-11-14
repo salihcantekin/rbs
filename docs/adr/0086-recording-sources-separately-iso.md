@@ -71,3 +71,4 @@ Forces: the master recording and stream must never degrade because of ISO (P7, A
 - 2026-11-13: Step 2 opens one AAC audio-only file per audio flag, in the caller's container, on partitions 17 (one encode worker) and 18 (one output worker). The tap is the mixer input, after filters and before the fader. Video tracks, off-air sources (decision 8), the `t0` protocol (decision 5), the cost warning (ADR-0087) and the UI stay later steps.
 - 2026-11-13: ADR-0085 is Accepted. The same start can open PCM in WAV (16-bit, 24-bit or 32-bit float) when the caller asks for that container and codec.
 - 2026-11-13: A FLAC writer is registered. ISO still opens AAC unless the caller asks for another codec, and that start does not pass `bit_depth`, so a requested FLAC file is 16-bit.
+- 2026-11-13: `start_iso_audio` passes `bit_depth` for PCM and FLAC, the same rule as the main recording. Absent stays 16-bit.

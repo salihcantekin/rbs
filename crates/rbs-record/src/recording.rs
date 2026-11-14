@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use rbs_audio::{AudioGraphConfig, LevelMeter};
 use rbs_codec::{
-    AudioEncoderFactory, EncoderPreset, KeyframeInterval, RateControl, VideoEncoderFactory,
+    AudioEncoderConfig, AudioEncoderFactory, EncoderPreset, KeyframeInterval, RateControl,
+    VideoEncoderFactory,
 };
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{CodecId, ColorSpace, ContainerId};
+use rbs_core::media::{AudioFormat, CodecId, ColorSpace, ContainerId};
 use rbs_core::registry::{AdapterId, Registry};
 use rbs_engine::{Engine, EngineError, Serviced};
 use rbs_gpu::{GpuContext, YuvFormat};
@@ -206,9 +207,23 @@ pub struct AudioSettings {
     pub codec: CodecId,
     /// Bitrate in bit/s. PCM ignores it.
     pub bitrate_bps: u64,
-    /// PCM sample width when `codec` is [`CodecId::Pcm`]: 16, 24 or 32 (float).
-    /// `None` is 16-bit. Other codecs ignore it, and it is not sent to them.
+    /// Sample width when `codec` is PCM (16, 24 or 32, and 32 is float) or FLAC
+    /// (16 or 24). `None` is 16-bit. Other codecs are not given the option.
     pub bit_depth: Option<u16>,
+}
+
+impl AudioSettings {
+    /// The encoder session for this mix. PCM and FLAC pass `bit_depth` when it is
+    /// set. Other codecs are not given the option.
+    pub(crate) fn encoder_config(&self, format: AudioFormat) -> AudioEncoderConfig {
+        let mut config = AudioEncoderConfig::new(self.codec, format, self.bitrate_bps);
+        if matches!(self.codec, CodecId::Pcm | CodecId::Flac)
+            && let Some(bits) = self.bit_depth
+        {
+            config = config.with_adapter_option("bit_depth", bits.to_string());
+        }
+        config
+    }
 }
 
 impl Default for AudioSettings {
