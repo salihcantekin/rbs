@@ -5,7 +5,7 @@
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
-import { BrandMark, Icon, IconName, Icons, ListRow, MenuSurface, FocusRing, RingFocus, OverlayCover } from "components.slint";
+import { ScrollArea, BrandMark, Icon, IconName, Icons, ListRow, MenuSurface, FocusRing, RingFocus, OverlayCover } from "components.slint";
 
 // One row of the item column. kind: 1 command, 2 section heading, 3 separator,
 // 4 picker (opens its choices), 5 back (from a picker's choices).
@@ -196,11 +196,7 @@ export component AppMenu inherits Rectangle {
     }
     // Scrolls the item column so a row at `y` (`h` high) is in view.
     function reveal(y: length, h: length) {
-        if y + item-list.content-y < 0 {
-            item-list.content-y = -y;
-        } else if y + h + item-list.content-y > item-list.height {
-            item-list.content-y = item-list.height - y - h;
-        }
+        item-list.scroll-into-view(y, h);
     }
     function move(step: int) {
         if column == 1 {
@@ -327,11 +323,13 @@ export component AppMenu inherits Rectangle {
                         }
                     }
                     if query.text == "": Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
-                    item-list := Flickable {
+                    item-list := ScrollArea {
                         height: min(rows.preferred-height, Tokens.size-app-menu-list-h);
                         content-height: rows.preferred-height;
                         rows := VerticalLayout {
                             padding: Tokens.space-1;
+                            // The bar sits in the trailing padding (ScrollArea).
+                            padding-right: max(0px, Tokens.space-1 - item-list.bar-room);
                             spacing: Tokens.size-border;
                             alignment: start;
                             accessible-role: list;

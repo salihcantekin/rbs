@@ -614,15 +614,9 @@ export component SourceSettingsWindow inherits Window {
                         NumberField {
                             preferred-width: Tokens.size-field-compact;
                             label: @tr("Bar thickness of {} in pixels", d.name);
+                            unit: @tr("px");
                             value: root.chrome-thickness;
                             edited(v) => { root.chrome-thickness = max(1, round(v)); }
-                        }
-                        Text {
-                            text: @tr("px");
-                            color: Theme.text-secondary;
-                            font-size: Tokens.type-body-size;
-                            vertical-alignment: center;
-                            accessible-role: none;
                         }
                     }
                     if root.chrome-on: SettingRow {

@@ -3754,16 +3754,10 @@ component AudioFields inherits VerticalLayout {
                 horizontal-stretch: 1;
                 preferred-width: 0;
                 label: @tr("Sync offset of {} in milliseconds", data.name);
+                unit: @tr("ms");
                 value: data.sync-offset;
                 step: 10;
                 edited(v) => { Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
-            }
-            Text {
-                text: @tr("ms");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-                accessible-role: none;
             }
         }
     }
@@ -4046,15 +4040,9 @@ component SourceProperties inherits VerticalLayout {
                 horizontal-stretch: 1;
                 preferred-width: 0;
                 label: @tr("Show duration of {} in milliseconds", data.name);
+                unit: @tr("ms");
                 value: data.show-for-ms;
                 edited(v) => { Studio.set-item-show-for(data.item-id, max(0, min(600000, round(v)))); }
-            }
-            Text {
-                text: @tr("ms");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-                accessible-role: none;
             }
         }
         HorizontalLayout {
@@ -4113,7 +4101,7 @@ component SourceProperties inherits VerticalLayout {
                 label: @tr("Duration");
                 NumberField {
                     label: @tr("Glide duration of {} in milliseconds", data.name);
-                    prefix: @tr("ms");
+                    unit: @tr("ms");
                     value: data.glide-duration;
                     edited(v) => {
                         Studio.set-source-glide(data.id, true, max(0, min(5000, round(v))), data.glide-easing);
@@ -4723,7 +4711,7 @@ export component GeneralSettings inherits Rectangle {
                 enabled: Studio.glide-duration > 0;
                 NumberField {
                     label: @tr("Glide duration in milliseconds");
-                    prefix: @tr("ms");
+                    unit: @tr("ms");
                     value: Studio.glide-duration;
                     enabled: Studio.glide-duration > 0;
                     edited(v) => {

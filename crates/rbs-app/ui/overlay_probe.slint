@@ -1,6 +1,6 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
-import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Tabs } from "components.slint";
+import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Tabs, ScrollArea, SettingRow, Toggle } from "components.slint";
 
 export component OverlayProbe inherits Window {
     // literal-begin: a test window; its size and the places of its two controls are test data
@@ -56,4 +56,37 @@ export component OverlayProbe inherits Window {
     public function focus-hint() { hint.take-focus(); }
     public function focus-button() { button.take-focus(); }
     OverlayHost { width: parent.width; height: parent.height; }
+}
+
+// A window for tests/overlays.rs: Tab into a row whose help lies below a scrolled
+// area shows the whole row (FocusReveal), not only its control.
+export component FocusRevealProbe inherits Window {
+    // literal-begin: a test window; its size and the gap that pushes the row down are test data
+    width: 300px;
+    height: 200px;
+    out property <length> offset: area.offset;
+    out property <length> view-height: area.view-height;
+    out property <length> row-bottom: second.y + second.height;
+    area := ScrollArea {
+        content-height: rows.preferred-height;
+        rows := VerticalLayout {
+            width: parent.width;
+            height: self.preferred-height;
+            first := SettingRow {
+                label: "First";
+                fill: false;
+                t1 := Toggle { label: "First"; }
+            }
+            Rectangle { height: 150px; }
+            second := SettingRow {
+                label: "Second";
+                help: "Help under the name that wraps onto a second line in this narrow window.";
+                fill: false;
+                Toggle { label: "Second"; }
+            }
+            Rectangle { height: 300px; }
+        }
+    }
+    // literal-end
+    public function focus-first() { t1.focus(); }
 }
