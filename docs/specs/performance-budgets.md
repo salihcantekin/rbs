@@ -31,6 +31,8 @@ Principle P13 and [ADR-0013](../adr/0013-zero-cost-when-unused.md). All checks u
 | GPU time per frame (*scene*) | Loaded equals baseline within 1 % | Self-hosted GPU runner |
 | Activate then deactivate each feature | Threads, resident memory (within 64 KiB) and GPU allocations return to the pre-activation level | Hosted CI where possible |
 
+Recording protection (ADR-0090, [spec](recording-protection.md)) costs nothing while no recording or stream runs: no thread, timer or polling. During a take it adds one probe thread and one guard step a second on the control thread (integer arithmetic over at most four outputs and the volumes they write to), and one free-space and memory reading every 5 s on the probe thread. It reads existing counters only, so it adds nothing to any hot path.
+
 "Hot loops contain no checks for inactive features" cannot be measured by a benchmark; it is a review item in the `hot-path-review` skill.
 
 ## Scenario budgets (initial targets, to be calibrated in Phase 0)

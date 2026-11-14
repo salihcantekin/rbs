@@ -414,6 +414,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-transport-rtmp"
         | "rbs-transport-srt"
         | "rbs-thread-os"
+        | "rbs-system-probe"
         | "rbs-vcam-mf"
         | "rbs-vcam-test"
         | "rbs-media-decode-test"

@@ -1297,6 +1297,136 @@ pub struct ReplayStatus {
     pub last_error: Option<String>,
 }
 
+/// A level of recording protection (protocol 1.49, ADR-0090 decision 9). A client
+/// treats a level it does not know as `warning`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectionLevel {
+    /// Nothing could be read (the platform has no reading, or the probe timed out).
+    /// Never raises the overall level.
+    Unavailable,
+    /// Fine.
+    Ok,
+    /// Worth knowing.
+    Notice,
+    /// Act soon.
+    Warning,
+    /// Acting now (at the disk reserve the recordings there stop cleanly).
+    Critical,
+}
+
+/// What a protection alert is about (protocol 1.49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectionKind {
+    /// A disk a recording writes to is filling.
+    Disk,
+    /// An output loses frames.
+    Lag,
+    /// The render worker is late (every canvas).
+    Render,
+    /// The audio worker is late.
+    Audio,
+    /// System memory is low.
+    Memory,
+}
+
+/// One disk (volume) at least one running recording writes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectionDisk {
+    /// Its level.
+    pub level: ProtectionLevel,
+    /// Free bytes at the last reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_bytes: Option<u64>,
+    /// Seconds until the reserve is reached at the measured rate, rounded to whole
+    /// minutes; absent while the rate is unknown or free space does not fall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds_left: Option<u64>,
+    /// The canvases whose recording writes there.
+    pub recordings: Vec<OutputCanvas>,
+}
+
+/// One running output's lag level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectionOutput {
+    /// Its canvas.
+    pub canvas: OutputCanvas,
+    /// Recording or stream.
+    pub output: OutputKind,
+    /// `ok` or `warning` in this version.
+    pub level: ProtectionLevel,
+}
+
+/// System memory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectionMemory {
+    /// Its level.
+    pub level: ProtectionLevel,
+    /// Available bytes at the last reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_bytes: Option<u64>,
+}
+
+/// One thing the user should know, with a plain sentence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectionAlert {
+    /// What it is about.
+    pub kind: ProtectionKind,
+    /// How bad.
+    pub level: ProtectionLevel,
+    /// The sentence for the user.
+    pub text: String,
+    /// The canvas, for a lag alert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputCanvas>,
+    /// The output, for a lag alert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputKind>,
+}
+
+/// `protection.status` and `protection.changed` (protocol 1.49, ADR-0090 decision 9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectionStatus {
+    /// A guard runs: some recording or stream runs. While false the lists are empty.
+    pub guarded: bool,
+    /// The highest level of all, `ok` when none is higher (`unavailable` never
+    /// raises it).
+    pub level: ProtectionLevel,
+    /// Disks of the running recordings.
+    pub disks: Vec<ProtectionDisk>,
+    /// Running outputs.
+    pub outputs: Vec<ProtectionOutput>,
+    /// The render worker.
+    pub render: ProtectionLevel,
+    /// The audio worker.
+    pub audio: ProtectionLevel,
+    /// System memory.
+    pub memory: ProtectionMemory,
+    /// Every item at `notice` or above, and a disk that could not be read, most
+    /// severe first.
+    pub alerts: Vec<ProtectionAlert>,
+}
+
+impl ProtectionStatus {
+    /// The state while no guard runs.
+    pub fn idle() -> Self {
+        Self {
+            guarded: false,
+            level: ProtectionLevel::Ok,
+            disks: Vec::new(),
+            outputs: Vec::new(),
+            render: ProtectionLevel::Ok,
+            audio: ProtectionLevel::Ok,
+            memory: ProtectionMemory {
+                level: ProtectionLevel::Ok,
+                available_bytes: None,
+            },
+            alerts: Vec::new(),
+        }
+    }
+}
+
 /// `vcam.status` and `vcam.changed` (protocol 1.12, ADR-0066 decision 13).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VcamStatus {
