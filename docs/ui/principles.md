@@ -37,10 +37,11 @@ Before a minor release that changes one of these flows, at least five people fro
 
 1. **Simple** (default): the controls needed for the core tasks, with sensible defaults chosen from probed capabilities.
 2. **Advanced**: shown with an explicit "Advanced" toggle or section in the same place. It does not move the user to another screen.
-3. **Expert**: raw settings, the media graph view, per-node metrics, adapter selection. Reached from a single "Expert" entry point.
+3. **Expert**: raw settings, the media graph view, per-node metrics, adapter selection. Expert sections are drawn in place when `experience` is `pro`, and otherwise reached through the "More options are hidden" line. The media graph view and per-node metrics keep a single "Expert" entry point.
 
 Rules:
-- Every setting declares its level (`simple`, `advanced`, `expert`) in its settings schema. The level is chosen in review using the personas above, and the review checks the declared level, not the rendered screen.
+- Every setting has a level (`simple`, `advanced`, `expert`). Until a settings schema exists, the level is declared by the section the setting sits in ([ADR-0113](../adr/0113-experience-level-and-first-run.md)). The level is chosen in review using the personas above, and the review checks the declared level, not the rendered screen.
+- The `experience` setting decides which levels are drawn; a place that leaves options out says so and offers to show them.
 - A setting that the second persona changes regularly must not be `expert`.
 - Every option shows its default and a one-line explanation: the `Tooltip` (hover and keyboard focus) gives the short line and the default, and the `InfoHint` popover (press) carries longer text, never inline paragraphs ([ADR-0094](../adr/0094-ui-interaction-patterns-and-tabler-icon-set.md)).
 
@@ -97,6 +98,7 @@ Rules:
 
 - First run offers an auto-configuration wizard that uses capability probing to pick encoder, resolution and bitrate, and can be skipped.
 - First run also offers importing an OBS scene collection and settings.
+- First run asks how the user wants to start (Simple, Standard, Pro) and sets the starting layout, density and drawn levels from the answer.
 - Every empty state (no scenes, no sources, no filters) shows the next action as a button, not just text.
 - Scene templates (just chatting, gameplay with camera, podcast, vertical) are offered when creating a scene.
 
@@ -189,7 +191,7 @@ The user decides what is on screen. RBS ships good defaults, never a fixed layou
 | U5 | UI frame-time and UI-thread-blocking metrics in debug builds; CI scenario |
 | U7 | Automated contrast check on tokens; keyboard-only and screen reader walkthrough per release |
 | U1, U2, U10 | Usability tests with target times and success rate |
-| U2 | Declared setting levels reviewed against the personas |
+| U2 | Declared section levels reviewed against the personas |
 | U14 | Plugin registry panel schema validation |
 | U15-U19 | `ui-review` checklist; usability tests for canvas switching and the mixer |
 | U18 | Automated test: no modal dialog opens automatically while live |

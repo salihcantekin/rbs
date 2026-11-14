@@ -170,6 +170,10 @@ struct App {
     reload_themes: bool,
     /// `ui.theme.select` ran; the next sync applies this theme id.
     select_theme: Option<String>,
+    /// `ui.density.select` ran; the next sync applies this density.
+    select_density: Option<rbs_ui::tokens::Density>,
+    /// The density in use, as the registry shows it (View › Spacing).
+    density: rbs_ui::tokens::Density,
     /// `ui.settings.open` ran; the next sync shows Settings, at this section when
     /// given.
     open_settings: Option<Option<i32>>,
@@ -483,6 +487,8 @@ impl App {
             workspaces: &self.workspaces,
             studio: &self.studio,
             themes: appearance_page::theme_menu_choices(&self.studio.user),
+            experience: self.bg.experience(),
+            density: self.density,
             maximized: self.maximized.as_ref(),
             camera: self.vcam.shown(),
             replay: menu_bar::ReplayShown {
@@ -691,6 +697,9 @@ impl App {
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
             Run::SelectTheme(id) => self.select_theme = Some(id),
+            Run::SelectExperience(level) => Ctx::set_experience(self, level),
+            // Needs the Appearance page, which the next sync has.
+            Run::SelectDensity(density) => self.select_density = Some(density),
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section) => self.open_settings = Some(section),
             Run::OpenAppMenu => self.open_app_menu = true,
@@ -1628,6 +1637,7 @@ impl Ctx {
             app.menus.push(&w.global::<Menus>());
             install_studio(&w.global::<Studio>(), &ctx);
             install_sections(&w.global::<Sections>(), &ctx);
+            install_experience(&w.global::<Experience>());
             // `install_studio` cannot borrow the app here (this runs inside an update):
             // the shared models (the access token list) are attached directly.
             app.studio.attach_models(&w.global::<Studio>());
@@ -1680,6 +1690,9 @@ impl Ctx {
                 }
             });
             w.set_section(section);
+            set_levels(&w.global::<Experience>(), app.bg.experience());
+            w.global::<Studio>()
+                .set_experience(app.bg.experience().index());
             present_settings(&w, app);
             // End-of-sync refresh must run again for this new window.
             app.capture_applied.1 = usize::MAX;
@@ -2223,6 +2236,38 @@ impl Ctx {
     }
 
     /// The General section's setting (ADR-0056 decision 1).
+    /// Draws the section levels of the experience setting in every open window
+    /// (ADR-0113 decision 3).
+    fn push_experience(app: &App) {
+        let level = app.bg.experience();
+        let set = |g: Experience<'_>| set_levels(&g, level);
+        set(app.main.global::<Experience>());
+        app.main.global::<Studio>().set_experience(level.index());
+        if let Some(w) = &app.settings {
+            set(w.global::<Experience>());
+            w.global::<Studio>().set_experience(level.index());
+        }
+        if let Some(w) = &app.source_settings {
+            set(w.global::<Experience>());
+        }
+        for f in &app.floats {
+            set(f.window.global::<Experience>());
+        }
+    }
+
+    /// Uses and saves the experience level (Settings > General, `ui.experience.select`).
+    /// It changes only which sections are drawn (ADR-0113 decision 6).
+    fn set_experience(app: &mut App, level: background::Experience) {
+        if app.bg.experience == Some(level) {
+            return;
+        }
+        app.bg.experience = Some(level);
+        if let Err(e) = background::save(&app.config, &app.bg) {
+            app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
+        }
+        Self::push_experience(app);
+    }
+
     fn push_general(app: &App) {
         let platform = if cfg!(target_os = "macos") {
             0
@@ -2260,6 +2305,9 @@ impl Ctx {
         }
         if std::mem::take(&mut app.reload_themes) {
             appearance_page::reload(self, &mut app);
+        }
+        if let Some(density) = app.select_density.take() {
+            appearance_page::select_density(self, &mut app, density);
         }
         if let Some(id) = app.select_theme.take() {
             appearance_page::select_theme(self, &mut app, &id);
@@ -2300,6 +2348,7 @@ impl Ctx {
             return;
         }
         Self::push_general(&app);
+        Self::push_experience(&app);
         vcam_page::push(&app);
         replay_page::push(&app);
 
@@ -2578,6 +2627,7 @@ impl Ctx {
             });
         }
         app.floats = slots;
+        Self::push_experience(app);
     }
 
     fn new_float(&self) -> Option<FloatSlot> {
@@ -2591,6 +2641,7 @@ impl Ctx {
         shortcuts_page::install_press(&fw.global::<Shortcuts>(), self);
         install_studio(&fw.global::<Studio>(), self);
         install_sections(&fw.global::<Sections>(), self);
+        install_experience(&fw.global::<Experience>());
         look::apply(
             &fw.global::<Theme>(),
             &fw.global::<Tokens>(),
@@ -2977,6 +3028,58 @@ fn install_vertical_prompt(g: &Overlays<'_>, ctx: &Ctx) {
     });
 }
 
+/// The first-run page's answer (ADR-0113 decision 5). Skip (`choice` -1) means Standard
+/// and changes nothing else; a choice sets the level, the density, the theme and adjusts
+/// the current workspace once: Simple closes the Stats and Outputs tabs, Pro turns studio
+/// mode on.
+fn install_first_run(g: &Overlays<'_>, ctx: &Ctx) {
+    let c = ctx.clone();
+    g.on_first_run_done(move |choice, theme| {
+        let ctx = c.clone();
+        c.update(move |app: &mut App| {
+            app.main.global::<Overlays>().set_first_run_open(false);
+            let level = if choice < 0 {
+                background::Experience::Standard
+            } else {
+                background::Experience::from_index(choice)
+            };
+            app.bg.first_run_done = Some(true);
+            app.bg.experience = Some(level);
+            if let Err(e) = background::save(&app.config, &app.bg) {
+                app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
+            }
+            Ctx::push_experience(app);
+            if choice < 0 {
+                return;
+            }
+            let density = match level {
+                background::Experience::Simple => rbs_ui::tokens::Density::Roomy,
+                background::Experience::Standard => rbs_ui::tokens::Density::Regular,
+                background::Experience::Pro => rbs_ui::tokens::Density::Compact,
+            };
+            appearance_page::select_density(&ctx, app, density);
+            appearance_page::first_run_theme(&ctx, app, theme);
+            match level {
+                background::Experience::Simple => {
+                    for id in ["rbs.stats", "rbs.outputs"] {
+                        if let Some(id) = panel(id)
+                            && app.session.workspace().is_open(&id)
+                        {
+                            app.command(LayoutCommand::ClosePanel(id), Origin::Command);
+                        }
+                    }
+                }
+                background::Experience::Standard => {}
+                background::Experience::Pro => {
+                    if !app.studio.studio_mode {
+                        app.studio.set_studio_mode(true);
+                    }
+                }
+            }
+        });
+    });
+}
+
 /// The searchable picker's callbacks (every window has them; the one it is open in
 /// answers).
 fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
@@ -3286,11 +3389,12 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 25] = [
+const SETTINGS_SECTIONS: [&str; 26] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.appearance.themes",
     "settings.general.capture",
+    "settings.general.experience",
     "settings.general.closing",
     "settings.general.glide",
     "settings.general.studio",
@@ -3388,6 +3492,26 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
 
 /// Opens the Source settings window for a source (centred on the main window; one at a
 /// time: another source's replaces the content of the open one).
+/// Remembers which shells were answered with Show in one window while it is open
+/// (ADR-0113 decision 4): the set lives in the window's own callbacks, so it goes with
+/// the window.
+fn install_experience(g: &Experience<'_>) {
+    let shown: Rc<RefCell<std::collections::HashSet<String>>> = Rc::default();
+    let s = shown.clone();
+    g.on_shown(move |id, _rev| s.borrow().contains(id.as_str()));
+    g.on_show(move |id| {
+        shown.borrow_mut().insert(id.to_string());
+    });
+}
+
+/// Draws the section levels of `level` in one window (ADR-0113 decision 3); set before
+/// a new window shows, so it never shows the sections of another level first.
+fn set_levels(g: &Experience<'_>, level: background::Experience) {
+    let (advanced, expert) = level.levels();
+    g.set_advanced(advanced);
+    g.set_expert(expert);
+}
+
 fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
     app.studio.request_source_settings(id);
     if let Some(w) = &app.source_settings {
@@ -3408,6 +3532,7 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
         ctx.look.borrow().as_ref(),
     );
     install_studio(&w.global::<Studio>(), ctx);
+    install_experience(&w.global::<Experience>());
     app.studio.attach_models(&w.global::<Studio>());
     let c = ctx.clone();
     entry::on_close_requested(w.window(), move || {
@@ -3431,6 +3556,7 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
     });
     let t = w.global::<Tokens>();
     let size = slint::LogicalSize::new(t.get_size_floating_w(), t.get_size_floating_h());
+    set_levels(&w.global::<Experience>(), app.bg.experience());
     let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
     let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
     app.capture_applied.1 = usize::MAX;
@@ -4002,6 +4128,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_canvas_rate, |app, i: i32| {
         app.studio.set_canvas_rate(i, close_preview);
     });
+    // Settings, General (ADR-0113 decision 2): takes effect at once.
+    on!(on_set_experience, |app, i: i32| {
+        Ctx::set_experience(app, background::Experience::from_index(i));
+    });
     // Settings, General (ADR-0056 decision 1): takes effect at once.
     on!(on_set_on_close, |app, i: i32| {
         let on_close = if i == 1 {
@@ -4256,6 +4386,8 @@ fn forget_deleted_themes(config: &Path) {
 
 fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let demo_live = std::env::args().any(|a| a == "--demo-live");
+    // Before this start writes any user file (ADR-0113 decision 2).
+    let existing_install = background::existing_install(&config);
     // `--reset-appearance` (themes spec): back to the default look when a theme made
     // the app hard to use. Done before anything else takes the user data lock.
     let reset_note = std::env::args()
@@ -4286,8 +4418,13 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     );
     let mut user_notes = user.notes.clone();
     // What closing the main window does (ADR-0056); a bad file means the default.
-    let (bg, bg_note) = background::load(&config);
+    let (mut bg, bg_note) = background::load(&config);
     user_notes.extend(bg_note);
+    // The experience level and the first run of a file from an older build, saved at
+    // once (ADR-0113 decisions 2 and 5). A failed save repeats this at the next start.
+    if bg.settle(existing_install) {
+        let _ = background::save(&config, &bg);
+    }
     let (vcam, vcam_note) = vcam_page::Camera::load(&config);
     user_notes.extend(vcam_note);
     let (replay, replay_note) = replay_page::Replay::load(&config);
@@ -4362,6 +4499,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             error_generation,
             reload_themes: false,
             select_theme: None,
+            select_density: None,
+            density: user.data().appearance().0.density,
             open_settings: None,
             open_source_settings: None,
             open_app_menu: false,
@@ -4415,10 +4554,16 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_picker(&main.global::<Overlays>(), &ctx);
     install_name_prompt(&main.global::<Overlays>(), &ctx);
     install_vertical_prompt(&main.global::<Overlays>(), &ctx);
+    install_first_run(&main.global::<Overlays>(), &ctx);
+    // A new install asks once how to start (ADR-0113 decision 5).
+    if ctx.app.borrow().bg.first_run_done == Some(false) {
+        main.global::<Overlays>().set_first_run_open(true);
+    }
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
     install_sections(&main.global::<Sections>(), &ctx);
+    install_experience(&main.global::<Experience>());
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     // Windows menus follow the theme, which changes what the toolkit reports as the
     // system scheme. The slot stays on the real setting, including when it changes.

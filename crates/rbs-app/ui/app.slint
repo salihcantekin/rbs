@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { ScrollArea, Sections, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
+import { ScrollArea, Sections, Experience, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader, SettingsScroll } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -15,8 +15,8 @@ import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_m
 import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { SourceSettingsWindow, ModeData, SourceSettingsData }
-export { OverlayProbe, FocusRevealProbe, SettingRowProbe, NumberFieldProbe } from "overlay_probe.slint";
-export { Sections, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
+export { OverlayProbe, FocusRevealProbe, SettingRowProbe, NumberFieldProbe, ExperienceProbe } from "overlay_probe.slint";
+export { Sections, Experience, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }

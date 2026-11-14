@@ -492,6 +492,51 @@ pub fn select_theme(ctx: &Ctx, app: &mut App, id: &str) {
     show(ctx, app);
 }
 
+/// `ui.density.select` (View › Spacing, ADR-0113 decision 2): uses that density, as
+/// Settings › Appearance › Spacing does.
+pub fn select_density(ctx: &Ctx, app: &mut App, density: rbs_ui::tokens::Density) {
+    let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
+    let Some(file) = file else {
+        return;
+    };
+    {
+        let mut page = ctx.page.borrow_mut();
+        page.ui.refresh(app.studio.user.data(), &file);
+        if choose(app, &mut page, |ui, now| ui.set_density(density, now)) == Change::Page {
+            return;
+        }
+    }
+    relook(ctx, app);
+    show(ctx, app);
+}
+
+/// The first-run page's theme (ADR-0113 decision 5): 0 follows the system, 1 uses the
+/// built-in Dark theme, 2 the built-in Light theme.
+pub fn first_run_theme(ctx: &Ctx, app: &mut App, choice: i32) {
+    match choice {
+        1 => select_theme(ctx, app, "builtin:dark"),
+        2 => select_theme(ctx, app, "builtin:light"),
+        _ => {
+            let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
+            let Some(file) = file else {
+                return;
+            };
+            {
+                let mut page = ctx.page.borrow_mut();
+                page.ui.refresh(app.studio.user.data(), &file);
+                let shown = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
+                if choose(app, &mut page, |ui, _now| ui.set_follow_system(true, shown))
+                    == Change::Page
+                {
+                    return;
+                }
+            }
+            relook(ctx, app);
+            show(ctx, app);
+        }
+    }
+}
+
 /// `ui.theme.reload` (View › Reload themes, themes spec "Reading"): reads the token
 /// file, `appearance.toml` and the theme files again and applies the result to every
 /// open window. An open editor draft stays applied. What cannot be used is shown as
@@ -546,6 +591,7 @@ fn after(ctx: &Ctx, app: &mut App, change: Change) {
 
 /// Resolves the two slots again and applies them to every open window.
 fn relook(ctx: &Ctx, app: &mut App) {
+    app.density = ctx.page.borrow().ui.choice.density;
     // `RBS_THEME` fixes the look; the choice is still saved.
     if look::dev_theme().is_some() {
         return;

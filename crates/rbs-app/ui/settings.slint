@@ -4,7 +4,7 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Button, StatusLine } from "components.slint";
+import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Experience, MoreHidden, Button, StatusLine } from "components.slint";
 
 // One entry of the section list. The section in use has a quiet plate and the label
 // weight, and is marked checked for screen readers, so it is never shown by colour
@@ -125,6 +125,12 @@ export component SettingsCard inherits Rectangle {
     // A card with an id folds under its title and keeps that in the workspace file
     // (ADR-0078): `<page>.<card>` such as `settings.recording.files`.
     in property <string> id;
+    // ADR-0113 decision 4, as FeatureSection: `more-hidden` is bound by the author to
+    // the level of what the card leaves out; Show sets `show-all` while the window is
+    // open.
+    in property <bool> more-hidden;
+    property <bool> shown-here;
+    out property <bool> show-all: root.shown-here || (root.id != "" && Experience.shown(root.id, Experience.rev));
     property <bool> closed: root.id != "" && Sections.closed(root.id, Sections.rev);
     background: Theme.surface-raised;
     border-radius: Tokens.radius-lg;
@@ -177,6 +183,12 @@ export component SettingsCard inherits Rectangle {
                 VerticalLayout {
                     alignment: start;
                     @children
+                }
+                if root.more-hidden && !root.show-all: MoreHidden {
+                    shown => {
+                        root.shown-here = true;
+                        if root.id != "" { Experience.show(root.id); Experience.rev += 1; }
+                    }
                 }
             }
         }

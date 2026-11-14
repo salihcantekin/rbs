@@ -1800,6 +1800,8 @@ pub const UI_METHODS: &[&str] = &[
     "ui.toolbar.reset",
     "ui.theme.reload",
     "ui.theme.switch",
+    "ui.experience.switch",
+    "ui.density.switch",
     "ui.settings.open",
     "ui.source.settings",
     "ui.properties.show",

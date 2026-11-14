@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { ListBox, ScrollArea, Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
+import { ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -606,12 +606,15 @@ export global Studio {
     // General (Settings, General, ADR-0056): what closing the main window does.
     // 0 Quit RBS, 1 Keep RBS running.
     in property <int> on-close;
+    // The experience level (ADR-0113 decision 2): 0 Simple, 1 Standard, 2 Pro.
+    in property <int> experience: 1;
     // 0 macOS, 1 Windows, 2 elsewhere (the setting is not available there).
     in property <int> platform;
     // A hidden window can be brought back on this platform now; without it, closing
     // the window quits.
     in property <bool> way-back;
     callback set-on-close(int);
+    callback set-experience(int);
     // Studio mode (Settings, General, ADR-0098): a transition also puts the old
     // program scene in preview. Off by default.
     in property <bool> swap-after-transition;
@@ -2703,9 +2706,14 @@ component EncoderFields inherits VerticalLayout {
     // A stream: the hints speak of the stream instead of files.
     in property <bool> stream;
     callback set(int /* field */, int /* value */);
-    // Advanced settings (U2): shown with the button below, in the same place.
-    property <bool> advanced: false;
-    SettingRow {
+    // Section levels (ADR-0113): advanced rows are drawn while `Experience.advanced`,
+    // expert rows while `Experience.expert`, and both once the user answered the
+    // card's "More options are hidden" line (`show-all`, the card's own property). The
+    // card sets `more-hidden: !Experience.expert`.
+    in property <bool> show-all;
+    property <bool> advanced: Experience.advanced || root.show-all;
+    property <bool> expert: Experience.expert || root.show-all;
+    if root.advanced: SettingRow {
         changed: root.idle && root.data.defaults[11] >= 0 && root.data.codec != root.data.defaults[11];
         default-text: root.data.codecs[root.data.defaults[11]];
         reset => { root.set(11, root.data.defaults[11]); }
@@ -2722,7 +2730,7 @@ component EncoderFields inherits VerticalLayout {
             selected(i) => { root.set(11, i); }
         }
     }
-    SettingRow {
+    if root.advanced: SettingRow {
         changed: root.idle && root.data.defaults[12] >= 0 && root.data.delivery != root.data.defaults[12];
         default-text: [@tr("Video"), @tr("Screen")][root.data.defaults[12]];
         reset => { root.set(12, root.data.defaults[12]); }
@@ -2739,7 +2747,7 @@ component EncoderFields inherits VerticalLayout {
             selected(i) => { root.set(12, i); }
         }
     }
-    Shown {
+    if root.expert: Shown {
         shown: root.data.delivery == 0;
         gap: 0;
         SettingRow {
@@ -2834,24 +2842,8 @@ component EncoderFields inherits VerticalLayout {
             selected(i) => { root.set(2, i); }
         }
     }
-    SettingRow {
-        label: @tr("Advanced settings");
-        summary: @tr("Rate control, keyframes and more");
-        hint: @tr("Rate control, keyframes, preset, profile and B-frames. The defaults suit most uses.");
-        fill: false;
-        Button {
-            lead: root.advanced ? IconName.eye-off : IconName.eye;
-            text: root.advanced ? @tr("Hide") : @tr("Show");
-            accessible-name: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
-            kind: "secondary";
-            icon: root.advanced ? IconName.chevron-up : IconName.chevron-down;
-            clicked => { root.advanced = !root.advanced; }
-        }
-    }
-    // Advanced: every other setting that changes the output's quality.
-    Shown {
-        shown: root.advanced;
-        gap: 0;
+    // Advanced and expert: every other setting that changes the output's quality.
+    if root.advanced: VerticalLayout {
         SettingRow {
             changed: root.idle && root.data.defaults[3] >= 0 && root.data.rate-mode != root.data.defaults[3];
             default-text: root.data.rate-modes[root.data.defaults[3]];
@@ -2865,7 +2857,7 @@ component EncoderFields inherits VerticalLayout {
                 label: @tr("Rate control");
                 options: root.data.rate-modes;
                 index: root.data.rate-mode;
-                enabled: root.idle && root.advanced;
+                enabled: root.idle;
                 selected(i) => { root.set(3, i); }
             }
         }
@@ -2884,12 +2876,12 @@ component EncoderFields inherits VerticalLayout {
                     label: @tr("Maximum bitrate");
                     options: root.data.peaks;
                     index: root.data.peak;
-                    enabled: root.idle && root.advanced && root.data.rate-kind == 1;
+                    enabled: root.idle && root.data.rate-kind == 1;
                     selected(i) => { root.set(4, i); }
                 }
             }
         }
-        Shown {
+        if root.expert: Shown {
             shown: root.data.rate-kind == 0;
             gap: 0;
             SettingRow {
@@ -2902,7 +2894,7 @@ component EncoderFields inherits VerticalLayout {
                 Toggle {
                     label: @tr("Pad to the full bitrate");
                     checked: root.data.padding;
-                    enabled: root.idle && root.advanced && root.data.rate-kind == 0 && root.data.padding-available;
+                    enabled: root.idle && root.data.rate-kind == 0 && root.data.padding-available;
                     toggled(on) => { root.set(6, on ? 1 : 0); }
                 }
             }
@@ -2920,7 +2912,7 @@ component EncoderFields inherits VerticalLayout {
                 label: @tr("Keyframe interval");
                 options: root.data.keyframes;
                 index: root.data.keyframe;
-                enabled: root.idle && root.advanced;
+                enabled: root.idle;
                 selected(i) => { root.set(7, i); }
             }
         }
@@ -2937,11 +2929,11 @@ component EncoderFields inherits VerticalLayout {
                 label: @tr("Encoder preset");
                 options: root.data.presets;
                 index: root.data.preset;
-                enabled: root.idle && root.advanced;
+                enabled: root.idle;
                 selected(i) => { root.set(8, i); }
             }
         }
-        SettingRow {
+        if root.expert: SettingRow {
             changed: root.idle && root.data.defaults[9] >= 0 && root.data.profile != root.data.defaults[9];
             default-text: root.data.profiles[root.data.defaults[9]];
             reset => { root.set(9, root.data.defaults[9]); }
@@ -2953,11 +2945,11 @@ component EncoderFields inherits VerticalLayout {
                 label: @tr("Profile");
                 options: root.data.profiles;
                 index: root.data.profile;
-                enabled: root.idle && root.advanced;
+                enabled: root.idle;
                 selected(i) => { root.set(9, i); }
             }
         }
-        SettingRow {
+        if root.expert: SettingRow {
             changed: root.idle && root.data.defaults[10] >= 0 && root.data.b-frame != root.data.defaults[10];
             default-text: root.data.b-frames[root.data.defaults[10]];
             reset => { root.set(10, root.data.defaults[10]); }
@@ -2969,7 +2961,7 @@ component EncoderFields inherits VerticalLayout {
                 label: @tr("B-frames");
                 options: root.data.b-frames;
                 index: root.data.b-frame;
-                enabled: root.idle && root.advanced && root.data.b-frames-note == "";
+                enabled: root.idle && root.data.b-frames-note == "";
                 selected(i) => { root.set(10, i); }
             }
         }
@@ -4510,9 +4502,10 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
         }
-        SettingsCard {
+        rec-card := SettingsCard {
             title: @tr("Encoding");
             id: "settings.recording.encoding";
+            more-hidden: !Studio.out-audio-only && !Experience.expert;
             if Studio.out-audio-only && !Studio.out-flac: SettingRow {
                 divider: false;
                 label: @tr("PCM");
@@ -4604,6 +4597,7 @@ export component RecordingSettings inherits Rectangle {
             if !Studio.out-audio-only: fields := EncoderFields {
                 data: Studio.out-enc;
                 idle: idle;
+                show-all: rec-card.show-all;
                 set(field, value) => { Studio.set-encoding(0, field, value); }
             }
         }
@@ -4689,9 +4683,10 @@ export component StreamSettings inherits Rectangle {
                 }
             }
         }
-        SettingsCard {
+        conn-card := SettingsCard {
             title: @tr("Connection");
             id: "settings.stream.connection";
+            more-hidden: Studio.st-srt && !Experience.advanced;
             SettingRow {
                 divider: false;
                 label: @tr("Reconnect when the connection drops");
@@ -4706,7 +4701,7 @@ export component StreamSettings inherits Rectangle {
                     toggled(on) => { Studio.set-reconnect(on); }
                 }
             }
-            Shown {
+            if Experience.advanced || conn-card.show-all: Shown {
                 shown: Studio.st-srt;
                 gap: 0;
                 SettingRow {
@@ -4747,9 +4742,10 @@ export component StreamSettings inherits Rectangle {
             }
             if Studio.st-auto-record: SettingsNotice { text: Studio.st-auto-record-note; }
         }
-        SettingsCard {
+        enc-card := SettingsCard {
             title: @tr("Encoding");
             id: "settings.stream.encoding";
+            more-hidden: !Experience.expert;
             SettingBlock {
                 divider: false;
                 label: @tr("Output size");
@@ -4806,6 +4802,7 @@ export component StreamSettings inherits Rectangle {
                 data: Studio.st-enc;
                 idle: idle;
                 stream: true;
+                show-all: enc-card.show-all;
                 set(field, value) => { Studio.set-encoding(1, field, value); }
             }
         }
@@ -4911,6 +4908,24 @@ export component GeneralSettings inherits Rectangle {
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
+        // ADR-0113 decision 2: which section levels the app draws.
+        SettingsCard {
+            title: @tr("Experience");
+            id: "settings.general.experience";
+            SettingRow {
+                divider: false;
+                label: @tr("Settings shown");
+                summary: @tr("How many options the app shows");
+                hint: @tr("Simple shows the settings most people need. Standard adds advanced ones, Pro shows every setting. A place that leaves options out says so and can show them. Nothing hidden stops applying.");
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Settings shown");
+                    options: [@tr("Simple"), @tr("Standard"), @tr("Pro")];
+                    index: Studio.experience;
+                    selected(i) => { Studio.set-experience(i); }
+                }
+            }
+        }
         SettingsCard {
             title: @tr("Closing the main window");
             id: "settings.general.closing";

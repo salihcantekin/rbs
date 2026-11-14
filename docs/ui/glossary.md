@@ -9,6 +9,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Look | A preset of a source's shape, border and filters, copied onto the selected source in one undoable step. Later edits to the source do not change the look | Preset, style, theme | `Look` |
 | Library | The panel that applies looks to the selected source and adds backgrounds, frames, a PNG file and shapes. It is not the folder of saved themes, workspaces and scene collections (ADR-0051), which the UI never calls a library | Assets, templates | `rbs.library` |
 | Effects (theme) | How lively a theme's controls look: Calm, Vivid or Tactile. Only the theme editor's label; a filter or transition is never an effect | Style | `effects` key of a theme |
+| Experience | How many settings the app shows: Simple, Standard or Pro. Shown as "Settings shown"; a place that leaves options out says "More options are hidden" | Mode, user level, expert mode | `experience` in `app.toml` (ADR-0113) |
 | Filter | An effect applied to a source or audio | Effect, plugin | Filter node |
 | Transition | How the view changes from one scene to another | Effect | Transition node |
 | Canvas | The pixel grid and frame rate a scene is drawn on, for example horizontal 1920x1080 or vertical 1080x1920. Scene items are placed in these pixels | Resolution, Output size | Canvas |

@@ -539,3 +539,38 @@ fn a_changed_setting_resets_from_its_button_or_a_double_click_on_the_name() {
     settle();
     assert!(!p.get_reset_shown(), "no room in a stacked row");
 }
+
+/// ADR-0113 decisions 1 and 4: a section above the level is not instantiated, the shell
+/// says so, and Show draws it.
+#[test]
+fn a_hidden_level_is_not_made_until_show() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::ExperienceProbe::new().expect("the probe window");
+    p.global::<rbs_app_ui::Experience>().set_expert(false);
+    p.show().expect("show");
+    settle();
+    // The window was built at the default level; what counts is what Show makes.
+    let before = p.get_made();
+    assert!(!p.get_show_all());
+    // Show on "More options are hidden" is the only Tab stop in the window.
+    for k in [Key::Tab, Key::Return] {
+        let s: slint::SharedString = k.into();
+        p.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: s.clone() });
+        p.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: s });
+    }
+    settle();
+    assert!(p.get_show_all(), "Show sets the shell's show-all");
+    assert_eq!(
+        p.get_made(),
+        before + 1,
+        "the section is made by Show, so it did not exist below Pro"
+    );
+    // Pro draws it without asking.
+    let q = rbs_app_ui::ExperienceProbe::new().expect("a second probe window");
+    q.show().expect("show");
+    settle();
+    assert_eq!(q.get_made(), 1, "drawn in Pro");
+    assert!(!q.get_show_all());
+}
