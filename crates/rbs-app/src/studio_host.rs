@@ -1307,12 +1307,13 @@ struct IsoFiles {
     images: Vec<rbs_record::IsoImageTrack>,
 }
 
-/// Most separate video files a recording writes beside its master (ADR-0087, the
-/// owner's choice of 2026-11-14): with the master's encoder, three 1080p60 files kept
-/// the master whole on an M4 Pro and four did not (ADR-0086 step 3.2). Marked sources
-/// past it are skipped, in source id order, and listed with the reason `limit`. Image
-/// and sound files are not counted. The ADR-0087 estimate replaces this number.
-pub const SEPARATE_VIDEO_LIMIT: usize = 3;
+/// Separate video files a take may open while the encoder session limit of this
+/// computer is not known (neither measured nor declared): the owner's choice of
+/// 2026-11-14 in ADR-0087's Review. With a known limit the estimate decides
+/// ([`rbs_record::estimate::separate_video_limit`]). Marked sources past the limit are
+/// skipped, in source id order, and listed with the reason `limit`. Image and sound
+/// files are not counted.
+pub const SEPARATE_VIDEO_LIMIT: usize = rbs_record::estimate::UNKNOWN_SESSIONS_VIDEO_LIMIT;
 
 /// The markers of a running recording and where its manifest goes (ADR-0089
 /// decisions 1 and 5). The recording's state on the control thread owns them.
@@ -4638,7 +4639,8 @@ impl Host {
     /// Opens the separate video files and image tracks of the main recording, once its
     /// master runs (ADR-0086 step 3.5, ADR-0117). The take never fails here (ADR-0087
     /// decision 7 for requests without the new start parameters): a source with no
-    /// picture, a file past [`SEPARATE_VIDEO_LIMIT`], a recording with no picture or
+    /// picture, a file past the estimate's limit ([`SEPARATE_VIDEO_LIMIT`] while the
+    /// session limit is unknown), a recording with no picture or
     /// files that cannot open are listed in `skipped`, and the manifest is written
     /// again with what is open.
     fn start_separate_pictures(&mut self, files: &mut IsoFiles, r: &RecordRequest) {
@@ -4679,7 +4681,17 @@ impl Host {
         );
         start.image_dir = Some(files.folder.clone());
         start.t0 = Timestamp::from_nanos(files.manifest.t0_ns);
-        start.max_video = SEPARATE_VIDEO_LIMIT;
+        // The estimate of what runs now plus these files (ADR-0087). Not calibrated yet
+        // (step D): the declared session limit, else SEPARATE_VIDEO_LIMIT.
+        let (estimate_plan, declared) =
+            self.studio
+                .separate_video_plan(&self.adapters, &self.collection, &start);
+        let limits = rbs_record::estimate::Limits {
+            adapters: declared,
+            ..rbs_record::estimate::Limits::default()
+        };
+        let estimate = rbs_record::estimate::estimate(&estimate_plan, &limits);
+        start.max_video = rbs_record::estimate::separate_video_limit(&estimate);
         start.skip_no_picture = true;
         let started = match self.studio.start_iso_video(&self.adapters, &start) {
             Ok(started) => started,

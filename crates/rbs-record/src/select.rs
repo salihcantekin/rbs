@@ -90,6 +90,29 @@ pub(crate) fn is_video_candidate(
         .any(|f| f.id() == *adapter)
 }
 
+/// The video encoder a selection for `config` would most likely use, without opening
+/// one: the first candidate in the registry's order (hardware first, then
+/// registration) that a running encoder already uses, since it is known to open,
+/// else the first candidate. The real selection passes over an encoder that refuses
+/// to open, so this is the plan's best guess.
+pub(crate) fn likely_video_encoder(
+    registry: &Registry<dyn VideoEncoderFactory>,
+    config: &VideoEncoderConfig,
+    running: &[AdapterId],
+) -> Option<AdapterId> {
+    let candidates: Vec<AdapterId> = registry
+        .select(&video_requirement(config))
+        .candidates
+        .iter()
+        .map(|f| f.id())
+        .collect();
+    candidates
+        .iter()
+        .find(|id| running.contains(id))
+        .or_else(|| candidates.first())
+        .cloned()
+}
+
 /// True when `adapter` is a candidate of an audio encoder selection for `config`.
 pub(crate) fn is_audio_candidate(
     registry: &Registry<dyn AudioEncoderFactory>,

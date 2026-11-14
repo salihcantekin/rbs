@@ -574,3 +574,44 @@ fn a_hidden_level_is_not_made_until_show() {
     assert_eq!(q.get_made(), 1, "drawn in Pro");
     assert!(!q.get_show_all());
 }
+
+#[test]
+fn a_long_select_opens_a_list_that_stays_in_the_window_and_chooses_by_keyboard() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    let options: Vec<slint::SharedString> = (0..40).map(|i| format!("Mode {i}").into()).collect();
+    p.set_select_options(slint::ModelRc::new(slint::VecModel::from(options)));
+    p.invoke_focus_select();
+    key(&p, Key::Return);
+    settle();
+    assert!(
+        o.get_select_open(),
+        "a long list opens the scrolling list, not a menu"
+    );
+    assert_eq!(o.get_select_label().as_str(), "Mode");
+    let cover = o.get_select_cover();
+    assert!(
+        cover.y >= 0.0 && cover.y + cover.height <= 300.0,
+        "inside the window: {cover:?}"
+    );
+    assert!(cover.height < 40.0 * 20.0, "shorter than the 40 rows");
+    // Nothing chosen yet: the highlight starts on the first row.
+    key(&p, Key::DownArrow);
+    key(&p, Key::DownArrow);
+    key(&p, Key::End);
+    key(&p, Key::UpArrow);
+    key(&p, Key::Return);
+    settle();
+    assert!(!o.get_select_open());
+    assert_eq!(p.get_select_index(), 38);
+    // Opening again starts on the chosen row; Escape closes without a choice.
+    key(&p, Key::Return);
+    settle();
+    assert!(o.get_select_open());
+    assert_eq!(o.get_select_current(), 38);
+    key(&p, Key::Home);
+    key(&p, Key::Escape);
+    settle();
+    assert!(!o.get_select_open());
+    assert_eq!(p.get_select_index(), 38);
+}

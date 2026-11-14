@@ -328,8 +328,8 @@ export component SourceSettingsWindow inherits Window {
                     description: @tr("Mode, frame rate and cursor for this capture.");
                     if camera: SettingRow {
                         label: @tr("Mode");
-                        summary: @tr("Resolution and colour mode");
-                        hint: @tr("Resolution and colour mode listed by the camera.");
+                        summary: @tr("Picture size from the camera");
+                        hint: @tr("The picture sizes the camera offers, largest first. RBS picks the best colour format for the size.");
                         divider: false;
                         Select {
                             label: @tr("Mode");
