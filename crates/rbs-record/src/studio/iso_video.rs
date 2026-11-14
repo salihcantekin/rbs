@@ -23,6 +23,7 @@ use rbs_gpu::node::GpuRuntime;
 use rbs_graph::description::{GraphDescription, NodeId};
 use rbs_graph::node::LinkKind;
 use rbs_graph::runtime::Node;
+use rbs_graph::runtime::queue::QueueStats;
 use rbs_nodes::OutputNode;
 use rbs_nodes::VideoEncoderNode;
 use rbs_nodes::encode::EncoderNodeStats;
@@ -91,6 +92,10 @@ pub struct IsoVideoTrack {
     pub stats: Arc<ExportNodeStats>,
     /// The track's encoder counters: `submitted` is the frames in the file.
     pub encoder: Arc<EncoderNodeStats>,
+    /// The queue into the track's encoder: `video_drops` counts frames the export
+    /// passed on that the encoder never took (its partition was busy with the other
+    /// tracks on it). `None` only if the engine did not report the crossing.
+    pub queue: Option<Arc<QueueStats>>,
 }
 
 /// What [`super::Studio::start_iso_video`] opened. Empty when nothing is marked for
@@ -267,6 +272,7 @@ impl super::Studio {
         let mut graph = self.graph.clone();
         let mut adopted: Vec<Added> = Vec::with_capacity(taps.len() * 4);
         let mut tracks = Vec::with_capacity(taps.len());
+        let mut encoders = Vec::with_capacity(taps.len());
         for (i, (tap, (export, encoder, size))) in taps.iter().zip(chains).enumerate() {
             let encoder_part = ISO_VIDEO_ENCODERS[i % ISO_VIDEO_ENCODERS.len()];
             let output = OutputNode::new(
@@ -280,7 +286,7 @@ impl super::Studio {
             .with_muxer(Arc::clone(muxer), start.container, None);
             let stats = export.stats();
             let encoder_stats = encoder.stats();
-            let step = self.add_track(
+            let encoder_node = self.add_track(
                 &mut graph,
                 &mut adopted,
                 tap,
@@ -289,16 +295,21 @@ impl super::Studio {
                 encoder_part,
                 output,
             );
-            if let Err(e) = step {
-                self.abandon(adopted);
-                return Err(e);
-            }
+            let encoder_node = match encoder_node {
+                Ok(node) => node,
+                Err(e) => {
+                    self.abandon(adopted);
+                    return Err(e);
+                }
+            };
+            encoders.push(encoder_node);
             tracks.push(IsoVideoTrack {
                 source: tap.source,
                 file_name: tap.file_name.clone(),
                 size,
                 stats,
                 encoder: encoder_stats,
+                queue: None,
             });
         }
         match self.engine.apply(&graph) {
@@ -320,6 +331,13 @@ impl super::Studio {
                     }
                 }
                 if failed.is_empty() {
+                    let crossings = self.engine.crossings();
+                    for (track, node) in tracks.iter_mut().zip(&encoders) {
+                        track.queue = crossings
+                            .iter()
+                            .find(|c| c.link.to.node == *node)
+                            .map(|c| Arc::clone(&c.stats));
+                    }
                     Ok((adopted, tracks))
                 } else {
                     self.remove_added(&adopted);
@@ -330,7 +348,7 @@ impl super::Studio {
     }
 
     /// Adds one track's nodes to `graph` and adopts them, pushing each adopted node
-    /// to `adopted` so a failure can take them back.
+    /// to `adopted` so a failure can take them back. Returns the encoder's node.
     #[allow(clippy::too_many_arguments)]
     fn add_track(
         &mut self,
@@ -341,7 +359,7 @@ impl super::Studio {
         encoder: VideoEncoderNode,
         encoder_part: rbs_graph::description::PartitionId,
         output: OutputNode,
-    ) -> Result<(), RecordError> {
+    ) -> Result<NodeId, RecordError> {
         // The normalisation pass draws the source's picture into the canvas format
         // (decision 9, case b); a filter tail already is (case a).
         let mut from = (tap.producer, tap.pin.clone());
@@ -387,7 +405,7 @@ impl super::Studio {
             partition: ISO_OUTPUT,
             gpu: false,
         });
-        Ok(())
+        Ok(encoder_id)
     }
 }
 

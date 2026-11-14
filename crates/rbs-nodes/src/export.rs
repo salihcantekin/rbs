@@ -124,6 +124,9 @@ pub struct VideoExportNode {
 }
 
 /// How an ISO track's export differs from the master's (ADR-0086 decisions 3 and 9).
+/// How far a track's hold grows when the master keeps dropping frames.
+const MAX_HOLD_FACTOR: u64 = 8;
+
 /// Reads how many frames the master's encoders dropped so far.
 pub type MasterDrops = Arc<dyn Fn() -> u64 + Send + Sync>;
 
@@ -138,6 +141,10 @@ struct Track {
     /// it grows, this track skips canvases for `hold_ticks` ticks.
     master_drops: Option<MasterDrops>,
     hold_ticks: u64,
+    /// The hold now: `hold_ticks`, doubled (up to `MAX_HOLD_FACTOR` times) each time
+    /// the master drops again within `hold_ticks` of the last hold's end, so a track
+    /// that keeps pushing shared hardware past its limit backs off further.
+    hold: u64,
     /// The masters' drops seen so far, and the first tick index converted again.
     seen_drops: u64,
     hold_until: u64,
@@ -152,7 +159,13 @@ impl Track {
             let drops = master_drops();
             if drops > self.seen_drops {
                 self.seen_drops = drops;
-                self.hold_until = tick.index.saturating_add(self.hold_ticks);
+                let soon = tick.index < self.hold_until.saturating_add(self.hold_ticks);
+                self.hold = if soon && self.hold_until > 0 {
+                    (self.hold * 2).min(self.hold_ticks * MAX_HOLD_FACTOR)
+                } else {
+                    self.hold_ticks
+                };
+                self.hold_until = tick.index.saturating_add(self.hold);
             }
         }
         previous_ns > self.give_way_ns || tick.index < self.hold_until
@@ -259,7 +272,9 @@ impl VideoExportNode {
     /// decision 9): when `master_drops` (frames dropped on the way into the master's
     /// video encoders so far, for example the sum of their queues'
     /// `QueueStats::video_drops`) grows, this export skips its canvases for the next
-    /// `hold_ticks` ticks, counted in [`ExportNodeStats::gave_way`]. Encoders that
+    /// `hold_ticks` ticks, counted in [`ExportNodeStats::gave_way`]. A drop within
+    /// `hold_ticks` after a hold ended doubles the next hold, up to eight times
+    /// `hold_ticks`; a drop later starts again from `hold_ticks`. Encoders that
     /// share hardware (one media engine for every session) then lose frames on the
     /// ISO tracks first. Drops before this call do not count. Called once per tick on
     /// the render thread: it must only read atomics.
@@ -269,6 +284,7 @@ impl VideoExportNode {
         track.seen_drops = master_drops();
         track.master_drops = Some(master_drops);
         track.hold_ticks = hold_ticks;
+        track.hold = hold_ticks;
         self
     }
 
@@ -473,6 +489,16 @@ mod tests {
         assert!(track.gives_way(&at(4, 0)));
         assert!(track.gives_way(&at(5, 0)));
         assert!(!track.gives_way(&at(6, 0)));
+        // Dropping again soon after (within 3 ticks of the end) doubles the hold.
+        drops.fetch_add(1, Ordering::Relaxed);
+        assert!(track.gives_way(&at(7, 0)));
+        assert!(track.gives_way(&at(12, 0)));
+        assert!(!track.gives_way(&at(13, 0)), "held 6 ticks: 7 to 12");
+        // A drop long after starts again from 3.
+        drops.fetch_add(1, Ordering::Relaxed);
+        assert!(track.gives_way(&at(100, 0)));
+        assert!(track.gives_way(&at(102, 0)));
+        assert!(!track.gives_way(&at(103, 0)));
         assert!(
             VideoExportNode::new(YuvFormat::Nv12, 16, 8, 16, 8)
                 .track

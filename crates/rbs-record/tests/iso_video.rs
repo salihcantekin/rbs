@@ -152,6 +152,7 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
 
     for track in &started.tracks {
         assert_eq!(track.stats.lost.load(Ordering::Relaxed), 0, "{track:?}");
+        assert!(track.queue.is_some(), "{track:?}");
     }
 
     assert!(studio.stop_iso_video());

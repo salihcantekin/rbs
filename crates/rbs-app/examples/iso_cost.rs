@@ -201,12 +201,13 @@ fn main() {
     for t in &iso {
         use std::sync::atomic::Ordering::Relaxed;
         println!(
-            "file {} {}x{}: exported {}, encoded {}, gave way {}, lost {}",
+            "file {} {}x{}: exported {}, encoded {}, skipped {}, gave way {}, lost {}",
             t.file_name,
             t.size.0,
             t.size.1,
             t.stats.frames.load(Relaxed),
             t.encoder.submitted.load(Relaxed),
+            t.queue.as_ref().map_or(0, |q| q.video_drops()),
             t.stats.gave_way.load(Relaxed),
             t.stats.lost.load(Relaxed)
         );
