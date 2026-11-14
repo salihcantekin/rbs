@@ -8,7 +8,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 
 | Path | Runs | Location (current or planned) |
 | --- | --- | --- |
-| Audio thread: device callbacks, audio graph, audio filters (ducker key link: [ADR-0095](adr/0095-audio-ducker-and-key-tap.md)) | Every block (10 ms) | `crates/rbs-audio` (`input.rs`, `resample.rs`, `mixer.rs` with its monitor output, `meter.rs`, `sink.rs`, `output.rs` and the output ring producer it pushes into; `encoder.rs` on the encoder worker), `crates/rbs-audio-filters` (DSPs and the filter node), audio adapters in `crates/rbs-audio-io-*` |
+| Audio thread: device callbacks, audio graph, audio filters (ducker key link: [ADR-0095](adr/0095-audio-ducker-and-key-tap.md)) | Every block (10 ms) | `crates/rbs-audio` (`input.rs`, `resample.rs`, `mixer.rs` with its monitor output, `meter.rs`, `loudness/` (ADR-0092), `sink.rs`, `output.rs` and the output ring producer it pushes into; `encoder.rs` on the encoder worker), `crates/rbs-audio-filters` (DSPs and the filter node), audio adapters in `crates/rbs-audio-io-*` |
 | Audio input hand-off: `AudioInputStream::read`, the sample ring (`RingProducer` pushes in OS callbacks, `RingConsumer::read`) and `EdgeClock` | Every OS packet and every block per Active audio input | `crates/rbs-audio-io/src/ring.rs`, `crates/rbs-audio-io/src/edge.rs`, adapters in `crates/rbs-audio-io-*` |
 | Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu`, `crates/rbs-filters` (`FilterNode::process` and the pass recording it calls; `FilterType::uniforms` of every built-in type) |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |

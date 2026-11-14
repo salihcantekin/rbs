@@ -220,6 +220,37 @@ impl MonitorMode {
     }
 }
 
+/// `loudness.status` (protocol 1.51, ADR-0092 stage 1): the loudness of the main
+/// canvas's mix after ITU-R BS.1770-4 and EBU R 128. Each value is `null` while it has
+/// no data: the meter is off, its window has not filled since it started or was
+/// reset, or the programme so far is below the -70 LUFS gate.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct LoudnessStatus {
+    /// The meter runs.
+    pub enabled: bool,
+    /// Momentary loudness (400 ms), LUFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub momentary: Option<f32>,
+    /// Short-term loudness (3 s), LUFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_term: Option<f32>,
+    /// Integrated loudness since the meter started or was reset, LUFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrated: Option<f32>,
+    /// Loudness range (EBU Tech 3342) over the same time, LU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<f32>,
+    /// Highest true peak over the same time, dBTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub true_peak_max: Option<f32>,
+    /// Highest momentary loudness over the same time, LUFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub momentary_max: Option<f32>,
+    /// Highest short-term loudness over the same time, LUFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_term_max: Option<f32>,
+}
+
 /// `monitor.status` and `monitor.changed` (protocol 1.30, ADR-0097).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MonitorStatus {

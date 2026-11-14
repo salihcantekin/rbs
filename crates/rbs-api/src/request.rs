@@ -11,10 +11,10 @@ use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
     Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, FilterTypeList, Library,
-    MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputKind, OutputProfile,
-    OutputTarget, OutputsResult, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap,
-    Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
-    VcamStatus,
+    LoudnessStatus, MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputKind,
+    OutputProfile, OutputTarget, OutputsResult, RecordState, RecordingProfile, ReplayStatus,
+    SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch,
+    StreamState, StudioInfo, VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -542,6 +542,15 @@ pub struct SetMonitorVolume {
 pub struct SetMonitorSolo {
     /// The soloed sources; empty ends solo.
     pub sources: Vec<u32>,
+}
+
+/// `loudness.set_enabled` (protocol 1.51, ADR-0092): starts or stops the main canvas's
+/// loudness meter. Session state: a restart of the app starts with it off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetLoudnessEnabled {
+    /// Measure (true) or not.
+    pub on: bool,
 }
 
 /// `source.set_mixer_hidden` (protocol 1.14, ADR-0080).
@@ -1223,6 +1232,12 @@ pub enum Command {
     MonitorSetVolume(SetMonitorVolume),
     /// `monitor.set_solo` (protocol 1.30).
     MonitorSetSolo(SetMonitorSolo),
+    /// `loudness.status` (protocol 1.51, ADR-0092).
+    LoudnessStatus,
+    /// `loudness.set_enabled` (protocol 1.51).
+    LoudnessSetEnabled(SetLoudnessEnabled),
+    /// `loudness.reset` (protocol 1.51).
+    LoudnessReset,
     /// `replay.arm` (protocol 1.27).
     ReplayArm,
     /// `replay.disarm` (protocol 1.27).
@@ -1360,6 +1375,9 @@ impl Command {
             Command::MonitorSetDevice(_) => "monitor.set_device",
             Command::MonitorSetVolume(_) => "monitor.set_volume",
             Command::MonitorSetSolo(_) => "monitor.set_solo",
+            Command::LoudnessStatus => "loudness.status",
+            Command::LoudnessSetEnabled(_) => "loudness.set_enabled",
+            Command::LoudnessReset => "loudness.reset",
             Command::ReplayArm => "replay.arm",
             Command::ReplayDisarm => "replay.disarm",
             Command::ReplaySave(_) => "replay.save",
@@ -1516,6 +1534,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("monitor.set_device", Some(Scope::Admin)),
     m("monitor.set_volume", Some(Scope::Control)),
     m("monitor.set_solo", Some(Scope::Control)),
+    m("loudness.status", Some(Scope::Read)),
+    m("loudness.set_enabled", Some(Scope::Control)),
+    m("loudness.reset", Some(Scope::Control)),
     m("replay.arm", Some(Scope::Control)),
     m("replay.disarm", Some(Scope::Control)),
     m("replay.save", Some(Scope::Control)),
@@ -1788,6 +1809,12 @@ enum WireRequest {
     MonitorSetVolume(SetMonitorVolume),
     #[serde(rename = "monitor.set_solo")]
     MonitorSetSolo(SetMonitorSolo),
+    #[serde(rename = "loudness.status")]
+    LoudnessStatus(Empty),
+    #[serde(rename = "loudness.set_enabled")]
+    LoudnessSetEnabled(SetLoudnessEnabled),
+    #[serde(rename = "loudness.reset")]
+    LoudnessReset(Empty),
     #[serde(rename = "replay.arm")]
     ReplayArm(Empty),
     #[serde(rename = "replay.disarm")]
@@ -1933,6 +1960,9 @@ impl From<WireRequest> for Request {
             WireRequest::MonitorSetDevice(p) => Request::Command(C::MonitorSetDevice(p)),
             WireRequest::MonitorSetVolume(p) => Request::Command(C::MonitorSetVolume(p)),
             WireRequest::MonitorSetSolo(p) => Request::Command(C::MonitorSetSolo(p)),
+            WireRequest::LoudnessStatus(_) => Request::Command(C::LoudnessStatus),
+            WireRequest::LoudnessSetEnabled(p) => Request::Command(C::LoudnessSetEnabled(p)),
+            WireRequest::LoudnessReset(_) => Request::Command(C::LoudnessReset),
             WireRequest::ReplayArm(_) => Request::Command(C::ReplayArm),
             WireRequest::ReplayDisarm(_) => Request::Command(C::ReplayDisarm),
             WireRequest::ReplaySave(p) => Request::Command(C::ReplaySave(p)),
@@ -2052,6 +2082,9 @@ impl From<Request> for WireRequest {
                 C::MonitorSetDevice(p) => WireRequest::MonitorSetDevice(p),
                 C::MonitorSetVolume(p) => WireRequest::MonitorSetVolume(p),
                 C::MonitorSetSolo(p) => WireRequest::MonitorSetSolo(p),
+                C::LoudnessStatus => WireRequest::LoudnessStatus(Empty {}),
+                C::LoudnessSetEnabled(p) => WireRequest::LoudnessSetEnabled(p),
+                C::LoudnessReset => WireRequest::LoudnessReset(Empty {}),
                 C::ReplayArm => WireRequest::ReplayArm(Empty {}),
                 C::ReplayDisarm => WireRequest::ReplayDisarm(Empty {}),
                 C::ReplaySave(p) => WireRequest::ReplaySave(p),
@@ -2327,6 +2360,8 @@ pub enum Response {
     MonitorStatus(Snapshot<MonitorStatus>),
     /// `monitor.devices` (protocol 1.30).
     MonitorDevices(MonitorDeviceList),
+    /// `loudness.status` (protocol 1.51).
+    LoudnessStatus(LoudnessStatus),
     /// `settings.get`, `settings.set`.
     Settings(Snapshot<Settings>),
     /// `profile.list`, `collection.list` (protocol 1.4).

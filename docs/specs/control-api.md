@@ -264,6 +264,8 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `monitor.status`, `monitor.devices` | `read` | The monitor output and the playback devices it can use; see "Monitor output" (protocol 1.30) |
 | `monitor.set_device {device}` | `admin` | Choose the monitor device (`null`: System default), a saved setting of the computer like `settings.set`; see "Monitor output" (protocol 1.30) |
 | `monitor.set_volume {volume}`, `monitor.set_solo {sources}` | `control` | The monitor volume and the soloed sources (session state); see "Monitor output" (protocol 1.30) |
+| `loudness.status` | `read` | The main canvas's loudness (momentary, short-term, integrated, range, maximum true peak) while the meter runs; see "Protocol 1.51" (ADR-0092) |
+| `loudness.set_enabled {on}`, `loudness.reset` | `control` | Start or stop the loudness meter (session state) and restart its measurement; see "Protocol 1.51" |
 | `events.subscribe`, `events.unsubscribe` | `read` | Topics `monitor.changed` (protocol 1.30), `replay.changed` (protocol 1.27), `source.changed`, `record.state`, `stream.state` (protocol 1.1), `record.canvas_state` and `stream.canvas_state` (protocol 1.29), `canvas.changed`, `settings.changed`, `audio.levels`, `scene.changed` (protocol 1.6), `vcam.changed` (protocol 1.12); `source.changed` rows carry `filters` and `sync_offset_ms` (protocol 1.8) |
 | `tokens.list` | `tokens` | Access tokens: name and scopes, never the token or its hash |
 | `tokens.create {name, scopes}` | `tokens` | Make a named token; the answer holds the token, the only time it exists in readable form. `scopes` is one of the desktop app's access levels: `["read"]`, `["read", "control"]` or `["read", "control", "admin"]`; other sets, an empty, too long or taken name, or a name with control characters are refused (`invalid_params`, `conflict` for a taken name) |
@@ -467,6 +469,16 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 ### Protocol 1.35: configurable glide (ADR-0100)
 
 `collection.set_glide { duration_ms, easing }` sets the collection morph defaults (`duration_ms` in `0..=5000`, `easing` `"linear"` or `"ease-in-out"`). `source.set_glide { source, glide }` sets a per-source slide override (`glide` is `{ duration_ms, easing }` or `null` to clear). Each is one undo step. Fade-ins always use the collection duration and a linear ramp. `scene.list` and `scene.changed` carry the collection `glide` (absent when 400 ms and ease-in-out) and each `sources` entry may carry `glide` when overridden. `source.list` / `source.changed` rows carry the same optional `glide`. A 1.34 server answers `method_not_found` and omits the fields.
+
+### Protocol 1.51: loudness meter (ADR-0092 stage 1)
+
+The minor number is provisional: it is assigned when the change merges, and the server advertises it only once every earlier minor is built (the handshake rule). Until then `PROTOCOL_VERSION` stays at the last merged minor and a client finds the methods by calling them (`method_not_found` from an older server).
+
+- **`loudness.status`** (`read`, effect `none`) answers `{enabled, momentary?, short_term?, integrated?, range?, true_peak_max?, momentary_max?, short_term_max?}` for the main canvas's mix: `enabled` says the meter runs; `momentary` (400 ms) and `short_term` (3 s) in LUFS, ungated, updated every 10 ms of audio; `integrated` (LUFS, BS.1770-4 gating), `range` (LU, EBU Tech 3342), `true_peak_max` (dBTP, oversampled), `momentary_max` and `short_term_max` (LUFS) since the meter started or was last reset. A value without data is absent, never `null`, NaN or infinite: the meter is off, its window has not filled, or everything measured so far is below -70 LUFS. Values are not rounded; a display shows one decimal (Tech 3341). There is no event yet; a client polls (at most a few times a second is plenty, the values move every 10 ms of audio).
+- **`loudness.set_enabled {on}`** (`control`) starts (`true`) or stops the meter and answers `{}`. Session state, not saved and not undoable: the app starts with it off. Starting it while it runs keeps the measurement; while it runs, a new studio (another collection, a canvas change) starts it again with a fresh measurement. A collection without audio has nothing to measure: `failed`. Off, nothing of the meter runs (ADR-0013).
+- **`loudness.reset`** (`control`) restarts the measurement: integrated loudness, range, maxima and the windows, so momentary and short-term read again after 400 ms and 3 s. Answers `{}`; `conflict` while the meter is off.
+- **Not yet.** The target (`Settings › Audio › Loudness`), the `audio.levels` master row, per-recording measurement and the leveler are later stages of ADR-0092.
+- **Older servers.** A server before 1.51 answers `method_not_found` to the three methods.
 
 ### Protocol 1.46: separate files (ADR-0086)
 
