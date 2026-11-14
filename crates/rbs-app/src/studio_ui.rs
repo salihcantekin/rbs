@@ -704,6 +704,13 @@ impl StudioUi {
         } else {
             1
         });
+        let glide_default = rbs_scene::CollectionGlide::default();
+        g.set_glide_default_duration(glide_default.duration_ms as i32);
+        g.set_glide_default_easing(if glide_default.easing == rbs_scene::GlideEasing::Linear {
+            0
+        } else {
+            1
+        });
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -885,6 +892,7 @@ impl StudioUi {
     fn push_remote(&self, g: &Studio<'_>) {
         let r = &self.remote;
         g.set_rc_enabled(r.enabled);
+        g.set_rc_default_port(remote_profile::DEFAULT_PORT.to_string().into());
         if g.get_rc_port_serial() != self.remote_port_serial as i32 {
             g.set_rc_port(self.remote_port_text.as_str().into());
             g.set_rc_port_serial(self.remote_port_serial as i32);
@@ -2907,7 +2915,9 @@ impl StudioUi {
         let codecs = self.video_codecs(out, &e);
         let codec_index = codecs.iter().position(|c| *c == e.video_codec).unwrap_or(0);
         let (out_w, out_h) = self.resolved_output_size(out);
+        let defaults = Self::encoder_defaults(out, &form, &video, &codecs);
         EncoderData {
+            defaults,
             codecs: strings(codecs.iter().map(|c| c.label().to_owned())),
             codec: codec_index as i32,
             encoders: strings(encoders),
@@ -2953,6 +2963,53 @@ impl StudioUi {
             },
             open_shadows: e.open_shadows,
         }
+    }
+
+    /// The default option of each encoder field of an [`output`], by its
+    /// [`enc_field`] code, as an index into the options the window shows now; -1
+    /// where that default is not offered or the field is on/off (owner decision
+    /// 2026-11-14: a changed value shows a reset button).
+    fn encoder_defaults(
+        out: i32,
+        form: &EncoderForm,
+        video: &[u32],
+        codecs: &[VideoCodec],
+    ) -> ModelRc<i32> {
+        let d = if out == output::STREAM {
+            StreamProfile::new().encoding
+        } else {
+            RecordProfile::default().encoding()
+        };
+        fn at<T: PartialEq>(items: &[(String, T)], v: &T) -> i32 {
+            items
+                .iter()
+                .position(|(_, x)| x == v)
+                .map_or(-1, |i| i32::try_from(i).unwrap_or(-1))
+        }
+        fn pos<T: PartialEq>(items: &[T], v: &T) -> i32 {
+            items
+                .iter()
+                .position(|x| x == v)
+                .map_or(-1, |i| i32::try_from(i).unwrap_or(-1))
+        }
+        let mut v = vec![-1; 14];
+        // Automatic is always the first encoder.
+        v[enc_field::ENCODER as usize] = if d.encoder.is_none() { 0 } else { -1 };
+        v[enc_field::VIDEO_RATE as usize] = pos(video, &d.video_kbps);
+        v[enc_field::AUDIO_RATE as usize] = pos(&AUDIO_KBPS, &d.audio_kbps);
+        v[enc_field::RATE_MODE as usize] = at(&form.rate_modes.items, &d.rate_control);
+        v[enc_field::PEAK as usize] = at(&form.peaks.items, &d.max_video_kbps);
+        v[enc_field::QUALITY as usize] = at(&form.qualities.items, &d.quality);
+        v[enc_field::KEYFRAME as usize] = at(&form.keyframes.items, &d.keyframe_seconds);
+        v[enc_field::PRESET as usize] = at(&form.presets.items, &d.preset);
+        v[enc_field::PROFILE as usize] = at(&form.profiles.items, &d.profile);
+        v[enc_field::B_FRAMES as usize] = at(&form.b_frames.items, &d.b_frames);
+        v[enc_field::VIDEO_CODEC as usize] = pos(codecs, &d.video_codec);
+        v[enc_field::DELIVERY as usize] = match d.delivery {
+            Delivery::Video => 0,
+            Delivery::Screen => 1,
+        };
+        ModelRc::new(VecModel::from(v))
     }
 
     /// An encoder field of an [`output`] was picked ([`enc_field`] codes); the

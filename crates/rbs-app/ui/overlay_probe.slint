@@ -98,10 +98,17 @@ export component SettingRowProbe inherits Window {
     width: 400px;
     height: 200px;
     out property <bool> hint-shown: row.hint-shown;
+    in-out property <bool> changed;
+    in-out property <length> row-width: 400px;
+    out property <bool> reset-shown: row.reset-shown;
+    out property <int> resets;
     row := SettingRow {
+        changed: root.changed;
+        default-text: "Off";
+        reset => { root.resets += 1; root.changed = false; }
         x: 0px;
         y: 0px;
-        width: 400px;
+        width: root.row-width;
         height: self.preferred-height;
         divider: false;
         label: "Glide";

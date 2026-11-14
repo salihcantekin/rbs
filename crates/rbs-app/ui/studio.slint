@@ -94,6 +94,9 @@ export struct EncoderData {
     delivery: int,
     // Lifts only the darkest tones. Shown while Colour is Video.
     open-shadows: bool,
+    // The default of each field, by its `set` code (an index into that field's
+    // options), or -1 when the default is not one of them or the field has none.
+    defaults: [int],
 }
 // One access token in the Remote control section: its name and what it allows.
 export struct TokenRow { name: string, access: string }
@@ -266,6 +269,9 @@ export global Studio {
     // Collection glide defaults (ADR-0100): duration ms and easing 0 linear / 1 ease-in-out.
     in property <int> glide-duration: 400;
     in property <int> glide-easing: 1;
+    // The collection glide's defaults, for the reset buttons.
+    in property <int> glide-default-duration: 400;
+    in property <int> glide-default-easing: 1;
     callback set-glide(int /* duration_ms */, int /* easing */);
     // Per-source slide override (ADR-0100). `custom` false clears it.
     callback set-source-glide(int /* id */, bool /* custom */, int /* duration_ms */, int /* easing */);
@@ -598,6 +604,8 @@ export global Studio {
     in property <bool> rc-enabled;
     // The port field's text; set by Rust on load and when a typed port is refused.
     in property <string> rc-port;
+    // The port remote control uses by default, for the reset button.
+    in property <string> rc-default-port;
     // Bumped by Rust when `rc-port` is set from outside the field.
     in property <int> rc-port-serial;
     // Where apps connect, or why remote control is not running; `rc-status-bad` marks a
@@ -2657,6 +2665,9 @@ component EncoderFields inherits VerticalLayout {
     // Advanced settings (U2): shown with the button below, in the same place.
     property <bool> advanced: false;
     SettingRow {
+        changed: root.idle && root.data.defaults[11] >= 0 && root.data.codec != root.data.defaults[11];
+        default-text: root.data.codecs[root.data.defaults[11]];
+        reset => { root.set(11, root.data.defaults[11]); }
         label: @tr("Video codec");
         help: root.stream
             ? @tr("A stream uses H.264. RTMP does not carry HEVC yet.")
@@ -2671,6 +2682,9 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        changed: root.idle && root.data.defaults[12] >= 0 && root.data.delivery != root.data.defaults[12];
+        default-text: [@tr("Video"), @tr("Screen")][root.data.defaults[12]];
+        reset => { root.set(12, root.data.defaults[12]); }
         label: @tr("Colour");
         help: root.data.delivery == 0
             ? @tr("Rec. 709 limited range, for YouTube, TV and streams.")
@@ -2703,6 +2717,9 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        changed: root.idle && root.data.defaults[0] >= 0 && root.data.encoder != root.data.defaults[0];
+        default-text: root.data.encoders[root.data.defaults[0]];
+        reset => { root.set(0, root.data.defaults[0]); }
         label: @tr("Video encoder");
         summary: @tr("Automatic picks this computer's best");
         hint: @tr("Automatic picks the best one this computer has.");
@@ -2720,6 +2737,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.data.rate-kind != 2;
         gap: 0;
         SettingRow {
+            changed: root.idle && root.data.defaults[1] >= 0 && root.data.video-rate != root.data.defaults[1];
+            default-text: root.data.video-rates[root.data.defaults[1]];
+            reset => { root.set(1, root.data.defaults[1]); }
             label: root.data.bitrate-label;
             help: root.data.recommended-kbps > 0
                 ? @tr("{} kbit/s is below the {} kbit/s recommended for this output size ({} x {} at {} fps).", root.data.video-kbps, root.data.recommended-kbps, root.data.out-width, root.data.out-height, root.data.out-fps)
@@ -2742,6 +2762,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.data.rate-kind == 2;
         gap: 0;
         SettingRow {
+            changed: root.idle && root.data.defaults[5] >= 0 && root.data.quality != root.data.defaults[5];
+            default-text: root.data.qualities[root.data.defaults[5]];
+            reset => { root.set(5, root.data.defaults[5]); }
             label: @tr("Quality level");
             summary: @tr("Lower is better quality, larger files");
             enabled: root.idle;
@@ -2755,6 +2778,9 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        changed: root.idle && root.data.defaults[2] >= 0 && root.data.audio-rate != root.data.defaults[2];
+        default-text: root.data.audio-rates[root.data.defaults[2]];
+        reset => { root.set(2, root.data.defaults[2]); }
         label: @tr("Audio bitrate");
         summary: @tr("160 kbit/s suits most voices and music");
         hint: @tr("AAC. 160 kbit/s suits most voices and music.");
@@ -2785,6 +2811,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.advanced;
         gap: 0;
         SettingRow {
+            changed: root.idle && root.data.defaults[3] >= 0 && root.data.rate-mode != root.data.defaults[3];
+            default-text: root.data.rate-modes[root.data.defaults[3]];
+            reset => { root.set(3, root.data.defaults[3]); }
             label: @tr("Rate control");
             help: root.data.rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
                 : root.data.rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum. CBR is the default.")
@@ -2802,6 +2831,9 @@ component EncoderFields inherits VerticalLayout {
             shown: root.data.rate-kind == 1;
             gap: 0;
             SettingRow {
+                changed: root.idle && root.data.defaults[4] >= 0 && root.data.peak != root.data.defaults[4];
+                default-text: root.data.peaks[root.data.defaults[4]];
+                reset => { root.set(4, root.data.defaults[4]); }
                 label: @tr("Maximum bitrate");
                 summary: @tr("Short peaks above the target");
                 hint: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate.");
@@ -2834,6 +2866,9 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[7] >= 0 && root.data.keyframe != root.data.defaults[7];
+            default-text: root.data.keyframes[root.data.defaults[7]];
+            reset => { root.set(7, root.data.defaults[7]); }
             label: @tr("Keyframe interval");
             help: root.stream
                 ? @tr("How often a full picture is sent. Most streaming services require 2 s, the default.")
@@ -2848,6 +2883,9 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[8] >= 0 && root.data.preset != root.data.defaults[8];
+            default-text: root.data.presets[root.data.defaults[8]];
+            reset => { root.set(8, root.data.defaults[8]); }
             label: @tr("Encoder preset");
             summary: @tr("Quality or speed");
             hint: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default.");
@@ -2862,6 +2900,9 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[9] >= 0 && root.data.profile != root.data.defaults[9];
+            default-text: root.data.profiles[root.data.defaults[9]];
+            reset => { root.set(9, root.data.defaults[9]); }
             label: @tr("Profile");
             summary: @tr("Which devices can play it");
             hint: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices.");
@@ -2875,6 +2916,9 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            changed: root.idle && root.data.defaults[10] >= 0 && root.data.b-frame != root.data.defaults[10];
+            default-text: root.data.b-frames[root.data.defaults[10]];
+            reset => { root.set(10, root.data.defaults[10]); }
             label: @tr("B-frames");
             help: root.data.b-frames-note != "" ? root.data.b-frames-note
                 : @tr("More B-frames save bits and add a little delay. 0 is the default.");
@@ -4777,6 +4821,9 @@ export component GeneralSettings inherits Rectangle {
                 label: @tr("Duration");
                 summary: @tr("0 turns Glide off");
                 enabled: Studio.glide-duration > 0;
+                changed: Studio.glide-duration > 0 && Studio.glide-duration != Studio.glide-default-duration;
+                default-text: @tr("{} ms", Studio.glide-default-duration);
+                reset => { Studio.set-glide(Studio.glide-default-duration, Studio.glide-easing); }
                 NumberField {
                     label: @tr("Glide duration in milliseconds");
                     unit: @tr("ms");
@@ -4793,6 +4840,9 @@ export component GeneralSettings inherits Rectangle {
                 summary: @tr("How a slide starts and stops");
                 hint: @tr("How a slide eases. Fade-ins stay linear.");
                 enabled: Studio.glide-duration > 0;
+                changed: Studio.glide-duration > 0 && Studio.glide-easing != Studio.glide-default-easing;
+                default-text: Studio.glide-default-easing == 0 ? @tr("Linear") : @tr("Ease in-out");
+                reset => { Studio.set-glide(Studio.glide-duration, Studio.glide-default-easing); }
                 fill: false;
                 SegmentedControl {
                     label: @tr("Glide easing");
@@ -4965,7 +5015,10 @@ export component RemoteControlSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Port");
-                summary: @tr("4456 is the default");
+                summary: @tr("{} is the default", Studio.rc-default-port);
+                changed: Studio.rc-default-port != "" && Studio.rc-port != Studio.rc-default-port;
+                default-text: Studio.rc-default-port;
+                reset => { Studio.set-rc-port(Studio.rc-default-port); }
                 hint: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default.");
                 control-width: Tokens.size-menu-sm / 2;
                 port := TextField {
