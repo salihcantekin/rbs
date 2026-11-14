@@ -117,11 +117,11 @@ Invariants:
 | Call | Does |
 | --- | --- |
 | `prepare` | Nothing |
-| `warm` | Uploads the picture with `SourceUpload` into a pool texture (not real time) |
+| `warm` | Uploads the picture with `SourceUpload` into a pool texture (not real time); the frame's sequence is a new generation (`rbs_core::media::next_generation()`, ADR-0117 decision 4), so each upload has a key no earlier frame had, though the timestamp is always zero |
 | `process` | Publishes the uploaded frame once; every later tick returns at once and the output slot keeps the frame (P13) |
 | `cool`, `release` | Drop the frame and give the textures back |
 
-Counters are those of the capture node: `picture_size` is known from construction, `uploaded` and `frames` count one per warm-up. Test: `crates/rbs-nodes/tests/still_gpu.rs` (one upload and one publication over many ticks; the exported canvas shows the picture).
+Counters are those of the capture node: `picture_size` is known from construction, `uploaded` and `frames` count one per warm-up. Test: `crates/rbs-nodes/tests/still_gpu.rs` (one upload and one publication over many ticks; the exported canvas shows the picture; an upload after Standby has a new generation).
 
 ### Video export node
 

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rbs_core::media::{
     ColorSpace, FramePayload, PixelFormat, Size, TextureId, TransferFunction, VideoFormat,
+    next_generation,
 };
 use rbs_core::time::Timestamp;
 use rbs_gpu::node::GpuRuntime;
@@ -432,6 +433,9 @@ impl Node<GpuRuntime> for FilterNode {
         }
         match frame {
             Some(Ok(frame)) => {
+                // A new generation per render: a still input keeps its timestamp, so
+                // the sequence tells a reader the picture changed (ADR-0117 decision 4).
+                let frame = frame.with_sequence(next_generation());
                 self.stats.frames.fetch_add(1, Ordering::Relaxed);
                 self.published = Some((input_id, time));
                 self.last_output = output;
