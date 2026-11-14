@@ -4836,6 +4836,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-manifest"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "rbs-mcp"
 version = "0.0.1"
 dependencies = [
@@ -4979,6 +4987,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-project"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-manifest",
+]
+
+[[package]]
 name = "rbs-record"
 version = "0.0.1"
 dependencies = [
@@ -4995,6 +5011,7 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-manifest",
  "rbs-media-decode-test",
  "rbs-mux",
  "rbs-nodes",

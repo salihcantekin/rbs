@@ -19,12 +19,13 @@ use rbs_scene::model::SourceId;
 use rbs_transport::{TransportConfig, TransportInput};
 
 use super::{AUDIO_ENCODER_PACKETS, Added};
-use crate::iso::{self, IsoError, IsoRole, RecordingManifest};
+use crate::iso::{self, IsoError, IsoRole};
 use crate::recording::{
     AudioSettings, ISO_AUDIO_ENCODER, ISO_OUTPUT, RecordAdapters, RecordError, StartFailure,
     add_active,
 };
 use crate::select::{self, scheme_of};
+use rbs_manifest::RecordingManifest;
 
 /// What [`super::Studio::start_iso_audio`] opens. Audio defaults to AAC at 160 kbit/s,
 /// the master's usual audio settings.
@@ -127,7 +128,7 @@ impl super::Studio {
         }
         let planned = iso::plan(&self.collection).map_err(RecordError::Iso)?;
         let mut manifest =
-            RecordingManifest::at_start(&planned, &start.master_name, &start.t0_utc, start.t0_ns)
+            iso::manifest_at_start(&planned, &start.master_name, &start.t0_utc, start.t0_ns)
                 .map_err(RecordError::Iso)?;
         let video_pending = planned
             .tracks
@@ -153,7 +154,7 @@ impl super::Studio {
             file.role != "audio"
                 || file
                     .source
-                    .is_none_or(|source| !not_heard.iter().any(|(id, _)| *id == source))
+                    .is_none_or(|source| !not_heard.iter().any(|(id, _)| id.get() == source.get()))
         });
         if taps.is_empty() {
             return Ok(IsoAudioStarted {
@@ -166,7 +167,7 @@ impl super::Studio {
         for file in &mut manifest.files {
             if file.role == "audio"
                 && let Some(source) = file.source
-                && let Some(tap) = taps.iter().find(|tap| tap.source == source)
+                && let Some(tap) = taps.iter().find(|tap| tap.source.get() == source.get())
             {
                 file.file_name.clone_from(&tap.file_name);
             }
