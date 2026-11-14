@@ -2098,10 +2098,27 @@ pub struct HostConfig {
     /// Reads free disk space and memory for recording protection (ADR-0090); `None`:
     /// disk and memory are reported unavailable and only lag is watched.
     pub system_probe: Option<protection::SystemProbeFactory>,
+    /// The last calibration of this computer (`calibration.toml`, ADR-0087 decision
+    /// 4), read with `app.toml` before the control thread starts; empty by default.
+    pub calibration: crate::calibration_file::CalibrationFile,
+    /// Reads a recording folder's free space for the estimate's disk probe (ADR-0087
+    /// decision 1), on the probe's own short-lived thread; `None`: free space is
+    /// unknown.
+    pub read_free_space: Option<FreeSpaceReader>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fault: Option<Fault>,
+}
+
+/// Reads a recording folder's free space for the estimate ([`HostConfig::read_free_space`]).
+#[derive(Clone)]
+pub struct FreeSpaceReader(pub rbs_record::estimate::ReadFreeSpace);
+
+impl std::fmt::Debug for FreeSpaceReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FreeSpaceReader")
+    }
 }
 
 impl HostConfig {
@@ -2128,6 +2145,8 @@ impl HostConfig {
             swap_after_transition: false,
             monitor: MonitorSettings::default(),
             system_probe: None,
+            calibration: crate::calibration_file::CalibrationFile::default(),
+            read_free_space: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -2446,6 +2465,11 @@ struct Host {
     /// The recent targets per source type and the folder they are saved in.
     recent: RecentTargets,
     recent_dir: Option<PathBuf>,
+    /// The last calibration of this computer (ADR-0087 decision 4).
+    calibration: crate::calibration_file::CalibrationFile,
+    /// Free space of recording folders for the estimate; `None` when the app gave no
+    /// reader. Starts a thread only while a read runs (P13).
+    disk_probe: Option<rbs_record::estimate::DiskProbe>,
     /// A transition also puts the old program scene in preview (ADR-0098).
     swap_after_transition: bool,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
@@ -3037,6 +3061,10 @@ fn start(
             .map(|d| crate::recent_targets::load(d).0)
             .unwrap_or_default(),
         recent_dir: config.recent_dir,
+        calibration: config.calibration,
+        disk_probe: config
+            .read_free_space
+            .map(|r| rbs_record::estimate::DiskProbe::new(r.0)),
         swap_after_transition: config.swap_after_transition,
         thumbs: Arc::new(AtomicU64::new(0)),
         region_grabs: Arc::new(AtomicU64::new(0)),
@@ -4681,15 +4709,14 @@ impl Host {
         );
         start.image_dir = Some(files.folder.clone());
         start.t0 = Timestamp::from_nanos(files.manifest.t0_ns);
-        // The estimate of what runs now plus these files (ADR-0087). Not calibrated yet
-        // (step D): the declared session limit, else SEPARATE_VIDEO_LIMIT.
+        // The estimate of what runs now plus these files (ADR-0087): measured, else
+        // the declared session limit, else SEPARATE_VIDEO_LIMIT.
         let (estimate_plan, declared) =
             self.studio
                 .separate_video_plan(&self.adapters, &self.collection, &start);
-        let limits = rbs_record::estimate::Limits {
-            adapters: declared,
-            ..rbs_record::estimate::Limits::default()
-        };
+        // The profile's recording folder, not the take folder (new on every start).
+        let recording_folder = files.folder.parent().unwrap_or(&files.folder).to_owned();
+        let limits = self.estimate_limits(declared, &recording_folder);
         let estimate = rbs_record::estimate::estimate(&estimate_plan, &limits);
         start.max_video = rbs_record::estimate::separate_video_limit(&estimate);
         start.skip_no_picture = true;
@@ -4742,23 +4769,13 @@ impl Host {
         let _ = rbs_record::write_manifest(&files.folder, &files.manifest);
     }
 
-    /// Starts the recording of `c` into `path` with `r`'s settings.
-    fn start_master(
-        &mut self,
-        c: OutputCanvas,
+    /// The output settings of a recording of `r` into `path` on `canvas`.
+    fn master_settings(
+        &self,
         canvas: Option<CanvasId>,
         r: &RecordRequest,
         path: &Path,
-        profile: Option<String>,
-        mut iso: Option<IsoFiles>,
-    ) -> Result<RecordingUpdate, String> {
-        if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder)
-                .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
-        }
-        if path.exists() {
-            return Err(format!("{} already exists.", path.display()));
-        }
+    ) -> OutputSettings {
         let mut out = OutputSettings::new(rbs_transport_file::file_url(path), r.container);
         out.canvas = canvas;
         out.video = r.video.clone();
@@ -4781,6 +4798,114 @@ impl Host {
         // next start (ADR-0102). `None` stays the canvas, including a side above 7680.
         // An audio-only file has no picture size.
         out.size = if r.video.is_none() { None } else { r.size };
+        out
+    }
+
+    /// The estimate of a start of the saved recording profile on `c` (or on every
+    /// canvas with `all`), next to what runs (`record.estimate`, ADR-0087 decision 7).
+    /// A recording that runs on a canvas the start covers is left out, as if it had
+    /// stopped. Opens nothing and never waits.
+    fn record_estimate(
+        &mut self,
+        c: OutputCanvas,
+        all: bool,
+        iso: Option<bool>,
+    ) -> Result<api::EstimateAnswer, String> {
+        let canvases: Vec<OutputCanvas> = if all { self.output_canvases() } else { vec![c] };
+        let mut settings = Vec::new();
+        let mut encoders = Vec::new();
+        let mut replacing = Vec::new();
+        let mut separate = None;
+        let mut sound_files = false;
+        let mut folder = None;
+        let mut replacing_separate = false;
+        for one in canvases {
+            let path = self.recording_file(one);
+            let r = self.profile_request(one, path.clone())?;
+            let canvas = self.output_canvas(one)?;
+            settings.push(self.master_settings(canvas, &r, &path));
+            encoders.push(r.encoder.clone());
+            if let Some((_, id)) = self.outs[slot(one)].recording {
+                replacing.push(id);
+            }
+            if one == OutputCanvas::Main {
+                folder = path.parent().map(Path::to_path_buf);
+                replacing_separate = self.outs[slot(one)].recording.is_some();
+                if iso.unwrap_or(self.separate_files) && self.marks_separate() {
+                    sound_files = true;
+                    separate = r.video.clone().map(|video| {
+                        rbs_record::IsoVideoStart::new(String::new(), r.container, video)
+                    });
+                }
+            }
+        }
+        let mut request = rbs_record::StartPlanRequest::default();
+        request.outputs = settings
+            .iter()
+            .zip(&encoders)
+            .map(|(s, e)| rbs_record::PlannedOutput::new(s, e.as_deref()))
+            .collect();
+        request.separate = separate.as_ref();
+        request.sound_files = sound_files;
+        request.replacing = replacing;
+        request.replacing_separate = replacing_separate;
+        let (plan, declared) = self
+            .studio
+            .start_plan(&self.adapters, &self.collection, &request);
+        let folder = folder.unwrap_or_default();
+        let limits = self.estimate_limits(declared, &folder);
+        let estimate = rbs_record::estimate::estimate(&plan, &limits);
+        let at_most_now = plan
+            .video_template
+            .is_some()
+            .then(|| rbs_record::estimate::separate_video_limit(&estimate));
+        Ok(api_estimate(&estimate, at_most_now))
+    }
+
+    /// The estimate of what runs now, for `record.start`'s answer (protocol 1.53): the
+    /// plan of what the start decided to open, which now runs.
+    fn running_estimate(&mut self, c: OutputCanvas) -> Option<api::EstimateSummary> {
+        let folder = self.outs[slot(c)].recording.as_ref().and_then(|(p, _)| {
+            // A take with separate files is a folder inside the profile's folder.
+            let parent = p.parent()?;
+            Some(if self.iso.is_some() && c == OutputCanvas::Main {
+                parent.parent().unwrap_or(parent).to_path_buf()
+            } else {
+                parent.to_path_buf()
+            })
+        })?;
+        let request = rbs_record::StartPlanRequest::default();
+        let (plan, declared) = self
+            .studio
+            .start_plan(&self.adapters, &self.collection, &request);
+        let limits = self.estimate_limits(declared, &folder);
+        let e = rbs_record::estimate::estimate(&plan, &limits);
+        let a = api_estimate(&e, None);
+        Some(api::EstimateSummary {
+            level: a.level,
+            unknown: a.unknown,
+            reasons: a.reasons,
+        })
+    }
+
+    /// Starts the recording of `c` into `path` with `r`'s settings.
+    fn start_master(
+        &mut self,
+        c: OutputCanvas,
+        canvas: Option<CanvasId>,
+        r: &RecordRequest,
+        path: &Path,
+        profile: Option<String>,
+        mut iso: Option<IsoFiles>,
+    ) -> Result<RecordingUpdate, String> {
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
+        }
+        if path.exists() {
+            return Err(format!("{} already exists.", path.display()));
+        }
+        let out = self.master_settings(canvas, r, path);
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
         if started.is_ok()
@@ -5011,6 +5136,39 @@ impl Host {
     }
 
     /// A new file for a recording of `c` with its saved settings, named for now.
+    /// What the estimate knows about this computer for a start that records into
+    /// `folder` (ADR-0087 decision 1): the adapters' declared capabilities, the
+    /// calibration entries that still hold and the folder's cached free space. Never
+    /// waits: a folder with no fresh reading is unknown now and read for the next call.
+    fn estimate_limits(
+        &mut self,
+        adapters: Vec<rbs_record::estimate::DeclaredAdapter>,
+        folder: &Path,
+    ) -> rbs_record::estimate::Limits {
+        let this = crate::calibration_file::ThisComputer {
+            // No adapter reports `adapter.version` yet (ADR-0087 decision 4).
+            adapters: self
+                .adapters
+                .video_encoders
+                .ids()
+                .map(|id| (id.as_str().to_owned(), None))
+                .collect(),
+            rbs_version: env!("CARGO_PKG_VERSION").to_owned(),
+        };
+        let calibration = self.calibration.for_estimate(&this, folder);
+        let now = self.clock.now();
+        let free_space = self
+            .disk_probe
+            .as_mut()
+            .and_then(|p| p.free_space(folder, now).bytes());
+        rbs_record::estimate::Limits {
+            adapters,
+            calibration: Some(calibration),
+            free_space,
+            previous_tick: None,
+        }
+    }
+
     fn recording_file(&self, c: OutputCanvas) -> PathBuf {
         let now = chrono::Local::now().naive_local();
         let p = self.record_profile(c);
@@ -9262,6 +9420,98 @@ fn rounded_rate(fps: FrameRate) -> u32 {
         .map_or(0, |r| u32::try_from(r).unwrap_or(u32::MAX))
 }
 
+/// An estimate enum as the API's, through its wire name: a name the API types do
+/// not know reads as their `Other`.
+fn api_enum<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+}
+
+fn api_resource(r: rbs_record::estimate::Resource) -> api::EstimateResource {
+    api_enum(r.as_str()).unwrap_or(api::EstimateResource::Other)
+}
+
+fn api_level(l: rbs_record::estimate::Level) -> api::EstimateLevel {
+    api_enum(l.as_str()).unwrap_or(api::EstimateLevel::Other)
+}
+
+/// A number the API may send: finite, else `None` (ADR-0087: never NaN or infinity).
+fn finite(v: f64) -> Option<f64> {
+    v.is_finite().then_some(v)
+}
+
+/// `record.estimate`'s answer from the estimate (protocol 1.53). `at_most_now` is the
+/// most separate video files a start opens now, when the plan has a picture template.
+fn api_estimate(
+    e: &rbs_record::estimate::Estimate,
+    at_most_now: Option<usize>,
+) -> api::EstimateAnswer {
+    use rbs_record::estimate as est;
+    let track = |t: &est::TrackRef| api::EstimateTrack {
+        source: t.source.get(),
+        role: api_track_role(t.role),
+    };
+    let max = |m: &est::MaxTracks, now: Option<usize>| api::MaxTracks {
+        count: m.count,
+        limit: m.limit.map(api_resource),
+        partial: m.partial,
+        unknown: m.unknown.iter().copied().map(api_resource).collect(),
+        at_most_now: now.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+    };
+    api::EstimateAnswer {
+        level: api_level(e.level),
+        gate_level: api_level(e.gate_level),
+        unknown: e.unknown.iter().copied().map(api_resource).collect(),
+        resources: e
+            .resources
+            .iter()
+            .map(|r| {
+                let need = finite(r.need).unwrap_or(0.0);
+                let limit = r.limit.and_then(finite);
+                // A limit that is not a finite number is reported as unknown.
+                let level = match (r.limit, limit) {
+                    (Some(_), None) => Some(api::EstimateLevel::Unknown),
+                    _ => r.level.map(api_level),
+                };
+                api::EstimateRow {
+                    resource: api_resource(r.resource),
+                    scope: r.scope.clone(),
+                    need,
+                    limit,
+                    unit: api_enum(r.unit.as_str()).unwrap_or(api::EstimateUnit::Other),
+                    level,
+                    measured: r.measured,
+                }
+            })
+            .collect(),
+        reasons: e
+            .reasons
+            .iter()
+            .map(|r| api::EstimateReason {
+                code: api_enum(r.code.as_str()).unwrap_or(api::EstimateCode::Other),
+                resource: r.resource.map(api_resource),
+                track: r.track.as_ref().map(track),
+            })
+            .collect(),
+        max_tracks: api::MaxTracksByKind {
+            video: max(&e.max_video, at_most_now),
+            audio: max(&e.max_audio, None),
+        },
+        tracks: e
+            .tracks
+            .iter()
+            .map(|t| api::TrackCost {
+                source: t.track.source.get(),
+                role: api_track_role(t.track.role),
+                cost: t
+                    .cost
+                    .iter()
+                    .filter_map(|(r, v)| Some((r.as_str().to_owned(), finite(*v)?)))
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
 fn failed(message: impl Into<String>) -> ApiError {
     ApiError::new(ErrorKind::Failed, message)
 }
@@ -10171,6 +10421,17 @@ impl ApiTarget<'_> {
                     }
                 }
             }
+            C::RecordEstimate(p) => {
+                check_profile(&p.profile)?;
+                let target = p.canvas.unwrap_or_default();
+                let (c, all) = match target.single() {
+                    Some(one) => (host.api_canvas_of(Some(one))?, false),
+                    None => (OutputCanvas::Main, true),
+                };
+                host.record_estimate(c, all, p.iso)
+                    .map(Response::RecordEstimate)
+                    .map_err(failed)
+            }
             C::RecordStartToFile(p) => {
                 check_profile(&p.profile)?;
                 let c = host.api_canvas_of(p.canvas)?;
@@ -10669,6 +10930,15 @@ impl ApiTarget<'_> {
                     } => RecordStarted {
                         video_encoder: video_encoder.clone(),
                         audio_encoder: audio_encoder.clone(),
+                        estimate: host.running_estimate(c),
+                        skipped: match c {
+                            OutputCanvas::Main => host
+                                .iso
+                                .as_ref()
+                                .map(|f| f.skipped.clone())
+                                .unwrap_or_default(),
+                            OutputCanvas::Vertical => Vec::new(),
+                        },
                     },
                     _ => return Err(failed("the recording did not start")),
                 };
@@ -10699,6 +10969,8 @@ impl ApiTarget<'_> {
                 video_encoder: None,
                 audio_encoder: None,
                 error: None,
+                estimate: None,
+                skipped: Vec::new(),
             };
             if ending {
                 let e = ApiError::new(ErrorKind::Conflict, "the recording is still ending");
@@ -10736,6 +11008,8 @@ impl ApiTarget<'_> {
                 Ok(Response::RecordStarted(r)) => outputs.push(api::OutputEntry {
                     video_encoder: Some(r.video_encoder),
                     audio_encoder: r.audio_encoder,
+                    estimate: r.estimate,
+                    skipped: r.skipped,
                     ..entry(api::OutputOutcome::Started)
                 }),
                 Ok(Response::StreamStarted(r)) => outputs.push(api::OutputEntry {
@@ -10793,6 +11067,8 @@ impl ApiTarget<'_> {
                 video_encoder: None,
                 audio_encoder: None,
                 error: None,
+                estimate: None,
+                skipped: Vec::new(),
             });
         }
         if !outputs

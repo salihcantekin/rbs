@@ -4595,6 +4595,20 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             eprintln!("rbs: monitor settings: {why}");
         }
         config.monitor = monitor;
+        // This computer's calibration (ADR-0087 decision 4), read with `app.toml`
+        // before the control thread serves anything.
+        let (calibration, note) = rbs_app::calibration_file::load(&ctx.app.borrow().config);
+        if let Some(why) = note {
+            eprintln!("rbs: calibration: {why}");
+        }
+        config.calibration = calibration;
+        config.read_free_space = Some(studio_host::FreeSpaceReader(std::sync::Arc::new(
+            |folder: &std::path::Path| {
+                rbs_system_probe::volume_space(folder)
+                    .map(|s| s.free_bytes)
+                    .map_err(|e| e.to_string())
+            },
+        )));
         config
     };
     match studio_host::StudioHost::spawn(

@@ -364,6 +364,11 @@ fn every_request() -> Vec<Request> {
             canvas: Some(OutputTarget::Vertical),
             iso: None,
         })),
+        c(Command::RecordEstimate(RecordStart {
+            profile: "default".into(),
+            canvas: Some(OutputTarget::All),
+            iso: None,
+        })),
         c(Command::RecordStartToFile(RecordStartToFile {
             profile: "default".into(),
             path: "/videos/a.mkv".into(),
@@ -760,6 +765,8 @@ fn every_result_and_event_type_round_trips() {
     round_trip(&RecordStarted {
         video_encoder: "NVENC".into(),
         audio_encoder: Some("MF AAC".into()),
+        estimate: None,
+        skipped: vec![],
     });
     round_trip(&Snapshot {
         seq: seq.clone(),
@@ -1155,6 +1162,8 @@ fn an_all_answer_lists_each_canvas_main_first() {
                 video_encoder: Some("NVENC".into()),
                 audio_encoder: None,
                 error: None,
+                estimate: None,
+                skipped: vec![],
             },
             OutputEntry {
                 canvas: OutputCanvas::Vertical,
@@ -1162,6 +1171,8 @@ fn an_all_answer_lists_each_canvas_main_first() {
                 video_encoder: None,
                 audio_encoder: None,
                 error: Some(OutputError::from(&refused)),
+                estimate: None,
+                skipped: vec![],
             },
         ],
     });
@@ -1957,4 +1968,64 @@ fn markers_round_trip_and_unknown_colours_are_refused() {
         rbs_api::request::method_scope("marker.remove"),
         Some(Some(rbs_api::Scope::Control))
     );
+}
+
+/// `record.estimate`'s answer (protocol 1.53): counts and bytes are written as whole
+/// numbers, and names a client does not know read as `other`.
+#[test]
+fn the_estimate_answer_writes_whole_counts_and_reads_unknown_names_as_other() {
+    use rbs_api::types::{
+        EstimateAnswer, EstimateCode, EstimateLevel, EstimateReason, EstimateResource, EstimateRow,
+        EstimateUnit, MaxTracks, MaxTracksByKind,
+    };
+    let answer = EstimateAnswer {
+        level: EstimateLevel::Fits,
+        gate_level: EstimateLevel::Fits,
+        unknown: vec![EstimateResource::EncoderSessions],
+        resources: vec![EstimateRow {
+            resource: EstimateResource::EncoderSessions,
+            scope: Some("org.rbs.test".into()),
+            need: 4.0,
+            limit: None,
+            unit: EstimateUnit::Sessions,
+            level: Some(EstimateLevel::Unknown),
+            measured: false,
+        }],
+        reasons: vec![EstimateReason {
+            code: EstimateCode::SessionsUnknown,
+            resource: Some(EstimateResource::EncoderSessions),
+            track: None,
+        }],
+        max_tracks: MaxTracksByKind {
+            video: MaxTracks {
+                count: None,
+                limit: None,
+                partial: true,
+                unknown: vec![EstimateResource::EncoderSessions],
+                at_most_now: Some(3),
+            },
+            audio: MaxTracks {
+                count: Some(32),
+                limit: Some(EstimateResource::IsoCeiling),
+                partial: false,
+                unknown: vec![],
+                at_most_now: None,
+            },
+        },
+        tracks: vec![],
+    };
+    let v = serde_json::to_value(&answer).unwrap();
+    assert_eq!(v["resources"][0]["need"], json!(4));
+    assert!(v["resources"][0]["need"].is_u64() || v["resources"][0]["need"].is_i64());
+    assert_eq!(v["resources"][0]["limit"], json!(null));
+    assert!(v["max_tracks"]["audio"].get("at_most_now").is_none());
+    round_trip(&answer);
+    let later: EstimateRow = serde_json::from_value(json!({
+        "resource": "gpu_memory", "need": 0.5, "limit": 1.0, "unit": "percent",
+        "level": "critical", "measured": true
+    }))
+    .unwrap();
+    assert_eq!(later.resource, EstimateResource::Other);
+    assert_eq!(later.unit, EstimateUnit::Other);
+    assert_eq!(later.level, Some(EstimateLevel::Other));
 }

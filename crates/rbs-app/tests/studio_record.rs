@@ -1445,3 +1445,89 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `record.estimate` (protocol 1.53, ADR-0087 step C2a): the plan of a start of the
+/// saved profile next to what runs, its separate files listed with their cost, and
+/// the live limit of separate video files (3 while the encoder's capacity is
+/// unknown). It opens nothing.
+#[test]
+fn the_estimate_lists_a_start_and_its_separate_files_without_opening_anything() {
+    let Some(gpu) = gpu() else { return };
+    let clock = TestClock::new();
+    let (host, rx, display, mic) = marked(gpu, &clock, None);
+    host.send(Command::SetRecordSeparately {
+        id: display.id,
+        patch: RecordPatch {
+            video: Some(true),
+            ..RecordPatch::default()
+        },
+    });
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == display.id && r.record_separately.video)
+    });
+    let mut api = ApiClient::attach(&host);
+
+    let answer = api.call("record.estimate", serde_json::json!({"profile": "default"}));
+    let e = &answer["result"];
+    assert!(answer.get("error").is_none(), "{answer}");
+    assert!(
+        ["fits", "heavy"].contains(&e["level"].as_str().unwrap()),
+        "{answer}"
+    );
+    assert_eq!(e["max_tracks"]["video"]["at_most_now"], 3, "{answer}");
+    let tracks: Vec<(u64, &str)> = e["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["source"].as_u64().unwrap(), t["role"].as_str().unwrap()))
+        .collect();
+    assert!(
+        tracks.contains(&(u64::from(display.id.get()), "video")),
+        "{answer}"
+    );
+    assert!(
+        tracks.contains(&(u64::from(mic.id.get()), "audio")),
+        "{answer}"
+    );
+    // The master and the screen's file, each one session on the test encoder; whole
+    // numbers on the wire.
+    let sessions = e["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["resource"] == "encoder_sessions")
+        .unwrap_or_else(|| panic!("{answer}"));
+    assert_eq!(sessions["need"], 2, "{answer}");
+    assert!(sessions["scope"].is_string(), "{answer}");
+
+    // Without the separate files: the master alone, no live limit.
+    let plain = api.call(
+        "record.estimate",
+        serde_json::json!({"profile": "default", "iso": false}),
+    );
+    assert_eq!(plain["result"]["tracks"], serde_json::json!([]), "{plain}");
+    assert!(
+        plain["result"]["max_tracks"]["video"]
+            .get("at_most_now")
+            .is_none(),
+        "{plain}"
+    );
+    // `all` without a vertical canvas is the main one; an explicit vertical is not
+    // found; an unknown profile too.
+    let all = api.call(
+        "record.estimate",
+        serde_json::json!({"profile": "default", "canvas": "all"}),
+    );
+    assert_eq!(all["result"]["tracks"], e["tracks"], "{all}");
+    let vertical = api.call(
+        "record.estimate",
+        serde_json::json!({"profile": "default", "canvas": "vertical"}),
+    );
+    assert_eq!(error_kind(&vertical), "not_found", "{vertical}");
+    let other = api.call("record.estimate", serde_json::json!({"profile": "other"}));
+    assert_eq!(error_kind(&other), "not_found", "{other}");
+    // Nothing started.
+    let status = api.call("record.status", serde_json::json!({}));
+    assert_eq!(status["result"]["data"]["state"], "idle", "{status}");
+}

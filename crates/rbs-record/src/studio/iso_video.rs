@@ -184,6 +184,8 @@ pub enum IsoSkip {
 
 pub(super) struct IsoVideoRun {
     nodes: Vec<Added>,
+    /// What each open video file costs, for the estimate of a later start (ADR-0087).
+    pub(super) encodes: Vec<crate::estimate::VideoEncode>,
     /// The first node of each track after the source's chain, to follow the source
     /// when the binder replaces its node (a new colour or file builds a new still
     /// node; ADR-0117 decision 4).
@@ -394,6 +396,7 @@ impl super::Studio {
             })
             .collect();
         let mut chains = Vec::with_capacity(taps.len());
+        let mut encodes = Vec::with_capacity(taps.len());
         for tap in &taps {
             let size = even(tap.picture);
             let export = VideoExportNode::with_tone(
@@ -409,7 +412,22 @@ impl super::Studio {
             .yield_to(masters.clone(), hold)
             .every_tick();
             let config = super::video_encoder_config(&start.video, export.frame_format(), self.fps);
-            let (encoder, _) = select::video_encoder(&adapters.video_encoders, &config)?;
+            let (encoder, chosen) = select::video_encoder(&adapters.video_encoders, &config)?;
+            let fps = 1.0 / self.fps.frame_duration().as_secs_f64();
+            let mut e = self.encode_of(
+                adapters,
+                crate::estimate::Use::Iso(crate::estimate::TrackRef {
+                    source: tap.source,
+                    role: IsoRole::Video,
+                }),
+                chosen.adapter.as_str(),
+                &start.video,
+                size,
+                fps,
+            );
+            e.worker = Some(encodes.len() % SHARED_ENGINE_PARTITIONS);
+            e.export_buffers = rbs_gpu::download::DOWNLOAD_BUFFERS as u32;
+            encodes.push(e);
             chains.push((export, encoder, size));
         }
         let sinks = if taps.is_empty() {
@@ -424,7 +442,11 @@ impl super::Studio {
         self.ensure_iso_video_partitions(taps.len())?;
         let (nodes, tracks, images, relinks) =
             self.install_video(&taps, chains, &image_taps, images, sinks.as_ref(), start)?;
-        self.iso_video = Some(IsoVideoRun { nodes, relinks });
+        self.iso_video = Some(IsoVideoRun {
+            nodes,
+            encodes,
+            relinks,
+        });
         skipped.sort_by_key(|s| s.source);
         Ok(IsoVideoStarted {
             tracks,

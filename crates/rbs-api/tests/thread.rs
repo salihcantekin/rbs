@@ -132,6 +132,8 @@ impl ControlTarget for Studio {
                 Ok(Response::RecordStarted(RecordStarted {
                     video_encoder: "Test".into(),
                     audio_encoder: None,
+                    estimate: None,
+                    skipped: vec![],
                 }))
             }
             Command::RecordStatus(_) => Ok(Response::RecordStatus(Snapshot {

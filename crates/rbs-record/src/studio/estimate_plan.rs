@@ -14,8 +14,11 @@ use crate::estimate::{
     VideoEncode,
 };
 use crate::iso::IsoRole;
-use crate::recording::{RecordAdapters, VideoSettings};
+use crate::recording::{AudioSettings, RecordAdapters, VideoSettings};
+
 use crate::select;
+
+use super::{OutputId, OutputSettings};
 
 use super::IsoVideoStart;
 use super::iso_video::SHARED_ENGINE_PARTITIONS;
@@ -64,20 +67,92 @@ fn declared(adapters: &RecordAdapters, id: &rbs_core::registry::AdapterId) -> De
     }
 }
 
+/// An output a start would add, for [`super::Studio::start_plan`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug)]
+pub struct PlannedOutput<'a> {
+    /// Its settings, as the start would pass them to `start_output`.
+    pub settings: &'a OutputSettings,
+    /// The video encoder the user picked, when one is: it is the only one tried.
+    pub encoder: Option<&'a str>,
+}
+
+impl<'a> PlannedOutput<'a> {
+    /// An output of `settings`, its encoder picked by `encoder` or by the selection.
+    pub fn new(settings: &'a OutputSettings, encoder: Option<&'a str>) -> Self {
+        Self { settings, encoder }
+    }
+}
+
+/// What a start would add to what runs, for [`super::Studio::start_plan`] (ADR-0087
+/// decision 1, spec `docs/specs/output-estimate.md#the-studios-plan`).
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
+pub struct StartPlanRequest<'a> {
+    /// The outputs the start adds (a recording; with `canvas: "all"` one per canvas).
+    pub outputs: Vec<PlannedOutput<'a>>,
+    /// The separate video files and image tracks of the main recording, with their
+    /// settings; `None` when the start writes no picture files.
+    pub separate: Option<&'a IsoVideoStart>,
+    /// The start writes the separate sound files of the sources marked for sound.
+    pub sound_files: bool,
+    /// Running outputs the start replaces (a recording that runs while the estimate is
+    /// asked for its next start): their chains are left out unless another output
+    /// uses them.
+    pub replacing: Vec<OutputId>,
+    /// The running separate files are left out (they belong to a replaced recording).
+    pub replacing_separate: bool,
+}
+
+/// Bytes per second of 24-bit PCM at the graph's format: the separate sound files.
+fn wav_bytes_per_second(format: rbs_core::media::AudioFormat) -> u64 {
+    u64::from(format.sample_rate.hz()) * format.channels.channels() as u64 * 3
+}
+
+/// Bytes per second of an audio encoder: the bit rate, or PCM at `bit_depth` (16 when
+/// unset) for a lossless one.
+fn audio_bytes_per_second(a: &AudioSettings, format: rbs_core::media::AudioFormat) -> u64 {
+    if a.bitrate_bps > 0 {
+        return a.bitrate_bps / 8;
+    }
+    let depth = u64::from(a.bit_depth.unwrap_or(16));
+    u64::from(format.sample_rate.hz()) * format.channels.channels() as u64 * depth / 8
+}
+
 impl super::Studio {
     /// What a start of the separate video files of `start` would run next to the
     /// outputs that already run, and what their adapters declare (ADR-0087 decision
-    /// 1). Reads only the studio's state and the registries' probe results: nothing
-    /// opens. The files go to the encoder the selection would most likely use (the
-    /// first candidate a running encoder uses, else the first candidate); marked sources
-    /// without a picture yet are planned at the canvas size.
+    /// 1). The same as [`Self::start_plan`] with only `start`'s files added.
     pub fn separate_video_plan(
         &self,
         adapters: &RecordAdapters,
         collection: &SceneCollection,
         start: &IsoVideoStart,
     ) -> (EstimatePlan, Vec<DeclaredAdapter>) {
+        let request = StartPlanRequest {
+            separate: Some(start),
+            ..StartPlanRequest::default()
+        };
+        self.start_plan(adapters, collection, &request)
+    }
+
+    /// The plan of a start (ADR-0087 decision 1): what runs now (encoder chains of
+    /// every canvas once, and the running separate files) plus what `request` adds,
+    /// and what their adapters declare. Reads only the studio's state and the
+    /// registries' probe results: nothing opens. An added output shares a running
+    /// chain when the start would (ADR-0047 decision 7); otherwise its video encoder
+    /// is the one the user picked, else the one the selection would most likely use
+    /// (the first candidate a running encoder uses, else the first candidate). The
+    /// separate video files go to that likely encoder; marked sources without a
+    /// picture yet are planned at the canvas size.
+    pub fn start_plan(
+        &self,
+        adapters: &RecordAdapters,
+        collection: &SceneCollection,
+        request: &StartPlanRequest<'_>,
+    ) -> (EstimatePlan, Vec<DeclaredAdapter>) {
         let fps = 1.0 / self.fps.frame_duration().as_secs_f64();
+        let graph_format = self.settings.audio_graph.format;
         let mut ids: Vec<rbs_core::registry::AdapterId> = Vec::new();
         let note = |ids: &mut Vec<rbs_core::registry::AdapterId>,
                     id: &rbs_core::registry::AdapterId| {
@@ -87,7 +162,11 @@ impl super::Studio {
         };
 
         let mut video = Vec::new();
-        for chain in self.chains.video.iter().flatten() {
+        for (slot, chain) in self.chains.video.iter().enumerate() {
+            let Some(chain) = chain else { continue };
+            if !self.slot_kept(slot, true, &request.replacing) {
+                continue;
+            }
             note(&mut ids, &chain.chosen.adapter);
             video.push(self.encode_of(
                 adapters,
@@ -98,98 +177,245 @@ impl super::Studio {
                 fps,
             ));
         }
-        let audio: Vec<AudioEncode> = self
+        let mut audio: Vec<AudioEncode> = self
             .chains
             .audio
             .iter()
-            .flatten()
+            .enumerate()
+            .filter(|(slot, _)| self.slot_kept(*slot, false, &request.replacing))
+            .filter_map(|(_, c)| c.as_ref())
             .map(|chain| AudioEncode {
                 used_by: Use::Recording,
-                bytes_per_second: chain.settings.bitrate_bps / 8,
+                bytes_per_second: audio_bytes_per_second(&chain.settings, graph_format),
             })
             .collect();
+        if !request.replacing_separate {
+            if let Some(run) = &self.iso_video {
+                for e in &run.encodes {
+                    if let Some(id) = adapters
+                        .video_encoders
+                        .ids()
+                        .find(|id| id.as_str() == e.adapter)
+                    {
+                        note(&mut ids, id);
+                    }
+                    video.push(e.clone());
+                }
+            }
+            if let Some(run) = &self.iso_audio {
+                audio.extend(run.encodes.iter().cloned());
+            }
+        }
 
-        let (width, height) = self.size;
-        let config = super::video_encoder_config(
-            &start.video,
-            VideoFormat::new(
-                Size::new(width, height),
-                start.video.format.pixel_format(),
-                start.video.color,
-            ),
-            self.fps,
-        );
-        let iso_adapter = select::likely_video_encoder(&adapters.video_encoders, &config, &ids);
-        if let Some(id) = &iso_adapter {
-            note(&mut ids, id);
+        for out in &request.outputs {
+            self.plan_output(
+                adapters, out, request, fps, &mut ids, &mut video, &mut audio,
+            );
         }
 
         let marked = crate::iso::plan(collection)
             .map(|p| p.tracks)
             .unwrap_or_default();
         let mut images = Vec::new();
-        let mut i = 0;
-        for t in &marked {
-            let track = TrackRef {
-                source: t.source,
-                role: t.role,
-            };
-            match t.role {
-                IsoRole::Image => images.push(track),
-                IsoRole::Video => {
-                    if let Some(id) = &iso_adapter {
-                        let size = self.picture_size(t.source).unwrap_or(self.size);
-                        let mut e = self.encode_of(
-                            adapters,
-                            Use::Iso(track),
-                            id.as_str(),
-                            &start.video,
-                            size,
-                            fps,
-                        );
-                        e.worker = Some(i % SHARED_ENGINE_PARTITIONS);
-                        e.export_buffers = rbs_gpu::download::DOWNLOAD_BUFFERS as u32;
-                        video.push(e);
-                        i += 1;
-                    }
-                }
-                IsoRole::Audio => {}
-            }
-        }
-        let video_template = iso_adapter.as_ref().map(|id| {
-            let mut e = self.encode_of(
-                adapters,
-                Use::Iso(TrackRef {
-                    source: rbs_scene::model::SourceId::from_raw(0),
-                    role: IsoRole::Video,
-                }),
-                id.as_str(),
+        let mut video_template = None;
+        if let Some(start) = request.separate {
+            let (width, height) = self.size;
+            let config = super::video_encoder_config(
                 &start.video,
-                self.size,
-                fps,
+                VideoFormat::new(
+                    Size::new(width, height),
+                    start.video.format.pixel_format(),
+                    start.video.color,
+                ),
+                self.fps,
             );
-            e.export_buffers = rbs_gpu::download::DOWNLOAD_BUFFERS as u32;
-            e
-        });
+            let iso_adapter = select::likely_video_encoder(&adapters.video_encoders, &config, &ids);
+            if let Some(id) = &iso_adapter {
+                note(&mut ids, id);
+            }
+            let mut i = 0;
+            for t in &marked {
+                let track = TrackRef {
+                    source: t.source,
+                    role: t.role,
+                };
+                match t.role {
+                    IsoRole::Image => images.push(track),
+                    IsoRole::Video => {
+                        if let Some(id) = &iso_adapter {
+                            let size = self.picture_size(t.source).unwrap_or(self.size);
+                            let mut e = self.encode_of(
+                                adapters,
+                                Use::Iso(track),
+                                id.as_str(),
+                                &start.video,
+                                size,
+                                fps,
+                            );
+                            e.worker = Some(i % SHARED_ENGINE_PARTITIONS);
+                            e.export_buffers = rbs_gpu::download::DOWNLOAD_BUFFERS as u32;
+                            video.push(e);
+                            i += 1;
+                        }
+                    }
+                    IsoRole::Audio => {}
+                }
+            }
+            video_template = iso_adapter.as_ref().map(|id| {
+                let mut e = self.encode_of(
+                    adapters,
+                    Use::Iso(TrackRef {
+                        source: rbs_scene::model::SourceId::from_raw(0),
+                        role: IsoRole::Video,
+                    }),
+                    id.as_str(),
+                    &start.video,
+                    self.size,
+                    fps,
+                );
+                e.export_buffers = rbs_gpu::download::DOWNLOAD_BUFFERS as u32;
+                e
+            });
+        }
+        let mut audio_template = None;
+        if request.sound_files {
+            let wav = wav_bytes_per_second(graph_format);
+            for t in marked.iter().filter(|t| t.role == IsoRole::Audio) {
+                audio.push(AudioEncode {
+                    used_by: Use::Iso(TrackRef {
+                        source: t.source,
+                        role: IsoRole::Audio,
+                    }),
+                    bytes_per_second: wav,
+                });
+            }
+            audio_template = Some(AudioEncode {
+                used_by: Use::Iso(TrackRef {
+                    source: rbs_scene::model::SourceId::from_raw(0),
+                    role: IsoRole::Audio,
+                }),
+                bytes_per_second: wav,
+            });
+        }
+        let active = if request.separate.is_some() || request.sound_files {
+            marked.len()
+        } else {
+            0
+        };
 
+        let give_way_share = request
+            .separate
+            .map_or(super::DEFAULT_GIVE_WAY_SHARE, |s| s.give_way_share);
         let plan = EstimatePlan {
             video,
             audio,
             images,
-            active_sources: u32::try_from(marked.len()).unwrap_or(u32::MAX),
+            active_sources: u32::try_from(active).unwrap_or(u32::MAX),
             inactive: Vec::new(),
             video_template,
-            audio_template: None,
+            audio_template,
             iso_workers: SHARED_ENGINE_PARTITIONS,
             tick: self.fps.frame_duration(),
-            give_way_share: start.give_way_share,
+            give_way_share,
             planned_duration: DEFAULT_PLANNED_DURATION,
         };
         let declared = ids.iter().map(|id| declared(adapters, id)).collect();
         (plan, declared)
     }
 
-    fn encode_of(
+    /// The running encoder chain in `slot` (video or audio) stays when a start
+    /// replaces `replacing`: some other output uses it, or no output does (it drains).
+    fn slot_kept(&self, slot: usize, video: bool, replacing: &[OutputId]) -> bool {
+        let users: Vec<&super::Attached> = self
+            .outputs
+            .iter()
+            .filter(|a| {
+                if video {
+                    a.video == Some(slot)
+                } else {
+                    a.audio == Some(slot)
+                }
+            })
+            .collect();
+        users.is_empty() || users.iter().any(|a| !replacing.contains(&a.id))
+    }
+
+    /// Adds what output `out` would open to `video` and `audio`.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_output(
+        &self,
+        adapters: &RecordAdapters,
+        out: &PlannedOutput<'_>,
+        request: &StartPlanRequest<'_>,
+        fps: f64,
+        ids: &mut Vec<rbs_core::registry::AdapterId>,
+        video: &mut Vec<VideoEncode>,
+        audio: &mut Vec<AudioEncode>,
+    ) {
+        let s = out.settings;
+        let canvas = s.canvas.unwrap_or(self.settings.canvas);
+        if let Some(v) = &s.video {
+            let canvas_size = self.canvas_size(canvas).unwrap_or(self.size);
+            let size = super::resolve_output_size(s.size, canvas_size).unwrap_or(canvas_size);
+            let config = super::video_encoder_config(
+                v,
+                VideoFormat::new(Size::new(size.0, size.1), v.format.pixel_format(), v.color),
+                self.fps,
+            );
+            let shared = self.chains.video.iter().enumerate().any(|(slot, c)| {
+                c.as_ref().is_some_and(|c| {
+                    self.slot_kept(slot, true, &request.replacing)
+                        && c.canvas == canvas
+                        && c.settings == *v
+                        && c.size == size
+                        && c.end.requested().is_none()
+                        && select::is_video_candidate(
+                            &adapters.video_encoders,
+                            &config,
+                            &c.chosen.adapter,
+                        )
+                })
+            });
+            if !shared {
+                let adapter = match out.encoder {
+                    Some(picked) => adapters
+                        .video_encoders
+                        .ids()
+                        .find(|id| id.as_str() == picked)
+                        .cloned(),
+                    None => select::likely_video_encoder(&adapters.video_encoders, &config, ids),
+                };
+                if let Some(id) = adapter {
+                    if !ids.contains(&id) {
+                        ids.push(id.clone());
+                    }
+                    video.push(self.encode_of(adapters, Use::Recording, id.as_str(), v, size, fps));
+                }
+            }
+        }
+        if let Some(a) = &s.audio {
+            let config = a.encoder_config(self.settings.audio_graph.format);
+            let shared = self.chains.audio.iter().enumerate().any(|(slot, c)| {
+                c.as_ref().is_some_and(|c| {
+                    self.slot_kept(slot, false, &request.replacing)
+                        && c.settings == *a
+                        && select::is_audio_candidate(
+                            &adapters.audio_encoders,
+                            &config,
+                            &c.chosen.adapter,
+                        )
+                })
+            });
+            if !shared {
+                audio.push(AudioEncode {
+                    used_by: Use::Recording,
+                    bytes_per_second: audio_bytes_per_second(a, self.settings.audio_graph.format),
+                });
+            }
+        }
+    }
+
+    pub(super) fn encode_of(
         &self,
         adapters: &RecordAdapters,
         used_by: Use,

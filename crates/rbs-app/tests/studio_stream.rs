@@ -1645,6 +1645,11 @@ fn all_canvases_start_and_stop_together_and_report_each_output() {
         [pair("main", "started"), pair("vertical", "started")],
         "{rec}"
     );
+    // Each started entry carries the estimate of what now runs (protocol 1.53).
+    for entry in 0..2 {
+        let level = &rec["result"]["outputs"][entry]["estimate"]["level"];
+        assert!(level == "fits" || level == "heavy", "{rec}");
+    }
     let again = c.call("record.start", all.clone());
     assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
     let status = c.call("record.status", serde_json::json!({"canvas": "vertical"}));

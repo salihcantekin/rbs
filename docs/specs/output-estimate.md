@@ -1,6 +1,6 @@
 # Output cost estimate
 
-Status: Draft. Decision: [ADR-0087](../adr/0087-output-cost-estimate-and-hardware-limits.md) (Accepted). This spec covers the estimate function (step A), the disk probe and the `calibration.toml` file (step B); the calibration run, the control API and the UI are later steps, listed at the end.
+Status: Draft. Decision: [ADR-0087](../adr/0087-output-cost-estimate-and-hardware-limits.md) (Accepted). This spec covers the estimate function (step A), the disk probe and the `calibration.toml` file (step B), the plan of a start and `record.estimate` (step C, control API 1.53); the start gate, the calibration run and the UI are later steps, listed at the end.
 
 ## Purpose
 
@@ -11,7 +11,8 @@ Say before a start what it will cost on this computer, which resource sets the l
 | Part | Crate | Notes |
 | --- | --- | --- |
 | `estimate()`, `EstimatePlan`, `Limits`, `Estimate` | `rbs-record` (`estimate`) | Pure: no clock read, no OS call, no thread, no adapter. Tested with synthetic plans |
-| `Studio::separate_video_plan` | `rbs-record` (`studio::estimate_plan`) | The plan of a start of separate video files next to what runs, and the adapters' declared capabilities; reads state only, opens nothing |
+| `Studio::start_plan`, `Studio::separate_video_plan` | `rbs-record` (`studio::estimate_plan`) | The plan of a start next to what runs, and the adapters' declared capabilities; reads state only, opens nothing |
+| `record.estimate` and the host's limits | `rbs-app` (`studio_host`) | Control API 1.53; `calibration.toml` and the disk probe keyed on the profile's recording folder |
 | `separate_video_limit` in the host | `rbs-app` (`studio_host`) | The desktop app's and the API's picture files (1.52) |
 | `DiskProbe` (free space per folder, short-lived thread, cache) | `rbs-record` (`estimate`) | Takes the caller's master-clock time and a `ReadFreeSpace` function (`rbs-system-probe` in the app, a fake in tests) |
 | `calibration.toml` (`CalibrationFile`, `load`, `save`, `for_estimate`, `prune`) | `rbs-app` (`calibration_file`) | Beside `app.toml`, outside the `UserData` library |
@@ -64,6 +65,7 @@ Every row has a resource, an optional scope (the adapter id, or `video`/`audio` 
 - Rate: `fits` when need < 0.7 × limit, `heavy` when 0.7 × limit ≤ need ≤ limit, `over` when need > limit.
 - Disk space: as a rate, but `over` is reported as `heavy`; a disk with no room for the start itself is found when files open.
 - Unknown limit: level `unknown`, never `over`.
+- `Estimate::gate_level` is the same level computed without the `disk_space` row: what a start's gate judges (ADR-0087 decision 2: disk space never refuses a start).
 - The plan's level is the worst of `fits`, `heavy` and `over`; the resources with an unknown limit are listed beside it in `unknown`. A track that falls to a CPU encoder raises the plan to at least `heavy`. A marked source that cannot be kept active makes it `over`.
 
 ## Reasons
@@ -91,9 +93,11 @@ Each separate track lists what it adds per resource: a video track one session, 
 
 ## The studio's plan
 
-`Studio::separate_video_plan(adapters, collection, start)` builds the `EstimatePlan` of a start of separate video files (`IsoVideoStart`) next to what runs now, and the `DeclaredAdapter` list of the adapters it names. It reads the studio's state and the registries' probe results only; nothing opens.
+`Studio::start_plan(adapters, collection, request)` builds the `EstimatePlan` of a start (`StartPlanRequest`) next to what runs now, and the `DeclaredAdapter` list of the adapters it names. `Studio::separate_video_plan(adapters, collection, start)` is the same with only the separate video files of `start` added. It reads the studio's state and the registries' probe results only; nothing opens.
 
-- Every running video encoder chain is one `VideoEncode` (`Recording`), at the size it was opened with and the canvas frame rate; every running audio chain one `AudioEncode`.
+- Every running video encoder chain is one `VideoEncode` (`Recording`), at the size it was opened with and the canvas frame rate; every running audio chain one `AudioEncode`. Chains used only by the outputs in `request.replacing` are left out. The running separate files are listed as they opened (their encoder, size and worker), unless `request.replacing_separate`.
+- Each added output (`PlannedOutput`: its `OutputSettings` and the encoder the user picked, if any) adds nothing when the start would share a running chain (same canvas, settings and resolved size, an adapter that is a candidate, ADR-0047 decision 7); otherwise one `VideoEncode` (`Recording`) on the picked encoder, else the likely one, and one `AudioEncode` at its bit rate (PCM at its bit depth for a lossless one).
+- With `request.sound_files`, each source marked for sound is one `AudioEncode` (`Iso`) of 24-bit PCM at the graph's format, and the audio template is one more.
 - The files' encoder is the one the selection would most likely use for the start's settings at the canvas size: the first candidate in registry order that a running chain already uses (it is known to open), else the first candidate. The real selection passes over an encoder that refuses to open, so this is a best guess.
 - Each source marked for video (`iso::plan`) is one `VideoEncode` (`Iso`) at its picture size, or the canvas size before it has a picture, on the shared engine workers in turn, holding `DOWNLOAD_BUFFERS` export buffers. Image tracks are listed. The template is one more such file at the canvas size.
 - Bytes per second: the bit rate over 8 (VBR: the target); constant quality is planned at 0.1 bit per pixel per frame.
@@ -118,7 +122,7 @@ Each separate track lists what it adds per resource: a video track one session, 
 
 ## calibration.toml
 
-A per-computer file beside `app.toml` in the config directory, outside the `UserData` library: never part of a profile or collection, never exported, imported or synced (`user-data.md`). Read once at app start and kept until a calibration rewrites it (the wiring comes with step C).
+A per-computer file beside `app.toml` in the config directory, outside the `UserData` library: never part of a profile or collection, never exported, imported or synced (`user-data.md`). Read once at app start, with `app.toml`, before the control thread serves anything (`HostConfig::calibration`), and kept until a calibration rewrites it. The estimate uses the entries of the profile's recording folder, never the take folder, which is new on every start; the disk probe reads the same folder.
 
 ```toml
 format = 1
@@ -160,7 +164,7 @@ Nothing runs unless the caller asks. The function is called by the control threa
 
 ## Later steps
 
-- C: the desktop app's and the API's picture files take their limit from the estimate (above, done). Next: reading `calibration.toml` at app start, the disk probe in the host, `record.estimate`, the start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, and the plan built by the host.
+- C: the desktop app's and the API's picture files take their limit from the estimate (C1, done); `calibration.toml` read at app start, the disk probe in the host, the plan of a whole start and `record.estimate` (C2a, control API 1.53, done). Next (C2b, a later minor): the start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, the per-file open rules and the manifest's `[[skipped]]`.
 - D: *Test this computer* (`calibration.run`, `calibration.cancel`, `calibration.status`, topic `calibration.state`).
 - E: the render partition's previous-tick time published for the estimate (hot path: measurements and sign-off).
 - F: the meter, the sentence, the button and the start confirmation in the desktop app.

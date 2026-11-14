@@ -62,6 +62,7 @@ use crate::recording::{
 use crate::select::{self, Chosen};
 
 mod estimate_plan;
+pub use estimate_plan::{PlannedOutput, StartPlanRequest};
 mod iso_audio;
 mod iso_video;
 mod loudness;
