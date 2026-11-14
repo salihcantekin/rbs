@@ -1048,6 +1048,10 @@ pub enum Command {
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// output profile saved them. Sent at start and after each change.
     SetVerticalFlags(VerticalFlags),
+    /// Whether Record and `record.start` without `iso` write the separate files
+    /// (Settings › Recording › Separate files, ADR-0086 decision 4). Sent at start
+    /// and after each change.
+    SetSeparateFiles(bool),
     /// The vertical canvas's panel shows (`true`) or not (ADR-0093 decision 7): its
     /// picture runs only while it shows, so a closed panel costs nothing. Kept while
     /// there is no vertical canvas, for the next one.
@@ -2481,6 +2485,8 @@ struct Host {
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// UI last sent them.
     vertical_flags: VerticalFlags,
+    /// The output profile's Separate files switch (ADR-0086 decision 4).
+    separate_files: bool,
     /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
     vertical_shared: Vec<SceneId>,
     vertical_sent: Option<Option<VerticalState>>,
@@ -2990,6 +2996,7 @@ fn start(
         vertical: None,
         vertical_restore_error: None,
         vertical_flags: VerticalFlags::default(),
+        separate_files: true,
         vertical_shared: Vec::new(),
         vertical_sent: None,
         master_sent: None,
@@ -3663,6 +3670,7 @@ impl Host {
                     self.settings_changed();
                 }
             }
+            Command::SetSeparateFiles(on) => self.separate_files = on,
             Command::SetVerticalPicture(on) => {
                 // Turning the picture off cannot leave anything to report: the node
                 // goes with the next update at the latest.
@@ -4774,9 +4782,14 @@ impl Host {
                 f.tracks
                     .iter()
                     .filter_map(|t| {
+                        let what = match t.role {
+                            api::TrackRole::Video => "video",
+                            api::TrackRole::Image => "images",
+                            _ => "sound",
+                        };
                         self.collection
                             .source(SourceId::from_raw(t.source))
-                            .map(|s| s.name.clone())
+                            .map(|s| format!("{} ({what})", s.name))
                     })
                     .collect()
             })
@@ -5142,7 +5155,7 @@ impl Host {
             audio_bitrate_bps: start.audio_bitrate_bps,
             bit_depth: start.bit_depth,
             size: start.size,
-            iso: true,
+            iso: self.separate_files,
         })
     }
 
@@ -10137,9 +10150,13 @@ impl ApiTarget<'_> {
                     Some(one) => {
                         let c = host.api_canvas_of(Some(one))?;
                         let path = host.recording_file(c);
-                        self.record(c, path, false, p.iso.unwrap_or(true))
+                        let iso = p.iso.unwrap_or(host.separate_files);
+                        self.record(c, path, false, iso)
                     }
-                    None => self.start_all(api::OutputKind::Record, p.iso.unwrap_or(true)),
+                    None => {
+                        let iso = p.iso.unwrap_or(host.separate_files);
+                        self.start_all(api::OutputKind::Record, iso)
+                    }
                 }
             }
             C::RecordStartToFile(p) => {

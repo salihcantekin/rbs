@@ -23,7 +23,7 @@ export struct FilterFieldData { label: string, help: string, log: bool, options:
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterLevels { input: float, reduction: float }
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool, record-choice: int, record-form: int }
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
 // by name; `in-globals`: it is a global source too; `places`: how many items place it.
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
@@ -225,10 +225,22 @@ export global Studio {
     // Lock a source so the picture panel does not move it (ADR-0059).
     callback set-source-locked(int /* id */, bool /* locked */);
     // A source's sound: mute, and the volume as a fader position from 0 to 1.
-    // Separate files (ADR-0086): mark a source to record its sound as its own file.
+    // Separate files (ADR-0086): mark a source's main feed (a picture source's picture,
+    // anything else's sound) to record as its own file.
     callback set-source-record-separately(int, bool);
+    // The form of a marked picture (ADR-0117): for a still source 0 Automatic (image),
+    // 1 Image, 2 Video; for a media file 0 Picture and sound, 1 Picture, 2 Sound.
+    callback set-source-record-form(int, int);
     // The marked sources by name, for Settings › Recording; empty when none.
     in property <string> rec-separate-names;
+    // What they write ("1 video · 1 image · 1 sound"), how many video files that is,
+    // and how many a take writes (ADR-0087 interim limit).
+    in property <string> rec-separate-counts;
+    in property <int> rec-separate-videos;
+    in property <int> rec-separate-limit;
+    // The output profile's Separate files switch (ADR-0086 decision 4).
+    in property <bool> rec-separate-on;
+    callback set-separate-files(bool);
     // The running recording's separate files in words, for the Outputs card; empty
     // when it writes one file.
     in property <string> out-separate;
@@ -3875,8 +3887,9 @@ component AudioFields inherits VerticalLayout {
             }
         }
     }
-    // Separate files (ADR-0086): 1.46 writes sound only, so the row is on the Audio tab.
-    Section {
+    // Separate files (ADR-0086): a sound source's row is on the Audio tab; a picture
+    // source's is below the tabs (SourceProperties).
+    if !data.picture: Section {
         title: @tr("Recording");
         id: "properties.recording";
         hint: @tr("Writes this source's sound to its own WAV file, in a folder with the recording. Changes apply to the next recording.");
@@ -4256,6 +4269,47 @@ component SourceProperties inherits VerticalLayout {
             }
         }
     }
+    // Separate files of a picture source (ADR-0086 step 3.5, ADR-0117): one switch, and
+    // for a still source or a media file the form once it is on.
+    if data.picture: Section {
+        title: @tr("Recording");
+        id: "properties.picture-recording";
+        hint: data.record-choice == 1
+            ? @tr("Writes this source's picture as PNG images in the recording's folder, a new image each time it changes. Video writes a video file instead. Changes apply to the next recording.")
+            : data.record-choice == 2
+            ? @tr("Writes this file's picture as a video file, its sound as a WAV file, or both, in the recording's folder. Changes apply to the next recording.")
+            : @tr("Writes this source's picture to its own video file in the recording's folder, without its filters. Up to 3 video files are written. Changes apply to the next recording.");
+        Toggle {
+            label: @tr("Record {} separately", data.name);
+            text: @tr("Record separately");
+            checked: data.record-separately;
+            toggled(v) => { Studio.set-source-record-separately(data.id, v); }
+        }
+        if data.record-separately && data.record-choice == 1: Field {
+            label: @tr("Recorded as");
+            Select {
+                label: @tr("Recorded form of {}", data.name);
+                options: [@tr("Automatic (image)"), @tr("Image"), @tr("Video")];
+                index: data.record-form;
+                selected(i) => { Studio.set-source-record-form(data.id, i); }
+            }
+        }
+        if data.record-separately && data.record-choice == 2: Field {
+            label: @tr("Recorded as");
+            Select {
+                label: @tr("Recorded feeds of {}", data.name);
+                options: [@tr("Picture and sound"), @tr("Picture"), @tr("Sound")];
+                index: data.record-form;
+                selected(i) => { Studio.set-source-record-form(data.id, i); }
+            }
+        }
+        if Studio.rec-state == 2 && data.record-separately: Text {
+            text: @tr("Applies to the next recording.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+    }
 }
 
 // The selected source's properties (mockup E): its icon, name and type, its name as a
@@ -4391,20 +4445,65 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
         }
-        // Separate files (ADR-0086). No switch yet: the profile setting comes with
-        // the `recording.iso` section; marks are set on each source.
+        // Separate files (ADR-0086 decision 4, step 3.5): the profile's switch, then
+        // what the marked sources write. Marks are set on each source in Properties.
         SettingsCard {
             title: @tr("Separate files");
             id: "settings.recording.separate";
-            description: @tr("Sources marked Record separately also write their sound to their own file.");
+            description: @tr("Sources marked Record separately also write their own files, in a folder with the recording.");
+            SettingRow {
+                label: @tr("Record separate files");
+                help: @tr("Off: Record writes one file even when sources are marked.");
+                Toggle {
+                    label: @tr("Record separate files");
+                    checked: Studio.rec-separate-on;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-separate-files(on); }
+                }
+            }
+            SettingRow {
+                label: @tr("Sources");
+                help: Studio.rec-separate-names == "" ? @tr("None yet. Turn on Record separately in a source's Properties.") : Studio.rec-separate-names;
+                hint: @tr("Only the main canvas's recording writes them.");
+                Text {
+                    text: Studio.rec-separate-counts == "" ? @tr("None") : Studio.rec-separate-counts;
+                    color: Studio.rec-separate-counts == "" ? Theme.text-secondary : Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            SettingRow {
+                label: @tr("Video files");
+                help: @tr("Other encoders for these files come in a later version.");
+                Text {
+                    text: @tr("Same encoder as the recording");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            SettingRow {
+                label: @tr("Sound files");
+                Text {
+                    text: @tr("WAV, 24-bit");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
             SettingRow {
                 divider: false;
-                label: @tr("Sources");
-                help: Studio.rec-separate-names == "" ? @tr("None yet. Turn on Record separately in a source's Audio tab.") : @tr("Each is a 24-bit WAV file beside master in a folder named like the recording.");
-                hint: @tr("Only the main canvas's recording writes them. Picture files and the choice of format come in a later version.");
+                label: @tr("Limit");
+                help-is-warning: Studio.rec-separate-videos > Studio.rec-separate-limit;
+                help: Studio.rec-separate-videos > Studio.rec-separate-limit
+                    ? @tr("{} video sources are marked. The rest are skipped, in source order.", Studio.rec-separate-videos)
+                    : @tr("More video files make the recording drop frames. Images and sound do not count.");
                 Text {
-                    text: Studio.rec-separate-names == "" ? @tr("None") : Studio.rec-separate-names;
-                    color: Studio.rec-separate-names == "" ? Theme.text-secondary : Theme.text-primary;
+                    text: @tr("Up to {} video files", Studio.rec-separate-limit);
+                    color: Theme.text-secondary;
                     font-size: Tokens.type-body-size;
                     vertical-alignment: center;
                     overflow: elide;
