@@ -1,4 +1,4 @@
-//! The loudness meter through the host and control API 1.51 (ADR-0092 stage 1):
+//! The loudness meter through the host and control API 1.47 (ADR-0092 stage 1):
 //! `loudness.set_enabled` starts and stops it, `loudness.status` reads it and
 //! `loudness.reset` restarts the measurement, and the values without data are left
 //! out. Reference adapters, an engine on a `TestClock`; a bound only as a hang guard

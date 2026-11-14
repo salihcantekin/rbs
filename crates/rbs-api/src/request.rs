@@ -544,7 +544,7 @@ pub struct SetMonitorSolo {
     pub sources: Vec<u32>,
 }
 
-/// `loudness.set_enabled` (protocol 1.51, ADR-0092): starts or stops the main canvas's
+/// `loudness.set_enabled` (protocol 1.47, ADR-0092): starts or stops the main canvas's
 /// loudness meter. Session state: a restart of the app starts with it off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1232,11 +1232,11 @@ pub enum Command {
     MonitorSetVolume(SetMonitorVolume),
     /// `monitor.set_solo` (protocol 1.30).
     MonitorSetSolo(SetMonitorSolo),
-    /// `loudness.status` (protocol 1.51, ADR-0092).
+    /// `loudness.status` (protocol 1.47, ADR-0092).
     LoudnessStatus,
-    /// `loudness.set_enabled` (protocol 1.51).
+    /// `loudness.set_enabled` (protocol 1.47).
     LoudnessSetEnabled(SetLoudnessEnabled),
-    /// `loudness.reset` (protocol 1.51).
+    /// `loudness.reset` (protocol 1.47).
     LoudnessReset,
     /// `replay.arm` (protocol 1.27).
     ReplayArm,
@@ -2360,7 +2360,7 @@ pub enum Response {
     MonitorStatus(Snapshot<MonitorStatus>),
     /// `monitor.devices` (protocol 1.30).
     MonitorDevices(MonitorDeviceList),
-    /// `loudness.status` (protocol 1.51).
+    /// `loudness.status` (protocol 1.47).
     LoudnessStatus(LoudnessStatus),
     /// `settings.get`, `settings.set`.
     Settings(Snapshot<Settings>),

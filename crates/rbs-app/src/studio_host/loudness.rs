@@ -1,5 +1,5 @@
 //! The loudness meter of the main canvas's mix (ADR-0092 stage 1; control API
-//! `loudness.*`, protocol 1.51).
+//! `loudness.*`, protocol 1.47).
 //!
 //! Whether it runs is session state: off when the app starts, on after
 //! `loudness.set_enabled`, and started again in a new studio (a collection or canvas

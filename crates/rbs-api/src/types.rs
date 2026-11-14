@@ -220,7 +220,7 @@ impl MonitorMode {
     }
 }
 
-/// `loudness.status` (protocol 1.51, ADR-0092 stage 1): the loudness of the main
+/// `loudness.status` (protocol 1.47, ADR-0092 stage 1): the loudness of the main
 /// canvas's mix after ITU-R BS.1770-4 and EBU R 128. Each value is `null` while it has
 /// no data: the meter is off, its window has not filled since it started or was
 /// reset, or the programme so far is below the -70 LUFS gate.

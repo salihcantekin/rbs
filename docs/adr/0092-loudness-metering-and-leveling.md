@@ -1,6 +1,6 @@
 # ADR-0092: Loudness: BS.1770 metering first, then a slow leveler, and gain advice for editing
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-09
 - Deciders: Salih (owner)
 - Builds on: [ADR-0037](0037-audio-graph.md), [ADR-0081](0081-master-strip-in-the-mixer.md), [ADR-0082](0082-audio-filter-chains-on-sources.md), [ADR-0086](0086-recording-sources-separately-iso.md), [ADR-0089](0089-recording-markers-and-editor-project-export.md), [ADR-0091](0091-per-scene-audio-levels.md)
@@ -58,6 +58,6 @@ Facts: the master volume and mute are the last stage of the mix (ADR-0081); filt
 
 - 2026-11-09, independent AI session (round 1, reviewing only the ADRs, specs and code): changes requested. Concerns covered contract details, claims about existing code, hot-path and zero-cost rules, and number allocation across these ADRs; each was resolved in the text above (the numbers of protocol minors and scene formats are now assigned at merge time, not claimed by ADRs).
 - 2026-11-14, independent AI session (round 2, a fresh reviewer given only the ADR, the specs it names, the related ADRs and the code): changes requested, 3 blocking, 7 should-fix, 4 nits. Blocking: the meter was described both as a chain filter and as a parallel tap; the tap read the mixer output, before a future master chain, which would break ADR-0081 decision 3; integrated loudness and range need unbounded history while "nothing allocates". Should-fix: the LRA and true-peak contract and tolerances; the oversampling factor and K-weighting derivation; the master chain's data model; the control API for stage 1 (no master row in `audio.levels`, no API twin of *Show loudness*); stage 2 gated on ADR-0086, which is Accepted; the leveler's *Speed* defined two ways; the hot-path ceiling deferred. Nits: "per output tap", platform scope, the mono rule, when integrated loudness restarts. Each was resolved in the text above by the author's session (decisions 1 to 6a and 8 to 10).
-- Stage 1 was implemented on a branch alongside this revision (BS.1770 meter, tap, `loudness.*`), to be merged only after this ADR is accepted.
+- Stage 1 was implemented on a branch alongside this revision (BS.1770 meter, tap, `loudness.*`), merged after this ADR was accepted.
 - 2026-11-14, independent AI session (round 3, a different fresh reviewer verifying the revision): approve with changes. All round-2 findings resolved (the master chain's data model left to the stage-3 PR, acceptable). New: the conformance case list overclaimed; *Measure on* contradicted the recording profile setting; where the leveler's controls are edited; the master-filter "dip" claim was unsupported; stale text in Alternatives; "from 192 kHz"; what *Speed* smooths. Each was fixed in the text above. On acceptance, a `## Review` note on ADR-0081 points to the amendment of its decision 3 here.
-- The owner's approval is still needed before the status can become Accepted (ADR-0014).
+- 2026-11-14: Salih (owner) accepted the ADR and signed off stage 1's hot-path change (P15); stage 1 merged as control API 1.47.
