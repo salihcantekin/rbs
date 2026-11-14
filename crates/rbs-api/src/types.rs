@@ -700,6 +700,8 @@ pub enum Container {
     Wav,
     /// FLAC (`.flac`): the mix, lossless, with no picture (protocol 1.43).
     Flac,
+    /// QuickTime (`.mov`), written fragmented like MP4 (protocol 1.51, ADR-0085).
+    Mov,
 }
 
 /// How the encoder spends bits.

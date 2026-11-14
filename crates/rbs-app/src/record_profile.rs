@@ -399,11 +399,19 @@ pub enum Format {
     Wav,
     /// FLAC (`.flac`): the mix, lossless, with no picture (ADR-0085).
     Flac,
+    /// QuickTime (`.mov`, ADR-0085), written fragmented like MP4: survives a crash.
+    Mov,
 }
 
 impl Format {
     /// All of them, in the order the UI lists them.
-    pub const ALL: [Format; 4] = [Format::Mkv, Format::Mp4, Format::Wav, Format::Flac];
+    pub const ALL: [Format; 5] = [
+        Format::Mkv,
+        Format::Mp4,
+        Format::Mov,
+        Format::Wav,
+        Format::Flac,
+    ];
 
     /// The container.
     pub fn container(self) -> ContainerId {
@@ -412,6 +420,7 @@ impl Format {
             Format::Mp4 => ContainerId::Mp4Fragmented,
             Format::Wav => ContainerId::Wav,
             Format::Flac => ContainerId::Flac,
+            Format::Mov => ContainerId::Mov,
         }
     }
 
@@ -422,6 +431,7 @@ impl Format {
             Format::Mp4 => "mp4",
             Format::Wav => "wav",
             Format::Flac => "flac",
+            Format::Mov => "mov",
         }
     }
 
@@ -432,16 +442,17 @@ impl Format {
             Format::Mp4 => "MP4",
             Format::Wav => "WAV",
             Format::Flac => "FLAC",
+            Format::Mov => "MOV",
         }
     }
 
-    /// WAV and FLAC are one audio file of the mix. MKV and MP4 carry a picture.
+    /// WAV and FLAC are one audio file of the mix. MKV, MP4 and MOV carry a picture.
     pub fn is_audio_only(self) -> bool {
         matches!(self, Format::Wav | Format::Flac)
     }
 
     /// Video containers, in the order the container menu lists them.
-    pub const VIDEO: [Format; 2] = [Format::Mkv, Format::Mp4];
+    pub const VIDEO: [Format; 3] = [Format::Mkv, Format::Mp4, Format::Mov];
 
     /// Audio containers, in the order the container menu lists them.
     pub const AUDIO: [Format; 2] = [Format::Wav, Format::Flac];
@@ -1078,6 +1089,7 @@ impl RecordProfile {
                 Format::Mp4 => api::Container::Mp4,
                 Format::Wav => api::Container::Wav,
                 Format::Flac => api::Container::Flac,
+                Format::Mov => api::Container::Mov,
             },
             encoder: self.encoder.clone(),
             video_codec: match self.video_codec {
@@ -1142,6 +1154,7 @@ impl RecordProfile {
                 api::Container::Mp4 => Format::Mp4,
                 api::Container::Wav => Format::Wav,
                 api::Container::Flac => Format::Flac,
+                api::Container::Mov => Format::Mov,
             },
             video_format: Format::Mkv,
             audio_format: Format::Wav,
@@ -1631,6 +1644,11 @@ mod tests {
         );
         assert_eq!(Format::Mkv.container(), ContainerId::Matroska);
         assert_eq!(Format::Mp4.container(), ContainerId::Mp4Fragmented);
+        assert_eq!(Format::Mov.container(), ContainerId::Mov);
+        assert_eq!(Format::Mov.extension(), "mov");
+        assert!(!Format::Mov.is_audio_only());
+        assert_eq!(Format::Mov.category(), &Format::VIDEO);
+        assert_eq!(Format::Mov.category_index(), 2);
         p.format = Format::Wav;
         p.bit_depth = 24;
         p.video_kbps = 1;
