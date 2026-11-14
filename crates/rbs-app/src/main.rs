@@ -3286,7 +3286,7 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 24] = [
+const SETTINGS_SECTIONS: [&str; 25] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.appearance.themes",
@@ -3295,6 +3295,7 @@ const SETTINGS_SECTIONS: [&str; 24] = [
     "settings.general.glide",
     "settings.general.studio",
     "settings.recording.files",
+    "settings.recording.separate",
     "settings.recording.encoding",
     "settings.recording.replay",
     "settings.remote.access-tokens",
@@ -3590,6 +3591,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_source_muted, |app, id: i32, muted: bool| {
         app.studio.set_source_muted(id, muted);
     });
+    on!(
+        on_set_source_record_separately,
+        |app, id: i32, enabled: bool| {
+            app.studio.set_source_record_separately(id, enabled);
+        }
+    );
     on!(on_set_source_mixer_hidden, |app, id: i32, hidden: bool| {
         app.studio.set_source_mixer_hidden(id, hidden);
     });

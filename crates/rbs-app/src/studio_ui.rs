@@ -409,6 +409,10 @@ pub struct StudioUi {
     pub st_state: i32,
     /// The file being recorded has no picture. Set when recording starts.
     rec_file_audio: bool,
+    /// The sources the running recording writes as files of their own (ADR-0086).
+    rec_separate: Vec<String>,
+    /// The sources marked to record separately, by name, for Settings › Recording.
+    separate_names: String,
     /// The vertical canvas's recording and stream (ADR-0093 decision 6): the frame's
     /// Record and Go live menus start and stop them, and an output profile switch
     /// waits for them as for the main ones.
@@ -586,6 +590,8 @@ impl StudioUi {
             next_redo: None,
             rec_state: rec_state::OFF,
             rec_file_audio: false,
+            rec_separate: Vec::new(),
+            separate_names: String::new(),
             rec_file: None,
             rec_note: String::new(),
             rec_note_bad: false,
@@ -715,6 +721,8 @@ impl StudioUi {
         g.set_collection_name(self.user.collection_name.as_str().into());
         g.set_switching(self.switching.is_some());
         g.set_rec_state(self.rec_state);
+        g.set_rec_separate_names(self.separate_names.as_str().into());
+        g.set_out_separate(separate_line(&self.rec_separate).into());
         g.set_rec_file(
             self.rec_file
                 .as_ref()
@@ -1836,6 +1844,15 @@ impl StudioUi {
             op: TransformOp::SetAngle(degrees),
             gesture: gesture.max(0) as u64,
             canvas: self.props_target(id),
+        });
+    }
+
+    /// Mark a source to record its sound as a file of its own, or clear the mark
+    /// (Properties' Record separately, ADR-0086).
+    pub fn set_source_record_separately(&mut self, id: i32, enabled: bool) {
+        self.send(Command::SetRecordSeparately {
+            id: SourceId::from_raw(id as u32),
+            enabled,
         });
     }
 
@@ -4916,6 +4933,13 @@ impl StudioUi {
                     self.vedit.reset();
                     self.refresh_marks();
                 }
+                self.separate_names = list
+                    .sources
+                    .iter()
+                    .filter(|s| s.record_separately)
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 self.scene_list = Some(list);
                 self.refresh_existing();
                 self.refresh_global_existing();
@@ -5138,6 +5162,7 @@ impl StudioUi {
                 path,
                 video_encoder,
                 audio_encoder,
+                separate,
             } => {
                 log(&format!(
                     "recording to {} (video: {video_encoder}, audio: {})",
@@ -5146,6 +5171,7 @@ impl StudioUi {
                 ));
                 self.rec_state = rec_state::RECORDING;
                 self.rec_file = Some((path, Instant::now()));
+                self.rec_separate = separate;
                 self.rec_file_audio = self.profile.format.is_audio_only();
                 if !self.rec_file_audio {
                     self.set_note(format!("Video encoder: {video_encoder}"), false);
@@ -5160,6 +5186,7 @@ impl StudioUi {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 self.rec_file_audio = false;
+                self.rec_separate.clear();
                 self.set_note(format!("The recording did not start: {why}"), true);
             }
             RecordingUpdate::Stopped {
@@ -5172,6 +5199,7 @@ impl StudioUi {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 self.rec_file_audio = false;
+                self.rec_separate.clear();
                 log(&format!(
                     "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
                 ));
@@ -5296,6 +5324,7 @@ impl StudioUi {
                     filters,
                     selected_filter,
                     sync_offset: r.audio.sync_offset_ms,
+                    record_separately: r.record_separately,
                     global: r.global,
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
@@ -6454,10 +6483,30 @@ fn properties_source(selected: i32, remembered: i32, ids: &[i32]) -> i32 {
     ids.first().copied().unwrap_or(-1)
 }
 
+/// The Outputs card's line for the files a recording writes beside its master
+/// (ADR-0086): empty when there are none.
+fn separate_line(names: &[String]) -> String {
+    match names.len() {
+        0 => String::new(),
+        1 => format!("1 sound file: {}", names[0]),
+        n => format!("{n} sound files: {}", names.join(", ")),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_outputs_card_names_the_separate_files() {
+        assert_eq!(separate_line(&[]), "");
+        assert_eq!(separate_line(&["Mic".into()]), "1 sound file: Mic");
+        assert_eq!(
+            separate_line(&["Mic".into(), "Music".into()]),
+            "2 sound files: Mic, Music"
+        );
+    }
 
     fn window(name: &str, app: Option<&str>) -> Target {
         Target {
@@ -6824,6 +6873,7 @@ mod tests {
             path: path.clone(),
             video_encoder: "x".into(),
             audio_encoder: None,
+            separate: Vec::new(),
         }));
         ui.apply(Update::Recording(RecordingUpdate::NotStarted(
             "A recording is already running.".into(),
@@ -7488,6 +7538,7 @@ mod tests {
             path: d.join("v.mkv"),
             video_encoder: "x".into(),
             audio_encoder: None,
+            separate: Vec::new(),
         }));
         assert_eq!(ui.vertical_rec, VerticalOut::On);
         // Each running vertical output has its chip (ADR-0111 decision 6): the stream
