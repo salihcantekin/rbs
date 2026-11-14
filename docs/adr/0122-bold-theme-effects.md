@@ -17,6 +17,7 @@
     - **Decision 10:** the face structure: a gradient face and more children.
     - **Decision 11:**
       - the extent is no longer the only limit, because the halo has its own (decision 8);
+      - the test "every library component's preferred and minimum sizes are identical in every setting and every density": in Glow the library containers that opt in to the halo (decision 8) grow by the zone;
       - "a neighbour's effect may reach the gap but never another box" (around a primary, decision 8's clear zone applies);
       - the sheen clamp.
     - **Decision 16:** the U12 wording.
@@ -151,9 +152,9 @@ The forces are those of ADR-0120:
    - A ring pair is checked at the bottom edge.
    - At the top edge the gloss turns off while the button's `focus.ring` shows: the top stop then equals the fill.
 
-   **Search.** Per kind, in steps of 0.01:
+   **Search.** The gloss stop is one fraction `s` per kind. The effective stop of an instance is `max(band top / height, s)`. Per kind, in steps of 0.01:
    1. `face.dark` is scaled down to the largest value that passes for every state and height of the kind.
-   2. Then the gloss stop is moved down from the band top, while every pair still passes, to at most 45 %.
+   2. Then `s` grows from 0 while every pair still passes, to at most 0.45.
 
    A kind's face therefore has one shape in every state and size. `gloss` itself is not scaled, because at the band top it touches no pair.
 
@@ -165,8 +166,15 @@ The forces are those of ADR-0120:
    | --- | --- | --- | --- | --- |
    | primary | 0.09 | 45 % | 0.30 | band top |
    | secondary | 0.30 | band top | 0.03 | 45 % |
-   | checked | 0.30 | band top | 0.03 | 45 % |
+   | checked | 0.30 | 10 % | 0.03 | 45 % |
    | danger | 0.30 | band top | 0.02 | 45 % |
+
+   Glow and Tactile resolve as follows:
+   - **Glow:**
+     - Inner glow: 0 in Dark for every kind. `text.secondary` on `button.pressed` (4.54 in calm) and the danger pairs leave no room. In Light it is 0.19 for secondary and 0.05 for danger.
+     - Rim: 0.55 everywhere, which passes the ΔE ≥ 10 check from `accent`.
+     - In Dark, Glow's secondaries are therefore drawn by their rim alone.
+   - **Tactile:** gloss 0.12, with the same stops as Glass.
 
    Each kind gets one strong side:
    - **Where the ink is dark** (Light's secondaries and Dark's primary), the gloss is tall.
@@ -220,19 +228,34 @@ The forces are those of ADR-0120:
      - It is computed in `slot()`. It is the same in every density, because the halo is.
      - Within `halo-clear` of a primary Button's box, on every side, nothing may be drawn: no other control, text, divider or picture, and no clip edge of its container. Only the ground that the primary itself stands on may be there.
      - Beside a SplitButton, the zone is `halo-clear + size.focus-ring`, because its rings sit outside its shape.
-   - **How layouts keep it.**
-     - Every spacing or padding next to a primary is `max(<today's value>, Theme.halo-clear)`, or `max(<today's value>, Theme.halo-clear + size.focus-ring)` beside a SplitButton. Today's value is `space.1`, `space.2`, `size.field.gap` or a panel padding.
+   - **A halo only where the layout opts in.**
+     - A Button gets the property `halo-room: bool`, false by default. A primary draws its halo only when the setting has one **and** its instance sets `halo-room: true`.
+     - Every other primary looks exactly as in calm, apart from its shadow. It needs no zone, and no layout around it changes.
+     - The choice is made by layout, in the app files. Nothing is decided per frame.
+   - **A position that opts in reserves the zone.**
+     - The zone is reserved whatever the button's current kind. Go live becomes secondary or `live` while live, and the layout must not jump at that moment. So the zone is reserved for the position, not for the current kind.
+     - Every spacing or padding at the position is `max(<today's value>, Theme.halo-clear)`, or `max(<today's value>, Theme.halo-clear + size.focus-ring)` beside a SplitButton. Today's value is `space.1`, `space.2`, `size.field.gap`, a panel padding, or a fixed height such as the frame bar's.
      - In calm, Glass and Tactile `halo-clear` is 0, so every layout stays exactly as it is.
-     - Rows and columns without a primary never change. The Mixer column and its `size.mixer.min-h` are not affected.
-   - **The places with a primary today** must keep the zone in Glow:
-     - the toolbar Go live / Record row;
-     - TransitionGo with its shortcut caption and icon-mode name (`app.slint`);
-     - the transition bar's divider and TransitionChoice;
-     - Properties "Show now" under its NumberField (`studio.slint`);
-     - dialog and card actions.
+     - A container whose size the user can drag (a resizable panel) never opts in, because a dragged size cannot keep the zone.
+   - **The first positions to opt in:**
+     - **The toolbar Go live / Record row.**
+       - In Glow the frame bar grows from `size.control.md + 2·space.1 + size.border` to `size.control.md + 2·(halo-clear + size.focus-ring) + size.border`. That is about 22 px taller.
+       - The ADR-0071 caption regions follow `root.height`, as they do today.
+     - **Dialog actions** (`DialogActions`) and the library's overlay dialogs.
+     - **EmptyState.**
 
-     The implementing PR lists each one, and the ui-review checklist gains the item "nothing lies within `Theme.halo-clear` of a primary, in any direction, including the panel edge".
-   - **Layouts change in Glow, and only there.** Around a primary they grow by up to 9 px per side, in every density. That makes compact less compact around primaries. A theme switch to or from Glow re-lays those rows out once.
+     Every other primary keeps `halo-room: false`. That includes:
+     - TransitionGo and TransitionPanel (user-sized);
+     - the stream panel;
+     - the setting-row primaries;
+     - Properties "Show now";
+     - the toast action;
+     - the Appearance keep bar;
+     - the shortcuts and vcam rows.
+
+     A later change may opt more positions in, with screenshots, under this decision.
+   - **The ui-review checklist** gains the item "a Button with `halo-room: true` has nothing but its ground within `Theme.halo-clear` on every side". A neighbour's own ADR-0120 effects are the one exception: its shadow, key edge, rim and inner glow are not ink, and the extent keeps them within 4 px of that neighbour's box.
+   - **Layouts change in Glow, and only at the opted-in positions.** The space grows by up to 9 px per side, or 11 px beside a SplitButton, in every density. A switch to or from Glow re-lays those rows out once.
    - **The halo is off while the primary's own ring shows.** It does not follow hover or press (ADR-0120 decision 12).
 9. **Structure and cost.**
    - ADR-0120 decision 10's structure stays: the bases, then the face, then the lip and the content.
@@ -264,9 +287,10 @@ The forces are those of ADR-0120:
     - **The rendered test** (`effects_render.rs`):
       - It renders Dark and Light, regular and compact, in each setting.
       - Its rule becomes: every ring pixel keeps at least min(3, its calm ratio) against the ground pixel beside it in the same render.
-      - For the halo, each row is also rendered in Glow with the halo forced off. The two renders must be identical outside the primary's box plus `halo-clear`.
+      - For the halo, each opted-in position is also rendered in Glow with the halo's alpha forced to 0, keeping `halo-clear`. In that render, every pixel within the primary's box plus `halo-clear` and outside the box must equal the ground. The only exceptions are a neighbour's own effects, within the extent of its box. This tests that nothing else lies in the zone.
+      - `effects_never_change_the_layout` becomes: sizes are identical in every setting, except at opted-in positions in Glow, which grow by exactly the zone.
       - Text is not measured from anti-aliased pixels. The test samples the face colour at the ink band's ends next to the label and computes the ratio against the known ink colour.
-      - Its rows are the ones it has today, plus a checked button. It also has a primary with a neighbour on each side and above and below it: a button, a field, a caption, and the SplitButton row.
+      - Its rows are the ones it has today, plus a checked button and each opted-in position: the frame bar's SplitButton row, `DialogActions` and EmptyState.
     - **`drawn.rs`:**
       - It keeps reading `Theme.effects-*` atoms as calm.
       - Its face test becomes: the gradient stops are chosen by the same kind and state branches as `face-fill`.
@@ -297,10 +321,10 @@ The forces are those of ADR-0120:
 ## Consequences
 
 - Users get three looks that read at a glance, and the look still travels with the theme:
-  - **Glow:** a strong halo on the primary, plus a coloured rim and an inner glow on the others;
+  - **Glow:** a strong halo on the primaries that have room for it, and a coloured rim on the others, with an inner glow in Light;
   - **Glass:** gloss and shading with a soft shadow;
   - **Tactile:** a deeper key edge and press.
-- **Glow changes layout around primaries.** Spacing next to a primary grows by up to 9 px per side, in every density, and a switch to or from Glow re-lays those rows out once. This is a first: until now a theme never changed a layout beyond density.
+- **Glow changes layout at the opted-in positions.** The frame bar grows by about 22 px. Dialog actions and EmptyState get more room around the primary. A switch to or from Glow re-lays them out once. This is a first: until now a theme never changed a layout beyond density.
 - The check grows from "derived colours far from live" to every button pair at the ink band, for every kind, state, size and density. This adds work in `resolve`, still well under 1 ms.
 - **On acceptance:**
   - ADR-0120's Review gets the pointer "decisions 1, 5, 6, 7, 8, 9, 10, 11 and 16 superseded in part by ADR-0122".
@@ -318,7 +342,8 @@ The forces are those of ADR-0120:
     - `effects.rs`: `Effects::ALL`, `LIVELY`, `index`, `draw(density)` and `check`;
     - `build.rs`: the slot fields and `halo-clear`;
     - Button, IconButton and SplitButton drawing;
-    - every layout next to a primary in the app files;
+    - the `halo-room` property, and the opted-in positions in the app files (the frame bar, `DialogActions`, EmptyState);
+    - `effects_render.rs` grows from Dark and compact step 1 to Dark and Light, regular and compact;
     - the editor's labels and hint;
     - the `EffectsProbe` rows;
     - the `RBS_EFFECTS` names in the measure mode;
@@ -426,4 +451,32 @@ Revision 4 answers:
 | 10 | Decision 6 |
 | 11 | Decision 8 and the Consequences |
 
-Round 4 is pending.
+### Round 4 (independent AI session, architecture-review, 2026-11-14)
+
+Verdict: accept with changes. The reviewer found that the decision 5 table, the halo's reach, the key-edge rule, the SplitButton term, the inner-glow model and format 3 reading hold. The concerns were:
+
+- user-sized containers cannot keep the zone;
+- the frame bar is a fixed height;
+- buttons change kind at runtime;
+- ADR-0120 decision 11's layout test conflicts;
+- Glow's resolved values were missing (the inner glow is 0 in Dark), and the Dark mock-up drew one;
+- the halo test proved nothing.
+
+Minor points:
+
+- the gloss stop variable was undefined;
+- the SplitButton zone is 11 px;
+- the list of places was incomplete;
+- the test extension was not listed as follow-up work.
+
+Revision 5 answers:
+
+| Point | Where it is answered |
+| --- | --- |
+| User-sized containers, frame bar, kind changes | Decision 8: a halo only at positions that opt in (`halo-room`); the zone is reserved for the position; resizable panels never opt in; the frame bar's growth is stated |
+| ADR-0120 decision 11's layout test | Header and decision 10 |
+| Glow's resolved values | Decision 5; `bold-v3-dark.png` redrawn with no inner glow in Dark |
+| The halo test | Decision 10 |
+| Minor points | Decisions 5 and 8, and the follow-up list |
+
+Round 5 is pending.
