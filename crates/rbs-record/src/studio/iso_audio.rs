@@ -48,6 +48,10 @@ pub struct IsoAudioStart {
     pub t0_ns: u64,
     /// When set, `recording.rbs.toml` is written here after the audio files are open.
     pub manifest_dir: Option<PathBuf>,
+    /// A marked source the program mix does not hear is left out and listed in
+    /// [`IsoAudioStarted::not_heard`] instead of failing the start with
+    /// [`IsoError::NotHeard`]. False by default.
+    pub skip_unheard: bool,
 }
 
 impl IsoAudioStart {
@@ -67,6 +71,7 @@ impl IsoAudioStart {
             t0_utc: t0_utc.into(),
             t0_ns,
             manifest_dir: None,
+            skip_unheard: false,
         }
     }
 }
@@ -83,11 +88,18 @@ pub struct IsoAudioStarted {
     pub audio_tracks: usize,
     /// Video flags named in the manifest and not opened.
     pub video_pending: usize,
+    /// Marked sources left out because the program mix does not hear them (only
+    /// with [`IsoAudioStart::skip_unheard`]), with their display names. They are not
+    /// in the manifest.
+    pub not_heard: Vec<(SourceId, String)>,
 }
 
 pub(super) struct IsoAudioRun {
     nodes: Vec<Added>,
 }
+
+/// Marked sources the program mix does not hear, with their display names.
+type Unheard = Vec<(SourceId, String)>;
 
 /// A source the program mix is hearing, and the file this step opens for it.
 struct Tap {
@@ -133,9 +145,24 @@ impl super::Studio {
                 manifest,
                 audio_tracks: 0,
                 video_pending,
+                not_heard: Vec::new(),
             });
         }
-        let taps = self.taps(&audio, start.container)?;
+        let (taps, not_heard) = self.taps(&audio, start.container, start.skip_unheard)?;
+        manifest.files.retain(|file| {
+            file.role != "audio"
+                || file
+                    .source
+                    .is_none_or(|source| !not_heard.iter().any(|(id, _)| *id == source))
+        });
+        if taps.is_empty() {
+            return Ok(IsoAudioStarted {
+                manifest,
+                audio_tracks: 0,
+                video_pending,
+                not_heard,
+            });
+        }
         for file in &mut manifest.files {
             if file.role == "audio"
                 && let Some(source) = file.source
@@ -170,6 +197,7 @@ impl super::Studio {
             manifest,
             audio_tracks: taps.len(),
             video_pending,
+            not_heard,
         })
     }
 
@@ -197,29 +225,36 @@ impl super::Studio {
         true
     }
 
-    /// The program mix must already be hearing each marked source.
+    /// The program mix must already be hearing each marked source; with `skip`, one it
+    /// does not hear is returned in the second list instead.
     fn taps(
         &self,
         audio: &[crate::iso::IsoTrack],
         container: ContainerId,
-    ) -> Result<Vec<Tap>, RecordError> {
+        skip: bool,
+    ) -> Result<(Vec<Tap>, Unheard), RecordError> {
         let mixer = self
             .bound_mixer
             .as_ref()
             .ok_or(RecordError::NotBound("mixer"))?;
         let ext = extension(container);
         let mut taps = Vec::with_capacity(audio.len());
+        let mut not_heard = Vec::new();
         for track in audio {
-            let input = mixer
+            let Some(input) = mixer
                 .inputs
                 .iter()
                 .find(|input| input.source == track.source)
-                .ok_or_else(|| {
-                    RecordError::Iso(IsoError::NotHeard {
-                        source: track.source,
-                        name: track.source_name.clone(),
-                    })
-                })?;
+            else {
+                if skip {
+                    not_heard.push((track.source, track.source_name.clone()));
+                    continue;
+                }
+                return Err(RecordError::Iso(IsoError::NotHeard {
+                    source: track.source,
+                    name: track.source_name.clone(),
+                }));
+            };
             let pin = audio_pin(&self.graph, input.producer)?;
             taps.push(Tap {
                 source: track.source,
@@ -228,7 +263,7 @@ impl super::Studio {
                 file_name: format!("{}.{}", track.file_name, ext),
             });
         }
-        Ok(taps)
+        Ok((taps, not_heard))
     }
 
     fn ensure_iso_partitions(&mut self) -> Result<(), RecordError> {

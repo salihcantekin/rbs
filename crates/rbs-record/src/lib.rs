@@ -27,8 +27,8 @@ mod timed_show;
 
 pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_clip};
 pub use iso::{
-    IsoError, IsoPlan, IsoRole, IsoTrack, MAX_ISO_AUDIO, MAX_ISO_VIDEO, ManifestFile,
-    RecordingManifest, plan,
+    IsoError, IsoPlan, IsoRole, IsoTrack, MASTER_STEM, MAX_ISO_AUDIO, MAX_ISO_VIDEO, ManifestFile,
+    RecordingManifest, plan, write_manifest,
 };
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
 pub use rbs_nodes::replay_node::{ReplayStatus, RequestError as ReplayRequestError};

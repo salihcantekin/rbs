@@ -27,9 +27,11 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.46 adds separate files (ADR-0086): `source.set_record_separately`, `iso` on
+/// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.45";
+pub const PROTOCOL_VERSION: &str = "1.46";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

@@ -128,10 +128,7 @@ impl fmt::Display for IsoError {
 
 /// Writes `recording.rbs.toml` into `dir` (a temporary name, then a rename). The
 /// manifest text has no directory. An I/O error is [`IsoError::Manifest`].
-pub(crate) fn write_manifest(
-    dir: &std::path::Path,
-    manifest: &RecordingManifest,
-) -> Result<(), IsoError> {
+pub fn write_manifest(dir: &std::path::Path, manifest: &RecordingManifest) -> Result<(), IsoError> {
     let path = dir.join("recording.rbs.toml");
     let tmp = dir.join(".recording.rbs.toml.tmp");
     std::fs::write(&tmp, manifest.to_toml()).map_err(|_| IsoError::Manifest)?;
@@ -146,7 +143,9 @@ pub(crate) fn write_manifest(
 /// does not know, may set either. No source is opened.
 pub fn plan(collection: &SceneCollection) -> Result<IsoPlan, IsoError> {
     let mut tracks = Vec::new();
-    let mut used = BTreeSet::new();
+    // Names are compared case-folded, as Windows and macOS file systems do, and the
+    // master's name is reserved.
+    let mut used = BTreeSet::from([MASTER_STEM.to_owned()]);
     for source in collection.sources() {
         let flag = source.record_separately;
         if flag.is_none() {
@@ -363,6 +362,9 @@ fn is_reserved(stem: &str) -> bool {
     )
 }
 
+/// The master file's name without its extension (ADR-0086 decision 7). No track takes it.
+pub const MASTER_STEM: &str = "master";
+
 fn take_name(used: &mut BTreeSet<String>, stem: &str, id: SourceId) -> String {
     let mut n = 1u32;
     loop {
@@ -371,7 +373,7 @@ fn take_name(used: &mut BTreeSet<String>, stem: &str, id: SourceId) -> String {
         } else {
             format!("{stem} {n}")
         };
-        if used.insert(candidate.clone()) {
+        if used.insert(candidate.to_lowercase()) {
             return candidate;
         }
         match n.checked_add(1) {
@@ -425,6 +427,24 @@ mod tests {
     fn mark(col: &mut SceneCollection, id: SourceId, video: bool, audio: bool) {
         col.set_source_record_separately(id, RecordSeparately::new(video, audio))
             .unwrap();
+    }
+
+    #[test]
+    fn track_names_never_take_the_master_name_or_differ_only_by_case() {
+        let mut col = SceneCollection::new();
+        let master = source(&mut col, "Master", AUDIO_INPUT_SOURCE);
+        let upper = source(&mut col, "Mic", AUDIO_INPUT_SOURCE);
+        let lower = source(&mut col, "mic", AUDIO_INPUT_SOURCE);
+        for id in [master, upper, lower] {
+            mark(&mut col, id, false, true);
+        }
+        let names: Vec<_> = plan(&col)
+            .unwrap()
+            .tracks
+            .into_iter()
+            .map(|t| t.file_name)
+            .collect();
+        assert_eq!(names, ["Master 2", "Mic", "mic 2"]);
     }
 
     #[test]

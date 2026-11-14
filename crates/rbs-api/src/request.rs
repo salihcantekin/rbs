@@ -178,6 +178,18 @@ pub struct SetSourceRegion {
     pub region: Option<[u32; 4]>,
 }
 
+/// `source.set_record_separately` (protocol 1.46, ADR-0086). One undo step. The
+/// per-track options of ADR-0086 decision 2 are later minors, so 1.46 refuses them as
+/// unknown fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetRecordSeparately {
+    /// The source's id.
+    pub source: u32,
+    /// Record it as a file of its own from the next recording on.
+    pub enabled: bool,
+}
+
 /// `source.get_region`'s answer (protocol 1.41).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRegionInfo {
@@ -924,6 +936,11 @@ pub struct RecordStart {
     /// `all` records every canvas, main first (protocol 1.42).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<OutputTarget>,
+    /// Write the separate files of the sources marked to record separately (protocol
+    /// 1.46, ADR-0086). Absent or `null` is `true`. Only the main canvas's recording
+    /// has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iso: Option<bool>,
 }
 
 /// `record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every
@@ -1236,6 +1253,8 @@ pub enum Command {
     SourceSetGlide(SetSourceGlide),
     /// `source.set_region` (protocol 1.41, ADR-0103).
     SourceSetRegion(SetSourceRegion),
+    /// `source.set_record_separately` (protocol 1.46, ADR-0086).
+    SourceSetRecordSeparately(SetRecordSeparately),
     /// `source.get_region` (protocol 1.41).
     SourceGetRegion(SourceRef),
     /// `source.set_chrome` (protocol 1.41, ADR-0104).
@@ -1356,6 +1375,7 @@ impl Command {
             Command::CollectionSetGlide(_) => "collection.set_glide",
             Command::SourceSetGlide(_) => "source.set_glide",
             Command::SourceSetRegion(_) => "source.set_region",
+            Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
             Command::SourceGetRegion(_) => "source.get_region",
             Command::SourceSetChrome(_) => "source.set_chrome",
             Command::SourceGetChrome(_) => "source.get_chrome",
@@ -1511,6 +1531,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("collection.set_glide", Some(Scope::Control)),
     m("source.set_glide", Some(Scope::Control)),
     m("source.set_region", Some(Scope::Control)),
+    m("source.set_record_separately", Some(Scope::Control)),
     m("source.get_region", Some(Scope::Control)),
     m("source.set_chrome", Some(Scope::Control)),
     m("source.get_chrome", Some(Scope::Control)),
@@ -1797,6 +1818,8 @@ enum WireRequest {
     SourceSetGlide(SetSourceGlide),
     #[serde(rename = "source.set_region")]
     SourceSetRegion(SetSourceRegion),
+    #[serde(rename = "source.set_record_separately")]
+    SourceSetRecordSeparately(SetRecordSeparately),
     #[serde(rename = "source.get_region")]
     SourceGetRegion(SourceRef),
     #[serde(rename = "source.set_chrome")]
@@ -1925,6 +1948,9 @@ impl From<WireRequest> for Request {
             WireRequest::CollectionSetGlide(p) => Request::Command(C::CollectionSetGlide(p)),
             WireRequest::SourceSetGlide(p) => Request::Command(C::SourceSetGlide(p)),
             WireRequest::SourceSetRegion(p) => Request::Command(C::SourceSetRegion(p)),
+            WireRequest::SourceSetRecordSeparately(p) => {
+                Request::Command(C::SourceSetRecordSeparately(p))
+            }
             WireRequest::SourceGetRegion(p) => Request::Command(C::SourceGetRegion(p)),
             WireRequest::SourceSetChrome(p) => Request::Command(C::SourceSetChrome(p)),
             WireRequest::SourceGetChrome(p) => Request::Command(C::SourceGetChrome(p)),
@@ -2041,6 +2067,7 @@ impl From<Request> for WireRequest {
                 C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
                 C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
                 C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
+                C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
                 C::SourceGetRegion(p) => WireRequest::SourceGetRegion(p),
                 C::SourceSetChrome(p) => WireRequest::SourceSetChrome(p),
                 C::SourceGetChrome(p) => WireRequest::SourceGetChrome(p),
