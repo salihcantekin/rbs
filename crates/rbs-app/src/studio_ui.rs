@@ -772,6 +772,13 @@ impl StudioUi {
                 .position(|b| *b == p.bit_depth)
                 .unwrap_or(0) as i32,
         );
+        g.set_out_bit_depth_default(
+            p.format
+                .widths()
+                .iter()
+                .position(|b| *b == RecordProfile::default().bit_depth)
+                .unwrap_or(0) as i32,
+        );
         g.set_out_pcm_widths(strings(
             p.format.width_labels().iter().map(|s| (*s).to_owned()),
         ));
@@ -856,6 +863,12 @@ impl StudioUi {
             RATES
                 .iter()
                 .position(|r| *r == self.canvas.fps)
+                .unwrap_or(0) as i32,
+        );
+        g.set_canvas_rate_default(
+            RATES
+                .iter()
+                .position(|r| *r == CanvasProfile::new().fps)
                 .unwrap_or(0) as i32,
         );
         g.set_canvas_restarting(self.canvas_restarting);

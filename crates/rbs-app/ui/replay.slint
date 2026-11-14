@@ -17,8 +17,13 @@ export global ReplayBuffer {
     // The length slider, 0 to 1 on a log scale, and its text ("2 min").
     in property <float> length;
     in property <string> length-text;
+    // The saved length differs from the default, which reads as `length-default-text`.
+    in property <bool> length-changed;
+    in property <string> length-default-text;
     in property <[string]> memories;
     in property <int> memory;
+    // The default memory limit as an index into `memories`, or -1 when not offered.
+    in property <int> memory-default: -1;
     in property <string> folder;
     // Bumped when Rust changes the folder, so the field takes the new text.
     in property <int> folder-serial;
@@ -40,6 +45,7 @@ export global ReplayBuffer {
     callback set-audio(bool);
     callback length-moved(float);
     callback length-released();
+    callback reset-length();
     callback set-memory(int);
     callback set-folder(string);
     callback save();
@@ -78,6 +84,9 @@ export component ReplaySettings inherits Rectangle {
                 label: @tr("Length");
                 summary: @tr("How much past to keep");
                 hint: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
+                changed: ReplayBuffer.length-changed;
+                default-text: ReplayBuffer.length-default-text;
+                reset => { root.drag = -1; ReplayBuffer.reset-length(); }
                 Slider {
                     horizontal-stretch: 1;
                     label: @tr("Length");
@@ -86,12 +95,16 @@ export component ReplaySettings inherits Rectangle {
                     moved(v) => { root.drag = v; ReplayBuffer.length-moved(v); }
                     released => { ReplayBuffer.length-released(); root.drag = -1; }
                     cancelled => { root.drag = -1; }
+                    reset => { root.drag = -1; ReplayBuffer.reset-length(); }
                 }
                 ValueReadout { text: ReplayBuffer.length-text; }
             }
             SettingRow {
                 label: @tr("Memory limit");
                 help: ReplayBuffer.estimate;
+                changed: ReplayBuffer.memory-default >= 0 && ReplayBuffer.memory != ReplayBuffer.memory-default;
+                default-text: ReplayBuffer.memory-default >= 0 ? ReplayBuffer.memories[ReplayBuffer.memory-default] : "";
+                reset => { ReplayBuffer.set-memory(ReplayBuffer.memory-default); }
                 fill: false;
                 Select {
                     label: @tr("Memory limit");

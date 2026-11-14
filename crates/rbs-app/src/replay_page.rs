@@ -210,6 +210,16 @@ pub fn install(g: &ReplayBuffer<'_>, ctx: &Ctx) {
         })
     });
     let c = ctx.clone();
+    g.on_reset_length(move || {
+        entry::guard(|| {
+            c.update(|app| {
+                app.replay.dragging = None;
+                app.replay.setup.length_secs = ReplaySetup::default().length_secs;
+                changed(app);
+            })
+        })
+    });
+    let c = ctx.clone();
     g.on_set_memory(move |i| {
         entry::guard(|| {
             c.update(move |app| {
@@ -267,6 +277,12 @@ pub fn push(app: &App) {
         .iter()
         .position(|m| *m == r.setup.memory_mib)
         .unwrap_or(0);
+    let default = ReplaySetup::default();
+    let memory_default = steps
+        .iter()
+        .position(|m| *m == default.memory_mib)
+        .and_then(|i| i32::try_from(i).ok())
+        .unwrap_or(-1);
     let folder = r
         .setup
         .folder
@@ -286,6 +302,8 @@ pub fn push(app: &App) {
         g.set_audio(r.setup.audio);
         g.set_length(position_of(r.dragging.unwrap_or(r.setup.length_secs)));
         g.set_length_text(r.length_text().into());
+        g.set_length_changed(r.setup.length_secs != default.length_secs);
+        g.set_length_default_text(duration_text(default.length_secs).into());
         g.set_memories(ModelRc::new(VecModel::from(
             steps
                 .iter()
@@ -293,6 +311,7 @@ pub fn push(app: &App) {
                 .collect::<Vec<_>>(),
         )));
         g.set_memory(i32::try_from(memory).unwrap_or(0));
+        g.set_memory_default(memory_default);
         g.set_folder(folder.as_str().into());
         g.set_folder_serial(r.folder_serial);
         g.set_status(status.as_str().into());
