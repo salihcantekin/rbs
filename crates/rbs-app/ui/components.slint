@@ -3362,7 +3362,7 @@ export component OverlayHost inherits Rectangle {
                         font-size: Tokens.type-body-size;
                         vertical-alignment: center;
                         accessible-label: @tr("Filter");
-                        edited => { Overlays.picker-current = 0; picker-list.content-y = 0px; Overlays.picker-filtered(self.text); }
+                        edited => { Overlays.picker-current = 0; picker-list.scroll-into-view(0px, 0px); Overlays.picker-filtered(self.text); }
                         accepted => {
                             if Overlays.picker-rows.length > 0 {
                                 Overlays.picker-chosen(Overlays.picker-rows[min(Overlays.picker-current, Overlays.picker-rows.length - 1)].index);
@@ -3372,12 +3372,12 @@ export component OverlayHost inherits Rectangle {
                             if e.text == Key.Escape { Overlays.picker-cancelled(); return accept; }
                             if e.text == Key.DownArrow && Overlays.picker-rows.length > 0 {
                                 Overlays.picker-current = min(Overlays.picker-current + 1, Overlays.picker-rows.length - 1);
-                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
                                 return accept;
                             }
                             if e.text == Key.UpArrow && Overlays.picker-rows.length > 0 {
                                 Overlays.picker-current = max(Overlays.picker-current - 1, 0);
-                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
                                 return accept;
                             }
                             reject
@@ -3401,7 +3401,7 @@ export component OverlayHost inherits Rectangle {
                     border-color: Theme.border-subtle;
                     background: Theme.surface-base;
                     clip: true;
-                picker-list := Flickable {
+                picker-list := ScrollArea {
                     y: Tokens.size-border;
                     x: Tokens.size-border;
                     width: parent.width - 2 * Tokens.size-border;
