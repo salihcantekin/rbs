@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 use rbs_core::media::{
     ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
+    next_generation,
 };
 use rbs_core::time::Timestamp;
 use rbs_gpu::node::GpuRuntime;
@@ -131,7 +132,9 @@ impl Node<GpuRuntime> for StillSourceNode {
             .upload(ctx.shared, &mut ctx.local.pool, frame)
             .map_err(|_| NodeError::Backend("still picture upload failed"))?;
         self.stats.uploaded.fetch_add(1, Ordering::Relaxed);
-        self.ready = Some(uploaded);
+        // A new generation per upload: the timestamp is always zero, so this is how a
+        // reader tells a new picture from the one it took (ADR-0117 decision 4).
+        self.ready = Some(uploaded.with_sequence(next_generation()));
         Ok(())
     }
 

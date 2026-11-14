@@ -598,6 +598,13 @@ impl Rig {
         self.exec.health(self.filter).and_then(|h| h.last_error)
     }
 
+    /// The `(timestamp, sequence)` key of the frame the probe saw on the last tick.
+    pub fn output_key(&self) -> Option<(Timestamp, u64)> {
+        lock(&self.last)
+            .as_ref()
+            .map(|f| (f.timestamp(), f.sequence()))
+    }
+
     /// The frame the probe saw on the last tick: its picture, format and time; `None`
     /// when the filter published nothing.
     pub fn output(&mut self) -> Option<(Picture, VideoFormat, Timestamp)> {
@@ -692,12 +699,18 @@ pub fn check_on_gpu(ty: Arc<dyn FilterType>, ctx: Arc<GpuContext>) -> Vec<String
     if rig.output().is_none() {
         problems.push("the output went away while the input was unchanged".to_owned());
     }
+    let key = rig.output_key();
     if rig.set_values(0, values).is_err() {
         problems.push("no value channel".to_owned());
     }
     rig.tick();
     if rig.stats.frames() != frames + 1 {
         problems.push("new values did not filter the unchanged input again".to_owned());
+    }
+    // 8: a render of the same input has a key no earlier frame had (ADR-0117
+    // decision 4), so a reader of a still picture sees the change.
+    if rig.output_key().is_none() || rig.output_key() == key {
+        problems.push("a new render kept the key of the frame before it".to_owned());
     }
     problems
 }

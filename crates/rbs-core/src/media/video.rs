@@ -13,6 +13,18 @@ use super::MediaError;
 use super::lease::Lease;
 use crate::time::Timestamp;
 
+/// The process-wide picture generation counter (ADR-0117 decision 4).
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A sequence number no earlier call returned, for a producer whose picture changes
+/// while its timestamp does not: a still source on each upload and a filter on each
+/// re-render (ADR-0117 decision 4). A node instance built anew therefore never repeats
+/// a `(timestamp, sequence)` key an earlier instance published. One relaxed
+/// `fetch_add`: lock-free and allocation-free (P6). Never 0, the default sequence.
+pub fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Width and height in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Size {
@@ -872,7 +884,8 @@ impl VideoFrame {
         }
     }
 
-    /// Sets the sequence number.
+    /// Sets the sequence number. A producer whose picture changes without a new
+    /// timestamp (a still source, a filter re-rendering) passes [`next_generation`].
     pub fn with_sequence(mut self, sequence: u64) -> Self {
         self.sequence = sequence;
         self
@@ -952,6 +965,15 @@ impl VideoFrame {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn generations_are_never_zero_and_never_repeat() {
+        let a = super::next_generation();
+        let b = super::next_generation();
+        assert_ne!(a, 0);
+        assert!(b > a);
+    }
+
     use std::sync::Arc;
 
     use super::*;

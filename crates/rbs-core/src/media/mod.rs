@@ -27,7 +27,7 @@ pub use packet::{
 pub use video::{
     ColorPrimaries, ColorRange, ColorSpace, D3dApi, DmaBufPlane, DmaBufSurface, FramePayload,
     MatrixCoefficients, MemoryKind, NativeSurface, PixelFormat, PlaneLayout, Size, SurfaceSync,
-    SystemFrame, TextureId, TransferFunction, VideoFormat, VideoFrame,
+    SystemFrame, TextureId, TransferFunction, VideoFormat, VideoFrame, next_generation,
 };
 
 /// Why a media value could not be built. Never allocates.
