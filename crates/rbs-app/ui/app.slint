@@ -1171,50 +1171,14 @@ component EndStreamCard inherits Rectangle {
     }
 }
 
-// The workspace picker in the toolbar: "Workspace" and the current one's name.
-component WorkspacePicker inherits Rectangle {
-    callback clicked();
-    height: Tokens.size-control-md;
-    min-width: row.preferred-width;
-    horizontal-stretch: 0;
-    border-radius: Tokens.radius-sm;
-    background: touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
-    border-width: Tokens.size-border;
-    border-color: Theme.border-subtle;
-    accessible-role: button;
-    accessible-label: @tr("Workspace: {}", Shell.workspace-name);
-    accessible-action-default => { clicked(); }
-    forward-focus: focus;
-    focus := RingFocus {
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
-            reject
-        }
-    }
-    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
-    row := HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
-        spacing: Tokens.space-2;
-        Text {
-            text: @tr("Workspace");
-            color: Theme.text-secondary;
-            font-size: Tokens.type-label-size;
-            vertical-alignment: center;
-        }
-        Text {
-            text: Shell.workspace-name;
-            color: Theme.text-primary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            vertical-alignment: center;
-        }
-        VerticalLayout {
-            alignment: center;
-            Icon { name: IconName.chevron-down; ink: Theme.text-secondary; }
-        }
-    }
-    FocusRing { show: focus.ring; }
+// The workspace picker in the toolbar: "Workspace" and the current one's name, a
+// library Button in its menu form.
+component WorkspacePicker inherits Button {
+    menu: true;
+    caption: @tr("Workspace");
+    text: Shell.workspace-name;
+    icon: IconName.chevron-down;
+    accessible-name: @tr("Workspace: {}", Shell.workspace-name);
 }
 
 // One toolbar item: a command button with its icon (a toggle that is on is tinted;
@@ -1560,44 +1524,18 @@ component FrameBar inherits Rectangle {
     changed asked => { open-app-menu(); }
 }
 
-// A status bar item that opens a menu: "<label> <value>".
-component StatusPicker inherits Rectangle {
+// A status bar item that opens a menu: "<label> <value>", a dense ghost Button in its
+// menu form.
+component StatusPicker inherits Button {
     in property <string> label;
     in property <string> value;
-    callback clicked();
-    min-width: row.preferred-width;
-    horizontal-stretch: 0;
-    border-radius: Tokens.radius-sm;
-    background: touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: button;
-    accessible-label: @tr("{}: {}", label, value);
-    accessible-action-default => { clicked(); }
-    forward-focus: focus;
-    focus := RingFocus {
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
-            reject
-        }
-    }
-    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
-    row := HorizontalLayout {
-        padding-left: Tokens.space-1;
-        padding-right: Tokens.space-1;
-        spacing: Tokens.space-1;
-        Text {
-            text: label;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-        }
-        Text {
-            text: value;
-            color: Theme.text-primary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-        }
-    }
-    FocusRing { show: focus.ring; }
+    kind: "ghost";
+    dense: true;
+    small: true;
+    menu: true;
+    caption: label;
+    text: value;
+    accessible-name: @tr("{}: {}", label, value);
 }
 
 // The status bar (spec Frame): live and recording state in words, the Output profile

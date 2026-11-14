@@ -408,6 +408,25 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.text.secondary", "color.button.fill", 4.5, 7.0),
     ("color.text.secondary", "color.button.hover", 4.5, 7.0),
     ("color.text.secondary", "color.button.pressed", 4.5, 7.0),
+    // A Button's caption and hint (its menu form) on a checked or danger fill.
+    (
+        "color.text.secondary",
+        "color.accent.subtle.hover",
+        4.5,
+        7.0,
+    ),
+    (
+        "color.text.secondary",
+        "color.action.destructive.subtle",
+        4.5,
+        7.0,
+    ),
+    (
+        "color.text.secondary",
+        "color.action.destructive.subtle.hover",
+        4.5,
+        7.0,
+    ),
     ("color.text.inverse", "color.accent.pressed", 4.5, 7.0),
     ("color.text.primary", "color.accent.subtle.hover", 4.5, 7.0),
     ("color.accent", "color.accent.subtle.hover", 3.0, 3.0),
@@ -442,7 +461,8 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.state.warning", "color.accent.subtle", 3.0, 3.0),
     // The same mark of a ListRow in the searchable picker's well (ADR-0114).
     ("color.state.warning", "color.surface.base", 3.0, 3.0),
-    // The brand mark in the RBS menu button, resting (raised) and under the pointer (overlay).
+    // The brand mark: on its `surface.raised` chip in the RBS button (ADR-0118), and on
+    // the overlay.
     ("color.brand", "color.surface.raised", 3.0, 3.0),
     ("color.brand", "color.surface.overlay", 3.0, 3.0),
     // The notice card (toast and error bar): text on its fill, its edge and the
