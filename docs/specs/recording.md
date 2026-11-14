@@ -383,9 +383,9 @@ The studio host (`rbs-app`) opens the separate audio files with the main canvas'
 - Offsets from `t0` are not written yet: the WAVs start before the master by the master's start-up time.
 - `iso: false`, the vertical canvas and no flag at all record one file, as before 1.46.
 - UI (ADR-0086 step 2):
-  - Properties › Audio has a *Recording* section with a *Record separately* Toggle for the sound (`RecordPatch::enabled`), and while a take runs it says the mark applies to the next recording. Picture marks have no UI yet (the next step, with the owner's approval of the proposal of 2026-11-14); they are set through the control API.
-  - Settings › Recording has a *Separate files* card that lists the sources marked for their sound by name (`SourceEntry::record_separately`). It has no switch until the `recording.iso` profile section exists.
-  - While recording, the Outputs panel's recording card has a *Separate files* line naming the sources written (`RecordingUpdate::Started::separate`).
+  - Properties › Audio of a sound source has a *Recording* section with a *Record separately* Toggle (`RecordPatch::enabled`). A picture source has its *Recording* section below the tabs, with the other source-wide sections (step 3.5): the Toggle marks the picture (a media file: both feeds), and once on a still source shows *Recorded as* *Automatic (image)* / *Image* / *Video* and a media file *Picture and sound* / *Picture* / *Sound*. While a take runs each says the mark applies to the next recording.
+  - Settings › Recording › *Separate files*: *Record separate files* (the output profile's `recording.iso` section, `SeparateFiles { format_version, enabled }`, on by default; off, Record and `record.start` without `iso` write one file), *Sources* (what the marks write, "2 video · 1 image · 1 sound", with the names behind (i)), *Video files* (same encoder as the recording), *Sound files* (WAV, 24-bit) and *Limit* (`SEPARATE_VIDEO_LIMIT`, a warning when more are marked).
+  - While recording, the Outputs panel's recording card has a *Separate files* line naming each file's source and kind, "Camera (video), Logo (images), Mic (sound)" (`RecordingUpdate::Started::separate`).
 
 ## Recording manifest (ADR-0086 decision 6, ADR-0089)
 

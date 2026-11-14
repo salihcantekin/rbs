@@ -745,7 +745,7 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
         RecordingUpdate::Started { path, separate, .. } => {
             assert_eq!(path, folder.join("master.mkv"));
             // The Outputs card names the sources written as files of their own.
-            assert_eq!(separate, vec![mic.name.clone()]);
+            assert_eq!(separate, vec![format!("{} (sound)", mic.name)]);
         }
         other => panic!("{other:?}"),
     }
@@ -887,7 +887,10 @@ fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
         RecordingUpdate::Started { path, separate, .. } => {
             assert_eq!(path, folder.join("master.mkv"));
             assert_eq!(separate.len(), 2, "{separate:?}");
-            assert!(separate.contains(&display.name), "{separate:?}");
+            assert!(
+                separate.contains(&format!("{} (video)", display.name)),
+                "{separate:?}"
+            );
         }
         other => panic!("{other:?}"),
     }
