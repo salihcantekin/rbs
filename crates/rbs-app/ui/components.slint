@@ -2204,6 +2204,74 @@ export component NumberField inherits Rectangle {
         vertical-alignment: center;
         accessible-role: none;
     }
+    // Drag to change (design system NumberField): right or up raises the value, one
+    // step per `size.field.drag-step` of travel, ten with Shift. The field shows the
+    // dragged value and calls `edited` once, on release; Escape puts it back. A press
+    // that moves less than one step is a click: the field takes the focus to type.
+    property <bool> dragging;
+    property <bool> drag-cancelled;
+    property <float> drag-from;
+    property <float> drag-value;
+    function end-drag(apply: bool) {
+        root.dragging = false;
+        drag-keys.clear-focus();
+        if apply && root.drag-value != root.value {
+            root.edited(root.drag-value);
+        }
+        input.text = shown(root.value);
+    }
+    drag := TouchArea {
+        x: 0;
+        width: parent.width - steppers.width;
+        height: parent.height;
+        // While typing, the pointer edits the text; a drag that took the focus keeps
+        // its press.
+        enabled: root.enabled && (!input.has-focus || self.pressed);
+        mouse-cursor: ew-resize;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.dragging = false;
+                root.drag-cancelled = false;
+                root.drag-from = input.text.is-float() ? input.text.to-float() : root.value;
+                root.drag-value = root.drag-from;
+            } else if e.kind == PointerEventKind.move && self.pressed && !root.drag-cancelled {
+                let travel = (self.mouse-x - self.pressed-x) - (self.mouse-y - self.pressed-y);
+                if !root.dragging && abs(travel) < Tokens.size-field-drag-step {
+                    return;
+                }
+                if !root.dragging {
+                    root.dragging = true;
+                    drag-keys.focus();
+                }
+                root.drag-value = root.drag-from + round(travel / Tokens.size-field-drag-step) * root.step * (e.modifiers.shift ? 10 : 1);
+                input.text = shown(root.drag-value);
+            } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                if root.dragging {
+                    root.end-drag(true);
+                } else if !root.drag-cancelled {
+                    input.focus();
+                    input.select-all();
+                }
+            } else if e.kind == PointerEventKind.cancel && root.dragging {
+                root.end-drag(false);
+            }
+        }
+    }
+    // Takes the keys during a drag, for Escape; never a Tab stop of its own.
+    drag-keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(e) => {
+            if e.text == Key.Escape && root.dragging {
+                root.drag-cancelled = true;
+                root.end-drag(false);
+                return accept;
+            }
+            reject
+        }
+    }
     // The stepper column: the arrow keys' up and down as buttons, so the field shows
     // that it steps (U2). A divider line separates it from the value.
     steppers := Rectangle {

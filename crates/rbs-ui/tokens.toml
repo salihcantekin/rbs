@@ -118,6 +118,9 @@ format = 2
 "size.field.gap" = 8
 # Short NumberField for insets and bar thickness (about four digits plus steppers).
 "size.field.compact" = 96
+# Pointer travel for one step when a NumberField value is dragged; less than one
+# step is a click.
+"size.field.drag-step" = 4
 # Thickness of the chosen tab's underline.
 "size.tab.indicator" = 2
 "size.control.sm" = 24
