@@ -62,6 +62,7 @@ use crate::recording::{
 use crate::select::{self, Chosen};
 
 mod iso_audio;
+mod loudness;
 mod monitor;
 mod replay;
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
@@ -869,6 +870,9 @@ pub struct Studio {
     /// The monitor output while it plays (ADR-0097 F1); `None` otherwise, so no device,
     /// ring or node of it exists.
     monitor: Option<monitor::MonitorRun>,
+    /// The loudness tap while loudness is measured (ADR-0092 stage 1); `None`
+    /// otherwise, so nothing of the meter runs.
+    loudness: Option<loudness::LoudnessRun>,
     /// Separate audio files while they are open (ADR-0086). `None` adds no node and
     /// no worker. Not one of [`MAX_OUTPUTS`].
     iso_audio: Option<iso_audio::IsoAudioRun>,
@@ -1185,6 +1189,7 @@ impl Studio {
             filter_problems: Vec::new(),
             camera: None,
             monitor: None,
+            loudness: None,
             iso_audio: None,
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
@@ -3456,6 +3461,7 @@ impl Studio {
         self.stop_iso_audio();
         self.stop_virtual_camera();
         self.stop_monitor();
+        self.stop_loudness();
         let ids = self.outputs();
         let (removed, errors) = self.detach_all(&ids, true);
         let reports = removed

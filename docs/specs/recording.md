@@ -306,6 +306,13 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 - **Running.** The node is not essential: its failure is kept in `MonitorState::failure` (cleared when it runs again), never in `failure()` or an output's failure. `MonitorState::latency` is the graph latency plus the ring target plus the device's latency. `set_monitor_volume` ramps (`OUTPUT_VOLUME_RAMP`), clamped to `0..=MAX_OUTPUT_VOLUME`.
 - **Stop.** `stop_monitor` removes the node with a plain apply and takes it back, through the pending takes if the audio partition still runs it; the device is stopped and dropped on the control thread. `shutdown` stops the monitor.
 
+### Loudness meter (ADR-0092 stage 1)
+
+- **Start.** `start_loudness` adds a `LoudnessTapNode` Active on the audio partition and links the main canvas mixer's `main` output to it, beside the meter sink and the encoders, then applies. The mixer instance is kept and nothing it feeds changes, so the stream and recordings do not dip. It answers `Ok(true)` when it started, `Ok(false)` when it was already running (the measurement goes on), and `NotBound("mixer")` without audio; a refused apply takes the node back.
+- **Tap point.** The mixer's `main` output, after the master volume and mute: what the encoders get while the master has no filter chain. When a master chain exists (ADR-0092 decision 2, a later step), the tap moves to the chain's tail.
+- **Reading.** `loudness()` is `Some(Loudness)` while it runs (rbs-audio spec, "Loudness meter"); `reset_loudness` asks the tap to restart the measurement at its next block and is false while it is off.
+- **Stop.** `stop_loudness` removes the node with a plain apply and takes it back like the monitor. `shutdown` stops it. While it is off the studio has no loudness node (ADR-0013).
+
 ### Invariants
 
 1. Engine code names no adapter: `rbs-record` depends on ports, node crates, the scene and the engine only (P1), and selects by capability (P3).
