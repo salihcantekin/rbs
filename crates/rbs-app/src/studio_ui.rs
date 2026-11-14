@@ -5844,6 +5844,7 @@ fn request_of(
         audio_bitrate_bps: start.audio_bitrate_bps,
         bit_depth: start.bit_depth,
         size: start.size,
+        iso: true,
     }
 }
 
@@ -6160,7 +6161,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// scene, 16 look applied, 17 source pointed at another target, 18 source settings
 /// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing,
 /// 21 how long Show draws a hidden item (the cue itself is not an undo step),
-/// 22 the source's capture region.
+/// 22 the source's capture region, 23 the source's Record separately mark.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -6188,6 +6189,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Glide => 20,
                 EditKind::ShowFor => 21,
                 EditKind::Region => 22,
+                EditKind::RecordSeparately => 23,
             },
             s.name.as_str(),
         ),

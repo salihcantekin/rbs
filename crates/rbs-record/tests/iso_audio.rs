@@ -175,6 +175,56 @@ fn a_separate_audio_file_that_cannot_open_leaves_the_studio_running() {
     assert!(errors.is_empty(), "{errors:?}");
 }
 
+#[test]
+fn a_marked_source_the_mix_does_not_hear_fails_or_is_left_out() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    // In the collection, on no scene: the program mix does not hear it.
+    let (off_air, _) = col
+        .add_source(
+            "Spare mic",
+            rbs_graph::node::NodeTypeId::new_static(rbs_sources::types::AUDIO_INPUT_SOURCE),
+            rbs_scene::model::Settings::new(),
+        )
+        .unwrap();
+    for id in [mic, off_air] {
+        col.set_source_record_separately(id, RecordSeparately::new(false, true))
+            .unwrap();
+    }
+    let (engine, _clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+
+    let err = studio
+        .start_iso_audio(&r.adapters, &start_request("mem://iso"))
+        .unwrap_err();
+    assert!(
+        matches!(err, RecordError::Iso(rbs_record::IsoError::NotHeard { .. })),
+        "{err}"
+    );
+    assert!(!studio.iso_audio_running());
+
+    let mut skipping = start_request("mem://iso");
+    skipping.skip_unheard = true;
+    let started = studio.start_iso_audio(&r.adapters, &skipping).unwrap();
+    assert_eq!(started.audio_tracks, 1);
+    assert_eq!(started.not_heard, [(off_air, "Spare mic".to_owned())]);
+    let text = started.manifest.to_toml();
+    assert!(text.contains("Microphone.mkv"), "{text}");
+    assert!(!text.contains("Spare mic"), "{text}");
+    assert!(studio.stop_iso_audio());
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
 /// Remembers the adapter options of the audio session it opens, and emits nothing.
 struct SeenAudio {
     codec: CodecId,
