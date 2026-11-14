@@ -18,7 +18,7 @@ import { ReplayControls, ReplaySettings } from "replay.slint";
 // there, `value-text` the value with its unit; `min`, `max`, `snap` (the value's step),
 // `decimals` and `suffix` (the unit with its space) for the text while dragging), 1 a colour (`colour` as #rrggbb or
 // #rrggbbaa, `swatch` the same colour).
-export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color }
+export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color, changed: bool, default-text: string }
 // One filter of a source's chain: `known` false for a type this version lacks (it can
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterLevels { input: float, reduction: float }
@@ -310,6 +310,8 @@ export global Studio {
     // puts the stored values back.
     callback preview-filter(int /* filter */, int /* field */, float /* position */);
     callback commit-filter(int /* filter */);
+    // Puts one field of a filter back to its default (one change).
+    callback reset-filter-field(int /* filter */, int /* field */);
     callback cancel-filter(int /* filter */);
     callback set-filter-colour(int /* filter */, int /* field */, string /* colour */);
     callback reset-filter(int /* filter */);
@@ -2608,6 +2610,12 @@ component Section inherits VerticalLayout {
     // The explanation behind an info button at the end of the header (ADR-0094 rule A1);
     // empty draws no button.
     in property <string> hint;
+    // A section with one value and a known default (owner decision 2026-11-14, ADR-0114
+    // decision 4): while the value differs, a reset button sits at the trailing end of
+    // the header, before the info button. `default-text` names the default.
+    in property <bool> changed;
+    in property <string> default-text;
+    callback reset();
     property <bool> closed: Sections.closed(root.id, Sections.rev);
     spacing: Tokens.size-field-gap;
     HorizontalLayout {
@@ -2618,6 +2626,11 @@ component Section inherits VerticalLayout {
             collapsible: true;
             open: !root.closed;
             toggled(o) => { Sections.set-closed(root.id, !o); }
+        }
+        if root.changed && !root.closed: IconButton {
+            icon: IconName.reset;
+            name: @tr("Reset {} to {}", root.title, root.default-text);
+            clicked => { root.reset(); }
         }
         if root.hint != "" && !root.closed: InfoHint {
             label: root.title;
@@ -3555,8 +3568,12 @@ component FilterFieldView inherits VerticalLayout {
     property <string> colour-text: data.colour;
     changed colour-text => { colour.text = colour-text; }
     spacing: Tokens.space-1;
+    // The label line: name, (i), and at its right end the reset button while the value
+    // differs from the default (owner decision 2026-11-14). The line keeps the button's
+    // height either way, so the field does not move when the button comes and goes.
     HorizontalLayout {
         spacing: Tokens.space-1;
+        min-height: Tokens.size-control-sm;
         Text {
             text: data.label;
             color: Theme.text-secondary;
@@ -3565,6 +3582,12 @@ component FilterFieldView inherits VerticalLayout {
             accessible-role: none;
         }
         if data.help != "": InfoHint { label: data.label; text: data.help; }
+        Rectangle { horizontal-stretch: 1; }
+        if data.changed && filter.known: IconButton {
+            icon: IconName.reset;
+            name: @tr("Reset {} to {}", data.label, data.default-text);
+            clicked => { root.dragged = -1; Studio.reset-filter-field(filter.id, index); }
+        }
     }
     if data.kind == 0: HorizontalLayout {
         spacing: Tokens.space-2;
@@ -3782,6 +3805,10 @@ component AudioFields inherits VerticalLayout {
     Section {
         title: @tr("Sound");
         id: "properties.sound";
+        // Position 1 is 0 dB, the top of the fader and the default.
+        changed: data.volume < 1;
+        default-text: @tr("0 dB");
+        reset => { Studio.set-source-volume(data.id, 1); }
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             alignment: stretch;
@@ -3817,6 +3844,9 @@ component AudioFields inherits VerticalLayout {
     Section {
         title: @tr("Sync offset");
         id: "properties.sync";
+        changed: data.sync-offset != 0;
+        default-text: @tr("0 ms");
+        reset => { Studio.set-source-sync-offset(data.id, 0); }
         hint: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
