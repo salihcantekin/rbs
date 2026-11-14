@@ -9,6 +9,10 @@
 //! *unknown*, a [`Level`], and how many separate video and audio tracks fit
 //! ([`MaxTracks`]). Nothing here runs unless the caller asks (P13).
 
+mod probe;
+
+pub use probe::{CACHE_FOR, DiskProbe, FreeSpace, PROBE_TIMEOUT, ReadFreeSpace};
+
 use std::time::Duration;
 
 use rbs_scene::model::SourceId;
@@ -262,6 +266,19 @@ impl SizeClass {
             Self::Above2160 => "above-2160",
         }
     }
+
+    /// The class named `s` ([`SizeClass::as_str`]).
+    pub fn parse(s: &str) -> Option<Self> {
+        [
+            Self::L720,
+            Self::L1080,
+            Self::L1440,
+            Self::L2160,
+            Self::Above2160,
+        ]
+        .into_iter()
+        .find(|c| c.as_str() == s)
+    }
 }
 
 /// Frame-rate class of a calibration entry: 30, 60 or above 60, at or below.
@@ -295,6 +312,13 @@ impl FpsClass {
             Self::Above60 => "above-60",
         }
     }
+
+    /// The class named `s` ([`FpsClass::as_str`]).
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::F30, Self::F60, Self::Above60]
+            .into_iter()
+            .find(|c| c.as_str() == s)
+    }
 }
 
 /// Rate-control class of a calibration entry.
@@ -316,6 +340,13 @@ impl RateClass {
             Self::Vbr => "vbr",
             Self::Cq => "cq",
         }
+    }
+
+    /// The class named `s` ([`RateClass::as_str`]).
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Cbr, Self::Vbr, Self::Cq]
+            .into_iter()
+            .find(|c| c.as_str() == s)
     }
 }
 

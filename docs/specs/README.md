@@ -25,7 +25,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
 | [recording-protection.md](recording-protection.md) | Draft | `rbs-record` (`protection`: guard, probe port and worker), `rbs-system-probe` (OS readings), `rbs-app` (host, `protection.status`; ADR-0090 phase one) |
-| [output-estimate.md](output-estimate.md) | Draft | `rbs-record` (`estimate`: the pure cost estimate of a start, ADR-0087 step A). Probe, calibration, API and UI are later steps |
+| [output-estimate.md](output-estimate.md) | Draft | `rbs-record` (`estimate`: the pure cost estimate of a start and the disk probe), `rbs-app` (`calibration_file`: `calibration.toml`). Calibration run, API and UI are later steps (ADR-0087) |
 | [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk` (manifest), `rbs-plugin-host` (reads manifests, loads nothing). Loaders are not started |
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
 | [control-api.md](control-api.md) | Draft | `rbs-api`, `rbs-api-ws`, `rbs-api-ipc` (ADR-0044). What is still missing is in that spec's implementation status |
