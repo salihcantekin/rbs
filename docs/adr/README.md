@@ -120,7 +120,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
 | [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Accepted |
 | [0111](0111-vertical-outputs-start-with-the-main-ones.md) | Vertical outputs start and stop with the main ones, and each output shows its own state | Accepted |
-| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted |
+| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted; decision 6 superseded in part by ADR-0120 |
 | [0113](0113-experience-level-and-first-run.md) | An experience level and the first-run choice | Accepted |
 | [0114](0114-screen-grammar.md) | One screen grammar: row, list row, section marks, held edits, one home | Accepted |
 | [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Accepted |
@@ -128,3 +128,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0117](0117-still-sources-as-images.md) | Still sources are recorded separately as PNG images, not video | Accepted |
 | [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted |
 | [0119](0119-where-separate-files-are-encoded.md) | Separate files take the cheapest path per source, and the user picks where the rest is encoded | Accepted |
+| [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted |

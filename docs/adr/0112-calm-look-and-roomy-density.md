@@ -83,3 +83,4 @@ Follow-up check by the same reviewer (2026-11-13, texts at `26c3d03`): approve, 
 
 - 2026-11-13: Owner (Salih) accepts this ADR after the independent review recorded above (rounds 1 to 3 and the follow-up check; reviewer verdict: approve). Status: Accepted.
 - 2026-11-14: decision 4 is superseded in part by [ADR-0118](0118-tint-buttons.md) (Tint buttons): a secondary button has no `border.strong` outline; it draws a `border.subtle` outline only while its fill does not separate from a surface. Fields, dropdowns, segmented tracks and switches keep their boundaries.
+- 2026-11-14: decision 6 ("No shadows") is superseded in part by [ADR-0120](0120-theme-effects.md) (Theme effects), for themes whose effects are not calm.
