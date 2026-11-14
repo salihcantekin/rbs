@@ -4237,7 +4237,8 @@ export component RecordingSettings inherits Rectangle {
             }
             SettingRow {
                 label: @tr("Format");
-                help: @tr("Video carries the picture. Audio is the mix, with no picture. WAV is uncompressed. FLAC is lossless and smaller.");
+                help: @tr("Audio records the mix with no picture.");
+                hint: @tr("Video carries the picture. Audio is the mix, with no picture. WAV is uncompressed. FLAC is lossless and smaller.");
                 enabled: idle;
                 fill: false;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm;
@@ -4268,7 +4269,8 @@ export component RecordingSettings inherits Rectangle {
             if Studio.out-audio-only && !Studio.out-flac: SettingRow {
                 divider: false;
                 label: @tr("PCM");
-                help: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording. 32-bit float does not clip.");
+                help: @tr("16-bit is the usual choice.");
+                hint: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording. 32-bit float does not clip.");
                 enabled: idle;
                 fill: false;
                 SegmentedControl {
