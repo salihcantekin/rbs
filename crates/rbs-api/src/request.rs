@@ -199,6 +199,69 @@ pub struct SourceRegionInfo {
     pub region: Option<[u32; 4]>,
 }
 
+/// `scene.audio.reset_source` (protocol 1.50, ADR-0091): a scene and one of the
+/// sources it may set a level for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneSourceRef {
+    /// The scene's id.
+    pub scene: u32,
+    /// The source's id.
+    pub source: u32,
+}
+
+/// `scene.audio.set` (protocol 1.50, ADR-0091): the scene's own level for a source.
+/// At least one of `volume` and `muted`; a field left out keeps what the scene has.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSceneLevel {
+    /// The scene's id.
+    pub scene: u32,
+    /// The source's id.
+    pub source: u32,
+    /// A linear factor from 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f32>,
+    /// Muted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+}
+
+/// One entry of a scene's own levels (protocol 1.50, ADR-0091); a field left out uses
+/// the source's own value.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneLevelInfo {
+    /// The source's id.
+    pub source: u32,
+    /// The scene's volume for it, a linear factor from 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f32>,
+    /// The scene's mute for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+}
+
+/// `scene.audio.get`'s answer (protocol 1.50, ADR-0091).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneLevels {
+    /// The scene's id.
+    pub scene: u32,
+    /// Own levels (`true`) or Shared levels.
+    pub own: bool,
+    /// Its entries by source id; empty in Shared levels.
+    #[serde(default)]
+    pub levels: Vec<SceneLevelInfo>,
+}
+
+/// `scene.audio.set`'s answer (protocol 1.50).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneLevelSet {
+    /// The scene was in Shared levels and this call turned it to Own levels (one undo
+    /// step, copying what was heard).
+    #[serde(default)]
+    pub turned_own: bool,
+}
+
 /// `source.set_chrome` (protocol 1.41, ADR-0104). Writes the insets and the region
 /// they describe. Does not move the item box. `null` clears chrome and the region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1266,6 +1329,16 @@ pub enum Command {
     /// `source.reset_chrome` (protocol 1.41): copies insets from `work_rect`.
     /// A no-op when the adapter did not report one.
     SourceResetChrome(SourceRef),
+    /// `scene.audio.get` (protocol 1.50, ADR-0091).
+    SceneAudioGet(SceneRef),
+    /// `scene.audio.set` (protocol 1.50).
+    SceneAudioSet(SetSceneLevel),
+    /// `scene.audio.own` (protocol 1.50): Own levels, copying what is heard.
+    SceneAudioOwn(SceneRef),
+    /// `scene.audio.shared` (protocol 1.50): Shared levels, discarding the entries.
+    SceneAudioShared(SceneRef),
+    /// `scene.audio.reset_source` (protocol 1.50): removes one entry.
+    SceneAudioResetSource(SceneSourceRef),
     /// `events.subscribe`: answered on the control thread with the `seq` of the topics'
     /// state keys, read after the subscriber mask was set. The target never sees it.
     EventsSubscribe(Subscribe),
@@ -1381,6 +1454,11 @@ impl Command {
             Command::SourceGetChrome(_) => "source.get_chrome",
             Command::SourceFitChrome(_) => "source.fit_chrome",
             Command::SourceResetChrome(_) => "source.reset_chrome",
+            Command::SceneAudioGet(_) => "scene.audio.get",
+            Command::SceneAudioSet(_) => "scene.audio.set",
+            Command::SceneAudioOwn(_) => "scene.audio.own",
+            Command::SceneAudioShared(_) => "scene.audio.shared",
+            Command::SceneAudioResetSource(_) => "scene.audio.reset_source",
             Command::EventsSubscribe(_) => "events.subscribe",
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
@@ -1537,6 +1615,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.get_chrome", Some(Scope::Control)),
     m("source.fit_chrome", Some(Scope::Control)),
     m("source.reset_chrome", Some(Scope::Control)),
+    m("scene.audio.get", Some(Scope::Read)),
+    m("scene.audio.set", Some(Scope::Control)),
+    m("scene.audio.own", Some(Scope::Control)),
+    m("scene.audio.shared", Some(Scope::Control)),
+    m("scene.audio.reset_source", Some(Scope::Control)),
     m("events.subscribe", Some(Scope::Read)),
     m("events.unsubscribe", Some(Scope::Read)),
     m("tokens.list", Some(Scope::Tokens)),
@@ -1830,6 +1913,16 @@ enum WireRequest {
     SourceFitChrome(SourceRef),
     #[serde(rename = "source.reset_chrome")]
     SourceResetChrome(SourceRef),
+    #[serde(rename = "scene.audio.get")]
+    SceneAudioGet(SceneRef),
+    #[serde(rename = "scene.audio.set")]
+    SceneAudioSet(SetSceneLevel),
+    #[serde(rename = "scene.audio.own")]
+    SceneAudioOwn(SceneRef),
+    #[serde(rename = "scene.audio.shared")]
+    SceneAudioShared(SceneRef),
+    #[serde(rename = "scene.audio.reset_source")]
+    SceneAudioResetSource(SceneSourceRef),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(Subscribe),
     #[serde(rename = "events.unsubscribe")]
@@ -1956,6 +2049,11 @@ impl From<WireRequest> for Request {
             WireRequest::SourceGetChrome(p) => Request::Command(C::SourceGetChrome(p)),
             WireRequest::SourceFitChrome(p) => Request::Command(C::SourceFitChrome(p)),
             WireRequest::SourceResetChrome(p) => Request::Command(C::SourceResetChrome(p)),
+            WireRequest::SceneAudioGet(p) => Request::Command(C::SceneAudioGet(p)),
+            WireRequest::SceneAudioSet(p) => Request::Command(C::SceneAudioSet(p)),
+            WireRequest::SceneAudioOwn(p) => Request::Command(C::SceneAudioOwn(p)),
+            WireRequest::SceneAudioShared(p) => Request::Command(C::SceneAudioShared(p)),
+            WireRequest::SceneAudioResetSource(p) => Request::Command(C::SceneAudioResetSource(p)),
             WireRequest::EventsSubscribe(p) => Request::Command(C::EventsSubscribe(p)),
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
@@ -2073,6 +2171,11 @@ impl From<Request> for WireRequest {
                 C::SourceGetChrome(p) => WireRequest::SourceGetChrome(p),
                 C::SourceFitChrome(p) => WireRequest::SourceFitChrome(p),
                 C::SourceResetChrome(p) => WireRequest::SourceResetChrome(p),
+                C::SceneAudioGet(p) => WireRequest::SceneAudioGet(p),
+                C::SceneAudioSet(p) => WireRequest::SceneAudioSet(p),
+                C::SceneAudioOwn(p) => WireRequest::SceneAudioOwn(p),
+                C::SceneAudioShared(p) => WireRequest::SceneAudioShared(p),
+                C::SceneAudioResetSource(p) => WireRequest::SceneAudioResetSource(p),
                 C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
@@ -2292,6 +2395,10 @@ pub enum Response {
     SourceSettings(SourceSettingsInfo),
     /// `source.get_region` (protocol 1.41).
     SourceRegion(SourceRegionInfo),
+    /// `scene.audio.get` (protocol 1.50).
+    SceneLevels(SceneLevels),
+    /// `scene.audio.set` (protocol 1.50).
+    SceneLevelSet(SceneLevelSet),
     /// `source.get_chrome` (protocol 1.41).
     SourceChrome(SourceChromeInfo),
     /// `look.list` (protocol 1.34).

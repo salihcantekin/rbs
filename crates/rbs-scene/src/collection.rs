@@ -11,9 +11,9 @@ use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, DISPLAY_SOURCE_TYPE, DisplayChrome, Fallback,
     Filter, FilterId, ItemContent, ItemId, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS,
-    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, Scene, SceneId, SceneItem, SceneScope,
-    SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
-    SourceRegion, show_for_is_valid,
+    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem,
+    SceneLevel, SceneScope, SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId,
+    SourceMonitor, SourceRegion, show_for_is_valid,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -90,6 +90,9 @@ pub enum SceneError {
     /// A global scene (ADR-0065) would be shown as program or preview, nested, nest a
     /// scene, or not be scoped to its own canvas.
     GlobalScene(SceneId),
+    /// The scene is in Shared levels, so it has no entries of its own to edit
+    /// (ADR-0091).
+    SharedLevels(SceneId),
 }
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
@@ -168,6 +171,7 @@ impl fmt::Display for SceneError {
                 write!(f, "show duration must be from 1 to {MAX_SHOW_FOR_MS} ms")
             }
             SceneError::ChromeNotDisplay => f.write_str("only a display source can store chrome"),
+            SceneError::SharedLevels(id) => write!(f, "{id} uses the sources' own levels"),
         }
     }
 }
@@ -208,6 +212,9 @@ enum Op {
     InsertSource {
         source: Source,
         placements: Vec<(SceneId, usize, SceneItem)>,
+        /// Its entries in scenes' own levels (ADR-0091), put back into the scenes
+        /// still in Own levels.
+        levels: Vec<(SceneId, SceneLevel)>,
     },
     RemoveSource(SourceId),
     /// Several edits that undo and redo as one (a picture deleted with its companions,
@@ -263,6 +270,21 @@ enum Op {
         globals: Vec<CanvasId>,
     },
     RemoveScene(SceneId),
+    /// Turns a scene's Own levels on (`new` is `Some`) or off (ADR-0091). Checks only
+    /// the mode, so live level edits never make it conflict; the inverse keeps the
+    /// entries current when it is applied.
+    SetSceneAudio {
+        scene: SceneId,
+        expected_own: bool,
+        new: Option<SceneAudio>,
+    },
+    /// Replaces one entry of a scene in Own levels (`None`: no entry, ADR-0091).
+    SetSceneLevel {
+        scene: SceneId,
+        source: SourceId,
+        expected: Option<SceneLevel>,
+        new: Option<SceneLevel>,
+    },
     ReplaceSceneHeader {
         id: SceneId,
         expected: (String, SceneScope),
@@ -935,6 +957,7 @@ impl SceneCollection {
             Op::InsertSource {
                 source,
                 placements: Vec::new(),
+                levels: Vec::new(),
             },
             next,
         )?;
@@ -1247,6 +1270,7 @@ impl SceneCollection {
             name: name.trim().to_owned(),
             scope,
             items: Vec::new(),
+            audio: None,
         };
         let undo = self.apply_with(
             Op::InsertScene {
@@ -1285,6 +1309,7 @@ impl SceneCollection {
             name: name.trim().to_owned(),
             scope: source.scope,
             items,
+            audio: source.audio.clone(),
         };
         let undo = self.apply_with(
             Op::InsertScene {
@@ -1302,6 +1327,125 @@ impl SceneCollection {
     /// showing it show nothing; the undo restores all of it.
     pub fn remove_scene(&mut self, id: SceneId) -> Result<Undo, SceneError> {
         self.apply(Op::RemoveScene(id))
+    }
+
+    /// Turns a scene's Own levels on (ADR-0091), with these entries: the caller copies
+    /// the effective levels of the scene's sources so nothing jumps
+    /// ([`SceneCollection::heard_levels`]). Refused for a global scene. One undo step;
+    /// the scene in Own levels already changes nothing but its entries.
+    pub fn set_scene_own_levels(
+        &mut self,
+        id: SceneId,
+        audio: SceneAudio,
+    ) -> Result<Undo, SceneError> {
+        if self.is_global_scene(id) {
+            return Err(SceneError::GlobalScene(id));
+        }
+        let expected_own = self.get_scene(id)?.audio.is_some();
+        self.apply(Op::SetSceneAudio {
+            scene: id,
+            expected_own,
+            new: Some(audio),
+        })
+    }
+
+    /// Puts a scene back in Shared levels, discarding its entries (ADR-0091). One undo
+    /// step, whose undo restores the entries.
+    pub fn set_scene_shared_levels(&mut self, id: SceneId) -> Result<Undo, SceneError> {
+        let expected_own = self.get_scene(id)?.audio.is_some();
+        self.apply(Op::SetSceneAudio {
+            scene: id,
+            expected_own,
+            new: None,
+        })
+    }
+
+    /// Sets, changes or (with `None`) removes a scene's entry for a source (ADR-0091).
+    /// `SharedLevels` while the scene is in Shared levels; `InvalidVolume` for a volume
+    /// outside `0.0..=1.0`. A live edit: the record covers only this entry.
+    pub fn set_scene_level(
+        &mut self,
+        scene: SceneId,
+        source: SourceId,
+        level: Option<SceneLevel>,
+    ) -> Result<Undo, SceneError> {
+        self.get_source(source)?;
+        let audio = self
+            .get_scene(scene)?
+            .audio
+            .as_ref()
+            .ok_or(SceneError::SharedLevels(scene))?;
+        if level.is_some_and(|l| !l.is_valid()) {
+            return Err(SceneError::InvalidVolume);
+        }
+        let expected = audio.level(source).copied();
+        self.apply(Op::SetSceneLevel {
+            scene,
+            source,
+            expected,
+            new: level,
+        })
+    }
+
+    /// Every source `scene` places on `canvas`: its own items, the items of scenes it
+    /// nests and the canvas's global sources (ADR-0065), hidden items included. The
+    /// sources [`SceneCollection::set_scene_own_levels`] callers copy.
+    pub fn placed_sources(&self, canvas: CanvasId, scene: SceneId) -> BTreeSet<SourceId> {
+        let mut found = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let globals = self.canvases.get(&canvas).and_then(|c| c.globals);
+        let mut stack: Vec<SceneId> = globals.into_iter().chain([scene]).collect();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(s) = self.scenes.get(&id) else {
+                continue;
+            };
+            for item in &s.items {
+                match item.content {
+                    ItemContent::Source(src) => {
+                        found.insert(src);
+                    }
+                    ItemContent::Scene(nested) => stack.push(nested),
+                }
+            }
+        }
+        found
+    }
+
+    /// The levels a scene starts Own levels with (ADR-0091 decision 5): for every
+    /// source it places on `canvas`, the level the scene makes heard in Shared levels,
+    /// the source's own, so turning Own levels on changes nothing heard, on air or the
+    /// next time the scene goes on air.
+    pub fn heard_levels(&self, canvas: CanvasId, scene: SceneId) -> SceneAudio {
+        let levels = self
+            .placed_sources(canvas, scene)
+            .into_iter()
+            .filter_map(|id| {
+                let audio = self.sources.get(&id)?.audio;
+                Some((id, SceneLevel::new(Some(audio.volume), Some(audio.muted))))
+            })
+            .collect();
+        SceneAudio::new(levels)
+    }
+
+    /// The program scene's own levels on `canvas`, while it is in Own levels
+    /// (ADR-0091).
+    pub fn program_levels(&self, canvas: CanvasId) -> Option<&SceneAudio> {
+        let program = self.canvases.get(&canvas)?.program?;
+        self.scenes.get(&program)?.audio.as_ref()
+    }
+
+    /// The volume and mute the mixer of `canvas` gives `source` (ADR-0091 decision 3):
+    /// the program scene's entry over the source's own values. `None` for an unknown
+    /// source.
+    pub fn heard_audio(&self, canvas: CanvasId, source: SourceId) -> Option<SourceAudio> {
+        let audio = self.sources.get(&source)?.audio;
+        Some(match self.program_levels(canvas) {
+            Some(levels) => levels.heard(source, audio),
+            None => audio,
+        })
     }
 
     /// Renames a scene.
@@ -1700,7 +1844,11 @@ impl SceneCollection {
                     new: expected,
                 })
             }
-            Op::InsertSource { source, placements } => {
+            Op::InsertSource {
+                source,
+                placements,
+                levels,
+            } => {
                 let id = source.id;
                 Self::restorable(self.next.source, id.0, self.sources.contains_key(&id))?;
                 for f in &source.filters {
@@ -1710,6 +1858,13 @@ impl SceneCollection {
                 }
                 self.sources.insert(id, source);
                 self.restore_items(placements)?;
+                // A scene that went back to Shared levels since keeps them (ADR-0091).
+                for (scene, level) in levels {
+                    if let Some(audio) = self.scenes.get_mut(&scene).and_then(|s| s.audio.as_mut())
+                    {
+                        audio.levels.insert(id, level);
+                    }
+                }
                 Ok(Op::RemoveSource(id))
             }
             Op::Batch(ops) => {
@@ -1726,7 +1881,17 @@ impl SceneCollection {
                     .remove(&id)
                     .ok_or(SceneError::UnknownSource(id))?;
                 let placements = self.remove_items(ItemContent::Source(id));
-                Ok(Op::InsertSource { source, placements })
+                let mut levels = Vec::new();
+                for scene in self.scenes.values_mut() {
+                    if let Some(level) = scene.audio.as_mut().and_then(|a| a.levels.remove(&id)) {
+                        levels.push((scene.id, level));
+                    }
+                }
+                Ok(Op::InsertSource {
+                    source,
+                    placements,
+                    levels,
+                })
             }
             Op::SetSourceAudio {
                 source,
@@ -1934,6 +2099,51 @@ impl SceneCollection {
                     globals,
                 })
             }
+            Op::SetSceneAudio {
+                scene,
+                expected_own,
+                new,
+            } => {
+                let s = self
+                    .scenes
+                    .get_mut(&scene)
+                    .ok_or(SceneError::UnknownScene(scene))?;
+                if s.audio.is_some() != expected_own {
+                    return Err(SceneError::UndoConflict);
+                }
+                let own = new.is_some();
+                let old = std::mem::replace(&mut s.audio, new);
+                Ok(Op::SetSceneAudio {
+                    scene,
+                    expected_own: own,
+                    new: old,
+                })
+            }
+            Op::SetSceneLevel {
+                scene,
+                source,
+                expected,
+                new,
+            } => {
+                let s = self
+                    .scenes
+                    .get_mut(&scene)
+                    .ok_or(SceneError::UnknownScene(scene))?;
+                let audio = s.audio.as_mut().ok_or(SceneError::UndoConflict)?;
+                if audio.levels.get(&source).copied() != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                match new {
+                    Some(level) => audio.levels.insert(source, level),
+                    None => audio.levels.remove(&source),
+                };
+                Ok(Op::SetSceneLevel {
+                    scene,
+                    source,
+                    expected: new,
+                    new: expected,
+                })
+            }
             Op::ReplaceSceneHeader { id, expected, new } => {
                 let s = self
                     .scenes
@@ -2110,6 +2320,18 @@ impl SceneCollection {
             }
             if let SceneScope::Canvas(c) = s.scope {
                 self.get_canvas(c)?;
+            }
+            if let Some(audio) = &s.audio {
+                // A global scene is never on air, so levels there would be dead data.
+                if globals.contains(&s.id) {
+                    return Err(SceneError::GlobalScene(s.id));
+                }
+                for (source, level) in &audio.levels {
+                    self.get_source(*source)?;
+                    if !level.is_valid() {
+                        return Err(SceneError::InvalidVolume);
+                    }
+                }
             }
             for item in &s.items {
                 if !show_for_is_valid(item.show_for_ms) {

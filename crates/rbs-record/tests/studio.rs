@@ -18,6 +18,7 @@ use rbs_record::{
     AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, ExtraCanvas, OUTPUT, OutputSettings, RENDER, RecordError,
     Studio, StudioSettings, VIDEO_ENCODER,
 };
+use rbs_scene::SceneLevel;
 #[cfg(any(windows, target_vendor = "apple"))]
 use rbs_scene::model::CanvasId;
 use rbs_scene::model::{ItemContent, Layout, Settings};
@@ -489,6 +490,66 @@ fn volume_and_mute_reach_the_mixer_without_a_rebind() {
     assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
     assert!(peak(&studio, mic) > 0.0, "unmuted");
     assert_eq!(peak(&studio, system), 0.0, "volume 0");
+    assert_eq!(studio.mixer_anomalies(), 0);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_scene_switch_sends_the_program_scenes_own_levels() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let system = col.sources().find(|s| s.name == "System audio").unwrap().id;
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    // "Intermission": the same sources, the microphone muted by the scene (ADR-0091).
+    let (quiet, _) = col.duplicate_scene(live, "Intermission").unwrap();
+    col.set_scene_own_levels(quiet, col.heard_levels(canvas, quiet))
+        .unwrap();
+    col.set_scene_level(quiet, mic, Some(SceneLevel::new(None, Some(true))))
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let peak = |s: &Studio, id| s.meter(id).unwrap().take().peak(0);
+    let settle = |studio: &mut Studio| {
+        let t = blocks(studio);
+        assert!(run_until(studio, &clock, |s| blocks(s) >= t + 5));
+        let _ = (peak(studio, mic), peak(studio, system));
+        let t = blocks(studio);
+        assert!(run_until(studio, &clock, |s| blocks(s) >= t + 10));
+    };
+    settle(&mut studio);
+    assert!(peak(&studio, mic) > 0.0, "Live uses the source's own level");
+
+    // The switch goes through the ordinary update and brings the scene's levels.
+    col.set_program(canvas, Some(quiet)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    settle(&mut studio);
+    assert_eq!(peak(&studio, mic), 0.0, "muted by the scene");
+    assert!(peak(&studio, system) > 0.0, "no entry: its own level");
+
+    // A live edit of the program scene's entry takes the light path.
+    col.set_scene_level(quiet, mic, None).unwrap();
+    assert!(studio.set_mix(&col));
+    settle(&mut studio);
+    assert!(peak(&studio, mic) > 0.0, "entry reset");
+
+    // Back to a scene in Shared levels: the source's own values again.
+    col.set_scene_level(quiet, mic, Some(SceneLevel::new(None, Some(true))))
+        .unwrap();
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    settle(&mut studio);
+    assert!(peak(&studio, mic) > 0.0);
     assert_eq!(studio.mixer_anomalies(), 0);
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");

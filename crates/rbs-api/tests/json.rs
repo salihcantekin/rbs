@@ -125,6 +125,10 @@ fn source() -> SourceInfo {
         }],
         sync_offset_ms: -40,
         glide: None,
+        heard: Some(Heard {
+            volume: 1.0,
+            muted: false,
+        }),
     }
 }
 
@@ -134,10 +138,12 @@ fn scenes() -> SceneList {
             SceneInfo {
                 id: 0,
                 name: "Talk".into(),
+                own_audio: true,
             },
             SceneInfo {
                 id: 2,
                 name: "Game".into(),
+                own_audio: false,
             },
         ],
         program: 2,
@@ -435,6 +441,19 @@ fn every_request() -> Vec<Request> {
         c(Command::SourceGetChrome(SourceRef { source: 3 })),
         c(Command::SourceFitChrome(SourceRef { source: 3 })),
         c(Command::SourceResetChrome(SourceRef { source: 3 })),
+        c(Command::SceneAudioGet(SceneRef { scene: 2 })),
+        c(Command::SceneAudioSet(SetSceneLevel {
+            scene: 2,
+            source: 3,
+            volume: Some(0.25),
+            muted: None,
+        })),
+        c(Command::SceneAudioOwn(SceneRef { scene: 2 })),
+        c(Command::SceneAudioShared(SceneRef { scene: 2 })),
+        c(Command::SceneAudioResetSource(SceneSourceRef {
+            scene: 2,
+            source: 3,
+        })),
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
             canvas: Some(canvas()),
@@ -1696,4 +1715,44 @@ fn separate_files_round_trip_and_later_options_are_refused() {
             .get("record_separately")
             .is_none()
     );
+}
+
+#[test]
+fn scene_levels_are_optional_fields_and_their_answers_round_trip() {
+    // Protocol 1.50 (ADR-0091): a row without an entry and a scene in Shared levels
+    // look as they did before.
+    let row = serde_json::to_value(SourceInfo {
+        heard: None,
+        ..source()
+    })
+    .unwrap();
+    assert!(row.get("heard").is_none());
+    assert_eq!(
+        serde_json::to_value(source()).unwrap()["heard"],
+        json!({"volume": 1.0, "muted": false})
+    );
+    let list = serde_json::to_value(scenes()).unwrap();
+    assert_eq!(list["scenes"][0]["own_audio"], true);
+    assert!(list["scenes"][1].get("own_audio").is_none());
+    let older: SceneInfo = serde_json::from_value(json!({"id": 1, "name": "A"})).unwrap();
+    assert!(!older.own_audio);
+    round_trip(&SceneLevels {
+        scene: 2,
+        own: true,
+        levels: vec![SceneLevelInfo {
+            source: 3,
+            volume: None,
+            muted: Some(true),
+        }],
+    });
+    round_trip(&SceneLevelSet { turned_own: true });
+    // Only the given fields are sent.
+    let set = serde_json::to_value(SetSceneLevel {
+        scene: 2,
+        source: 3,
+        volume: None,
+        muted: Some(true),
+    })
+    .unwrap();
+    assert_eq!(set, json!({"scene": 2, "source": 3, "muted": true}));
 }

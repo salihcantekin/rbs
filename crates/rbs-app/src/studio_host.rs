@@ -52,8 +52,8 @@ use rbs_scene::model::{
     Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion,
 };
 use rbs_scene::{
-    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, Undo, place_chrome, recrop_keeping,
-    visible_size,
+    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, SceneLevel, Undo, place_chrome,
+    recrop_keeping, visible_size,
 };
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::BrowserTree;
@@ -342,6 +342,9 @@ pub struct SourceRow {
     /// The source's volume, a linear factor from 0 to 1, its mute (ADR-0059) and its
     /// sync offset (ADR-0062).
     pub audio: SourceAudio,
+    /// What the mix hears while the program scene, in Own levels, has an entry for the
+    /// source (ADR-0091); `None` when `audio` is what is heard.
+    pub heard: Option<SourceAudio>,
     /// Its filters in chain order (ADR-0062).
     pub filters: Vec<filters::FilterRow>,
     /// A global source's row (ADR-0065): its item is in the canvas's global scene.
@@ -410,6 +413,7 @@ impl PartialEq for SourceRow {
             && self.active == other.active
             && self.locked == other.locked
             && self.audio == other.audio
+            && self.heard == other.heard
             && self.filters == other.filters
             && self.global == other.global
             && self.also_in == other.also_in
@@ -1446,6 +1450,8 @@ pub struct SceneRow {
     pub id: SceneId,
     /// Its name.
     pub name: String,
+    /// The scene keeps its own levels (ADR-0091).
+    pub own_audio: bool,
 }
 
 /// A source of the collection, for "Add existing source".
@@ -7454,6 +7460,134 @@ impl Host {
         Ok(true)
     }
 
+    /// A scene the Scenes panel lists, by name, for the scene levels methods; a global
+    /// scene is never listed (ADR-0065).
+    fn levels_scene(&self, id: SceneId) -> Result<String, Refusal> {
+        self.collection
+            .scene(id)
+            .filter(|_| self.listed(id))
+            .map(|s| s.name.clone())
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))
+    }
+
+    /// Turns a scene's Own levels on (ADR-0091 decision 5), copying what every source
+    /// it places is heard at now, so nothing jumps. One undo step. `Ok(false)` when it
+    /// is in Own levels already.
+    fn scene_levels_own(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if self.collection.scene(id).is_some_and(Scene::own_levels) {
+            return Ok(false);
+        }
+        let levels = self.collection.heard_levels(self.canvas, id);
+        let undo = self
+            .collection
+            .set_scene_own_levels(id, levels)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Puts a scene back in Shared levels, discarding its entries (ADR-0091). One undo
+    /// step. `Ok(false)` when it is in Shared levels already.
+    fn scene_levels_shared(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if !self.collection.scene(id).is_some_and(Scene::own_levels) {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_scene_shared_levels(id)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Removes a scene's entry for one source (ADR-0091): one undo step. `Ok(false)`
+    /// when the scene has no entry for it (or is in Shared levels).
+    fn scene_level_reset(&mut self, id: SceneId, source: SourceId) -> Result<bool, Refusal> {
+        let name = self.levels_scene(id)?;
+        if self.collection.source(source).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no source {}.",
+                source.get()
+            )));
+        }
+        let has = self
+            .collection
+            .scene(id)
+            .and_then(|s| s.audio.as_ref())
+            .is_some_and(|a| a.level(source).is_some());
+        if !has {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_scene_level(id, source, None)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SceneLevels, &name, 0, vec![undo]);
+        if self.on_air(id) {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok(true)
+    }
+
+    /// A scene's own volume or mute for a source (ADR-0091): a live control, not on
+    /// the undo stack, sent to the mixer at once while the scene is on air. A scene in
+    /// Shared levels is turned to Own levels first, as one undo step. Answers whether
+    /// that happened and whether anything changed.
+    fn scene_level_set(
+        &mut self,
+        id: SceneId,
+        source: SourceId,
+        volume: Option<f32>,
+        muted: Option<bool>,
+    ) -> Result<(bool, bool), Refusal> {
+        self.levels_scene(id)?;
+        if self.collection.source(source).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no source {}.",
+                source.get()
+            )));
+        }
+        if volume.is_none() && muted.is_none() {
+            return Err(Refusal::Invalid(
+                "Give a volume, a mute or both.".to_owned(),
+            ));
+        }
+        let level = SceneLevel::new(volume, muted);
+        if !level.is_valid() {
+            return Err(Refusal::of(&SceneError::InvalidVolume));
+        }
+        let turned_own = self.scene_levels_own(id)?;
+        let now = self
+            .collection
+            .scene(id)
+            .and_then(|s| s.audio.as_ref())
+            .and_then(|a| a.level(source).copied());
+        let base = now.unwrap_or_default();
+        let new = SceneLevel::new(volume.or(base.volume), muted.or(base.muted));
+        let changed = now != Some(new);
+        if changed {
+            // Live: the record is not kept (ADR-0059, ADR-0091 decision 5).
+            let _ = self
+                .collection
+                .set_scene_level(id, source, Some(new))
+                .map_err(|e| Refusal::of(&e))?;
+        }
+        if (changed || turned_own) && self.on_air(id) {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok((turned_own, changed || turned_own))
+    }
+
+    /// True while `id` is the studio canvas's program scene, whose levels are heard.
+    fn on_air(&self, id: SceneId) -> bool {
+        self.scene == id
+    }
+
     /// The preview scene while the canvas is in studio mode (ADR-0061).
     fn preview(&self) -> Option<SceneId> {
         self.collection.canvas(self.canvas).and_then(|c| c.preview)
@@ -7635,6 +7769,7 @@ impl Host {
                 .map(|s| SceneRow {
                     id: s.id,
                     name: s.name.clone(),
+                    own_audio: s.own_levels(),
                 })
                 .collect(),
             program: self.scene,
@@ -8441,6 +8576,11 @@ impl Host {
                     active: !s.standby(),
                     locked: item.locked,
                     audio: s.audio,
+                    heard: self
+                        .collection
+                        .program_levels(self.canvas)
+                        .and_then(|l| l.level(s.id))
+                        .map(|l| l.over(s.audio)),
                     filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
                     status,
                     global,
@@ -8793,6 +8933,73 @@ impl ApiTarget<'_> {
                     .map_err(|e| refused(&e))?;
                 host.apply(notify);
                 Ok(Response::SceneAdded(SceneAdded { scene: id.get() }))
+            }
+            C::SceneAudioGet(p) => {
+                let id = SceneId::from_raw(p.scene);
+                host.levels_scene(id).map_err(|e| refused(&e))?;
+                let audio = host.collection.scene(id).and_then(|s| s.audio.as_ref());
+                Ok(Response::SceneLevels(rbs_api::request::SceneLevels {
+                    scene: p.scene,
+                    own: audio.is_some(),
+                    levels: audio
+                        .map(|a| {
+                            a.levels
+                                .iter()
+                                .map(|(source, l)| rbs_api::request::SceneLevelInfo {
+                                    source: source.get(),
+                                    volume: l.volume,
+                                    muted: l.muted,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }))
+            }
+            C::SceneAudioSet(p) => {
+                let (turned_own, changed) = host
+                    .scene_level_set(
+                        SceneId::from_raw(p.scene),
+                        SourceId::from_raw(p.source),
+                        p.volume,
+                        p.muted,
+                    )
+                    .map_err(|e| refused(&e))?;
+                if turned_own {
+                    // An undo step: saved and on the history like any edit.
+                    host.apply(notify);
+                } else if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::SceneLevelSet(rbs_api::request::SceneLevelSet {
+                    turned_own,
+                }))
+            }
+            C::SceneAudioOwn(p) => {
+                if host
+                    .scene_levels_own(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneAudioShared(p) => {
+                if host
+                    .scene_levels_shared(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneAudioResetSource(p) => {
+                if host
+                    .scene_level_reset(SceneId::from_raw(p.scene), SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?
+                {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
             }
             C::SceneSources(p) => {
                 let id = SceneId::from_raw(p.scene);
@@ -10346,6 +10553,10 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         glide: row.glide.map(api_glide_source),
+        heard: row.heard.map(|h| api::Heard {
+            volume: h.volume,
+            muted: h.muted,
+        }),
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),
@@ -10406,6 +10617,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             .map(|s| api::SceneInfo {
                 id: s.id.get(),
                 name: s.name.clone(),
+                own_audio: s.own_audio,
             })
             .collect(),
         program: list.program.get(),
@@ -10644,7 +10856,11 @@ fn run_copy(
         })
         .collect();
     let mut scenes: Vec<Scene> = collection.scenes().cloned().collect();
-    scenes.push(held.scene.clone());
+    // Scene levels are not held (ADR-0091 decision 3): the copy on air carries the real
+    // scene's levels as they are now, like the sources' own volume and mute.
+    let mut copy = held.scene.clone();
+    copy.audio = collection.scene(held.from).and_then(|s| s.audio.clone());
+    scenes.push(copy);
     SceneCollection::from_parts(
         canvases,
         collection.sources().cloned().collect(),

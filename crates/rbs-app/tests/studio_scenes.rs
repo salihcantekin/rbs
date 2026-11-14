@@ -1278,3 +1278,132 @@ fn the_control_api_arranges_and_resizes_the_vertical_canvas() {
     ));
     drop(host);
 }
+
+/// The source row of `id` in `source.list` (the program scene).
+fn row(c: &mut Client, id: u64) -> Value {
+    sources(c)
+        .into_iter()
+        .find(|r| r["id"] == id)
+        .expect("a row for the source")
+}
+
+#[test]
+fn a_scene_keeps_its_own_levels_and_they_are_heard_while_it_is_on_air() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let mic = add(&mut c, "audio_input", "Mic");
+    let brb = ok(&c.call("scene.add", json!({"name": "Be right back"})))["scene"]
+        .as_u64()
+        .unwrap();
+    ok(&c.call("item.add", json!({"source": mic, "scene": brb})));
+
+    // Shared levels by default: nothing new in the answers (ADR-0091).
+    let got = ok(&c.call("scene.audio.get", json!({"scene": brb}))).clone();
+    assert_eq!(got, json!({"scene": brb, "own": false, "levels": []}));
+    assert!(scenes(&mut c)["scenes"][1].get("own_audio").is_none());
+    assert!(row(&mut c, mic).get("heard").is_none());
+
+    // A level for a scene in Shared levels turns it to Own levels, copying what is
+    // heard, and says so.
+    let set = c.call(
+        "scene.audio.set",
+        json!({"scene": brb, "source": mic, "muted": true}),
+    );
+    assert_eq!(ok(&set)["turned_own"], true);
+    let got = ok(&c.call("scene.audio.get", json!({"scene": brb}))).clone();
+    assert_eq!(got["own"], true);
+    assert_eq!(
+        got["levels"],
+        json!([{"source": mic, "volume": 1.0, "muted": true}])
+    );
+    assert_eq!(scenes(&mut c)["scenes"][1]["own_audio"], true);
+    // Not on air: the program scene hears the source's own level.
+    assert!(row(&mut c, mic).get("heard").is_none());
+
+    // On air, the row says what is heard; the source's own values stay.
+    ok(&c.call("scene.switch", json!({"scene": brb})));
+    let r = row(&mut c, mic);
+    assert_eq!(r["muted"], false);
+    assert_eq!(r["heard"], json!({"volume": 1.0, "muted": true}));
+    ok(&c.call("source.set_volume", json!({"source": mic, "volume": 0.5})));
+    let r = row(&mut c, mic);
+    assert_eq!(r["volume"], 0.5);
+    assert_eq!(
+        r["heard"]["volume"], 1.0,
+        "the scene's entry is still in force"
+    );
+    // A second set on a scene in Own levels is live, not an undo step.
+    let set = c.call(
+        "scene.audio.set",
+        json!({"scene": brb, "source": mic, "volume": 0.25}),
+    );
+    assert_eq!(ok(&set)["turned_own"], false);
+    assert_eq!(
+        row(&mut c, mic)["heard"],
+        json!({"volume": 0.25, "muted": true})
+    );
+
+    // Reset one entry: one undo step.
+    ok(&c.call(
+        "scene.audio.reset_source",
+        json!({"scene": brb, "source": mic}),
+    ));
+    assert!(row(&mut c, mic).get("heard").is_none());
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(
+        row(&mut c, mic)["heard"],
+        json!({"volume": 0.25, "muted": true})
+    );
+
+    // Shared levels discard the entries; undo brings them back.
+    ok(&c.call("scene.audio.shared", json!({"scene": brb})));
+    assert!(row(&mut c, mic).get("heard").is_none());
+    assert!(scenes(&mut c)["scenes"][1].get("own_audio").is_none());
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(row(&mut c, mic)["heard"]["muted"], true);
+
+    // Own levels copy what the scene makes heard in Shared levels: the source's own
+    // level, not the program scene's entry.
+    ok(&c.call("scene.audio.own", json!({"scene": one})));
+    let got = ok(&c.call("scene.audio.get", json!({"scene": one}))).clone();
+    assert_eq!(
+        got["levels"],
+        json!([{"source": mic, "volume": 0.5, "muted": false}])
+    );
+    // Back to the first scene: its entry is heard, which is the source's own level.
+    ok(&c.call("scene.switch", json!({"scene": one})));
+    assert_eq!(
+        row(&mut c, mic)["heard"],
+        json!({"volume": 0.5, "muted": false})
+    );
+
+    // Refusals.
+    for (params, want) in [
+        (json!({"scene": brb, "source": mic}), "invalid_params"),
+        (
+            json!({"scene": brb, "source": mic, "volume": 2.0}),
+            "invalid_params",
+        ),
+        (
+            json!({"scene": 99, "source": mic, "muted": true}),
+            "not_found",
+        ),
+        (
+            json!({"scene": brb, "source": 99, "muted": true}),
+            "not_found",
+        ),
+    ] {
+        assert_eq!(
+            kind(&c.call("scene.audio.set", params.clone())),
+            want,
+            "{params}"
+        );
+    }
+    assert_eq!(
+        kind(&c.call("scene.audio.get", json!({"scene": 99}))),
+        "not_found"
+    );
+    drop(host);
+}
