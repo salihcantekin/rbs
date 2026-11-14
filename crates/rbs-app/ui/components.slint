@@ -426,8 +426,8 @@ export global Icons {
 }
 // END generated icon set
 
-// Button: kinds "primary", "secondary", "ghost", "danger" (outlined, with the trash icon,
-// ADR-0076), and "live" (only for stopping a live
+// Button (Tint look, ADR-0118): kinds "primary", "secondary", "ghost", "danger" (a
+// destructive tint with the trash icon, ADR-0076), and "live" (only for stopping a live
 // or recording output: the fixed live colour, rule U12). Activated by click, Enter or
 // Space.
 export component Button inherits Rectangle {
@@ -442,6 +442,9 @@ export component Button inherits Rectangle {
     // Optional icon before the text (toolbar commands), in `lead-ink` when set.
     in property <IconName> lead;
     in property <color> lead-ink: ink;
+    // `lead-ink` is a signal colour (Record's live dot, a running output's stop square):
+    // the icon sits in a `surface.sunken` well, where its contrast rule holds.
+    in property <bool> lead-signal: false;
     // A ghost button that must read as a button at rest (the mixer mute).
     in property <bool> framed: false;
     // The short name or reason shown as a tooltip while the pointer rests on the button or
@@ -459,32 +462,36 @@ export component Button inherits Rectangle {
     property <int> tip-owner;
     height: dense ? Tokens.size-control-sm : Tokens.size-control-md;
     min-width: max(root.height, content.preferred-width + (text == "" ? 0px : 2 * Tokens.space-3));
-    // Tint look (owner decision 2026-11-14): soft corners; a button with only an icon is
-    // round. A secondary button is a quiet tinted fill with no outline, so it reads as a
-    // button without a box drawn round it; ghost has no fill until the pointer comes.
-    // High contrast keeps an outline on every unfilled kind.
+    // Tint look (ADR-0118): soft corners; a button with only an icon is round. A
+    // secondary or danger button is a quiet tinted fill; it keeps a `border.subtle`
+    // outline only while that fill is too close to a surface (`Theme.button-outline`).
+    // Ghost has no fill until the pointer comes. High contrast outlines every unfilled
+    // kind but a plain ghost; a checked button always has its accent outline.
     property <bool> round: root.text == "";
-    border-radius: root.round ? root.height / 2 : Tokens.radius-button;
+    border-radius: root.round ? min(root.width, root.height) / 2 : Tokens.radius-button;
     property <bool> filled: kind == "primary" || kind == "live";
-    property <bool> outlined: enabled && !filled && (Theme.high-contrast ? kind != "ghost" || framed || checked : checked);
+    // An icon-only danger button (a row's delete) rests bare, like a ghost, so a list
+    // of rows does not carry a tinted disc each.
+    property <bool> rests-filled: kind == "secondary" || (kind == "danger" && !round) || framed;
+    property <bool> outlined: enabled && !filled && (checked || (Theme.high-contrast ? kind != "ghost" || framed : Theme.button-outline && rests-filled));
     background: !enabled ? transparent
         : kind == "primary" ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live
-        : kind == "danger" ? (touch.has-hover ? Theme.state-error-subtle-hover : Theme.state-error-subtle)
-        : checked ? (touch.has-hover ? Theme.accent-subtle-hover : Theme.accent-subtle)
+        : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.action-destructive-subtle-hover : root.round ? transparent : Theme.action-destructive-subtle)
+        : checked ? (touch.has-hover || touch.pressed ? Theme.accent-subtle-hover : Theme.accent-subtle)
         : touch.pressed ? Theme.button-pressed
         : touch.has-hover ? Theme.button-hover
         : kind == "secondary" || framed ? Theme.button-fill
         : transparent;
     border-width: outlined ? Tokens.size-border : 0px;
-    border-color: checked ? Theme.accent : Theme.border-strong;
+    border-color: checked ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
     // A one-pixel lip along the top of a filled button, inset past the corners.
-    if root.enabled && root.filled && !root.round && !touch.has-hover && !touch.pressed: Rectangle {
+    if root.enabled && root.kind == "primary" && !root.round && !touch.has-hover && !touch.pressed: Rectangle {
         y: 0px;
         x: root.border-radius;
         width: parent.width - 2 * root.border-radius;
         height: Tokens.size-border;
-        background: root.kind == "live" ? Theme.text-on-live : Theme.accent-hover;
+        background: Theme.accent-hover;
     }
     accessible-role: button;
     accessible-label: accessible-name;
@@ -512,23 +519,26 @@ export component Button inherits Rectangle {
     }
     out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : Theme.text-primary;
     // A danger button always shows the trash icon (ADR-0076): it is never bare coloured text.
-    property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" ? IconName.trash : IconName.none;
+    property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" && root.icon == IconName.none ? IconName.trash : IconName.none;
     content := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-1 + Tokens.space-1 / 2;
         // With text beside it, the lead icon of an unfilled button sits on its own small
-        // chip, so a row of commands scans by icon (Tint look).
-        if root.shown-lead != IconName.none && root.text != "" && !root.filled: VerticalLayout {
+        // chip, so a row of commands scans by icon (Tint look): `accent` on `button.chip`,
+        // or the caller's `lead-ink` when it set one (a caller that passes the ink itself
+        // gets the accent like one that passes nothing). A signal icon (`lead-signal`)
+        // sits in a `surface.sunken` well, with or without text.
+        if root.shown-lead != IconName.none && !root.filled && (root.text != "" || root.lead-signal): VerticalLayout {
             alignment: center;
             Rectangle {
                 width: Tokens.size-button-chip;
                 height: Tokens.size-button-chip;
-                border-radius: Tokens.radius-md;
-                background: !root.enabled ? transparent : root.kind == "danger" ? Theme.state-error-subtle-hover : Theme.button-chip;
-                Icon { name: root.shown-lead; ink: !root.enabled ? root.ink : root.kind == "danger" ? Theme.state-error : root.lead-ink == root.ink ? Theme.accent : root.lead-ink; }
+                border-radius: root.text == "" ? Tokens.size-button-chip / 2 : Tokens.radius-md;
+                background: !root.enabled ? transparent : root.lead-signal ? Theme.surface-sunken : root.kind == "danger" ? Theme.surface-raised : Theme.button-chip;
+                Icon { name: root.shown-lead; ink: !root.enabled ? root.ink : root.lead-signal ? root.lead-ink : root.kind == "danger" ? Theme.state-error : root.lead-ink == root.ink ? Theme.accent : root.lead-ink; }
             }
         }
-        if root.shown-lead != IconName.none && (root.text == "" || root.filled): VerticalLayout {
+        if root.shown-lead != IconName.none && (root.filled || (root.text == "" && !root.lead-signal)): VerticalLayout {
             alignment: center;
             Icon { name: root.shown-lead; ink: root.enabled ? root.lead-ink : root.ink; }
         }
@@ -584,6 +594,8 @@ export component SplitButton inherits Rectangle {
     in property <bool> checked: false;
     in property <IconName> lead;
     in property <color> lead-ink: ink;
+    // As Button: `lead-ink` is a signal colour, drawn in a `surface.sunken` well.
+    in property <bool> lead-signal: false;
     // The ▾ part's accessible name and tooltip, such as "Vertical stream".
     in property <string> menu-name;
     in property <string> menu-text;
@@ -595,13 +607,18 @@ export component SplitButton inherits Rectangle {
     out property <color> ink: !enabled ? Theme.text-disabled : part-ink;
     // The ▾ part stays usable while the command is disabled: its own ink and fill.
     property <color> part-ink: kind == "primary" && enabled ? Theme.text-inverse : Theme.text-primary;
-    // A disabled primary loses its accent fill (as a disabled Button), so a dimmed
-    // Go live does not keep a bright ▾ half.
-    property <color> rest: kind == "primary" && !enabled ? Theme.surface-raised
+    // Tint look as Button (ADR-0118). A disabled primary loses its accent fill (as a
+    // disabled Button), so a dimmed Go live does not keep a bright ▾ half.
+    property <color> rest: kind == "primary" && !enabled ? Theme.button-fill
         : kind == "primary" ? Theme.accent
         : checked && enabled ? Theme.accent-subtle
-        : Theme.surface-raised;
-    property <color> hover: kind == "primary" && enabled ? Theme.accent-hover : Theme.surface-overlay;
+        : Theme.button-fill;
+    property <color> hover: kind == "primary" && enabled ? Theme.accent-hover
+        : checked && enabled ? Theme.accent-subtle-hover
+        : Theme.button-hover;
+    property <color> pressed: kind == "primary" && enabled ? Theme.accent-pressed
+        : checked && enabled ? Theme.accent-subtle-hover
+        : Theme.button-pressed;
     property <int> tip-owner;
     height: Tokens.size-control-md;
     min-width: shape.min-width;
@@ -609,18 +626,20 @@ export component SplitButton inherits Rectangle {
     // The shape clips its parts to the rounded corners; the focus rings are drawn
     // around it, on what the button sits on (a ring on the primary fill would not show).
     shape := Rectangle {
-    border-radius: Tokens.radius-sm;
+    border-radius: Tokens.radius-button;
     clip: true;
     background: root.rest;
-    border-width: root.kind == "primary" && root.enabled ? 0px : Tokens.size-border;
-    border-color: Theme.border-subtle;
+    border-width: root.kind == "primary" && root.enabled ? 0px
+        : (root.checked && root.enabled) || Theme.high-contrast || Theme.button-outline ? Tokens.size-border
+        : 0px;
+    border-color: root.checked && root.enabled ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
     HorizontalLayout {
         main := Rectangle {
             min-width: main-row.preferred-width + 2 * Tokens.space-3;
             // Disabled: the command part has no fill (as a disabled Button); checked
             // wins over hover (as in Button).
             background: !root.enabled ? Theme.surface-base
-                : root.checked && root.kind != "primary" ? transparent
+                : main-touch.pressed ? root.pressed
                 : main-touch.has-hover ? root.hover : transparent;
             accessible-role: button;
             accessible-label: root.text;
@@ -630,9 +649,21 @@ export component SplitButton inherits Rectangle {
             main-row := HorizontalLayout {
                 alignment: center;
                 spacing: Tokens.space-1 + Tokens.space-1 / 2;
-                if root.lead != IconName.none: VerticalLayout {
+                // The lead icon as in Button: a chip on a secondary button, a well for a
+                // signal colour, bare on the primary fill.
+                if root.lead != IconName.none && (root.kind != "primary" || root.lead-signal): VerticalLayout {
                     alignment: center;
-                    Icon { name: root.lead; ink: root.enabled ? root.lead-ink : root.ink; }
+                    Rectangle {
+                        width: Tokens.size-button-chip;
+                        height: Tokens.size-button-chip;
+                        border-radius: Tokens.radius-md;
+                        background: !root.enabled ? transparent : root.lead-signal ? Theme.surface-sunken : Theme.button-chip;
+                        Icon { name: root.lead; ink: !root.enabled ? root.ink : root.lead-signal ? root.lead-ink : Theme.accent; }
+                    }
+                }
+                if root.lead != IconName.none && root.kind == "primary" && !root.lead-signal: VerticalLayout {
+                    alignment: center;
+                    Icon { name: root.lead; ink: root.ink; }
                 }
                 Text {
                     text: root.text;
@@ -661,7 +692,7 @@ export component SplitButton inherits Rectangle {
         }
         part := Rectangle {
             min-width: part-row.preferred-width + 2 * Tokens.space-1;
-            background: part-touch.has-hover ? root.hover : transparent;
+            background: part-touch.pressed ? root.pressed : part-touch.has-hover ? root.hover : transparent;
             accessible-role: button;
             accessible-label: root.menu-name;
             accessible-description: root.menu-description;
@@ -711,6 +742,7 @@ export component SplitButton inherits Rectangle {
         width: main.width + 2 * Tokens.size-focus-ring;
         height: root.height + 2 * Tokens.size-focus-ring;
         show: main-focus.ring;
+        radius: Tokens.radius-button;
     }
     FocusRing {
         x: part.x - Tokens.size-focus-ring;
@@ -718,6 +750,7 @@ export component SplitButton inherits Rectangle {
         width: part.width + 2 * Tokens.size-focus-ring;
         height: root.height + 2 * Tokens.size-focus-ring;
         show: part-focus.ring;
+        radius: Tokens.radius-button;
     }
 }
 

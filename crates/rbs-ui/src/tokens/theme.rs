@@ -205,9 +205,9 @@ pub const THEMEABLE: &[Themeable] = &[
     colour("color.state.warning", "Warning"),
     colour("color.state.healthy", "Healthy"),
     colour("color.state.error", "Error"),
-    colour("color.state.error.subtle", "Danger button"),
+    colour("color.action.destructive.subtle", "Danger button"),
     colour(
-        "color.state.error.subtle.hover",
+        "color.action.destructive.subtle.hover",
         "Danger button under the pointer",
     ),
     colour("color.action.destructive", "Destructive action"),
@@ -803,6 +803,35 @@ impl ResolvedTheme {
             _ => true,
         }
     }
+
+    /// True when a secondary button draws its `color.border.subtle` outline: its fill
+    /// (`color.button.fill`) is closer than [`PANEL_OUTLINE_BELOW`] to one of the surfaces
+    /// a button sits on, so the fill alone would not show the button's edge (ADR-0118).
+    /// Also true when a colour is missing.
+    pub fn button_outline(&self) -> bool {
+        let get = |n: &str| self.colors.get(n).copied();
+        match get("color.button.fill") {
+            Some(fill) => BUTTON_SURFACES
+                .iter()
+                .map(|n| get(n))
+                .any(|s| s.is_none_or(|s| button_outline(fill, s))),
+            None => true,
+        }
+    }
+}
+
+/// The surfaces a button sits on: the window ground, panels, wells and popups.
+pub const BUTTON_SURFACES: [&str; 4] = [
+    "color.surface.base",
+    "color.surface.raised",
+    "color.surface.sunken",
+    "color.surface.overlay",
+];
+
+/// Whether a button filled with `fill` on a surface of colour `surface` needs its outline
+/// (ADR-0118, the same threshold as a panel's, ADR-0112 decision 3).
+pub fn button_outline(fill: Color, surface: Color) -> bool {
+    fill.contrast(surface) < PANEL_OUTLINE_BELOW
 }
 
 /// Below this contrast between a panel and the window ground, the panel keeps its outline
@@ -1127,6 +1156,11 @@ impl Look<'_> {
             &len,
         );
         ascending(&["size.field.gap", "size.section.gap"], &len);
+        // A button's icon fits its chip, and the chip fits a dense button (ADR-0118).
+        ascending(
+            &["size.icon.box", "size.button.chip", "size.control.sm"],
+            &len,
+        );
         ascending(&["radius.sm", "radius.md", "radius.lg"], &len);
         ascending(
             &["type.caption", "type.body", "type.title", "type.heading"],
@@ -1139,6 +1173,14 @@ impl Look<'_> {
             p.push(ThemeProblem::at(
                 "size.focus-ring",
                 format!("size.focus-ring must not be wider than space.1 ({space})"),
+            ));
+        }
+        if let (Some(r), Some(sm)) = (len("radius.button"), len("size.control.sm"))
+            && r > sm / 2.0
+        {
+            p.push(ThemeProblem::at(
+                "radius.button",
+                format!("radius.button must not be more than half of size.control.sm ({sm})"),
             ));
         }
     }

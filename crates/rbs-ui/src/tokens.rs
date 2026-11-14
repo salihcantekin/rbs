@@ -49,8 +49,8 @@ pub const THEME_COLORS: &[&str] = &[
     "color.state.warning",
     "color.state.healthy",
     "color.state.error",
-    "color.state.error.subtle",
-    "color.state.error.subtle.hover",
+    "color.action.destructive.subtle",
+    "color.action.destructive.subtle.hover",
     "color.action.destructive",
     "color.meter.low",
     "color.meter.mid",
@@ -386,6 +386,23 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.text.primary", "color.button.hover", 4.5, 7.0),
     ("color.text.primary", "color.button.pressed", 4.5, 7.0),
     ("color.accent", "color.button.chip", 3.0, 3.0),
+    // The focus ring is drawn inside a button, over its own fill (ADR-0118).
+    ("color.border.focus", "color.button.fill", 3.0, 3.0),
+    ("color.border.focus", "color.button.hover", 3.0, 3.0),
+    ("color.border.focus", "color.button.pressed", 3.0, 3.0),
+    ("color.border.focus", "color.accent.subtle.hover", 3.0, 3.0),
+    (
+        "color.border.focus",
+        "color.action.destructive.subtle",
+        3.0,
+        3.0,
+    ),
+    (
+        "color.border.focus",
+        "color.action.destructive.subtle.hover",
+        3.0,
+        3.0,
+    ),
     ("color.text.primary", "color.button.chip", 4.5, 7.0),
     ("color.text.secondary", "color.button.chip", 4.5, 7.0),
     ("color.text.secondary", "color.button.fill", 4.5, 7.0),
@@ -394,10 +411,15 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.text.inverse", "color.accent.pressed", 4.5, 7.0),
     ("color.text.primary", "color.accent.subtle.hover", 4.5, 7.0),
     ("color.accent", "color.accent.subtle.hover", 3.0, 3.0),
-    ("color.state.error", "color.state.error.subtle", 4.5, 7.0),
     (
         "color.state.error",
-        "color.state.error.subtle.hover",
+        "color.action.destructive.subtle",
+        4.5,
+        7.0,
+    ),
+    (
+        "color.state.error",
+        "color.action.destructive.subtle.hover",
         4.5,
         7.0,
     ),
@@ -867,6 +889,8 @@ mod tests {
         let e = Tokens::parse(&low_contrast).unwrap_err().0;
         assert!(e.contains("color.text.secondary"), "{e}");
 
+        // Light enough to pass error-on-danger-fill contrast, so the hue check is the one
+        // that fails.
         let red_error = base.replacen(
             "\"color.state.error\" = \"#c38bf0\"",
             "\"color.state.error\" = \"#ff7070\"",

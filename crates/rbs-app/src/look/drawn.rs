@@ -70,15 +70,10 @@ const EXEMPT: [&str; 2] = ["color.text.disabled", "color.border.subtle"];
 /// the small live dot before "REC" on the selected scene row (`accent.subtle`), and
 /// for Record's dot and a running output's stop square on the button fills, which sit
 /// at the lightness of `surface.overlay` (Tint buttons, owner decision 2026-11-14).
-const ACCEPTED: [(&str, &str); 8] = [
+const ACCEPTED: [(&str, &str); 3] = [
     ("color.state.live", "color.surface.raised"),
     ("color.state.live", "color.surface.overlay"),
     ("color.state.live", "color.accent.subtle"),
-    ("color.state.live", "color.accent.subtle.hover"),
-    ("color.state.live", "color.button.fill"),
-    ("color.state.live", "color.button.hover"),
-    ("color.state.live", "color.button.pressed"),
-    ("color.state.live", "color.button.chip"),
 ];
 
 /// What a foreground colour draws: text needs 4.5:1, the others 3:1 (U7).
