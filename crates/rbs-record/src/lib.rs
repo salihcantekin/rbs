@@ -19,6 +19,7 @@
 //! in sync (ADR-0004).
 
 mod clip;
+pub mod estimate;
 mod iso;
 mod png_writer;
 pub mod protection;
