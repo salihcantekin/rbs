@@ -1426,6 +1426,9 @@ pub enum RecordingUpdate {
         video_encoder: String,
         /// The audio encoder's name, when audio is recorded.
         audio_encoder: Option<String>,
+        /// The names of the sources written as files of their own (ADR-0086), in
+        /// track order; empty for a recording of one file.
+        separate: Vec<String>,
     },
     /// It could not start, in words; nothing records.
     NotStarted(String),
@@ -1551,6 +1554,8 @@ pub struct SourceEntry {
     pub global: bool,
     /// Per-source slide override (ADR-0100).
     pub glide: Option<rbs_scene::SourceGlide>,
+    /// Marked to record its sound as a file of its own (ADR-0086).
+    pub record_separately: bool,
 }
 
 /// The scenes and sources of the collection, as the Scenes panel and the source
@@ -4562,6 +4567,19 @@ impl Host {
         out.size = if r.video.is_none() { None } else { r.size };
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
+        let separate: Vec<String> = iso
+            .as_ref()
+            .map(|f| {
+                f.tracks
+                    .iter()
+                    .filter_map(|t| {
+                        self.collection
+                            .source(SourceId::from_raw(t.source))
+                            .map(|s| s.name.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let started = started.map(|(id, video_encoder, audio_encoder)| {
             (
                 id,
@@ -4569,6 +4587,7 @@ impl Host {
                     path: path.to_path_buf(),
                     video_encoder,
                     audio_encoder,
+                    separate,
                 },
             )
         });
@@ -7958,6 +7977,7 @@ impl Host {
                 kind: SourceKind::of(&s.type_id),
                 global: self.global_item(s.id).is_some(),
                 glide: s.glide,
+                record_separately: s.record_separately.audio,
             })
             .collect();
         sources.sort_by_key(|s| s.name.to_lowercase());

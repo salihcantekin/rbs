@@ -403,7 +403,9 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
             path,
             video_encoder,
             audio_encoder,
+            separate,
         } => {
+            assert!(separate.is_empty());
             assert_eq!(path, first);
             assert_eq!(video_encoder, WORKING);
             assert!(audio_encoder.is_some());
@@ -724,7 +726,10 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
     // Marked, `iso` off (as `record.start_to_file` and `iso: false` ask): still one file.
     let single = dir.join("single.mkv");
     host.send(Command::StartRecording(request(single.clone(), None)));
-    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    match recording(&rx) {
+        RecordingUpdate::Started { separate, .. } => assert!(separate.is_empty()),
+        other => panic!("{other:?}"),
+    }
     stop_recording(&host, &rx, &clock);
     assert!(single.is_file());
 
@@ -735,7 +740,11 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
     with_tracks.iso = true;
     host.send(Command::StartRecording(with_tracks.clone()));
     match recording(&rx) {
-        RecordingUpdate::Started { path, .. } => assert_eq!(path, folder.join("master.mkv")),
+        RecordingUpdate::Started { path, separate, .. } => {
+            assert_eq!(path, folder.join("master.mkv"));
+            // The Outputs card names the sources written as files of their own.
+            assert_eq!(separate, vec![mic.name.clone()]);
+        }
         other => panic!("{other:?}"),
     }
     let manifest = std::fs::read_to_string(folder.join("recording.rbs.toml")).unwrap();
