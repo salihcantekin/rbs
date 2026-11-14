@@ -71,6 +71,9 @@ pub enum EditKind {
     Region,
     /// A source was marked to record separately, or the mark was cleared (ADR-0086).
     RecordSeparately,
+    /// A scene's levels changed mode (Own or Shared) or lost an entry (ADR-0091; the
+    /// name is the scene's). Level edits themselves are live, not undo steps.
+    SceneLevels,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or
