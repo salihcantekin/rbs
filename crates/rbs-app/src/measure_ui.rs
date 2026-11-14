@@ -5,8 +5,9 @@
 //! phase:
 //!
 //! - **idle**: nothing is sent; frames counted here are redraws nobody asked for;
-//! - **hover**: the pointer sweeps across the toolbar row and back, one step per tick, so
-//!   every button's hover fill changes;
+//! - **hover**: the pointer sweeps across the window and back, one step per tick, on a
+//!   new row every pass, so the hover fills change whichever page is showing (the first-run
+//!   page included);
 //! - **resize**: the window grows and shrinks by up to 200 logical pixels, one step per
 //!   tick.
 //!
@@ -17,7 +18,13 @@
 //! GPU memory are read from the OS tools while it runs (Activity Monitor or `footprint`
 //! on macOS, Task Manager on Windows).
 //!
-//! Zero cost when unused (P13): without the variable nothing here is installed.
+//! Frame notifications: Slint keeps one rendering notifier per window, and a second
+//! `set_rendering_notifier` replaces the first. On macOS and Windows the app already has
+//! one (the preview layer follows the window, `main.rs`), so there that notifier calls
+//! [`observe`] and this module installs none. Elsewhere it installs its own.
+//!
+//! Zero cost when unused (P13): without the variable nothing here is installed, and
+//! [`observe`] returns after one thread-local read.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,10 +35,10 @@ use slint::platform::WindowEvent;
 
 const WARM_UP: Duration = Duration::from_secs(3);
 const TICK: Duration = Duration::from_millis(16);
-/// Pointer steps across the toolbar, and the y of the sweep (logical pixels from the
-/// top: the middle of the toolbar row).
+/// Pointer steps across the window, and the rows of the sweep: the first at `HOVER_ROW`
+/// logical pixels from the top, each pass `HOVER_ROW` lower, wrapping at the bottom.
 const HOVER_STEPS: u32 = 120;
-const HOVER_Y: f32 = 28.0;
+const HOVER_ROW: f32 = 28.0;
 const RESIZE_REACH: f32 = 200.0;
 const RESIZE_STEPS: u32 = 60;
 
@@ -48,6 +55,44 @@ struct State {
     started: Option<Instant>,
     last_frame: Option<Instant>,
     render_start: Option<Instant>,
+    reported: bool,
+}
+
+thread_local! {
+    /// The running measurement, when the app's own notifier forwards frames here.
+    static ACTIVE: RefCell<Option<Rc<RefCell<State>>>> = const { RefCell::new(None) };
+}
+
+/// Called by the app's rendering notifier for every state; does nothing unless a
+/// measurement is running.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+pub fn observe(state: &slint::RenderingState) {
+    ACTIVE.with(|a| {
+        if let Some(st) = a.borrow().as_ref() {
+            record(st, state);
+        }
+    });
+}
+
+fn record(state: &Rc<RefCell<State>>, s: &slint::RenderingState) {
+    let now = Instant::now();
+    let mut st = state.borrow_mut();
+    match s {
+        slint::RenderingState::BeforeRendering => st.render_start = Some(now),
+        slint::RenderingState::AfterRendering => {
+            let render = st.render_start.take().map(|t| now - t);
+            let interval = st.last_frame.replace(now).map(|t| now - t);
+            if let Some(p) = st.phases.last_mut() {
+                if let Some(r) = render {
+                    p.renders.push(r);
+                }
+                if let Some(i) = interval {
+                    p.intervals.push(i);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The seconds `RBS_MEASURE_UI` asks for, if set and valid.
@@ -61,28 +106,13 @@ pub fn requested() -> Option<u64> {
 /// Installs the measure mode on `main`: the rendering notifier and the sweep timer.
 pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
     let state = Rc::new(RefCell::new(State::default()));
-    {
-        let state = state.clone();
-        let installed = crate::entry::set_rendering_notifier(main.window(), move |s, _| {
-            let now = Instant::now();
-            let mut st = state.borrow_mut();
-            match s {
-                slint::RenderingState::BeforeRendering => st.render_start = Some(now),
-                slint::RenderingState::AfterRendering => {
-                    let render = st.render_start.take().map(|t| now - t);
-                    let interval = st.last_frame.replace(now).map(|t| now - t);
-                    if let Some(p) = st.phases.last_mut() {
-                        if let Some(r) = render {
-                            p.renders.push(r);
-                        }
-                        if let Some(i) = interval {
-                            p.intervals.push(i);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        });
+    if cfg!(any(target_os = "macos", windows)) {
+        // The app's notifier forwards to `observe`.
+        ACTIVE.with(|a| *a.borrow_mut() = Some(state.clone()));
+    } else {
+        let st = state.clone();
+        let installed =
+            crate::entry::set_rendering_notifier(main.window(), move |s, _| record(&st, &s));
         if let Err(e) = installed {
             eprintln!("rbs measure: this renderer gives no frame notifications: {e:?}");
         }
@@ -107,11 +137,16 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
         let index = (at.as_secs_f64() / phase_len.as_secs_f64()) as usize;
         let names = ["idle", "hover", "resize"];
         if index >= names.len() {
-            if let Some(size) = base_size {
-                window.set_size(size);
+            // The quit takes effect after this tick returns; report once.
+            if !st.reported {
+                st.reported = true;
+                if let Some(size) = base_size {
+                    window.set_size(size);
+                }
+                report(&st.phases, scale);
+                ACTIVE.with(|a| *a.borrow_mut() = None);
+                let _ = slint::quit_event_loop();
             }
-            report(&st.phases, scale);
-            let _ = slint::quit_event_loop();
             return;
         }
         if st.phases.len() <= index {
@@ -126,6 +161,7 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
         let size = window.size().to_logical(scale);
         match names[index] {
             "hover" => {
+                let pass = tick / HOVER_STEPS;
                 let step = tick % (2 * HOVER_STEPS);
                 let step = if step < HOVER_STEPS {
                     step
@@ -133,8 +169,9 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
                     2 * HOVER_STEPS - step
                 };
                 let x = size.width * step as f32 / HOVER_STEPS as f32;
+                let y = hover_row(pass, size.height);
                 window.dispatch_event(WindowEvent::PointerMoved {
-                    position: slint::LogicalPosition::new(x, HOVER_Y),
+                    position: slint::LogicalPosition::new(x, y),
                 });
             }
             "resize" => {
@@ -156,6 +193,12 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
     });
     // The timer lives as long as the event loop.
     std::mem::forget(timer);
+}
+
+/// The y of the hover sweep's `pass`-th row in a window `height` tall.
+fn hover_row(pass: u32, height: f32) -> f32 {
+    let rows = (height / HOVER_ROW).floor().max(1.0) as u32;
+    HOVER_ROW * ((pass % rows) as f32 + 0.5)
 }
 
 fn ms(d: Duration) -> f64 {
@@ -205,5 +248,14 @@ mod tests {
         assert_eq!(s[3], 100.0);
         assert!((s[0] - 51.0).abs() < 1.0 && (s[1] - 95.0).abs() < 1.0);
         assert_eq!(spread(&[]), [0.0; 4]);
+    }
+
+    #[test]
+    fn hover_rows_move_down_and_wrap_inside_the_window() {
+        let h = 100.0;
+        let ys: Vec<f32> = (0..5).map(|p| hover_row(p, h)).collect();
+        assert_eq!(ys, vec![14.0, 42.0, 70.0, 14.0, 42.0]);
+        assert!(ys.iter().all(|y| *y < h));
+        assert_eq!(hover_row(3, 10.0), 14.0);
     }
 }

@@ -4212,6 +4212,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         if let Ok(app) = ctx.app.try_borrow() {
             let main = app.main.as_weak();
             let set = entry::set_rendering_notifier(app.main.window(), move |state, api| {
+                measure_ui::observe(&state);
                 // Once per surface: which graphics API Slint draws with. Slint's CPU
                 // surface calls no notifier at all, so a log without this line means
                 // that fallback.
