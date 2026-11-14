@@ -182,7 +182,8 @@ impl super::Studio {
                 start.video.color,
                 start.video.open_shadows,
             )
-            .give_way_after(budget);
+            .give_way_after(budget)
+            .every_tick();
             let config = super::video_encoder_config(&start.video, export.frame_format(), self.fps);
             let (encoder, _) = select::video_encoder(&adapters.video_encoders, &config)?;
             chains.push((export, encoder, size));

@@ -121,6 +121,9 @@ pub struct VideoExportNode {
     /// Nanoseconds of render tick time after which this export skips a canvas;
     /// `u64::MAX` (every export but an ISO track's) never skips.
     give_way_ns: u64,
+    /// Takes the canvas on every tick, stamped with the tick (an ISO track); false
+    /// (the master's) takes each canvas once, with its own time.
+    every_tick: bool,
 }
 
 impl VideoExportNode {
@@ -197,6 +200,7 @@ impl VideoExportNode {
             stats: Arc::default(),
             end: Arc::default(),
             give_way_ns: u64::MAX,
+            every_tick: false,
         }
     }
 
@@ -207,6 +211,17 @@ impl VideoExportNode {
     #[must_use]
     pub fn give_way_after(mut self, budget: std::time::Duration) -> Self {
         self.give_way_ns = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
+        self
+    }
+
+    /// An export that converts its input on every tick and stamps the frame with the
+    /// tick's time and index, so a picture that does not change (a still, a paused
+    /// source, a 30 fps camera on a 60 fps canvas) still gives one frame per tick
+    /// (ADR-0086: a separate file at the canvas frame rate). For ISO tracks only: the
+    /// master's canvas is new on every tick anyway.
+    #[must_use]
+    pub fn every_tick(mut self) -> Self {
+        self.every_tick = true;
         self
     }
 
@@ -289,9 +304,10 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let ctx_time = ctx.tick().time.as_nanos();
+        let tick = ctx.tick();
+        let ctx_time = tick.time.as_nanos();
         // `u64::MAX` (every export but an ISO track's): one compare that never holds.
-        let previous_ns = u64::try_from(ctx.tick().previous_busy.as_nanos()).unwrap_or(u64::MAX);
+        let previous_ns = u64::try_from(tick.previous_busy.as_nanos()).unwrap_or(u64::MAX);
         let give_way = previous_ns > self.give_way_ns;
         let gpu = ctx.shared();
         let (inputs, outputs, local) = ctx.parts();
@@ -320,12 +336,20 @@ impl Node<GpuRuntime> for VideoExportNode {
         }
 
         if let Some(canvas) = inputs.video(CANVAS_PIN, 0) {
-            let key = (canvas.timestamp(), canvas.sequence());
-            if self.last != Some(key) && canvas.timestamp().as_nanos() <= end {
+            // An ISO track stamps the tick, so it takes the same picture again.
+            let key = if self.every_tick {
+                (tick.time, tick.index)
+            } else {
+                (canvas.timestamp(), canvas.sequence())
+            };
+            if self.last != Some(key) && key.0.as_nanos() <= end {
                 self.last = Some(key);
                 if give_way {
                     self.stats.gave_way.fetch_add(1, Ordering::Relaxed);
-                } else if download.submit(gpu, &local.pool, canvas).is_err() {
+                } else if download
+                    .submit_at(gpu, &local.pool, canvas, key.0, key.1)
+                    .is_err()
+                {
                     result = Err(NodeError::Backend("video export conversion failed"));
                 }
             }

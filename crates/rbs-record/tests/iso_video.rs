@@ -10,11 +10,13 @@ mod support;
 use std::sync::atomic::Ordering;
 
 use rbs_core::media::{CodecId, ContainerId};
+use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     ISO_OUTPUT, ISO_VIDEO_ENCODERS, IsoError, IsoVideoStart, OutputSettings, RecordError, Studio,
     StudioSettings, VideoSettings,
 };
-use rbs_scene::model::RecordSeparately;
+use rbs_scene::model::{ItemContent, Layout, RecordSeparately, SettingValue, Settings};
+use rbs_sources::types::{self, keys};
 use support::*;
 
 fn h264(log: &Log) -> usize {
@@ -65,7 +67,33 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
         .unwrap();
     let master_sessions = r.video_sessions.load(Ordering::Relaxed);
 
-    for name in ["Display", "Camera"] {
+    // A still picture: its chain gives one frame, and its file still gets one per tick.
+    let scene = col.scenes().next().unwrap().id;
+    let settings: Settings = [
+        (
+            keys::COLOR.to_owned(),
+            SettingValue::Text("#30a050".to_owned()),
+        ),
+        (keys::WIDTH.to_owned(), SettingValue::Int(32)),
+        (keys::HEIGHT.to_owned(), SettingValue::Int(18)),
+    ]
+    .into_iter()
+    .collect();
+    let (card, _) = col
+        .add_source(
+            "Card",
+            NodeTypeId::new_static(types::COLOR_SOURCE),
+            settings,
+        )
+        .unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(card),
+        Layout::new([0.0, 0.0], [8.0, 4.5]),
+        None,
+    )
+    .unwrap();
+    for name in ["Display", "Camera", "Card"] {
         let id = col.sources().find(|s| s.name == name).unwrap().id;
         col.set_source_record_separately(id, RecordSeparately::new(true, false))
             .unwrap();
@@ -86,7 +114,7 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
     let started = studio
         .start_iso_video(&r.adapters, &start_request())
         .unwrap();
-    assert_eq!(started.tracks.len(), 2);
+    assert_eq!(started.tracks.len(), 3);
     for track in &started.tracks {
         assert!(track.file_name.ends_with(".mkv"), "{}", track.file_name);
         assert_eq!(track.size.0 % 2, 0);
@@ -96,7 +124,7 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
     assert_eq!(studio.outputs(), [master], "the files are not outputs");
     assert_eq!(
         r.video_sessions.load(Ordering::Relaxed),
-        master_sessions * 3,
+        master_sessions * 4,
         "each file opens its encoder as the master did"
     );
     let err = studio
@@ -108,8 +136,8 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
         started
             .tracks
             .iter()
-            .all(|t| t.stats.frames.load(Ordering::Relaxed) >= 3)
-            && r.log.headers.load(Ordering::Relaxed) >= 3
+            .all(|t| t.stats.frames.load(Ordering::Relaxed) >= 10)
+            && r.log.headers.load(Ordering::Relaxed) >= 4
     });
     assert!(
         reached,
@@ -133,7 +161,7 @@ fn separate_video_files_follow_each_marked_source_and_are_not_outputs() {
         assert!(!studio.engine().has_worker(part), "{part:?}");
     }
     assert!(!studio.engine().has_worker(ISO_OUTPUT));
-    assert!(r.log.trailers.load(Ordering::Relaxed) >= 2);
+    assert!(r.log.trailers.load(Ordering::Relaxed) >= 3);
     let report = studio.stop_output(master).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     let (_, errors) = studio.shutdown();
