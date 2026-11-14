@@ -27,13 +27,16 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.48 adds scene levels (ADR-0091): `scene.audio.get`, `scene.audio.set`,
+/// `scene.audio.own`, `scene.audio.shared`, `scene.audio.reset_source`, `own_audio` on
+/// scene rows and `heard` on source rows.
 /// 1.47 adds the loudness meter (ADR-0092 stage 1): `loudness.status`,
 /// `loudness.set_enabled` and `loudness.reset`.
 /// 1.46 adds separate files (ADR-0086): `source.set_record_separately`, `iso` on
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.47";
+pub const PROTOCOL_VERSION: &str = "1.48";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
