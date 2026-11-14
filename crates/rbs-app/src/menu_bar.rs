@@ -220,6 +220,10 @@ pub struct Shown<'a> {
     pub panels: Vec<(String, String, bool)>,
     /// View › Theme: `(name, id, current)`, at most ten.
     pub themes: Vec<(String, String, bool)>,
+    /// View › Settings shown (ADR-0113).
+    pub experience: crate::background::Experience,
+    /// View › Spacing: the density in use (ADR-0113 decision 2).
+    pub density: rbs_ui::tokens::Density,
     /// The maximized panel (ADR-0049 decision 2).
     pub maximized: Option<&'a PanelId>,
     /// The virtual camera, for `vcam.toggle`.
@@ -891,6 +895,34 @@ impl CommandState for Shown<'_> {
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
             "ui.theme.select" => self.themes.clone(),
+            "ui.experience.select" => {
+                use crate::background::Experience;
+                [
+                    (Experience::Simple, "Simple"),
+                    (Experience::Standard, "Standard"),
+                    (Experience::Pro, "Pro"),
+                ]
+                .into_iter()
+                .map(|(e, title)| (title.to_owned(), e.id().to_owned(), e == self.experience))
+                .collect()
+            }
+            "ui.density.select" => {
+                use rbs_ui::tokens::Density;
+                [
+                    (Density::Regular, "Regular"),
+                    (Density::Compact, "Compact"),
+                    (Density::Roomy, "Roomy"),
+                ]
+                .into_iter()
+                .map(|(d, title)| {
+                    (
+                        title.to_owned(),
+                        density_id(d).to_owned(),
+                        d == self.density,
+                    )
+                })
+                .collect()
+            }
             "output.with_vertical" => {
                 let Some(kind) = output_kind(id) else {
                     return Vec::new();
@@ -1441,6 +1473,10 @@ pub enum Run {
     ReloadThemes,
     /// Use this theme id in Fixed mode (`ui.theme.select`).
     SelectTheme(String),
+    /// Draw the sections of this level (`ui.experience.select`, ADR-0113).
+    SelectExperience(crate::background::Experience),
+    /// Use this density (`ui.density.select`, ADR-0113 decision 2).
+    SelectDensity(rbs_ui::tokens::Density),
     /// Show the Settings window, at this section (`SettingsWindow.section`) when
     /// given (`ui.settings.open`).
     OpenSettings(Option<i32>),
@@ -1599,6 +1635,10 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
             "ui.theme.select" => Run::SelectTheme(value),
+            "ui.experience.select" => {
+                Run::SelectExperience(crate::background::Experience::from_id(&value)?)
+            }
+            "ui.density.select" => Run::SelectDensity(density_from_id(&value)?),
             "output.with_vertical" => Run::WithVertical(
                 output_kind(&id)?,
                 match value.as_str() {
@@ -1826,6 +1866,23 @@ fn size_of(id: &CommandId) -> Option<(u32, u32)> {
         id.param("width")?.parse().ok()?,
         id.param("height")?.parse().ok()?,
     ))
+}
+
+/// The command and API value of a density (`regular`, `compact`, `roomy`).
+pub fn density_id(density: rbs_ui::tokens::Density) -> &'static str {
+    match density {
+        rbs_ui::tokens::Density::Regular => "regular",
+        rbs_ui::tokens::Density::Compact => "compact",
+        rbs_ui::tokens::Density::Roomy => "roomy",
+    }
+}
+
+/// The density named `id`, if any.
+pub fn density_from_id(id: &str) -> Option<rbs_ui::tokens::Density> {
+    use rbs_ui::tokens::Density;
+    [Density::Regular, Density::Compact, Density::Roomy]
+        .into_iter()
+        .find(|d| density_id(*d) == id)
 }
 
 #[cfg(test)]

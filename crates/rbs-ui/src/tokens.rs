@@ -164,6 +164,7 @@ pub const LENGTHS: &[&str] = &[
     "size.toast.border",
     "size.toast.rail",
     "size.toast.max",
+    "size.first-run.w",
 ];
 
 /// Duration tokens every file defines (milliseconds).

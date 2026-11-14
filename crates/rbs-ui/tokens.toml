@@ -242,6 +242,10 @@ format = 2
 "size.toast.rail" = 4
 "size.toast.max" = 480
 
+# The first-run card (ADR-0113 decision 5): wide enough for the three choices with
+# their one-line descriptions. Not themeable.
+"size.first-run.w" = 480
+
 # Milliseconds. Every animation is off under "reduce motion".
 [duration]
 "motion.fast" = 120

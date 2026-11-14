@@ -1440,6 +1440,65 @@ export component SizeNest inherits Rectangle {
 // SegmentedControl: a few mutually exclusive options side by side, in a sunken track
 // with the chosen one raised (mockup E). The chosen option is also bold and marked
 // checked for screen readers, so it is never shown by colour alone (U7).
+// One answer of a question asked with a few large choices (the first-run page, ADR-0113
+// decision 5): a title and a line under it, in the Tint look of a checked Button when
+// chosen. Up and Down move between the choices of a group (the owner moves the focus);
+// Return and Space choose.
+export component ChoiceCard inherits Rectangle {
+    in property <string> title;
+    in property <string> text;
+    in property <bool> checked;
+    callback chosen();
+    callback moved(int /* -1 up, 1 down */);
+    public function take-focus() { focus.focus(); }
+    border-radius: Tokens.radius-button;
+    background: root.checked ? (touch.has-hover ? Theme.accent-subtle-hover : Theme.accent-subtle)
+        : touch.pressed ? Theme.button-pressed
+        : touch.has-hover ? Theme.button-hover : Theme.button-fill;
+    border-width: root.checked || Theme.high-contrast || Theme.button-outline ? Tokens.size-border : 0px;
+    border-color: root.checked ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+    min-height: body.min-height;
+    preferred-height: body.preferred-height;
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.title;
+    accessible-description: root.text;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.chosen(); }
+    forward-focus: focus;
+    body := VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-1;
+        Text {
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            accessible-role: none;
+        }
+        Text {
+            text: root.text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+    }
+    focus := RingFocus {
+        focus-on-click: false;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.chosen(); return accept; }
+            if e.text == Key.UpArrow { root.moved(-1); return accept; }
+            if e.text == Key.DownArrow { root.moved(1); return accept; }
+            reject
+        }
+    }
+    // After the FocusScope, so it is on top (see Button).
+    touch := TouchArea {
+        clicked => { focus.focus-pointer(); root.chosen(); }
+    }
+    FocusRing { show: focus.ring; radius: root.border-radius; }
+}
+
 export component SegmentedControl inherits Rectangle {
     in property <string> label;
     in property <[string]> options;
@@ -1549,6 +1608,20 @@ export component Tabs inherits Rectangle {
 // Panel sections the user closed (ADR-0078), saved in the workspace file. Rust answers
 // `closed`; `rev` changes whenever the answers may have, because Slint calls a pure
 // callback again only when its arguments change.
+// Which section levels are drawn (ADR-0113 decision 1), set from the `experience`
+// setting in every window. Both on until the app sets them, so a window shows
+// everything.
+export global Experience {
+    in property <bool> advanced: true;
+    in property <bool> expert: true;
+    // Shells whose "More options are hidden" line was answered with Show (decision 4),
+    // by the shell's id, while this window is open. Slint asks again when `rev` changes;
+    // the shell steps it after `show`.
+    in-out property <int> rev;
+    pure callback shown(string /* id */, int /* rev */) -> bool;
+    callback show(string /* id */);
+}
+
 export global Sections {
     in property <int> rev;
     // The Mixer's layout (ADR-0083): 0 auto (by the panel's shape), 1 rows, 2 columns.
@@ -2577,6 +2650,15 @@ export global Overlays {
     callback vertical-removed();
     callback vertical-cancelled();
 
+    // The first-run page (ADR-0113 decision 5): shown once on a new install. `first-run-choice`
+    // is 0 Simple, 1 Standard (the default), 2 Pro; `first-run-theme` 0 System, 1 Dark,
+    // 2 Light. `first-run-done` gets the choice, or -1 for Skip.
+    in-out property <bool> first-run-open;
+    in-out property <OverlayCover> first-run-cover;
+    in-out property <int> first-run-choice: 1;
+    in-out property <int> first-run-theme;
+    callback first-run-done(int /* choice, -1 skipped */, int /* theme */);
+
     // The tooltip: waits `delay.tooltip` after the pointer rests on its control, shows
     // at once for keyboard focus, stays while the pointer is over the control or the
     // tooltip, and Escape dismisses it until the pointer or focus leaves. Only the
@@ -3346,6 +3428,111 @@ export component OverlayHost inherits Rectangle {
             }
         }
     }
+    // The first-run page (ADR-0113 decision 5): modal over the whole window; Escape or
+    // "Skip for now" skips (Standard), Start applies the choice.
+    if Overlays.first-run-open: first-run := Rectangle {
+        width: root.width;
+        height: root.height;
+        background: Theme.surface-base;
+        init => {
+            Overlays.first-run-cover = { x: 0, y: 0, width: self.width, height: self.height };
+            if Overlays.first-run-choice == 0 { c0.take-focus(); }
+            else if Overlays.first-run-choice == 2 { c2.take-focus(); }
+            else { c1.take-focus(); }
+        }
+        changed width => { Overlays.first-run-cover = { x: 0, y: 0, width: self.width, height: self.height }; }
+        changed height => { Overlays.first-run-cover = { x: 0, y: 0, width: self.width, height: self.height }; }
+        // Takes the clicks the card does not, so nothing under the page reacts.
+        TouchArea { }
+        first-run-keys := FocusScope {
+            focus-on-click: false;
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.first-run-done(-1, Overlays.first-run-theme); return accept; }
+                reject
+            }
+        }
+        first-run-card := MenuSurface {
+            width: Tokens.size-first-run-w;
+            height: first-run-body.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: max(Tokens.space-4, (root.height - self.height) / 3);
+            accessible-role: groupbox;
+            accessible-label: @tr("Welcome to RBS");
+            first-run-body := VerticalLayout {
+                padding: Tokens.space-6;
+                spacing: Tokens.space-3;
+                Text {
+                    text: @tr("Welcome to RBS");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-heading-size;
+                    font-weight: Tokens.type-heading-weight;
+                    accessible-role: none;
+                }
+                Text {
+                    text: @tr("How do you want to start? You can change this later in Settings, General.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+                VerticalLayout {
+                    spacing: Tokens.space-2;
+                    c0 := ChoiceCard {
+                        title: @tr("Simple");
+                        text: @tr("The settings most people need, with roomy spacing. A good start if RBS is your first streaming app.");
+                        checked: Overlays.first-run-choice == 0;
+                        chosen => { Overlays.first-run-choice = 0; }
+                        moved(d) => { if d > 0 { Overlays.first-run-choice = 1; c1.take-focus(); } }
+                    }
+                    c1 := ChoiceCard {
+                        title: @tr("Standard");
+                        text: @tr("Adds the advanced settings, with regular spacing. Suits most people who have streamed before.");
+                        checked: Overlays.first-run-choice == 1;
+                        chosen => { Overlays.first-run-choice = 1; }
+                        moved(d) => {
+                            if d < 0 { Overlays.first-run-choice = 0; c0.take-focus(); }
+                            else { Overlays.first-run-choice = 2; c2.take-focus(); }
+                        }
+                    }
+                    c2 := ChoiceCard {
+                        title: @tr("Pro");
+                        text: @tr("Every setting, compact spacing and studio mode on. For people who know OBS well.");
+                        checked: Overlays.first-run-choice == 2;
+                        chosen => { Overlays.first-run-choice = 2; }
+                        moved(d) => { if d < 0 { Overlays.first-run-choice = 1; c1.take-focus(); } }
+                    }
+                }
+                Text {
+                    text: @tr("Theme");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-label-size;
+                    font-weight: Tokens.type-label-weight;
+                    accessible-role: none;
+                }
+                SegmentedControl {
+                    label: @tr("Theme");
+                    options: [@tr("Match the system"), @tr("Dark"), @tr("Light")];
+                    index: Overlays.first-run-theme;
+                    selected(i) => { Overlays.first-run-theme = i; }
+                }
+                HorizontalLayout {
+                    padding-top: Tokens.space-2;
+                    spacing: Tokens.space-2;
+                    alignment: end;
+                    Button {
+                        text: @tr("Skip for now");
+                        kind: "ghost";
+                        clicked => { Overlays.first-run-done(-1, Overlays.first-run-theme); }
+                    }
+                    Button {
+                        text: @tr("Start");
+                        kind: "primary";
+                        clicked => { Overlays.first-run-done(Overlays.first-run-choice, Overlays.first-run-theme); }
+                    }
+                }
+            }
+        }
+    }
     // The Add vertical output dialog: modal, a click outside it cancels.
     if Overlays.vertical-open: vertical-prompt := Rectangle {
         width: root.width;
@@ -3753,6 +3940,17 @@ export component StatusLine inherits Rectangle {
     }
 }
 
+// The line a shell ends with while it leaves out options of a higher experience level
+// (ADR-0113 decision 4): a quiet info line with Show.
+export component MoreHidden inherits StatusLine {
+    callback shown();
+    // Info.
+    tone: 0;
+    text: @tr("More options are hidden");
+    action: @tr("Show");
+    activated => { root.shown(); }
+}
+
 // A feature with many settings (ADR-0094 rule A3, ADR-0078): the name flush left, then
 // an info button, an optional on/off switch and a chevron on the right; the settings
 // under it sit flush left. The settings are kept while the feature is off. `id` saves
@@ -3761,6 +3959,14 @@ export component FeatureSection inherits VerticalLayout {
     in property <string> title;
     in property <string> id;
     in property <string> hint;
+    // ADR-0113 decision 4: the author binds `more-hidden` to the level of what this
+    // section leaves out (`!Experience.expert`) and draws that under
+    // `if Experience.expert || self.show-all`. While something is left out, the
+    // section ends with "More options are hidden" and Show, which sets `show-all`
+    // while the window is open.
+    in property <bool> more-hidden;
+    property <bool> shown-here;
+    out property <bool> show-all: root.shown-here || (root.id != "" && Experience.shown(root.id, Experience.rev));
     in property <bool> has-toggle: true;
     in-out property <bool> on: true;
     callback toggled(bool);
@@ -3811,6 +4017,12 @@ export component FeatureSection inherits VerticalLayout {
         inner := VerticalLayout {
             spacing: Tokens.size-field-gap;
             @children
+            if root.more-hidden && !root.show-all: MoreHidden {
+                shown => {
+                    root.shown-here = true;
+                    if root.id != "" { Experience.show(root.id); Experience.rev += 1; }
+                }
+            }
         }
     }
 }

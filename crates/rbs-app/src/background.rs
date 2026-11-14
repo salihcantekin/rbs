@@ -42,6 +42,64 @@ impl OnClose {
     }
 }
 
+/// How much of the app's settings a user wants to see (ADR-0113 decision 2): which
+/// section levels are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Experience {
+    /// Simple sections only.
+    Simple,
+    /// Simple and advanced sections.
+    Standard,
+    /// Every section, expert ones too.
+    Pro,
+}
+
+impl Experience {
+    /// Whether advanced and expert sections are drawn (ADR-0113 decision 3).
+    pub const fn levels(self) -> (bool, bool) {
+        match self {
+            Self::Simple => (false, false),
+            Self::Standard => (true, false),
+            Self::Pro => (true, true),
+        }
+    }
+
+    /// The settings' order: Simple 0, Standard 1, Pro 2.
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::Simple => 0,
+            Self::Standard => 1,
+            Self::Pro => 2,
+        }
+    }
+
+    /// The level at `index`; Standard for any other value.
+    pub const fn from_index(index: i32) -> Self {
+        match index {
+            0 => Self::Simple,
+            2 => Self::Pro,
+            _ => Self::Standard,
+        }
+    }
+
+    /// The command and API value (`simple`, `standard`, `pro`).
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Simple => "simple",
+            Self::Standard => "standard",
+            Self::Pro => "pro",
+        }
+    }
+
+    /// The level named `id`, if any.
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Simple, Self::Standard, Self::Pro]
+            .into_iter()
+            .find(|e| e.id() == id)
+    }
+}
+
 /// The app's own settings, which belong to this computer and to no output profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -62,6 +120,60 @@ pub struct AppSettings {
     /// absent: a screen recording does not include RBS. Linux ignores it.
     #[serde(default = "yes")]
     pub exclude_own_window: bool,
+    /// Which section levels are drawn (ADR-0113 decision 2). Absent in files from
+    /// older builds: [`AppSettings::settle`] fills it at the first start of this build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experience: Option<Experience>,
+    /// The first-run page was shown (ADR-0113 decision 5). Absent: filled like
+    /// `experience`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_run_done: Option<bool>,
+}
+
+impl AppSettings {
+    /// Fills the fields an older file lacks (ADR-0113 decisions 2 and 5): an existing
+    /// install reads as Pro with the first run done, a new one as Standard with the first
+    /// run to show. Returns whether anything changed, so the caller saves at once and the
+    /// next start does not take its own files for an older install's.
+    pub fn settle(&mut self, existing_install: bool) -> bool {
+        let mut changed = false;
+        if self.experience.is_none() {
+            self.experience = Some(if existing_install {
+                Experience::Pro
+            } else {
+                Experience::Standard
+            });
+            changed = true;
+        }
+        if self.first_run_done.is_none() {
+            self.first_run_done = Some(existing_install);
+            changed = true;
+        }
+        changed
+    }
+
+    /// The level in use; Standard before [`AppSettings::settle`] ran.
+    pub fn experience(&self) -> Experience {
+        self.experience.unwrap_or(Experience::Standard)
+    }
+}
+
+/// Whether the user data folder already holds a user file (ADR-0113 decision 2): a
+/// workspace, an output profile, a scene collection, `appearance.toml` or `app.toml`.
+/// Called before anything at this start writes one.
+pub fn existing_install(config: &Path) -> bool {
+    let has_file = |p: PathBuf| p.is_file();
+    let has_entry = |p: PathBuf| {
+        std::fs::read_dir(p)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    };
+    has_file(file(config))
+        || has_file(config.join(rbs_user_data::APPEARANCE_FILE))
+        // The binary's `config::workspace_dir`.
+        || has_entry(config.join("workspaces"))
+        || has_entry(config.join(rbs_user_data::PROFILES_DIR))
+        || has_entry(config.join(rbs_user_data::SCENE_COLLECTIONS_DIR))
 }
 
 fn yes() -> bool {
@@ -76,6 +188,8 @@ impl Default for AppSettings {
             background_notice_shown: false,
             swap_after_transition: false,
             exclude_own_window: true,
+            experience: None,
+            first_run_done: None,
         }
     }
 }
@@ -468,6 +582,73 @@ mod tests {
             OnClose::platform_default()
         };
         assert_eq!(got.on_close, want);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn experience_maps_to_the_drawn_levels() {
+        assert_eq!(Experience::Simple.levels(), (false, false));
+        assert_eq!(Experience::Standard.levels(), (true, false));
+        assert_eq!(Experience::Pro.levels(), (true, true));
+        for e in [Experience::Simple, Experience::Standard, Experience::Pro] {
+            assert_eq!(Experience::from_index(e.index()), e);
+            assert_eq!(Experience::from_id(e.id()), Some(e));
+        }
+        assert_eq!(Experience::from_index(7), Experience::Standard);
+        assert_eq!(Experience::from_id("expert"), None);
+    }
+
+    #[test]
+    fn absent_fields_settle_by_install() {
+        let mut new = AppSettings::default();
+        assert!(new.settle(false));
+        assert_eq!(new.experience, Some(Experience::Standard));
+        assert_eq!(new.first_run_done, Some(false));
+        assert!(!new.settle(true), "settled fields stay");
+        let mut old = AppSettings::default();
+        assert!(old.settle(true));
+        assert_eq!(old.experience, Some(Experience::Pro));
+        assert_eq!(old.first_run_done, Some(true));
+    }
+
+    #[test]
+    fn experience_round_trips_and_is_optional() {
+        let d = dir("experience");
+        // A file from an older build: both fields absent.
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(file(&d), "format_version = 1\non_close = \"quit\"\n").unwrap();
+        let (got, note) = load(&d);
+        assert_eq!(note, None);
+        assert_eq!((got.experience, got.first_run_done), (None, None));
+        let s = AppSettings {
+            experience: Some(Experience::Simple),
+            first_run_done: Some(true),
+            ..AppSettings::default()
+        };
+        save(&d, &s).unwrap();
+        assert_eq!(load(&d), (s, None));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_install_is_known_by_any_user_file() {
+        let d = dir("existing");
+        assert!(!existing_install(&d), "no folder");
+        std::fs::create_dir_all(d.join("crash-reports")).unwrap();
+        assert!(!existing_install(&d), "crash reports are not user files");
+        std::fs::create_dir_all(d.join(rbs_user_data::SCENE_COLLECTIONS_DIR)).unwrap();
+        assert!(!existing_install(&d), "an empty folder is not a file");
+        std::fs::write(
+            d.join(rbs_user_data::SCENE_COLLECTIONS_DIR)
+                .join("default.toml"),
+            "",
+        )
+        .unwrap();
+        assert!(existing_install(&d));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(rbs_user_data::APPEARANCE_FILE), "").unwrap();
+        assert!(existing_install(&d));
         let _ = std::fs::remove_dir_all(&d);
     }
 }
