@@ -99,6 +99,7 @@ export component SettingsHeader inherits VerticalLayout {
         if root.fold != 0: VerticalLayout {
             alignment: center;
             Button {
+                lead: root.fold == 1 ? IconName.chevron-up : IconName.chevron-down;
                 dense: true;
                 kind: "ghost";
                 text: root.fold == 1 ? @tr("Collapse all") : @tr("Expand all");

@@ -267,6 +267,7 @@ export component ShortcutsSettings inherits VerticalLayout {
             edited(t) => { Shortcuts.set-search(t); }
         }
         Button {
+            lead: IconName.reset;
             text: @tr("Reset all");
             clicked => { Shortcuts.ask-reset-all(); }
         }

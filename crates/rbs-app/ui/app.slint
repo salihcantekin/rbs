@@ -661,6 +661,7 @@ component TransitionGo inherits VerticalLayout {
     in property <bool> icons;
     spacing: Tokens.space-1;
     if !root.icons: Button {
+        lead: IconName.transition;
         text: @tr("Transition");
         kind: "primary";
         enabled: root.can;
@@ -778,6 +779,7 @@ component TransitionRail inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Button {
+                lead: IconName.transition;
                 text: @tr("Transition");
                 kind: "primary";
                 enabled: root.can;
@@ -809,6 +811,7 @@ component TransitionRail inherits Rectangle {
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 Button {
+                    lead: IconName.transition;
                     text: @tr("Transition");
                     kind: "primary";
                     enabled: root.can;
@@ -2405,7 +2408,7 @@ export component FloatWindow inherits Window {
                 HorizontalLayout {
                     padding: Tokens.space-1;
                     alignment: start;
-                    Button { text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
+                    Button { lead: IconName.dock; text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
                     if Shell.end-stream-confirm: EndStreamConfirm { }
                     if Shell.end-vertical-confirm && !Shell.end-stream-confirm: EndStreamConfirm { vertical: true; }
                 }
