@@ -123,6 +123,18 @@ Invariants:
 
 Counters are those of the capture node: `picture_size` is known from construction, `uploaded` and `frames` count one per warm-up. Test: `crates/rbs-nodes/tests/still_gpu.rs` (one upload and one publication over many ticks; the exported canvas shows the picture; an upload after Standby has a new generation).
 
+### Image track node (ADR-0117)
+
+`rbs_nodes::ImageTrackNode` (`org.rbs.image-track`, kind `VideoFilter`, input "picture", output "video", render partition) writes a still source's picture as images, one readback per change. `new(width, height)` sizes its `RgbaDownload`; `give_way_after(budget)` and `yield_to(master_drops)` set the ADR-0086 decision 9 rules.
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Creates the `RgbaDownload`; forgets the last picture taken |
+| `process` | 1. A completed readback goes on "video" (`System`, `Rgba8`, sRGB, straight alpha, stamped with the tick's time and index of the submit). 2. The input's `(timestamp, sequence)` equal to the last taken: nothing more (one compare). 3. Otherwise, at `MAX_IMAGES_PER_TRACK` (1 000) taken: counted in `over_cap`, not taken. 4. Inside `MIN_IMAGE_INTERVAL` (100 ms of tick time) of the last taken, with a readback in flight, or giving way (the previous render tick over the budget, or `master_drops` grew): the change waits for a later tick, counted once in `coalesced` (`gave_way` counts the ticks it gave way); a newer change replaces it. 5. Otherwise `submit_at` with the tick's time and index (`taken`). A failed conversion is counted in `failed` and not retried for that picture |
+| `release` | A readback still in flight is counted in `failed` |
+
+Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (an unchanged picture is taken once over 30 ticks; a change on every tick for one second at 60 fps gives one image per interval, each change in between waits and is counted, images stamped at least 100 ms apart, bytes copied as published).
+
 ### Video export node
 
 | Call | Does |

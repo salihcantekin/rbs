@@ -8,10 +8,18 @@
 //! of [`ISO_VIDEO_ENCODERS`] while they share the master's engine (see
 //! `SHARED_ENGINE_PARTITIONS`); the files share [`ISO_OUTPUT`] with the audio files. The files are not [`super::MAX_OUTPUTS`] outputs.
 //!
+//!
+//! A still source marked for video is an image track instead (ADR-0117): an
+//! [`ImageTrackNode`] on the render partition reads its picture back once per change,
+//! and a [`PngWriterNode`] on [`ISO_OUTPUT`] writes each as a PNG into
+//! [`IsoVideoStart::image_dir`]. No encoder, no encoder partition, not counted in
+//! [`crate::MAX_ISO_VIDEO`].
+//!
 //! Not yet (later steps): a source whose size changes during the take (the export's
 //! input no longer fits and its frames are lost, counted), `size: master` and
 //! `max_height`, a per-source filter choice, off-air sources, offsets from `t0`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,12 +38,14 @@ use rbs_nodes::OutputNode;
 use rbs_nodes::VideoEncoderNode;
 use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::export::{ExportNodeStats, VideoExportNode};
+use rbs_nodes::{ImageTrackNode, ImageTrackStats};
 use rbs_scene::model::SourceId;
 use rbs_transport::{TransportConfig, TransportInput};
 
 use super::Added;
 use super::iso_audio::{extension, track_url};
 use crate::iso::{self, IsoError, IsoRole};
+use crate::png_writer::{ImageFiles, PngWriterNode};
 use crate::recording::{
     ISO_OUTPUT, ISO_VIDEO_ENCODERS, RENDER, RecordAdapters, RecordError, StartFailure,
     VideoSettings, add_active,
@@ -65,6 +75,12 @@ pub struct IsoVideoStart {
     /// Records each source after its filters (ADR-0086 decision 3) instead of its
     /// own picture (ADR-0119 decision 1, the default).
     pub include_filters: bool,
+    /// The take folder image tracks write their PNG files into (ADR-0117), written
+    /// directly as the manifest is. Needed only when a still source is marked:
+    /// without it such a start is [`IsoError::ImageFolder`].
+    pub image_dir: Option<PathBuf>,
+    /// `t0` on the master clock: each image's `at_ns` is its tick's time from here.
+    pub t0: Timestamp,
 }
 
 impl IsoVideoStart {
@@ -80,6 +96,8 @@ impl IsoVideoStart {
             video,
             give_way_share: DEFAULT_GIVE_WAY_SHARE,
             include_filters: false,
+            image_dir: None,
+            t0: Timestamp::ZERO,
         }
     }
 }
@@ -104,17 +122,54 @@ pub struct IsoVideoTrack {
     pub queue: Option<Arc<QueueStats>>,
 }
 
+/// One image track [`super::Studio::start_iso_video`] opened (ADR-0117).
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct IsoImageTrack {
+    /// The source.
+    pub source: SourceId,
+    /// The name of its first image, `<stem>.png`; later ones are `<stem>-2.png`, ...
+    pub file_name: String,
+    /// The source's picture size at the start.
+    pub size: (u32, u32),
+    /// The track's counters: pictures taken, coalesced, over the cap, failures.
+    pub stats: Arc<ImageTrackStats>,
+    /// The images written so far, for the manifest at stop.
+    pub files: Arc<ImageFiles>,
+}
+
 /// What [`super::Studio::start_iso_video`] opened. Empty when nothing is marked for
 /// video: no node and no worker were added.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct IsoVideoStarted {
-    /// The files, in source id order.
+    /// The video files, in source id order.
     pub tracks: Vec<IsoVideoTrack>,
+    /// The image tracks of still sources, in source id order.
+    pub images: Vec<IsoImageTrack>,
 }
 
 pub(super) struct IsoVideoRun {
     nodes: Vec<Added>,
+    /// The first node of each track after the source's chain, to follow the source
+    /// when the binder replaces its node (a new colour or file builds a new still
+    /// node; ADR-0117 decision 4).
+    relinks: Vec<Relink>,
+}
+
+/// Where a track reads its source's picture from.
+struct Relink {
+    source: SourceId,
+    /// Reads the chain tail (filters included) rather than the source node.
+    filters: bool,
+    /// Takes any producer (an image track). A video track's first node is a
+    /// normalisation pass for a source node and the export for a filter tail, so it
+    /// follows a producer of the same kind only.
+    any_kind: bool,
+    from_filter: bool,
+    /// The track's first node; its input pin 0 takes the picture.
+    to: NodeId,
+    to_pin: &'static str,
 }
 
 /// A marked source, the node its picture leaves its chain from, and its file.
@@ -159,11 +214,53 @@ impl super::Studio {
             .iter()
             .filter(|track| track.role == IsoRole::Video)
             .collect();
-        if marked.is_empty() {
-            return Ok(IsoVideoStarted { tracks: Vec::new() });
+        let stills: Vec<_> = planned
+            .tracks
+            .iter()
+            .filter(|track| track.role == IsoRole::Image)
+            .collect();
+        if marked.is_empty() && stills.is_empty() {
+            return Ok(IsoVideoStarted {
+                tracks: Vec::new(),
+                images: Vec::new(),
+            });
         }
-        if scheme_of(&start.folder_url).is_none() {
+        if !marked.is_empty() && scheme_of(&start.folder_url).is_none() {
             return Err(RecordError::InvalidUrl(start.folder_url.clone()));
+        }
+        let image_dir = match (&start.image_dir, stills.is_empty()) {
+            (_, true) => None,
+            (Some(dir), false) => Some(dir.clone()),
+            (None, false) => return Err(RecordError::Iso(IsoError::ImageFolder)),
+        };
+        let mut image_taps = Vec::with_capacity(stills.len());
+        for track in stills {
+            let no_picture = || {
+                RecordError::Iso(IsoError::NoPicture {
+                    source: track.source,
+                    name: track.source_name.clone(),
+                })
+            };
+            // ADR-0119 decision 1: the source's own picture (straight sRGB, copied as
+            // it is) unless filters are asked for (converted once per change).
+            let producer = if start.include_filters {
+                self.binder.chain_tail(track.source).map(|(node, _)| node)
+            } else {
+                self.binder.source_node(track.source)
+            }
+            .ok_or_else(no_picture)?;
+            let picture = self
+                .picture_size(track.source)
+                .filter(|(w, h)| *w > 0 && *h > 0)
+                .ok_or_else(no_picture)?;
+            image_taps.push(Tap {
+                source: track.source,
+                producer,
+                pin: video_pin(&self.graph, producer)?,
+                normalise: false,
+                picture,
+                file_name: track.file_name.clone(),
+            });
         }
         let ext = extension(start.container);
         let mut taps = Vec::with_capacity(marked.len());
@@ -211,6 +308,20 @@ impl super::Studio {
         let masters: rbs_nodes::export::MasterDrops =
             Arc::new(move || queues.iter().map(|q| q.video_drops()).sum());
         let hold = (Duration::from_secs(1).as_nanos() / period.as_nanos().max(1)) as u64;
+        let images: Vec<_> = image_taps
+            .iter()
+            .map(|tap| {
+                let node = ImageTrackNode::new(tap.picture.0, tap.picture.1)
+                    .give_way_after(budget)
+                    .yield_to(masters.clone());
+                let writer = PngWriterNode::new(
+                    image_dir.clone().unwrap_or_default(),
+                    &tap.file_name,
+                    start.t0,
+                );
+                (node, writer)
+            })
+            .collect();
         let mut chains = Vec::with_capacity(taps.len());
         for tap in &taps {
             let size = even(tap.picture);
@@ -230,14 +341,56 @@ impl super::Studio {
             let (encoder, _) = select::video_encoder(&adapters.video_encoders, &config)?;
             chains.push((export, encoder, size));
         }
-        let (muxer, _) = select::muxer(&adapters.muxers, start.container)?;
-        let input = TransportInput::Container(start.container);
-        let (transport, _) = select::transport(&adapters.transports, &start.folder_url, input)?;
+        let sinks = if taps.is_empty() {
+            None
+        } else {
+            let (muxer, _) = select::muxer(&adapters.muxers, start.container)?;
+            let input = TransportInput::Container(start.container);
+            let (transport, _) = select::transport(&adapters.transports, &start.folder_url, input)?;
+            Some((transport, muxer))
+        };
         self.ensure_iso_partitions()?;
         self.ensure_iso_video_partitions(taps.len())?;
-        let (nodes, tracks) = self.install_video(&taps, chains, &transport, &muxer, start)?;
-        self.iso_video = Some(IsoVideoRun { nodes });
-        Ok(IsoVideoStarted { tracks })
+        let (nodes, tracks, images, relinks) =
+            self.install_video(&taps, chains, &image_taps, images, sinks.as_ref(), start)?;
+        self.iso_video = Some(IsoVideoRun { nodes, relinks });
+        Ok(IsoVideoStarted { tracks, images })
+    }
+
+    /// Links each running track to its source's current producer, after the binder
+    /// replaced a source or filter node. Called by an update before its apply.
+    pub(super) fn relink_iso_video(&mut self) {
+        let Some(run) = &self.iso_video else {
+            return;
+        };
+        for r in &run.relinks {
+            let producer = if r.filters {
+                self.binder.chain_tail(r.source)
+            } else {
+                self.binder.source_node(r.source).map(|n| (n, false))
+            };
+            let Some((node, is_filter)) = producer else {
+                continue;
+            };
+            if !r.any_kind && is_filter != r.from_filter {
+                continue;
+            }
+            let current = self
+                .graph
+                .links()
+                .iter()
+                .find(|l| l.to.node == r.to && l.to.pin == 0)
+                .copied();
+            if current.is_some_and(|l| l.from.node == node) {
+                continue;
+            }
+            if let Some(link) = current {
+                self.graph.disconnect(link);
+            }
+            if let Ok(pin) = video_pin(&self.graph, node) {
+                let _ = self.graph.connect(node, &pin, r.to, r.to_pin);
+            }
+        }
     }
 
     /// True while separate video files are open.
@@ -286,18 +439,63 @@ impl super::Studio {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]
     fn install_video(
         &mut self,
         taps: &[Tap],
         chains: Vec<(VideoExportNode, VideoEncoderNode, (u32, u32))>,
-        transport: &Arc<dyn rbs_transport::TransportFactory>,
-        muxer: &Arc<dyn rbs_mux::MuxerFactory>,
+        image_taps: &[Tap],
+        images: Vec<(ImageTrackNode, PngWriterNode)>,
+        sinks: Option<&(
+            Arc<dyn rbs_transport::TransportFactory>,
+            Arc<dyn rbs_mux::MuxerFactory>,
+        )>,
         start: &IsoVideoStart,
-    ) -> Result<(Vec<Added>, Vec<IsoVideoTrack>), RecordError> {
+    ) -> Result<
+        (
+            Vec<Added>,
+            Vec<IsoVideoTrack>,
+            Vec<IsoImageTrack>,
+            Vec<Relink>,
+        ),
+        RecordError,
+    > {
+        let mut relinks = Vec::with_capacity(taps.len() + image_taps.len());
         let mut graph = self.graph.clone();
-        let mut adopted: Vec<Added> = Vec::with_capacity(taps.len() * 4);
+        let mut adopted: Vec<Added> = Vec::with_capacity(taps.len() * 4 + images.len() * 2);
         let mut tracks = Vec::with_capacity(taps.len());
+        let mut image_tracks = Vec::with_capacity(images.len());
         let mut encoders = Vec::with_capacity(taps.len());
+        for (tap, (node, writer)) in image_taps.iter().zip(images) {
+            let stats = node.stats();
+            let files = writer.files();
+            match self.add_image_track(&mut graph, &mut adopted, tap, node, writer) {
+                Ok(to) => relinks.push(Relink {
+                    source: tap.source,
+                    filters: start.include_filters,
+                    any_kind: true,
+                    from_filter: false,
+                    to,
+                    to_pin: "picture",
+                }),
+                Err(e) => {
+                    self.abandon(adopted);
+                    return Err(e);
+                }
+            }
+            image_tracks.push(IsoImageTrack {
+                source: tap.source,
+                file_name: PngWriterNode::file_name(&tap.file_name, 1),
+                size: tap.picture,
+                stats,
+                files,
+            });
+        }
+        let Some((transport, muxer)) = sinks else {
+            return self
+                .apply_iso_video(graph, adopted, tracks, image_tracks, &encoders)
+                .map(|(a, t, i)| (a, t, i, relinks));
+        };
         for (i, (tap, (export, encoder, size))) in taps.iter().zip(chains).enumerate() {
             let encoder_part = ISO_VIDEO_ENCODERS[i % SHARED_ENGINE_PARTITIONS];
             let output = OutputNode::new(
@@ -321,7 +519,17 @@ impl super::Studio {
                 output,
             );
             let encoder_node = match encoder_node {
-                Ok(node) => node,
+                Ok((node, first)) => {
+                    relinks.push(Relink {
+                        source: tap.source,
+                        filters: start.include_filters,
+                        any_kind: false,
+                        from_filter: !tap.normalise,
+                        to: first,
+                        to_pin: if tap.normalise { "in" } else { "canvas" },
+                    });
+                    node
+                }
                 Err(e) => {
                     self.abandon(adopted);
                     return Err(e);
@@ -337,6 +545,20 @@ impl super::Studio {
                 queue: None,
             });
         }
+        self.apply_iso_video(graph, adopted, tracks, image_tracks, &encoders)
+            .map(|(a, t, i)| (a, t, i, relinks))
+    }
+
+    /// Applies `graph` with the nodes this start adopted, or takes them back.
+    #[allow(clippy::type_complexity)]
+    fn apply_iso_video(
+        &mut self,
+        graph: GraphDescription,
+        adopted: Vec<Added>,
+        mut tracks: Vec<IsoVideoTrack>,
+        image_tracks: Vec<IsoImageTrack>,
+        encoders: &[NodeId],
+    ) -> Result<(Vec<Added>, Vec<IsoVideoTrack>, Vec<IsoImageTrack>), RecordError> {
         match self.engine.apply(&graph) {
             Err(e) => {
                 self.abandon(adopted);
@@ -357,13 +579,13 @@ impl super::Studio {
                 }
                 if failed.is_empty() {
                     let crossings = self.engine.crossings();
-                    for (track, node) in tracks.iter_mut().zip(&encoders) {
+                    for (track, node) in tracks.iter_mut().zip(encoders) {
                         track.queue = crossings
                             .iter()
                             .find(|c| c.link.to.node == *node)
                             .map(|c| Arc::clone(&c.stats));
                     }
-                    Ok((adopted, tracks))
+                    Ok((adopted, tracks, image_tracks))
                 } else {
                     self.remove_added(&adopted);
                     Err(RecordError::Start(failed))
@@ -372,8 +594,40 @@ impl super::Studio {
         }
     }
 
+    /// Adds an image track's two nodes to `graph` and adopts them: the track on
+    /// `RENDER` after `tap`'s producer, the PNG writer on `ISO_OUTPUT`.
+    fn add_image_track(
+        &mut self,
+        graph: &mut GraphDescription,
+        adopted: &mut Vec<Added>,
+        tap: &Tap,
+        node: ImageTrackNode,
+        writer: PngWriterNode,
+    ) -> Result<NodeId, RecordError> {
+        let track_id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
+        let writer_id = add_active(graph, Node::<()>::descriptor(&writer), ISO_OUTPUT)?;
+        graph.connect(tap.producer, &tap.pin, track_id, "picture")?;
+        graph.connect(track_id, "video", writer_id, "video")?;
+        self.engine
+            .adopt::<GpuRuntime>(RENDER, track_id, Box::new(node))?;
+        adopted.push(Added {
+            node: track_id,
+            partition: RENDER,
+            gpu: true,
+        });
+        self.engine
+            .adopt::<()>(ISO_OUTPUT, writer_id, Box::new(writer))?;
+        adopted.push(Added {
+            node: writer_id,
+            partition: ISO_OUTPUT,
+            gpu: false,
+        });
+        Ok(track_id)
+    }
+
     /// Adds one track's nodes to `graph` and adopts them, pushing each adopted node
-    /// to `adopted` so a failure can take them back. Returns the encoder's node.
+    /// to `adopted` so a failure can take them back. Returns the encoder's node and
+    /// the track's first node (the one that reads the source's picture).
     #[allow(clippy::too_many_arguments)]
     fn add_track(
         &mut self,
@@ -384,10 +638,11 @@ impl super::Studio {
         encoder: VideoEncoderNode,
         encoder_part: rbs_graph::description::PartitionId,
         output: OutputNode,
-    ) -> Result<NodeId, RecordError> {
+    ) -> Result<(NodeId, NodeId), RecordError> {
         // The normalisation pass draws the source's picture into the canvas format
         // (decision 9, case b); a filter tail already is (case a).
         let mut from = (tap.producer, tap.pin.clone());
+        let mut first = None;
         if tap.normalise {
             let ty: Arc<dyn FilterType> = Arc::new(Normalise);
             let values = Values::defaults(ty.as_ref());
@@ -402,6 +657,7 @@ impl super::Studio {
                 gpu: true,
             });
             from = (id, "out".to_owned());
+            first = Some(id);
         }
         let export_id = add_active(graph, Node::<GpuRuntime>::descriptor(&export), RENDER)?;
         let encoder_id = add_active(graph, Node::<()>::descriptor(&encoder), encoder_part)?;
@@ -430,7 +686,7 @@ impl super::Studio {
             partition: ISO_OUTPUT,
             gpu: false,
         });
-        Ok(encoder_id)
+        Ok((encoder_id, first.unwrap_or(export_id)))
     }
 }
 

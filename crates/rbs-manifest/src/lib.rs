@@ -86,10 +86,33 @@ pub struct FileTiming {
     pub sound: Option<Sound>,
 }
 
+/// One picture of an image track (ADR-0117 decision 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageEntry {
+    /// Its file name inside the recording folder (`<name>.png`, `<name>-2.png`, ...).
+    pub file_name: String,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// The time from `t0` of the render tick on which the picture was taken.
+    pub at_ns: u64,
+}
+
+/// What an image track counted, written at stop (ADR-0117 decisions 3 and 6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImageCounts {
+    /// Changes taken later than they happened (the interval, a busy readback or a
+    /// long render tick); each image shows the picture as it was when taken.
+    pub coalesced: u64,
+    /// Changes not written because the track reached its image cap.
+    pub over_cap: u64,
+}
+
 /// One file in the recording manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestFile {
-    /// `"master"`, `"video"` or `"audio"`.
+    /// `"master"`, `"video"`, `"audio"` or `"image"`.
     pub role: String,
     /// Name inside the recording folder (with its extension once the file is open).
     pub file_name: String,
@@ -99,6 +122,11 @@ pub struct ManifestFile {
     pub source_name: Option<String>,
     /// Timing and format, written at stop.
     pub timing: Option<FileTiming>,
+    /// The pictures of an image track, in the order they were taken. Empty for any
+    /// other role.
+    pub images: Vec<ImageEntry>,
+    /// An image track's counters, written at stop.
+    pub image_counts: Option<ImageCounts>,
 }
 
 impl ManifestFile {
@@ -110,6 +138,8 @@ impl ManifestFile {
             source: None,
             source_name: None,
             timing: None,
+            images: Vec::new(),
+            image_counts: None,
         }
     }
 }
@@ -195,6 +225,17 @@ impl RecordingManifest {
                     text.push_str(&format!("sample_rate = {}\n", s.sample_rate));
                     text.push_str(&format!("channels = {}\n", s.channels));
                 }
+            }
+            if let Some(c) = &file.image_counts {
+                text.push_str(&format!("coalesced = {}\n", c.coalesced));
+                text.push_str(&format!("over_cap = {}\n", c.over_cap));
+            }
+            for image in &file.images {
+                text.push_str("\n[[files.images]]\n");
+                text.push_str(&format!("name = {}\n", toml_string(&image.file_name)));
+                text.push_str(&format!("width = {}\n", image.width));
+                text.push_str(&format!("height = {}\n", image.height));
+                text.push_str(&format!("at_ns = {}\n", image.at_ns));
             }
         }
         for m in &self.markers {
@@ -335,7 +376,28 @@ mod tests {
                 channels: 1,
             }),
         });
-        m.files = vec![master, mic];
+        let mut logo = ManifestFile::listed("image", "Logo.png");
+        logo.source = Some(SourceRef::new(9));
+        logo.source_name = Some("Logo".to_owned());
+        logo.images = vec![
+            ImageEntry {
+                file_name: "Logo.png".to_owned(),
+                width: 320,
+                height: 180,
+                at_ns: 0,
+            },
+            ImageEntry {
+                file_name: "Logo-2.png".to_owned(),
+                width: 640,
+                height: 360,
+                at_ns: 4_200_000_000,
+            },
+        ];
+        logo.image_counts = Some(ImageCounts {
+            coalesced: 3,
+            over_cap: 0,
+        });
+        m.files = vec![master, logo, mic];
         let mut log = MarkerLog::new(5_000, std::time::Duration::from_secs(1)).unwrap();
         log.add_manual(3_000_005_000, Some("Good"), Some(MarkerColor::Green))
             .unwrap();
@@ -356,6 +418,7 @@ mod tests {
         assert!(text.starts_with("format = 1\nkind = \"recording-manifest\"\n"));
         assert!(text.contains("frame_duration = \"1001/60000\"\n"));
         assert!(text.contains("complete = true\n"));
+        assert!(text.contains("\n[[files.images]]\nname = \"Logo-2.png\"\n"));
         assert_eq!(RecordingManifest::from_toml(&text).unwrap(), m);
     }
 

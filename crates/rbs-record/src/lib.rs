@@ -20,6 +20,7 @@
 
 mod clip;
 mod iso;
+mod png_writer;
 pub mod protection;
 mod recording;
 mod select;
@@ -28,9 +29,10 @@ mod timed_show;
 
 pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_clip};
 pub use iso::{
-    IsoError, IsoPlan, IsoRole, IsoTrack, MASTER_STEM, MAX_ISO_AUDIO, MAX_ISO_VIDEO,
-    manifest_at_start, plan, write_manifest,
+    IsoError, IsoPlan, IsoRole, IsoTrack, MASTER_STEM, MAX_ISO_AUDIO, MAX_ISO_IMAGES,
+    MAX_ISO_VIDEO, manifest_at_start, plan, write_manifest,
 };
+pub use png_writer::{ImageFiles, PNG_WRITER_NODE_TYPE, PngWriterNode};
 /// The recording manifest model (ADR-0086, ADR-0089), owned by `rbs-manifest`.
 pub use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
@@ -46,8 +48,8 @@ pub use recording::{
 pub use select::{Chosen, scheme_of};
 pub use studio::{
     DEFAULT_GIVE_WAY_SHARE, END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE,
-    FilterSettingsAdjusted, IsoAudioStart, IsoAudioStarted, IsoVideoStart, IsoVideoStarted,
-    IsoVideoTrack, Link, MAX_CANVASES, MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS,
-    MonitorState, OutputId, OutputSettings, ReplaySettings, Studio, StudioSettings, Updated,
-    VirtualCameraSettings, VirtualCameraState,
+    FilterSettingsAdjusted, IsoAudioStart, IsoAudioStarted, IsoImageTrack, IsoVideoStart,
+    IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_LAYERS, MAX_OUTPUTS,
+    MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings, ReplaySettings, Studio,
+    StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
 };
