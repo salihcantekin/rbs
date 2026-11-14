@@ -202,7 +202,7 @@ pub struct RecordArgs {
 /// The usage text.
 pub const USAGE: &str = "\
 usage:
-  rbs-cli record <file.mkv|file.mp4> [options]
+  rbs-cli record <file.mkv|file.mp4|file.mov> [options]
   rbs-cli stream <rtmp://host/app|srt://host:port> [stream options] [options]
   rbs-cli devices
   rbs-cli token list
@@ -438,8 +438,9 @@ pub fn container_of(path: &Path) -> Result<ContainerId, String> {
     match ext.as_deref() {
         Some("mkv") => Ok(ContainerId::Matroska),
         Some("mp4") => Ok(ContainerId::Mp4Fragmented),
+        Some("mov") => Ok(ContainerId::Mov),
         _ => Err(format!(
-            "{}: the file must end in .mkv or .mp4",
+            "{}: the file must end in .mkv, .mp4 or .mov",
             path.display()
         )),
     }
@@ -868,7 +869,7 @@ mod tests {
     fn bad_arguments_are_refused_with_a_reason() {
         for (args, want) in [
             (&[][..], "output file is missing"),
-            (&["a.avi"][..], ".mkv or .mp4"),
+            (&["a.avi"][..], ".mkv, .mp4 or .mov"),
             (&["a.mkv", "b.mkv"][..], "unexpected argument"),
             (&["a.mkv", "--size", "1919x1080"][..], "even"),
             (&["a.mkv", "--size", "big"][..], "WxH"),

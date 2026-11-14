@@ -11,7 +11,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rbs_core::media::{BitstreamFormat, Bytes, CodecId, ContainerId, EncodedPacket, StreamIndex};
+use rbs_core::media::{
+    AudioFormat, BitstreamFormat, Bytes, CodecId, ContainerId, EncodedPacket, StreamDescriptor,
+    StreamIndex, StreamParams,
+};
 use rbs_core::time::Timestamp;
 use rbs_mux::conformance::{aac_stream, h264_stream};
 use rbs_mux::{MuxerConfig, MuxerFactory};
@@ -46,20 +49,21 @@ static GLOBAL: Counting = Counting;
 
 #[test]
 fn one_allocation_per_fragment_after_warm_up() {
+    // One test, run case by case: the counter is global, and tests in one binary run
+    // in parallel.
+    fragmented_mp4_with_h264_and_aac();
+    mov_with_h264_and_pcm();
+}
+
+fn fragmented_mp4_with_h264_and_aac() {
     let config = MuxerConfig::new(
         ContainerId::Mp4Fragmented,
         vec![h264_stream(), aac_stream()],
     );
-    let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
-    let lp = BitstreamFormat::LengthPrefixed { length_size: 4 };
     let mut input = Vec::new();
     for i in 0..2000u64 {
         let t = Timestamp::from_nanos(1_000_000_000 + i * 33_333_333);
-        let mut data = 5996u32.to_be_bytes().to_vec();
-        data.push(if i % 30 == 0 { 0x65 } else { 0x41 });
-        data.resize(6000, 0xab);
-        let v = EncodedPacket::new(CodecId::H264, lp, t, t, i % 30 == 0, Bytes::from(data));
-        input.push((StreamIndex(0), v.unwrap()));
+        input.push((StreamIndex(0), h264(i, t)));
         let a = EncodedPacket::new(
             CodecId::Aac,
             BitstreamFormat::Raw,
@@ -70,6 +74,60 @@ fn one_allocation_per_fragment_after_warm_up() {
         );
         input.push((StreamIndex(1), a.unwrap()));
     }
+    measure(&config, &input);
+}
+
+/// MOV with 24-bit stereo PCM in 10 ms packets: a PCM run has no per-sample rows, so
+/// the fragment stays one allocation however many frames it holds.
+fn mov_with_h264_and_pcm() {
+    let pcm = StreamDescriptor::new(
+        CodecId::Pcm,
+        BitstreamFormat::Raw,
+        Bytes::from_static(&[24]),
+        StreamParams::audio(AudioFormat::STEREO_48K, 480),
+    );
+    let config = MuxerConfig::new(ContainerId::Mov, vec![h264_stream(), pcm]);
+    let mut input = Vec::new();
+    let mut next_audio = 0u64;
+    for i in 0..2000u64 {
+        let ms = i * 1000 / 30;
+        while next_audio <= ms {
+            let t = Timestamp::from_nanos(1_000_000_000 + next_audio * 1_000_000);
+            let a = EncodedPacket::new(
+                CodecId::Pcm,
+                BitstreamFormat::Raw,
+                t,
+                t,
+                true,
+                Bytes::from(vec![0x21; 480 * 6]),
+            );
+            input.push((StreamIndex(1), a.unwrap()));
+            next_audio += 10;
+        }
+        let t = Timestamp::from_nanos(1_000_000_000 + ms * 1_000_000);
+        input.push((StreamIndex(0), h264(i, t)));
+    }
+    measure(&config, &input);
+}
+
+fn h264(i: u64, t: Timestamp) -> EncodedPacket {
+    let lp = BitstreamFormat::LengthPrefixed { length_size: 4 };
+    let mut data = 5996u32.to_be_bytes().to_vec();
+    data.push(if i.is_multiple_of(30) { 0x65 } else { 0x41 });
+    data.resize(6000, 0xab);
+    EncodedPacket::new(
+        CodecId::H264,
+        lp,
+        t,
+        t,
+        i.is_multiple_of(30),
+        Bytes::from(data),
+    )
+    .unwrap()
+}
+
+fn measure(config: &MuxerConfig, input: &[(StreamIndex, EncodedPacket)]) {
+    let mut muxer = Fmp4MuxerFactory.create(config).unwrap();
     // Share every payload once, as an encoder's pooled or already-cloned output is.
     let shared: Vec<Bytes> = input.iter().map(|(_, p)| p.data().clone()).collect();
     let mut chunks = Vec::with_capacity(input.len() + 1);

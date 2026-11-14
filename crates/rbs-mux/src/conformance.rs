@@ -325,7 +325,7 @@ pub fn is_entry_point(container: ContainerId, chunk: &[u8]) -> Result<(), String
             }
             Ok(())
         }
-        ContainerId::Mp4Fragmented => match chunk.get(4..8) {
+        ContainerId::Mp4Fragmented | ContainerId::Mov => match chunk.get(4..8) {
             Some(b"moof") | Some(b"styp") => Ok(()),
             _ => Err("does not start with a moof or styp box".into()),
         },
@@ -441,7 +441,7 @@ pub fn read_structure(container: ContainerId, bytes: &[u8]) -> Result<(), String
     match container {
         ContainerId::MpegTs => read_mpegts(bytes),
         ContainerId::Flv => read_flv(bytes),
-        ContainerId::Mp4Fragmented => read_fmp4(bytes),
+        ContainerId::Mp4Fragmented | ContainerId::Mov => read_fmp4(bytes),
         ContainerId::Matroska => read_matroska(bytes),
         other => Err(format!("no reader for {other}")),
     }

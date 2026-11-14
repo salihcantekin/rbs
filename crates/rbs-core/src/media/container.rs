@@ -27,17 +27,22 @@ pub enum ContainerId {
     Wav,
     /// Native FLAC (ADR-0085). `rbs-mux-flac` writes the stream.
     Flac,
+    /// QuickTime movie (`.mov`, ADR-0085), written fragmented like
+    /// [`ContainerId::Mp4Fragmented`] (`moov` + `mvex`, then `moof` + `mdat`) under
+    /// the `qt  ` brand, so a crash leaves a playable file.
+    Mov,
 }
 
 impl ContainerId {
     /// Every container id, in declaration order.
-    pub const ALL: [ContainerId; 6] = [
+    pub const ALL: [ContainerId; 7] = [
         ContainerId::Mp4Fragmented,
         ContainerId::Matroska,
         ContainerId::MpegTs,
         ContainerId::Flv,
         ContainerId::Wav,
         ContainerId::Flac,
+        ContainerId::Mov,
     ];
 
     /// Stable lowercase name, used in capability values (`mux.container`).
@@ -49,6 +54,7 @@ impl ContainerId {
             ContainerId::Flv => "flv",
             ContainerId::Wav => "wav",
             ContainerId::Flac => "flac",
+            ContainerId::Mov => "mov",
         }
     }
 
@@ -67,6 +73,7 @@ impl ContainerId {
             ContainerId::Flv => "container.flv",
             ContainerId::Wav => "container.wav",
             ContainerId::Flac => "container.flac",
+            ContainerId::Mov => "container.mov",
         }
     }
 }
