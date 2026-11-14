@@ -1,6 +1,6 @@
 # Output cost estimate
 
-Status: Draft. Decision: [ADR-0087](../adr/0087-output-cost-estimate-and-hardware-limits.md) (Accepted). This spec covers the estimate function (step A); the probe, the calibration, the control API and the UI are later steps, listed at the end.
+Status: Draft. Decision: [ADR-0087](../adr/0087-output-cost-estimate-and-hardware-limits.md) (Accepted). This spec covers the estimate function (step A), the disk probe and the `calibration.toml` file (step B); the calibration run, the control API and the UI are later steps, listed at the end.
 
 ## Purpose
 
@@ -12,7 +12,9 @@ Say before a start what it will cost on this computer, which resource sets the l
 | --- | --- | --- |
 | `estimate()`, `EstimatePlan`, `Limits`, `Estimate` | `rbs-record` (`estimate`) | Pure: no clock read, no OS call, no thread, no adapter. Tested with synthetic plans |
 | Plan building from the output profile and the collection | `rbs-app` (later step) | Resolves the adapter each encoder would use and its declared capabilities |
-| Disk probe, `calibration.toml`, calibration run | later steps | ADR-0087 decisions 1 and 4 |
+| `DiskProbe` (free space per folder, short-lived thread, cache) | `rbs-record` (`estimate`) | Takes the caller's master-clock time and a `ReadFreeSpace` function (`rbs-system-probe` in the app, a fake in tests) |
+| `calibration.toml` (`CalibrationFile`, `load`, `save`, `for_estimate`, `prune`) | `rbs-app` (`calibration_file`) | Beside `app.toml`, outside the `UserData` library |
+| Calibration run | later step | ADR-0087 decision 4 |
 
 ## Inputs
 
@@ -86,14 +88,59 @@ Closed codes, as ADR-0087 decision 7: `unknown`, `no_adapter`, `open_failed`, `s
 
 Each separate track lists what it adds per resource: a video track one session, its pixel rate, its bytes per second, its export memory and, when measured, its export time over the tick; an audio track its bytes per second.
 
+## Disk probe
+
+- `DiskProbe::free_space(folder, now)` never waits. It answers `Known(bytes)` when the folder was read less than `CACHE_FOR` (60 s) ago on the caller's clock, `Unknown(reason)` when the last read failed or timed out, and `Pending` otherwise. A missing or stale reading starts a read for the next estimate.
+- A read runs on its own short-lived thread, which ends after the one read and is never joined, so a hung network share never holds the control thread. One read runs at a time: while one is running (also after it timed out), no other starts.
+- A read that has not answered `PROBE_TIMEOUT` (2 s) after it started makes the folder `Unknown` with a reason (`poll`), until the late answer or a later read replaces it. A failed read is cached like a value, so a missing folder is not read again for 60 s.
+- The estimate takes `FreeSpace::bytes()` as `Limits::free_space`; `Pending` and `Unknown` are an unknown disk space row (`disk_unknown`), never `over`.
+- Nothing runs between requests: no thread exists unless a read is running (P13).
+
+## calibration.toml
+
+A per-computer file beside `app.toml` in the config directory, outside the `UserData` library: never part of a profile or collection, never exported, imported or synced (`user-data.md`). Read once at app start and kept until a calibration rewrites it (the wiring comes with step C).
+
+```toml
+format = 1
+kind = "calibration"
+rbs_version = "0.1.0"        # the RBS version that last wrote it
+
+[[encoders]]
+adapter = "nvenc"
+version = "560.94"           # the adapter's adapter.version; absent when it reports none
+codec = "h264"
+size = "1080"                # 720, 1080, 1440, 2160, above-2160
+fps = "60"                   # 30, 60, above-60
+rate = "cbr"                 # cbr, vbr, cq
+sessions = 3
+pixels_per_second = 373248000
+frame_time_us = 2100
+measured_at = 1763150000     # seconds since the Unix epoch
+partial = false              # the run stopped at its time limit
+
+[[exports]]
+size = "1080"
+time_us = 900
+measured_at = 1763150000
+
+[[folders]]
+path = "D:/Recordings"       # kept in this local file only
+write_speed = 412000000      # bytes per second
+measured_at = 1763150000
+```
+
+- **Read** (`load`): a missing file is empty. A file that cannot be read, of another `kind` or another `format` is taken as empty with a message, and replaced when a calibration next writes.
+- **For the estimate** (`for_estimate(this computer, folder)`): an encoder entry holds when its adapter still probes with the same `version`; an entry without a version holds only while `rbs_version` equals the running version. Export entries hold while `rbs_version` is unchanged. The write speed is the entry of the start's recording folder. Entries with a class name this build does not know are skipped.
+- **Before a write** (`prune`): entries that no longer hold are dropped, folder entries whose folder no longer exists are dropped, the newest `MAX_ENTRIES` (64) of each kind are kept, and `rbs_version` is stamped.
+- Written in one step (a temporary file, then a rename).
+
 ## Cost
 
 Nothing runs unless the caller asks. The function is called by the control thread when the UI opens the Separate files card or the Record separately row, when one of their settings changes, and when Record or Go live is pressed (later steps). It touches no hot path.
 
 ## Later steps
 
-- B: the disk probe (2 s timeout, 60 s cache per folder) and `calibration.toml` (format 1, beside `app.toml`).
-- C: `record.estimate`, the start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, and the plan built by the host; the estimate replaces the fixed limit of 3 separate video files.
+- C: reading `calibration.toml` at app start, the disk probe in the host, `record.estimate`, the start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, and the plan built by the host; the estimate replaces the fixed limit of 3 separate video files.
 - D: *Test this computer* (`calibration.run`, `calibration.cancel`, `calibration.status`, topic `calibration.state`).
 - E: the render partition's previous-tick time published for the estimate (hot path: measurements and sign-off).
 - F: the meter, the sentence, the button and the start confirmation in the desktop app.
