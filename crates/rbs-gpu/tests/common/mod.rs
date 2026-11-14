@@ -2,7 +2,8 @@
 
 #![allow(dead_code, clippy::expect_used)] // Not every test binary uses every helper; tests fail by panicking.
 
-use std::sync::OnceLock;
+use std::cell::RefCell;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use rbs_gpu::{GpuContext, GpuError, GpuRequest, TextureDesc, TextureId, TexturePool, readback};
 
@@ -12,7 +13,18 @@ use rbs_gpu::{GpuContext, GpuError, GpuRequest, TextureDesc, TextureId, TextureP
 /// many Vulkan devices concurrently is not what we test (and crashes some software
 /// drivers). `None` (with a message) when no adapter exists, so tests skip instead
 /// of failing on machines without a GPU.
+///
+/// The calling test also takes its turn on the device: tests of one binary that call
+/// this run one after another, never at once. wgpu runs a buffer's map callback on
+/// whichever thread polls the device next, so a test whose `wait_idle` and `poll`
+/// returned could still find its own readback not mapped yet, because another test's
+/// poll had collected the callback and not run it yet (seen as a rare
+/// `a_scaled_download_fits_the_canvas_with_black_bars` failure under `cargo test`,
+/// reproduced at about 5 in 10 000 with a second thread polling). The turn is held
+/// until the test's thread ends; `cargo nextest` runs each test in its own process
+/// and is unaffected. Threads a test spawns must not call this function.
 pub fn gpu() -> Option<&'static GpuContext> {
+    take_turn();
     static CTX: OnceLock<Option<GpuContext>> = OnceLock::new();
     let ctx = CTX.get_or_init(|| {
         match GpuContext::new(&GpuRequest {
@@ -33,6 +45,23 @@ pub fn gpu() -> Option<&'static GpuContext> {
         eprintln!("SKIPPED: no GPU adapter (install lavapipe or WARP to run GPU tests)");
     }
     ctx.as_ref()
+}
+
+/// Takes the calling thread's turn on the shared device (see [`gpu`]); a thread that
+/// holds it already keeps it. Released when the thread ends, also after a panic.
+fn take_turn() {
+    static DEVICE: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static TURN: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+    }
+    TURN.with(|turn| {
+        let mut turn = turn.borrow_mut();
+        if turn.is_none() {
+            // A test that panicked while holding the turn poisons the lock; its panic
+            // already fails that test, so the next one goes on.
+            *turn = Some(DEVICE.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+    });
 }
 
 /// Encodes an `f32` as IEEE half (exact for the simple values tests use).
