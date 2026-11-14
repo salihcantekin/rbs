@@ -7076,10 +7076,11 @@ impl Host {
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
         // Picture files are a later step (ADR-0086 step 3) with its own minor, so 1.46
         // marks sound only: a picture source is refused, and a source with both (a
-        // media file) records its sound. A picture mark already in the collection is
-        // kept as it is when the sound mark changes.
+        // media file) records its sound. A picture mark already in the collection (saved
+        // by a later version, or edited by hand) is kept as it is when the sound mark
+        // changes, set or cleared.
         let flag = if !enabled {
-            RecordSeparately::default()
+            RecordSeparately::new(source.record_separately.video, false)
         } else {
             match types::class_of(&source.type_id) {
                 Some(
@@ -8419,7 +8420,8 @@ impl Host {
                     id: s.id,
                     item: item.id,
                     companion_of: s.companion_of(),
-                    record_separately: !s.record_separately.is_none(),
+                    // 1.46 writes sound files only, so only a sound mark is shown as marked.
+                    record_separately: s.record_separately.audio,
                     name: s.name.clone(),
                     kind,
                     layout: kind
@@ -10662,8 +10664,6 @@ fn run_copy_or(
     run_copy(collection, canvas, held?)
 }
 
-/// Removes what a refused start left in the recording folder it made: the named files,
-/// the manifest and its temporary file, then the folder when nothing else is in it.
 /// A container's file extension.
 fn container_ext(container: ContainerId) -> &'static str {
     match container {
@@ -10677,6 +10677,9 @@ fn container_ext(container: ContainerId) -> &'static str {
     }
 }
 
+/// Removes what a refused start left in the recording folder it made: the named files,
+/// the manifest and its temporary file, then the folder when nothing else is in it.
+/// A delete that fails is left for the user (the start already answers `failed`).
 fn remove_recording_folder(folder: &Path, names: &[String]) {
     const MANIFEST_FILE: &str = "recording.rbs.toml";
     for name in names
