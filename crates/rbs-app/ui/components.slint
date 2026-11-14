@@ -13,6 +13,34 @@ import { Theme, Tokens } from "tokens.slint";
 // takes focus on click accepts the first press while it has no focus, so the control
 // under it would need a second click (a Tabs bar after a click in another panel). The
 // control's own click handler calls `focus-pointer()` instead.
+// Keyboard focus that lands in a scrolled list shows the whole row holding the
+// control, its name and help too, not only the control (Slint scrolls just the
+// focused element into view). A control reports where its focus landed; the
+// `SettingRow` that contains that place reports itself; the `ScrollArea` that holds
+// the row scrolls it into view. All in window coordinates, all on events only.
+export global FocusReveal {
+    in-out property <int> serial;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <int> row-serial;
+    in-out property <length> row-x;
+    in-out property <length> row-y;
+    in-out property <length> row-w;
+    in-out property <length> row-h;
+    public function focused(x: length, y: length) {
+        self.x = x;
+        self.y = y;
+        self.serial += 1;
+    }
+    public function row(x: length, y: length, w: length, h: length) {
+        self.row-x = x;
+        self.row-y = y;
+        self.row-w = w;
+        self.row-h = h;
+        self.row-serial += 1;
+    }
+}
+
 export component RingFocus inherits FocusScope {
     out property <bool> ring: self.has-focus && !by-pointer;
     // The focus came from the keyboard and is not just back with its window: a tooltip
@@ -24,7 +52,17 @@ export component RingFocus inherits FocusScope {
         by-pointer = true;
         self.focus();
     }
-    focus-gained(reason) => { with-window = reason == FocusReason.window-activation; }
+    property <bool> by-tab;
+    focus-gained(reason) => {
+        with-window = reason == FocusReason.window-activation;
+        by-tab = reason == FocusReason.tab-navigation;
+    }
+    // Reported once Slint has scrolled the control into view, so the place is current.
+    changed has-focus => {
+        if self.has-focus && by-tab {
+            FocusReveal.focused(self.absolute-position.x, self.absolute-position.y);
+        }
+    }
     // Another window taking the focus keeps how this one got it, so a control clicked
     // with the pointer shows no focus ring when its window comes back.
     focus-lost(reason) => { if reason != FocusReason.window-activation { by-pointer = false; } }
@@ -1307,7 +1345,8 @@ export component SegmentedControl inherits Rectangle {
     // Same as Tabs: the track takes the row, and the options share it. A width
     // binding would turn this stretch off and leave the track as wide as its labels.
     horizontal-stretch: 1;
-    min-width: 0px;
+    // Never narrower than its labels: a squeezed track clips the last option.
+    min-width: track.min-width;
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-md;
     border-width: Tokens.size-border;
@@ -1318,7 +1357,7 @@ export component SegmentedControl inherits Rectangle {
     // `parent.width`, not stretch alone: this layout is inside a rectangle, so it
     // stays as wide as the labels until it is given the track's width. The options
     // then share it (design system: filling a row).
-    HorizontalLayout {
+    track := HorizontalLayout {
         width: parent.width;
         height: parent.height;
         padding: Tokens.size-focus-ring;
@@ -1545,7 +1584,13 @@ export component TextField inherits Rectangle {
         edited => { root.edited(self.text); }
     }
     property <bool> focused: input.has-focus;
-    changed focused => { if !focused && !root.read-only && !root.password { root.accepted(root.text); } }
+    changed focused => {
+        if focused {
+            FocusReveal.focused(input.absolute-position.x, input.absolute-position.y);
+        } else if !root.read-only && !root.password {
+            root.accepted(root.text);
+        }
+    }
 }
 
 // ColorPicker: a swatch button that opens a popover to choose a colour by hue,
@@ -2069,6 +2114,9 @@ export component NumberField inherits Rectangle {
     // A short visible label inside the field, before the value (X, Y, W, H...); the
     // value is then right-aligned. `label` stays the accessible name.
     in property <string> prefix;
+    // A unit after the value, inside the field (ms, px): it reads as "400 ms", and
+    // the value is then right-aligned next to it.
+    in property <string> unit;
     in property <float> value;
     in property <float> step: 1;
     in property <bool> enabled: true;
@@ -2107,9 +2155,11 @@ export component NumberField inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-increment => { step-by(1); }
     accessible-action-decrement => { step-by(-1); }
-    // Never narrower than the prefix, the value and the steppers side by side, so a
-    // narrow panel does not run "Bottom" into its value (U11).
-    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + steppers.width;
+    // Room the unit takes at the value's trailing end, with its gap.
+    property <length> unit-room: root.unit != "" ? post.preferred-width + Tokens.space-1 : 0px;
+    // Never narrower than the prefix, the value, the unit and the steppers side by
+    // side, so a narrow panel does not run "Bottom" into its value (U11).
+    min-width: 2 * Tokens.space-2 + pre.preferred-width + (root.prefix != "" ? Tokens.space-2 : 0px) + input.preferred-width + root.unit-room + steppers.width;
     pre := Text {
         x: Tokens.space-2;
         height: parent.height;
@@ -2121,13 +2171,13 @@ export component NumberField inherits Rectangle {
     }
     input := TextInput {
         x: Tokens.space-2;
-        width: parent.width - 2 * Tokens.space-2 - steppers.width;
+        width: parent.width - 2 * Tokens.space-2 - steppers.width - root.unit-room;
         height: parent.height;
         text: shown(root.value);
         enabled: root.enabled;
         single-line: true;
         vertical-alignment: center;
-        horizontal-alignment: root.prefix != "" ? right : left;
+        horizontal-alignment: root.prefix != "" || root.unit != "" ? right : left;
         color: root.enabled ? Theme.text-primary : Theme.text-disabled;
         font-size: Tokens.type-body-size;
         // The caret is drawn in the selection colour (Slint 1.18 on macOS): accent,
@@ -2143,6 +2193,16 @@ export component NumberField inherits Rectangle {
         }
         accepted => { root.commit(); }
         edited => { root.typed(self.text); }
+    }
+    post := Text {
+        x: parent.width - Tokens.space-2 - steppers.width - self.width;
+        width: self.preferred-width;
+        height: parent.height;
+        text: root.unit;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        accessible-role: none;
     }
     // The stepper column: the arrow keys' up and down as buttons, so the field shows
     // that it steps (U2). A divider line separates it from the value.
@@ -2172,7 +2232,13 @@ export component NumberField inherits Rectangle {
         }
     }
     property <bool> focused: input.has-focus;
-    changed focused => { if !focused { root.commit(); } }
+    changed focused => {
+        if focused {
+            FocusReveal.focused(input.absolute-position.x, input.absolute-position.y);
+        } else {
+            root.commit();
+        }
+    }
 }
 
 // KeyboardShortcutHint (design system): a chord shown as a key chip, for example in
@@ -2819,6 +2885,19 @@ export component ScrollArea inherits Rectangle {
     public function scroll-by(dy: length) {
         flick.content-y = -clamp(root.offset + dy, 0px, root.max-offset);
     }
+    // A row reported by FocusReveal that lies in this area's content is brought into
+    // view whole.
+    property <int> row-serial: FocusReveal.row-serial;
+    changed row-serial => {
+        let p = flick.absolute-position;
+        let top = p.y + flick.content-y;
+        // The row's middle decides the side: two areas side by side never share it.
+        let mid = FocusReveal.row-x + FocusReveal.row-w / 2;
+        if mid >= p.x && mid < p.x + flick.width
+            && FocusReveal.row-y >= top && FocusReveal.row-y + FocusReveal.row-h <= top + flick.content-height {
+            root.scroll-into-view(FocusReveal.row-y - top, FocusReveal.row-h);
+        }
+    }
     flick := Flickable {
         x: 0px;
         y: 0px;
@@ -3362,7 +3441,7 @@ export component OverlayHost inherits Rectangle {
                         font-size: Tokens.type-body-size;
                         vertical-alignment: center;
                         accessible-label: @tr("Filter");
-                        edited => { Overlays.picker-current = 0; picker-list.content-y = 0px; Overlays.picker-filtered(self.text); }
+                        edited => { Overlays.picker-current = 0; picker-list.scroll-into-view(0px, 0px); Overlays.picker-filtered(self.text); }
                         accepted => {
                             if Overlays.picker-rows.length > 0 {
                                 Overlays.picker-chosen(Overlays.picker-rows[min(Overlays.picker-current, Overlays.picker-rows.length - 1)].index);
@@ -3372,12 +3451,12 @@ export component OverlayHost inherits Rectangle {
                             if e.text == Key.Escape { Overlays.picker-cancelled(); return accept; }
                             if e.text == Key.DownArrow && Overlays.picker-rows.length > 0 {
                                 Overlays.picker-current = min(Overlays.picker-current + 1, Overlays.picker-rows.length - 1);
-                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
                                 return accept;
                             }
                             if e.text == Key.UpArrow && Overlays.picker-rows.length > 0 {
                                 Overlays.picker-current = max(Overlays.picker-current - 1, 0);
-                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
                                 return accept;
                             }
                             reject
@@ -3401,7 +3480,7 @@ export component OverlayHost inherits Rectangle {
                     border-color: Theme.border-subtle;
                     background: Theme.surface-base;
                     clip: true;
-                picker-list := Flickable {
+                picker-list := ScrollArea {
                     y: Tokens.size-border;
                     x: Tokens.size-border;
                     width: parent.width - 2 * Tokens.size-border;
@@ -3595,6 +3674,14 @@ export component SettingRow inherits Rectangle {
     min-width: max(info.min-width, controls.min-width);
     min-height: Tokens.space-3 * 2 + root.inner;
     preferred-height: Tokens.space-3 * 2 + root.inner;
+    // Focus that lands in this row shows the whole row (FocusReveal).
+    property <int> focus-serial: FocusReveal.serial;
+    changed focus-serial => {
+        let p = self.absolute-position;
+        if FocusReveal.x >= p.x && FocusReveal.x < p.x + self.width && FocusReveal.y >= p.y && FocusReveal.y < p.y + self.height {
+            FocusReveal.row(p.x, p.y, self.width, self.height);
+        }
+    }
     if root.divider: Rectangle {
         y: 0;
         height: Tokens.size-border;
