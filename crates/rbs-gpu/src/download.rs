@@ -321,6 +321,20 @@ impl YuvDownload {
         pool: &TexturePool,
         canvas: &VideoFrame,
     ) -> Result<bool, GpuError> {
+        self.submit_at(ctx, pool, canvas, canvas.timestamp(), canvas.sequence())
+    }
+
+    /// [`Self::submit`], with the frame read back stamped `timestamp` and `sequence`
+    /// instead of the canvas's: a picture that did not change is passed on again as a
+    /// new frame (ADR-0086, a separate file at the canvas frame rate). Hot path.
+    pub fn submit_at(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &TexturePool,
+        canvas: &VideoFrame,
+        timestamp: Timestamp,
+        sequence: u64,
+    ) -> Result<bool, GpuError> {
         let FramePayload::Texture(id) = *canvas.payload() else {
             return Err(GpuError::Unsupported("download needs a pool texture frame"));
         };
@@ -354,8 +368,8 @@ impl YuvDownload {
         copy(&mut encoder, &self.chroma_tex, self.chroma_offset);
         ctx.queue().submit(Some(encoder.finish()));
 
-        slot.timestamp = canvas.timestamp();
-        slot.sequence = canvas.sequence();
+        slot.timestamp = timestamp;
+        slot.sequence = sequence;
         slot.state.store(MAPPING, Ordering::Release);
         let state = Arc::clone(&slot.state);
         slot.staging

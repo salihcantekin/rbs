@@ -257,3 +257,33 @@ fn a_resize_sweep_keeps_memory_to_one_size() {
         rig.allocated()
     );
 }
+
+#[test]
+fn normalise_passes_linear_input_unchanged_and_decodes_srgb_input() {
+    let Some(ctx) = common::gpu() else { return };
+    let normalise: Arc<dyn FilterType> = Arc::new(rbs_filters::Normalise);
+    assert!(rbs_filters::conformance::check_type(&rbs_filters::Normalise).is_empty());
+    let input = gradient(16, 8);
+    let want = input.clone();
+    let got = run(
+        ctx.clone(),
+        vec![(
+            Arc::clone(&normalise),
+            Values::defaults(&rbs_filters::Normalise as &dyn FilterType),
+        )],
+        input,
+    );
+    assert_close(&got, |x, y| want.at(x, y), 4e-3);
+    // An 8-bit sRGB picture (a still, a window) comes out linear, as on the canvas.
+    let input = Picture::solid(4, 4, [0.5, 0.5, 0.5, 1.0]).encoded();
+    let got = run(
+        ctx,
+        vec![(
+            normalise,
+            Values::defaults(&rbs_filters::Normalise as &dyn FilterType),
+        )],
+        input,
+    );
+    let g = srgb_to_linear(128.0 / 255.0);
+    assert_close(&got, |_, _| [g, g, g, 1.0], 4e-3);
+}

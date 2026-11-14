@@ -267,7 +267,7 @@ impl super::Studio {
         Ok((taps, not_heard))
     }
 
-    fn ensure_iso_partitions(&mut self) -> Result<(), RecordError> {
+    pub(super) fn ensure_iso_partitions(&mut self) -> Result<(), RecordError> {
         // An empty partition starts no thread (ADR-0013). A worker starts when the
         // apply below schedules nodes, and stops when [`Self::stop_iso_audio`] removes them.
         if self.engine.worker_stats(ISO_AUDIO_ENCODER).is_none() {
@@ -387,7 +387,7 @@ impl super::Studio {
     }
 
     /// Instances adopted before the graph was applied.
-    fn abandon(&mut self, adopted: Vec<Added>) {
+    pub(super) fn abandon(&mut self, adopted: Vec<Added>) {
         for node in adopted {
             if !super::take(&mut self.engine, node) {
                 self.pending_takes.push((node, None));
@@ -396,7 +396,7 @@ impl super::Studio {
     }
 
     /// The apply installed these nodes and one of them did not join.
-    fn remove_added(&mut self, nodes: &[Added]) {
+    pub(super) fn remove_added(&mut self, nodes: &[Added]) {
         for node in nodes {
             let _ = self.graph.set_state(node.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(node.node);
@@ -423,7 +423,7 @@ fn audio_pin(graph: &GraphDescription, node: NodeId) -> Result<String, RecordErr
         .ok_or(RecordError::NotBound("audio source"))
 }
 
-fn extension(container: ContainerId) -> &'static str {
+pub(super) fn extension(container: ContainerId) -> &'static str {
     match container {
         ContainerId::Matroska => "mkv",
         ContainerId::Mp4Fragmented => "mp4",
@@ -437,7 +437,7 @@ fn extension(container: ContainerId) -> &'static str {
 }
 
 /// `{folder}/{name}` with a space, `%`, `#` or `?` in the name escaped.
-fn track_url(folder: &str, file_name: &str) -> String {
+pub(super) fn track_url(folder: &str, file_name: &str) -> String {
     let folder = folder.trim_end_matches('/');
     let mut name = String::new();
     for c in file_name.chars() {

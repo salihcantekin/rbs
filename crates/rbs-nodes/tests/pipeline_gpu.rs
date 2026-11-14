@@ -77,6 +77,10 @@ fn gpu() -> Option<Arc<GpuContext>> {
 
 type Frames = Arc<Mutex<Vec<VideoFrame>>>;
 
+/// The test pipeline's export gives way after a previous tick this long (an ISO track's
+/// rule, ADR-0086 decision 9); the other tests' ticks take no time, so it never does.
+const GIVE_WAY_MS: u64 = 8;
+
 struct Rig {
     graph: GraphDescription,
     ctl: Controller<GpuRuntime>,
@@ -112,8 +116,13 @@ impl Rig {
     /// One render tick at 30 fps with the capture clock at the tick's time; the GPU is
     /// waited on afterwards so readbacks complete deterministically by the next tick.
     fn tick(&mut self) {
+        self.tick_after(std::time::Duration::ZERO);
+    }
+
+    /// [`Rig::tick`] for a tick whose previous one took `previous_busy`.
+    fn tick_after(&mut self, previous_busy: std::time::Duration) {
         let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
-        let tick = Tick::of(&cadence, self.tick);
+        let tick = Tick::of(&cadence, self.tick).after(previous_busy);
         self.clock.set(tick.time);
         self.exec.run_tick(tick);
         self.ctx.wait_idle().unwrap();
@@ -174,7 +183,8 @@ fn pipeline_from(
         vec![NodeLayer::new(capture, 0, 0.0, 0.0, W as f32, H as f32)],
     );
     let comp = rig.add(Box::new(comp));
-    let export = VideoExportNode::new(YuvFormat::Nv12, W, H, W, H);
+    let export = VideoExportNode::new(YuvFormat::Nv12, W, H, W, H)
+        .give_way_after(std::time::Duration::from_millis(GIVE_WAY_MS));
     let end = export.end();
     let export = rig.add(Box::new(export));
     let frames = Arc::new(Mutex::new(Vec::new()));
@@ -352,4 +362,31 @@ fn the_capture_node_reports_its_picture_size_and_follows_a_resize() {
         }
     }
     panic!("still {:?} after the resize", stats.picture_size());
+}
+
+#[test]
+fn an_export_that_gives_way_skips_the_canvas_after_a_long_tick() {
+    let Some((mut rig, frames, export, _end)) =
+        pipeline("test-window-0", None, &[PixelFormat::Bgra8])
+    else {
+        return;
+    };
+    let long = std::time::Duration::from_millis(GIVE_WAY_MS + 1);
+    let budget = std::time::Duration::from_millis(GIVE_WAY_MS);
+    // Tick 0 converts; tick 1 follows a long tick, so it passes tick 0's frame on and
+    // converts nothing; a tick exactly at the budget still converts.
+    rig.tick();
+    rig.tick_after(long);
+    rig.tick_after(budget);
+    rig.tick();
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let delivered: Vec<Timestamp> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|f| f.timestamp())
+        .collect();
+    assert_eq!(delivered, vec![cadence.time_of(0), cadence.time_of(2)]);
+    let health = rig.exec.health(export).unwrap();
+    assert_eq!(health.errors, 0, "{health:?}");
 }
