@@ -97,10 +97,10 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0086](0086-recording-sources-separately-iso.md) | Record sources separately (ISO recording) next to the master recording | Accepted |
 | [0087](0087-output-cost-estimate-and-hardware-limits.md) | Show the cost of outputs before they start, and the limits of this hardware | Proposed |
 | [0088](0088-replay-buffer-and-retroactive-recording.md) | Replay buffer: keep the last minutes in memory, save a clip, or turn the buffer into a recording | Accepted |
-| [0089](0089-recording-markers-and-editor-project-export.md) | Recording markers and an editor project (FCPXML) written from the recording manifest | Proposed |
-| [0090](0090-recording-protection-disk-lag-and-adaptive-bitrate.md) | Recording protection: early warnings for disk and encoder trouble, ordered load shedding, and adaptive bitrate | Proposed |
-| [0091](0091-per-scene-audio-levels.md) | Per-scene audio levels: a scene can remember its own volumes and mutes | Proposed |
-| [0092](0092-loudness-metering-and-leveling.md) | Loudness: BS.1770 metering first, then a slow leveler, and gain advice for editing | Proposed |
+| [0089](0089-recording-markers-and-editor-project-export.md) | Recording markers and an editor project (FCPXML) written from the recording manifest | Accepted |
+| [0090](0090-recording-protection-disk-lag-and-adaptive-bitrate.md) | Recording protection: early warnings for disk and encoder trouble, ordered load shedding, and adaptive bitrate | Accepted |
+| [0091](0091-per-scene-audio-levels.md) | Per-scene audio levels: a scene can remember its own volumes and mutes | Accepted |
+| [0092](0092-loudness-metering-and-leveling.md) | Loudness: BS.1770 metering first, then a slow leveler, and gain advice for editing | Accepted |
 | [0093](0093-vertical-second-canvas-from-the-same-sources.md) | A vertical (9:16) second canvas running at the same time as the main one | Accepted |
 | [0094](0094-ui-interaction-patterns-and-tabler-icon-set.md) | UI interaction patterns (info hints, feature sections, one menu system) and the Tabler icon set | Accepted |
 | [0095](0095-audio-ducker-and-key-tap.md) | Audio ducker as a filter with a pre-fader key tap from another source | Accepted |

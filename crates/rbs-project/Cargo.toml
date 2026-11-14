@@ -1,0 +1,19 @@
+[package]
+name = "rbs-project"
+description = "Writes an editor project (FCPXML) from an RBS recording manifest: the files placed and aligned on a timeline, with the markers (ADR-0089)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A leaf used only by composition roots (`rbs-app`, `rbs-cli`; ADR-0089 decision 7).
+# It reads the manifest and never probes media: no engine, port, adapter, GPU, FFmpeg
+# or UI crate, and no XML library (the writer emits a fixed, escaped subset).
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-manifest = { path = "../rbs-manifest" }
+
+[lints]
+workspace = true

@@ -64,6 +64,8 @@ rbs-params = { path = "../rbs-params" }
 # CaptureError::Cancelled from OS pickers.
 rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }
+# The recording manifest and its markers (ADR-0089).
+rbs-manifest = { path = "../rbs-manifest" }
 rbs-browser-runner = { path = "../rbs-browser-runner" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-thread-os = { path = "../rbs-thread-os" }
@@ -101,6 +103,8 @@ rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 # Stand-in media decoder until an FFmpeg adapter ships (ADR-0108 / ADR-0007).
 rbs-media-decode-test = { path = "../rbs-media-decode-test" }
+# Free disk space and memory for recording protection (ADR-0090 decision 11).
+rbs-system-probe = { path = "../rbs-system-probe" }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 # The system file dialog for importing and exporting output profiles and scene
