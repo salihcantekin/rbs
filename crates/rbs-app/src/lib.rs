@@ -28,6 +28,7 @@
 
 pub mod background;
 pub mod browser_tree;
+pub mod calibration_file;
 pub mod canvas_profile;
 pub mod caption;
 pub mod edit_history;
