@@ -1,6 +1,6 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
-import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Tabs, ScrollArea, SettingRow, Toggle } from "components.slint";
+import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Tabs, ScrollArea, SettingRow, Toggle, NumberField } from "components.slint";
 
 export component OverlayProbe inherits Window {
     // literal-begin: a test window; its size and the places of its two controls are test data
@@ -109,6 +109,24 @@ export component SettingRowProbe inherits Window {
         hint: "Shared sources slide to their new place; new sources fade in.";
         fill: false;
         Toggle { label: "Glide"; }
+    }
+    // literal-end
+}
+
+// A window for tests/overlays.rs: drag to change on a NumberField.
+export component NumberFieldProbe inherits Window {
+    // literal-begin: a test window; its size and the field's place are test data
+    width: 300px;
+    height: 100px;
+    in-out property <float> value: 10;
+    out property <int> edits;
+    field := NumberField {
+        x: 0px;
+        y: 0px;
+        width: 200px;
+        label: "Width";
+        value: root.value;
+        edited(v) => { root.edits += 1; root.value = v; }
     }
     // literal-end
 }

@@ -88,6 +88,7 @@ pub const LENGTHS: &[&str] = &[
     "size.section.gap",
     "size.field.gap",
     "size.field.compact",
+    "size.field.drag-step",
     "size.tab.indicator",
     "size.control.sm",
     "size.control.md",

@@ -422,3 +422,89 @@ fn a_setting_rows_hint_shows_only_while_the_pointer_is_over_the_row_or_it_has_fo
     settle();
     assert!(p.get_hint_shown(), "keyboard focus on the (i)");
 }
+
+fn number_probe() -> rbs_app_ui::NumberFieldProbe {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::NumberFieldProbe::new().expect("the probe window");
+    p.show().expect("show");
+    p
+}
+
+fn press(w: &slint::Window, x: f32, y: f32) {
+    w.dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(x, y),
+    });
+    w.dispatch_event(WindowEvent::PointerPressed {
+        position: slint::LogicalPosition::new(x, y),
+        button: slint::platform::PointerEventButton::Left,
+    });
+}
+
+fn drag_to(w: &slint::Window, x: f32, y: f32) {
+    w.dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(x, y),
+    });
+}
+
+fn release(w: &slint::Window, x: f32, y: f32) {
+    w.dispatch_event(WindowEvent::PointerReleased {
+        position: slint::LogicalPosition::new(x, y),
+        button: slint::platform::PointerEventButton::Left,
+    });
+    settle();
+}
+
+#[test]
+fn dragging_a_number_field_changes_it_once_on_release() {
+    let p = number_probe();
+    let w = p.window();
+    press(w, 50.0, 14.0);
+    // 20 px right and 4 px up at 4 px a step: six steps.
+    drag_to(w, 60.0, 12.0);
+    drag_to(w, 70.0, 10.0);
+    assert_eq!(p.get_edits(), 0, "nothing applies during the drag");
+    release(w, 70.0, 10.0);
+    assert_eq!(p.get_edits(), 1, "one change for the whole drag");
+    assert_eq!(p.get_value(), 16.0);
+    // Left lowers it.
+    press(w, 50.0, 14.0);
+    drag_to(w, 42.0, 14.0);
+    release(w, 42.0, 14.0);
+    assert_eq!(p.get_value(), 14.0);
+}
+
+#[test]
+fn escape_during_a_drag_keeps_the_value() {
+    let p = number_probe();
+    let w = p.window();
+    press(w, 50.0, 14.0);
+    drag_to(w, 90.0, 14.0);
+    key_on(w, Key::Escape);
+    drag_to(w, 120.0, 14.0);
+    release(w, 120.0, 14.0);
+    assert_eq!(p.get_edits(), 0);
+    assert_eq!(p.get_value(), 10.0);
+}
+
+#[test]
+fn a_click_without_moving_types_instead_of_dragging() {
+    let p = number_probe();
+    let w = p.window();
+    press(w, 50.0, 14.0);
+    drag_to(w, 51.0, 14.0);
+    release(w, 51.0, 14.0);
+    assert_eq!(p.get_edits(), 0);
+    // The value is selected: typing replaces it, Return applies it.
+    w.dispatch_event(WindowEvent::KeyPressed { text: "7".into() });
+    w.dispatch_event(WindowEvent::KeyReleased { text: "7".into() });
+    key_on(w, Key::Return);
+    assert_eq!(p.get_edits(), 1);
+    assert_eq!(p.get_value(), 7.0);
+}
+
+fn key_on(w: &slint::Window, k: Key) {
+    let s: slint::SharedString = k.into();
+    w.dispatch_event(WindowEvent::KeyPressed { text: s.clone() });
+    w.dispatch_event(WindowEvent::KeyReleased { text: s });
+    settle();
+}
