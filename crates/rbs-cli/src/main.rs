@@ -10,7 +10,8 @@
 //!
 //! `record` captures the main display with the first camera in the bottom-right corner,
 //! the default microphone and the system audio, and writes H.264 and AAC to a Matroska
-//! (`.mkv`) or fragmented MP4 (`.mp4`) file until the time is up or Enter is pressed.
+//! (`.mkv`) or fragmented MP4 (`.mp4`) file until the time is up, Enter is pressed,
+//! or Ctrl+C asks the recording to finish.
 //! `stream` sends the same program live: H.264 and AAC packets over RTMP, or MPEG-TS
 //! over SRT, with the stream key from an environment variable.
 
@@ -19,6 +20,7 @@
 mod app;
 mod args;
 mod control;
+mod interrupt;
 mod permissions;
 mod platform;
 mod remote;
@@ -378,11 +380,12 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     };
     match a.duration {
         Some(d) => println!(
-            "{verb} {} s to {destination} (press Enter to stop early)",
+            "{verb} {} s to {destination} (press Enter or Ctrl+C to stop early)",
             d.as_secs(),
         ),
-        None => println!("{verb} to {destination}; press Enter to stop"),
+        None => println!("{verb} to {destination}; press Enter or Ctrl+C to stop"),
     }
+    interrupt::install();
     {
         let stop = Arc::clone(&stop);
         // Detached: it ends with the process if stdin never delivers a line.
@@ -402,7 +405,10 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     let mut next = Duration::from_secs(1);
     let mut failure = None;
     let mut link = Link::default();
-    while !stop.load(Ordering::Relaxed) && a.duration.is_none_or(|d| start.elapsed() < d) {
+    while !stop.load(Ordering::Relaxed)
+        && !interrupt::stop_asked()
+        && a.duration.is_none_or(|d| start.elapsed() < d)
+    {
         let serviced = recording.service();
         for (_, event) in &serviced.events {
             if let Some(text) = describe_event(event, &recording.started().sources) {
