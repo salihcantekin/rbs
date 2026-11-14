@@ -1352,7 +1352,7 @@ mod tests {
         ] {
             let mut p = RecordProfile::new();
             p.folder = PathBuf::from("rec");
-            p.format = format;
+            p.use_format(format);
             p.rate_control = rate;
             p.preset = preset;
             p.encoder = Some("org.rbs.codec.nvenc".into());
@@ -1409,7 +1409,7 @@ mod tests {
         assert_eq!(load(&d), (RecordProfile::new(), None));
         let mut p = RecordProfile::new();
         p.folder = d.join("rec");
-        p.format = Format::Mp4;
+        p.use_format(Format::Mp4);
         p.encoder = Some("org.rbs.codec.nvenc".into());
         p.video_kbps = 8_000;
         p.audio_kbps = 192;
@@ -1456,7 +1456,7 @@ mod tests {
         assert_eq!(why, None);
         let mut want = RecordProfile::new();
         want.folder = folder;
-        want.format = Format::Mp4;
+        want.use_format(Format::Mp4);
         want.video_kbps = 8_000;
         want.audio_kbps = 128;
         assert_eq!(p, want);
