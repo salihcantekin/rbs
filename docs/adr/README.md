@@ -129,3 +129,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted |
 | [0119](0119-where-separate-files-are-encoded.md) | Separate files take the cheapest path per source, and the user picks where the rest is encoded | Accepted |
 | [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted |
+| [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Proposed |
