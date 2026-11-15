@@ -501,6 +501,13 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Refusals.** `not_found` for an unknown scene (the canvas's global scene included, which no method lists) or source; `invalid_params` for `scene.audio.set` with neither `volume` nor `muted`, a volume outside `0..=1` or not finite, or unknown keys.
 - **Older clients and servers.** A 1.47 client sees the same objects as before for a collection without Own levels; on a scene in Own levels its `volume` and `muted` remain the source's own values, which may differ from what is heard. A 1.47 server answers `method_not_found` and omits the fields. 1.47 was the loudness meter. A collection that uses Own levels is saved as scene format 17, which older builds refuse to open.
 
+### Protocol 1.58 (planned): pause a recording, hold a stream (ADR-0124)
+
+- **Methods** (`control`, live class): `record.pause {canvas?}`, `record.resume {canvas?}`, `record.pause_toggle {canvas?}` (`canvas` as in 1.29, `all` as in 1.42); `stream.hold {canvas?, picture?}` (`freeze` by default, `black`; `scene` with phase 2b), `stream.resume {canvas?}`, `stream.hold_toggle {canvas?}`; `output.break_toggle` (holds every live stream and pauses every recording; when all of them already are, resumes them all). Holding a stream that shares an encoder with a recording pauses that recording, and `stream.resume` resumes it, unless the user had paused it before the hold. Additive: a minor version. The stream methods change what is on air and take the on-air permission check. `conflict` when nothing runs to pause or hold, it is already in the asked state, or the pause is refused because a shared video encoder cannot make a keyframe on request (the message says so); `invalid_params` for an unknown `picture`.
+- **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `stream.state` and `stream.canvas_state` add `held` and `held_ms`. Published on each change, never per frame.
+- **Markers.** `marker.add` while paused is accepted; the marker sits on that pause's join with `while_paused: true`.
+- **Registry.** Each method is a command, so shortcuts, the RBS menu, Stream Deck and MCP get it. A server older than 1.58 answers `method_not_found`.
+
 ### Protocol 1.57: *Test this computer* measures the export (ADR-0087 step D2)
 
 - **`calibration.state`** while `running`: `part` gains `export`, the first part of a run whose plan has separate video files; `adapter` is `null` during it, and `steps` counts each export class as one step. What it measures is in [output-estimate.md](output-estimate.md#calibration-run) ("The export part").
