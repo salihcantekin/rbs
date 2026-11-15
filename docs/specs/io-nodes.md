@@ -150,6 +150,8 @@ Invariants:
 2. Never waits for the GPU. A frame submitted on tick `i` appears on tick `i + 1` at the earliest; a full staging ring drops the new canvas frame (`busy`).
 3. Once ended, every canvas the export took up to the end time is on "video" in order (one per tick), and no later canvas is taken. Canvases dropped as on the run path (`busy`, no free buffer, a failed readback) are counted in `busy` or `lost`. Whether the encoder took the last one is the studio's check (`EncoderNodeStats::last_frame`, recording spec 5a). The run path costs one relaxed atomic load and a compare per tick.
 
+Planned (ADR-0124): the run-path atomic becomes `next`, the earliest of the end time and the next pause window instant (lowered by compare-and-swap; only the export raises it again, by compare-and-swap from the value it observed; only the end path sets `ended`), so the run path keeps one load and one compare. With `PauseGate` the export takes no canvas with a time in `[pause_at, resume_at)` and stamps later frames `t - paused_total`. With `HoldGate`, while holding, it pins its last converted frame's buffer (or a black one), re-stamps it with each tick's time and a new sequence and reads nothing back; the ring works one buffer short.
+
 ### Video encoder node
 
 | Call | Does |
@@ -165,6 +167,8 @@ Invariants:
 2. Packets leave in the order the session produced them. At most `PER_TICK_EVENTS` per tick go on "packets"; up to `CARRY_PACKETS` more wait for the next ticks.
 3. The packet stream is always decodable: when the carry-over is full, packets are dropped up to the next keyframe and `EncoderChange::RequestKeyframe` is sent.
 4. A refused frame (`EncodeError::InvalidInput`) is counted and does not fail the tick: a failed tick discards the packets the node already pushed in it, which would break the stream. A device loss or non-recoverable failure is permanent.
+
+Planned (ADR-0124): a request "keyframe at the first frame with pts at or after `t`" from the control thread (an atomic time, `u64::MAX` for none, read once per tick, applied as `EncoderChange::RequestKeyframe` before that frame's `submit`). The studio passes the adapter's `codec.reconfigure` capability when it builds the node; without `keyframe` the request is never stored.
 
 ### Output node
 
@@ -184,6 +188,8 @@ Invariants:
 5. Muxer and transport creation errors and `begin` errors are permanent; a `start` error is retried only when `TransportError::is_recoverable`.
 6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
 7. **Aligned start.** An output with a video stream and other streams starts at the first video packet's pts: packets of other streams that end at or before it (pts plus duration, or pts when the packet has no duration) are dropped and counted (`start_drops`); packets that arrive before the first video packet are held (at most `START_HOLD` = 256, preallocated in `prepare`; past it the oldest are dropped and counted) and written when it arrives, in arrival order. So a recording never begins with audio before the first picture (video started 143 ms after audio on SC-PC, 3440x1440 NVENC,). Outputs with only video or no video pass every packet.
+
+8. Planned (ADR-0124): a recording's output node carries `PauseGate` (streams `HoldGate`, others `NoGate`). For a shared encoder's cut it drops video packets in decode order from the first one whose pts is at or after `pause_at` and passes again from the requested keyframe at or after `resume_at`, pts and dts shifted by `paused_total`; the keyframe starts a closed GOP, pictures that would show before the join are dropped, and each dts is clamped per packet to `max(dts + shift, last_dts + 1)` while that stays at or below pts. Audio packets with pts in `[pause_at, resume_at)` are dropped, later ones shifted, and the last kept one is trimmed to end at `pause_at`.
 
 ### Preview node (ADR-0041)
 
