@@ -10,7 +10,7 @@
 //! Options: `--demo-live` shows a made-up live and recording state, to check
 //! the live indicator without an engine. `--reset-appearance` moves
 //! `appearance.toml` aside and starts with the default look (themes spec).
-//! `RBS_THEME=dark|light|high-contrast`
+//! `RBS_THEME=dark|light`
 //! overrides the OS theme. `RBS_TOKENS=<file>` uses another token file
 //! (development aid, see `look`). `RBS_CONFIG_DIR` overrides the config directory.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]

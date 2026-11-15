@@ -18,7 +18,7 @@ pub use theme::*;
 pub const BUILT_IN: &str = include_str!("../tokens.toml");
 
 /// Themes every token file defines.
-pub const THEMES: [&str; 3] = ["dark", "light", "high-contrast"];
+pub const THEMES: [&str; 2] = ["dark", "light"];
 
 /// Colour tokens every theme defines.
 pub const THEME_COLORS: &[&str] = &[
@@ -342,152 +342,127 @@ fn valid_name(n: &str) -> bool {
         })
 }
 
-/// Contrast rules of rule U7: (foreground, background, minimum ratio, high-contrast minimum).
-pub const CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
-    ("color.scrollbar.thumb", "color.surface.raised", 3.0, 3.0),
-    ("color.scrollbar.thumb", "color.surface.base", 3.0, 3.0),
-    (
-        "color.scrollbar.thumb-hot",
-        "color.surface.overlay",
-        3.0,
-        3.0,
-    ),
-    ("color.text.primary", "color.surface.base", 4.5, 7.0),
-    ("color.text.primary", "color.surface.raised", 4.5, 7.0),
-    ("color.text.primary", "color.surface.overlay", 4.5, 7.0),
-    ("color.text.primary", "color.surface.sunken", 4.5, 7.0),
-    ("color.text.secondary", "color.surface.base", 4.5, 7.0),
-    ("color.text.secondary", "color.surface.raised", 4.5, 7.0),
-    ("color.text.secondary", "color.surface.overlay", 4.5, 7.0),
-    ("color.text.secondary", "color.surface.sunken", 4.5, 7.0),
-    ("color.text.inverse", "color.accent", 4.5, 7.0),
-    ("color.text.primary", "color.accent.subtle", 4.5, 7.0),
-    ("color.border.focus", "color.surface.base", 3.0, 3.0),
-    ("color.border.focus", "color.surface.raised", 3.0, 3.0),
-    ("color.border.strong", "color.surface.raised", 3.0, 3.0),
-    ("color.state.warning", "color.surface.raised", 4.5, 7.0),
-    ("color.state.healthy", "color.surface.raised", 3.0, 3.0),
-    ("color.state.error", "color.surface.raised", 3.0, 3.0),
-    ("color.action.destructive", "color.surface.raised", 3.0, 3.0),
-    ("color.meter.low", "color.surface.sunken", 3.0, 3.0),
-    ("color.meter.mid", "color.surface.sunken", 3.0, 3.0),
-    ("color.meter.high", "color.surface.sunken", 3.0, 3.0),
-    ("color.meter.clip", "color.surface.sunken", 3.0, 3.0),
+/// Contrast rules of rule U7: (foreground, background, minimum ratio).
+pub const CONTRAST_RULES: &[(&str, &str, f64)] = &[
+    ("color.scrollbar.thumb", "color.surface.raised", 3.0),
+    ("color.scrollbar.thumb", "color.surface.base", 3.0),
+    ("color.scrollbar.thumb-hot", "color.surface.overlay", 3.0),
+    ("color.text.primary", "color.surface.base", 4.5),
+    ("color.text.primary", "color.surface.raised", 4.5),
+    ("color.text.primary", "color.surface.overlay", 4.5),
+    ("color.text.primary", "color.surface.sunken", 4.5),
+    ("color.text.secondary", "color.surface.base", 4.5),
+    ("color.text.secondary", "color.surface.raised", 4.5),
+    ("color.text.secondary", "color.surface.overlay", 4.5),
+    ("color.text.secondary", "color.surface.sunken", 4.5),
+    ("color.text.inverse", "color.accent", 4.5),
+    ("color.text.primary", "color.accent.subtle", 4.5),
+    ("color.border.focus", "color.surface.base", 3.0),
+    ("color.border.focus", "color.surface.raised", 3.0),
+    ("color.border.strong", "color.surface.raised", 3.0),
+    ("color.state.warning", "color.surface.raised", 4.5),
+    ("color.state.healthy", "color.surface.raised", 3.0),
+    ("color.state.error", "color.surface.raised", 3.0),
+    ("color.action.destructive", "color.surface.raised", 3.0),
+    ("color.meter.low", "color.surface.sunken", 3.0),
+    ("color.meter.mid", "color.surface.sunken", 3.0),
+    ("color.meter.high", "color.surface.sunken", 3.0),
+    ("color.meter.clip", "color.surface.sunken", 3.0),
 ];
 
 /// Contrast rules that exist because themes are untrusted input (ADR-0057 decision 3);
-/// the built-in file passes them too: (foreground, background, minimum ratio,
-/// high-contrast minimum).
-pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
-    ("color.border.focus", "color.surface.overlay", 3.0, 3.0),
-    ("color.border.focus", "color.surface.sunken", 3.0, 3.0),
-    ("color.text.inverse", "color.accent.hover", 4.5, 7.0),
-    ("color.accent", "color.surface.base", 3.0, 3.0),
-    ("color.accent", "color.surface.raised", 3.0, 3.0),
-    ("color.accent", "color.surface.overlay", 3.0, 3.0),
-    ("color.accent", "color.surface.sunken", 3.0, 3.0),
-    ("color.text.secondary", "color.accent.subtle", 4.5, 7.0),
+/// the built-in file passes them too: (foreground, background, minimum ratio).
+pub const THEME_CONTRAST_RULES: &[(&str, &str, f64)] = &[
+    ("color.border.focus", "color.surface.overlay", 3.0),
+    ("color.border.focus", "color.surface.sunken", 3.0),
+    ("color.text.inverse", "color.accent.hover", 4.5),
+    ("color.accent", "color.surface.base", 3.0),
+    ("color.accent", "color.surface.raised", 3.0),
+    ("color.accent", "color.surface.overlay", 3.0),
+    ("color.accent", "color.surface.sunken", 3.0),
+    ("color.text.secondary", "color.accent.subtle", 4.5),
     // Buttons (owner decision 2026-11-14, Tint look): text on the resting, hovered and
     // pressed fills, the accent icon on its chip, the danger ink on its fill.
-    ("color.text.primary", "color.button.fill", 4.5, 7.0),
-    ("color.text.primary", "color.button.hover", 4.5, 7.0),
-    ("color.text.primary", "color.button.pressed", 4.5, 7.0),
-    ("color.accent", "color.button.chip", 3.0, 3.0),
+    ("color.text.primary", "color.button.fill", 4.5),
+    ("color.text.primary", "color.button.hover", 4.5),
+    ("color.text.primary", "color.button.pressed", 4.5),
+    ("color.accent", "color.button.chip", 3.0),
     // The focus ring is drawn inside a button, over its own fill (ADR-0118).
-    ("color.border.focus", "color.button.fill", 3.0, 3.0),
-    ("color.border.focus", "color.button.hover", 3.0, 3.0),
-    ("color.border.focus", "color.button.pressed", 3.0, 3.0),
-    ("color.border.focus", "color.accent.subtle.hover", 3.0, 3.0),
-    (
-        "color.border.focus",
-        "color.action.destructive.subtle",
-        3.0,
-        3.0,
-    ),
+    ("color.border.focus", "color.button.fill", 3.0),
+    ("color.border.focus", "color.button.hover", 3.0),
+    ("color.border.focus", "color.button.pressed", 3.0),
+    ("color.border.focus", "color.accent.subtle.hover", 3.0),
+    ("color.border.focus", "color.action.destructive.subtle", 3.0),
     (
         "color.border.focus",
         "color.action.destructive.subtle.hover",
         3.0,
-        3.0,
     ),
-    ("color.text.primary", "color.button.chip", 4.5, 7.0),
-    ("color.text.secondary", "color.button.chip", 4.5, 7.0),
-    ("color.text.secondary", "color.button.fill", 4.5, 7.0),
-    ("color.text.secondary", "color.button.hover", 4.5, 7.0),
-    ("color.text.secondary", "color.button.pressed", 4.5, 7.0),
+    ("color.text.primary", "color.button.chip", 4.5),
+    ("color.text.secondary", "color.button.chip", 4.5),
+    ("color.text.secondary", "color.button.fill", 4.5),
+    ("color.text.secondary", "color.button.hover", 4.5),
+    ("color.text.secondary", "color.button.pressed", 4.5),
     // A Button's caption and hint (its menu form) on a checked or danger fill.
-    (
-        "color.text.secondary",
-        "color.accent.subtle.hover",
-        4.5,
-        7.0,
-    ),
+    ("color.text.secondary", "color.accent.subtle.hover", 4.5),
     (
         "color.text.secondary",
         "color.action.destructive.subtle",
         4.5,
-        7.0,
     ),
     (
         "color.text.secondary",
         "color.action.destructive.subtle.hover",
         4.5,
-        7.0,
     ),
-    ("color.text.inverse", "color.accent.pressed", 4.5, 7.0),
-    ("color.text.primary", "color.accent.subtle.hover", 4.5, 7.0),
-    ("color.accent", "color.accent.subtle.hover", 3.0, 3.0),
-    (
-        "color.state.error",
-        "color.action.destructive.subtle",
-        4.5,
-        7.0,
-    ),
+    ("color.text.inverse", "color.accent.pressed", 4.5),
+    ("color.text.primary", "color.accent.subtle.hover", 4.5),
+    ("color.accent", "color.accent.subtle.hover", 3.0),
+    ("color.state.error", "color.action.destructive.subtle", 4.5),
     (
         "color.state.error",
         "color.action.destructive.subtle.hover",
         4.5,
-        7.0,
     ),
     // Pairs the desktop UI draws (`rbs-app` test `every_drawn_pair_has_a_contrast_rule`).
     // Error messages are text, so they need the text minimum.
-    ("color.state.error", "color.surface.base", 4.5, 7.0),
-    ("color.state.error", "color.surface.raised", 4.5, 7.0),
-    ("color.state.error", "color.surface.overlay", 4.5, 7.0),
-    ("color.state.error", "color.surface.sunken", 4.5, 7.0),
-    ("color.state.error", "color.accent.subtle", 4.5, 7.0),
-    ("color.border.focus", "color.accent.subtle", 3.0, 3.0),
-    ("color.border.strong", "color.surface.base", 3.0, 3.0),
-    ("color.border.strong", "color.surface.sunken", 3.0, 3.0),
+    ("color.state.error", "color.surface.base", 4.5),
+    ("color.state.error", "color.surface.raised", 4.5),
+    ("color.state.error", "color.surface.overlay", 4.5),
+    ("color.state.error", "color.surface.sunken", 4.5),
+    ("color.state.error", "color.accent.subtle", 4.5),
+    ("color.border.focus", "color.accent.subtle", 3.0),
+    ("color.border.strong", "color.surface.base", 3.0),
+    ("color.border.strong", "color.surface.sunken", 3.0),
     // A Checkbox on a hovered or selected row (Properties, Filters tab; ADR-0062).
-    ("color.border.strong", "color.surface.overlay", 3.0, 3.0),
-    ("color.border.strong", "color.accent.subtle", 3.0, 3.0),
-    ("color.accent", "color.accent.subtle", 3.0, 3.0),
+    ("color.border.strong", "color.surface.overlay", 3.0),
+    ("color.border.strong", "color.accent.subtle", 3.0),
+    ("color.accent", "color.accent.subtle", 3.0),
     // The warning mark of an unavailable source on a hovered or selected row (ADR-0077).
-    ("color.state.warning", "color.surface.overlay", 3.0, 3.0),
-    ("color.state.warning", "color.accent.subtle", 3.0, 3.0),
+    ("color.state.warning", "color.surface.overlay", 3.0),
+    ("color.state.warning", "color.accent.subtle", 3.0),
     // The same mark of a ListRow in the searchable picker's well (ADR-0114).
-    ("color.state.warning", "color.surface.base", 3.0, 3.0),
+    ("color.state.warning", "color.surface.base", 3.0),
     // The brand mark: on its `surface.raised` chip in the RBS button (ADR-0118), and on
     // the overlay.
-    ("color.brand", "color.surface.raised", 3.0, 3.0),
-    ("color.brand", "color.surface.overlay", 3.0, 3.0),
+    ("color.brand", "color.surface.raised", 3.0),
+    ("color.brand", "color.surface.overlay", 3.0),
     // The notice card (toast and error bar): text on its fill, its edge and the
     // controls on it, and the edge against the window and the panels it floats over.
-    ("color.text.primary", "color.toast.surface", 4.5, 7.0),
-    ("color.text.secondary", "color.toast.surface", 4.5, 7.0),
+    ("color.text.primary", "color.toast.surface", 4.5),
+    ("color.text.secondary", "color.toast.surface", 4.5),
     // The outline, the side mark and the notice icon are the edge colour on the fill.
-    ("color.toast.edge", "color.toast.surface", 4.5, 7.0),
+    ("color.toast.edge", "color.toast.surface", 4.5),
     // The countdown chip is filled with the edge colour; the seconds and the hourglass
     // are the surface colour, and the seconds are text.
-    ("color.toast.surface", "color.toast.edge", 4.5, 7.0),
-    ("color.border.focus", "color.toast.surface", 3.0, 3.0),
-    ("color.border.strong", "color.toast.surface", 3.0, 3.0),
-    ("color.accent", "color.toast.surface", 3.0, 3.0),
-    ("color.toast.edge", "color.surface.base", 3.0, 3.0),
-    ("color.toast.edge", "color.surface.raised", 3.0, 3.0),
-    ("color.toast.edge", "color.surface.overlay", 3.0, 3.0),
-    ("color.toast.edge", "color.surface.sunken", 3.0, 3.0),
+    ("color.toast.surface", "color.toast.edge", 4.5),
+    ("color.border.focus", "color.toast.surface", 3.0),
+    ("color.border.strong", "color.toast.surface", 3.0),
+    ("color.accent", "color.toast.surface", 3.0),
+    ("color.toast.edge", "color.surface.base", 3.0),
+    ("color.toast.edge", "color.surface.raised", 3.0),
+    ("color.toast.edge", "color.surface.overlay", 3.0),
+    ("color.toast.edge", "color.surface.sunken", 3.0),
 ];
 
 /// Surfaces `color.state.live` must stand out from (3:1). Not `surface.raised` or
@@ -633,8 +608,7 @@ impl Tokens {
     }
 
     /// A shipped file cannot make a lively setting silently calm: every built-in base
-    /// but high contrast (always calm) passes the effect checks in every setting
-    /// (ADR-0120 decision 9).
+    /// passes the effect checks in every setting (ADR-0120 decision 9).
     fn check_effects(&self) -> Result<(), TokenError> {
         let Some(tables) = &self.effects else {
             return Ok(());
@@ -643,7 +617,7 @@ impl Tokens {
             .type_styles
             .get("type.label")
             .map_or(0.0, |s| f32::from(s.line));
-        for base in [Base::Dark, Base::Light] {
+        for base in Base::ALL {
             for setting in Effects::LIVELY {
                 if let Some(why) = check(
                     &tables.values(setting),
@@ -685,7 +659,6 @@ impl Tokens {
             let look = Look {
                 colors,
                 live,
-                high_contrast: theme == "high-contrast",
                 length: &self.length,
                 duration: &self.duration,
                 type_styles: &self.type_styles,
@@ -924,7 +897,7 @@ mod tests {
     #[test]
     fn built_in_tokens_pass_every_check() {
         let t = Tokens::built_in().unwrap();
-        assert_eq!(t.themes.len(), 3);
+        assert_eq!(t.themes.len(), 2);
         assert_eq!(t.length["size.control.md"], 28.0);
         assert_eq!(t.type_styles["type.body"].size, 13);
     }
@@ -1027,7 +1000,7 @@ mod tests {
                 .contains("motion.fast")
         );
 
-        let missing = base.replacen("\"color.meter.clip\" = \"#e9a6ff\"\n", "", 1);
+        let missing = base.replacen("\"color.meter.clip\" = \"#8e3fb5\"\n", "", 1);
         assert!(
             Tokens::parse(&missing)
                 .unwrap_err()

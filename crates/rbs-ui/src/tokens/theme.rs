@@ -43,13 +43,11 @@ pub enum Base {
     Dark,
     /// `light`.
     Light,
-    /// `high-contrast`: contrast rules use the high-contrast thresholds.
-    HighContrast,
 }
 
 impl Base {
     /// Every base, in [`THEMES`] order.
-    pub const ALL: [Base; 3] = [Base::Dark, Base::Light, Base::HighContrast];
+    pub const ALL: [Base; 2] = [Base::Dark, Base::Light];
 
     /// The name used in files and in [`THEMES`].
     pub fn name(self) -> &'static str {
@@ -61,15 +59,28 @@ impl Base {
         match self {
             Base::Dark => 0,
             Base::Light => 1,
-            Base::HighContrast => 2,
         }
     }
 
-    /// The base named `name`.
+    /// The base named `name`. A retired base reads as the base that replaced it
+    /// ([`RETIRED_BASES`]), so an old theme file or setting still opens.
     pub fn from_name(name: &str) -> Option<Base> {
-        Base::ALL.into_iter().find(|b| b.name() == name)
+        Base::ALL
+            .into_iter()
+            .find(|b| b.name() == name)
+            .or_else(|| {
+                RETIRED_BASES
+                    .iter()
+                    .find(|(old, _)| *old == name)
+                    .map(|(_, b)| *b)
+            })
     }
 }
+
+/// Bases that RBS no longer ships, and the base each one now reads as. `high-contrast`
+/// was removed in ADR-0123: a theme or setting that names it shows on dark, and is
+/// written back as `dark` the next time it is saved.
+pub const RETIRED_BASES: &[(&str, Base)] = &[("high-contrast", Base::Dark)];
 
 /// Where a token appears in the theme editor and in which table of a theme file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -592,7 +603,7 @@ impl ThemeBody {
     pub fn from_body(mut body: toml::Table) -> Result<ThemeBody, String> {
         let base = match body.remove("base") {
             Some(toml::Value::String(b)) => Base::from_name(&b)
-                .ok_or_else(|| format!("base {b:?} is not one of dark, light, high-contrast"))?,
+                .ok_or_else(|| format!("base {b:?} is not one of {}", THEMES.join(", ")))?,
             Some(_) => return Err("base must be a string".into()),
             None => return Err("base is missing".into()),
         };
@@ -847,11 +858,6 @@ pub struct ResolvedTheme {
 }
 
 impl ResolvedTheme {
-    /// True when the base is `high-contrast`.
-    pub fn high_contrast(&self) -> bool {
-        self.base == Base::HighContrast
-    }
-
     /// What a slot draws for the theme's effects, on its lengths as they are now (after
     /// density, ADR-0120 decision 11).
     pub fn effect_draw(&self) -> EffectDraw {
@@ -974,11 +980,6 @@ impl Tokens {
                 )),
             );
         };
-        // High contrast is always calm, and keeps the key (decision 3): no notice, the
-        // editor shows the choice disabled with that reason.
-        if out.high_contrast() {
-            return (calm.0, calm.1, None);
-        }
         let Some(tables) = &self.effects else {
             return (
                 calm.0,
@@ -1076,7 +1077,6 @@ impl Tokens {
         let look = Look {
             colors: &out.colors,
             live: self.fixed["color.state.live"],
-            high_contrast: out.high_contrast(),
             length: &out.length,
             duration: &out.duration,
             type_styles: &out.type_styles,
@@ -1102,7 +1102,6 @@ impl Tokens {
 pub(super) struct Look<'a> {
     pub colors: &'a BTreeMap<String, Color>,
     pub live: Color,
-    pub high_contrast: bool,
     pub length: &'a BTreeMap<String, f32>,
     pub duration: &'a BTreeMap<String, u32>,
     pub type_styles: &'a BTreeMap<String, TypeStyle>,
@@ -1126,8 +1125,7 @@ impl Look<'_> {
                 "color.surface.overlay must differ from color.surface.raised, so a row under the pointer is visible".into(),
             ));
         }
-        for (fg, bg, min, min_hc) in CONTRAST_RULES.iter().chain(THEME_CONTRAST_RULES) {
-            let need = if self.high_contrast { *min_hc } else { *min };
+        for &(fg, bg, need) in CONTRAST_RULES.iter().chain(THEME_CONTRAST_RULES) {
             if let (Some(f), Some(b)) = (c(fg), c(bg)) {
                 let ratio = f.contrast(b);
                 if ratio < need {
