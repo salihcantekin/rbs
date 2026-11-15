@@ -4,8 +4,8 @@
 //! Two slots: slot 0 is used while the OS scheme is dark, slot 1 while it is light. In
 //! `system` mode they hold the appearance's `dark` and `light` themes, in `fixed` mode
 //! both hold its `theme`. A user theme that cannot be used falls back to the built-in
-//! theme of its base, so a high-contrast user keeps high contrast. `RBS_TOKENS=<file>`
-//! (another complete token file), `RBS_THEME=<dark|light|high-contrast>` and
+//! theme of its base, so a light user keeps light. `RBS_TOKENS=<file>`
+//! (another complete token file), `RBS_THEME=<dark|light>` and
 //! `RBS_EFFECTS=<calm|vivid|tactile>` (both slots' effects, for the UI measure mode,
 //! ADR-0120 decision 13) are development aids that win over the appearance choice.
 
@@ -244,13 +244,17 @@ pub fn resolve(
     };
     notes.push(format!(
         "{why} The built-in {} theme is used instead.",
-        match base {
-            Base::Dark => "Dark",
-            Base::Light => "Light",
-            Base::HighContrast => "High contrast",
-        }
+        base_label(base)
     ));
     file.built_in_theme(base)
+}
+
+/// The name a built-in theme shows in the UI.
+pub fn base_label(base: Base) -> &'static str {
+    match base {
+        Base::Dark => "Dark",
+        Base::Light => "Light",
+    }
 }
 
 fn read(path: &Path) -> Result<TokenFile, String> {
@@ -267,11 +271,11 @@ pub fn dev_effects() -> Option<rbs_ui::tokens::Effects> {
         .and_then(|n| rbs_ui::tokens::Effects::from_name(&n))
 }
 
-/// Gives `theme` the effects `setting` (a development aid): high contrast stays calm, and
-/// a token file without effect tables gives calm.
+/// Gives `theme` the effects `setting` (a development aid): a token file without effect
+/// tables gives calm.
 fn force_effects(file: &TokenFile, theme: &mut ResolvedTheme, setting: rbs_ui::tokens::Effects) {
     let values = match &file.effects {
-        Some(t) if !theme.high_contrast() => t.values(setting),
+        Some(t) => t.values(setting),
         _ => rbs_ui::tokens::EffectValues::default(),
     };
     theme.effects = if values.is_calm() {
@@ -581,29 +585,12 @@ mod tests {
             assert_eq!(tokens.get_type_title_size(), 16.0);
             assert_eq!(tokens.get_type_title_weight(), 700);
             assert_eq!(theme.get_font_family(), "Inter");
-            assert!(!theme.get_high_contrast());
             let slots: Vec<_> = theme.get_slots().iter().collect();
             assert_eq!(
                 slots[1].surface_base,
                 argb(light.colors["color.surface.base"])
             );
         }
-    }
-
-    /// A high-contrast theme in a slot sets `Theme.high-contrast` while that slot shows.
-    #[test]
-    fn high_contrast_follows_the_slot() {
-        let file = TokenFile::built_in().unwrap();
-        let hc = file.built_in_theme(Base::HighContrast);
-        let w = window();
-        let (theme, tokens) = (w.global::<Theme>(), w.global::<Tokens>());
-        let pair = [slot(&hc, "").unwrap(), slot(&hc, "").unwrap()];
-        apply_tokens(&theme, &tokens, &file, pair).unwrap();
-        assert!(theme.get_high_contrast());
-        assert_eq!(
-            theme.get_surface_base(),
-            argb(hc.colors["color.surface.base"])
-        );
     }
 
     /// A token file without a single value the app uses changes nothing.
@@ -661,7 +648,7 @@ mod tests {
         assert!(notes.is_empty());
 
         // One that only breaks colour rules is used, with its warnings (ADR-0072).
-        let mut loud = ThemeBody::new(Base::HighContrast);
+        let mut loud = ThemeBody::new(Base::Light);
         let live = Color::parse("#c4262e").unwrap();
         loud.colors.insert("color.accent".into(), live);
         let id = data.themes().create(&lock, "Warned", &loud).unwrap();
@@ -670,14 +657,14 @@ mod tests {
         assert!(!r.warnings.is_empty());
         assert!(notes.is_empty(), "{notes:?}");
 
-        // One with an error: its base's built-in theme (high contrast kept).
-        let mut failing = ThemeBody::new(Base::HighContrast);
+        // One with an error: its base's built-in theme (light kept, not the slot's dark).
+        let mut failing = ThemeBody::new(Base::Light);
         failing.length.insert("radius.md".into(), 500.0);
         let id = data.themes().create(&lock, "Loud", &failing).unwrap();
         let r = resolve(&file, &data, &ThemeId::User(id), Base::Dark, &mut notes);
-        assert_eq!(r, file.built_in_theme(Base::HighContrast));
+        assert_eq!(r, file.built_in_theme(Base::Light));
         assert!(
-            notes[0].contains("Loud") && notes[0].contains("High contrast"),
+            notes[0].contains("Loud") && notes[0].contains("Light"),
             "{notes:?}"
         );
 
@@ -729,7 +716,7 @@ mod tests {
 
         let system = Appearance::new(
             AppearanceMode::System,
-            ThemeId::BuiltIn(Base::HighContrast),
+            ThemeId::BuiltIn(Base::Light),
             ThemeId::User(id.clone()),
             ThemeId::BuiltIn(Base::Dark),
         );
@@ -738,7 +725,7 @@ mod tests {
         let Look { themes, .. } = look.unwrap();
         assert!(note.is_none(), "{note:?}");
         // System mode is the built-in pair, even when the file names other themes.
-        assert!(!themes[0].high_contrast());
+        assert_eq!(themes[0].base, Base::Dark);
         assert_ne!(themes[1].length.get("radius.md").copied(), Some(9.0));
 
         let fixed = Appearance::new(

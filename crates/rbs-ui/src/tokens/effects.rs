@@ -2,8 +2,8 @@
 //!
 //! The token file (format 3) holds one table of effect values per lively setting;
 //! calm is all zero. A theme only chooses its setting. This module parses the tables,
-//! checks their bounds and the extent rule, resolves a theme's setting (high contrast
-//! is always calm, a failed effect check drops to calm with a notice) and computes what
+//! checks their bounds and the extent rule, resolves a theme's setting (a failed effect
+//! check drops to calm with a notice) and computes what
 //! a slot draws: values scaled into the slot's extent and the derived colours.
 
 use std::collections::BTreeMap;

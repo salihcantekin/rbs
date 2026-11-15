@@ -14,7 +14,7 @@ An AI agent whose change would break a rule of `docs/ui/principles.md`, the desi
 - `cargo xtask check-ui` counts three things in `crates/rbs-app/ui` (raw `TouchArea` outside the library, component names declared in more than one file, `help:` texts over 90 characters). Each count must equal `docs/ui/baseline.toml` plus `docs/ui/exceptions.toml`. It runs in `cargo test --workspace`.
 - Never edit those two files by hand. When your change lowers a count, run `cargo xtask check-ui --lower`. When a count would rise, stop and ask the owner; only after written approval run `cargo xtask check-ui --except <check> <count> <file> <reason> <owner's approval> <date>`.
 - The checks see only what they count. Every other rule (tokens, library components, row anatomy, `Toggle` for a setting, `DialogActions` for window buttons, glossary terms) is checked with the UI review checklist.
-- Screenshots for the owner's approval of a visual change are dark and light; add high contrast when the change touches a surface or border token, an outline, or a branch on the high-contrast theme.
+- Screenshots for the owner's approval of a visual change are dark and light (the only built-in themes, [ADR-0123](../../docs/adr/0123-remove-the-high-contrast-theme.md)).
 
 - Every size, spacing, radius, line width, font size, duration and colour comes from a design token (`Tokens.*`, `Theme.*`); see CLAUDE.md rule 15.
 - A visual change is proposed to the owner first and approved from screenshots before merge; see CLAUDE.md rule 16.

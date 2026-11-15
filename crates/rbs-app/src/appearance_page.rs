@@ -443,13 +443,8 @@ pub fn theme_menu_choices(
         .into_iter()
         .map(|b| {
             let id = ThemeId::BuiltIn(b);
-            let name = match b {
-                Base::Dark => "Dark",
-                Base::Light => "Light",
-                Base::HighContrast => "High contrast",
-            };
             (
-                name.to_owned(),
+                look::base_label(b).to_owned(),
                 id.to_string(),
                 current.as_ref() == Some(&id),
             )

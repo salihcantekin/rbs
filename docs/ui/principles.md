@@ -112,7 +112,7 @@ Rules:
 ## U12. Visual style
 
 - Modern, calm and dense where needed: neutral surfaces, one accent colour, clear hierarchy through type size and weight rather than borders and boxes.
-- Dark and light themes are both first-class and follow the OS setting by default. High-contrast theme is provided.
+- Dark and light themes are both first-class and follow the OS setting by default. They are the only built-in themes ([ADR-0123](../adr/0123-remove-the-high-contrast-theme.md)).
 - Colour meanings are reserved. `color.state.live` (red) is used only for live and recording. Errors, clipping and destructive actions use their own tokens with a hue clearly distinct from live in RBS's own themes (a user theme that breaks this shows a warning), and always with an icon or text. Amber is for warnings, green for healthy, and the accent for selection and primary actions.
 - Users may pick the accent from a curated set and may install custom themes. A theme is a token file that cannot change `color.state.live`. Built-in themes pass the contrast check; a user theme that does not is used with a warning ([ADR-0072](../adr/0072-theme-colour-rules-warn.md)).
 - Motion is short (120-200 ms), purposeful (shows where something came from or went), and never delays an action.
