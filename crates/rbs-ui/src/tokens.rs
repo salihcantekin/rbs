@@ -180,6 +180,8 @@ pub const DURATIONS: &[&str] = &[
     "delay.tooltip",
     "delay.toast",
     "delay.toast-tick",
+    "delay.find-fallback",
+    "delay.find-mark",
 ];
 
 /// Text styles every file defines.

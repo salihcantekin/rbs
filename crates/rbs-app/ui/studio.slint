@@ -2718,6 +2718,7 @@ component EncoderFields inherits VerticalLayout {
     property <bool> advanced: Experience.advanced || root.show-all;
     property <bool> expert: Experience.expert || root.show-all;
     if root.advanced: SettingRow {
+        find: "encoding.video-codec";
         changed: root.idle && root.data.defaults[11] >= 0 && root.data.codec != root.data.defaults[11];
         default-text: root.data.codecs[root.data.defaults[11]];
         reset => { root.set(11, root.data.defaults[11]); }
@@ -2735,6 +2736,7 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     if root.advanced: SettingRow {
+        find: "encoding.colour";
         changed: root.idle && root.data.defaults[12] >= 0 && root.data.delivery != root.data.defaults[12];
         default-text: [@tr("Video"), @tr("Screen")][root.data.defaults[12]];
         reset => { root.set(12, root.data.defaults[12]); }
@@ -2755,6 +2757,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.data.delivery == 0;
         gap: 0;
         SettingRow {
+            find: "encoding.open-shadows";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.delivery == 0;
             label: @tr("Open shadows");
             help: root.stream
                 ? @tr("Lifts only the darkest tones so they stay visible on YouTube and TV. The stream stays Rec. 709. Off by default.")
@@ -2770,6 +2775,7 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        find: "encoding.video-encoder";
         changed: root.idle && root.data.defaults[0] >= 0 && root.data.encoder != root.data.defaults[0];
         default-text: root.data.encoders[root.data.defaults[0]];
         reset => { root.set(0, root.data.defaults[0]); }
@@ -2790,6 +2796,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.data.rate-kind != 2;
         gap: 0;
         SettingRow {
+            find: "encoding.video-bitrate";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.rate-kind != 2;
             changed: root.idle && root.data.defaults[1] >= 0 && root.data.video-rate != root.data.defaults[1];
             default-text: root.data.video-rates[root.data.defaults[1]];
             reset => { root.set(1, root.data.defaults[1]); }
@@ -2815,6 +2824,9 @@ component EncoderFields inherits VerticalLayout {
         shown: root.data.rate-kind == 2;
         gap: 0;
         SettingRow {
+            find: "encoding.quality-level";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.rate-kind == 2;
             changed: root.idle && root.data.defaults[5] >= 0 && root.data.quality != root.data.defaults[5];
             default-text: root.data.qualities[root.data.defaults[5]];
             reset => { root.set(5, root.data.defaults[5]); }
@@ -2831,6 +2843,7 @@ component EncoderFields inherits VerticalLayout {
         }
     }
     SettingRow {
+        find: "encoding.audio-bitrate";
         changed: root.idle && root.data.defaults[2] >= 0 && root.data.audio-rate != root.data.defaults[2];
         default-text: root.data.audio-rates[root.data.defaults[2]];
         reset => { root.set(2, root.data.defaults[2]); }
@@ -2849,6 +2862,7 @@ component EncoderFields inherits VerticalLayout {
     // Advanced and expert: every other setting that changes the output's quality.
     if root.advanced: VerticalLayout {
         SettingRow {
+            find: "encoding.rate-control";
             changed: root.idle && root.data.defaults[3] >= 0 && root.data.rate-mode != root.data.defaults[3];
             default-text: root.data.rate-modes[root.data.defaults[3]];
             reset => { root.set(3, root.data.defaults[3]); }
@@ -2869,6 +2883,9 @@ component EncoderFields inherits VerticalLayout {
             shown: root.data.rate-kind == 1;
             gap: 0;
             SettingRow {
+                find: "encoding.max-bitrate";
+                // Hidden with its Shown: search shows the card instead.
+                findable: root.data.rate-kind == 1;
                 changed: root.idle && root.data.defaults[4] >= 0 && root.data.peak != root.data.defaults[4];
                 default-text: root.data.peaks[root.data.defaults[4]];
                 reset => { root.set(4, root.data.defaults[4]); }
@@ -2889,6 +2906,9 @@ component EncoderFields inherits VerticalLayout {
             shown: root.data.rate-kind == 0;
             gap: 0;
             SettingRow {
+                find: "encoding.pad-bitrate";
+                // Hidden with its Shown: search shows the card instead.
+                findable: root.data.rate-kind == 0;
                 label: @tr("Pad to the full bitrate");
                 help: root.data.padding-available
                     ? @tr("Adds filler data so a still picture still uses the whole bitrate. Off by default.")
@@ -2904,6 +2924,7 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            find: "encoding.keyframe-interval";
             changed: root.idle && root.data.defaults[7] >= 0 && root.data.keyframe != root.data.defaults[7];
             default-text: root.data.keyframes[root.data.defaults[7]];
             reset => { root.set(7, root.data.defaults[7]); }
@@ -2921,6 +2942,7 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         SettingRow {
+            find: "encoding.encoder-preset";
             changed: root.idle && root.data.defaults[8] >= 0 && root.data.preset != root.data.defaults[8];
             default-text: root.data.presets[root.data.defaults[8]];
             reset => { root.set(8, root.data.defaults[8]); }
@@ -2938,6 +2960,7 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         if root.expert: SettingRow {
+            find: "encoding.profile";
             changed: root.idle && root.data.defaults[9] >= 0 && root.data.profile != root.data.defaults[9];
             default-text: root.data.profiles[root.data.defaults[9]];
             reset => { root.set(9, root.data.defaults[9]); }
@@ -2954,6 +2977,7 @@ component EncoderFields inherits VerticalLayout {
             }
         }
         if root.expert: SettingRow {
+            find: "encoding.b-frames";
             changed: root.idle && root.data.defaults[10] >= 0 && root.data.b-frame != root.data.defaults[10];
             default-text: root.data.b-frames[root.data.defaults[10]];
             reset => { root.set(10, root.data.defaults[10]); }
@@ -4392,6 +4416,7 @@ export component RecordingSettings inherits Rectangle {
             title: @tr("Files");
             id: "settings.recording.files";
             SettingRow {
+                find: "recording.folder";
                 divider: false;
                 label: @tr("Folder");
                 summary: @tr("Where recordings are saved");
@@ -4406,6 +4431,7 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "recording.format";
                 label: @tr("Format");
                 summary: @tr("Video, or only the sound");
                 hint: @tr("Video carries the picture. Audio is the mix, with no picture. MOV opens in QuickTime and Final Cut. WAV is uncompressed. FLAC is lossless and smaller.");
@@ -4440,6 +4466,7 @@ export component RecordingSettings inherits Rectangle {
             id: "settings.recording.separate";
             description: @tr("Sources marked Record separately also write their own files, in a folder with the recording.");
             SettingRow {
+                find: "recording.separate";
                 label: @tr("Record separate files");
                 help: @tr("Off: Record writes one file even when sources are marked.");
                 Toggle {
@@ -4450,6 +4477,7 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "recording.separate-sources";
                 label: @tr("Sources");
                 help: Studio.rec-separate-names == "" ? @tr("None yet. Turn on Record separately in a source's Properties.") : Studio.rec-separate-names;
                 hint: @tr("Only the main canvas's recording writes them.");
@@ -4462,6 +4490,7 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "recording.separate-video";
                 label: @tr("Video files");
                 help: @tr("Other encoders for these files come in a later version.");
                 Text {
@@ -4473,6 +4502,7 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "recording.separate-sound";
                 label: @tr("Sound files");
                 Text {
                     text: @tr("WAV, 24-bit");
@@ -4483,6 +4513,7 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "recording.separate-limit";
                 divider: false;
                 label: @tr("Limit");
                 help-is-warning: Studio.rec-separate-videos > Studio.rec-separate-limit;
@@ -4503,6 +4534,7 @@ export component RecordingSettings inherits Rectangle {
             id: "settings.recording.encoding";
             more-hidden: !Studio.out-audio-only && !Experience.expert;
             if Studio.out-audio-only && !Studio.out-flac: SettingRow {
+                find: "recording.pcm";
                 divider: false;
                 label: @tr("PCM");
                 summary: @tr("16-bit is the usual choice");
@@ -4521,6 +4553,7 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
             if Studio.out-flac: SettingRow {
+                find: "recording.flac-width";
                 divider: false;
                 label: @tr("Width");
                 summary: @tr("16-bit is the usual choice");
@@ -4539,6 +4572,7 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
             if !Studio.out-audio-only: SettingBlock {
+                find: "encoding.output-size";
                 divider: false;
                 label: @tr("Output size");
                 help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next recording.");
@@ -4622,6 +4656,7 @@ export component StreamSettings inherits Rectangle {
             title: @tr("Destination");
             id: "settings.stream.destination";
             SettingRow {
+                find: "stream.server";
                 divider: false;
                 label: @tr("Server");
                 summary: @tr("From your streaming service");
@@ -4637,6 +4672,7 @@ export component StreamSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "stream.key";
                 label: @tr("Stream key");
                 help: Studio.st-key-place;
                 enabled: idle;
@@ -4684,6 +4720,7 @@ export component StreamSettings inherits Rectangle {
             id: "settings.stream.connection";
             more-hidden: Studio.st-srt && !Experience.advanced;
             SettingRow {
+                find: "stream.reconnect";
                 divider: false;
                 label: @tr("Reconnect when the connection drops");
                 summary: @tr("Up to 10 tries");
@@ -4701,6 +4738,9 @@ export component StreamSettings inherits Rectangle {
                 shown: Studio.st-srt;
                 gap: 0;
                 SettingRow {
+                    find: "stream.srt-latency";
+                    // Hidden with its Shown: search shows the card instead.
+                    findable: Studio.st-srt;
                     label: @tr("SRT latency");
                     summary: @tr("More survives a worse network");
                     hint: @tr("More latency survives a worse network; viewers see the picture a little later.");
@@ -4723,6 +4763,7 @@ export component StreamSettings inherits Rectangle {
             title: @tr("While live");
             id: "settings.stream.while-live";
             SettingRow {
+                find: "stream.record-on-start";
                 divider: false;
                 label: @tr("Record when the stream starts");
                 summary: @tr("Uses the Recording settings");
@@ -4743,6 +4784,7 @@ export component StreamSettings inherits Rectangle {
             id: "settings.stream.encoding";
             more-hidden: !Experience.expert;
             SettingBlock {
+                find: "encoding.output-size";
                 divider: false;
                 label: @tr("Output size");
                 help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next stream.");
@@ -4834,6 +4876,7 @@ export component VideoSettings inherits Rectangle {
             title: @tr("Canvas");
             id: "settings.video.canvas";
             SettingBlock {
+                find: "video.canvas-size";
                 divider: false;
                 label: @tr("Canvas size");
                 help: @tr("720p, 1080p, 1440p and 4K share one corner. Or type a size. Portrait swaps the sides.");
@@ -4877,6 +4920,7 @@ export component VideoSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "video.frame-rate";
                 label: @tr("Frame rate");
                 summary: @tr("Frames per second");
                 enabled: can-change;
@@ -4909,6 +4953,7 @@ export component GeneralSettings inherits Rectangle {
             title: @tr("Experience");
             id: "settings.general.experience";
             SettingRow {
+                find: "general.settings-shown";
                 divider: false;
                 label: @tr("Settings shown");
                 summary: @tr("How many options the app shows");
@@ -4926,6 +4971,7 @@ export component GeneralSettings inherits Rectangle {
             title: @tr("Closing the main window");
             id: "settings.general.closing";
             SettingRow {
+                find: "general.close-window";
                 divider: false;
                 label: @tr("When I close the main window");
                 help: Studio.platform == 2 ? @tr("Not available on Linux yet. Closing the main window quits RBS.")
@@ -4947,6 +4993,7 @@ export component GeneralSettings inherits Rectangle {
             title: @tr("Screen capture");
             id: "settings.general.capture";
             SettingRow {
+                find: "general.hide-from-capture";
                 divider: false;
                 label: @tr("Leave RBS out of screen recordings");
                 help: Studio.platform == 2 ? @tr("Not available on this system yet. A screen recording can include the RBS windows.")
@@ -4966,6 +5013,7 @@ export component GeneralSettings inherits Rectangle {
             title: @tr("Studio mode");
             id: "settings.general.studio";
             SettingRow {
+                find: "general.swap-scenes";
                 divider: false;
                 label: @tr("Swap scenes after a transition");
                 summary: @tr("Preview shows what was on air");
@@ -4983,6 +5031,7 @@ export component GeneralSettings inherits Rectangle {
             id: "settings.general.glide";
             description: @tr("How shared sources move when the program scene changes, including outside studio mode.");
             SettingRow {
+                find: "general.glide";
                 label: @tr("Glide");
                 summary: @tr("Shared sources slide between scenes");
                 hint: @tr("Shared sources slide to their new place; new sources fade in. Off: every scene change is instant.");
@@ -4996,6 +5045,7 @@ export component GeneralSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "general.glide-duration";
                 label: @tr("Duration");
                 summary: @tr("0 turns Glide off");
                 enabled: Studio.glide-duration > 0;
@@ -5013,6 +5063,7 @@ export component GeneralSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "general.glide-easing";
                 divider: false;
                 label: @tr("Easing");
                 summary: @tr("How a slide starts and stops");
@@ -5057,11 +5108,13 @@ export component GlobalSourcesSettings inherits Rectangle {
             id: "settings.sources.global-sources";
             description: @tr("Heard and shown in every scene, above the scene's own sources.");
             if !running: SettingRow {
+                // find: none (a status line).
                 divider: false;
                 label: @tr("The studio is not running");
                 help: @tr("Global sources can be changed once it runs.");
             }
             if running && Studio.global-count == 0: SettingRow {
+                // find: none (an empty state).
                 divider: false;
                 label: @tr("No global sources yet");
                 help: @tr("A global source is heard and shown in every scene.");
@@ -5104,6 +5157,7 @@ export component GlobalSourcesSettings inherits Rectangle {
             title: @tr("Add a global source");
             id: "settings.sources.add-global";
             SettingRow {
+                // find: none (part of the Add form; the card is indexed).
                 divider: false;
                 label: @tr("Kind");
                 summary: @tr("What kind of source to add");
@@ -5118,6 +5172,7 @@ export component GlobalSourcesSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                // find: none (part of the Add form; the card is indexed).
                 label: @tr("Source");
                 help: Studio.global-kind < 0 ? @tr("Pick a kind first.")
                     : Studio.global-options.length == 0 ? @tr("Nothing of this kind is available.")
@@ -5170,6 +5225,7 @@ export component RemoteControlSettings inherits Rectangle {
             title: @tr("This computer");
             id: "settings.remote.this-computer";
             SettingRow {
+                find: "remote.allow";
                 divider: false;
                 label: @tr("Allow remote control");
                 summary: @tr("Stream Deck, panels and scripts");
@@ -5186,6 +5242,7 @@ export component RemoteControlSettings inherits Rectangle {
                 tone: Studio.rc-status-bad ? 2 : Studio.rc-enabled ? 1 : 0;
             }
             SettingRow {
+                find: "remote.port";
                 label: @tr("Port");
                 summary: @tr("{} is the default", Studio.rc-default-port);
                 changed: Studio.rc-default-port != "" && Studio.rc-port != Studio.rc-default-port;
@@ -5206,6 +5263,7 @@ export component RemoteControlSettings inherits Rectangle {
             title: @tr("Other computers");
             id: "settings.remote.other-computers";
             SettingRow {
+                find: "remote.allow-network";
                 divider: false;
                 label: @tr("Allow access from other computers");
                 help: @tr("Lets apps on other computers on your network connect over an encrypted connection. Turn it on only on networks you trust. Changing it disconnects connected apps. Windows and macOS ask to allow RBS through the firewall the first time; if that is refused, other computers cannot connect and RBS is not told.");
@@ -5223,6 +5281,7 @@ export component RemoteControlSettings inherits Rectangle {
                 tone: Studio.rc-network-status-bad ? 2 : Studio.rc-network ? 1 : 0;
             }
             if Studio.rc-network && Studio.rc-key-pin != "": SettingBlock {
+                find: "remote.key-pin";
                 label: @tr("Key pin");
                 help: @tr("Apps on other computers must check this before they send a token. It stays the same when the certificate is renewed.");
                 HorizontalLayout {
@@ -5268,6 +5327,7 @@ export component RemoteControlSettings inherits Rectangle {
                 }
             }
             if Studio.rc-network && Studio.rc-fingerprint != "": SettingBlock {
+                find: "remote.fingerprint";
                 label: @tr("Certificate fingerprint (SHA-256)");
                 help: Studio.rc-cert-note;
                 HorizontalLayout {
@@ -5312,6 +5372,7 @@ export component RemoteControlSettings inherits Rectangle {
                 }
             }
             if Studio.rc-network: SettingRow {
+                find: "remote.allow-admin";
                 label: @tr("Allow remote admin");
                 summary: @tr("Full control from other computers");
                 hint: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps.");
@@ -5323,6 +5384,7 @@ export component RemoteControlSettings inherits Rectangle {
                 }
             }
             if Studio.rc-network: SettingRow {
+                find: "remote.certificate";
                 label: @tr("Certificate");
                 help: root.cert-source == 0
                     ? @tr("RBS made a key and a certificate for this computer. Browser panels on other devices cannot check a key pin: they need your own certificate, one those devices already trust.")
@@ -5340,6 +5402,7 @@ export component RemoteControlSettings inherits Rectangle {
             }
             if Studio.rc-network && root.cert-source == 1: VerticalLayout {
                 SettingRow {
+                    find: "remote.certificate-file";
                     label: @tr("Certificate file");
                     summary: @tr("A full path");
                     control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
@@ -5349,6 +5412,7 @@ export component RemoteControlSettings inherits Rectangle {
                     }
                 }
                 SettingRow {
+                    find: "remote.key-file";
                     label: @tr("Key file");
                     summary: @tr("A full path");
                     hint: @tr("A full path. On macOS and Linux the key file must be readable by you only.");
@@ -5374,6 +5438,7 @@ export component RemoteControlSettings inherits Rectangle {
                 tone: 2;
             }
             if Studio.rc-network && root.cert-source == 0 && !root.confirming: SettingRow {
+                find: "remote.new-key";
                 label: @tr("New key");
                 summary: @tr("If the key may have been copied");
                 hint: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin.");
@@ -5439,6 +5504,7 @@ export component RemoteControlSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                // find: none (part of the Create form; the card is indexed).
                 label: @tr("Name");
                 summary: @tr("The app it is for, such as Stream Deck");
                 name := TextField {
@@ -5446,6 +5512,7 @@ export component RemoteControlSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                // find: none (part of the Create form; the card is indexed).
                 label: @tr("Access");
                 help: Studio.rc-access-hints[root.access];
                 fill: false;
@@ -5489,6 +5556,7 @@ export component RemoteControlSettings inherits Rectangle {
                 }
             }
             SettingBlock {
+                // find: none (the token list; the card is indexed).
                 label: @tr("Tokens");
                 VerticalLayout {
                     spacing: Tokens.space-1;

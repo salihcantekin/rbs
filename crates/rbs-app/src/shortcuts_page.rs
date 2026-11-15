@@ -792,6 +792,19 @@ pub fn install(g: &Shortcuts<'_>, ctx: &Ctx) {
     }
 }
 
+/// Settings search asked for a command (`ui.settings.open {command}`, spec
+/// `settings-search.md`): the page's search shows that command's row.
+pub fn show_command(ctx: &Ctx, app: &App, id: &str) {
+    let Some(entry) = rbs_ui::command::entry(id) else {
+        return;
+    };
+    ctx.keys.borrow_mut().search = entry.title.to_owned();
+    if let Some(w) = &app.settings {
+        w.global::<Shortcuts>().set_search(entry.title.into());
+    }
+    refresh(ctx, app);
+}
+
 /// Settings › Shortcuts was shown.
 pub fn opened(ctx: &Ctx, app: &App) {
     refresh(ctx, app);

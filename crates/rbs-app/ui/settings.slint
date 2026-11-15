@@ -4,7 +4,16 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Experience, MoreHidden, Button, StatusLine } from "components.slint";
+import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Experience, MoreHidden, Button, StatusLine, SettingsFind, FindMark } from "components.slint";
+
+// One result of the Settings window's search field (docs/specs/settings-search.md,
+// step 3): what was found, where it is ("Recording › Encoding"; empty for a section)
+// and the section number it opens, which gives its icon.
+export struct SettingsHit {
+    title: string,
+    path: string,
+    section: int,
+}
 
 // One entry of the section list. The section in use has a quiet plate and the label
 // weight, and is marked checked for screen readers, so it is never shown by colour
@@ -142,6 +151,23 @@ export component SettingsCard inherits Rectangle {
     horizontal-stretch: 1;
     min-height: body.min-height;
     preferred-height: body.preferred-height;
+    // Settings search: this card answers when its key is asked for (SettingsFind).
+    property <int> find-serial: SettingsFind.serial;
+    changed find-serial => { root.answer-find(); }
+    init => { root.answer-find(); }
+    function answer-find() {
+        if root.id != "" && root.id == SettingsFind.key {
+            SettingsFind.answer(root.id, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+        }
+    }
+    FindMark {
+        x: -Tokens.space-2;
+        y: -Tokens.space-2;
+        width: root.width + 2 * Tokens.space-2;
+        height: root.height + 2 * Tokens.space-2;
+        radius: Tokens.radius-lg + Tokens.space-2;
+        on: root.id != "" && SettingsFind.marked == root.id;
+    }
     body := VerticalLayout {
         alignment: start;
         horizontal-stretch: 1;
@@ -199,11 +225,30 @@ export component SettingsCard inherits Rectangle {
 // buttons): its name and explanation on top, the content under them.
 export component SettingBlock inherits Rectangle {
     in property <string> label;
+    // Its key in the settings search index (docs/specs/settings-search.md), as
+    // `SettingRow.find`.
+    in property <string> find;
     in property <string> help;
     in property <bool> divider: true;
     horizontal-stretch: 1;
     min-height: lay.min-height;
     preferred-height: lay.preferred-height;
+    // Settings search: this setting answers when its key is asked for (SettingsFind).
+    property <int> find-serial: SettingsFind.serial;
+    changed find-serial => { root.answer-find(); }
+    init => { root.answer-find(); }
+    function answer-find() {
+        if root.find != "" && root.find == SettingsFind.key {
+            SettingsFind.answer(root.find, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+        }
+    }
+    FindMark {
+        x: -Tokens.space-2;
+        y: 0px;
+        width: root.width + 2 * Tokens.space-2;
+        height: root.height;
+        on: root.find != "" && SettingsFind.marked == root.find;
+    }
     if root.divider: Rectangle {
         y: 0;
         height: Tokens.size-border;

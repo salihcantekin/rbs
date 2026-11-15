@@ -63,6 +63,7 @@ export component ReplaySettings inherits Rectangle {
             id: "settings.recording.replay";
             description: @tr("Keeps the last minutes of the program in memory so you can save them as a clip after something happens. Off until you arm it.");
             SettingRow {
+                find: "replay.arm";
                 divider: false;
                 label: @tr("Keep the past");
                 summary: @tr("Keeps the last minutes ready to save");
@@ -81,6 +82,7 @@ export component ReplaySettings inherits Rectangle {
                 tone: ReplayBuffer.tone;
             }
             SettingRow {
+                find: "replay.length";
                 label: @tr("Length");
                 summary: @tr("How much past to keep");
                 hint: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
@@ -100,6 +102,7 @@ export component ReplaySettings inherits Rectangle {
                 ValueReadout { text: ReplayBuffer.length-text; }
             }
             SettingRow {
+                find: "replay.memory-limit";
                 label: @tr("Memory limit");
                 help: ReplayBuffer.estimate;
                 changed: ReplayBuffer.memory-default >= 0 && ReplayBuffer.memory != ReplayBuffer.memory-default;
@@ -114,6 +117,7 @@ export component ReplaySettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "replay.sound";
                 label: @tr("Include sound");
                 summary: @tr("Keeps the program's audio with the picture");
                 fill: false;
@@ -124,6 +128,7 @@ export component ReplaySettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "replay.arm-at-start";
                 label: @tr("Arm when RBS starts");
                 summary: @tr("Starts as soon as the studio is ready");
                 fill: false;
@@ -134,6 +139,7 @@ export component ReplaySettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "replay.folder";
                 label: @tr("Folder");
                 summary: @tr("Where clips are saved");
                 hint: @tr("Clips are named by date and time; a file is never replaced. Empty uses the recording folder.");

@@ -50,6 +50,7 @@ export component VirtualCameraSettings inherits Rectangle {
             id: "settings.vcam.camera";
             description: @tr("Shows the program in meeting and streaming apps. Video only.");
             SettingRow {
+                find: "vcam.enable";
                 divider: false;
                 label: @tr("Virtual camera");
                 summary: @tr("Off by default");
@@ -104,6 +105,7 @@ export component VirtualCameraSettings inherits Rectangle {
             title: @tr("Picture");
             id: "settings.vcam.picture";
             SettingRow {
+                find: "vcam.size";
                 divider: false;
                 label: @tr("Size");
                 help: VirtualCamera.format-help;
@@ -120,6 +122,7 @@ export component VirtualCameraSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "vcam.frame-rate";
                 label: @tr("Frame rate");
                 summary: @tr("Frames per second");
                 hint: @tr("Frames per second. RBS sends at the canvas rate when that is lower.");
@@ -159,6 +162,7 @@ export component VirtualCameraSettings inherits Rectangle {
             title: @tr("Removal");
             id: "settings.vcam.removal";
             SettingRow {
+                find: "vcam.remove";
                 divider: false;
                 label: @tr("Remove completely");
                 help: @tr("Removes the camera and RBS's part from Windows. Windows asks for administrator approval once more.");
