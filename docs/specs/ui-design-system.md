@@ -167,6 +167,16 @@ The one vertical scrolling surface (ADR-0114; owner decision 2026-11-14), in `co
 - **Cost.** No timer, no animation, no polling; the bar is two rectangles bound to the flickable's position (P13).
 - **Accessibility.** The bar is decorative for screen readers (`accessible-role: none`).
 
+### HScrollArea
+
+The one horizontal scrolling surface (owner request 2026-11-15), in `components.slint`, beside `ScrollArea`; it carries the same thin bar and the same tokens (`size.scrollbar.hit`, `.thumb`, `.thumb-hot`, `color.scrollbar.thumb` and `.thumb-hot`), turned on its side. It replaces a bare horizontal `Flickable` that scrolls by the user: the Mixer's columns in the wide layout. The panel tab strip stays a non-interactive, clipped `Flickable`.
+
+- **Properties.** `content-width` and `content-height` (the owner's layout's preferred size), the output `view-height` (the room the content gets) and `offset`, and `scroll-by(dx)`.
+- **Bar.** At the bottom edge, in `size.scrollbar.hit`, drawn only while the content is wider than the area. Unlike `ScrollArea` it keeps no room while the content fits, so the area is exactly as tall as its owner makes it; while the bar shows, the content gets that much less height (`view-height`). The thumb is as long as the visible share of the content (at least `size.scrollbar.thumb-min`), thicker under the pointer; dragging it scrolls in proportion and a press in the track pages by the area's width.
+- **Input.** A trackpad pan scrolls as a `Flickable` does. A mouse wheel that the content and the area do not use is forwarded by the owner with `scroll-by` (the Mixer's background forwards vertical wheel as sideways). Content taller than the area still scrolls down as a `Flickable` does, without a bar.
+- **Cost.** No timer, no animation; the bar is two rectangles bound to the flickable's position (P13).
+- **Accessibility.** The bar is decorative (`accessible-role: none`).
+
 ### ListBox
 
 The geometry and keys of a list of `ListRow` items on a `ScrollArea` (owner decision 2026-11-14), in `components.slint`. Slint 1.18 cannot count, place or take keys from `@children`, so the box computes and the owner places: the owner gives `count` and `row-height`, writes its own `for` of rows and places row `i` at `cell-x(i)`, `cell-y(i)`, `cell-width` wide; each row's `key` callback forwards to the box's `key(event) -> EventResult`. `current` (an index, -1 for none) and `current-changed(int)` belong to the owner.
