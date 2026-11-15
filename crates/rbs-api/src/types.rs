@@ -830,6 +830,9 @@ pub struct RecordingMarkers {
     pub scene_changes: bool,
     /// A marker when a stream starts and when it ends (off by default).
     pub stream_events: bool,
+    /// One marker per pause on its join in the editor project (on by default;
+    /// protocol 1.63, ADR-0124 decision 10).
+    pub pause_markers: bool,
 }
 
 impl Default for RecordingMarkers {
@@ -838,6 +841,7 @@ impl Default for RecordingMarkers {
             lead_ms: 0,
             scene_changes: true,
             stream_events: false,
+            pause_markers: true,
         }
     }
 }

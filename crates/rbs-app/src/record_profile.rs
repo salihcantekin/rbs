@@ -976,18 +976,23 @@ pub struct MarkerSettings {
     pub scene_changes: bool,
     /// A marker when a stream starts and when it ends during the recording.
     pub stream_events: bool,
+    /// One marker per pause, on its join, in the editor project (ADR-0124 decision
+    /// 10): "Pauses become markers in the editor project".
+    pub pause_markers: bool,
 }
 
 /// The longest reaction-time offset, in milliseconds.
 pub const MAX_MARKER_LEAD_MS: u32 = 30_000;
 
 impl Default for MarkerSettings {
-    /// No offset, scene changes on, stream events off (ADR-0089 decision 3).
+    /// No offset, scene changes on, stream events off (ADR-0089 decision 3), pause
+    /// markers on (ADR-0124 decision 10).
     fn default() -> Self {
         Self {
             lead_ms: 0,
             scene_changes: true,
             stream_events: false,
+            pause_markers: true,
         }
     }
 }
@@ -999,6 +1004,7 @@ impl MarkerSettings {
             lead_ms: self.lead_ms,
             scene_changes: self.scene_changes,
             stream_events: self.stream_events,
+            pause_markers: self.pause_markers,
         }
     }
 
@@ -1008,6 +1014,7 @@ impl MarkerSettings {
             lead_ms: m.lead_ms,
             scene_changes: m.scene_changes,
             stream_events: m.stream_events,
+            pause_markers: m.pause_markers,
         }
     }
 
@@ -1533,6 +1540,7 @@ mod tests {
             lead_ms: 3_000,
             scene_changes: false,
             stream_events: true,
+            pause_markers: false,
         };
         let back: RecordProfile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.markers, p.markers);

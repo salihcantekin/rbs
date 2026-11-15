@@ -1437,6 +1437,9 @@ struct RecordingMarkers {
     settings: crate::record_profile::MarkerSettings,
     /// The program scene last marked (or on air at the start), for scene markers.
     scene: Option<SceneId>,
+    /// When the recording stopped, from `t0` (master time): the end of a pause still
+    /// open then (ADR-0124 decision 10).
+    stopped_ns: u64,
 }
 
 impl RecordingMarkers {
@@ -1464,6 +1467,7 @@ impl RecordingMarkers {
                 project,
                 settings,
                 scene,
+                stopped_ns: 0,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1483,6 +1487,7 @@ impl RecordingMarkers {
             project,
             settings,
             scene,
+            stopped_ns: 0,
         })
     }
 
@@ -1549,13 +1554,26 @@ impl RecordingMarkers {
             crate::record_profile::EditorProject::Fcpxml => rbs_project::Format::Fcpxml,
             crate::record_profile::EditorProject::Xmeml => rbs_project::Format::Xmeml,
         };
-        rbs_project::export(&self.dir, &self.name, format, false)
+        let mut options = rbs_project::Options::default();
+        options.pause_markers = self.settings.pause_markers;
+        rbs_project::export_with(&self.dir, &self.name, format, false, options)
             .map(|done| {
                 done.path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
             })
             .map_err(|e| e.to_string())
+    }
+
+    /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
+    /// markers and the manifest are in file time. A pause changes the manifest.
+    fn paused(&mut self, pause: bool, at_ns: u64) {
+        if pause {
+            self.log.pause(at_ns);
+        } else {
+            self.log.resume(at_ns);
+        }
+        self.dirty = true;
     }
 
     /// Writes the manifest with the markers, at stop. Nothing to write is `Ok`.
@@ -1569,6 +1587,7 @@ impl RecordingMarkers {
             return Ok(());
         }
         self.manifest.markers = self.log.markers().to_vec();
+        self.manifest.pauses = self.log.pauses().rows(self.stopped_ns);
         self.apply_ended();
         rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
         self.log.mark_flushed();
@@ -4561,7 +4580,13 @@ impl Host {
         } else {
             self.studio.resume_output(id)
         };
-        done.map_err(|e| ApiError::new(ErrorKind::Conflict, pause_refusal(e)))?;
+        let at = done
+            .map_err(|e| ApiError::new(ErrorKind::Conflict, pause_refusal(e)))?
+            .as_nanos();
+        // Markers and the manifest are in file time (ADR-0124 decision 10).
+        if let Some(markers) = self.outs[slot(c)].markers.as_mut() {
+            markers.paused(pause, at);
+        }
         self.refresh_record_pause(c);
         Ok(pause)
     }
@@ -5829,6 +5854,7 @@ impl Host {
                 canvas: c,
                 index: m.index,
                 t_ns: m.t_ns,
+                while_paused: m.while_paused,
             });
         }
         Ok(rbs_api::request::MarkersAdded { markers })
@@ -6066,7 +6092,9 @@ impl Host {
                 markers.set_images(&files.images);
             }
         }
+        let now = self.clock.now().as_nanos();
         if let Some(markers) = self.outs[slot(c)].markers.as_mut() {
+            markers.stopped_ns = now.saturating_sub(markers.log.t0_ns());
             markers.set_ended(report.as_ref().and_then(|r| r.media), separate);
         }
         inject!(self, Fault::InRecordingStop);

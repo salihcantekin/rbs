@@ -1799,7 +1799,8 @@ fn stream_markers_mark_a_running_recording_when_the_profile_asks() {
         assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
         clock.advance(Duration::from_secs(3));
         host.send(Command::EndStream);
-        assert!(matches!(stream(&rx), StreamUpdate::Ended { .. }));
+        // The connection change can arrive after the end was asked: skipped.
+        assert_eq!(ended(&rx), None);
         host.send(Command::StopRecording);
         let stopped = next_while(
             &rx,
@@ -1841,4 +1842,87 @@ fn stream_markers_mark_a_running_recording_when_the_profile_asks() {
     assert!(!dir.join("off.rbs.toml").exists());
     let _ = std::fs::remove_dir_all(&dir);
     drop(host);
+}
+
+/// ADR-0124 decision 10, control API 1.63: a marker added while a recording is paused
+/// sits on the pause's join with `while_paused`, a later one is in file time, and the
+/// manifest written at stop lists the pause.
+#[test]
+fn markers_while_paused_sit_on_the_join_and_the_manifest_lists_the_pause() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    let (api, mut c) = api_client(&host);
+    add_display(&host, &rx);
+    let dir = std::env::temp_dir().join(format!("rbs-app-pause-markers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    host.send(Command::StartRecording(RecordRequest {
+        path: dir.join("take.mkv"),
+        container: ContainerId::Matroska,
+        encoder: None,
+        video: Some(VideoSettings::default()),
+        audio_bitrate_bps: 128_000,
+        bit_depth: None,
+        size: None,
+        iso: false,
+        editor_project: None,
+        markers: rbs_app::record_profile::MarkerSettings::default(),
+    }));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    let s = 1_000_000_000u64;
+    clock.advance(Duration::from_secs(2));
+    assert!(c.call("record.pause", serde_json::json!({}))["result"].is_object());
+    clock.advance(Duration::from_secs(1));
+    let during = c.call("marker.add", serde_json::json!({"label": "During"}));
+    assert_eq!(
+        during["result"]["markers"][0]["while_paused"], true,
+        "{during}"
+    );
+    clock.advance(Duration::from_secs(2));
+    assert!(c.call("record.resume", serde_json::json!({}))["result"].is_object());
+    clock.advance(Duration::from_secs(1));
+    let after = c.call("marker.add", serde_json::json!({"label": "After"}));
+    assert!(
+        after["result"]["markers"][0].get("while_paused").is_none(),
+        "{after}"
+    );
+    host.send(Command::StopRecording);
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r @ RecordingUpdate::Stopped { .. }) => Some(r),
+            _ => None,
+        },
+    );
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+    let text = std::fs::read_to_string(dir.join("take.rbs.toml")).unwrap();
+    let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    assert_eq!(manifest.pauses.len(), 1, "{text}");
+    let p = manifest.pauses[0];
+    assert_eq!(p.at_file_ns, p.from_ns, "no earlier pause");
+    assert!(
+        p.from_ns >= 2 * s && p.to_ns >= 5 * s && p.to_ns < 6 * s,
+        "{text}"
+    );
+    assert_eq!(manifest.paused_ns(), p.to_ns - p.from_ns);
+    let [during, after] = &manifest.markers[..] else {
+        panic!("{text}")
+    };
+    assert!(during.while_paused && !after.while_paused, "{text}");
+    assert_eq!(during.t_ns, p.at_file_ns, "{text}");
+    // Pressed 1 s after the resume was asked (a few ticks before the join): in file
+    // time the pause is left out.
+    let master = after.t_ns + manifest.paused_ns();
+    assert!(master > p.to_ns && master <= p.to_ns + s, "{text}");
+    assert_eq!(after.pressed_ns, Some(after.t_ns), "no lead");
+    let _ = std::fs::remove_dir_all(&dir);
+    drop(host);
+    drop(api);
 }
