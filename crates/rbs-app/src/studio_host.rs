@@ -1329,6 +1329,9 @@ struct IsoFiles {
     /// Video files skipped because their encoder would have fallen to a software one
     /// (ADR-0087 decision 5): `software_fallback` in the start answer's estimate.
     software_stopped: Vec<SourceId>,
+    /// The pause window the sound files follow; the master is started with it
+    /// (ADR-0124).
+    pause: rbs_record::SharedPause,
 }
 
 /// How a `record.start` asks for its separate video files (control API 1.54,
@@ -1608,6 +1611,22 @@ pub use calibration::{CalibrationSetup, ExportRigMaker};
 pub use rbs_api::types::OutputCanvas;
 
 /// `c`'s place in the host's per-canvas state.
+/// A refused pause or resume in words, for its `conflict` (control API 1.61).
+fn pause_refusal(e: rbs_record::PauseRefused) -> String {
+    use rbs_record::PauseRefused as R;
+    match e {
+        R::KeyframeUnsupported => "the recording shares its video encoder with another \
+            output, and that encoder cannot make a keyframe on request, so the file \
+            could not go on cleanly after the pause"
+            .to_owned(),
+        R::NotPausable => "this recording cannot be paused".to_owned(),
+        R::SeparateFiles => "separate files run that do not belong to this recording, so they \
+             would go on while it is paused"
+            .to_owned(),
+        e => e.to_string(),
+    }
+}
+
 fn slot(c: OutputCanvas) -> usize {
     match c {
         OutputCanvas::Main => 0,
@@ -4514,6 +4533,51 @@ impl Host {
             });
     }
 
+    /// Pauses (`Some(true)`), resumes (`Some(false)`) or toggles (`None`) the
+    /// recording of `c` (ADR-0124, control API 1.61) and publishes its new state.
+    /// Answers whether it is paused now; `conflict` when nothing records or the
+    /// studio refuses.
+    fn pause_recording(&mut self, c: OutputCanvas, pause: Option<bool>) -> Result<bool, ApiError> {
+        let o = &self.outs[slot(c)];
+        let Some(id) = o.recording.as_ref().filter(|_| !o.ending).map(|r| r.1) else {
+            return Err(ApiError::new(ErrorKind::Conflict, "nothing records"));
+        };
+        let pause =
+            pause.unwrap_or_else(|| !self.studio.output_pause(id).is_some_and(|p| p.paused));
+        let done = if pause {
+            self.studio.pause_output(id)
+        } else {
+            self.studio.resume_output(id)
+        };
+        done.map_err(|e| ApiError::new(ErrorKind::Conflict, pause_refusal(e)))?;
+        self.refresh_record_pause(c);
+        Ok(pause)
+    }
+
+    /// Puts the pause fields of `c`'s running recording into its record state, as of
+    /// now (published as a change, never per frame).
+    fn refresh_record_pause(&mut self, c: OutputCanvas) {
+        let Some(id) = self.outs[slot(c)].recording.as_ref().map(|r| r.1) else {
+            return;
+        };
+        let Some(progress) = self.studio.output_counters(id) else {
+            return;
+        };
+        let mut state = self.outs[slot(c)].record_state.clone();
+        if let api::RecordState::Recording {
+            paused,
+            paused_ms,
+            recorded_ms,
+            ..
+        } = &mut state
+        {
+            *paused = progress.paused;
+            *paused_ms = progress.paused_ns / 1_000_000;
+            *recorded_ms = progress.recorded_ns / 1_000_000;
+            self.set_record_state(c, state);
+        }
+    }
+
     fn set_record_state(&mut self, c: OutputCanvas, state: api::RecordState) {
         self.outs[slot(c)].record_state = state.clone();
         match c {
@@ -5046,6 +5110,10 @@ impl Host {
         start.audio.bitrate_bps = 0;
         start.audio.bit_depth = Some(24);
         start.skip_unheard = true;
+        // The sound files open before the master, so they follow a window made now
+        // that the master is then started with (ADR-0124).
+        let pause = rbs_record::SharedPause::new();
+        start.pause = Some(pause.clone());
         let (mut manifest, mut skipped) = match self.studio.start_iso_audio(&self.adapters, &start)
         {
             Ok(started) => {
@@ -5118,6 +5186,7 @@ impl Host {
             images: Vec::new(),
             gate: pictures,
             software_stopped: Vec::new(),
+            pause,
         };
         let master = folder.join(&master_name);
         match self.start_master(c, canvas, r, &master, profile, Some(iso)) {
@@ -5147,6 +5216,7 @@ impl Host {
         &mut self,
         files: &mut IsoFiles,
         r: &RecordRequest,
+        master: rbs_record::OutputId,
     ) -> Result<(), StartError> {
         let gate = files.gate.take();
         let Ok(plan) = rbs_record::plan(&self.collection) else {
@@ -5198,6 +5268,8 @@ impl Host {
         );
         start.image_dir = Some(files.folder.clone());
         start.t0 = Timestamp::from_nanos(files.manifest.t0_ns);
+        // The video files pause with their master (ADR-0124).
+        start.pause_with = Some(master);
         start.skip_no_picture = true;
         // A file whose hardware encoder refuses a session is skipped, never moved to a
         // software encoder (ADR-0087 decision 5).
@@ -5471,13 +5543,17 @@ impl Host {
         // The master keeps its timing only for a take that can become an editor
         // project: one with separate files or with the project setting on (P13).
         out.track_span = r.editor_project.is_some() || iso.is_some();
+        // Every recording can be paused (ADR-0124): its export and audio encoder
+        // follow a window, and its separate files follow the same one.
+        out.pausable = true;
+        out.shared_pause = iso.as_ref().map(|f| f.pause.clone());
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
         if let Ok((id, _, _)) = &started
             && let Some(files) = iso.as_mut()
         {
             let id = *id;
-            if let Err(refusal) = self.start_separate_pictures(files, r) {
+            if let Err(refusal) = self.start_separate_pictures(files, r, id) {
                 // A refusal after the master runs (`on_hardware_limit: "ask"`): stop the
                 // video files that opened and the master; the caller stops the sound
                 // files and removes the folder. An encoder the master shares with a
@@ -5557,6 +5633,9 @@ impl Host {
                     audio_encoder: audio_encoder.clone(),
                     tracks,
                     skipped,
+                    paused: false,
+                    paused_ms: 0,
+                    recorded_ms: 0,
                 },
             );
         } else if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
@@ -11144,6 +11223,9 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::RecordPause(p) => self.pause_asked(p, Some(true)),
+            C::RecordResume(p) => self.pause_asked(p, Some(false)),
+            C::RecordPauseToggle(p) => self.pause_asked(p, None),
             C::MarkerAdd(p) => host.add_marker(&p).map(Response::MarkersAdded),
             C::MarkerRemove(p) => {
                 host.remove_marker(p.canvas, p.index)?;
@@ -11835,6 +11917,83 @@ impl ApiTarget<'_> {
 
     /// `record.stop` or `stream.stop` with `canvas: "all"`: stops every running output
     /// of that kind; `conflict` only when none ran.
+    /// `record.pause` (`Some(true)`), `record.resume` (`Some(false)`) or
+    /// `record.pause_toggle` (`None`) on the canvases `p` names (control API 1.61).
+    fn pause_asked(
+        &mut self,
+        p: rbs_api::request::OnCanvases,
+        pause: Option<bool>,
+    ) -> Result<Response, ApiError> {
+        let Some(one) = p.target().single() else {
+            return self.pause_all(pause);
+        };
+        let notify = self.notify;
+        let host = &mut *self.host;
+        let c = host.api_canvas_of(Some(one))?;
+        host.pause_recording(c, pause)?;
+        host.publish(notify);
+        Ok(Response::Done(Empty {}))
+    }
+
+    /// `record.pause`, `record.resume` or `record.pause_toggle` with `canvas: "all"`
+    /// (control API 1.61): every running recording, main first. A toggle pauses them
+    /// all when any runs unpaused, else resumes them all. `conflict` when none
+    /// changed: the one refusal when there is one, else "nothing records".
+    fn pause_all(&mut self, pause: Option<bool>) -> Result<Response, ApiError> {
+        let notify = self.notify;
+        let host = &mut *self.host;
+        let canvases = host.output_canvases();
+        let running = |host: &Host, c: OutputCanvas| {
+            let o = &host.outs[slot(c)];
+            o.recording.as_ref().filter(|_| !o.ending).map(|r| r.1)
+        };
+        let pause = pause.unwrap_or_else(|| {
+            canvases.iter().any(|&c| {
+                running(host, c)
+                    .is_some_and(|id| !host.studio.output_pause(id).is_some_and(|p| p.paused))
+            })
+        });
+        let mut outputs = Vec::new();
+        let mut refusals = Vec::new();
+        for c in canvases {
+            let (outcome, error) = if running(host, c).is_none() {
+                (api::OutputOutcome::NotRunning, None)
+            } else {
+                match host.pause_recording(c, Some(pause)) {
+                    Ok(true) => (api::OutputOutcome::Paused, None),
+                    Ok(false) => (api::OutputOutcome::Resumed, None),
+                    Err(e) => {
+                        let error = api::OutputError::from(&e);
+                        refusals.push(e);
+                        (api::OutputOutcome::Refused, Some(error))
+                    }
+                }
+            };
+            outputs.push(api::OutputEntry {
+                canvas: c,
+                outcome,
+                video_encoder: None,
+                audio_encoder: None,
+                error,
+                estimate: None,
+                skipped: Vec::new(),
+            });
+        }
+        if !outputs.iter().any(|o| {
+            matches!(
+                o.outcome,
+                api::OutputOutcome::Paused | api::OutputOutcome::Resumed
+            )
+        }) {
+            return Err(refusals
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| ApiError::new(ErrorKind::Conflict, "nothing records")));
+        }
+        host.publish(notify);
+        Ok(Response::Outputs(api::OutputsResult { outputs }))
+    }
+
     fn stop_all(&mut self, kind: api::OutputKind) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;

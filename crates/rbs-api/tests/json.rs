@@ -390,6 +390,13 @@ fn every_request() -> Vec<Request> {
         c(Command::RecordStop(OnCanvases {
             canvas: Some(OutputTarget::All),
         })),
+        c(Command::RecordPause(OnCanvases::default())),
+        c(Command::RecordResume(OnCanvases {
+            canvas: Some(OutputTarget::Vertical),
+        })),
+        c(Command::RecordPauseToggle(OnCanvases {
+            canvas: Some(OutputTarget::All),
+        })),
         c(Command::OutputSetWithVertical(SetWithVertical {
             kind: OutputKind::Stream,
             on: false,
@@ -851,6 +858,9 @@ fn every_result_and_event_type_round_trips() {
             audio_encoder: None,
             tracks: vec![],
             skipped: vec![],
+            paused: false,
+            paused_ms: 0,
+            recorded_ms: 0,
         }),
         EventPayload::CanvasChanged(canvas()),
         EventPayload::SettingsChanged(Settings {
@@ -1101,6 +1111,9 @@ fn canvas_states_are_the_main_object_with_canvas_added() {
                 audio_encoder: None,
                 tracks: vec![],
                 skipped: vec![],
+                paused: true,
+                paused_ms: 1500,
+                recorded_ms: 61_250,
             },
         }),
     };
@@ -1110,7 +1123,8 @@ fn canvas_states_are_the_main_object_with_canvas_added() {
         v["params"],
         json!({"topic": "record.canvas_state", "object": 1, "seq": 3, "data": {
             "canvas": "vertical", "state": "recording", "profile": "default",
-            "video_encoder": "NVENC", "audio_encoder": null}})
+            "video_encoder": "NVENC", "audio_encoder": null,
+            "paused": true, "paused_ms": 1500, "recorded_ms": 61_250}})
     );
 }
 
@@ -1819,6 +1833,9 @@ fn separate_files_round_trip_and_later_options_are_refused() {
             role: TrackRole::Audio,
             reason: SkipReason::NotHeard,
         }],
+        paused: false,
+        paused_ms: 0,
+        recorded_ms: 0,
     };
     round_trip(&running);
     let value = serde_json::to_value(&running).unwrap();
@@ -1845,6 +1862,9 @@ fn separate_files_round_trip_and_later_options_are_refused() {
         audio_encoder: None,
         tracks: vec![],
         skipped: vec![],
+        paused: false,
+        paused_ms: 0,
+        recorded_ms: 0,
     })
     .unwrap();
     assert!(plain.get("tracks").is_none());
@@ -2378,4 +2398,45 @@ fn the_calibration_state_is_flat_and_reads_unknown_names_as_other() {
     })
     .unwrap();
     assert_eq!(run, json!({"profile": "default"}));
+}
+
+/// Protocol 1.61 (ADR-0124): a paused recording keeps `state: "recording"` with its
+/// pause fields; a 1.60 server's state reads as not paused, and the `canvas: "all"`
+/// answer has its own outcomes.
+#[test]
+fn a_paused_recording_reads_as_recording_and_older_states_as_not_paused() {
+    let paused = RecordState::Recording {
+        profile: None,
+        video_encoder: "VT".into(),
+        audio_encoder: None,
+        tracks: vec![],
+        skipped: vec![],
+        paused: true,
+        paused_ms: 2_000,
+        recorded_ms: 10_000,
+    };
+    round_trip(&paused);
+    let value = serde_json::to_value(&paused).unwrap();
+    assert_eq!(value["state"], "recording");
+    assert_eq!(value["paused"], true);
+    let older: RecordState = serde_json::from_value(json!({"state": "recording", "profile": null,
+            "video_encoder": "VT", "audio_encoder": null}))
+    .unwrap();
+    assert!(matches!(
+        older,
+        RecordState::Recording {
+            paused: false,
+            paused_ms: 0,
+            recorded_ms: 0,
+            ..
+        }
+    ));
+    assert_eq!(
+        serde_json::to_value([
+            rbs_api::types::OutputOutcome::Paused,
+            rbs_api::types::OutputOutcome::Resumed
+        ])
+        .unwrap(),
+        json!(["paused", "resumed"])
+    );
 }

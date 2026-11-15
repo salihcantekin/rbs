@@ -78,7 +78,7 @@ pub use iso_video::{
     IsoVideoTrack,
 };
 pub use monitor::MonitorState;
-pub use pause::{PauseRefused, PauseState};
+pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
@@ -211,6 +211,10 @@ pub struct OutputSettings {
     /// stream, the replay buffer): none of that is built and
     /// [`Studio::pause_output`] refuses with [`PauseRefused::NotPausable`].
     pub pausable: bool,
+    /// With `pausable`: the window to follow, made before the recording so separate
+    /// audio files opened first follow it too ([`IsoAudioStart::pause`]). `None`: a
+    /// new window. Ignored when not `pausable`.
+    pub shared_pause: Option<SharedPause>,
 }
 
 /// Smallest side of an explicit output size (ADR-0102 decision 7).
@@ -266,6 +270,7 @@ impl OutputSettings {
             size: None,
             track_span: false,
             pausable: false,
+            shared_pause: None,
         }
     }
 
@@ -639,7 +644,12 @@ impl Prepared {
             return Err(RecordError::EmptyOutput);
         }
         let mut streams = Vec::new();
-        let pause = out.pausable.then(|| Arc::new(PauseWindow::default()));
+        let pause = out.pausable.then(|| {
+            out.shared_pause.as_ref().map_or_else(
+                || Arc::new(PauseWindow::default()),
+                |p| Arc::clone(p.window()),
+            )
+        });
         let video = match &out.video {
             None => VideoPlan::None,
             Some(video) => {

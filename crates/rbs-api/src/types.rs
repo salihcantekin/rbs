@@ -996,6 +996,18 @@ pub enum RecordState {
         /// none.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped: Vec<SkippedTrack>,
+        /// Paused, or a pause asked for has not begun yet (protocol 1.61,
+        /// ADR-0124). `state` stays `recording` while paused.
+        #[serde(default)]
+        paused: bool,
+        /// Time left out by pauses so far, in milliseconds, as of this state (an
+        /// open pause counted up to the change) (protocol 1.61).
+        #[serde(default)]
+        paused_ms: u64,
+        /// Time written to the file so far, in milliseconds, as of this state: the
+        /// time since the start less `paused_ms` (protocol 1.61).
+        #[serde(default)]
+        recorded_ms: u64,
     },
 }
 
@@ -1165,11 +1177,17 @@ pub enum OutputOutcome {
     Running,
     /// Stop: it was stopped now.
     Stopped,
-    /// Stop: it was not running (idle, or still ending).
+    /// Stop: it was not running (idle, or still ending). Pause and resume: no
+    /// recording runs (protocol 1.61).
     NotRunning,
+    /// Pause: it was paused now (protocol 1.61).
+    Paused,
+    /// Resume: it was resumed now (protocol 1.61).
+    Resumed,
     /// Start of a vertical stream with no server saved: skipped, not an error.
     NotConfigured,
-    /// Start: refused; `error` says why.
+    /// Start: refused; `error` says why. Pause and resume: refused (already in the
+    /// asked state, or the pause cannot be made); `error` says why (protocol 1.61).
     Refused,
 }
 

@@ -446,6 +446,9 @@ fn events_reach_subscribers_with_seq_and_coalesce_while_blocked() {
                 audio_encoder: None,
                 tracks: vec![],
                 skipped: vec![],
+                paused: false,
+                paused_ms: 0,
+                recorded_ms: 0,
             }
         } else {
             RecordState::Idle { last: None }
