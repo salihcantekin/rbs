@@ -11,9 +11,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use super::{
-    CONTRAST_RULES, Color, EFFECTS_KEY, EffectDraw, EffectValues, Effects, FIXED, LIVE_SURFACES,
-    MIN_DELTA_E_FROM_LIVE, MIN_HUE_DISTANCE_FROM_LIVE, THEME_COLORS, THEME_CONTRAST_RULES, THEMES,
-    TokenError, Tokens, TypeStyle, check, draw, hue_distance, valid_name,
+    CONTRAST_RULES, Color, Density, EFFECTS_KEY, EffectDraw, EffectValues, Effects, FIXED,
+    LIVE_SURFACES, MIN_DELTA_E_FROM_LIVE, MIN_HUE_DISTANCE_FROM_LIVE, THEME_COLORS,
+    THEME_CONTRAST_RULES, THEMES, TokenError, Tokens, TypeStyle, apply_density, checked,
+    hue_distance, valid_name,
 };
 
 /// The font family token: a list of family names, the first installed one is used.
@@ -853,19 +854,28 @@ impl ResolvedTheme {
     }
 
     /// What a slot draws for the theme's effects, on its lengths as they are now (after
-    /// density, ADR-0120 decision 11).
+    /// density, ADR-0120 decision 11): the faces and derived colours of the density in
+    /// use (ADR-0122 decision 6). Calm when the effect checks fail at this density.
     pub fn effect_draw(&self) -> EffectDraw {
-        let label_line = self
-            .type_styles
-            .get("type.label")
-            .map_or(0.0, |s| f32::from(s.line));
-        draw(
+        let Some(live) = self.fixed.get("color.state.live") else {
+            return EffectDraw::default();
+        };
+        checked(
             &self.effect_values,
             &self.colors,
             &self.length,
-            label_line,
+            self.label_line(),
             self.base == Base::Dark,
+            *live,
         )
+        .unwrap_or_default()
+    }
+
+    /// The line height of the label style, which sets a button's ink band.
+    fn label_line(&self) -> f32 {
+        self.type_styles
+            .get("type.label")
+            .map_or(0.0, |s| f32::from(s.line))
     }
 
     /// The colour warnings (ADR-0072), without the effects notice.
@@ -873,7 +883,8 @@ impl ResolvedTheme {
         self.warnings.iter().filter(|p| p.is_warning())
     }
 
-    /// The effects notice, if the theme's effects show as calm for a reason.
+    /// The effects notice, if the theme's effects show as calm, or without shading, for
+    /// a reason.
     pub fn effects_notice(&self) -> Option<&ThemeProblem> {
         self.warnings
             .iter()
@@ -988,26 +999,28 @@ impl Tokens {
                 )),
             );
         };
-        let values = tables.values(setting);
-        let label_line = out
-            .type_styles
-            .get("type.label")
-            .map_or(0.0, |s| f32::from(s.line));
-        if let Some(why) = check(
-            &values,
-            &out.colors,
-            &out.length,
-            label_line,
-            out.base == Base::Dark,
-            self.fixed["color.state.live"],
-        ) {
+        if !tables.has(setting) {
             return (
                 calm.0,
                 calm.1,
                 Some(ThemeProblem::notice(format!(
-                    "The effects show as Calm: {why}"
+                    "This build's token file has no {} effects",
+                    setting.label()
                 ))),
             );
+        }
+        let values = tables.values(setting);
+        let notice = effects_notice(setting, &values, out, &out.length);
+        // Calm only when no density may draw the setting; otherwise the setting stays
+        // and `effect_draw` gives calm at the densities that fail.
+        if let Some(n) = &notice
+            && n.everywhere
+            && n.calm
+        {
+            return (calm.0, calm.1, Some(ThemeProblem::notice(n.to_string())));
+        }
+        if let Some(n) = notice {
+            return (setting, values, Some(ThemeProblem::notice(n.to_string())));
         }
         (setting, values, None)
     }
@@ -1095,6 +1108,93 @@ impl Tokens {
             Ok(out)
         }
     }
+}
+
+/// The densities the effect checks run for, with the name a notice uses (ADR-0122
+/// decision 6): regular, roomy and compact steps 1 to 3.
+pub const EFFECT_DENSITIES: [(Density, u8, &str); 5] = [
+    (Density::Regular, 1, "Regular"),
+    (Density::Roomy, 1, "Roomy"),
+    (Density::Compact, 1, "Compact 1"),
+    (Density::Compact, 2, "Compact 2"),
+    (Density::Compact, 3, "Compact 3"),
+];
+
+/// Why a setting does not draw all it could (ADR-0122 decisions 5 and 6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectsNotice {
+    /// The reason in words.
+    pub reason: String,
+    /// The setting shows as calm there (a failed check), not only without shading.
+    pub calm: bool,
+    /// It applies to every density.
+    pub everywhere: bool,
+    /// The densities it applies to, by name.
+    pub densities: Vec<&'static str>,
+}
+
+impl fmt::Display for EffectsNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.everywhere {
+            write!(f, "{}", self.reason)
+        } else {
+            write!(
+                f,
+                "{} (density: {})",
+                self.reason,
+                self.densities.join(", ")
+            )
+        }
+    }
+}
+
+/// Runs the effect checks of `values` (the table of `setting`) on `theme`'s colours for
+/// every density of `length` (lengths before density): the first reason found and the
+/// densities it or any other reason applies to, or `None` when every density draws the
+/// setting in full.
+pub fn effects_notice(
+    setting: Effects,
+    values: &EffectValues,
+    theme: &ResolvedTheme,
+    length: &BTreeMap<String, f32>,
+) -> Option<EffectsNotice> {
+    let live = *theme.fixed.get("color.state.live")?;
+    let mut reason = None;
+    let mut calm = true;
+    let mut densities = Vec::new();
+    for (density, steps, name) in EFFECT_DENSITIES {
+        let mut l = length.clone();
+        apply_density(&mut l, density, steps);
+        let why = match checked(
+            values,
+            &theme.colors,
+            &l,
+            theme.label_line(),
+            theme.base == Base::Dark,
+            live,
+        ) {
+            Err(why) => Some((format!("The effects show as Calm: {why}"), true)),
+            Ok(d) if setting == Effects::Glass && d.faces_are_flat() => Some((
+                "This theme's colours leave no room for Glass shading".to_owned(),
+                false,
+            )),
+            Ok(_) => None,
+        };
+        match why {
+            Some((why, is_calm)) => {
+                calm &= is_calm;
+                reason.get_or_insert(why);
+                densities.push(name);
+            }
+            None => calm = false,
+        }
+    }
+    reason.map(|reason| EffectsNotice {
+        reason,
+        calm,
+        everywhere: densities.len() == EFFECT_DENSITIES.len(),
+        densities,
+    })
 }
 
 /// One complete set of look values: what every theme, built-in or resolved, is

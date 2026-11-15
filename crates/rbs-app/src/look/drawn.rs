@@ -945,7 +945,7 @@ impl Eval<'_> {
             Cond::Not(p) => Ok(!self.truth(p, env, assign, depth)?),
             Cond::Atom(id) => {
                 // Theme effects are read as calm (ADR-0120 decision 10): the face copy
-                // and its sheen are not seen, and the root draws the face, so each pair
+                // and its gradient are not seen, and the root draws the face, so each pair
                 // is checked once. A local property that reads them comes here too.
                 if self.parser.atoms.info[*id as usize]
                     .lhs

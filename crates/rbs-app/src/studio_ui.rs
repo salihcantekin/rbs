@@ -7242,7 +7242,9 @@ mod tests {
         use crate::look::{apply_tokens, slot};
         use crate::menu_bar::{Shown, toolbar};
         use crate::ui::{MainWindow, Shell, Theme, Tokens, ToolbarData};
-        use rbs_ui::tokens::{Base, Density, Tokens as TokenFile, apply_density};
+        use rbs_ui::tokens::{
+            Base, Density, Effects, ThemeBody, Tokens as TokenFile, apply_density,
+        };
         use slint::ComponentHandle;
 
         let (ui, d) = ui("frame-fits");
@@ -7280,32 +7282,39 @@ mod tests {
         let model = |v: Vec<ToolbarData>| slint::ModelRc::new(slint::VecModel::from(v));
         i_slint_backend_testing::init_no_event_loop();
         let file = TokenFile::built_in().unwrap();
-        for density in [Density::Regular, Density::Compact, Density::Roomy] {
-            for base in [Base::Dark, Base::Light] {
-                let mut theme = file.built_in_theme(base);
-                apply_density(&mut theme.length, density, 3);
-                let w = MainWindow::new().unwrap();
-                let s = slot(&theme, "").unwrap();
-                apply_tokens(
-                    &w.global::<Theme>(),
-                    &w.global::<Tokens>(),
-                    &file,
-                    [s.clone(), s],
-                )
-                .unwrap();
-                let shell = w.global::<Shell>();
-                shell.set_toolbar(model(data(&row.lead)));
-                shell.set_toolbar_end(model(data(&row.end)));
-                shell.set_toolbar_fixed(model(data(&row.fixed)));
-                shell.set_toolbar_visible(true);
-                w.window().set_size(slint::LogicalSize::new(1280.0, 720.0));
-                w.show().unwrap();
-                let narrowest = w.get_frame_row_width();
-                assert!(
-                    narrowest <= 1280.0,
-                    "{density:?} {base:?}: the frame row needs {narrowest} px, more than 1280"
-                );
-                w.hide().unwrap();
+        // Calm, and Glow: its halo's clear zone pads Go live's cell (ADR-0122 decision 8).
+        for effects in [Effects::Calm, Effects::Glow] {
+            for density in [Density::Regular, Density::Compact, Density::Roomy] {
+                for base in [Base::Dark, Base::Light] {
+                    let mut body = ThemeBody::new(base);
+                    body.set_effects(effects);
+                    let mut theme = file.resolve(&body).unwrap();
+                    assert_eq!(theme.effects, effects);
+                    apply_density(&mut theme.length, density, 3);
+                    let w = MainWindow::new().unwrap();
+                    let s = slot(&theme, "").unwrap();
+                    assert_eq!(s.halo_clear > 0.0, effects == Effects::Glow);
+                    apply_tokens(
+                        &w.global::<Theme>(),
+                        &w.global::<Tokens>(),
+                        &file,
+                        [s.clone(), s],
+                    )
+                    .unwrap();
+                    let shell = w.global::<Shell>();
+                    shell.set_toolbar(model(data(&row.lead)));
+                    shell.set_toolbar_end(model(data(&row.end)));
+                    shell.set_toolbar_fixed(model(data(&row.fixed)));
+                    shell.set_toolbar_visible(true);
+                    w.window().set_size(slint::LogicalSize::new(1280.0, 720.0));
+                    w.show().unwrap();
+                    let narrowest = w.get_frame_row_width();
+                    assert!(
+                        narrowest <= 1280.0,
+                        "{effects:?} {density:?} {base:?}: the frame row needs {narrowest} px, more than 1280"
+                    );
+                    w.hide().unwrap();
+                }
             }
         }
         let _ = std::fs::remove_dir_all(&d);

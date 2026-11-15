@@ -459,6 +459,10 @@ export component Button inherits Rectangle {
     in property <bool> lead-signal: false;
     // A ghost button that must read as a button at rest (the mixer mute).
     in property <bool> framed: false;
+    // The layout keeps `Theme.halo-clear` free on every side of this button, so a
+    // primary may draw its halo there (ADR-0122 decision 8). Set by the layout, per
+    // position; false everywhere else.
+    in property <bool> halo-room: false;
     // Menu form (ADR-0118 decision 9): a short name before the text in `text.secondary`
     // ("Workspace" before the current one's name), and a hint after it in `text.secondary`
     // at caption size (a bound shortcut).
@@ -513,16 +517,53 @@ export component Button inherits Rectangle {
         : touch.has-hover ? Theme.button-hover
         : kind == "secondary" || framed ? Theme.button-fill
         : transparent;
-    property <length> face-border: outlined ? Tokens.size-border : 0px;
-    // Theme effects (ADR-0120 decisions 8 and 10). Only a button whose kind and state
-    // take an effect draws them: never an unframed ghost, an icon-only danger button or a
-    // disabled one. Calm (`Theme.effects-on` false) adds no drawn item.
+    property <length> face-border: outlined || fx-rim ? Tokens.size-border : 0px;
+    // Theme effects (ADR-0120 decisions 8 and 10, ADR-0122 decisions 5 to 9). Only a
+    // button whose kind and state take an effect draws them: never an unframed ghost, an
+    // icon-only danger button or a disabled one. Calm (`Theme.effects-on` false) adds no
+    // drawn item. Every colour comes finished from the theme slot; nothing is mixed here.
     property <bool> fx: Theme.effects-on && enabled
         && (kind == "primary" || kind == "live" || kind == "secondary" || (kind == "danger" && !round) || framed || (checked && kind != "danger"));
-    // The glow is under the main action only. The glow and the sheen are off while the
-    // keyboard focus ring shows, so nothing of an effect lies under or beside the ring.
-    property <bool> fx-glow: fx && kind == "primary" && !checked && !focus.ring;
-    property <bool> fx-sheen: fx && !checked && !focus.ring && (kind == "primary" || kind == "secondary" || (kind == "ghost" && framed));
+    // The halo (the primary's outer glow) is drawn only where the layout opts in and
+    // keeps `Theme.halo-clear` free round the button (ADR-0122 decision 8). It is off
+    // while the keyboard focus ring shows, as the gloss, the rim and the inner glow are,
+    // so nothing of an effect lies under or beside the ring.
+    property <bool> fx-halo: fx && root.halo-room && kind == "primary" && !checked && !focus.ring && Theme.halo-clear > 0;
+    // The face's gradient (ADR-0122 decision 5): the top stop, the fill at the gloss
+    // stop, the bottom stop. The stops follow the same kind and state branches as
+    // `face-fill`. Live keeps its fixed colour (rule U12).
+    property <bool> fx-shade: fx && (kind == "primary" ? Theme.effects-shade-primary
+        : kind == "live" ? false
+        : kind == "danger" ? Theme.effects-shade-danger
+        : checked ? Theme.effects-shade-checked
+        : Theme.effects-shade-secondary);
+    property <color> fx-top: focus.ring ? face-fill
+        : kind == "primary" ? (touch.pressed ? Theme.effects-top-primary-pressed : touch.has-hover ? Theme.effects-top-primary-hover : Theme.effects-top-primary-rest)
+        : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.effects-top-danger-hover : Theme.effects-top-danger-rest)
+        : checked ? (touch.has-hover || touch.pressed ? Theme.effects-top-checked-hover : Theme.effects-top-checked-rest)
+        : touch.pressed ? Theme.effects-top-secondary-pressed
+        : touch.has-hover ? Theme.effects-top-secondary-hover
+        : Theme.effects-top-secondary-rest;
+    property <color> fx-bottom: kind == "primary" ? (touch.pressed ? Theme.effects-bottom-primary-pressed : touch.has-hover ? Theme.effects-bottom-primary-hover : Theme.effects-bottom-primary-rest)
+        : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.effects-bottom-danger-hover : Theme.effects-bottom-danger-rest)
+        : checked ? (touch.has-hover || touch.pressed ? Theme.effects-bottom-checked-hover : Theme.effects-bottom-checked-rest)
+        : touch.pressed ? Theme.effects-bottom-secondary-pressed
+        : touch.has-hover ? Theme.effects-bottom-secondary-hover
+        : Theme.effects-bottom-secondary-rest;
+    // The gloss stop of this instance, as a fraction of its height: never above the top
+    // of the ink band, and lower where the kind's text pairs allow (the searched stop).
+    property <float> fx-stop: max(root.height > 0 ? (root.height - Tokens.type-label-line) / 2 / root.height : 0,
+        kind == "primary" ? Theme.effects-stop-primary
+        : kind == "danger" ? Theme.effects-stop-danger
+        : checked ? Theme.effects-stop-checked
+        : Theme.effects-stop-secondary);
+    // The rim: a coloured outline on a secondary or danger button, also where calm draws
+    // none. A checked button keeps its accent outline. The inner glow is in the same
+    // colour, inside the outline.
+    property <bool> fx-rimmed: fx && !checked && !focus.ring && (kind == "secondary" || kind == "danger" || (kind == "ghost" && framed));
+    property <bool> fx-rim: fx-rimmed && Theme.effects-rim-on;
+    property <color> fx-inner-ink: kind == "danger" ? Theme.effects-inner-danger : Theme.effects-inner-secondary;
+    property <bool> fx-inner: fx-rimmed && Theme.effects-inner-blur > 0 && fx-inner-ink.alpha > 0;
     // The key edge: the rest fill of the kind, darker. Live has none (rule U12).
     property <length> fx-edge: kind == "live" ? 0px : Theme.effects-key-edge;
     property <color> fx-key: kind == "live" ? Theme.state-live
@@ -534,7 +575,9 @@ export component Button inherits Rectangle {
     property <length> fx-down: fx && touch.pressed ? Theme.effects-press : 0px;
     background: fx ? transparent : face-fill;
     border-width: fx ? 0px : face-border;
-    border-color: checked ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+    border-color: checked ? Theme.accent
+        : fx-rim ? (kind == "danger" ? Theme.effects-rim-danger : Theme.effects-rim-secondary)
+        : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
     // The bases: they never move, so their blur images never change. Each carries one
     // shadow; the part below the box is the key edge. They start at the press depth, so
     // the pressed face covers them.
@@ -548,32 +591,33 @@ export component Button inherits Rectangle {
         drop-shadow-offset-y: Theme.effects-shadow-offset;
         drop-shadow-color: Theme.effects-shadow;
     }
-    if root.fx-glow: Rectangle {
+    if root.fx-halo: Rectangle {
         y: Theme.effects-press;
         width: root.width;
         height: root.height - Theme.effects-press + root.fx-edge;
         border-radius: root.border-radius;
         background: root.fx-key;
-        drop-shadow-blur: Theme.effects-glow-blur;
-        drop-shadow-color: Theme.effects-glow;
+        drop-shadow-blur: Theme.effects-halo-blur;
+        drop-shadow-color: Theme.effects-halo;
     }
-    // The face: the fill, border and sheen, moved by the press.
+    // The face: the fill or its gradient and the border, moved by the press.
     if root.fx: Rectangle {
         y: root.fx-down;
         width: root.width;
         height: root.height;
         border-radius: root.border-radius;
-        background: root.face-fill;
+        background: root.fx-shade ? @linear-gradient(180deg, root.fx-top 0%, root.face-fill root.fx-stop * 100%, root.fx-bottom 100%) : root.face-fill;
         border-width: root.face-border;
         border-color: root.border-color;
-        clip: true;
-        // The sheen: inside the border, clamped clear of all ink, under the lip.
-        if root.fx-sheen: Rectangle {
+        // The inner glow, inside the border and under the content.
+        if root.fx-inner: Rectangle {
             x: root.face-border;
             y: root.face-border;
             width: parent.width - 2 * root.face-border;
-            height: Theme.effects-sheen-band;
-            background: Theme.effects-sheen;
+            height: parent.height - 2 * root.face-border;
+            border-radius: max(0px, root.border-radius - root.face-border);
+            inner-shadow-blur: Theme.effects-inner-blur;
+            inner-shadow-color: root.fx-inner-ink;
         }
     }
     // A one-pixel lip along the top of a filled button, inset past the corners.
@@ -712,6 +756,9 @@ export component SplitButton inherits Rectangle {
     in property <color> lead-ink: ink;
     // As Button: `lead-ink` is a signal colour, drawn in a `surface.sunken` well.
     in property <bool> lead-signal: false;
+    // As Button: the layout keeps the halo's clear zone round this button, plus
+    // `size.focus-ring`, because its rings sit outside its shape (ADR-0122 decision 8).
+    in property <bool> halo-room: false;
     // The ▾ part's accessible name and tooltip, such as "Vertical stream".
     in property <string> menu-name;
     in property <string> menu-text;
@@ -742,14 +789,55 @@ export component SplitButton inherits Rectangle {
     height: Tokens.size-control-md;
     min-width: shape.min-width;
     preferred-width: shape.preferred-width;
-    // Theme effects (ADR-0120): a base under the whole shape with the shadow, the glow
-    // (primary) and the key edge, and a sheen inside it; no press, because the parts share
-    // one clipped background. All off while either focus ring shows, since the rings sit
-    // outside the shape, and while the command is disabled.
-    property <bool> fx: Theme.effects-on && root.enabled && !main-focus.ring && !part-focus.ring;
+    // Theme effects (ADR-0120, ADR-0122 decision 7): a base under the whole shape with
+    // the shadow, the halo (a primary whose layout opts in) and the key edge, and one
+    // gradient across both parts; no press, because the parts share one clipped
+    // background. Everything outside the shape is off while either focus ring shows,
+    // since the rings sit outside the shape; inside it the gloss, the rim and the inner
+    // glow are off then. All off while the command is disabled.
+    property <bool> ringed: main-focus.ring || part-focus.ring;
+    property <bool> fx-in: Theme.effects-on && root.enabled;
+    property <bool> fx: fx-in && !ringed;
     property <color> fx-key: kind == "primary" ? Theme.effects-key-primary
         : checked ? Theme.effects-key-checked
         : Theme.effects-key-secondary;
+    // The faces at rest, under the pointer and pressed: the stops follow the same kind
+    // branches as `rest`, `hover` and `pressed`.
+    property <bool> fx-shade: fx-in && (kind == "primary" ? Theme.effects-shade-primary
+        : checked ? Theme.effects-shade-checked
+        : Theme.effects-shade-secondary);
+    property <float> fx-stop: max(root.height > 0 ? (root.height - Tokens.type-label-line) / 2 / root.height : 0,
+        kind == "primary" ? Theme.effects-stop-primary
+        : checked ? Theme.effects-stop-checked
+        : Theme.effects-stop-secondary);
+    property <color> fx-top-rest: ringed ? rest
+        : kind == "primary" ? Theme.effects-top-primary-rest
+        : checked ? Theme.effects-top-checked-rest
+        : Theme.effects-top-secondary-rest;
+    property <color> fx-top-hover: ringed ? hover
+        : kind == "primary" ? Theme.effects-top-primary-hover
+        : checked ? Theme.effects-top-checked-hover
+        : Theme.effects-top-secondary-hover;
+    property <color> fx-top-pressed: ringed ? pressed
+        : kind == "primary" ? Theme.effects-top-primary-pressed
+        : checked ? Theme.effects-top-checked-hover
+        : Theme.effects-top-secondary-pressed;
+    property <color> fx-bottom-rest: kind == "primary" ? Theme.effects-bottom-primary-rest
+        : checked ? Theme.effects-bottom-checked-rest
+        : Theme.effects-bottom-secondary-rest;
+    property <color> fx-bottom-hover: kind == "primary" ? Theme.effects-bottom-primary-hover
+        : checked ? Theme.effects-bottom-checked-hover
+        : Theme.effects-bottom-secondary-hover;
+    property <color> fx-bottom-pressed: kind == "primary" ? Theme.effects-bottom-primary-pressed
+        : checked ? Theme.effects-bottom-checked-hover
+        : Theme.effects-bottom-secondary-pressed;
+    property <brush> face-rest: fx-shade ? @linear-gradient(180deg, fx-top-rest 0%, rest fx-stop * 100%, fx-bottom-rest 100%) : rest;
+    property <brush> face-hover: fx-shade ? @linear-gradient(180deg, fx-top-hover 0%, hover fx-stop * 100%, fx-bottom-hover 100%) : hover;
+    property <brush> face-pressed: fx-shade ? @linear-gradient(180deg, fx-top-pressed 0%, pressed fx-stop * 100%, fx-bottom-pressed 100%) : pressed;
+    // The rim and the inner glow of a secondary, as on Button.
+    property <bool> fx-rimmed: fx && kind != "primary" && !checked;
+    property <bool> fx-rim: fx-rimmed && Theme.effects-rim-on;
+    property <bool> fx-inner: fx-rimmed && Theme.effects-inner-blur > 0 && Theme.effects-inner-secondary.alpha > 0;
     if root.fx: Rectangle {
         width: root.width;
         height: root.height + Theme.effects-key-edge;
@@ -759,32 +847,57 @@ export component SplitButton inherits Rectangle {
         drop-shadow-offset-y: Theme.effects-shadow-offset;
         drop-shadow-color: Theme.effects-shadow;
     }
-    if root.fx && root.kind == "primary" && !root.checked: Rectangle {
+    if root.fx && root.halo-room && root.kind == "primary" && !root.checked && Theme.halo-clear > 0: Rectangle {
         width: root.width;
         height: root.height + Theme.effects-key-edge;
         border-radius: Tokens.radius-button;
         background: root.fx-key;
-        drop-shadow-blur: Theme.effects-glow-blur;
-        drop-shadow-color: Theme.effects-glow;
+        drop-shadow-blur: Theme.effects-halo-blur;
+        drop-shadow-color: Theme.effects-halo;
     }
     // The shape clips its parts to the rounded corners; the focus rings are drawn
     // around it, on what the button sits on (a ring on the primary fill would not show).
     shape := Rectangle {
     border-radius: Tokens.radius-button;
     clip: true;
-    background: root.rest;
+    background: root.face-rest;
     border-width: root.kind == "primary" && root.enabled ? 0px
-        : (root.checked && root.enabled) || Theme.high-contrast || Theme.button-outline ? Tokens.size-border
+        : (root.checked && root.enabled) || Theme.high-contrast || Theme.button-outline || root.fx-rim ? Tokens.size-border
         : 0px;
-    border-color: root.checked && root.enabled ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+    border-color: root.checked && root.enabled ? Theme.accent
+        : root.fx-rim ? Theme.effects-rim-secondary
+        : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+    // With an inner glow, the parts' hover and pressed fills are drawn here, under the
+    // glow, instead of by the parts: the glow stays whole across both parts and under
+    // the content.
+    if root.fx-inner && (main-touch.pressed || main-touch.has-hover): Rectangle {
+        x: main.x;
+        width: main.width;
+        background: main-touch.pressed ? root.face-pressed : root.face-hover;
+    }
+    if root.fx-inner && (part-touch.pressed || part-touch.has-hover): Rectangle {
+        x: part.x;
+        width: part.width;
+        background: part-touch.pressed ? root.face-pressed : root.face-hover;
+    }
+    if root.fx-inner: Rectangle {
+        x: shape.border-width;
+        y: shape.border-width;
+        width: parent.width - 2 * shape.border-width;
+        height: parent.height - 2 * shape.border-width;
+        border-radius: max(0px, Tokens.radius-button - shape.border-width);
+        inner-shadow-blur: Theme.effects-inner-blur;
+        inner-shadow-color: Theme.effects-inner-secondary;
+    }
     HorizontalLayout {
         main := Rectangle {
             min-width: main-row.preferred-width + 2 * Tokens.space-3;
             // Disabled: the command part has no fill (as a disabled Button); checked
             // wins over hover (as in Button).
             background: !root.enabled ? Theme.surface-base
-                : main-touch.pressed ? root.pressed
-                : main-touch.has-hover ? root.hover : transparent;
+                : root.fx-inner ? transparent
+                : main-touch.pressed ? root.face-pressed
+                : main-touch.has-hover ? root.face-hover : transparent;
             accessible-role: button;
             accessible-label: root.text;
             accessible-checked: root.checked;
@@ -836,7 +949,7 @@ export component SplitButton inherits Rectangle {
         }
         part := Rectangle {
             min-width: part-row.preferred-width + 2 * Tokens.space-1;
-            background: part-touch.pressed ? root.pressed : part-touch.has-hover ? root.hover : transparent;
+            background: root.fx-inner ? transparent : part-touch.pressed ? root.face-pressed : part-touch.has-hover ? root.face-hover : transparent;
             accessible-role: button;
             accessible-label: root.menu-name;
             accessible-description: root.menu-description;
@@ -878,14 +991,6 @@ export component SplitButton inherits Rectangle {
                 clicked => { part-focus.focus-pointer(); root.open-menu(part.absolute-position.x); }
             }
         }
-    }
-    // The sheen, inside the border and clear of all ink, over the parts' hover fills.
-    if root.fx && !root.checked: Rectangle {
-        x: shape.border-width;
-        y: shape.border-width;
-        width: parent.width - 2 * shape.border-width;
-        height: Theme.effects-sheen-band;
-        background: Theme.effects-sheen;
     }
     }
     FocusRing {

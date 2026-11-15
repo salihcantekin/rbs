@@ -13,7 +13,7 @@
 //!
 //! For each phase: frames drawn, and the render time (Slint's before- to after-rendering
 //! notification, the work a theme's effects add) and the frame interval as p50, p95, p99
-//! and max in milliseconds. `RBS_EFFECTS=<calm|vivid|tactile>` picks the effects of both
+//! and max in milliseconds. `RBS_EFFECTS=<calm|glow|glass|tactile>` picks the effects of both
 //! slots for the run (`look`), so the same build measures each setting. Process CPU and
 //! GPU memory are read from the OS tools while it runs (Activity Monitor or `footprint`
 //! on macOS, Task Manager on Windows).

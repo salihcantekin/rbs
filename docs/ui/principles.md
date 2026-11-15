@@ -116,7 +116,7 @@ Rules:
 - Colour meanings are reserved. `color.state.live` (red) is used only for live and recording. Errors, clipping and destructive actions use their own tokens with a hue clearly distinct from live in RBS's own themes (a user theme that breaks this shows a warning), and always with an icon or text. Amber is for warnings, green for healthy, and the accent for selection and primary actions.
 - Users may pick the accent from a curated set and may install custom themes. A theme is a token file that cannot change `color.state.live`. Built-in themes pass the contrast check; a user theme that does not is used with a warning ([ADR-0072](../adr/0072-theme-colour-rules-warn.md)).
 - Motion is short (120-200 ms), purposeful (shows where something came from or went), and never delays an action.
-- The calm setting has no skeuomorphism, gradients, heavy shadows or decorative animation. A theme may choose livelier effects ([ADR-0120](../adr/0120-theme-effects.md)); they are then drawn only by library components, never carry meaning, never use or spread the live colour, never lower contrast, and never animate.
+- The calm setting has no skeuomorphism, gradients, heavy shadows or decorative animation. A theme may choose livelier effects ([ADR-0120](../adr/0120-theme-effects.md), [ADR-0122](../adr/0122-bold-theme-effects.md)); they are then drawn only by library components, never carry meaning, never use or spread the live colour, never lower a pair below its contrast rule, never reach another control (the primary's halo keeps a clear zone), and never animate.
 
 ## U13. Words are part of the design
 

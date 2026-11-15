@@ -21,7 +21,7 @@ export struct ThemeOption {
 }
 
 // One token in the editor. `kind`: 0 colour, 1 number (`unit` px or ms), 2 text style,
-// 3 font family, 4 the theme's effects (ADR-0120: `choice` Calm, Vivid or Tactile;
+// 3 font family, 4 the theme's effects (ADR-0122: `choice` Calm, Glow, Glass or Tactile;
 // `disabled` says why they cannot apply). `overridden`: the theme sets it (Reset removes
 // it).
 export struct ThemeTokenRow {
@@ -143,7 +143,7 @@ export global Appearance {
     callback set-color(string, string);
     callback set-number(string, float);
     callback set-style(string, int, float);
-    // The theme's effects: 0 Calm, 1 Vivid, 2 Tactile (ADR-0120).
+    // The theme's effects: 0 Calm, 1 Glow, 2 Glass, 3 Tactile (ADR-0122).
     callback set-effects(int);
     callback set-fonts(string);
     callback reset(string);
@@ -436,7 +436,7 @@ component TokenEditorRow inherits Rectangle {
             }
             if item.kind == 2: Hint { text: @tr("Size, line height, weight"); }
             if item.kind == 4: Hint {
-                text: item.disabled != "" ? item.disabled : @tr("How lively buttons look: flat, with soft shadows and a glow, or with a raised edge and a press");
+                text: item.disabled != "" ? item.disabled : @tr("How lively buttons look: flat, glowing, glossy, or raised with a press");
             }
             if item.kind == 3: Hint {
                 text: Appearance.font-in-use == "" ? @tr("Type names separated by commas, or pick one with Add font; the first one this computer has is used. In use: the system font.") : @tr("Type names separated by commas, or pick one with Add font; the first one this computer has is used. In use: {}.", Appearance.font-in-use);
@@ -527,7 +527,7 @@ component TokenEditorRow inherits Rectangle {
                 SegmentedControl {
                     width: Tokens.size-menu-sm;
                     label: item.label;
-                    options: [@tr("Calm"), @tr("Vivid"), @tr("Tactile")];
+                    options: [@tr("Calm"), @tr("Glow"), @tr("Glass"), @tr("Tactile")];
                     index: item.choice;
                     enabled: item.disabled == "";
                     selected(i) => { Appearance.set-effects(i); }

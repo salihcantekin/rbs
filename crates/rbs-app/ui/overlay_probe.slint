@@ -170,13 +170,14 @@ export component ExperienceProbe inherits Window {
     }
 }
 
-// A window for tests/effects_render.rs (ADR-0120 decision 11): the rows the rendered
-// focus-ring test names, laid out with the library spacing. Each `focus-*` gives one
-// control the keyboard focus, so its ring shows. Not shown by the app.
+// A window for tests/effects_render.rs (ADR-0120 decision 11, ADR-0122 decision 10): the
+// rows the rendered tests name, laid out with the library spacing. Each `focus-*` gives
+// one control the keyboard focus, so its ring shows. The last row is a position that
+// opts in to the primary's halo and keeps its clear zone. Not shown by the app.
 export component EffectsProbe inherits Window {
     // literal-begin: a test window; its size and padding are test data
     width: 480px;
-    height: 260px;
+    height: 400px;
     background: Theme.surface-base;
     VerticalLayout {
         padding: 16px;
@@ -187,9 +188,9 @@ export component EffectsProbe inherits Window {
         HorizontalLayout {
             spacing: Tokens.space-1;
             alignment: start;
-            Button { text: "Left"; kind: "primary"; }
+            first := Button { text: "Left"; kind: "primary"; }
             mid := Button { text: "Focused"; }
-            Button { text: "Right"; kind: "primary"; }
+            right := Button { text: "Right"; kind: "primary"; }
         }
         // The Go live / Record SplitButton row at space.2.
         HorizontalLayout {
@@ -197,15 +198,15 @@ export component EffectsProbe inherits Window {
             alignment: start;
             go := SplitButton { text: "Go live"; kind: "primary"; menu-name: "Vertical stream"; }
             rec := SplitButton { text: "Record"; menu-name: "Vertical recording"; }
-            Button { text: "Studio mode"; checked: true; }
+            studio := Button { text: "Studio mode"; checked: true; }
         }
         // An IconButton row at space.1.
         HorizontalLayout {
             spacing: Tokens.space-1;
             alignment: start;
-            IconButton { name: "One"; icon: IconName.gear; framed: true; }
+            one := IconButton { name: "One"; icon: IconName.gear; framed: true; }
             icon := IconButton { name: "Two"; icon: IconName.gear; framed: true; }
-            IconButton { name: "Three"; icon: IconName.gear; checked: true; }
+            three := IconButton { name: "Three"; icon: IconName.gear; checked: true; }
         }
         // A vertical pair: a Button above an IconButton at space.1.
         VerticalLayout {
@@ -214,12 +215,62 @@ export component EffectsProbe inherits Window {
             HorizontalLayout { alignment: start; above := Button { text: "Above"; kind: "primary"; } }
             HorizontalLayout { alignment: start; below := IconButton { name: "Below"; icon: IconName.gear; framed: true; } }
         }
+        // A checked and a danger button beside a secondary at space.1, and a dense one.
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            alignment: start;
+            plain := Button { text: "Plain"; }
+            on := Button { text: "Checked"; checked: true; }
+            del := Button { text: "Delete"; kind: "danger"; }
+            small := Button { text: "Dense"; dense: true; }
+        }
+        // A position that opts in to the halo: every spacing and padding round the
+        // primary is at least `Theme.halo-clear` while the theme draws a halo, and
+        // today's value otherwise (ADR-0122 decision 8).
+        HorizontalLayout {
+            padding: Theme.halo-clear > 0 ? max(0px, Theme.halo-clear) : 0px;
+            spacing: Theme.halo-clear > 0 ? max(Tokens.space-2, Theme.halo-clear) : Tokens.space-2;
+            alignment: start;
+            halo := Button { text: "Main action"; kind: "primary"; halo-room: true; }
+            beside := Button { text: "Beside"; }
+        }
     }
     // Every control's place and size, for the test that effects never change them.
     out property <string> geometry: "\{mid.absolute-position.x / 1px} \{mid.width / 1px} \{mid.height / 1px} "
         + "\{go.absolute-position.x / 1px} \{go.absolute-position.y / 1px} \{go.width / 1px} \{rec.width / 1px} "
         + "\{icon.absolute-position.x / 1px} \{icon.width / 1px} \{icon.height / 1px} "
-        + "\{above.absolute-position.y / 1px} \{above.width / 1px} \{below.absolute-position.y / 1px} \{below.width / 1px}";
+        + "\{above.absolute-position.y / 1px} \{above.width / 1px} \{below.absolute-position.y / 1px} \{below.width / 1px} "
+        + "\{on.absolute-position.x / 1px} \{on.absolute-position.y / 1px} \{on.width / 1px} \{del.absolute-position.x / 1px} \{del.width / 1px} "
+        + "\{small.absolute-position.x / 1px} \{small.width / 1px} \{small.height / 1px} "
+        + "\{halo.width / 1px} \{halo.height / 1px} \{beside.width / 1px} \{beside.height / 1px}";
+    // Every button's box in the window, as `label|x|y|width|height;`: where a neighbour's
+    // own effects may lie, and where the face tests sample.
+    out property <string> boxes: "Left|\{first.absolute-position.x / 1px}|\{first.absolute-position.y / 1px}|\{first.width / 1px}|\{first.height / 1px};"
+        + "Focused|\{mid.absolute-position.x / 1px}|\{mid.absolute-position.y / 1px}|\{mid.width / 1px}|\{mid.height / 1px};"
+        + "Right|\{right.absolute-position.x / 1px}|\{right.absolute-position.y / 1px}|\{right.width / 1px}|\{right.height / 1px};"
+        + "Go live|\{go.absolute-position.x / 1px}|\{go.absolute-position.y / 1px}|\{go.width / 1px}|\{go.height / 1px};"
+        + "Record|\{rec.absolute-position.x / 1px}|\{rec.absolute-position.y / 1px}|\{rec.width / 1px}|\{rec.height / 1px};"
+        + "Studio mode|\{studio.absolute-position.x / 1px}|\{studio.absolute-position.y / 1px}|\{studio.width / 1px}|\{studio.height / 1px};"
+        + "One|\{one.absolute-position.x / 1px}|\{one.absolute-position.y / 1px}|\{one.width / 1px}|\{one.height / 1px};"
+        + "Two|\{icon.absolute-position.x / 1px}|\{icon.absolute-position.y / 1px}|\{icon.width / 1px}|\{icon.height / 1px};"
+        + "Three|\{three.absolute-position.x / 1px}|\{three.absolute-position.y / 1px}|\{three.width / 1px}|\{three.height / 1px};"
+        + "Above|\{above.absolute-position.x / 1px}|\{above.absolute-position.y / 1px}|\{above.width / 1px}|\{above.height / 1px};"
+        + "Below|\{below.absolute-position.x / 1px}|\{below.absolute-position.y / 1px}|\{below.width / 1px}|\{below.height / 1px};"
+        + "Plain|\{plain.absolute-position.x / 1px}|\{plain.absolute-position.y / 1px}|\{plain.width / 1px}|\{plain.height / 1px};"
+        + "Checked|\{on.absolute-position.x / 1px}|\{on.absolute-position.y / 1px}|\{on.width / 1px}|\{on.height / 1px};"
+        + "Delete|\{del.absolute-position.x / 1px}|\{del.absolute-position.y / 1px}|\{del.width / 1px}|\{del.height / 1px};"
+        + "Dense|\{small.absolute-position.x / 1px}|\{small.absolute-position.y / 1px}|\{small.width / 1px}|\{small.height / 1px};"
+        + "Main action|\{halo.absolute-position.x / 1px}|\{halo.absolute-position.y / 1px}|\{halo.width / 1px}|\{halo.height / 1px};"
+        + "Beside|\{beside.absolute-position.x / 1px}|\{beside.absolute-position.y / 1px}|\{beside.width / 1px}|\{beside.height / 1px};";
+    // The opted-in row: the room left of and above the primary, and the gap to its
+    // neighbour. These grow by the clear zone while the theme draws a halo.
+    out property <length> halo-left: halo.absolute-position.x - first.absolute-position.x;
+    out property <length> halo-gap: beside.absolute-position.x - halo.absolute-position.x - halo.width;
+    // The primary's box in the window, for the clear zone test.
+    out property <length> halo-x: halo.absolute-position.x;
+    out property <length> halo-y: halo.absolute-position.y;
+    out property <length> halo-w: halo.width;
+    out property <length> halo-h: halo.height;
     public function focus-mid() { mid.take-focus(); }
     public function focus-go() { go.focus-command(); }
     public function focus-go-menu() { go.focus-menu(); }
@@ -228,4 +279,9 @@ export component EffectsProbe inherits Window {
     public function focus-icon() { icon.take-focus(); }
     public function focus-above() { above.take-focus(); }
     public function focus-below() { below.take-focus(); }
+    public function focus-checked() { on.take-focus(); }
+    public function focus-danger() { del.take-focus(); }
+    public function focus-dense() { small.take-focus(); }
+    public function focus-beside() { beside.take-focus(); }
+    public function focus-halo() { halo.take-focus(); }
 }

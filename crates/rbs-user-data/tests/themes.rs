@@ -319,7 +319,7 @@ fn calm_themes_are_written_as_format_1_and_any_other_effects_as_format_2() {
     let (line, text) = format_of(&calm);
     assert_eq!(line, "format = 1");
     assert!(!text.contains("effects"));
-    for stored in ["vivid", "tactile", "glossy"] {
+    for stored in ["glow", "glass", "tactile", "vivid", "glossy"] {
         let mut t = ThemeBody::new(Base::Dark);
         t.effects = Some(stored.into());
         let (line, text) = format_of(&t);
