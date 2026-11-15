@@ -150,7 +150,7 @@ Invariants:
 2. Never waits for the GPU. A frame submitted on tick `i` appears on tick `i + 1` at the earliest; a full staging ring drops the new canvas frame (`busy`).
 3. Once ended, every canvas the export took up to the end time is on "video" in order (one per tick), and no later canvas is taken. Canvases dropped as on the run path (`busy`, no free buffer, a failed readback) are counted in `busy` or `lost`. Whether the encoder took the last one is the studio's check (`EncoderNodeStats::last_frame`, recording spec 5a). The run path costs one relaxed atomic load and a compare per tick.
 
-Planned (ADR-0124, Proposed): a recording's export gets a pause window beside `ExportEnd` (the same load and compare on the run path): no canvas with a time in `[pause_at, resume_at)` is taken and later frames are stamped `t - paused_total`. For a held stream the export hands the encoder its last converted frame (or a black one) on each tick without reading back.
+Planned (ADR-0124, Proposed): the run-path atomic becomes `next`, the earliest of the end time and the next pause window instant (lowered by compare-and-swap; only the end path sets `ended`), so the run path keeps one load and one compare. With `PauseGate` the export takes no canvas with a time in `[pause_at, resume_at)` and stamps later frames `t - paused_total`. With `HoldGate`, while holding, it pins its last converted frame's buffer (or a black one), re-stamps it with each tick's time and a new sequence and reads nothing back; the ring works one buffer short.
 
 ### Video encoder node
 
@@ -168,7 +168,7 @@ Invariants:
 3. The packet stream is always decodable: when the carry-over is full, packets are dropped up to the next keyframe and `EncoderChange::RequestKeyframe` is sent.
 4. A refused frame (`EncodeError::InvalidInput`) is counted and does not fail the tick: a failed tick discards the packets the node already pushed in it, which would break the stream. A device loss or non-recoverable failure is permanent.
 
-Planned (ADR-0124, Proposed): a keyframe request from the control thread (an atomic flag swapped once per tick in `process`), sent as `EncoderChange::RequestKeyframe` only when the session declares `codec.reconfigure: keyframe`.
+Planned (ADR-0124, Proposed): a request "keyframe at the first frame with pts at or after `t`" from the control thread (an atomic time, `u64::MAX` for none, read once per tick, applied as `EncoderChange::RequestKeyframe` before that frame's `submit`). The studio passes the adapter's `codec.reconfigure` capability when it builds the node; without `keyframe` the request is never stored.
 
 ### Output node
 
@@ -189,7 +189,7 @@ Invariants:
 6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
 7. **Aligned start.** An output with a video stream and other streams starts at the first video packet's pts: packets of other streams that end at or before it (pts plus duration, or pts when the packet has no duration) are dropped and counted (`start_drops`); packets that arrive before the first video packet are held (at most `START_HOLD` = 256, preallocated in `prepare`; past it the oldest are dropped and counted) and written when it arrives, in arrival order. So a recording never begins with audio before the first picture (video started 143 ms after audio on SC-PC, 3440x1440 NVENC,). Outputs with only video or no video pass every packet.
 
-8. Planned (ADR-0124, Proposed): a recording's output node carries a pause gate (`PauseGate`; other outputs `NoGate`). While a pause is set on a shared encoder, it drops packets in decode order from the first one whose pts is at or after `pause_at`, and passes again from the first video keyframe at or after `resume_at`, shifted by the paused total; audio from that keyframe's pts.
+8. Planned (ADR-0124, Proposed): a recording's output node carries `PauseGate` (streams `HoldGate`, others `NoGate`). For a shared encoder's cut it drops video packets in decode order from the first one whose pts is at or after `pause_at` and passes again from the requested keyframe at or after `resume_at`, pts and dts shifted by `paused_total`, raising a GOP's dts when needed so dts stays above the last written one and at or below pts; audio packets with pts in `[pause_at, resume_at)` are dropped and later ones shifted.
 
 ### Preview node (ADR-0041)
 
