@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, SegmentedControl, Select, Slider, TextField, Toggle, ValueReadout, SettingRow, ListRow } from "components.slint";
+import { Button, DialogActions, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, SegmentedControl, Select, Slider, TextField, Toggle, ValueReadout, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -591,20 +591,17 @@ component TokenEditorRow inherits Rectangle {
 component EditorActions inherits HorizontalLayout {
     spacing: Tokens.space-2;
     alignment: end;
-    Button {
-        text: @tr("Save");
-        kind: "primary";
-        enabled: Appearance.can-save || Appearance.pending-kind >= 0;
-        clicked => {
-            Appearance.apply-pending();
-            Appearance.save();
-        }
-    }
-    Button {
-        text: Appearance.changed || Appearance.pending-kind >= 0 ? @tr("Cancel") : @tr("Close");
-        clicked => {
+    DialogActions {
+        cancel-text: Appearance.changed || Appearance.pending-kind >= 0 ? @tr("Cancel") : @tr("Close");
+        confirm-text: @tr("Save");
+        confirm-enabled: Appearance.can-save || Appearance.pending-kind >= 0;
+        cancelled => {
             Appearance.pending-kind = -1;
             Appearance.cancel();
+        }
+        confirmed => {
+            Appearance.apply-pending();
+            Appearance.save();
         }
     }
 }
@@ -952,22 +949,14 @@ export component AppearanceSettings inherits Rectangle {
                                 color: Theme.text-primary;
                                 wrap: word-wrap;
                             }
-                            HorizontalLayout {
-                                spacing: Tokens.space-2;
-                                alignment: start;
-                                Button {
-                                    lead: IconName.trash;
-                                    text: @tr("Delete");
-                                    kind: "primary";
-                                    clicked => {
-                                        Appearance.select(root.confirm-delete);
-                                        root.confirm-delete = -1;
-                                        Appearance.delete();
-                                    }
-                                }
-                                Button {
-                                    text: @tr("Cancel");
-                                    clicked => { root.confirm-delete = -1; }
+                            DialogActions {
+                                confirm-text: @tr("Delete");
+                                confirm-kind: "danger";
+                                cancelled => { root.confirm-delete = -1; }
+                                confirmed => {
+                                    Appearance.select(root.confirm-delete);
+                                    root.confirm-delete = -1;
+                                    Appearance.delete();
                                 }
                             }
                         }

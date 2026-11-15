@@ -4,7 +4,7 @@
 // keeps the window; OK sends it and closes; Cancel closes. The choice is a draft until
 // then. The preview and the main window stay usable while it is open.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconName, Select, Toggle, OverlayHost, NumberField, SettingRow } from "components.slint";
+import { Button, DialogActions, IconName, Select, Toggle, OverlayHost, NumberField, SettingRow } from "components.slint";
 import { SettingsCard } from "settings.slint";
 import { Studio, SourceSettingsData } from "studio.slint";
 
@@ -675,30 +675,20 @@ export component SourceSettingsWindow inherits Window {
                 }
                 } // body
             } // Flickable
-            HorizontalLayout {
-                spacing: Tokens.size-field-gap;
-                alignment: end;
-                Button {
-                    text: @tr("Cancel");
-                    clicked => { root.dismiss(); }
+            DialogActions {
+                confirm-text: @tr("OK");
+                confirm-enabled: d.id >= 0;
+                extra-text: @tr("Apply");
+                extra-enabled: d.id >= 0;
+                cancelled => { root.dismiss(); }
+                extra-clicked => {
+                    Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor);
+                    root.apply-region-chrome();
                 }
-                Button {
-                    text: @tr("Apply");
-                    enabled: d.id >= 0;
-                    clicked => {
-                        Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor);
-                        root.apply-region-chrome();
-                    }
-                }
-                Button {
-                    text: @tr("OK");
-                    kind: "primary";
-                    enabled: d.id >= 0;
-                    clicked => {
-                        Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor);
-                        root.apply-region-chrome();
-                        root.dismiss();
-                    }
+                confirmed => {
+                    Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor);
+                    root.apply-region-chrome();
+                    root.dismiss();
                 }
             }
         }

@@ -3,7 +3,7 @@
 // Rust (`vcam_page`) pushes state into the `VirtualCamera` global and handles its
 // callbacks; the texts it pushes come from `rbs_app::vcam_settings::Page::view`.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconName, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
+import { Button, DialogActions, IconName, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsCallout, RevealOnShow } from "settings.slint";
 
 export global VirtualCamera {
@@ -90,21 +90,13 @@ export component VirtualCameraSettings inherits Rectangle {
                         font-size: Tokens.type-body-size;
                         wrap: word-wrap;
                     }
-                    HorizontalLayout {
-                        spacing: Tokens.space-2;
-                        alignment: start;
-                        Button {
-                            text: @tr("Add the camera");
-                            kind: "primary";
-                            clicked => { VirtualCamera.add(); }
-                        }
-                        cancel := Button {
-                            text: @tr("Cancel");
-                            clicked => { VirtualCamera.cancel(); }
-                        }
+                    actions := DialogActions {
+                        confirm-text: @tr("Add the camera");
+                        cancelled => { VirtualCamera.cancel(); }
+                        confirmed => { VirtualCamera.add(); }
                     }
                     // Cancel is focused (ADR-0066 decision 11).
-                    init => { cancel.focus(); }
+                    init => { actions.focus-cancel(); }
                 }
             }
         }
