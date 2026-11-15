@@ -199,6 +199,9 @@ export component SettingsCard inherits Rectangle {
 // buttons): its name and explanation on top, the content under them.
 export component SettingBlock inherits Rectangle {
     in property <string> label;
+    // Its key in the settings search index (docs/specs/settings-search.md), as
+    // `SettingRow.find`.
+    in property <string> find;
     in property <string> help;
     in property <bool> divider: true;
     horizontal-stretch: 1;

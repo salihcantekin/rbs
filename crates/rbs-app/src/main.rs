@@ -176,8 +176,9 @@ struct App {
     /// The density in use, as the registry shows it (View › Spacing).
     density: rbs_ui::tokens::Density,
     /// `ui.settings.open` ran; the next sync shows Settings, at this section when
-    /// given.
-    open_settings: Option<Option<i32>>,
+    /// given. The setting key it names is not used yet: Settings opens at its section
+    /// (spec `settings-search.md`, step 2 shows the row).
+    open_settings: Option<(Option<i32>, Option<String>)>,
     /// `source.settings` ran; the next sync opens the Source settings window.
     open_source_settings: Option<i32>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
@@ -702,7 +703,7 @@ impl App {
             // Needs the Appearance page, which the next sync has.
             Run::SelectDensity(density) => self.select_density = Some(density),
             // Making the window needs the shell's context, which the next sync has.
-            Run::OpenSettings(section) => self.open_settings = Some(section),
+            Run::OpenSettings(section, setting) => self.open_settings = Some((section, setting)),
             Run::OpenAppMenu => self.open_app_menu = true,
         }
     }
@@ -2327,7 +2328,7 @@ impl Ctx {
             self.show_all(&mut app);
             app.open_name_prompt(ask);
         }
-        if let Some(section) = app.open_settings.take() {
+        if let Some((section, _setting)) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).
             let section = section
                 .or_else(|| app.settings.as_ref().map(|w| w.get_section()))

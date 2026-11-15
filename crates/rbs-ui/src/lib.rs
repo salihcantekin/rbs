@@ -33,6 +33,7 @@ pub mod live;
 pub mod meter;
 pub mod panel;
 pub mod session;
+pub mod settings_index;
 pub mod shortcut;
 pub mod store;
 pub mod tokens;

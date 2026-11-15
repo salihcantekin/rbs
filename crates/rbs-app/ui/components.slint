@@ -4533,6 +4533,9 @@ export component FeatureSection inherits VerticalLayout {
 // `@children` cannot sit under an `if`.
 export component SettingRow inherits Rectangle {
     in property <string> label;
+    // Its key in the settings search index (docs/specs/settings-search.md), or "" for
+    // a row search does not find. A test checks the keys against the index.
+    in property <string> find;
     // A few words under the name saying what the setting does, one line (owner
     // decision 2026-11-14): with `hint`, the usual pair for a short setting.
     in property <string> summary;

@@ -25,6 +25,7 @@ export component AudioSettings inherits Rectangle {
             id: "settings.audio.monitor";
             description: @tr("Hear sources in headphones without sending them to the outputs. These settings belong to this computer.");
             SettingRow {
+                find: "audio.monitor-device";
                 divider: false;
                 label: @tr("Device");
                 summary: @tr("Where you listen");
@@ -39,6 +40,7 @@ export component AudioSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "audio.monitor-volume";
                 label: @tr("Volume");
                 summary: @tr("Only what you hear");
                 hint: @tr("The monitor's own level. It does not change the stream or the recording.");
@@ -68,6 +70,7 @@ export component AudioSettings inherits Rectangle {
                 tone: Studio.monitor-tone;
             }
             SettingRow {
+                find: "audio.monitor-latency";
                 label: @tr("Latency");
                 summary: @tr("How late the monitor is");
                 hint: @tr("The monitor goes through the mix, so it lags the sound by this much. For playing live, use your audio interface's direct monitoring.");

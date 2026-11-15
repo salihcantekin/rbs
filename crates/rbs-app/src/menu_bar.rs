@@ -1166,12 +1166,32 @@ impl CommandState for Shown<'_> {
     }
 }
 
-/// What `ui.settings.open` runs: Settings at the id's section, if it names one.
+/// What `ui.settings.open` runs: Settings at the id's section, if it names one, and at
+/// its `setting` (spec `settings-search.md`): a settings index key shown in that
+/// section (without a section, the key's first one), or in Shortcuts a command id.
+/// An unknown section or setting, or a setting the section does not show, runs
+/// nothing.
 fn open_settings(id: &CommandId) -> Option<Run> {
-    Some(Run::OpenSettings(match id.param("section") {
-        Some(name) => Some(settings_section(name)?),
-        None => None,
-    }))
+    let section = id.param("section");
+    let Some(setting) = id.param("setting") else {
+        let shown = match section {
+            Some(name) => Some(settings_section(name)?),
+            None => None,
+        };
+        return Some(Run::OpenSettings(shown, None));
+    };
+    let section = match section {
+        Some("shortcuts") => {
+            let command = CommandId::parse(setting).ok()?;
+            rbs_ui::command::entry(command.base())?;
+            "shortcuts"
+        }
+        _ => rbs_ui::settings_index::place(setting, section)?.section,
+    };
+    Some(Run::OpenSettings(
+        Some(settings_section(section)?),
+        Some(setting.to_owned()),
+    ))
 }
 
 /// The `SettingsWindow.section` number of a `ui.settings.open` section name.
@@ -1478,8 +1498,8 @@ pub enum Run {
     /// Use this density (`ui.density.select`, ADR-0113 decision 2).
     SelectDensity(rbs_ui::tokens::Density),
     /// Show the Settings window, at this section (`SettingsWindow.section`) when
-    /// given (`ui.settings.open`).
-    OpenSettings(Option<i32>),
+    /// given, and at this setting key or, in Shortcuts, command id (`ui.settings.open`).
+    OpenSettings(Option<i32>, Option<String>),
     /// Open the RBS menu with its search field (`ui.app_menu.open`).
     OpenAppMenu,
     /// Scene edit undo (`true`) or redo.
@@ -1937,12 +1957,49 @@ mod tests {
         assert_eq!(seen, (0..10).collect::<Vec<_>>());
         assert_eq!(settings_section("mixer"), None);
         let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
-        assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None)));
+        assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None, None)));
         assert_eq!(
             run("ui.settings.open?section=shortcuts"),
-            Some(Run::OpenSettings(Some(6)))
+            Some(Run::OpenSettings(Some(6), None))
         );
         assert_eq!(run("ui.settings.open?section=mixer"), None);
+    }
+
+    /// `setting` names an index key in its section, or a command in Shortcuts
+    /// (spec `settings-search.md`).
+    #[test]
+    fn settings_open_at_a_setting() {
+        let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
+        let at = |section, key: &str| Some(Run::OpenSettings(Some(section), Some(key.to_owned())));
+        assert_eq!(
+            run("ui.settings.open?section=stream&setting=encoding.b-frames"),
+            at(2, "encoding.b-frames")
+        );
+        // Without a section: the key's first section.
+        assert_eq!(
+            run("ui.settings.open?setting=encoding.b-frames"),
+            at(1, "encoding.b-frames")
+        );
+        assert_eq!(
+            run("ui.settings.open?setting=settings.recording.replay"),
+            at(1, "settings.recording.replay")
+        );
+        // Not shown in that section, unknown, or a command outside Shortcuts.
+        assert_eq!(
+            run("ui.settings.open?section=general&setting=encoding.b-frames"),
+            None
+        );
+        assert_eq!(run("ui.settings.open?setting=nope"), None);
+        assert_eq!(run("ui.settings.open?setting=record.main.toggle"), None);
+        // A command in Shortcuts.
+        assert_eq!(
+            run("ui.settings.open?section=shortcuts&setting=record.main.toggle"),
+            at(6, "record.main.toggle")
+        );
+        assert_eq!(
+            run("ui.settings.open?section=shortcuts&setting=no.such"),
+            None
+        );
     }
 
     #[test]

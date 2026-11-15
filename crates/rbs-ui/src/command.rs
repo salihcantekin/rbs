@@ -190,6 +190,15 @@ const SECTION: Param = Param {
     required: false,
 };
 
+/// The place to show in the Settings window (spec `settings-search.md`): a key of the
+/// settings index (`crate::settings_index`), shown in `section` when given, else in
+/// its first section; in the Shortcuts section, a command id, whose row is shown.
+const SETTING: Param = Param {
+    name: "setting",
+    ty: ParamType::Text,
+    required: false,
+};
+
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
 pub const SETTINGS_SECTIONS: [&str; 10] = [
@@ -508,7 +517,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::File,
         kind: action("ui.settings.open"),
-        params: &[SECTION],
+        params: &[SECTION, SETTING],
         checkable: false,
         fixed: &[],
     },
@@ -2446,10 +2455,22 @@ pub fn settings_section_title(section: &str) -> String {
     out
 }
 
+/// A settings search hit as the RBS menu titles it: "Settings: Recording › Encoding ›
+/// Video encoder", or "Settings: Recording › Replay buffer" for a card.
+pub fn settings_hit_title(settings: &str, hit: &crate::settings_index::Hit) -> String {
+    let section = settings_section_title(hit.place.section);
+    match hit.card_title() {
+        Some(card) => format!("{settings}: {section} › {card} › {}", hit.setting.title),
+        None => format!("{settings}: {section} › {}", hit.setting.title),
+    }
+}
+
 /// The commands whose words hold every word of `query` (case-insensitive), for the
 /// RBS menu's search field: commands as the menus show them, each choice of a picker
-/// as its own command ("Workspace: Live"), and each Settings section ("Settings:
-/// Appearance"). A command's menu title counts as one of its words, so "view" finds
+/// as its own command ("Workspace: Live"), each Settings section ("Settings:
+/// Appearance"), and each card and setting of the settings index that matches
+/// (`settings_index::search`, "Settings: Recording › Encoding › Video encoder"), after
+/// every command. A command's menu title counts as one of its words, so "view" finds
 /// the View menu's commands. In menu order; at most [`MAX_SEARCH_RESULTS`]; none for
 /// a blank query.
 pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
@@ -2462,6 +2483,9 @@ pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
         words.iter().all(|w| text.contains(w.as_str()))
     };
     let mut out = Vec::new();
+    // Cards and settings follow every command, so a common word ("video") does not
+    // push commands past the result limit.
+    let mut settings = Vec::new();
     for (menu, rows) in app_menu(state) {
         for row in rows {
             let AppRow::Item(item) = row else { continue };
@@ -2490,6 +2514,27 @@ pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
                                     icon,
                                 });
                             }
+                        }
+                    }
+                    if id.base() == "ui.settings.open" && id.param("section").is_none() {
+                        for hit in crate::settings_index::search(
+                            query,
+                            &format!("{} {title}", menu.title()),
+                            &settings_section_title,
+                        ) {
+                            let mut run = id.clone();
+                            run.params
+                                .push(("section".to_owned(), hit.place.section.to_owned()));
+                            run.params
+                                .push(("setting".to_owned(), hit.setting.key.to_owned()));
+                            settings.push(MenuItem::Command {
+                                id: run,
+                                title: settings_hit_title(title, &hit),
+                                shortcut: None,
+                                disabled: disabled.clone(),
+                                checked: None,
+                                icon,
+                            });
                         }
                     }
                     if plain {
@@ -2521,6 +2566,7 @@ pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
             }
         }
     }
+    out.extend(settings);
     out.truncate(MAX_SEARCH_RESULTS);
     out
 }
@@ -3275,6 +3321,56 @@ mod tests {
         assert!(search(&Fake, " ").is_empty());
         let found = search(&Fake, "SETTINGS stream");
         assert!(found.iter().any(|i| matches!(i, MenuItem::Command { id, .. } if id.to_string() == "ui.settings.open?section=stream")));
+    }
+
+    /// The search finds single settings, after every command, with the section and the
+    /// setting in the id (spec `settings-search.md`).
+    #[test]
+    fn search_finds_settings_after_the_commands() {
+        let found = search(&Fake, "keyframe");
+        let ids: Vec<String> = found
+            .iter()
+            .filter_map(|i| match i {
+                MenuItem::Command { id, .. } => Some(id.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "ui.settings.open?section=recording&setting=encoding.keyframe-interval",
+                "ui.settings.open?section=stream&setting=encoding.keyframe-interval",
+            ]
+        );
+        let MenuItem::Command { title, .. } = &found[0] else {
+            panic!("a command")
+        };
+        assert_eq!(title, "Settings: Recording › Encoding › Keyframe interval");
+        // The menu's words count, as for sections.
+        assert_eq!(search(&Fake, "settings keyframe").len(), 2);
+        // A card.
+        let found = search(&Fake, "replay buffer");
+        assert!(found.iter().any(|i| matches!(i, MenuItem::Command { id, title, .. }
+            if id.to_string() == "ui.settings.open?section=recording&setting=settings.recording.replay"
+                && title == "Settings: Recording › Replay buffer")));
+        // Commands come first.
+        let found = search(&Fake, "record");
+        let first_setting = found
+            .iter()
+            .position(
+                |i| matches!(i, MenuItem::Command { id, .. } if id.param("setting").is_some()),
+            )
+            .unwrap_or(found.len());
+        assert!(
+            found[first_setting..].iter().all(
+                |i| matches!(i, MenuItem::Command { id, .. } if id.param("setting").is_some())
+            )
+        );
+        assert!(first_setting > 0);
+        // Ids parse back with both parameters.
+        let id =
+            CommandId::parse("ui.settings.open?section=stream&setting=encoding.b-frames").unwrap();
+        assert_eq!(id.param("setting"), Some("encoding.b-frames"));
     }
 
     /// Every command has an icon from the set, so no menu item is blank (spec,

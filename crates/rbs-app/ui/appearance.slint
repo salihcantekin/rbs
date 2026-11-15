@@ -632,6 +632,7 @@ component ThemeEditor inherits VerticalLayout {
     }
     for p in Appearance.general-problems: Problem { text: p; }
     SettingRow {
+        // find: none (a field of the theme editor, not a setting).
         divider: false;
         label: @tr("Group");
         control-width: Tokens.size-menu-sm;
@@ -797,6 +798,7 @@ export component AppearanceSettings inherits Rectangle {
             title: @tr("Theme in use");
             id: "settings.appearance.theme-in-use";
             SettingRow {
+                find: "appearance.follow-system";
                 divider: false;
                 label: @tr("Use the system appearance");
                 summary: @tr("Follows the system's dark and light mode");
@@ -809,6 +811,7 @@ export component AppearanceSettings inherits Rectangle {
                 }
             }
             SettingRow {
+                find: "appearance.spacing";
                 divider: false;
                 label: @tr("Spacing");
                 summary: @tr("How tightly controls are packed");
@@ -824,6 +827,7 @@ export component AppearanceSettings inherits Rectangle {
                 }
             }
             if Appearance.density == 1: SettingRow {
+                find: "appearance.compact-amount";
                 label: @tr("Amount");
                 summary: @tr("How compact");
                 // Stop 1 is the default (the same value the slider's double-click restores).
@@ -933,6 +937,7 @@ export component AppearanceSettings inherits Rectangle {
                         }
                     }
                     if !Appearance.editing && root.current.user: SettingRow {
+                        // find: none (renames the chosen theme; the Themes card is indexed).
                         label: @tr("Name");
                         TextField {
                             label: @tr("Name");
