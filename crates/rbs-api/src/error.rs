@@ -112,6 +112,11 @@ pub struct ApiError {
     pub kind: ErrorKind,
     /// What went wrong, in words for logs.
     pub message: String,
+    /// Members added to the wire's `error.data` beside `kind` (protocol 1.54): an
+    /// object, or `None`. A `kind` member here is dropped, so it never overrides the
+    /// error's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl ApiError {
@@ -120,7 +125,40 @@ impl ApiError {
         Self {
             kind,
             message: message.into(),
+            data: None,
         }
+    }
+
+    /// An error of `kind` whose wire `error.data` carries `data`'s members beside
+    /// `kind` (protocol 1.54). A `kind` member in `data` is dropped.
+    pub fn with_data(
+        kind: ErrorKind,
+        message: impl Into<String>,
+        mut data: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        data.remove("kind");
+        Self {
+            kind,
+            message: message.into(),
+            data: Some(data),
+        }
+    }
+
+    /// The wire's `error.data` object: `kind`, then the added members.
+    pub fn wire_data(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut out = serde_json::Map::new();
+        out.insert(
+            "kind".to_owned(),
+            serde_json::Value::String(self.kind.name().to_owned()),
+        );
+        if let Some(data) = &self.data {
+            for (k, v) in data {
+                if k != "kind" {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        out
     }
 }
 

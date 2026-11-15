@@ -171,6 +171,22 @@ pub struct RecordingManifest {
     pub markers: Vec<Marker>,
     /// Set by the stop rewrite.
     pub completion: Option<Completion>,
+    /// Marked sources the take did not write, in source order (`[[skipped]]`,
+    /// control API 1.54). Never in `files`.
+    pub skipped: Vec<SkippedEntry>,
+}
+
+/// A marked source a take left without its file (`[[skipped]]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedEntry {
+    /// The source.
+    pub source: SourceRef,
+    /// The source's name when the take started.
+    pub source_name: Option<String>,
+    /// The feed that was not written: `video`, `image` or `audio`.
+    pub role: String,
+    /// Why, as `record.status` names it (`limit`, `no_picture`, `open_failed`, ...).
+    pub reason: String,
 }
 
 impl RecordingManifest {
@@ -182,6 +198,7 @@ impl RecordingManifest {
             files: Vec::new(),
             markers: Vec::new(),
             completion: None,
+            skipped: Vec::new(),
         }
     }
 
@@ -237,6 +254,15 @@ impl RecordingManifest {
                 text.push_str(&format!("height = {}\n", image.height));
                 text.push_str(&format!("at_ns = {}\n", image.at_ns));
             }
+        }
+        for s in &self.skipped {
+            text.push_str("\n[[skipped]]\n");
+            text.push_str(&format!("source = {}\n", s.source.get()));
+            if let Some(name) = &s.source_name {
+                text.push_str(&format!("source_name = {}\n", toml_string(name)));
+            }
+            text.push_str(&format!("role = {}\n", toml_string(&s.role)));
+            text.push_str(&format!("reason = {}\n", toml_string(&s.reason)));
         }
         for m in &self.markers {
             text.push_str("\n[[markers]]\n");
@@ -420,6 +446,34 @@ mod tests {
         assert!(text.contains("complete = true\n"));
         assert!(text.contains("\n[[files.images]]\nname = \"Logo-2.png\"\n"));
         assert_eq!(RecordingManifest::from_toml(&text).unwrap(), m);
+    }
+
+    #[test]
+    fn skipped_sources_are_written_apart_from_files_and_read_back() {
+        let mut m = complete();
+        m.skipped = vec![
+            SkippedEntry {
+                source: SourceRef::new(4),
+                source_name: Some("Cam \"4\"".into()),
+                role: "video".into(),
+                reason: "limit".into(),
+            },
+            SkippedEntry {
+                source: SourceRef::new(7),
+                source_name: None,
+                role: "audio".into(),
+                reason: "open_failed".into(),
+            },
+        ];
+        let text = m.to_toml();
+        assert!(text.contains("\n[[skipped]]\nsource = 4\nsource_name = \"Cam \\\"4\\\"\"\nrole = \"video\"\nreason = \"limit\"\n"), "{text}");
+        let back = RecordingManifest::from_toml(&text).unwrap();
+        assert_eq!(back, m);
+        assert!(
+            back.files
+                .iter()
+                .all(|f| f.source.map(SourceRef::get) != Some(4))
+        );
     }
 
     #[test]

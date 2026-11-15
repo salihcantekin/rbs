@@ -780,15 +780,20 @@ pub const SEPARATE_FILES_SECTION: &str = "recording.iso";
 pub const SEPARATE_FILES_FORMAT: u32 = 1;
 
 /// Separate files settings of the main recording (Settings › Recording › Separate
-/// files). Only the switch for now; quality, container and the encoder choice come
-/// with later steps of ADR-0086 and ADR-0119.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// files). The switch and the hardware limit policy for now; quality, container and
+/// the encoder choice come with later steps of ADR-0086 and ADR-0119.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SeparateFiles {
     /// The section's format version.
     pub format_version: u32,
     /// Record and `record.start` without `iso` write the marked sources' files.
     pub enabled: bool,
+    /// What a `record.start` with the 1.54 parameters does with video files past
+    /// their encoder's capacity when it does not say (ADR-0087 decision 5): `ask` or
+    /// `skip`. Kept as read, so a value a later build wrote (`cpu`) is saved back
+    /// unchanged; this build treats it as `ask` ([`SeparateFiles::limit_policy`]).
+    pub on_hardware_limit: String,
 }
 
 impl Default for SeparateFiles {
@@ -796,11 +801,36 @@ impl Default for SeparateFiles {
         Self {
             format_version: SEPARATE_FILES_FORMAT,
             enabled: true,
+            on_hardware_limit: HARDWARE_LIMIT_ASK.to_owned(),
         }
     }
 }
 
+/// `on_hardware_limit = "ask"`.
+pub const HARDWARE_LIMIT_ASK: &str = "ask";
+/// `on_hardware_limit = "skip"`.
+pub const HARDWARE_LIMIT_SKIP: &str = "skip";
+
+/// The policy this build follows for a saved `on_hardware_limit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitPolicy {
+    /// Refuse the start and say which files do not fit.
+    Ask,
+    /// Start without the files that do not fit.
+    Skip,
+}
+
 impl SeparateFiles {
+    /// The policy of the saved `on_hardware_limit`, and whether this build knows the
+    /// value (an unknown one behaves as `ask`).
+    pub fn limit_policy(&self) -> (LimitPolicy, bool) {
+        match self.on_hardware_limit.as_str() {
+            HARDWARE_LIMIT_SKIP => (LimitPolicy::Skip, true),
+            HARDWARE_LIMIT_ASK => (LimitPolicy::Ask, true),
+            _ => (LimitPolicy::Ask, false),
+        }
+    }
+
     /// The settings a saved section gives: the defaults when it is absent, does not
     /// load, or was written by a newer RBS.
     pub fn from_section<E>(saved: Result<Option<Self>, E>) -> Self {
@@ -1388,6 +1418,24 @@ pub fn save(config: &Path, profile: &RecordProfile) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use rbs_core::media::ColorSpace;
+
+    #[test]
+    fn the_hardware_limit_policy_defaults_to_ask_and_keeps_values_it_does_not_know() {
+        let old: SeparateFiles = toml::from_str("format_version = 1\nenabled = false\n").unwrap();
+        assert_eq!(old.on_hardware_limit, "ask");
+        assert_eq!(old.limit_policy(), (LimitPolicy::Ask, true));
+        let skip: SeparateFiles =
+            toml::from_str("format_version = 1\nenabled = true\non_hardware_limit = \"skip\"\n")
+                .unwrap();
+        assert_eq!(skip.limit_policy(), (LimitPolicy::Skip, true));
+        // A later build's value behaves as `ask` and is saved back as read.
+        let later: SeparateFiles =
+            toml::from_str("format_version = 1\nenabled = true\non_hardware_limit = \"cpu\"\n")
+                .unwrap();
+        assert_eq!(later.limit_policy(), (LimitPolicy::Ask, false));
+        let text = toml::to_string(&later).unwrap();
+        assert!(text.contains("on_hardware_limit = \"cpu\""), "{text}");
+    }
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rbs-app-{name}-{}", std::process::id()));

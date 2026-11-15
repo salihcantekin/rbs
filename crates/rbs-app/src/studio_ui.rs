@@ -4590,7 +4590,7 @@ impl StudioUi {
         {
             self.profile_note = format!("The Separate files choice was not saved: {why}");
         }
-        self.send(Command::SetSeparateFiles(on));
+        self.send(Command::SetSeparateFiles(self.separate_files.clone()));
     }
 
     /// Keeps and saves whether Record and Go live also act on the vertical outputs
@@ -4604,7 +4604,7 @@ impl StudioUi {
     }
 
     fn send_vertical_profiles(&self) {
-        self.send(Command::SetSeparateFiles(self.separate_files.enabled));
+        self.send(Command::SetSeparateFiles(self.separate_files.clone()));
         self.send(Command::SetVerticalFlags(self.vertical_flags));
         self.send(Command::SetVerticalProfile(self.vertical_profile.clone()));
         self.send(Command::SetVerticalStreamProfile(
