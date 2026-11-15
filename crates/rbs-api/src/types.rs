@@ -823,7 +823,7 @@ pub enum ProjectFormat {
     /// FCPXML 1.9, one `.fcpxml` file (Final Cut Pro).
     Fcpxml,
     /// FCP7 XML (xmeml version 5), one `.xml` file (DaVinci Resolve, Premiere Pro;
-    /// protocol 1.61).
+    /// protocol 1.60).
     Xmeml,
 }
 

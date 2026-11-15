@@ -27,8 +27,7 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
-/// 1.61 adds `xmeml` (FCP7 XML) to `project.export` and `editor_project` (ADR-0089);
-/// the number is provisional, 1.60 is planned for pause and hold.
+/// 1.60 adds `xmeml` (FCP7 XML) to `project.export` and `editor_project` (ADR-0089).
 /// 1.59 adds the loudness settings (ADR-0092): `loudness` in `settings.get`,
 /// `settings.set` and `settings.changed`, `target` and `true_peak_limit` on
 /// `loudness.status`, and Show loudness saved.
@@ -63,7 +62,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.61";
+pub const PROTOCOL_VERSION: &str = "1.60";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
