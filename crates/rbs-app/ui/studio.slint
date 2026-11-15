@@ -199,7 +199,7 @@ export global Studio {
     in property <bool> props-can-vertical;
     callback set-props-vertical(bool);
     // The source Properties shows: the selection, else the last selected source that
-    // still exists, else the first source in the list. -1 only when there is none.
+    // still exists, else -1 (the Nothing selected state).
     in property <int> properties-source: -1;
     callback select-source(int /* id */);
     // One layer up (over the source above it in the list) or down.
