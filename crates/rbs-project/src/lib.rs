@@ -19,6 +19,78 @@ use rbs_manifest::RecordingManifest;
 
 pub use url::MediaFolder;
 
+/// What a project writes besides the files and the markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Options {
+    /// One marker per pause, on its join ("Paused 2:10", the time left out), from
+    /// the recording setting "Pauses become markers in the editor project" (ADR-0124
+    /// decision 10). On by default.
+    pub pause_markers: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            pause_markers: true,
+        }
+    }
+}
+
+/// A marker of the project, in file time from `t0`.
+pub(crate) struct ProjectMarker {
+    pub(crate) t_ns: u64,
+    pub(crate) label: String,
+    /// A chapter marker (a scene change).
+    pub(crate) chapter: bool,
+}
+
+/// The manifest's markers and, with `pause_markers`, one per pause on its join; in
+/// time order, a pause before the markers on its join.
+pub(crate) fn project_markers(
+    manifest: &RecordingManifest,
+    options: Options,
+) -> Vec<ProjectMarker> {
+    let pauses = manifest
+        .pauses
+        .iter()
+        .filter(|_| options.pause_markers)
+        .map(|p| {
+            (
+                (p.at_file_ns, 0u8, 0u32),
+                ProjectMarker {
+                    t_ns: p.at_file_ns,
+                    label: format!("Paused {}", clock_text(p.length_ns())),
+                    chapter: false,
+                },
+            )
+        });
+    let markers = manifest.markers.iter().map(|m| {
+        (
+            (m.t_ns, 1u8, m.index),
+            ProjectMarker {
+                t_ns: m.t_ns,
+                label: m.label.clone(),
+                chapter: m.kind == rbs_manifest::MarkerKind::Scene,
+            },
+        )
+    });
+    let mut all: Vec<_> = pauses.chain(markers).collect();
+    all.sort_by_key(|(key, _)| *key);
+    all.into_iter().map(|(_, m)| m).collect()
+}
+
+/// `m:ss`, or `h:mm:ss` from an hour, whole seconds rounded down.
+fn clock_text(ns: u64) -> String {
+    let s = ns / 1_000_000_000;
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 /// A project format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -111,9 +183,20 @@ pub fn build(
     format: Format,
     title: &str,
 ) -> Result<String, ProjectError> {
+    build_with(manifest, folder, format, title, Options::default())
+}
+
+/// [`build`] with `options`.
+pub fn build_with(
+    manifest: &RecordingManifest,
+    folder: &MediaFolder,
+    format: Format,
+    title: &str,
+    options: Options,
+) -> Result<String, ProjectError> {
     match format {
-        Format::Fcpxml => fcpxml::write(manifest, folder, title),
-        Format::Xmeml => xmeml::write(manifest, folder, title),
+        Format::Fcpxml => fcpxml::write(manifest, folder, title, options),
+        Format::Xmeml => xmeml::write(manifest, folder, title, options),
     }
 }
 
@@ -135,6 +218,17 @@ pub fn export(
     manifest_name: &str,
     format: Format,
     strict: bool,
+) -> Result<Exported, ProjectError> {
+    export_with(folder, manifest_name, format, strict, Options::default())
+}
+
+/// [`export`] with `options`.
+pub fn export_with(
+    folder: &Path,
+    manifest_name: &str,
+    format: Format,
+    strict: bool,
+    options: Options,
 ) -> Result<Exported, ProjectError> {
     let media = MediaFolder::from_path(folder)?;
     let path = folder.join(manifest_name);
@@ -171,7 +265,7 @@ pub fn export(
     } else {
         stem
     };
-    let project = build(&manifest, &media, format, stem)?;
+    let project = build_with(&manifest, &media, format, stem, options)?;
     let path = fresh_path(folder, stem, format.extension());
     write_new(&path, &project)?;
     Ok(Exported { path, missing })
