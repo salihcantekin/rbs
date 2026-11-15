@@ -2035,12 +2035,27 @@ fn markers_round_trip_and_unknown_colours_are_refused() {
             canvas: OutputCanvas::Main,
             index: 1,
             t_ns: 12_500_000_000,
+            while_paused: false,
         }],
     };
     round_trip(&added);
     assert_eq!(
         serde_json::to_value(&added).unwrap(),
         json!({"markers": [{"canvas": "main", "index": 1, "t_ns": 12_500_000_000u64}]})
+    );
+    // Protocol 1.63: a marker added while paused says so.
+    let paused = MarkersAdded {
+        markers: vec![MarkerPlaced {
+            canvas: OutputCanvas::Main,
+            index: 2,
+            t_ns: 7,
+            while_paused: true,
+        }],
+    };
+    round_trip(&paused);
+    assert_eq!(
+        serde_json::to_value(&paused).unwrap()["markers"][0]["while_paused"],
+        true
     );
     assert_eq!(
         rbs_api::request::method_scope("marker.add"),
@@ -2115,18 +2130,28 @@ fn project_export_round_trips_and_the_profile_omits_an_unset_editor_project() {
     p.markers.stream_events = true;
     assert_eq!(
         serde_json::to_value(&p).unwrap()["markers"],
-        json!({"lead_ms": 1500, "scene_changes": true, "stream_events": true})
+        json!({"lead_ms": 1500, "scene_changes": true, "stream_events": true,
+            "pause_markers": true})
     );
     round_trip(&p);
+    // Protocol 1.63: pause markers, on by default; a 1.62 client's object reads with
+    // them on.
+    p.markers.pause_markers = false;
+    round_trip(&p);
+    assert_eq!(
+        serde_json::to_value(&p).unwrap()["markers"]["pause_markers"],
+        false
+    );
     let partial: rbs_api::types::RecordingMarkers =
         serde_json::from_value(json!({"scene_changes": false})).unwrap();
     assert_eq!(
         (
             partial.lead_ms,
             partial.scene_changes,
-            partial.stream_events
+            partial.stream_events,
+            partial.pause_markers
         ),
-        (0, false, false)
+        (0, false, false, true)
     );
     assert!(
         serde_json::from_value::<rbs_api::types::RecordingMarkers>(json!({"lead": 1})).is_err()

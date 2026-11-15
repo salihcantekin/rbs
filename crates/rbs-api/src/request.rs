@@ -271,8 +271,12 @@ pub struct MarkerPlaced {
     /// 1-based, in the order the recording's markers were added.
     pub index: u32,
     /// Position from the recording's start (`t0`), after the reaction-time offset, in
-    /// nanoseconds.
+    /// nanoseconds. File time: the pauses before it are left out (protocol 1.63).
     pub t_ns: u64,
+    /// Added while the recording was paused: the marker sits on that pause's join
+    /// (protocol 1.63, ADR-0124 decision 10). Absent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub while_paused: bool,
 }
 
 /// `marker.add`'s answer: one entry per recording that got the marker.

@@ -503,6 +503,13 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Refusals.** `not_found` for an unknown scene (the canvas's global scene included, which no method lists) or source; `invalid_params` for `scene.audio.set` with neither `volume` nor `muted`, a volume outside `0..=1` or not finite, or unknown keys.
 - **Older clients and servers.** A 1.47 client sees the same objects as before for a collection without Own levels; on a scene in Own levels its `volume` and `muted` remain the source's own values, which may differ from what is heard. A 1.47 server answers `method_not_found` and omits the fields. 1.47 was the loudness meter. A collection that uses Own levels is saved as scene format 17, which older builds refuse to open.
 
+### Protocol 1.63: pauses and markers (ADR-0124 decision 10)
+
+- **Marker times are file times.** Once a recording has been paused, `marker.add`'s `t_ns` (and the manifest's times) leave out the pauses before it, so they are positions in the files. A marker added while the recording is paused sits on that pause's join (the lead does not apply) and its answer entry has `while_paused: true` (absent otherwise).
+- **`pause_markers`** in a recording profile's `markers` (default `true`): the editor project written at stop has one marker per pause on its join ("Paused 2:10"). The server omits it with the other defaults; a partial object takes it as `true`. A change applies to the next recording.
+- **Older clients and servers.** A 1.62 client ignores `while_paused`; the `rbs-api` crate before 1.63 refuses a `markers` object that carries `pause_markers` (unknown key), so a client checks for 1.63 before setting it. A 1.62 server refuses it in `settings.set`.
+- **Rust crate.** `RecordingMarkers::pause_markers` and `MarkerPlaced::while_paused`; struct literals must add them.
+
 ### Protocol 1.62: marker settings (ADR-0089 decisions 3 and 4)
 
 - **`markers`** on a recording profile (`settings.get`, `settings.changed`, `settings.set`): `{lead_ms, scene_changes, stream_events}`. `lead_ms` (0 to 30 000, default 0) moves manual markers earlier (`pressed_ns` keeps the press); `scene_changes` (default `true`) adds a `scene` marker when the program scene changes; `stream_events` (default `false`) adds `stream_start` and `stream_end` markers when a stream of that canvas starts or ends during the recording (recording spec, "Automatic markers"). The server omits `markers` while every value is the default; a set may give a partial object, the rest take defaults. `invalid_params` for `lead_ms` above 30 000 or an unknown key. A change applies to the next recording.
