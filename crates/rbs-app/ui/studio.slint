@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
+import { DialogActions, HScrollArea, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -2164,6 +2164,11 @@ export component MixerPanel inherits Rectangle {
         TouchArea {
             width: parent.width;
             height: parent.height;
+            // A wheel the strips and the area do not use pans the row sideways.
+            scroll-event(e) => {
+                flick.scroll-by(-(e.delta-x != 0px ? e.delta-x : e.delta-y));
+                accept
+            }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     mixer-menu.open({
@@ -2173,14 +2178,13 @@ export component MixerPanel inherits Rectangle {
                 }
             }
         }
-        flick := Flickable {
+        flick := HScrollArea {
             width: parent.width;
             height: parent.height;
             content-width: row.preferred-width;
             // Taller than the viewport only when the viewport is shorter than a strip
             // plus its caption: then the row scrolls so the buttons can be reached.
             content-height: row.height;
-            mouse-drag-pan-enabled: false;
             // x/y: do not fill the Flickable viewport (that was spreading the strips).
             row := HorizontalLayout {
                 // Caption, the gap under it, the strip's own minimum, and the panel padding.
@@ -2188,7 +2192,7 @@ export component MixerPanel inherits Rectangle {
                 property <length> col-h: self.height - 2 * Tokens.size-panel-pad;
                 x: 0;
                 y: 0;
-                height: max(flick.height, self.col-min);
+                height: max(flick.view-height, self.col-min);
                 width: self.preferred-width;
                 padding: Tokens.size-panel-pad;
                 spacing: Tokens.size-field-gap;

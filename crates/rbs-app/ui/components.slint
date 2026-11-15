@@ -3594,6 +3594,80 @@ export component ScrollArea inherits Rectangle {
     }
 }
 
+// The horizontal scrolling surface (design system, ScrollArea): content wider than the
+// area scrolls sideways, with the same thin bar as `ScrollArea`, at the bottom edge.
+// Dragging the thumb, a press in the track (a page), the wheel through `scroll-by`
+// (the owner forwards what its own background does not use) and a trackpad pan move it.
+// The bar's room is kept only while the content overflows, so the area is exactly as
+// tall as its owner makes it; content taller than the area still scrolls down as a
+// Flickable does, without a bar (a Mixer panel shorter than one strip).
+export component HScrollArea inherits Rectangle {
+    // The content's width and height (the owner's layout's preferred size).
+    in property <length> content-width;
+    in property <length> content-height;
+    out property <length> offset: -flick.content-x;
+    // The height the content gets: the area's, less the bar while it shows.
+    out property <length> view-height: flick.height;
+    property <length> max-offset: max(0px, root.content-width - root.width);
+    property <bool> overflows: root.max-offset > 0px;
+    public function scroll-by(dx: length) {
+        flick.content-x = -clamp(root.offset + dx, 0px, root.max-offset);
+    }
+    flick := Flickable {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height - (root.overflows ? Tokens.size-scrollbar-hit : 0px);
+        content-width: max(root.content-width, self.width);
+        content-height: max(root.content-height, self.height);
+        mouse-drag-pan-enabled: false;
+        @children
+    }
+    if root.overflows: bar := Rectangle {
+        y: root.height - self.height;
+        width: root.width;
+        height: Tokens.size-scrollbar-hit;
+        property <bool> hot: track.has-hover || track.dragging;
+        property <length> thumb-w: min(self.width, max(Tokens.size-scrollbar-thumb-min, self.width * root.width / root.content-width));
+        property <length> thumb-x: (self.width - self.thumb-w) * root.offset / root.max-offset;
+        background: self.hot ? Theme.surface-overlay : transparent;
+        border-radius: self.height / 2;
+        accessible-role: none;
+        Rectangle {
+            height: bar.hot ? Tokens.size-scrollbar-thumb-hot : Tokens.size-scrollbar-thumb;
+            y: (parent.height - self.height) / 2;
+            x: bar.thumb-x;
+            width: bar.thumb-w;
+            border-radius: self.height / 2;
+            background: bar.hot ? Theme.scrollbar-thumb-hot : Theme.scrollbar-thumb;
+        }
+        track := TouchArea {
+            in-out property <bool> dragging;
+            property <length> grab-offset;
+            pointer-event(e) => {
+                if e.button != PointerEventButton.left { return; }
+                if e.kind == PointerEventKind.down {
+                    if self.mouse-x >= bar.thumb-x && self.mouse-x <= bar.thumb-x + bar.thumb-w {
+                        self.dragging = true;
+                        self.grab-offset = root.offset;
+                    } else if self.mouse-x < bar.thumb-x {
+                        root.scroll-by(-root.width);
+                    } else {
+                        root.scroll-by(root.width);
+                    }
+                } else if e.kind == PointerEventKind.up {
+                    self.dragging = false;
+                }
+            }
+            moved => {
+                if self.dragging && bar.width > bar.thumb-w {
+                    flick.content-x = -clamp(self.grab-offset + (self.mouse-x - self.pressed-x) * root.max-offset / (bar.width - bar.thumb-w), 0px, root.max-offset);
+                }
+            }
+        }
+    }
+}
+
 // The geometry and keys of a list of ListRow items on a ScrollArea (design system,
 // ListBox). Slint cannot count or place @children, so the owner writes its own `for`,
 // places row `i` at `cell-x(i)`, `cell-y(i)`, `cell-width` wide and `row-height` high,
