@@ -926,3 +926,19 @@ fn timestamps_increase_across_steps() {
     let r = run(&[(&f, true)], &clock);
     assert_eq!(results(&r), vec![("hw".to_owned(), 5, StopReason::Refused)]);
 }
+
+/// The ring is a moving picture (the owner's choice of 2026-11-15): every frame
+/// differs from the others, and it is not noise (neighbouring pixels are close).
+#[test]
+fn the_ring_is_a_moving_picture_with_different_frames() {
+    let ring = rbs_record::calibration::moving_ring(config().format, 8).unwrap();
+    assert_eq!(ring.len(), 8);
+    for i in 0..ring.len() {
+        for j in i + 1..ring.len() {
+            assert_ne!(ring[i].data(), ring[j].data(), "frames {i} and {j}");
+        }
+    }
+    let y = &ring[0].data()[..1920];
+    let steps = y.windows(2).filter(|w| w[0].abs_diff(w[1]) > 8).count();
+    assert!(steps < 64, "{steps} jumps in one row");
+}

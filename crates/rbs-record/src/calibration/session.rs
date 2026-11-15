@@ -16,14 +16,16 @@ use super::driver::Pacer;
 /// Bits of the lost-frame window: `2 × 240` judged frames plus the tail.
 const SEEN_BITS: u64 = 512;
 
-/// `RING_FRAMES` frames of deterministic noise in `format` (planar layouts with
-/// tight rows), each different. `None` when the format has no CPU layout.
-pub fn noise_ring(format: VideoFormat, frames: usize) -> Option<Arc<[SystemFrame]>> {
+/// `frames` frames of a moving picture in `format` (planar layouts with tight rows),
+/// each different: a diagonal gradient that shifts each frame and a bright block that
+/// moves across it, which costs an encoder about what a screen or a camera does (the
+/// owner's choice of 2026-11-15, ADR-0087 Review: noise cost VideoToolbox about 40 %
+/// more than any real picture). `None` when the format has no CPU layout.
+pub fn moving_ring(format: VideoFormat, frames: usize) -> Option<Arc<[SystemFrame]>> {
     let pf = format.pixel_format;
     let (width, height) = (format.size.width, format.size.height);
     let mut ring = Vec::with_capacity(frames);
-    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
-    for _ in 0..frames {
+    for f in 0..frames {
         let mut data = Vec::new();
         let mut planes = Vec::new();
         for plane in 0..pf.plane_count() {
@@ -34,12 +36,19 @@ pub fn noise_ring(format: VideoFormat, frames: usize) -> Option<Arc<[SystemFrame
                 stride,
             });
             data.reserve(stride * rows);
-            for _ in 0..stride * rows {
-                // xorshift64: high-residual content, the conservative case.
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                data.push((state >> 24) as u8);
+            let shift = f * 24;
+            for y in 0..rows {
+                for x in 0..stride {
+                    let v = if plane > 0 {
+                        // Chroma: a gentle gradient around the middle.
+                        (112 + (x + y + shift) % 32) as u8
+                    } else if (x + shift) % stride < stride / 6 && y > rows / 3 && y < rows / 2 {
+                        235
+                    } else {
+                        ((x + y + shift) % 220 + 16) as u8
+                    };
+                    data.push(v);
+                }
             }
         }
         ring.push(SystemFrame::new(format, Bytes::from(data), &planes).ok()?);

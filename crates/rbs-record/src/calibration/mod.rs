@@ -23,7 +23,7 @@ pub use driver::{
     CalibrationEvent, CalibrationOutcome, EncoderResult, Lanes, LanesFailure, Pacer, RoundRequest,
     SeriesKey, SkipCode, Skipped, run_encoders,
 };
-pub use session::{FrameOutcome, SessionReport, SessionRunner, noise_ring};
+pub use session::{FrameOutcome, SessionReport, SessionRunner, moving_ring};
 pub use write::{
     CALIBRATION_WRITE_BYTES, FileSink, FolderResult, LEFTOVER_AGE, PARTIAL_MIN_BYTES, WriteSink,
     measure_write_speed, temp_name,

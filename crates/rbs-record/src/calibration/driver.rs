@@ -10,7 +10,7 @@ use rbs_core::media::SystemFrame;
 use rbs_core::registry::AdapterId;
 use rbs_core::time::{Clock, Timestamp};
 
-use super::session::{FrameOutcome, SessionReport, noise_ring};
+use super::session::{FrameOutcome, SessionReport, moving_ring};
 use super::{
     CALIBRATION_LIMIT, CalibrationPlan, Candidate, ClassKey, ClassPlan, FIRST_PASS,
     FRAME_TIME_ROUNDS, FRAME_TIME_SETTLE, JITTER_DEPTH, JUDGED_SECONDS, RING_FRAMES,
@@ -361,7 +361,7 @@ impl Ctx<'_> {
             version: cand.version.clone(),
             hardware: cand.hardware,
         };
-        let Some(ring) = noise_ring(class.config.format, RING_FRAMES) else {
+        let Some(ring) = moving_ring(class.config.format, RING_FRAMES) else {
             return SeriesEnd::Skip(SkipCode::OpenFailed);
         };
         let period = class.config.frame_rate.frame_duration();

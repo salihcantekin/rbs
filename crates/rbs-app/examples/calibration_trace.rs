@@ -7,8 +7,8 @@
 //! cargo run --release -p rbs-app --example calibration_trace -- [kbps]
 //! ```
 //!
-//! Contents: `noise` (the run's own ring, the conservative case), `moving` (a gradient
-//! with a moving block, closer to a screen or a camera) and `flat` (one grey frame).
+//! Contents: `moving` (the run's own ring: a gradient with a moving block, close to a
+//! screen or a camera), `noise` (high-residual noise, the worst case) and `flat` (one grey frame).
 //! Only the plan's likely encoder of the master's class is measured. `kbps` sets the
 //! master's video bit rate (the default output settings' when absent).
 
@@ -54,17 +54,18 @@ impl Pacer for RealPacer {
     }
 }
 
-/// Eight NV12-like frames of `content` (the run's ring is kept for `Noise`).
-fn ring(format: VideoFormat, content: Content, noise: &Arc<[SystemFrame]>) -> Arc<[SystemFrame]> {
+/// Eight frames of `content` (the run's ring is kept for `Moving`).
+fn ring(format: VideoFormat, content: Content, run: &Arc<[SystemFrame]>) -> Arc<[SystemFrame]> {
     let (w, h) = (format.size.width, format.size.height);
     let pf = format.pixel_format;
     let frames = match content {
-        Content::Noise => return Arc::clone(noise),
+        Content::Moving => return Arc::clone(run),
         Content::Flat => 1,
-        Content::Moving => 8,
+        Content::Noise => 8,
     };
     let mut out = Vec::new();
-    for f in 0..frames {
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    for _ in 0..frames {
         let mut data = Vec::new();
         let mut planes = Vec::new();
         for plane in 0..pf.plane_count() {
@@ -74,24 +75,16 @@ fn ring(format: VideoFormat, content: Content, noise: &Arc<[SystemFrame]>) -> Ar
                 offset: data.len(),
                 stride,
             });
-            for y in 0..rows {
-                for x in 0..stride {
-                    let v = match content {
-                        Content::Flat => 128u8,
-                        _ if plane > 0 => 128,
-                        _ => {
-                            let shift = f * 24;
-                            let in_block =
-                                (x + shift) % stride < 320 && y > rows / 3 && y < rows / 2;
-                            if in_block {
-                                235
-                            } else {
-                                ((x + y + shift) % 220 + 16) as u8
-                            }
-                        }
-                    };
-                    data.push(v);
-                }
+            for _ in 0..rows * stride {
+                let v = if matches!(content, Content::Flat) {
+                    128u8
+                } else {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state >> 24) as u8
+                };
+                data.push(v);
             }
         }
         out.push(SystemFrame::new(format, Bytes::from(data), &planes).expect("a frame"));
@@ -233,10 +226,10 @@ impl Lanes for TraceLanes {
         lane: usize,
         factory: &Arc<dyn VideoEncoderFactory>,
         config: &VideoEncoderConfig,
-        noise: &Arc<[SystemFrame]>,
+        run_ring: &Arc<[SystemFrame]>,
     ) -> Result<Result<(), CreateError>, LanesFailure> {
         self.print_step();
-        let ring = ring(config.format, self.content, noise);
+        let ring = ring(config.format, self.content, run_ring);
         let l = self.lanes.get_mut(lane).ok_or(LanesFailure)?;
         l.tx.send(Req::Open(
             Arc::clone(factory),
@@ -380,7 +373,7 @@ fn main() {
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
     let pacer: Arc<dyn Pacer> = Arc::new(RealPacer(Arc::clone(&clock)));
     let period = FrameRate::FPS_60.frame_duration();
-    for content in [Content::Noise, Content::Moving, Content::Flat] {
+    for content in [Content::Moving, Content::Noise, Content::Flat] {
         println!("== {content:?}");
         let mut lanes = TraceLanes::new(&clock, &pacer, content, period);
         let stop = AtomicBool::new(false);
