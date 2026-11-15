@@ -75,6 +75,21 @@ fn video_requirement(config: &VideoEncoderConfig) -> Requirement {
         )
 }
 
+/// True when the video encoder adapter `id` declares `codec.reconfigure: keyframe`:
+/// it honours a keyframe request (ADR-0124 decision 7).
+pub(crate) fn declares_keyframe(
+    registry: &Registry<dyn VideoEncoderFactory>,
+    id: &AdapterId,
+) -> bool {
+    matches!(
+        registry
+            .capabilities(id)
+            .and_then(|c| c.get(&rbs_codec::caps::RECONFIGURE)),
+        Some(rbs_core::capability::CapabilityValue::Set(values))
+            if values.iter().any(|v| v == rbs_codec::caps::RECONFIGURE_KEYFRAME)
+    )
+}
+
 /// True when `adapter` is a candidate of a video encoder selection for `config`: the
 /// registry holds it and it meets the requirement (a running encoder of that adapter
 /// may then serve another output, ADR-0047).

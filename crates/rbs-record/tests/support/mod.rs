@@ -91,6 +91,8 @@ pub struct FakeVideoFactory {
     configs: Arc<Mutex<Option<VideoEncoderConfig>>>,
     /// Sessions created.
     sessions: Arc<AtomicU64>,
+    /// Declares `codec.reconfigure: keyframe` and honours a keyframe request.
+    keyframe: bool,
 }
 
 impl AdapterFactory for FakeVideoFactory {
@@ -101,10 +103,15 @@ impl AdapterFactory for FakeVideoFactory {
         self.id
     }
     fn probe(&self) -> Result<CapabilitySet, ProbeError> {
-        Ok(CapabilitySet::new()
+        let caps = CapabilitySet::new()
             .with(codec_caps::VIDEO_ENCODE, set(&["h264"]))
             .with(codec_caps::INPUT_MEMORY, set(&["system"]))
-            .with(codec_caps::INPUT_PIXEL_FORMAT, set(&["nv12"])))
+            .with(codec_caps::INPUT_PIXEL_FORMAT, set(&["nv12"]));
+        Ok(if self.keyframe {
+            caps.with(codec_caps::RECONFIGURE, set(&["keyframe"]))
+        } else {
+            caps
+        })
     }
 }
 
@@ -133,6 +140,7 @@ impl VideoEncoderFactory for FakeVideoFactory {
             pending: Vec::with_capacity(64),
             count: 0,
             submitted: Arc::clone(&self.submitted),
+            force: false,
         }))
     }
 }
@@ -143,6 +151,8 @@ pub struct FakeVideo {
     pending: Vec<EncodedPacket>,
     count: u64,
     submitted: Arc<AtomicU64>,
+    /// A keyframe was asked for: the next frame is one.
+    force: bool,
 }
 
 impl VideoEncoder for FakeVideo {
@@ -159,7 +169,7 @@ impl VideoEncoder for FakeVideo {
             BitstreamFormat::AnnexB,
             t,
             t,
-            self.count.is_multiple_of(30),
+            self.count.is_multiple_of(30) || std::mem::take(&mut self.force),
             Bytes::from_static(b"frame"),
         )
         .unwrap();
@@ -172,7 +182,10 @@ impl VideoEncoder for FakeVideo {
         out.append(&mut self.pending);
         Ok(())
     }
-    fn reconfigure(&mut self, _: &EncoderChange) -> Result<(), EncodeError> {
+    fn reconfigure(&mut self, change: &EncoderChange) -> Result<(), EncodeError> {
+        if matches!(change, EncoderChange::RequestKeyframe) {
+            self.force = true;
+        }
         Ok(())
     }
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
@@ -414,6 +427,15 @@ pub struct Rig {
 }
 
 pub fn rig() -> Rig {
+    rig_with(false)
+}
+
+/// [`rig`] with a video encoder that makes a keyframe on request (ADR-0124).
+pub fn rig_with_keyframes() -> Rig {
+    rig_with(true)
+}
+
+fn rig_with(keyframe: bool) -> Rig {
     let log = Arc::new(Log::default());
     let stream_log = Arc::new(Log::default());
     let video_sessions = Arc::new(AtomicU64::new(0));
@@ -432,6 +454,7 @@ pub fn rig() -> Rig {
                 submitted: Arc::clone(&submitted),
                 configs: Arc::clone(&video_config),
                 sessions: Arc::clone(&video_sessions),
+                keyframe,
             }))
             .unwrap();
     }

@@ -8,9 +8,11 @@
 //! [`Studio::resume_output`] closes it the same way, and asks the video encoder for a
 //! keyframe at the join. A resume before the pause began cancels it.
 //!
-//! This first step pauses a recording whose encoders are its own. A recording that
-//! shares an encoder with another output is refused with
-//! [`PauseRefused::SharedEncoder`] until the cut at the output node is built.
+//! A chain the recording uses alone is cut before its encoder (the export and the
+//! audio encoder node follow the chain's window). A chain it shares with another
+//! output is cut at the recording's output node ([`OutputCut`]), and its video
+//! encoder is asked for a keyframe at the join in master time; an adapter that
+//! cannot make one refuses the pause ([`PauseRefused::KeyframeUnsupported`]).
 //! Separate files started with [`IsoVideoStart::pause_with`](super::IsoVideoStart::pause_with)
 //! or [`IsoAudioStart::pause_with`](super::IsoAudioStart::pause_with) naming the
 //! recording follow the same window: their exports, audio encoders and image tracks
@@ -20,6 +22,7 @@
 use std::fmt;
 
 use rbs_core::pause::{PauseError, Window};
+use rbs_nodes::output_cut::OutputCut;
 
 use super::*;
 
@@ -36,8 +39,10 @@ pub enum PauseRefused {
     /// The output was not started [`OutputSettings::pausable`] (a stream, the replay
     /// buffer).
     NotPausable,
-    /// The recording shares its video or audio encoder with another output.
-    SharedEncoder,
+    /// The recording shares its video encoder with another output, and that
+    /// encoder's adapter does not declare `codec.reconfigure: keyframe`: the file
+    /// could not resume at the join (ADR-0124 decision 4).
+    KeyframeUnsupported,
     /// Separate video or audio files run that were not started with this recording
     /// ([`IsoVideoStart::pause_with`](super::IsoVideoStart::pause_with)), so they
     /// would not pause with it.
@@ -55,7 +60,9 @@ impl fmt::Display for PauseRefused {
         f.write_str(match self {
             Self::NotRunning => "the output does not run",
             Self::NotPausable => "the output cannot be paused",
-            Self::SharedEncoder => "the recording shares an encoder with another output",
+            Self::KeyframeUnsupported => {
+                "the recording shares a video encoder that cannot make a keyframe on request"
+            }
             Self::SeparateFiles => "separate files run that do not belong to this recording",
             Self::Ending => "the output is ending",
             Self::AlreadyPaused => "the recording is already paused",
@@ -107,51 +114,120 @@ impl From<PauseError> for PauseRefused {
     }
 }
 
+/// Where one pause of a recording was written (ADR-0124 decision 4): a chain the
+/// recording uses alone is cut before its encoder, a shared one at the output node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Targets {
+    video_chain: bool,
+    audio_chain: bool,
+    /// Bit per output stream cut at the output node.
+    output_mask: u64,
+}
+
+/// How a pause of one running recording is applied, worked out before anything is
+/// written.
+struct Plan {
+    pause: Arc<PauseWindow>,
+    targets: Targets,
+    video_chain: Option<usize>,
+    audio_chain: Option<usize>,
+    cut: Option<Arc<OutputCut>>,
+}
+
 impl Studio {
     /// Pauses a running recording (ADR-0124): from a render tick at least two render
-    /// periods ahead, nothing reaches its file until [`Studio::resume_output`], and
-    /// what follows continues the file with no gap. The encoder sessions stay open.
-    /// Returns the instant the pause begins, on the master clock.
+    /// periods ahead, nothing reaches its files until [`Studio::resume_output`], and
+    /// what follows continues them with no gap. The encoder sessions stay open. A
+    /// chain the recording uses alone is cut before its encoder; one it shares with
+    /// another output (a stream) is cut at the recording's output node, which needs
+    /// that encoder to honour keyframe requests. Returns the instant the pause
+    /// begins, on the master clock.
     pub fn pause_output(&mut self, id: OutputId) -> Result<Timestamp, PauseRefused> {
         let at = self.next_pause_instant();
-        let pause = self.own_pause(id)?;
-        pause.pause(at.as_nanos())?;
-        if let Some(r) = self.attached(id)
-            && let Some(c) = r.video.and_then(|v| self.chains.video[v].as_ref())
+        let plan = self.plan_pause(id)?;
+        plan.pause.pause(at.as_nanos())?;
+        // The recording's window took it: the chains and the cut follow it, so they
+        // are never paused while it is not.
+        let n = at.as_nanos();
+        if plan.targets.video_chain
+            && let Some(c) = plan.video_chain.and_then(|v| self.chains.video[v].as_ref())
         {
+            if let Some(w) = &c.pause {
+                let _ = w.pause(n);
+            }
             c.end.wake_at(at);
+        }
+        if plan.targets.audio_chain
+            && let Some(w) = plan
+                .audio_chain
+                .and_then(|a| self.chains.audio[a].as_ref())
+                .and_then(|c| c.pause.as_ref())
+        {
+            let _ = w.pause(n);
+        }
+        if plan.targets.output_mask != 0
+            && let Some(cut) = &plan.cut
+        {
+            let _ = cut.pause(n, plan.targets.output_mask);
         }
         if let Some(v) = &self.iso_video {
             for end in &v.ends {
                 end.wake_at(at);
             }
         }
+        if let Some(r) = self.outputs.iter_mut().find(|r| r.id == id) {
+            r.paused_at = plan.targets;
+        }
         Ok(at)
     }
 
     /// Resumes a paused recording from a render tick at least two render periods
-    /// ahead, and asks its video encoder for a keyframe at the join. A resume before
+    /// ahead, and asks its video encoders for a keyframe at the join. A resume before
     /// the pause began cancels it: nothing is left out. Returns the instant the
     /// recording continues from, on the master clock.
     pub fn resume_output(&mut self, id: OutputId) -> Result<Timestamp, PauseRefused> {
         let at = self.next_pause_instant();
-        let pause = self.own_pause(id)?;
+        let r = self.attached(id).ok_or(PauseRefused::NotRunning)?;
+        if r.ended.is_some() {
+            return Err(PauseRefused::Ending);
+        }
+        let pause = r.pause.clone().ok_or(PauseRefused::NotPausable)?;
+        let (targets, video, audio, cut) = (r.paused_at, r.video, r.audio, r.cut.clone());
         let w = pause.resume(at.as_nanos())?;
-        if w.pause_at != u64::MAX
-            && let Some(v) = &self.iso_video
+        let n = at.as_nanos();
+        let resumed = w.pause_at != u64::MAX;
+        if let Some(c) = video.and_then(|v| self.chains.video[v].as_ref()) {
+            if targets.video_chain
+                && let Some(window) = &c.pause
+                && let Ok(cw) = window.resume(n)
+                && cw.pause_at != u64::MAX
+            {
+                // The first frame after the join is stamped at the pause's start in
+                // file time (ADR-0124 decision 7).
+                c.keyframes
+                    .request(Timestamp::from_nanos(cw.pause_at - cw.before));
+            }
+            if targets.output_mask & 1 != 0 && resumed {
+                // A shared encoder sees master time: the join keyframe at `resume_at`.
+                c.keyframes.request(at);
+            }
+        }
+        if targets.audio_chain
+            && let Some(window) = audio
+                .and_then(|a| self.chains.audio[a].as_ref())
+                .and_then(|c| c.pause.as_ref())
         {
+            let _ = window.resume(n);
+        }
+        if targets.output_mask != 0
+            && let Some(cut) = &cut
+        {
+            let _ = cut.resume(n);
+        }
+        if resumed && let Some(v) = &self.iso_video {
             for keyframes in &v.keyframes {
                 keyframes.request(Timestamp::from_nanos(w.pause_at - w.before));
             }
-        }
-        if w.pause_at != u64::MAX
-            && let Some(r) = self.attached(id)
-            && let Some(c) = r.video.and_then(|v| self.chains.video[v].as_ref())
-            && let Some(keyframes) = &c.keyframes
-        {
-            // The first frame after the join is stamped at the pause's start in file
-            // time (ADR-0124 decision 7).
-            keyframes.request(Timestamp::from_nanos(w.pause_at - w.before));
         }
         Ok(at)
     }
@@ -188,8 +264,8 @@ impl Studio {
         ticks.time_of(ticks.index_at_or_before(now).unwrap_or(0) + LEAD_TICKS)
     }
 
-    /// The pause window of a running, pausable output whose chains are its own.
-    fn own_pause(&self, id: OutputId) -> Result<Arc<PauseWindow>, PauseRefused> {
+    /// Where a pause of `id` goes, refusing what cannot be paused.
+    fn plan_pause(&self, id: OutputId) -> Result<Plan, PauseRefused> {
         let r = self.attached(id).ok_or(PauseRefused::NotRunning)?;
         if r.ended.is_some() {
             return Err(PauseRefused::Ending);
@@ -207,30 +283,43 @@ impl Studio {
         {
             return Err(PauseRefused::SeparateFiles);
         }
-        let users = |video: bool, slot: usize| {
+        let alone = |video: bool, slot: usize| {
             self.outputs
                 .iter()
                 .filter(|o| (if video { o.video } else { o.audio }) == Some(slot))
                 .count()
+                == 1
         };
+        let mut targets = Targets::default();
+        // Stream 0 is video when there is video; audio follows it.
         if let Some(v) = r.video {
-            let own = self.chains.video[v]
+            let c = self.chains.video[v]
                 .as_ref()
-                .and_then(|c| c.pause.as_ref())
-                .is_some_and(|p| Arc::ptr_eq(p, pause));
-            if !own || users(true, v) != 1 {
-                return Err(PauseRefused::SharedEncoder);
+                .ok_or(PauseRefused::NotRunning)?;
+            if c.pause.is_some() && alone(true, v) {
+                targets.video_chain = true;
+            } else if c.keyframe_capable {
+                targets.output_mask |= 1;
+            } else {
+                return Err(PauseRefused::KeyframeUnsupported);
             }
         }
         if let Some(a) = r.audio {
-            let own = self.chains.audio[a]
+            let c = self.chains.audio[a]
                 .as_ref()
-                .and_then(|c| c.pause.as_ref())
-                .is_some_and(|p| Arc::ptr_eq(p, pause));
-            if !own || users(false, a) != 1 {
-                return Err(PauseRefused::SharedEncoder);
+                .ok_or(PauseRefused::NotRunning)?;
+            if c.pause.is_some() && alone(false, a) {
+                targets.audio_chain = true;
+            } else {
+                targets.output_mask |= 1 << u32::from(r.video.is_some());
             }
         }
-        Ok(Arc::clone(pause))
+        Ok(Plan {
+            pause: Arc::clone(pause),
+            targets,
+            video_chain: r.video,
+            audio_chain: r.audio,
+            cut: r.cut.clone(),
+        })
     }
 }

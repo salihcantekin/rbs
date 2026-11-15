@@ -88,7 +88,7 @@ fn streams() -> Vec<StreamDescriptor> {
     ]
 }
 
-fn rig(track: bool) -> Rig {
+fn rig(track: bool, cut: bool) -> Rig {
     let mut rig = Rig::new();
     let feed = rig.add(Box::new(Feed {
         desc: NodeDescriptor::new(
@@ -108,10 +108,13 @@ fn rig(track: bool) -> Rig {
         Arc::new(FakeTransportFactory(tx)),
         TransportConfig::new("rtmp://never.invalid/x", TransportInput::Packets),
     );
-    let output = if track {
-        rig.add(Box::new(output.track_span()))
-    } else {
-        rig.add(Box::new(output))
+    // `cut`: a pausable recording never paused (ADR-0124), the gate's run path.
+    let window = Arc::new(rbs_nodes::output_cut::OutputCut::default());
+    let output = match (track, cut) {
+        (true, false) => rig.add(Box::new(output.track_span())),
+        (true, true) => rig.add(Box::new(output.track_span().with_cut(window))),
+        (false, true) => rig.add(Box::new(output.with_cut(window))),
+        (false, false) => rig.add(Box::new(output)),
     };
     for i in 0..2 {
         rig.graph
@@ -126,8 +129,13 @@ fn rig(track: bool) -> Rig {
 
 fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("output_tick");
-    for (name, track) in [("plain", false), ("tracked", true)] {
-        let mut r = rig(track);
+    for (name, track, cut) in [
+        ("plain", false, false),
+        ("tracked", true, false),
+        ("pausable", false, true),
+        ("pausable_tracked", true, true),
+    ] {
+        let mut r = rig(track, cut);
         group.bench_function(name, |b| {
             b.iter(|| {
                 r.tick();
