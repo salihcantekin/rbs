@@ -1104,6 +1104,41 @@ pub struct RecordStart {
     /// has them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iso: Option<bool>,
+    /// The caller accepts a `heavy` plan (protocol 1.54, ADR-0087 decision 6). Absent
+    /// or `null` is `false`; with this or `on_hardware_limit` set, the start gate may
+    /// refuse the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledge_heavy: Option<bool>,
+    /// What to do with separate video files past their encoder's capacity (protocol
+    /// 1.54). Absent or `null` uses the profile's `recording.iso.on_hardware_limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_hardware_limit: Option<HardwareLimitPolicy>,
+}
+
+impl RecordStart {
+    /// A start of `profile` on the main canvas, every other field absent.
+    pub fn new(profile: impl Into<String>) -> Self {
+        Self {
+            profile: profile.into(),
+            canvas: None,
+            iso: None,
+            acknowledge_heavy: None,
+            on_hardware_limit: None,
+        }
+    }
+}
+
+/// `record.start`'s `on_hardware_limit` (protocol 1.54, ADR-0087 decision 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareLimitPolicy {
+    /// Refuse the start and say which files do not fit.
+    Ask,
+    /// Start without the files that do not fit.
+    Skip,
+    /// Encode the files that do not fit on the CPU (refused until the CPU encoder for
+    /// separate files exists, ADR-0119 step (c)).
+    Cpu,
 }
 
 /// `record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every

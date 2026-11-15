@@ -9,8 +9,12 @@
 //! *unknown*, a [`Level`], and how many separate video and audio tracks fit
 //! ([`MaxTracks`]). Nothing here runs unless the caller asks (P13).
 
+mod gate;
 mod probe;
 
+pub use gate::{
+    GateDecision, GatePolicy, GateRefusal, GateRequest, LimitCause, gate, separate_video_bound,
+};
 pub use probe::{CACHE_FOR, DiskProbe, FreeSpace, PROBE_TIMEOUT, ReadFreeSpace};
 
 use std::time::Duration;
@@ -1003,7 +1007,7 @@ fn worst(rows: &[Row]) -> (Level, Vec<Resource>) {
 }
 
 /// The resources that grow with the separate tracks of one kind.
-fn grows_with(resource: Resource, video: bool) -> bool {
+pub(crate) fn grows_with(resource: Resource, video: bool) -> bool {
     match resource {
         Resource::DiskSpeed | Resource::IsoCeiling => true,
         Resource::EncoderSessions

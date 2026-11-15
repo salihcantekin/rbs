@@ -88,6 +88,20 @@ pub struct IsoVideoStart {
     /// Skips a marked source that has no picture yet ([`IsoSkip::NoPicture`]) instead
     /// of refusing the start with [`IsoError::NoPicture`].
     pub skip_no_picture: bool,
+    /// Only these sources may open a video file (ADR-0087 decision 7, a start's gate
+    /// with the new parameters): the others are skipped ([`IsoSkip::Limit`]) and a
+    /// kept source without a picture leaves its slot empty. `None`: every marked
+    /// source is a candidate, in source id order, and one without a picture leaves
+    /// its slot to the next ([`IsoVideoStart::max_video`] still applies).
+    pub keep: Option<Vec<SourceId>>,
+    /// A file whose encoder the selection would take from hardware never falls to a
+    /// software candidate (ADR-0087 decision 5): when every hardware candidate
+    /// refuses, the selection stops there.
+    pub stop_before_software: bool,
+    /// A file whose encoder cannot open is skipped ([`IsoSkip::EncoderRefused`] or
+    /// [`IsoSkip::SoftwareStopped`]) and the others open, instead of the whole set
+    /// failing.
+    pub skip_unopened: bool,
 }
 
 impl IsoVideoStart {
@@ -107,6 +121,9 @@ impl IsoVideoStart {
             t0: Timestamp::ZERO,
             max_video: crate::iso::MAX_ISO_VIDEO,
             skip_no_picture: false,
+            keep: None,
+            stop_before_software: false,
+            skip_unopened: false,
         }
     }
 }
@@ -180,6 +197,13 @@ pub enum IsoSkip {
     Limit,
     /// No picture yet, with [`IsoVideoStart::skip_no_picture`].
     NoPicture,
+    /// Every encoder candidate refused a session, with
+    /// [`IsoVideoStart::skip_unopened`].
+    EncoderRefused,
+    /// Every hardware candidate refused and the selection stopped before a software
+    /// one ([`IsoVideoStart::stop_before_software`], ADR-0087 decision 5), with
+    /// [`IsoVideoStart::skip_unopened`].
+    SoftwareStopped,
 }
 
 pub(super) struct IsoVideoRun {
@@ -340,8 +364,12 @@ impl super::Studio {
                 return Err(no_picture());
             };
             // In source id order: the first `max_video` that can open are kept
-            // (ADR-0087 decision 5).
-            if taps.len() >= start.max_video {
+            // (ADR-0087 decision 5), only among `keep` when the gate named them.
+            let outside_keep = start
+                .keep
+                .as_ref()
+                .is_some_and(|keep| !keep.contains(&track.source));
+            if outside_keep || taps.len() >= start.max_video {
                 skipped.push(IsoSkipped {
                     source: track.source,
                     role: IsoRole::Video,
@@ -397,7 +425,8 @@ impl super::Studio {
             .collect();
         let mut chains = Vec::with_capacity(taps.len());
         let mut encodes = Vec::with_capacity(taps.len());
-        for tap in &taps {
+        let mut opened_taps = Vec::with_capacity(taps.len());
+        for tap in taps {
             let size = even(tap.picture);
             let export = VideoExportNode::with_tone(
                 start.video.format,
@@ -412,7 +441,26 @@ impl super::Studio {
             .yield_to(masters.clone(), hold)
             .every_tick();
             let config = super::video_encoder_config(&start.video, export.frame_format(), self.fps);
-            let (encoder, chosen) = select::video_encoder(&adapters.video_encoders, &config)?;
+            let (encoder, chosen) = match select::iso_video_encoder(
+                &adapters.video_encoders,
+                &config,
+                start.stop_before_software,
+            ) {
+                Ok(opened) => opened,
+                Err((_, stopped)) if start.skip_unopened => {
+                    skipped.push(IsoSkipped {
+                        source: tap.source,
+                        role: IsoRole::Video,
+                        reason: if stopped {
+                            IsoSkip::SoftwareStopped
+                        } else {
+                            IsoSkip::EncoderRefused
+                        },
+                    });
+                    continue;
+                }
+                Err((e, _)) => return Err(e),
+            };
             let fps = 1.0 / self.fps.frame_duration().as_secs_f64();
             let mut e = self.encode_of(
                 adapters,
@@ -429,6 +477,16 @@ impl super::Studio {
             e.export_buffers = rbs_gpu::download::DOWNLOAD_BUFFERS as u32;
             encodes.push(e);
             chains.push((export, encoder, size));
+            opened_taps.push(tap);
+        }
+        let taps = opened_taps;
+        if taps.is_empty() && image_taps.is_empty() {
+            skipped.sort_by_key(|s| s.source);
+            return Ok(IsoVideoStarted {
+                tracks: Vec::new(),
+                images: Vec::new(),
+                skipped,
+            });
         }
         let sinks = if taps.is_empty() {
             None

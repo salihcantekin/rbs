@@ -12,8 +12,9 @@ Say before a start what it will cost on this computer, which resource sets the l
 | --- | --- | --- |
 | `estimate()`, `EstimatePlan`, `Limits`, `Estimate` | `rbs-record` (`estimate`) | Pure: no clock read, no OS call, no thread, no adapter. Tested with synthetic plans |
 | `Studio::start_plan`, `Studio::separate_video_plan` | `rbs-record` (`studio::estimate_plan`) | The plan of a start next to what runs, and the adapters' declared capabilities; reads state only, opens nothing |
-| `record.estimate` and the host's limits | `rbs-app` (`studio_host`) | Control API 1.53; `calibration.toml` and the disk probe keyed on the profile's recording folder |
-| `separate_video_limit` in the host | `rbs-app` (`studio_host`) | The desktop app's and the API's picture files (1.52) |
+| `record.estimate` and the host's limits | `rbs-app` (`studio_host`) | Control API 1.53 (the gate 1.54); `calibration.toml` and the disk probe keyed on the profile's recording folder |
+| `separate_video_bound`, `gate` (`GateRequest`, `GatePolicy`, `GateDecision`, `GateRefusal`, `LimitCause`) | `rbs-record` (`estimate::gate`) | Pure: the start gate of control API 1.54 over a plan and limits |
+| The start gate in the host | `rbs-app` (`studio_host`) | Decided once before the take folder is made; the desktop buttons are older requests until step F |
 | `DiskProbe` (free space per folder, short-lived thread, cache) | `rbs-record` (`estimate`) | Takes the caller's master-clock time and a `ReadFreeSpace` function (`rbs-system-probe` in the app, a fake in tests) |
 | `calibration.toml` (`CalibrationFile`, `load`, `save`, `for_estimate`, `prune`) | `rbs-app` (`calibration_file`) | Beside `app.toml`, outside the `UserData` library |
 | Calibration run | later step | ADR-0087 decision 4 |
@@ -110,6 +111,16 @@ Each separate track lists what it adds per resource: a video track one session, 
 - It is `max_video.count` when what an encoder can take is known.
 - While `encoder_sessions` or `cpu_load` is among `max_video.unknown` (a hardware encoder whose session limit is neither measured nor declared, or a software encoder whose load is not measured), it is at most `UNKNOWN_SESSIONS_VIDEO_LIMIT` (3), and 3 when the count is `None`: the owner's choice of 2026-11-14 (ADR-0087 Review). Three 1080p60 files kept the master whole on an M4 Pro with its hardware encoder; four did not.
 - A measured or declared session limit decides, above or below 3.
+- `separate_video_bound(plan, estimate)` returns the same number with its cause: `Encoder` (the cap of 3, or `encoder_sessions`, `encoder_throughput`, `cpu_load`), `Resource` (another growing resource) or `NoEncoder` (the plan has no video template: no encoder can take a file). The start gate (control API 1.54) refuses or skips by cause.
+
+## The start gate
+
+`gate(plan, limits, marked, request)` decides which marked video sources (source id order) open a file, once, before the take folder is made (control-api "Protocol 1.54", ADR-0087 decisions 5 to 7). It never looks at `disk_space` (`Estimate::gate_level`).
+
+- `GateRequest::Asked { acknowledge_heavy, policy }`: extra files with cause `Encoder` are skipped under `Skip`, refused under `Ask` (`HardwareLimit`); cause `Resource` the same with `OverLimit`; cause `NoEncoder` is refused (`OverLimit`) under both. The kept plan then refuses at gate level `over` (`OverLimit`) and at `heavy` without `acknowledge_heavy` (`Heavy`). `keep` is the exact list of sources that may open.
+- `GateRequest::Older`: never refused. Extra files are skipped; with `NoEncoder` every file. Then, per row (resource, scope) that grows with the files, while it is `heavy` or `over` with the kept files and was neither with none, the last kept file is skipped. `count` is how many files open, a later source taking the slot of one without a picture.
+- The decision carries the estimate of the kept plan, and for a refusal the plan that was judged and the files concerned.
+
 - Until the calibration (step D) no encoder entry is measured, and no adapter in the tree declares `codec.sessions.max`, so every computer gets 3 today. The Settings card still shows the fixed 3 (`SEPARATE_VIDEO_LIMIT`); the live number comes with the UI step.
 
 ## Disk probe
@@ -164,7 +175,7 @@ Nothing runs unless the caller asks. The function is called by the control threa
 
 ## Later steps
 
-- C: the desktop app's and the API's picture files take their limit from the estimate (C1, done); `calibration.toml` read at app start, the disk probe in the host, the plan of a whole start and `record.estimate` (C2a, control API 1.53, done). Next (C2b, a later minor): the start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, the per-file open rules and the manifest's `[[skipped]]`.
+- C: the desktop app's and the API's picture files take their limit from the estimate (C1, done); `calibration.toml` read at app start, the disk probe in the host, the plan of a whole start and `record.estimate` (C2a, control API 1.53, done). The start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, the per-file open rules and the manifest's `[[skipped]]` (C2b, control API 1.54, done).
 - D: *Test this computer* (`calibration.run`, `calibration.cancel`, `calibration.status`, topic `calibration.state`).
 - E: the render partition's previous-tick time published for the estimate (hot path: measurements and sign-off).
 - F: the meter, the sentence, the button and the start confirmation in the desktop app.

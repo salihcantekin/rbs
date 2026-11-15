@@ -183,7 +183,7 @@ fn error_body(id: &Value, error: &ApiError) -> Value {
         "error": {
             "code": error.kind.code(),
             "message": error.message,
-            "data": { "kind": error.kind.name() },
+            "data": error.wire_data(),
         },
     })
 }

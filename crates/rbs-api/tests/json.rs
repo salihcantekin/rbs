@@ -358,16 +358,22 @@ fn every_request() -> Vec<Request> {
             profile: "default".into(),
             canvas: None,
             iso: Some(false),
+            acknowledge_heavy: Some(true),
+            on_hardware_limit: Some(HardwareLimitPolicy::Skip),
         })),
         c(Command::RecordStart(RecordStart {
             profile: "default".into(),
             canvas: Some(OutputTarget::Vertical),
             iso: None,
+            acknowledge_heavy: None,
+            on_hardware_limit: None,
         })),
         c(Command::RecordEstimate(RecordStart {
             profile: "default".into(),
             canvas: Some(OutputTarget::All),
             iso: None,
+            acknowledge_heavy: None,
+            on_hardware_limit: None,
         })),
         c(Command::RecordStartToFile(RecordStartToFile {
             profile: "default".into(),
@@ -1115,6 +1121,8 @@ fn output_methods_take_an_optional_canvas() {
             profile: "default".into(),
             canvas: Some(OutputTarget::Vertical),
             iso: None,
+            acknowledge_heavy: None,
+            on_hardware_limit: None,
         }))
     );
     // `all` (protocol 1.42) on the four start and stop methods only.
@@ -1766,6 +1774,8 @@ fn separate_files_round_trip_and_later_options_are_refused() {
             profile: "default".into(),
             canvas: None,
             iso: Some(false),
+            acknowledge_heavy: None,
+            on_hardware_limit: None,
         }))
     );
     let running = RecordState::Recording {
@@ -2028,4 +2038,97 @@ fn the_estimate_answer_writes_whole_counts_and_reads_unknown_names_as_other() {
     assert_eq!(later.resource, EstimateResource::Other);
     assert_eq!(later.unit, EstimateUnit::Other);
     assert_eq!(later.level, Some(EstimateLevel::Other));
+}
+
+#[test]
+fn a_refused_start_carries_reason_estimate_and_tracks_beside_kind() {
+    let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
+        Ok(Request::Command(c)) => Ok(c),
+        Ok(other) => panic!("{other:?}"),
+        Err(m) => Err(m.error.kind),
+    };
+    // `null` is the same as absent; `cpu` is read (the host refuses it); an unknown
+    // policy is `invalid_params`.
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"record.start","params":{"profile":"p","acknowledge_heavy":null,"on_hardware_limit":null}}"#
+        ),
+        Ok(Command::RecordStart(RecordStart::new("p")))
+    );
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"record.start","params":{"profile":"p","on_hardware_limit":"cpu"}}"#
+        ),
+        Ok(Command::RecordStart(RecordStart {
+            on_hardware_limit: Some(HardwareLimitPolicy::Cpu),
+            ..RecordStart::new("p")
+        }))
+    );
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"record.start","params":{"profile":"p","on_hardware_limit":"gpu"}}"#
+        ),
+        Err(ErrorKind::InvalidParams)
+    );
+
+    let estimate: EstimateAnswer = serde_json::from_value(json!({
+        "level": "over", "gate_level": "over", "unknown": [], "resources": [],
+        "reasons": [], "tracks": [],
+        "max_tracks": {
+            "video": {"count": 3, "limit": "encoder_sessions", "partial": false, "unknown": []},
+            "audio": {"count": 32, "limit": "iso_ceiling", "partial": false, "unknown": []}
+        }
+    }))
+    .unwrap();
+    let refusal = StartRefusal {
+        reason: RefusalReason::HardwareLimit,
+        estimate,
+        tracks: vec![EstimateTrack {
+            source: 4,
+            role: TrackRole::Video,
+        }],
+    };
+    let error = refusal
+        .clone()
+        .into_error("4 video files, the encoder takes 3");
+    assert_eq!(error.kind, ErrorKind::Failed);
+    assert_eq!(StartRefusal::from_error(&error), Some(refusal));
+    let wire: Value = serde_json::from_str(
+        &JsonCodec.encode_response(Some(&RequestId::Number(1)), &Err(error.clone())),
+    )
+    .unwrap();
+    assert_eq!(wire["error"]["code"], json!(-32040));
+    assert_eq!(wire["error"]["data"]["kind"], json!("failed"));
+    assert_eq!(wire["error"]["data"]["reason"], json!("hardware_limit"));
+    assert_eq!(
+        wire["error"]["data"]["tracks"],
+        json!([{"source": 4, "role": "video"}])
+    );
+    assert_eq!(
+        wire["error"]["data"]["estimate"]["max_tracks"]["video"]["count"],
+        json!(3)
+    );
+
+    // A `kind` member never overrides the error's kind.
+    let mut data = serde_json::Map::new();
+    data.insert("kind".into(), json!("not_found"));
+    data.insert("reason".into(), json!("heavy"));
+    let odd = ApiError::with_data(ErrorKind::Failed, "x", data);
+    assert_eq!(odd.wire_data()["kind"], json!("failed"));
+    // An all-canvas entry carries the same members.
+    let entry = OutputError::from(&error);
+    let entry = serde_json::to_value(&entry).unwrap();
+    assert_eq!(entry["data"]["kind"], json!("failed"));
+    assert_eq!(entry["data"]["reason"], json!("hardware_limit"));
+    round_trip(&OutputError::from(&error));
+    // An unknown reason reads as `other`.
+    assert_eq!(
+        serde_json::from_value::<RefusalReason>(json!("too_hot")).unwrap(),
+        RefusalReason::Other
+    );
+    // Errors without data stay as before.
+    assert_eq!(
+        StartRefusal::from_error(&ApiError::new(ErrorKind::Failed, "x")),
+        None
+    );
 }
