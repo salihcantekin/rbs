@@ -54,7 +54,7 @@ export component OverlayProbe inherits Window {
         selected(i) => { root.tab-index = i; }
     }
     in property <[string]> select-options;
-    out property <int> select-index: -1;
+    in-out property <int> select-index: -1;
     long-select := Select {
         x: 10px;
         y: 60px;
