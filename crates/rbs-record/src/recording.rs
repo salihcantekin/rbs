@@ -433,6 +433,7 @@ impl RecordSettings {
             // way encodes at its canvas. Studio outputs carry the size themselves.
             size: None,
             track_span: false,
+            pausable: false,
         }
     }
 }
@@ -715,6 +716,13 @@ pub struct Progress {
     pub late_audio_ticks: u64,
     /// Master peak in dBFS since the last [`Recording::progress`], when audio is recorded.
     pub master_peak_db: Option<f32>,
+    /// The output is paused now, or a pause was asked for and begins within two
+    /// render periods (ADR-0124). Always false for an output that is not pausable.
+    pub paused: bool,
+    /// Time left out by its pauses so far, an open pause counted up to now.
+    pub paused_ns: u64,
+    /// Media time it has recorded: time since its start minus `paused_ns`.
+    pub recorded_ns: u64,
 }
 
 impl Progress {

@@ -18,6 +18,7 @@ use rbs_audio_filters::{
 use rbs_codec::{EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
+use rbs_core::pause::PauseWindow;
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
@@ -31,6 +32,7 @@ use rbs_graph::runtime::queue::QueueStats;
 use rbs_graph::runtime::{FaultCause, JoinError, Node, NodeHealth, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
+use rbs_nodes::encode::KeyframeAt;
 use rbs_nodes::export::{ExportEnd, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::{
@@ -67,6 +69,7 @@ mod iso_audio;
 mod iso_video;
 mod loudness;
 mod monitor;
+mod pause;
 mod replay;
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
@@ -74,6 +77,7 @@ pub use iso_video::{
     IsoVideoTrack,
 };
 pub use monitor::MonitorState;
+pub use pause::{PauseRefused, PauseState};
 pub use replay::ReplaySettings;
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
@@ -201,6 +205,11 @@ pub struct OutputSettings {
     /// recording manifest's stop rewrite (ADR-0089 decision 6). Off: the output node
     /// runs no span code (P13) and `media` is `None`.
     pub track_span: bool,
+    /// A recording that can be paused (ADR-0124): its new export and audio encoder
+    /// follow a pause window and its video encoder takes keyframe requests. Off (a
+    /// stream, the replay buffer): none of that is built and
+    /// [`Studio::pause_output`] refuses with [`PauseRefused::NotPausable`].
+    pub pausable: bool,
 }
 
 /// Smallest side of an explicit output size (ADR-0102 decision 7).
@@ -255,6 +264,7 @@ impl OutputSettings {
             canvas: None,
             size: None,
             track_span: false,
+            pausable: false,
         }
     }
 
@@ -483,6 +493,8 @@ enum VideoPlan {
     New {
         export: Box<VideoExportNode>,
         encoder: Box<VideoEncoderNode>,
+        /// The encoder's keyframe requests, for a pausable recording (ADR-0124).
+        keyframes: Option<Arc<KeyframeAt>>,
         chosen: Chosen,
         settings: VideoSettings,
         /// Resolved output size the encoder is opened with.
@@ -495,12 +507,31 @@ enum VideoPlan {
 enum AudioPlan {
     None,
     New {
-        node: Box<EncoderNode>,
+        node: Box<dyn Node<()>>,
+        /// The node's packet losses, end-of-stream flushes and tail losses.
+        counters: AudioCounters,
         chosen: Chosen,
         settings: AudioSettings,
         stream: StreamDescriptor,
     },
     Shared(usize),
+}
+
+/// An audio encoder node's counters, kept when the node is boxed.
+struct AudioCounters {
+    dropped: Arc<AtomicU64>,
+    flushes: Arc<AtomicU64>,
+    tail_lost: Arc<AtomicU64>,
+}
+
+impl AudioCounters {
+    fn of<G: rbs_audio::AudioGate>(node: &EncoderNode<G>) -> Self {
+        Self {
+            dropped: node.dropped(),
+            flushes: node.flushes(),
+            tail_lost: node.tail_lost(),
+        }
+    }
 }
 
 /// The encoder configuration of `video` for frames of `format` at `fps`.
@@ -575,6 +606,9 @@ pub(crate) struct Prepared {
     output: OutputNodePlan,
     muxer: Option<Chosen>,
     transport: Chosen,
+    /// The recording's pause window (ADR-0124), when `pausable`; followed by its new
+    /// export and audio encoder.
+    pause: Option<Arc<PauseWindow>>,
 }
 
 impl Prepared {
@@ -596,6 +630,7 @@ impl Prepared {
             return Err(RecordError::EmptyOutput);
         }
         let mut streams = Vec::new();
+        let pause = out.pausable.then(|| Arc::new(PauseWindow::default()));
         let video = match &out.video {
             None => VideoPlan::None,
             Some(video) => {
@@ -622,6 +657,8 @@ impl Prepared {
                             && c.size == (width, height)
                             // An export asked to end takes no later canvas (ADR-0045).
                             && c.end.requested().is_none()
+                            // Nor is a chain that was ever paused (ADR-0124).
+                            && never_paused(c.pause.as_ref())
                             && select::is_video_candidate(
                                 &adapters.video_encoders,
                                 &video_config,
@@ -638,9 +675,17 @@ impl Prepared {
                         let (encoder, chosen) =
                             select::video_encoder(&adapters.video_encoders, &video_config)?;
                         streams.push(encoder.stream().clone());
+                        let (export, encoder, keyframes) = match &pause {
+                            Some(p) => {
+                                let (encoder, keyframes) = encoder.with_keyframe_requests();
+                                (export.with_pause(Arc::clone(p)), encoder, Some(keyframes))
+                            }
+                            None => (export, encoder, None),
+                        };
                         VideoPlan::New {
                             export: Box::new(export),
                             encoder: Box::new(encoder),
+                            keyframes,
                             chosen,
                             settings: video.clone(),
                             size: (width, height),
@@ -655,6 +700,7 @@ impl Prepared {
                 let shared = running.audio.iter().enumerate().find_map(|(i, c)| {
                     let c = c.as_ref()?;
                     (c.settings == *a
+                        && never_paused(c.pause.as_ref())
                         && select::is_audio_candidate(
                             &adapters.audio_encoders,
                             &config,
@@ -672,8 +718,22 @@ impl Prepared {
                             select::audio_encoder(&adapters.audio_encoders, &config)?;
                         let stream = session.stream().clone();
                         streams.push(stream.clone());
+                        let node = EncoderNode::new(session, AUDIO_ENCODER_PACKETS);
+                        let (node, counters): (Box<dyn Node<()>>, _) = match &pause {
+                            Some(p) => {
+                                let node = node
+                                    .with_pause(Arc::clone(p), audio_graph.block_frames as usize);
+                                let counters = AudioCounters::of(&node);
+                                (Box::new(node), counters)
+                            }
+                            None => {
+                                let counters = AudioCounters::of(&node);
+                                (Box::new(node), counters)
+                            }
+                        };
                         AudioPlan::New {
-                            node: Box::new(EncoderNode::new(session, AUDIO_ENCODER_PACKETS)),
+                            node,
+                            counters,
                             chosen,
                             settings: a.clone(),
                             stream,
@@ -709,8 +769,15 @@ impl Prepared {
             output,
             muxer,
             transport,
+            pause,
         })
     }
+}
+
+/// True when a running chain was never paused, so a later output may share it
+/// (ADR-0124: a chain with an open window or time left out is never shared).
+fn never_paused(pause: Option<&Arc<PauseWindow>>) -> bool {
+    pause.is_none_or(|p| p.version() == 0)
 }
 
 /// A running video export and encoder, used by one or more outputs.
@@ -730,6 +797,10 @@ struct VideoChain {
     encoder_stats: Arc<EncoderNodeStats>,
     /// The queue into the encoder's partition, found after the apply that scheduled it.
     queue: Option<Arc<QueueStats>>,
+    /// The pause window its export follows and the encoder's keyframe requests, for a
+    /// pausable recording's own chain (ADR-0124).
+    pause: Option<Arc<PauseWindow>>,
+    keyframes: Option<Arc<KeyframeAt>>,
 }
 
 /// A running audio encoder, used by one or more outputs.
@@ -743,6 +814,8 @@ struct AudioChain {
     flushes: Arc<AtomicU64>,
     tail_lost: Arc<AtomicU64>,
     queue: Option<Arc<QueueStats>>,
+    /// The pause window its encoder node follows (ADR-0124).
+    pause: Option<Arc<PauseWindow>>,
 }
 
 /// The encoder chains running, by slot (the slot picks their partitions).
@@ -815,6 +888,10 @@ struct Attached {
     /// counters survive the draining apply that removes them.
     queues: Queues,
     base: Base,
+    /// When it started, on the master clock.
+    started: Timestamp,
+    /// Its pause window, when it was started `pausable` (ADR-0124).
+    pause: Option<Arc<PauseWindow>>,
 }
 
 /// The cross-partition queues feeding an output's encoders.
@@ -2918,6 +2995,7 @@ impl Studio {
             VideoPlan::New {
                 export,
                 encoder,
+                keyframes,
                 chosen,
                 settings,
                 size,
@@ -2946,6 +3024,8 @@ impl Studio {
                 end,
                 encoder_stats,
                 queue: None,
+                pause: p.pause.clone(),
+                keyframes,
             });
         }
         let mut audio_chain = None;
@@ -2953,6 +3033,12 @@ impl Studio {
         if let (
             AudioPlan::New {
                 node,
+                counters:
+                    AudioCounters {
+                        dropped,
+                        flushes,
+                        tail_lost,
+                    },
                 chosen,
                 settings,
                 stream,
@@ -2961,8 +3047,6 @@ impl Studio {
         ) = (p.audio, new_audio)
         {
             audio_shared = false;
-            let dropped = node.dropped();
-            let (flushes, tail_lost) = (node.flushes(), node.tail_lost());
             let r = self.engine.adopt::<()>(a.partition, a.node, node);
             adopt(&mut self.engine, a, r)?;
             audio_chain = Some(AudioChain {
@@ -2974,6 +3058,7 @@ impl Studio {
                 flushes,
                 tail_lost,
                 queue: None,
+                pause: p.pause.clone(),
             });
         }
         let r = self
@@ -3039,6 +3124,8 @@ impl Studio {
                 audio: audio_queue,
             },
             base,
+            started: self.engine.clock().now(),
+            pause: p.pause,
         });
         Ok((id, nodes))
     }
@@ -3407,7 +3494,8 @@ impl Studio {
     /// (an output that joined a running encoder does not count what it encoded
     /// before). `None` when `id` does not run.
     pub fn output_progress(&self, id: OutputId) -> Option<Progress> {
-        Some(self.progress_of(self.attached(id)?))
+        let r = self.attached(id)?;
+        Some(self.with_pause_progress(r, self.progress_of(r)))
     }
 
     /// A running output's counters, as in [`Studio::output_progress`], without the
@@ -3421,7 +3509,7 @@ impl Studio {
             late_audio_ticks: self.audio_worker.as_ref().map_or(0, |w| w.late()),
             ..Progress::default()
         };
-        Some(Self::counters_of(r, workers))
+        Some(self.with_pause_progress(r, Self::counters_of(r, workers)))
     }
 
     fn progress_of(&self, r: &Attached) -> Progress {
