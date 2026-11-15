@@ -12,6 +12,7 @@
 //! and writes manifests; `rbs-project` reads them.
 
 mod markers;
+mod pauses;
 mod read;
 
 use std::fmt;
@@ -23,6 +24,7 @@ pub use markers::{
     MAX_LABEL_CHARS, MAX_MARKER_LEAD, MAX_MARKERS, Marker, MarkerColor, MarkerError, MarkerKind,
     MarkerLog, checked_label,
 };
+pub use pauses::{Pause, PauseSpans};
 pub use read::ReadError;
 
 /// The `kind` of a recording manifest.
@@ -174,6 +176,9 @@ pub struct RecordingManifest {
     /// Marked sources the take did not write, in source order (`[[skipped]]`,
     /// control API 1.54). Never in `files`.
     pub skipped: Vec<SkippedEntry>,
+    /// The pauses, in order (`[[pauses]]`, ADR-0124 decision 10). Every other time in
+    /// the manifest is in file time, with these taken out.
+    pub pauses: Vec<Pause>,
 }
 
 /// A marked source a take left without its file (`[[skipped]]`).
@@ -199,7 +204,15 @@ impl RecordingManifest {
             markers: Vec::new(),
             completion: None,
             skipped: Vec::new(),
+            pauses: Vec::new(),
         }
+    }
+
+    /// The time the pauses left out (`paused_ns`).
+    pub fn paused_ns(&self) -> u64 {
+        self.pauses
+            .iter()
+            .fold(0u64, |sum, p| sum.saturating_add(p.length_ns()))
     }
 
     /// Whether the stop rewrite happened.
@@ -228,6 +241,11 @@ impl RecordingManifest {
             for image in &mut f.images {
                 image.at_ns = image.at_ns.saturating_add(shift);
             }
+        }
+        for p in &mut self.pauses {
+            p.at_file_ns = p.at_file_ns.saturating_add(shift);
+            p.from_ns = p.from_ns.saturating_add(shift);
+            p.to_ns = p.to_ns.saturating_add(shift);
         }
     }
 
@@ -268,6 +286,9 @@ impl RecordingManifest {
             if let Some(p) = &done.picture {
                 push_picture(&mut text, p);
             }
+        }
+        if !self.pauses.is_empty() {
+            text.push_str(&format!("paused_ns = {}\n", self.paused_ns()));
         }
         for file in &self.files {
             text.push_str("\n[[files]]\n");
@@ -321,6 +342,18 @@ impl RecordingManifest {
             text.push_str(&format!("kind = \"{}\"\n", m.kind.as_str()));
             text.push_str(&format!("label = {}\n", toml_string(&m.label)));
             text.push_str(&format!("color = \"{}\"\n", m.color.as_str()));
+            if m.while_paused {
+                text.push_str("while_paused = true\n");
+            }
+        }
+        for p in &self.pauses {
+            text.push_str("\n[[pauses]]\n");
+            text.push_str(&format!("at_file_ns = {}\n", p.at_file_ns));
+            text.push_str(&format!("from_ns = {}\n", p.from_ns));
+            text.push_str(&format!("to_ns = {}\n", p.to_ns));
+            if let Some(e) = p.join_error_ns {
+                text.push_str(&format!("join_error_ns = {e}\n"));
+            }
         }
         text
     }

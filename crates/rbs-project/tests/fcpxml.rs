@@ -14,7 +14,7 @@ use rbs_manifest::{
     Completion, FileTiming, ManifestFile, MarkerColor, MarkerKind, MarkerLog, Picture,
     RecordingManifest, Sound, SourceRef,
 };
-use rbs_project::{Format, MediaFolder, ProjectError, build, export};
+use rbs_project::{Format, MediaFolder, Options, ProjectError, build, build_with, export};
 
 const MS: u64 = 1_000_000;
 const S: u64 = 1_000_000_000;
@@ -210,6 +210,39 @@ fn xmeml_places_the_same_recordings_with_markers_on_the_master() {
     let folder = MediaFolder::from_text("/Users/salih/Movies/RBS/Konuşma").unwrap();
     let text = build(&late_master(), &folder, Format::Xmeml, "Konuşma").unwrap();
     golden("late-master-30.xml", &text);
+}
+
+/// ADR-0124 decision 10: a pause of 2:10 that began 20 s into the file becomes one
+/// marker on its join in both formats, before a marker pressed while paused there;
+/// the option leaves it out.
+#[test]
+fn a_pause_becomes_a_marker_on_its_join() {
+    let mut m = interview();
+    let t0 = m.t0_ns;
+    let mut log = MarkerLog::new(t0, Duration::ZERO).unwrap();
+    log.pause(t0 + 20 * S);
+    log.add_manual(t0 + 25 * S, Some("While paused"), None)
+        .unwrap();
+    log.resume(t0 + 150 * S);
+    m.markers = log.markers().to_vec();
+    m.pauses = log.pauses().rows(t0 + 200 * S);
+    assert_eq!(m.paused_ns(), 130 * S);
+    let folder = MediaFolder::from_text("/Users/salih/Movies/RBS/Pause").unwrap();
+    for (format, at) in [
+        (Format::Fcpxml, "start=\"599599/30000s\""),
+        (Format::Xmeml, "<in>1198</in>"),
+    ] {
+        let text = build(&m, &folder, format, "Pause").unwrap();
+        let paused = text.find("Paused 2:10").unwrap_or_else(|| panic!("{text}"));
+        let pressed = text.find("While paused").unwrap();
+        assert!(paused < pressed, "{format:?}: the pause comes first");
+        assert!(text.contains(at), "{format:?}: {text}");
+        let mut off = Options::default();
+        off.pause_markers = false;
+        let text = build_with(&m, &folder, format, "Pause", off).unwrap();
+        assert!(!text.contains("Paused"), "{format:?}");
+        assert!(text.contains("While paused"), "{format:?}");
+    }
 }
 
 /// xmeml has whole and NTSC rates only.

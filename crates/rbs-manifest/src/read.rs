@@ -7,7 +7,7 @@ use toml::{Table, Value};
 
 use crate::{
     Completion, FORMAT, FileTiming, ImageCounts, ImageEntry, KIND, ManifestFile, Marker,
-    MarkerColor, MarkerKind, Picture, RecordingManifest, SkippedEntry, Sound, SourceRef,
+    MarkerColor, MarkerKind, Pause, Picture, RecordingManifest, SkippedEntry, Sound, SourceRef,
     checked_label,
 };
 
@@ -197,6 +197,25 @@ fn marker(t: &Table) -> Result<Marker, ReadError> {
             None => MarkerColor::default(),
             Some(c) => MarkerColor::parse(&c).ok_or_else(|| bad("color"))?,
         },
+        while_paused: match t.get("while_paused") {
+            None | Some(Value::Boolean(false)) => false,
+            Some(Value::Boolean(true)) => true,
+            Some(_) => return Err(bad("while_paused")),
+        },
+    })
+}
+
+fn pause(t: &Table) -> Result<Pause, ReadError> {
+    let from_ns = need(u64_of(t, "from_ns")?, "from_ns")?;
+    let to_ns = need(u64_of(t, "to_ns")?, "to_ns")?;
+    if to_ns < from_ns {
+        return Err(bad("to_ns"));
+    }
+    Ok(Pause {
+        at_file_ns: need(u64_of(t, "at_file_ns")?, "at_file_ns")?,
+        from_ns,
+        to_ns,
+        join_error_ns: u64_of(t, "join_error_ns")?,
     })
 }
 
@@ -232,6 +251,10 @@ pub(crate) fn parse(text: &str) -> Result<RecordingManifest, ReadError> {
         skipped: tables(&t, "skipped")?
             .into_iter()
             .map(skipped)
+            .collect::<Result<_, _>>()?,
+        pauses: tables(&t, "pauses")?
+            .into_iter()
+            .map(pause)
             .collect::<Result<_, _>>()?,
     })
 }
@@ -284,6 +307,45 @@ mod tests {
                 "{HEAD}complete = true\nduration_ns = 1\nframe_duration = \"0/25\"\nwidth = 1\nheight = 1\n"
             )),
             Err(bad("frame_duration"))
+        );
+    }
+
+    /// ADR-0124 decision 10: `paused_ns`, `[[pauses]]` and `while_paused` round-trip;
+    /// a pause ending before it begins is refused.
+    #[test]
+    fn pauses_round_trip() {
+        let mut m = RecordingManifest::new("t", 1);
+        m.pauses = vec![
+            Pause {
+                at_file_ns: 10,
+                from_ns: 10,
+                to_ns: 15,
+                join_error_ns: Some(3),
+            },
+            Pause {
+                at_file_ns: 15,
+                from_ns: 20,
+                to_ns: 30,
+                join_error_ns: None,
+            },
+        ];
+        m.markers.push(Marker {
+            index: 1,
+            t_ns: 15,
+            pressed_ns: Some(15),
+            kind: MarkerKind::Manual,
+            label: "Marker 1".into(),
+            color: MarkerColor::Blue,
+            while_paused: true,
+        });
+        let text = m.to_toml();
+        assert!(text.contains("paused_ns = 15\n"), "{text}");
+        assert_eq!(parse(&text).unwrap(), m);
+        assert_eq!(
+            parse(&format!(
+                "{HEAD}\n[[pauses]]\nat_file_ns = 1\nfrom_ns = 5\nto_ns = 4\n"
+            )),
+            Err(bad("to_ns"))
         );
     }
 

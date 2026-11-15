@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 
 use rbs_core::timing::FrameRate;
-use rbs_manifest::{FileTiming, ManifestFile, MarkerKind, Picture, RecordingManifest};
+use rbs_manifest::{FileTiming, ManifestFile, Picture, RecordingManifest};
 
 use crate::time::{
     ceil_frame, floor_frame, frames_text, nearest_frame, nearest_sample, samples_text,
@@ -54,7 +54,7 @@ enum Item<'a> {
     Marker {
         at: u64,
         chapter: bool,
-        label: &'a str,
+        label: String,
     },
 }
 
@@ -124,6 +124,7 @@ pub(crate) fn write(
     manifest: &RecordingManifest,
     folder: &MediaFolder,
     title: &str,
+    options: crate::Options,
 ) -> Result<String, ProjectError> {
     let done = manifest.completion.ok_or(ProjectError::Incomplete)?;
     let seq_picture = done.picture.ok_or(ProjectError::NoPicture)?;
@@ -213,13 +214,11 @@ pub(crate) fn write(
             format: asset_format[i],
         });
     }
-    let mut markers: Vec<_> = manifest.markers.iter().collect();
-    markers.sort_by_key(|m| (m.t_ns, m.index));
-    for m in markers {
+    for m in crate::project_markers(manifest, options) {
         items.push(Item::Marker {
             at: floor_frame(m.t_ns, rate).min(end - 1),
-            chapter: m.kind == MarkerKind::Scene,
-            label: &m.label,
+            chapter: m.chapter,
+            label: m.label,
         });
     }
 

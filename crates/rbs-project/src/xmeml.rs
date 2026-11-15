@@ -95,6 +95,7 @@ pub(crate) fn write(
     manifest: &RecordingManifest,
     folder: &MediaFolder,
     title: &str,
+    options: crate::Options,
 ) -> Result<String, ProjectError> {
     let done = manifest.completion.ok_or(ProjectError::Incomplete)?;
     let seq_picture = done.picture.ok_or(ProjectError::NoPicture)?;
@@ -155,8 +156,7 @@ pub(crate) fn write(
         }
     }
 
-    let mut markers: Vec<_> = manifest.markers.iter().collect();
-    markers.sort_by_key(|m| (m.t_ns, m.index));
+    let markers = crate::project_markers(manifest, options);
 
     let mut x = String::new();
     x.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n");

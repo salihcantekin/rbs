@@ -10,6 +10,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use crate::PauseSpans;
+
 /// Most markers one recording keeps. One more is [`MarkerError::Full`].
 pub const MAX_MARKERS: usize = 10_000;
 
@@ -126,6 +128,9 @@ pub struct Marker {
     pub label: String,
     /// Its colour.
     pub color: MarkerColor,
+    /// Pressed while the recording was paused: it sits on that pause's join
+    /// (ADR-0124 decision 10).
+    pub while_paused: bool,
 }
 
 /// Why a marker was not added.
@@ -184,6 +189,7 @@ pub struct MarkerLog {
     manual: u32,
     next_index: u32,
     pending: bool,
+    pauses: PauseSpans,
 }
 
 impl MarkerLog {
@@ -202,6 +208,7 @@ impl MarkerLog {
             manual: 0,
             next_index: 1,
             pending: false,
+            pauses: PauseSpans::new(),
         })
     }
 
@@ -210,9 +217,29 @@ impl MarkerLog {
         self.t0_ns
     }
 
+    /// The recording paused at `at_ns` on the master clock (ADR-0124): later times are
+    /// file times with the pause taken out.
+    pub fn pause(&mut self, at_ns: u64) {
+        self.pauses.pause(at_ns.saturating_sub(self.t0_ns));
+    }
+
+    /// The recording resumed at `at_ns` on the master clock; at or before the pause's
+    /// beginning the pause is cancelled.
+    pub fn resume(&mut self, at_ns: u64) {
+        self.pauses.resume(at_ns.saturating_sub(self.t0_ns));
+    }
+
+    /// The pauses so far, from `t0`.
+    pub fn pauses(&self) -> &PauseSpans {
+        &self.pauses
+    }
+
     /// Adds a manual marker pressed at `now_ns` (master clock). A blank or absent
-    /// label becomes "Marker N", N counting manual markers from 1. The position is
-    /// `now - t0 - lead`, never before `t0`. A refused marker changes nothing.
+    /// label becomes "Marker N", N counting manual markers from 1. Times are file
+    /// times (ADR-0124 decision 10): the position is the press less `lead`, never
+    /// before `t0` nor before the join of the pause just before the press. Pressed
+    /// while paused, it sits on that pause's join with `while_paused`. A refused
+    /// marker changes nothing.
     pub fn add_manual(
         &mut self,
         now_ns: u64,
@@ -221,16 +248,25 @@ impl MarkerLog {
     ) -> Result<&Marker, MarkerError> {
         let label = checked_label(label)?;
         self.room()?;
-        let pressed = now_ns.saturating_sub(self.t0_ns);
+        let master = now_ns.saturating_sub(self.t0_ns);
+        let (pressed, while_paused) = self.pauses.to_file(master);
+        let t_ns = if while_paused {
+            pressed
+        } else {
+            pressed
+                .saturating_sub(self.lead_ns)
+                .max(self.pauses.last_join_before(master))
+        };
         self.manual = self.manual.saturating_add(1);
         let label = label.unwrap_or_else(|| format!("Marker {}", self.manual));
         Ok(self.push(Marker {
             index: 0,
-            t_ns: pressed.saturating_sub(self.lead_ns),
+            t_ns,
             pressed_ns: Some(pressed),
             kind: MarkerKind::Manual,
             label,
             color: color.unwrap_or_default(),
+            while_paused,
         }))
     }
 
@@ -249,13 +285,15 @@ impl MarkerLog {
         }
         let label = checked_label(Some(label))?.unwrap_or_else(|| kind.as_str().to_owned());
         self.room()?;
+        let (t_ns, while_paused) = self.pauses.to_file(now_ns.saturating_sub(self.t0_ns));
         Ok(self.push(Marker {
             index: 0,
-            t_ns: now_ns.saturating_sub(self.t0_ns),
+            t_ns,
             pressed_ns: None,
             kind,
             label,
             color,
+            while_paused,
         }))
     }
 
@@ -323,6 +361,7 @@ mod tests {
                 kind: MarkerKind::Manual,
                 label: "Marker 1".to_owned(),
                 color: MarkerColor::Blue,
+                while_paused: false,
             }
         );
         let m = log
@@ -349,6 +388,43 @@ mod tests {
         assert_eq!(m.label, "stream_start");
         let m = log.add_manual(10 * S, None, None).unwrap();
         assert_eq!((m.index, m.label.as_str()), (3, "Marker 1"));
+    }
+
+    /// ADR-0124 decision 10: times are file times; a marker pressed while paused
+    /// sits on the join, and a lead never reaches back past the last join.
+    #[test]
+    fn markers_around_pauses_are_in_file_time() {
+        let mut log = MarkerLog::new(S, Duration::from_secs(5)).unwrap();
+        // Paused from 10 s to 20 s after t0, then from 30 s (open).
+        log.pause(11 * S);
+        let m = log.add_manual(13 * S, None, None).unwrap().clone();
+        assert_eq!(
+            (m.t_ns, m.pressed_ns, m.while_paused),
+            (10 * S, Some(10 * S), true)
+        );
+        log.resume(21 * S);
+        // Pressed 2 s after the join: the 5 s lead stops at the join.
+        let m = log.add_manual(23 * S, None, None).unwrap().clone();
+        assert_eq!(
+            (m.t_ns, m.pressed_ns, m.while_paused),
+            (10 * S, Some(12 * S), false)
+        );
+        let m = log.add_manual(29 * S, None, None).unwrap().clone();
+        assert_eq!(m.t_ns, 13 * S);
+        log.pause(31 * S);
+        let m = log
+            .add_auto(35 * S, MarkerKind::Scene, "B", MarkerColor::Blue)
+            .unwrap();
+        assert_eq!((m.t_ns, m.while_paused), (20 * S, true));
+        // A pause cancelled before it began leaves times alone.
+        log.resume(31 * S);
+        let m = log
+            .add_auto(35 * S, MarkerKind::Scene, "C", MarkerColor::Blue)
+            .unwrap();
+        assert_eq!((m.t_ns, m.while_paused), (24 * S, false));
+        let rows = log.pauses().rows(40 * S);
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].at_file_ns, rows[0].length_ns()), (10 * S, 10 * S));
     }
 
     #[test]
