@@ -2050,7 +2050,7 @@ fn project_export_round_trips_and_the_profile_omits_an_unset_editor_project() {
         }))
     );
     for bad in [
-        r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"recording":"x","format":"xmeml"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"recording":"x","format":"aaf"}}"#,
         r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"recording":"x"}}"#,
         r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"format":"fcpxml"}}"#,
     ] {
@@ -2080,6 +2080,12 @@ fn project_export_round_trips_and_the_profile_omits_an_unset_editor_project() {
     assert_eq!(
         serde_json::to_value(&p).unwrap()["editor_project"],
         json!("fcpxml")
+    );
+    round_trip(&p);
+    p.editor_project = Some(ProjectFormat::Xmeml);
+    assert_eq!(
+        serde_json::to_value(&p).unwrap()["editor_project"],
+        json!("xmeml")
     );
     round_trip(&p);
 }

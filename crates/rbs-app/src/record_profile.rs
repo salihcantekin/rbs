@@ -569,8 +569,10 @@ impl VideoCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EditorProject {
-    /// FCPXML 1.9 (DaVinci Resolve first, then Final Cut Pro).
+    /// FCPXML 1.9 (Final Cut Pro).
     Fcpxml,
+    /// FCP7 XML (DaVinci Resolve, Premiere Pro): Resolve reads its markers.
+    Xmeml,
 }
 
 impl EditorProject {
@@ -578,6 +580,7 @@ impl EditorProject {
     pub fn to_api(self) -> rbs_api::types::ProjectFormat {
         match self {
             Self::Fcpxml => rbs_api::types::ProjectFormat::Fcpxml,
+            Self::Xmeml => rbs_api::types::ProjectFormat::Xmeml,
         }
     }
 
@@ -585,6 +588,7 @@ impl EditorProject {
     pub fn from_api(f: rbs_api::types::ProjectFormat) -> Self {
         match f {
             rbs_api::types::ProjectFormat::Fcpxml => Self::Fcpxml,
+            rbs_api::types::ProjectFormat::Xmeml => Self::Xmeml,
         }
     }
 }

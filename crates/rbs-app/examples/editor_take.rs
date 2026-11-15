@@ -1,7 +1,9 @@
 //! Makes real recordings for a manual editor import (ADR-0089 decision 9): the main
 //! display and the default microphone, through the app's studio host, with the
 //! recording profile's editor project on. Each take adds three markers while it runs
-//! and, when it stops, writes `<take>.rbs.toml` and `<take>.fcpxml` next to the media.
+//! and, when it stops, writes `<take>.rbs.toml` and the FCP7 XML `<take>.xml` (for
+//! DaVinci Resolve and Premiere Pro) next to the media; `project.export` then adds
+//! `<take>.fcpxml` (for Final Cut Pro).
 //!
 //! ```sh
 //! cargo run --release -p rbs-app --example editor_take -- <folder> [seconds] [mp4,mov,mkv]
@@ -110,7 +112,7 @@ fn main() -> ExitCode {
     }
     let mut profile = RecordProfile::new();
     profile.folder = folder.clone();
-    profile.editor_project = Some(EditorProject::Fcpxml);
+    profile.editor_project = Some(EditorProject::Xmeml);
     host.send(Command::SetProfile(profile));
     let mut api = Api::attach(&host);
 
@@ -166,7 +168,7 @@ fn take(
         bit_depth: None,
         size: None,
         iso: false,
-        editor_project: Some(EditorProject::Fcpxml),
+        editor_project: Some(EditorProject::Xmeml),
     }));
     let start = Instant::now();
     let length = Duration::from_secs(seconds.max(4));
@@ -210,7 +212,13 @@ fn take(
                         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let dir = path.parent().unwrap_or(Path::new("."));
                         let manifest = dir.join(format!("{stem}.rbs.toml"));
-                        let project = dir.join(format!("{stem}.fcpxml"));
+                        let project = dir.join(format!("{stem}.xml"));
+                        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                        let fcpxml = api.call(
+                            "project.export",
+                            serde_json::json!({"recording": file_name, "format": "fcpxml"}),
+                        );
+                        println!("project.export fcpxml: {fcpxml}");
                         println!("manifest: {}", manifest.display());
                         println!("project:  {}", project.display());
                         let fine = failure.is_none()
