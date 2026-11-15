@@ -289,7 +289,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 - **State out.** `replay.changed` (control API 1.27) is published when the state changes: about once a second while armed (`bytes` and `held_secs` move), never while disarmed and unchanged. `last_saved` is an absolute path and `last_error` free text, both visible to `read` tokens like a source's `detail`.
 - **Known deviations from ADR-0088.** The buffer always opens its own export and encoder session (no sharing with a running recording yet, decision 2), so an armed buffer beside a recording costs a second encode per frame. The API has no separate `replay.saved` event: completion is `saving` going false with a new `last_saved` or `last_error`. Retroactive recording (`record.start {include_buffer}`) is not built yet. The node's hand-off wakes the reaper with one non-blocking channel send per 32 evicted packets, which can take a short internal lock; P15 numbers for the whole armed buffer with 0, 1 and 2 other outputs and for a 30 minute cut are still to be measured.
 
-### Pause and hold (ADR-0124, Proposed; not built)
+### Pause and hold (ADR-0124; not built yet)
 
 Planned contract; nothing below exists yet.
 

@@ -1,6 +1,6 @@
 # ADR-0124: Pause a recording, hold a stream
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-15
 - Deciders: Salih (owner)
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0038](0038-io-graph-nodes.md), [ADR-0043](0043-end-of-stream-on-final-ticks.md), [ADR-0045](0045-recording-tail-on-stop.md), [ADR-0047](0047-several-outputs-per-canvas.md), [ADR-0060](0060-shortcuts-in-app-and-global.md), [ADR-0086](0086-recording-sources-separately-iso.md), [ADR-0088](0088-replay-buffer-and-retroactive-recording.md), [ADR-0089](0089-recording-markers-and-editor-project-export.md), [ADR-0090](0090-recording-protection-disk-lag-and-adaptive-bitrate.md), [ADR-0093](0093-vertical-second-canvas-from-the-same-sources.md), [ADR-0111](0111-vertical-outputs-start-with-the-main-ones.md), [ADR-0119](0119-where-separate-files-are-encoded.md)
@@ -86,4 +86,4 @@ Independent review per ADR-0014.
 
 - **Round 1** (independent AI session, 2026-11-15): changes requested, 10 major and 2 minor. Resolved in the revision: the pause window is its own record and composes with the end through `next` (1); the window is one record, two periods ahead, with cancel and ordering rules (2); a chain once paused is never shared (3); a shared cut needs the keyframe capability, dts and audio rules stated (4); the keyframe request carries a time and the adapter's capability (5); the cost is stated as an exception to rule 10 for the owner (6); streams get `HoldGate` and the held frame is re-stamped from a pinned buffer (7); the audio cut follows the sample-count contract, with the PCM fix first (8); separate files and picture tracks covered (9); manifest times in file time (10); API targets, semver and Break semantics (11); tests (12).
 - **Round 2** (same reviewer, 2026-11-15): two small fixes left, approve after them. Resolved: per-packet dts clamp and closed GOP at a shared join (A); only the export raises `next`, by compare-and-swap (B); Resume stream resumes only a recording its hold paused (C); the last audio packet before a shared cut is trimmed (D); seqlock over fixed slots; the extra encoder session a later output needs. Open: the owner's written acceptance of the rule-10 exception in decision 8 (every recording and every stream pays one relaxed load per audio block, per output tick and per video encoder tick; measured before merge).
-- **Owner:** pending.
+- **Owner:** Salih accepted the ADR and the rule-10 exception of decision 8, 2026-11-15 ("tamamdır kabul ediyorum. Accepted et"). The exception's numbers are still measured before the implementation merges (P15).
