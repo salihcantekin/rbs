@@ -18,6 +18,9 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Output | A destination: a streaming service, a recording, a virtual camera | Target | Output node |
 | Go live / End stream | Start / stop streaming to the selected outputs | Start stream, Stop live | - |
 | Record | Save the program to a file. "Capture" is used only in source type names (Screen capture, Window capture) | Save, Capture (as a verb for recording) | Recording output |
+| Pause recording / Resume recording | Stop writing to the recording's files for a while and continue the same files later; the file has no gap. Planned (ADR-0124) | Suspend, Freeze recording | `Studio::pause_output` |
+| Hold stream / Resume stream | Keep a live stream connected while viewers see a hold picture with silence; the program stays free to edit. Planned (ADR-0124) | Pause stream, Stop stream (it does not stop) | `hold_output` |
+| Break | Hold every live stream and pause every recording at once, and resume them together. Planned (ADR-0124) | BRB, Intermission | `output.break_toggle` |
 | Preview / Program | What you are preparing / what viewers see (studio mode) | - | - |
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
 | Automatic, Rows, Columns | Mixer layouts: follow the panel's shape, sources stacked top to bottom, or side by side | Horizontal, Vertical, Auto | Orientation (in UI text) |
