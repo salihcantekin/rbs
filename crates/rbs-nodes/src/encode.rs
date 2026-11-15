@@ -57,6 +57,56 @@ pub struct EncoderNodeStats {
     pub flush_lost: AtomicU64,
     /// Final ticks on which the session was flushed into the graph (ADR-0043).
     pub flushes: AtomicU64,
+    /// Keyframes asked of the session through [`KeyframeAt`] (ADR-0124 decision 7).
+    pub keyframes_requested: AtomicU64,
+    /// Requests through [`KeyframeAt`] the session refused; the stream goes on.
+    pub keyframes_refused: AtomicU64,
+}
+
+/// A request from the control thread for a keyframe at the first frame whose time is at
+/// or after a given time (ADR-0124 decision 7). The node reads it once per new frame,
+/// before that frame is submitted, and only when it was built with
+/// [`VideoEncoderNode::with_keyframe_requests`]: a node without it never reads it.
+#[derive(Debug)]
+pub struct KeyframeAt {
+    /// Nanoseconds of the requested time; `u64::MAX` for none.
+    at: AtomicU64,
+}
+
+impl Default for KeyframeAt {
+    fn default() -> Self {
+        Self {
+            at: AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
+impl KeyframeAt {
+    /// Asks for a keyframe at the first frame at or after `at`. Of two requests not yet
+    /// served, the earlier time wins; a frame at or after it serves both.
+    pub fn request(&self, at: Timestamp) {
+        self.at.fetch_min(at.as_nanos(), Ordering::AcqRel);
+    }
+
+    /// The time of a request not yet served.
+    pub fn pending(&self) -> Option<Timestamp> {
+        match self.at.load(Ordering::Acquire) {
+            u64::MAX => None,
+            at => Some(Timestamp::from_nanos(at)),
+        }
+    }
+
+    /// Takes the request when `frame_ns` is at or after it. A request made meanwhile for
+    /// a later time stays, unless this frame serves it too.
+    fn take_due(&self, frame_ns: u64) -> bool {
+        let at = self.at.load(Ordering::Acquire);
+        at != u64::MAX
+            && frame_ns >= at
+            && self
+                .at
+                .compare_exchange(at, u64::MAX, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
 }
 
 fn add(counter: &AtomicU64, n: u64) {
@@ -78,6 +128,9 @@ pub struct VideoEncoderNode {
     resync: bool,
     /// The session was flushed on a final tick: it takes no more frames.
     ended: bool,
+    /// Keyframe requests from the control thread; `None` when the adapter does not
+    /// declare `codec.reconfigure: keyframe`, so nothing is read per frame.
+    keyframe_at: Option<Arc<KeyframeAt>>,
     stats: Arc<EncoderNodeStats>,
 }
 
@@ -101,8 +154,19 @@ impl VideoEncoderNode {
             carry: VecDeque::new(),
             resync: false,
             ended: false,
+            keyframe_at: None,
             stats: Arc::default(),
         })
+    }
+
+    /// Lets the control thread ask for a keyframe at a time through the returned
+    /// handle (ADR-0124 decision 7). Call it only for an adapter that declares
+    /// `codec.reconfigure: keyframe`; the node then reads the request once per new
+    /// frame. A node built without it reads nothing.
+    pub fn with_keyframe_requests(mut self) -> (Self, Arc<KeyframeAt>) {
+        let handle = Arc::new(KeyframeAt::default());
+        self.keyframe_at = Some(Arc::clone(&handle));
+        (self, handle)
     }
 
     /// The stream every session of this node produces. A session created again after a
@@ -124,6 +188,18 @@ impl VideoEncoderNode {
     /// Submits `frame`, draining once and retrying when the session is busy.
     fn submit(&mut self, frame: &VideoFrame) -> Result<(), NodeError> {
         let session = self.session.as_mut().ok_or(NodeError::NotReady)?;
+        let due = self
+            .keyframe_at
+            .as_ref()
+            .is_some_and(|k| k.take_due(frame.timestamp().as_nanos()));
+        if due {
+            // Before the frame, so this frame is the keyframe. A refusal leaves the
+            // stream valid; the caller sees it in the counter.
+            match session.reconfigure(&EncoderChange::RequestKeyframe) {
+                Ok(()) => add(&self.stats.keyframes_requested, 1),
+                Err(_) => add(&self.stats.keyframes_refused, 1),
+            }
+        }
         let mut result = session.submit(frame);
         if matches!(result, Err(EncodeError::Busy)) {
             session.drain(&mut self.drained).map_err(encode_error)?;

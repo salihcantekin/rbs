@@ -35,7 +35,7 @@ pub mod still;
 pub mod vcam;
 
 pub use capture::{CAPTURE_NODE_TYPE, CaptureSourceNode, capture_descriptor, capture_fault};
-pub use encode::{VIDEO_ENCODER_NODE_TYPE, VideoEncoderNode, video_encoder_descriptor};
+pub use encode::{KeyframeAt, VIDEO_ENCODER_NODE_TYPE, VideoEncoderNode, video_encoder_descriptor};
 pub use export::{ExportEnd, VIDEO_EXPORT_NODE_TYPE, VideoExportNode, video_export_descriptor};
 pub use image_track::{
     IMAGE_TRACK_NODE_TYPE, ImageTrackNode, ImageTrackStats, MAX_IMAGES_PER_TRACK,
