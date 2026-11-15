@@ -578,6 +578,16 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(other["error"]["data"]["kind"], "not_found");
     let stop = c.call("record.stop", json!({}));
     assert_eq!(stop["error"]["data"]["kind"], "conflict", "{stop}");
+    // Nothing records: nothing to pause or resume (protocol 1.61).
+    for method in ["record.pause", "record.resume", "record.pause_toggle"] {
+        let none = c.call(method, json!({}));
+        assert_eq!(
+            none["error"]["data"]["kind"], "conflict",
+            "{method}: {none}"
+        );
+        let all = c.call(method, json!({"canvas": "all"}));
+        assert_eq!(all["error"]["data"]["kind"], "conflict", "{method}: {all}");
+    }
     let relative = c.call(
         "record.start_to_file",
         json!({"profile": "default", "path": "relative.mkv"}),

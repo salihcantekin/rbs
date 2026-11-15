@@ -14,8 +14,9 @@
 //! encoder is asked for a keyframe at the join in master time; an adapter that
 //! cannot make one refuses the pause ([`PauseRefused::KeyframeUnsupported`]).
 //! Separate files started with [`IsoVideoStart::pause_with`](super::IsoVideoStart::pause_with)
-//! or [`IsoAudioStart::pause_with`](super::IsoAudioStart::pause_with) naming the
-//! recording follow the same window: their exports, audio encoders and image tracks
+//! naming the recording, or with [`IsoAudioStart::pause`](super::IsoAudioStart::pause)
+//! holding the [`SharedPause`] the recording was started with
+//! ([`OutputSettings::shared_pause`]), follow the same window: their exports, audio encoders and image tracks
 //! cut at the same instants, and their encoders get a keyframe at each join. Other
 //! separate files make a pause [`PauseRefused::SeparateFiles`].
 
@@ -29,6 +30,34 @@ use super::*;
 /// Render ticks from the tick in progress to a pause's instant: the instant is then
 /// at least two render periods after the request (ADR-0124 decision 2).
 const LEAD_TICKS: u64 = 3;
+
+/// A pause window made before its recording starts, so separate audio files that
+/// open first can follow it (ADR-0124): give the same value to
+/// [`IsoAudioStart::pause`](super::IsoAudioStart::pause) and
+/// [`OutputSettings::shared_pause`]. Two values are equal only when they are the
+/// same window.
+#[derive(Debug, Clone, Default)]
+pub struct SharedPause(Arc<PauseWindow>);
+
+impl SharedPause {
+    /// A new window with no pause.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn window(&self) -> &Arc<PauseWindow> {
+        &self.0
+    }
+}
+
+impl PartialEq for SharedPause {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SharedPause {}
 
 /// Why [`Studio::pause_output`] or [`Studio::resume_output`] did nothing.
 #[non_exhaustive]

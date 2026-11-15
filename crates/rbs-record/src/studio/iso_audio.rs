@@ -53,10 +53,12 @@ pub struct IsoAudioStart {
     /// [`IsoAudioStarted::not_heard`] instead of failing the start with
     /// [`IsoError::NotHeard`]. False by default.
     pub skip_unheard: bool,
-    /// The recording these files belong to (ADR-0124): they follow its pause window.
-    /// `None`, or a recording that is not pausable: the files are never paused, and
-    /// a pause of any recording is refused while they run.
-    pub pause_with: Option<super::OutputId>,
+    /// The pause window of the recording these files belong to (ADR-0124). The files
+    /// open before their recording, so they take the window itself; the recording is
+    /// then started with the same value in [`super::OutputSettings::shared_pause`].
+    /// `None`: the files are never paused, and a pause of any recording is refused
+    /// while they run.
+    pub pause: Option<super::SharedPause>,
 }
 
 impl IsoAudioStart {
@@ -77,7 +79,7 @@ impl IsoAudioStart {
             t0_ns,
             manifest_dir: None,
             skip_unheard: false,
-            pause_with: None,
+            pause: None,
         }
     }
 }
@@ -219,7 +221,7 @@ impl super::Studio {
                 bytes_per_second,
             })
             .collect();
-        let pause = self.iso_audio_pause(start);
+        let pause = Self::iso_audio_pause(start);
         self.iso_audio = Some(IsoAudioRun {
             nodes,
             encodes,
@@ -306,12 +308,9 @@ impl super::Studio {
         Ok((taps, not_heard))
     }
 
-    /// The pause window of the recording `start` names, when it is pausable.
-    fn iso_audio_pause(&self, start: &IsoAudioStart) -> Option<Arc<rbs_core::pause::PauseWindow>> {
-        start
-            .pause_with
-            .and_then(|id| self.attached(id))
-            .and_then(|r| r.pause.clone())
+    /// The pause window `start` follows.
+    fn iso_audio_pause(start: &IsoAudioStart) -> Option<Arc<rbs_core::pause::PauseWindow>> {
+        start.pause.as_ref().map(|p| Arc::clone(p.window()))
     }
 
     pub(super) fn ensure_iso_partitions(&mut self) -> Result<(), RecordError> {
@@ -343,7 +342,7 @@ impl super::Studio {
     ) -> Result<Vec<Added>, RecordError> {
         let mut graph = self.graph.clone();
         let mut adopted = Vec::with_capacity(taps.len() * 2);
-        let pause = self.iso_audio_pause(start);
+        let pause = Self::iso_audio_pause(start);
         let block_frames = self.settings.audio_graph.block_frames as usize;
         for (tap, (session, stream)) in taps.iter().zip(sessions) {
             let plain = EncoderNode::new(session, AUDIO_ENCODER_PACKETS);

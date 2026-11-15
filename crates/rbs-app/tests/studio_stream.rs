@@ -1704,3 +1704,55 @@ fn all_canvases_start_and_stop_together_and_report_each_output() {
     drop(host);
     drop(api);
 }
+
+/// ADR-0124, control API 1.61: a recording is paused and resumed through the control
+/// API; its state stays `recording` with `paused` set, a second pause or a resume of
+/// a running one is a conflict, and `canvas: "all"` reports each canvas.
+#[test]
+fn a_control_api_client_pauses_and_resumes_a_recording() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    let (api, mut c) = api_client(&host);
+    let sub = c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["record.state"]}),
+    );
+    assert!(sub["result"].is_object(), "{sub}");
+    host.send(Command::SetProfile(record_profile("pause")));
+    add_display(&host, &rx);
+    let rec = c.call("record.start", serde_json::json!({"profile": "default"}));
+    assert!(rec["result"].is_object(), "{rec}");
+    let started = c.event("record.state", |d| d["state"] == "recording");
+    assert_eq!(started["params"]["data"]["paused"], false, "{started}");
+
+    let main = serde_json::json!({});
+    let resume = c.call("record.resume", main.clone());
+    assert_eq!(resume["error"]["data"]["kind"], "conflict", "{resume}");
+    assert!(resume.to_string().contains("not paused"), "{resume}");
+    let pause = c.call("record.pause", main.clone());
+    assert!(pause["result"].is_object(), "{pause}");
+    let paused = c.event("record.state", |d| d["paused"] == true);
+    assert_eq!(paused["params"]["data"]["state"], "recording", "{paused}");
+    let again = c.call("record.pause", main.clone());
+    assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
+    let status = c.call("record.status", main.clone());
+    assert_eq!(status["result"]["data"]["paused"], true, "{status}");
+
+    // A toggle resumes a paused recording; with "all", each canvas is reported.
+    let toggle = c.call("record.pause_toggle", main.clone());
+    assert!(toggle["result"].is_object(), "{toggle}");
+    c.event("record.state", |d| d["paused"] == false);
+    let all = c.call("record.pause_toggle", serde_json::json!({"canvas": "all"}));
+    assert_eq!(all["result"]["outputs"][0]["outcome"], "paused", "{all}");
+    c.event("record.state", |d| d["paused"] == true);
+    let all = c.call("record.resume", serde_json::json!({"canvas": "all"}));
+    assert_eq!(all["result"]["outputs"][0]["outcome"], "resumed", "{all}");
+    c.event("record.state", |d| d["paused"] == false);
+
+    assert!(c.call("record.stop", main)["result"].is_object());
+    drop(host);
+    drop(api);
+}

@@ -291,6 +291,9 @@ impl FakeTarget {
                 audio_encoder: None,
                 tracks: vec![],
                 skipped: vec![],
+                paused: false,
+                paused_ms: 0,
+                recorded_ms: 0,
             }
         } else {
             RecordState::Idle { last: None }

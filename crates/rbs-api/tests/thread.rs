@@ -127,6 +127,9 @@ impl ControlTarget for Studio {
                         audio_encoder: None,
                         tracks: vec![],
                         skipped: vec![],
+                        paused: false,
+                        paused_ms: 0,
+                        recorded_ms: 0,
                     })
                 });
                 Ok(Response::RecordStarted(RecordStarted {

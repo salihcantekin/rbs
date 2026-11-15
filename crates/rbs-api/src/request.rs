@@ -1175,7 +1175,8 @@ pub enum HardwareLimitPolicy {
 }
 
 /// `record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every
-/// canvas the studio runs, main first (`all`, protocol 1.42). Unknown fields are
+/// canvas the studio runs, main first (`all`, protocol 1.42); also `record.pause`,
+/// `record.resume` and `record.pause_toggle` (protocol 1.61). Unknown fields are
 /// ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OnCanvases {
@@ -1435,6 +1436,12 @@ pub enum Command {
     RecordStartToFile(RecordStartToFile),
     /// `record.stop`.
     RecordStop(OnCanvases),
+    /// `record.pause` (protocol 1.61, ADR-0124).
+    RecordPause(OnCanvases),
+    /// `record.resume` (protocol 1.61, ADR-0124).
+    RecordResume(OnCanvases),
+    /// `record.pause_toggle` (protocol 1.61, ADR-0124).
+    RecordPauseToggle(OnCanvases),
     /// `record.status`.
     RecordStatus(OnCanvas),
     /// `stream.start`.
@@ -1615,6 +1622,9 @@ impl Command {
             Command::RecordEstimate(_) => "record.estimate",
             Command::RecordStartToFile(_) => "record.start_to_file",
             Command::RecordStop(_) => "record.stop",
+            Command::RecordPause(_) => "record.pause",
+            Command::RecordResume(_) => "record.resume",
+            Command::RecordPauseToggle(_) => "record.pause_toggle",
             Command::RecordStatus(_) => "record.status",
             Command::StreamStart(_) => "stream.start",
             Command::StreamStop(_) => "stream.stop",
@@ -1787,6 +1797,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("record.estimate", Some(Scope::Read)),
     m("record.start_to_file", Some(Scope::Admin)),
     m("record.stop", Some(Scope::Control)),
+    m("record.pause", Some(Scope::Control)),
+    m("record.resume", Some(Scope::Control)),
+    m("record.pause_toggle", Some(Scope::Control)),
     m("record.status", Some(Scope::Read)),
     m("stream.start", Some(Scope::Control)),
     m("stream.stop", Some(Scope::Control)),
@@ -2066,6 +2079,12 @@ enum WireRequest {
     RecordStartToFile(RecordStartToFile),
     #[serde(rename = "record.stop")]
     RecordStop(OnCanvases),
+    #[serde(rename = "record.pause")]
+    RecordPause(OnCanvases),
+    #[serde(rename = "record.resume")]
+    RecordResume(OnCanvases),
+    #[serde(rename = "record.pause_toggle")]
+    RecordPauseToggle(OnCanvases),
     #[serde(rename = "record.status")]
     RecordStatus(OnCanvas),
     #[serde(rename = "stream.start")]
@@ -2254,6 +2273,9 @@ impl From<WireRequest> for Request {
             WireRequest::RecordEstimate(p) => Request::Command(C::RecordEstimate(p)),
             WireRequest::RecordStartToFile(p) => Request::Command(C::RecordStartToFile(p)),
             WireRequest::RecordStop(p) => Request::Command(C::RecordStop(p)),
+            WireRequest::RecordPause(p) => Request::Command(C::RecordPause(p)),
+            WireRequest::RecordResume(p) => Request::Command(C::RecordResume(p)),
+            WireRequest::RecordPauseToggle(p) => Request::Command(C::RecordPauseToggle(p)),
             WireRequest::RecordStatus(p) => Request::Command(C::RecordStatus(p)),
             WireRequest::StreamStart(p) => Request::Command(C::StreamStart(p)),
             WireRequest::StreamStop(p) => Request::Command(C::StreamStop(p)),
@@ -2389,6 +2411,9 @@ impl From<Request> for WireRequest {
                 C::RecordEstimate(p) => WireRequest::RecordEstimate(p),
                 C::RecordStartToFile(p) => WireRequest::RecordStartToFile(p),
                 C::RecordStop(p) => WireRequest::RecordStop(p),
+                C::RecordPause(p) => WireRequest::RecordPause(p),
+                C::RecordResume(p) => WireRequest::RecordResume(p),
+                C::RecordPauseToggle(p) => WireRequest::RecordPauseToggle(p),
                 C::RecordStatus(p) => WireRequest::RecordStatus(p),
                 C::StreamStart(p) => WireRequest::StreamStart(p),
                 C::StreamStop(p) => WireRequest::StreamStop(p),
@@ -2686,7 +2711,8 @@ pub enum Response {
     /// `record.start`, `record.start_to_file`.
     RecordStarted(RecordStarted),
     /// `record.start`, `record.stop`, `stream.start` and `stream.stop` with
-    /// `canvas: "all"` (protocol 1.42).
+    /// `canvas: "all"` (protocol 1.42); `record.pause`, `record.resume` and
+    /// `record.pause_toggle` with `canvas: "all"` (protocol 1.61).
     Outputs(OutputsResult),
     /// `record.status` for a canvas other than the main one (protocol 1.29).
     RecordCanvasStatus(Snapshot<CanvasRecordState>),
@@ -2725,7 +2751,7 @@ pub enum Response {
     /// `tokens.create`.
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, the `monitor.set_*` methods, `source.set_monitor`, `marker.remove`, `events.unsubscribe`, `tokens.revoke`,
+    /// `record.stop`, `record.pause`, `record.resume`, `record.pause_toggle` (one canvas), `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, the `monitor.set_*` methods, `source.set_monitor`, `marker.remove`, `events.unsubscribe`, `tokens.revoke`,
     /// `profile.switch`, `collection.switch`, and the protocol 1.6 edits other than
     /// `scene.add` and `item.add`.
     Done(Empty),

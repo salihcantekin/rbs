@@ -286,3 +286,85 @@ fn separate_files_pause_with_their_recording_and_others_refuse_a_pause() {
     assert!(studio.stop_iso_video());
     studio.shutdown();
 }
+
+/// Separate audio files open before their recording, so they take its window made
+/// up front (`SharedPause`): the recording started with the same value pauses them at
+/// its instants. Files opened without it make a pause `SeparateFiles`.
+#[test]
+fn separate_audio_files_opened_first_pause_with_their_recording() {
+    use rbs_core::media::CodecId;
+    use rbs_record::{IsoAudioStart, SharedPause};
+    use rbs_scene::model::RecordSeparately;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    col.set_source_record_separately(mic, RecordSeparately::new(false, true))
+        .unwrap();
+    let updated = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(updated.failed.is_empty(), "{updated:?}");
+    // The master has no sound, so every AAC packet is the separate file's.
+    let aac = || {
+        r.log
+            .packets
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.codec == CodecId::Aac)
+            .count()
+    };
+    let files = |pause: Option<SharedPause>| {
+        let mut start = IsoAudioStart::new(
+            "mem://iso",
+            ContainerId::Matroska,
+            "master.mkv",
+            "2026-11-15T20:00:00Z",
+            0,
+        );
+        start.pause = pause;
+        start
+    };
+    let master = |pause: Option<SharedPause>| {
+        let mut out = recording();
+        out.audio = None;
+        out.shared_pause = pause;
+        out
+    };
+
+    // Opened without the recording's window: a pause would leave them running.
+    studio.start_iso_audio(&r.adapters, &files(None)).unwrap();
+    let rec = studio.start_output(&r.adapters, &master(None)).unwrap();
+    assert_eq!(studio.pause_output(rec), Err(PauseRefused::SeparateFiles));
+    assert!(studio.stop_output(rec).is_some());
+    assert!(studio.stop_iso_audio());
+
+    let shared = SharedPause::new();
+    studio
+        .start_iso_audio(&r.adapters, &files(Some(shared.clone())))
+        .unwrap();
+    let rec = studio
+        .start_output(&r.adapters, &master(Some(shared)))
+        .unwrap();
+    assert!(run_until(&mut studio, &clock, |_| aac() >= 5));
+    let pause_at = studio.pause_output(rec).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| clock.now()
+        > pause_at + std::time::Duration::from_millis(100)));
+    let at_pause = aac();
+    assert!(run_until(&mut studio, &clock, |_| clock.now()
+        > pause_at + std::time::Duration::from_millis(500)));
+    assert_eq!(aac(), at_pause, "no sound encoded while paused");
+    studio.resume_output(rec).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| aac() >= at_pause + 5));
+    assert!(studio.stop_iso_audio());
+    studio.shutdown();
+}

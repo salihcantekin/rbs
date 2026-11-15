@@ -434,6 +434,7 @@ impl RecordSettings {
             size: None,
             track_span: false,
             pausable: false,
+            shared_pause: None,
         }
     }
 }
