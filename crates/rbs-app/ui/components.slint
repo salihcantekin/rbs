@@ -497,15 +497,15 @@ export component Button inherits Rectangle {
     // Tint look (ADR-0118): soft corners; a button with only an icon is round. A
     // secondary or danger button is a quiet tinted fill; it keeps a `border.subtle`
     // outline only while that fill is too close to a surface (`Theme.button-outline`).
-    // Ghost has no fill until the pointer comes. High contrast outlines every unfilled
-    // kind but a plain ghost; a checked button always has its accent outline.
+    // Ghost has no fill until the pointer comes. A checked button always has its accent
+    // outline.
     property <bool> round: root.text == "";
     border-radius: root.round ? min(root.width, root.height) / 2 : Tokens.radius-button;
     property <bool> filled: kind == "primary" || kind == "live";
     // An icon-only danger button (a row's delete) rests bare, like a ghost, so a list
     // of rows does not carry a tinted disc each.
     property <bool> rests-filled: kind == "secondary" || (kind == "danger" && !round) || framed;
-    property <bool> outlined: enabled && !filled && (checked || (Theme.high-contrast ? (kind != "ghost" && !(kind == "danger" && round)) || framed : Theme.button-outline && rests-filled));
+    property <bool> outlined: enabled && !filled && (checked || (Theme.button-outline && rests-filled));
     // The face: drawn by the root in calm, by the face copy below when the button draws
     // effects. One expression for both, so the two never differ.
     property <color> face-fill: !enabled ? transparent
@@ -577,7 +577,7 @@ export component Button inherits Rectangle {
     border-width: fx ? 0px : face-border;
     border-color: checked ? Theme.accent
         : fx-rim ? (kind == "danger" ? Theme.effects-rim-danger : Theme.effects-rim-secondary)
-        : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+        : Theme.border-subtle;
     // The bases: they never move, so their blur images never change. Each carries one
     // shadow; the part below the box is the key edge. They start at the press depth, so
     // the pressed face covers them.
@@ -862,11 +862,11 @@ export component SplitButton inherits Rectangle {
     clip: true;
     background: root.face-rest;
     border-width: root.kind == "primary" && root.enabled ? 0px
-        : (root.checked && root.enabled) || Theme.high-contrast || Theme.button-outline || root.fx-rim ? Tokens.size-border
+        : (root.checked && root.enabled) || Theme.button-outline || root.fx-rim ? Tokens.size-border
         : 0px;
     border-color: root.checked && root.enabled ? Theme.accent
         : root.fx-rim ? Theme.effects-rim-secondary
-        : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+        : Theme.border-subtle;
     // With an inner glow, the parts' hover and pressed fills are drawn here, under the
     // glow, instead of by the parts: the glow stays whole across both parts and under
     // the content.
@@ -1707,8 +1707,8 @@ export component ChoiceCard inherits Rectangle {
     background: root.checked ? (touch.has-hover ? Theme.accent-subtle-hover : Theme.accent-subtle)
         : touch.pressed ? Theme.button-pressed
         : touch.has-hover ? Theme.button-hover : Theme.button-fill;
-    border-width: root.checked || Theme.high-contrast || Theme.button-outline ? Tokens.size-border : 0px;
-    border-color: root.checked ? Theme.accent : Theme.high-contrast ? Theme.border-strong : Theme.border-subtle;
+    border-width: root.checked || Theme.button-outline ? Tokens.size-border : 0px;
+    border-color: root.checked ? Theme.accent : Theme.border-subtle;
     min-height: body.min-height;
     preferred-height: body.preferred-height;
     accessible-role: AccessibleRole.radio-button;

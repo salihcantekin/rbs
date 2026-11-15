@@ -49,7 +49,6 @@ fn every_base_resolves_with_no_overrides_to_its_built_in_values() {
         let r = t.resolve(&ThemeBody::new(base)).unwrap();
         assert_eq!(r, t.built_in_theme(base));
         assert_eq!(r.colors, t.themes[base.index()].1);
-        assert_eq!(r.high_contrast(), base == Base::HighContrast);
         assert!(r.font_family.is_empty());
     }
 }
@@ -255,23 +254,18 @@ fn every_contrast_rule_reports_its_token() {
 }
 
 #[test]
-fn high_contrast_base_uses_the_stricter_thresholds() {
-    // 5.0:1 passes on dark (4.5) but not on high contrast (7).
-    let grey = "#8c8c8c";
-    assert!((4.5..7.0).contains(&color(grey).contrast(color("#141414"))));
-    for (base, fails) in [(Base::Dark, false), (Base::HighContrast, true)] {
-        let mut theme = ThemeBody::new(base);
-        theme
-            .colors
-            .insert("color.surface.overlay".into(), color("#141414"));
-        theme
-            .colors
-            .insert("color.text.secondary".into(), color(grey));
-        let on_overlay = problems(&theme)
-            .iter()
-            .any(|(_, r)| r.starts_with("color.text.secondary on color.surface.overlay"));
-        assert_eq!(on_overlay, fails, "{base:?}");
-    }
+fn the_retired_high_contrast_base_reads_as_dark_and_is_written_as_dark() {
+    // ADR-0123: high contrast is no longer shipped. An old theme still opens.
+    assert_eq!(Base::from_name("high-contrast"), Some(Base::Dark));
+    assert_eq!(Base::ALL.map(Base::name), ["dark", "light"]);
+    let body: toml::Table = toml::from_str("base = \"high-contrast\"").unwrap();
+    let theme = ThemeBody::from_body(body).unwrap();
+    assert_eq!(theme.base, Base::Dark);
+    assert_eq!(theme.to_body()["base"].as_str(), Some("dark"));
+    assert_eq!(
+        tokens().resolve(&theme).unwrap(),
+        tokens().built_in_theme(Base::Dark)
+    );
 }
 
 #[test]
@@ -462,7 +456,7 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
     };
     let (mut passed, mut warned, mut refused) = (0, 0, 0);
     for _ in 0..2000 {
-        let base = Base::ALL[(next() % 3) as usize];
+        let base = Base::ALL[(next() % Base::ALL.len() as u64) as usize];
         let mut theme = ThemeBody::new(base);
         for _ in 0..(next() % 4) {
             let m = &THEMEABLE[(next() % THEMEABLE.len() as u64) as usize];
@@ -511,16 +505,16 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
             .map(str::to_owned);
         let result = t.resolve(&theme);
         if let Ok(r) = &result {
-            // High contrast is always calm; a setting that is drawn is the one the
-            // theme asked for; a calm theme that asked for more says why.
-            if base == Base::HighContrast {
+            // A notice always means calm; a known lively setting without a notice is
+            // drawn.
+            if r.effects_notice().is_some() {
                 assert_eq!(r.effects, Effects::Calm, "{theme:?}");
             }
             let asked = theme.effects.as_deref().and_then(Effects::from_name);
             if r.effects != Effects::Calm {
                 assert_eq!(Some(r.effects), asked);
                 assert!(!r.effect_values.is_calm());
-            } else if asked.is_some() && base != Base::HighContrast {
+            } else if asked.is_some() {
                 assert!(r.effects_notice().is_some(), "{theme:?}");
             }
             if theme.effects.as_deref() == Some("glossy") {
@@ -730,12 +724,11 @@ fn only_contrast_warnings_have_a_suggested_colour() {
 
 #[test]
 fn secondary_buttons_keep_an_outline_where_the_fill_does_not_separate() {
-    // ADR-0118: the Dark fill stands apart from every surface; Light and High contrast
-    // fills are too close to theirs, so those buttons keep the outline.
+    // ADR-0118: the Dark fill stands apart from every surface; the Light fill is too
+    // close to its surfaces, so those buttons keep the outline.
     let t = tokens();
     assert!(!t.built_in_theme(Base::Dark).button_outline());
     assert!(t.built_in_theme(Base::Light).button_outline());
-    assert!(t.built_in_theme(Base::HighContrast).button_outline());
 }
 
 /// The built-in file as format 2: no effect tables.
@@ -778,19 +771,6 @@ fn a_missing_or_calm_key_is_calm_and_lively_settings_resolve_on_dark_and_light()
     let theme = ThemeBody::from_body(body).unwrap();
     assert_eq!(theme.effects, None);
     assert!(!theme.to_body().contains_key(EFFECTS_KEY));
-}
-
-#[test]
-fn high_contrast_is_always_calm_and_keeps_the_key() {
-    let t = tokens();
-    for e in Effects::LIVELY {
-        let theme = with_effects(Base::HighContrast, e.name());
-        let r = t.resolve(&theme).unwrap();
-        assert_eq!(r.effects, Effects::Calm);
-        assert!(r.effects_notice().is_none());
-        assert_eq!(theme.to_body()[EFFECTS_KEY].as_str(), Some(e.name()));
-        assert_eq!(theme.stored_effects(), Some(e.name()));
-    }
 }
 
 #[test]

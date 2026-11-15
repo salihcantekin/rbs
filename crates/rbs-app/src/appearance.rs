@@ -168,14 +168,6 @@ pub struct AppearanceUi {
     pub keep: Option<KeepLook>,
 }
 
-fn base_label(base: Base) -> &'static str {
-    match base {
-        Base::Dark => "Dark",
-        Base::Light => "Light",
-        Base::HighContrast => "High contrast",
-    }
-}
-
 impl AppearanceUi {
     /// Reads the choice and the theme list again (when the page opens, and after a
     /// change to the library).
@@ -185,7 +177,7 @@ impl AppearanceUi {
             .into_iter()
             .map(|b| ThemeEntry {
                 id: ThemeId::BuiltIn(b),
-                name: base_label(b).to_owned(),
+                name: look::base_label(b).to_owned(),
                 body: None,
                 resolved: Ok(file.built_in_theme(b)),
             })
@@ -892,12 +884,10 @@ pub enum RowValue {
     },
 }
 
-/// The Effects row: the stored setting, disabled for high contrast and for a token file
-/// without effect tables, with the effects notice as its warning.
+/// The Effects row: the stored setting, disabled for a token file without effect
+/// tables, with the effects notice as its warning.
 fn effects_row(file: &TokenFile, ed: &Editor) -> TokenRow {
-    let disabled = if ed.draft.base == Base::HighContrast {
-        "High contrast always uses Calm effects, so every control stays plain.".to_owned()
-    } else if file.effects.is_none() {
+    let disabled = if file.effects.is_none() {
         "This build's token file has no effects.".to_owned()
     } else {
         String::new()
@@ -989,10 +979,11 @@ mod tests {
         let (_d, data, _file, mut ui, id) = setup("forget");
         ui.choice.dark = ThemeId::User(id.clone());
         ui.choice.theme = ThemeId::User(id.clone());
-        let next = ui.forget(&id, Base::HighContrast).unwrap();
-        assert_eq!(next.dark, ThemeId::BuiltIn(Base::HighContrast));
-        assert_eq!(next.theme, ThemeId::BuiltIn(Base::HighContrast));
-        assert_eq!(next.light, ThemeId::BuiltIn(Base::Light));
+        ui.choice.light = ThemeId::BuiltIn(Base::Dark);
+        let next = ui.forget(&id, Base::Light).unwrap();
+        assert_eq!(next.dark, ThemeId::BuiltIn(Base::Light));
+        assert_eq!(next.theme, ThemeId::BuiltIn(Base::Light));
+        assert_eq!(next.light, ThemeId::BuiltIn(Base::Dark));
         assert!(ui.forget(&id, Base::Dark).is_none());
         assert!(ui.keep.is_none());
 
@@ -1013,7 +1004,7 @@ mod tests {
     #[test]
     fn a_font_change_asks_to_keep_only_for_a_theme_in_use() {
         let (_d, _data, file, mut ui, id) = setup("font-not-in-use");
-        ui.selected = Some(3);
+        ui.selected = Some(2);
         assert!(ui.edit(&file));
         assert!(ui.set_fonts(&file, "Inter", Instant::now()));
         assert!(ui.keep.is_none());
@@ -1032,7 +1023,7 @@ mod tests {
     #[test]
     fn the_effects_row_sets_and_resets_the_theme_effects() {
         let (_d, _data, file, mut ui, id) = setup("effects-row");
-        ui.selected = Some(3);
+        ui.selected = Some(2);
         assert!(ui.edit(&file));
         ui.choice.dark = ThemeId::User(id);
         ui.group = GROUPS.iter().position(|g| *g == Group::Shapes).unwrap();
@@ -1076,7 +1067,7 @@ mod tests {
     #[test]
     fn a_stored_vivid_shows_as_glow_and_is_rewritten_only_by_a_pick() {
         let (_d, _data, file, mut ui, _id) = setup("effects-vivid");
-        ui.selected = Some(3);
+        ui.selected = Some(2);
         assert!(ui.edit(&file));
         ui.group = GROUPS.iter().position(|g| *g == Group::Shapes).unwrap();
         ui.editor.as_mut().unwrap().draft.effects = Some("vivid".into());
@@ -1113,9 +1104,9 @@ mod tests {
     }
 
     #[test]
-    fn high_contrast_disables_the_effects_row_and_an_unknown_value_shows_its_notice() {
-        let (_d, _data, file, mut ui, _id) = setup("effects-hc");
-        ui.selected = Some(3);
+    fn an_unknown_effects_value_shows_its_notice() {
+        let (_d, _data, file, mut ui, _id) = setup("effects-unknown");
+        ui.selected = Some(2);
         assert!(ui.edit(&file));
         ui.group = GROUPS.iter().position(|g| *g == Group::Shapes).unwrap();
         let ed = ui.editor.as_mut().unwrap();
@@ -1137,26 +1128,14 @@ mod tests {
         // The notice is not a colour warning and not a general problem.
         assert_eq!(ui.warning_count(), 0);
         assert!(ui.general_problems().is_empty());
-        let ed = ui.editor.as_mut().unwrap();
-        ed.draft.base = Base::HighContrast;
-        ed.draft.effects = Some("vivid".into());
-        ui.recheck(&file);
-        let r = ui
-            .rows(&file)
-            .into_iter()
-            .find(|r| r.name == EFFECTS_KEY)
-            .unwrap();
-        assert!(
-            matches!(r.value, RowValue::Effects { choice: 1, ref disabled } if !disabled.is_empty())
-        );
     }
 
     #[test]
     fn the_list_has_built_in_themes_first_then_user_themes() {
         let (_d, _data, _file, ui, id) = setup("list");
         let names: Vec<_> = ui.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["Dark", "Light", "High contrast", "Midnight"]);
-        assert_eq!(ui.entries[3].id, ThemeId::User(id));
+        assert_eq!(names, ["Dark", "Light", "Midnight"]);
+        assert_eq!(ui.entries[2].id, ThemeId::User(id));
         assert!(ui.entries.iter().all(|e| e.resolved.is_ok()));
     }
 
@@ -1164,30 +1143,30 @@ mod tests {
     fn picking_a_theme_stays_without_asking_to_keep() {
         let (_d, _data, _file, mut ui, id) = setup("keep");
         let before = ui.choice.clone();
-        let next = ui.pick(0, 3).unwrap();
+        let next = ui.pick(0, 2).unwrap();
         assert_eq!(next.dark, ThemeId::User(id.clone()));
         assert!(ui.keep.is_none());
         assert_eq!(ui.choice.dark, ThemeId::User(id.clone()));
         // A second pick stays as well. "Keep this look?" is not asked.
-        ui.pick(1, 2).unwrap();
+        ui.pick(1, 0).unwrap();
         assert!(ui.keep.is_none());
-        assert_eq!(ui.choice.light, ThemeId::BuiltIn(Base::HighContrast));
+        assert_eq!(ui.choice.light, ThemeId::BuiltIn(Base::Dark));
         assert_ne!(ui.choice, before);
         ui.set_follow_system(false, 0).unwrap();
         assert!(ui.keep.is_none());
         assert_eq!(ui.choice.mode, AppearanceMode::Fixed);
         // Use pins one theme and leaves the system pair as the built-in themes.
-        let pinned = ui.use_theme(3).unwrap();
+        let pinned = ui.use_theme(2).unwrap();
         assert_eq!(pinned.mode, AppearanceMode::Fixed);
         assert_eq!(pinned.theme, ThemeId::User(id.clone()));
         assert_eq!(pinned.dark, ThemeId::User(id.clone()));
-        assert_eq!(pinned.light, ThemeId::BuiltIn(Base::HighContrast));
+        assert_eq!(pinned.light, ThemeId::BuiltIn(Base::Dark));
         let back = ui.set_follow_system(true, 1).unwrap();
         assert_eq!(back.mode, AppearanceMode::System);
         assert_eq!(back.dark, ThemeId::BuiltIn(Base::Dark));
         assert_eq!(back.light, ThemeId::BuiltIn(Base::Light));
         // Picking the theme already in use changes nothing.
-        assert!(ui.pick(2, 3).is_none());
+        assert!(ui.pick(2, 2).is_none());
     }
 
     #[test]
@@ -1359,11 +1338,11 @@ mod tests {
     #[test]
     fn duplicates_get_a_free_name_and_the_right_body() {
         let (_d, _data, _file, mut ui, _id) = setup("dup");
-        ui.selected = Some(2);
+        ui.selected = Some(1);
         let (name, body) = ui.duplicate_of_selected().unwrap();
-        assert_eq!(name, "High contrast copy");
-        assert_eq!(body, ThemeBody::new(Base::HighContrast));
-        ui.selected = Some(3);
+        assert_eq!(name, "Light copy");
+        assert_eq!(body, ThemeBody::new(Base::Light));
+        ui.selected = Some(2);
         let (name, body) = ui.duplicate_of_selected().unwrap();
         assert_eq!(name, "Midnight copy");
         assert_eq!(body.length["radius.md"], 8.0);

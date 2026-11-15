@@ -742,7 +742,7 @@ fn rule(fg: &str, bg: &str) -> Option<f64> {
         .iter()
         .chain(THEME_CONTRAST_RULES)
         .find(|(f, b, ..)| *f == fg && *b == bg)
-        .map(|(_, _, min, _)| *min)
+        .map(|(_, _, min)| *min)
 }
 
 /// Text is not measured from anti-aliased pixels: the face colour is sampled at the ends

@@ -69,7 +69,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0054](0054-preview-never-disappears.md) | The preview picture never disappears behind popups: split it around covers | Accepted |
 | [0055](0055-crash-resilience.md) | Crash resilience: a fault in the app must not end a recording or a stream | Accepted |
 | [0056](0056-keep-running-after-the-main-window-closes.md) | Keep running after the main window closes: Close and Quit are separate; Dock on macOS, tray icon on Windows | Accepted |
-| [0057](0057-user-themes-and-appearance-settings.md) | User themes as checked token overrides in a theme library; Settings › Appearance picks and edits them | Accepted |
+| [0057](0057-user-themes-and-appearance-settings.md) | User themes as checked token overrides in a theme library; Settings › Appearance picks and edits them | Accepted; decisions 1 and 3 superseded in part by ADR-0123 |
 | [0058](0058-crop-editing-of-sources.md) | Crop editing of sources: keep the scale, read the picture size from the capture node | Accepted |
 | [0059](0059-scenes-lock-and-source-audio-in-the-studio.md) | Scenes, item lock and source volume in the studio | Accepted |
 | [0060](0060-shortcuts-in-app-and-global.md) | Shortcuts bind registry commands to key chords, in the app or globally; Settings › Shortcuts edits them | Accepted |
@@ -82,8 +82,8 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0066](0066-virtual-camera.md) | Virtual camera on Windows: the program as a camera for meeting apps, off by default | Accepted |
 | [0069](0069-rbs-menu-and-command-search.md) | The RBS menu: an app menu with command search, and the menu bar only on macOS | Accepted |
 | [0070](0070-virtual-camera-per-user-source-class.md) | Virtual camera on Windows: a per-user source class instead of camera properties | Accepted |
-| [0071](0071-merged-title-bar-on-windows.md) | The toolbar row is the title bar on Windows, and the row leaves no gaps | Accepted |
-| [0072](0072-theme-colour-rules-warn.md) | Theme colour rules warn instead of refusing a user theme; every editor change shows at once | Accepted |
+| [0071](0071-merged-title-bar-on-windows.md) | The toolbar row is the title bar on Windows, and the row leaves no gaps | Accepted; one sentence of decision 2 superseded by ADR-0123 |
+| [0072](0072-theme-colour-rules-warn.md) | Theme colour rules warn instead of refusing a user theme; every editor change shows at once | Accepted; decision 1 superseded in part by ADR-0123 |
 | [0074](0074-still-image-and-colour-sources.md) | Still sources: an image file and a solid colour or gradient, drawn once and costing nothing per frame | Accepted |
 | [0075](0075-looks-and-library-panel.md) | Looks and the Library panel: presets of style and filters, and generated sample pictures | Accepted |
 | [0077](0077-source-health-retarget-and-settings-window.md) | Source health, re-picking a source's target, and the Source settings window | Accepted |
@@ -120,13 +120,14 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
 | [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Accepted |
 | [0111](0111-vertical-outputs-start-with-the-main-ones.md) | Vertical outputs start and stop with the main ones, and each output shows its own state | Accepted |
-| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted; decision 6 superseded in part by ADR-0120 |
+| [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted; decision 6 superseded in part by ADR-0120; high-contrast lines of decisions 2 and 3 by ADR-0123 |
 | [0113](0113-experience-level-and-first-run.md) | An experience level and the first-run choice | Accepted |
 | [0114](0114-screen-grammar.md) | One screen grammar: row, list row, section marks, held edits, one home | Accepted |
-| [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Accepted |
+| [0115](0115-ui-stop-rule-for-agents.md) | A stop rule for UI changes by AI agents, with counted checks and an exceptions register | Accepted; decision 8 superseded by ADR-0123 |
 | [0116](0116-audio-only-recording.md) | Audio recording, an output that writes the mix without a picture | Closed: shipped as WAV/FLAC recording formats instead |
 | [0117](0117-still-sources-as-images.md) | Still sources are recorded separately as PNG images, not video | Accepted |
-| [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted; decision 3 superseded in part by ADR-0122 |
+| [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted; decision 3 superseded in part by ADR-0122 and ADR-0123 |
 | [0119](0119-where-separate-files-are-encoded.md) | Separate files take the cheapest path per source, and the user picks where the rest is encoded | Accepted |
-| [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted; superseded in part by ADR-0122 |
-| [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Accepted |
+| [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted; superseded in part by ADR-0122 and ADR-0123 (decision 3) |
+| [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Accepted; its high-contrast lines superseded by ADR-0123 |
+| [0123](0123-remove-the-high-contrast-theme.md) | Remove the built-in high-contrast theme; Dark and Light are the built-in themes | Accepted |

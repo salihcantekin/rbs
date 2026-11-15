@@ -4,9 +4,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rbs_ui::tokens::{
-    BUTTON_FILLS, BUTTON_SURFACES, THEMES, Tokens, button_outline, panel_outline,
-};
+use rbs_ui::tokens::{BUTTON_FILLS, BUTTON_SURFACES, Tokens, button_outline, panel_outline};
 
 /// `color.surface.base` -> `surface-base`; `space.1` -> `space-1`.
 fn ident(name: &str, strip: &str) -> String {
@@ -168,7 +166,6 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     let styles: Vec<&String> = t.type_styles.keys().collect();
     writeln!(s, "// Everything one theme sets.")?;
     writeln!(s, "export struct ThemeSlot {{")?;
-    writeln!(s, "    high-contrast: bool,")?;
     writeln!(s, "    panel-outline: bool,")?;
     writeln!(s, "    button-outline: bool,")?;
     writeln!(s, "    font-family: string,")?;
@@ -200,11 +197,10 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     )?;
     writeln!(s, "    in-out property <[ThemeSlot]> slots: [")?;
     for base in [0, 1] {
-        let (name, c) = &t.themes[base];
+        let (_, c) = &t.themes[base];
         write!(
             s,
-            "        {{ high-contrast: {}, panel-outline: {}, button-outline: {}, font-family: \"\"",
-            name == THEMES[2],
+            "        {{ panel-outline: {}, button-outline: {}, font-family: \"\"",
             panel_outline(c["color.surface.raised"], c["color.surface.base"]),
             BUTTON_FILLS
                 .iter()
@@ -245,10 +241,6 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(
         s,
         "    out property <int> active: os-scheme == 0 || os-scheme == 1 ? os-scheme : Palette.color-scheme == ColorScheme.light ? 1 : 0;"
-    )?;
-    writeln!(
-        s,
-        "    out property <bool> high-contrast: slots[active].high-contrast;"
     )?;
     writeln!(
         s,
@@ -378,7 +370,6 @@ fn generate_apply(t: &Tokens) -> Result<String, std::fmt::Error> {
     )?;
     writeln!(s, "    let fx = theme.effect_draw();")?;
     writeln!(s, "    Ok(ThemeSlot {{")?;
-    writeln!(s, "        high_contrast: theme.high_contrast(),")?;
     writeln!(s, "        panel_outline: theme.panel_outline(),")?;
     writeln!(s, "        button_outline: theme.button_outline(),")?;
     writeln!(s, "        font_family: font.into(),")?;

@@ -640,7 +640,7 @@ fn rule(fg: &str, bg: &str) -> Option<f64> {
         .iter()
         .chain(THEME_CONTRAST_RULES)
         .find(|(f, b, ..)| *f == fg && *b == bg)
-        .map(|(_, _, min, _)| *min)
+        .map(|(_, _, min)| *min)
 }
 
 /// One pair of decision 5's table for one state of a kind: the ink colour and the

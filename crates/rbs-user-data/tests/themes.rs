@@ -165,7 +165,7 @@ fn appearance_defaults_round_trip_and_unreadable_file() {
         AppearanceMode::Fixed,
         midnight.clone(),
         ThemeId::BuiltIn(Base::Light),
-        ThemeId::BuiltIn(Base::HighContrast),
+        ThemeId::BuiltIn(Base::Dark),
     );
     data.set_appearance(&lock, &chosen).unwrap();
     let (read, err) = data.appearance();
@@ -173,14 +173,11 @@ fn appearance_defaults_round_trip_and_unreadable_file() {
     assert_eq!(read, chosen);
     assert_eq!(
         chosen.slots(),
-        [
-            &ThemeId::BuiltIn(Base::HighContrast),
-            &ThemeId::BuiltIn(Base::HighContrast)
-        ]
+        [&ThemeId::BuiltIn(Base::Dark), &ThemeId::BuiltIn(Base::Dark)]
     );
     let text = std::fs::read_to_string(d.path().join(APPEARANCE_FILE)).unwrap();
     assert!(text.contains("dark = \"midnight\""), "{text}");
-    assert!(text.contains("theme = \"builtin:high-contrast\""), "{text}");
+    assert!(text.contains("theme = \"builtin:dark\""), "{text}");
 
     // Missing keys take their defaults.
     std::fs::write(
@@ -192,6 +189,20 @@ fn appearance_defaults_round_trip_and_unreadable_file() {
     assert!(err.is_none());
     assert_eq!(a.mode, AppearanceMode::Fixed);
     assert_eq!(a.theme, ThemeId::BuiltIn(Base::Dark));
+
+    // The retired high-contrast theme (ADR-0123) reads as Dark and is written back so.
+    std::fs::write(
+        d.path().join(APPEARANCE_FILE),
+        "format = 1\nkind = \"appearance\"\nmode = \"fixed\"\ntheme = \"builtin:high-contrast\"\n",
+    )
+    .unwrap();
+    let (a, err) = data.appearance();
+    assert!(err.is_none());
+    assert_eq!(a.theme, ThemeId::BuiltIn(Base::Dark));
+    data.set_appearance(&lock, &a).unwrap();
+    let text = std::fs::read_to_string(d.path().join(APPEARANCE_FILE)).unwrap();
+    assert!(text.contains("theme = \"builtin:dark\""), "{text}");
+    assert!(!text.contains("high-contrast"), "{text}");
 
     // An unreadable file gives the defaults and the reason, and is left as it is.
     let broken = "format = 1\nkind = \"appearance\"\nmode = \"sepia\"\n";
@@ -253,9 +264,11 @@ fn theme_ids() {
         Some(ThemeId::User(EntryId::parse("midnight").unwrap()))
     );
     assert_eq!(ThemeId::parse("Mid Night"), None);
+    assert_eq!(ThemeId::BuiltIn(Base::Light).to_string(), "builtin:light");
+    // The retired high-contrast theme (ADR-0123) reads as dark.
     assert_eq!(
-        ThemeId::BuiltIn(Base::HighContrast).to_string(),
-        "builtin:high-contrast"
+        ThemeId::parse("builtin:high-contrast"),
+        Some(ThemeId::BuiltIn(Base::Dark))
     );
 }
 
@@ -269,7 +282,8 @@ fn the_base_of_a_broken_theme_is_still_found() {
     )
     .unwrap();
     assert!(document::read::<ThemeBody>(&p).is_err());
-    assert_eq!(read_base(&p), Some(Base::HighContrast));
+    // A retired base reads as the base that replaced it (ADR-0123).
+    assert_eq!(read_base(&p), Some(Base::Dark));
     // Syntax from a newer RBS this build cannot parse.
     std::fs::write(
         &p,
@@ -293,7 +307,7 @@ fn reset_appearance_moves_the_file_aside() {
         AppearanceMode::Fixed,
         ThemeId::BuiltIn(Base::Dark),
         ThemeId::BuiltIn(Base::Light),
-        ThemeId::BuiltIn(Base::HighContrast),
+        ThemeId::BuiltIn(Base::Light),
     );
     data.set_appearance(&lock, &fixed).unwrap();
     let first = data.reset_appearance(&lock).unwrap().unwrap();
@@ -327,10 +341,6 @@ fn calm_themes_are_written_as_format_1_and_any_other_effects_as_format_2() {
         assert!(text.contains(&format!("effects = \"{stored}\"")));
         assert_eq!(document::parse::<ThemeBody>(&text).unwrap().document, t);
     }
-    // High contrast resolves to calm but keeps its key, so it stays format 2.
-    let mut hc = ThemeBody::new(Base::HighContrast);
-    hc.effects = Some("vivid".into());
-    assert_eq!(format_of(&hc).0, "format = 2");
 }
 
 #[test]

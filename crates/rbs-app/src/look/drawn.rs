@@ -1140,7 +1140,7 @@ fn rule(fg: &str, bg: &str) -> Option<f64> {
     CONTRAST_RULES
         .iter()
         .chain(THEME_CONTRAST_RULES)
-        .map(|(f, b, min, _)| (*f, *b, *min))
+        .copied()
         .chain(fixed)
         .filter(|(f, b, _)| *f == fg && *b == bg)
         .map(|(_, _, min)| min)
