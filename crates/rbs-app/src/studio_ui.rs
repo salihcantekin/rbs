@@ -695,8 +695,7 @@ impl StudioUi {
     }
 
     /// The source Properties shows: the selection, else the last source it showed
-    /// that still exists, else the first source in the list. `-1` only when the
-    /// scene has no sources.
+    /// that still exists. `-1` otherwise.
     fn remember_properties(&self) -> i32 {
         let ids: Vec<i32> = (0..self.sources.row_count())
             .filter_map(|i| self.sources.row_data(i).map(|s| s.id))
@@ -6657,7 +6656,9 @@ fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<Source
 }
 
 /// Which source Properties shows. The selection wins; otherwise the last source
-/// the panel showed, if it is still in `ids`; otherwise the first source.
+/// the panel showed, if it is still in `ids`; otherwise none (`-1`), so a fresh
+/// start or a removed source leaves the "Nothing selected" state instead of an
+/// arbitrary first source.
 fn properties_source(selected: i32, remembered: i32, ids: &[i32]) -> i32 {
     if selected >= 0 && ids.contains(&selected) {
         return selected;
@@ -6665,7 +6666,7 @@ fn properties_source(selected: i32, remembered: i32, ids: &[i32]) -> i32 {
     if remembered >= 0 && ids.contains(&remembered) {
         return remembered;
     }
-    ids.first().copied().unwrap_or(-1)
+    -1
 }
 
 /// The Outputs card's line for the files a recording writes beside its master
@@ -6738,9 +6739,9 @@ mod tests {
         let ids = [4, 7, 9];
         assert_eq!(properties_source(7, 4, &ids), 7);
         assert_eq!(properties_source(-1, 7, &ids), 7);
-        // The remembered source was removed: the first remaining source fills the panel.
-        assert_eq!(properties_source(-1, 3, &ids), 4);
-        assert_eq!(properties_source(-1, -1, &ids), 4);
+        // The remembered source was removed, or none was ever shown: the panel is empty.
+        assert_eq!(properties_source(-1, 3, &ids), -1);
+        assert_eq!(properties_source(-1, -1, &ids), -1);
         assert_eq!(properties_source(-1, 7, &[]), -1);
     }
 
