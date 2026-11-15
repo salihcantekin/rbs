@@ -1309,6 +1309,33 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "loudness.shown.toggle",
+        title: "Show loudness",
+        tooltip: "Measure the master mix in LUFS and show it on the Master strip",
+        icon: Some("sliders"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Toggle {
+            on: "loudness.set_enabled",
+            off: "loudness.set_enabled",
+        },
+        params: &[],
+        checkable: true,
+        fixed: &[],
+    },
+    Entry {
+        id: "loudness.reset",
+        title: "Reset loudness",
+        tooltip: "Start the integrated loudness, range and true peak again from now",
+        icon: Some("reset"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("loudness.reset"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
         id: "source.rename",
         title: "Rename source",
         tooltip: "Give the source another name",
@@ -2024,6 +2051,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "mixer.hide_all",
             "mixer.hide_muted",
             "mixer.unhide_all",
+            "loudness.shown.toggle",
+            "loudness.reset",
             "}",
         ],
     ),
@@ -2220,6 +2249,9 @@ pub fn title(id: &CommandId, e: &Entry) -> String {
             "transform" => "Transform…".to_owned(),
             _ => e.title.to_owned(),
         };
+    }
+    if let ("ui.settings.open", Some("settings.audio.loudness")) = (e.id, id.param("setting")) {
+        return "Loudness settings…".to_owned();
     }
     if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
         return format!("Scene at position {n}");
@@ -2608,6 +2640,9 @@ pub enum Context {
     MixerMonitor,
     /// The Mixer outside its strips and rows.
     Mixer,
+    /// The Master strip or row in the Mixer, or its "more" button (no target;
+    /// ADR-0092 decision 3).
+    MixerMaster,
     /// A panel's tab or header menu (target `id`, the panel).
     Panel,
     /// The toolbar's Workspace item (no target).
@@ -2627,7 +2662,7 @@ pub enum Context {
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 15] = [
+    pub const ALL: [Context; 16] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -2636,6 +2671,7 @@ impl Context {
         Context::MixerSource,
         Context::MixerMonitor,
         Context::Mixer,
+        Context::MixerMaster,
         Context::Panel,
         Context::Workspace,
         Context::Profiles,
@@ -2656,6 +2692,7 @@ impl Context {
             Context::MixerSource => "mixer-source",
             Context::MixerMonitor => "mixer-monitor",
             Context::Mixer => "mixer",
+            Context::MixerMaster => "mixer-master",
             Context::Panel => "panel",
             Context::Workspace => "workspace",
             Context::Profiles => "profiles",
@@ -2803,6 +2840,18 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "mixer.hide_all",
             "mixer.hide_muted",
             "mixer.unhide_all",
+            "|",
+            "loudness.shown.toggle",
+        ],
+    ),
+    (
+        Context::MixerMaster,
+        &[
+            "loudness.shown.toggle",
+            "loudness.reset",
+            "ui.settings.open?setting=settings.audio.loudness",
+            "|",
+            "ui.mixer.orientation",
         ],
     ),
     (

@@ -83,6 +83,7 @@ const GENERAL_CAPTURE: &[Place] = &[at("general", "settings.general.capture")];
 const GENERAL_STUDIO: &[Place] = &[at("general", "settings.general.studio")];
 const GENERAL_GLIDE: &[Place] = &[at("general", "settings.general.glide")];
 const AUDIO_MONITOR: &[Place] = &[at("audio", "settings.audio.monitor")];
+const AUDIO_LOUDNESS: &[Place] = &[at("audio", "settings.audio.loudness")];
 const APPEARANCE_IN_USE: &[Place] = &[at("appearance", "settings.appearance.theme-in-use")];
 const APPEARANCE_THEMES: &[Place] = &[at("appearance", "settings.appearance.themes")];
 const VIDEO_CANVAS: &[Place] = &[at("video", "settings.video.canvas")];
@@ -227,6 +228,40 @@ pub const SETTINGS: &[Setting] = &[
         "Latency",
         "monitor delay buffer",
         AUDIO_MONITOR,
+        Simple,
+    ),
+    c(
+        "settings.audio.loudness",
+        "Loudness",
+        "lufs loudness meter ebu r128 bs.1770 normalization",
+        AUDIO_LOUDNESS,
+    ),
+    row(
+        "audio.loudness-show",
+        "Show loudness",
+        "lufs meter master mixer",
+        AUDIO_LOUDNESS,
+        Simple,
+    ),
+    row(
+        "audio.loudness-target",
+        "Target",
+        "lufs loudness level youtube podcast broadcast ebu r128 atsc",
+        AUDIO_LOUDNESS,
+        Simple,
+    ),
+    row(
+        "audio.loudness-custom",
+        "Custom target",
+        "lufs loudness level",
+        AUDIO_LOUDNESS,
+        Simple,
+    ),
+    row(
+        "audio.loudness-limit",
+        "True-peak limit",
+        "dbtp ceiling peak clipping over",
+        AUDIO_LOUDNESS,
         Simple,
     ),
     // Appearance

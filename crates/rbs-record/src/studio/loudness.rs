@@ -78,6 +78,13 @@ impl Studio {
         self.loudness.as_ref().map(|l| l.readout.get())
     }
 
+    /// The running meter's shared values, for a reader on another thread (the Mixer
+    /// reads them at its own rate); `None` while the meter is off. A new run is a new
+    /// handle.
+    pub fn loudness_readout(&self) -> Option<&Arc<LoudnessReadout>> {
+        self.loudness.as_ref().map(|l| &l.readout)
+    }
+
     /// Restarts the loudness measurement (integrated loudness, range, maximum true
     /// peak, maxima and windows) at the next audio block. False while the meter is
     /// off.

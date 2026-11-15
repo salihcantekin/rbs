@@ -50,6 +50,8 @@ format = 4
 "color.meter.mid" = "#e3b341"
 "color.meter.high" = "#f0883e"
 "color.meter.clip" = "#c38bf0"
+"color.loudness.fill" = "#4cc2d6"
+"color.loudness.target" = "#eceef2"
 
 [themes.light]
 "color.surface.base" = "#ececf0"
@@ -88,6 +90,8 @@ format = 4
 "color.meter.mid" = "#9a6700"
 "color.meter.high" = "#bc4c00"
 "color.meter.clip" = "#8e3fb5"
+"color.loudness.fill" = "#0b7285"
+"color.loudness.target" = "#15171a"
 
 # Logical pixels at 100 % scale.
 [length]
@@ -173,6 +177,10 @@ format = 4
 "size.meter.scale-line" = 12
 # Fixed width of a level readout ("0 dB", "−60.0 dB", "Silent") beside a fader.
 "size.meter.readout" = 56
+# Thickness of the master's loudness bar (ADR-0092 decision 7), beside or under its level bar.
+"size.meter.loudness" = 6
+# Thickness of the target mark across the loudness bar.
+"size.meter.target" = 2
 # Width of one Mixer column strip (columns): padding + meter + VSlider + control column.
 # Must stay tight; the VSlider must not horizontal-stretch (its track is centred in its width).
 "size.mixer.strip" = 104

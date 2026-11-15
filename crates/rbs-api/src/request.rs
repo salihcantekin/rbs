@@ -1257,6 +1257,9 @@ pub struct SettingsPatch {
     /// New stream settings (protocol 1.2). Refused while a stream runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<StreamSettingsPatch>,
+    /// The loudness meter's target and true-peak limit (protocol 1.59).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness: Option<crate::types::LoudnessSettings>,
 }
 
 /// `events.subscribe`.

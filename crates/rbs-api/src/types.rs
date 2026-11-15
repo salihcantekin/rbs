@@ -267,6 +267,12 @@ pub struct LoudnessStatus {
     /// Highest short-term loudness over the same time, LUFS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short_term_max: Option<f32>,
+    /// The saved target, LUFS (protocol 1.59; `settings.get` `loudness`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<f32>,
+    /// The saved true-peak limit, dBTP (protocol 1.59).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub true_peak_limit: Option<f32>,
 }
 
 /// `monitor.status` and `monitor.changed` (protocol 1.30, ADR-0097).
@@ -957,6 +963,9 @@ pub struct Settings {
     /// read only here, set with `output.set_with_vertical`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertical: Option<VerticalWithMain>,
+    /// The loudness meter's target and true-peak limit (protocol 1.59).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness: Option<LoudnessSettings>,
 }
 
 /// What a recording is doing.
@@ -1248,6 +1257,27 @@ pub struct VerticalWithMain {
     /// Go live also starts and stops the vertical stream.
     pub stream_with_main: bool,
 }
+
+/// The loudness meter's target and true-peak limit (protocol 1.59, ADR-0092 decision
+/// 5): part of `settings.get`, `settings.set` and `settings.changed`, and of
+/// `loudness.status`. Values are finite; equality compares them bit for bit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LoudnessSettings {
+    /// The target, LUFS (-40 to -5): the mark on the Master's loudness bar.
+    pub target: f32,
+    /// The true-peak limit, dBTP (-10 to 0): the Master's dot lights once the true
+    /// peak has passed it since the meter started or was reset.
+    pub true_peak_limit: f32,
+}
+
+impl PartialEq for LoudnessSettings {
+    fn eq(&self, other: &Self) -> bool {
+        self.target.to_bits() == other.target.to_bits()
+            && self.true_peak_limit.to_bits() == other.true_peak_limit.to_bits()
+    }
+}
+
+impl Eq for LoudnessSettings {}
 
 /// A recording state of a canvas other than the main one (`record.canvas_state`,
 /// protocol 1.29): the `record.state` object with `canvas` added.

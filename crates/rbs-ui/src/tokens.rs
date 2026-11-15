@@ -58,6 +58,8 @@ pub const THEME_COLORS: &[&str] = &[
     "color.meter.mid",
     "color.meter.high",
     "color.meter.clip",
+    "color.loudness.fill",
+    "color.loudness.target",
 ];
 
 /// Colour tokens that are the same in every theme, with their only allowed
@@ -148,6 +150,8 @@ pub const LENGTHS: &[&str] = &[
     "size.meter.scale",
     "size.meter.scale-line",
     "size.meter.readout",
+    "size.meter.loudness",
+    "size.meter.target",
     "size.mixer.strip",
     "size.mixer.splitter",
     "size.mixer.controls",
@@ -380,6 +384,9 @@ pub const CONTRAST_RULES: &[(&str, &str, f64)] = &[
     ("color.meter.mid", "color.surface.sunken", 3.0),
     ("color.meter.high", "color.surface.sunken", 3.0),
     ("color.meter.clip", "color.surface.sunken", 3.0),
+    ("color.meter.clip", "color.surface.raised", 3.0),
+    ("color.loudness.fill", "color.surface.sunken", 3.0),
+    ("color.loudness.target", "color.surface.sunken", 3.0),
 ];
 
 /// Contrast rules that exist because themes are untrusted input (ADR-0057 decision 3);

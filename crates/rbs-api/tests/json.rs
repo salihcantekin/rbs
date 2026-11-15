@@ -516,6 +516,10 @@ fn every_request() -> Vec<Request> {
                 auto_record: Some(true),
                 output_size: None,
             }),
+            loudness: Some(LoudnessSettings {
+                target: -16.0,
+                true_peak_limit: -1.0,
+            }),
         })),
         c(Command::EventsSubscribe(Subscribe {
             topics: vec![Topic::RecordState, Topic::AudioLevels],
@@ -806,6 +810,10 @@ fn every_result_and_event_type_round_trips() {
             canvas: canvas(),
             stream: Some(stream_settings()),
             vertical: None,
+            loudness: Some(LoudnessSettings {
+                target: -14.0,
+                true_peak_limit: -1.0,
+            }),
         },
     });
     round_trip(&StreamStarted {
@@ -850,6 +858,7 @@ fn every_result_and_event_type_round_trips() {
             canvas: canvas(),
             stream: None,
             vertical: None,
+            loudness: None,
         }),
         EventPayload::AudioLevels(vec![SourceLevels {
             source: 2,
@@ -1348,6 +1357,7 @@ fn stream_settings_are_a_minor_addition() {
         canvas: canvas(),
         stream: None,
         vertical: None,
+        loudness: None,
     })
     .unwrap();
     assert!(text.get("stream").is_none(), "{text}");
@@ -1883,11 +1893,35 @@ fn loudness_values_have_their_wire_form() {
         true_peak_max: Some(-1.5),
         momentary_max: Some(-18.0),
         short_term_max: Some(-20.0),
+        target: Some(-14.0),
+        true_peak_limit: Some(-1.0),
     };
     let v = serde_json::to_value(status).unwrap();
     assert_eq!(v["integrated"], json!(-23.5));
     assert_eq!(v["true_peak_max"], json!(-1.5));
+    assert_eq!(v["target"], json!(-14.0));
     round_trip(&status);
+}
+
+/// Protocol 1.59 (ADR-0092 decision 5): `loudness` in the settings is optional both
+/// ways, so a 1.58 patch and a 1.58 server's settings read as before.
+#[test]
+fn loudness_settings_are_a_minor_addition() {
+    let old: SettingsPatch = serde_json::from_value(json!({"canvas": null})).unwrap();
+    assert_eq!(old.loudness, None);
+    let new: SettingsPatch =
+        serde_json::from_value(json!({"loudness": {"target": -23.0, "true_peak_limit": -2.0}}))
+            .unwrap();
+    assert_eq!(
+        new.loudness,
+        Some(LoudnessSettings {
+            target: -23.0,
+            true_peak_limit: -2.0
+        })
+    );
+    assert!(
+        serde_json::from_value::<SettingsPatch>(json!({"loudness": {"target": -23.0}})).is_err()
+    );
 }
 
 #[test]

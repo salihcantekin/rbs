@@ -227,6 +227,8 @@ pub const THEMEABLE: &[Themeable] = &[
     colour("color.meter.mid", "Meter, middle level"),
     colour("color.meter.high", "Meter, high level"),
     colour("color.meter.clip", "Meter, clipped"),
+    colour("color.loudness.fill", "Loudness bar"),
+    colour("color.loudness.target", "Loudness target mark"),
     text("type.caption", "Caption"),
     text("type.body", "Body"),
     text("type.label", "Label"),
