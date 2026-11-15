@@ -1504,6 +1504,52 @@ export component Toggle inherits Rectangle {
     FocusRing { show: focus.ring; border-radius: track.border-radius; }
 }
 
+// The buttons of a window that holds an edit and of every confirmation (ADR-0114 rule
+// 6): right-aligned, the way back to the left of the answer, so the answer is always
+// the last button and the one nearest the corner. The way back is a text-only
+// secondary Button ("Cancel", or words such as "Keep streaming"); the answer is
+// named by its result ("Save theme", "Delete") and is `primary`, or `danger` for a
+// destructive one (always at most one). Never put the answer first, and never
+// start-align them. `extra` shows a third, quiet button between the two (Apply).
+export component DialogActions inherits HorizontalLayout {
+    in property <string> cancel-text: @tr("Cancel");
+    in property <string> confirm-text;
+    // "primary", or "danger" (a destructive answer; Button draws its trash icon).
+    in property <string> confirm-kind: "primary";
+    in property <bool> confirm-enabled: true;
+    in property <string> extra-text;
+    in property <bool> extra-enabled: true;
+    in property <bool> dense: false;
+    callback cancelled();
+    callback confirmed();
+    callback extra-clicked();
+    // Takes the focus onto the way back, for a confirmation that must not be
+    // answered by a stray Enter (ADR-0066 decision 11).
+    public function focus-cancel() {
+        cancel-button.focus();
+    }
+    spacing: root.dense ? Tokens.size-field-gap : Tokens.space-2;
+    alignment: end;
+    cancel-button := Button {
+        text: root.cancel-text;
+        dense: root.dense;
+        clicked => { root.cancelled(); }
+    }
+    if root.extra-text != "": Button {
+        text: root.extra-text;
+        dense: root.dense;
+        enabled: root.extra-enabled;
+        clicked => { root.extra-clicked(); }
+    }
+    Button {
+        text: root.confirm-text;
+        kind: root.confirm-kind;
+        dense: root.dense;
+        enabled: root.confirm-enabled;
+        clicked => { root.confirmed(); }
+    }
+}
+
 // One option of a SegmentedControl.
 component Segment inherits Rectangle {
     in property <string> text;
@@ -3706,7 +3752,7 @@ export component OverlayHost inherits Rectangle {
             accessible-label: Overlays.name-title;
             init => {
                 Overlays.name-cover = { x: self.x, y: self.y, width: self.width, height: self.height };
-                if Overlays.name-ask { name-input.text = Overlays.name-value; name-input.focus(); } else { keep-button.focus(); }
+                if Overlays.name-ask { name-input.text = Overlays.name-value; name-input.focus(); } else { name-actions.focus-cancel(); }
             }
             changed x => { Overlays.name-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
             changed y => { Overlays.name-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
@@ -3760,19 +3806,12 @@ export component OverlayHost inherits Rectangle {
                     wrap: word-wrap;
                     accessible-role: text;
                 }
-                HorizontalLayout {
-                    spacing: Tokens.space-2;
-                    alignment: end;
-                    keep-button := Button {
-                        text: Overlays.name-ask ? @tr("Cancel") : @tr("Keep");
-                        clicked => { Overlays.name-cancelled(); }
-                    }
-                    Button {
-                        text: Overlays.name-confirm;
-                        kind: "primary";
-                        enabled: !Overlays.name-ask || name-input.text != "";
-                        clicked => { Overlays.name-accepted(Overlays.name-ask ? name-input.text : ""); }
-                    }
+                name-actions := DialogActions {
+                    cancel-text: Overlays.name-ask ? @tr("Cancel") : @tr("Keep");
+                    confirm-text: Overlays.name-confirm;
+                    confirm-enabled: !Overlays.name-ask || name-input.text != "";
+                    cancelled => { Overlays.name-cancelled(); }
+                    confirmed => { Overlays.name-accepted(Overlays.name-ask ? name-input.text : ""); }
                 }
             }
         }
@@ -3894,7 +3933,7 @@ export component OverlayHost inherits Rectangle {
             y: max(Tokens.space-1, (root.height - self.height) / 3);
             accessible-role: groupbox;
             accessible-label: Overlays.vertical-exists ? @tr("Vertical output") : @tr("Add vertical output");
-            init => { Overlays.vertical-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; vertical-cancel.focus(); }
+            init => { Overlays.vertical-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; vertical-actions.focus-cancel(); }
             changed x => { Overlays.vertical-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
             changed y => { Overlays.vertical-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
             vertical-keys := FocusScope {
@@ -4015,23 +4054,13 @@ export component OverlayHost inherits Rectangle {
                     wrap: word-wrap;
                     accessible-role: text;
                 }
-                HorizontalLayout {
-                    spacing: Tokens.space-2;
-                    alignment: end;
-                    vertical-cancel := Button {
-                        text: @tr("Cancel");
-                        clicked => { Overlays.vertical-cancelled(); }
-                    }
-                    if Overlays.vertical-exists: Button {
-                        lead: IconName.trash;
-                        text: @tr("Remove");
-                        kind: "primary";
-                        clicked => { Overlays.vertical-removed(); }
-                    }
-                    if !Overlays.vertical-exists: Button {
-                        text: @tr("Add");
-                        kind: "primary";
-                        clicked => { Overlays.vertical-accepted(); }
+                vertical-actions := DialogActions {
+                    confirm-text: Overlays.vertical-exists ? @tr("Remove") : @tr("Add");
+                    confirm-kind: Overlays.vertical-exists ? "danger" : "primary";
+                    cancelled => { Overlays.vertical-cancelled(); }
+                    confirmed => {
+                        if Overlays.vertical-exists { Overlays.vertical-removed(); }
+                        else { Overlays.vertical-accepted(); }
                     }
                 }
             }

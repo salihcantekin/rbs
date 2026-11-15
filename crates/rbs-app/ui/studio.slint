@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
+import { DialogActions, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -4089,20 +4089,12 @@ component SourceProperties inherits VerticalLayout {
                 font-size: Tokens.type-body-size;
                 wrap: word-wrap;
             }
-            HorizontalLayout {
-                spacing: Tokens.size-field-gap;
-                alignment: start;
-                Button {
-                    text: @tr("Delete source");
-                    kind: "danger";
-                    dense: true;
-                    clicked => { root.confirm = false; Studio.delete-source(data.id); }
-                }
-                Button {
-                    text: @tr("Cancel");
-                    dense: true;
-                    clicked => { root.confirm = false; }
-                }
+            DialogActions {
+                dense: true;
+                confirm-text: @tr("Delete source");
+                confirm-kind: "danger";
+                cancelled => { root.confirm = false; }
+                confirmed => { root.confirm = false; Studio.delete-source(data.id); }
             }
         }
         TextField {
@@ -5094,20 +5086,12 @@ export component GlobalSourcesSettings inherits Rectangle {
                         font-size: Tokens.type-body-size;
                         wrap: word-wrap;
                     }
-                    HorizontalLayout {
-                        spacing: Tokens.size-field-gap;
-                        alignment: start;
-                        Button {
-                            text: @tr("Remove");
-                            kind: "danger";
-                            dense: true;
-                            clicked => { root.confirm-id = -1; Studio.remove-global(s.id); }
-                        }
-                        Button {
-                            text: @tr("Cancel");
-                            dense: true;
-                            clicked => { root.confirm-id = -1; }
-                        }
+                    DialogActions {
+                        dense: true;
+                        confirm-text: @tr("Remove");
+                        confirm-kind: "danger";
+                        cancelled => { root.confirm-id = -1; }
+                        confirmed => { root.confirm-id = -1; Studio.remove-global(s.id); }
                     }
                 }
             }
@@ -5406,18 +5390,10 @@ export component RemoteControlSettings inherits Rectangle {
                         font-size: Tokens.type-body-size;
                         wrap: word-wrap;
                     }
-                    HorizontalLayout {
-                        spacing: Tokens.space-2;
-                        alignment: start;
-                        Button {
-                            text: @tr("Make new key");
-                            kind: "primary";
-                            clicked => { root.confirming = false; Studio.rc-new-key(); }
-                        }
-                        Button {
-                            text: @tr("Cancel");
-                            clicked => { root.confirming = false; }
-                        }
+                    DialogActions {
+                        confirm-text: @tr("Make new key");
+                        cancelled => { root.confirming = false; }
+                        confirmed => { root.confirming = false; Studio.rc-new-key(); }
                     }
                 }
             }
