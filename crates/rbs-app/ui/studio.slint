@@ -2758,6 +2758,8 @@ component EncoderFields inherits VerticalLayout {
         gap: 0;
         SettingRow {
             find: "encoding.open-shadows";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.delivery == 0;
             label: @tr("Open shadows");
             help: root.stream
                 ? @tr("Lifts only the darkest tones so they stay visible on YouTube and TV. The stream stays Rec. 709. Off by default.")
@@ -2795,6 +2797,8 @@ component EncoderFields inherits VerticalLayout {
         gap: 0;
         SettingRow {
             find: "encoding.video-bitrate";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.rate-kind != 2;
             changed: root.idle && root.data.defaults[1] >= 0 && root.data.video-rate != root.data.defaults[1];
             default-text: root.data.video-rates[root.data.defaults[1]];
             reset => { root.set(1, root.data.defaults[1]); }
@@ -2821,6 +2825,8 @@ component EncoderFields inherits VerticalLayout {
         gap: 0;
         SettingRow {
             find: "encoding.quality-level";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.rate-kind == 2;
             changed: root.idle && root.data.defaults[5] >= 0 && root.data.quality != root.data.defaults[5];
             default-text: root.data.qualities[root.data.defaults[5]];
             reset => { root.set(5, root.data.defaults[5]); }
@@ -2878,6 +2884,8 @@ component EncoderFields inherits VerticalLayout {
             gap: 0;
             SettingRow {
                 find: "encoding.max-bitrate";
+                // Hidden with its Shown: search shows the card instead.
+                findable: root.data.rate-kind == 1;
                 changed: root.idle && root.data.defaults[4] >= 0 && root.data.peak != root.data.defaults[4];
                 default-text: root.data.peaks[root.data.defaults[4]];
                 reset => { root.set(4, root.data.defaults[4]); }
@@ -2899,6 +2907,8 @@ component EncoderFields inherits VerticalLayout {
             gap: 0;
             SettingRow {
                 find: "encoding.pad-bitrate";
+                // Hidden with its Shown: search shows the card instead.
+                findable: root.data.rate-kind == 0;
                 label: @tr("Pad to the full bitrate");
                 help: root.data.padding-available
                     ? @tr("Adds filler data so a still picture still uses the whole bitrate. Off by default.")
@@ -4729,6 +4739,8 @@ export component StreamSettings inherits Rectangle {
                 gap: 0;
                 SettingRow {
                     find: "stream.srt-latency";
+                    // Hidden with its Shown: search shows the card instead.
+                    findable: Studio.st-srt;
                     label: @tr("SRT latency");
                     summary: @tr("More survives a worse network");
                     hint: @tr("More latency survives a worse network; viewers see the picture a little later.");

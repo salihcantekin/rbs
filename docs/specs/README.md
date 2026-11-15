@@ -34,7 +34,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
 | [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui` (tokens), `rbs-app` |
 | [themes.md](themes.md) | Draft | `rbs-ui` (`tokens`), `rbs-user-data`, `rbs-app` (user themes, Settings › Appearance; ADR-0057) |
-| [settings-search.md](settings-search.md) | Draft | `rbs-ui` (`settings_index`, RBS menu search), `rbs-app` (`find:` keys, `ui.settings.open {setting}`). Showing the setting and the window's search field are later steps |
+| [settings-search.md](settings-search.md) | Draft | `rbs-ui` (`settings_index`, RBS menu search), `rbs-app` (`find:` keys, `SettingsFind`, the Settings window's search field, `ui.settings.open {setting, command}`) |
 | [shortcuts.md](shortcuts.md) | Draft | `rbs-ui` (`shortcut`), `rbs-user-data`, `rbs-app` (shortcuts, global shortcuts, Settings › Shortcuts; ADR-0060) |
 
 New specs start from [template.md](template.md).

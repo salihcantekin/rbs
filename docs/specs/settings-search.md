@@ -1,7 +1,7 @@
 # Spec: Settings search
 
 - Status: Draft
-- Owner crate(s): `rbs-ui` (`settings_index`, `command::search`), `rbs-app` (`find:` keys in `ui/`, `menu_bar::open_settings`, the Settings window)
+- Owner crate(s): `rbs-ui` (`settings_index`, `command::search`), `rbs-app` (`find:` keys in `ui/`, `SettingsFind`, `menu_bar::open_settings`, the Settings window's field and `show-setting`)
 - Related ADRs: ADR-0050 (command registry), ADR-0069 (RBS menu and its search; this spec extends its decision 2 results, "in menu order", with index hits after the commands, as its placeholder "Type a command, setting or panel" foresaw), ADR-0078 (foldable cards), ADR-0113 (experience levels), ADR-0013 (zero cost when unused)
 - Principles: U17 (one Settings window with a search field; a setting is never more than one section away), U2, U7
 
@@ -20,10 +20,8 @@ Out of scope: searching setting values ("6000 kbit/s"), the Source settings wind
 | Step | What | State |
 | --- | --- | --- |
 | 1 | Index, sync test, results in the RBS menu, `ui.settings.open {setting, command}` | This change |
-| 2 | Showing the setting: section, card opened, level revealed, row scrolled into view and marked; Shortcuts at a command | Planned |
-| 3 | The search field and its results in the Settings window, with the Shortcuts page's commands | Planned; visual proposal to the owner first (rule 16) |
-
-Until step 2, opening Settings at a setting shows its section. The RBS menu lists every match, rows above the shown level included; until step 2 such a hit opens the section, where that row is not drawn yet. That is expected for step 1.
+| 2 | Showing the setting: section, card opened, level revealed, row scrolled into view and marked; Shortcuts at a command | Built; owner approval of the screenshots pending (rule 16) |
+| 3 | The search field and its results in the Settings window, with the Shortcuts page's commands | Built; owner approval of the screenshots pending (rule 16) |
 
 ## Contract
 
@@ -95,7 +93,22 @@ The menu's words count as context ("File Settings"), as they do for sections: "s
 
 ### Showing a setting (step 2)
 
-Opening at a setting shows its section; when the key is a row, the card holding it opens if it was folded (the fold is saved, as a click would), a row above the shown level makes its card show all its rows (as answering "More options are hidden" does), the row scrolls into view through the page's `ScrollArea`, takes the keyboard focus on its control, and is marked for `duration.find-mark` with an outline that fades out. A row the page does not draw now (a WAV recording hides the video encoder rows) shows its card instead, marked the same way. Details, tokens and the timing contract (a row checks the request when it is made, as a section switch makes it) are written in that step.
+`ui.settings.open` with a target, from any caller (the RBS menu, the window's field, a shortcut, the API), first shows its section, then:
+
+- **A setting or card** (`SettingsWindow.show-setting(key, card, level)`, called by `rbs-app` with the place in the shown section): the card opens if it was folded (`Sections.set-closed`, saved as a click would be); a row above the level drawn makes its card show all its rows (`Experience.show`, as answering "More options are hidden" does); then the global `SettingsFind` gets the key and steps its `serial`.
+- **Answer.** The `SettingRow`, `SettingBlock` or `SettingsCard` whose key (`find`, or the card's `id`) equals `SettingsFind.key` answers when the serial steps and when it is made (a section switched to at the same moment makes its rows then): it sets `found`, reports its box through `FocusReveal.row`, so the page's `ScrollArea` brings it into view, and becomes the marked target. A row that a `Shown` hides without removing it answers only while `findable` (its condition) holds.
+- **Fallback.** When no row answered within `delay.find-fallback` (the format hides it: WAV has no video encoder rows; a Remote control row needs another choice), the window asks for the card instead, which answers the same way.
+- **Mark.** The target draws `FindMark`: a `size.focus-ring` outline in `color.border.focus`, `space.2` outside its sides (a card's on all four, with its radius grown to match), at full opacity until `delay.find-mark` has passed, then fading over `motion.normal` (no fade under reduce motion). Nothing else changes: no focus is moved and no value is touched.
+- **A command** (`ui.settings.open {command}`): the Shortcuts page's search takes the command's title, so its row is listed.
+- **Cost.** One `string` comparison per row when a target is asked for. While `SettingsFind.key` is empty nothing runs: the two timers run only during a jump, and the mark is a transparent rectangle.
+
+### The search field (step 3)
+
+- **Place.** In the Settings window's section list, under the title row: a `TextField` "Search settings" (placeholder and accessible name) across the list, with a Clear button (`IconButton`, `close`, "Clear the search") while it has text. The collapsed section list (the icon rail) has no field; expanding it brings the field back with its text.
+- **Results.** While the field has text, its results cover the section list (on `color.surface.raised`, scrolling in a `ScrollArea`): one `ListRow` per result, with the section's icon, the title, and under it where it is ("Recording › Encoding", or the section for a card, "Shortcuts" for a command; nothing for a section). The accessible name is "<title> in <where>". No match: "Nothing matches “<query>”." in `type.caption`, `color.text.secondary`.
+- **Order** (`settings_index::window_search`): sections whose title holds every word, then the index hits as in "Search" (at most `MAX_WINDOW_SETTINGS`, 30), then registry commands whose title holds every word (at most `MAX_WINDOW_COMMANDS`, 8).
+- **Choosing.** A click (or Return on a focused row) opens the result as `ui.settings.open` does (section, card, setting or command) and keeps the field and its results, so another result is one click away. Return in the field opens the first result. Clear empties the field and shows the section list again.
+- Each keystroke runs the search once on the UI thread (well under a millisecond) and replaces the result model; nothing runs while the field is empty.
 
 ## Errors and failure behaviour
 
@@ -108,7 +121,9 @@ Zero cost when unused (ADR-0013): the index is static data in the binary (a few 
 ## Conformance tests
 
 - `rbs-ui`: `settings_index::tests` (table rules, search order, places), `command::tests::search_finds_settings_after_the_commands`.
-- `rbs-app`: `tests/settings_index.rs` (sync with the pages), `menu_bar` `settings_open_at_a_setting`.
+- `rbs-ui`: `settings_index::tests::the_window_lists_sections_settings_then_commands`.
+- `rbs-app`: `tests/settings_index.rs` (sync with the pages, `findable` in `Shown`), `menu_bar` `settings_open_at_a_setting`.
+- Manual (Linux, Xvfb, dark and light): a menu hit and a field hit open the row in another section, scroll to it and mark it; a hidden row (PCM with MKV) marks its card; a Shortcuts command opens Shortcuts filtered to it.
 
 ## Open questions
 

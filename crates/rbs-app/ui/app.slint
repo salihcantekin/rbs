@@ -2,8 +2,8 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { ScrollArea, Sections, Experience, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
-import { SettingsNavItem, SettingsNavGroup, SettingsHeader, SettingsScroll } from "settings.slint";
+import { ScrollArea, Sections, Experience, SettingsFind, TextField, ListRow, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
+import { SettingsNavItem, SettingsNavGroup, SettingsHeader, SettingsScroll, SettingsHit } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
 import { VirtualCamera, VirtualCameraSettings } from "vcam.slint";
@@ -2385,8 +2385,8 @@ export component FloatWindow inherits Window {
     OverlayHost { width: parent.width; height: parent.height; }
 }
 
-// The Settings window (U17): a list of sections and the chosen one. Search comes when
-// there are more.
+// The Settings window (U17): a list of sections with a search field, and the chosen
+// section (docs/specs/settings-search.md).
 export component SettingsWindow inherits Window {
     default-font-family: Theme.font-family;
     title: @tr("RBS settings");
@@ -2407,6 +2407,64 @@ export component SettingsWindow inherits Window {
     // Another section is shown (the Appearance page reads its files when shown).
     callback section-shown(int);
     changed section => { root.section-shown(root.section); }
+    // Settings search field (docs/specs/settings-search.md, step 3): the query, its
+    // results from Rust, and the result chosen (Rust opens it as `ui.settings.open`).
+    in-out property <string> search;
+    in property <[SettingsHit]> hits;
+    callback search-edited(string);
+    callback hit-chosen(int);
+    pure function section-icon(s: int) -> IconName {
+        return s == 0 ? IconName.monitor : s == 1 ? IconName.dot : s == 2 ? IconName.broadcast
+            : s == 3 ? IconName.link : s == 4 ? IconName.sliders : s == 5 ? IconName.palette
+            : s == 6 ? IconName.keyboard : s == 7 ? IconName.globe : s == 8 ? IconName.camera
+            : IconName.headphones;
+    }
+    // Settings search (docs/specs/settings-search.md, step 2): show the row or card
+    // with `key` in the section shown. `card` is its card id (the key itself for a
+    // card): opened if folded, and shown when the row is not drawn now. `level` is the
+    // row's level (0 simple, 1 advanced, 2 expert): above the level drawn, the card
+    // shows all its rows, as answering "More options are hidden" does.
+    public function show-setting(key: string, card: string, level: int) {
+        if card != "" {
+            if Sections.closed(card, Sections.rev) { Sections.set-closed(card, false); }
+            if (level == 1 && !Experience.advanced) || (level == 2 && !Experience.expert) {
+                Experience.show(card);
+                Experience.rev += 1;
+            }
+        }
+        root.find-card = card;
+        SettingsFind.marked = "";
+        SettingsFind.found = false;
+        SettingsFind.key = key;
+        SettingsFind.serial += 1;
+        find-fallback.running = false;
+        find-fallback.running = true;
+    }
+    property <string> find-card;
+    // The row had its chance to answer: show its card when it did not (a row the page
+    // does not draw now), then let the mark fade after `delay.find-mark`.
+    find-fallback := Timer {
+        interval: Tokens.delay-find-fallback;
+        running: false;
+        triggered => {
+            self.running = false;
+            if !SettingsFind.found && root.find-card != "" && root.find-card != SettingsFind.key {
+                SettingsFind.key = root.find-card;
+                SettingsFind.serial += 1;
+            }
+            find-end.running = false;
+            find-end.running = true;
+        }
+    }
+    find-end := Timer {
+        interval: Tokens.delay-find-mark;
+        running: false;
+        triggered => {
+            self.running = false;
+            SettingsFind.marked = "";
+            SettingsFind.key = "";
+        }
+    }
     // Same menu bar as the main window so the macOS system menu bar stays filled
     // while Settings is key (spec, "Menu bar").
     // BEGIN generated menu bar (menu_bar.rs; do not edit)
@@ -2587,7 +2645,7 @@ export component SettingsWindow inherits Window {
                     width: Tokens.size-border;
                     background: Theme.border-subtle;
                 }
-                VerticalLayout {
+                nav := VerticalLayout {
                     padding: Tokens.space-3;
                     padding-top: Tokens.space-4;
                     spacing: Tokens.space-1;
@@ -2614,6 +2672,34 @@ export component SettingsWindow inherits Window {
                         }
                     }
                     Rectangle { height: Tokens.space-2; }
+                    // Search (U17): sections, cards, settings and Shortcuts commands. While
+                    // it has text, its results cover the section list below it.
+                    field-row := HorizontalLayout {
+                        visible: !root.nav-collapsed;
+                        height: root.nav-collapsed ? 0px : self.preferred-height;
+                        spacing: Tokens.space-2;
+                        search-field := TextField {
+                            horizontal-stretch: 1;
+                            label: @tr("Search settings");
+                            placeholder: @tr("Search settings");
+                            text <=> root.search;
+                            edited(t) => { root.search-edited(t); }
+                            accepted(t) => {
+                                if root.hits.length > 0 { root.hit-chosen(0); }
+                            }
+                        }
+                        if root.search != "": IconButton {
+                            horizontal-stretch: 0;
+                            icon: IconName.close;
+                            name: @tr("Clear the search");
+                            clicked => {
+                                root.search = "";
+                                root.search-edited("");
+                                search-field.focus();
+                            }
+                        }
+                    }
+                    Rectangle { height: root.nav-collapsed ? 0px : Tokens.space-2; }
                     if !root.nav-collapsed: SettingsNavGroup { title: @tr("App"); }
                     if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
                     SettingsNavItem {
@@ -2691,6 +2777,38 @@ export component SettingsWindow inherits Window {
                         compact: root.nav-collapsed;
                         current: root.section == 3;
                         activated => { root.section = 3; }
+                    }
+                }
+                // The search results, over the section list while the field has text.
+                if root.search != "" && !root.nav-collapsed: Rectangle {
+                    y: field-row.y + field-row.height + Tokens.space-2;
+                    width: parent.width - Tokens.size-border;
+                    height: parent.height - self.y;
+                    background: Theme.surface-raised;
+                    results := ScrollArea {
+                        x: Tokens.space-3;
+                        width: parent.width - 2 * Tokens.space-3;
+                        content-height: found.preferred-height;
+                        found := VerticalLayout {
+                            spacing: Tokens.space-1;
+                            alignment: start;
+                            accessible-role: list;
+                            accessible-label: @tr("Search results");
+                            for h[i] in root.hits: ListRow {
+                                has-icon: true;
+                                icon: root.section-icon(h.section);
+                                name: h.title;
+                                note: h.path;
+                                accessible-name: h.path == "" ? h.title : @tr("{} in {}", h.title, h.path);
+                                activated => { root.hit-chosen(i); }
+                            }
+                            if root.hits.length == 0: Text {
+                                text: @tr("Nothing matches “{}”.", root.search);
+                                color: Theme.text-secondary;
+                                font-size: Tokens.type-caption-size;
+                                wrap: word-wrap;
+                            }
+                        }
                     }
                 }
             }

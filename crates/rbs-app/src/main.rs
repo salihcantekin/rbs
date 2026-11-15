@@ -176,9 +176,11 @@ struct App {
     /// The density in use, as the registry shows it (View › Spacing).
     density: rbs_ui::tokens::Density,
     /// `ui.settings.open` ran; the next sync shows Settings, at this section when
-    /// given. The setting or command it names is not used yet: Settings opens at its
-    /// section (spec `settings-search.md`; step 2 shows the row).
+    /// given, and at the setting or command it names (spec `settings-search.md`).
     open_settings: Option<(Option<i32>, Option<menu_bar::SettingsTarget>)>,
+    /// The Settings window's search results, in the order shown (settings search
+    /// step 3); `SettingsWindow.hit-chosen` indexes them.
+    settings_found: Vec<rbs_ui::settings_index::Found>,
     /// `source.settings` ran; the next sync opens the Source settings window.
     open_source_settings: Option<i32>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
@@ -1601,8 +1603,8 @@ impl Ctx {
     fn connect_vertical_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
     /// Shows the Settings window at `section`, made on first use and kept until it is
-    /// closed.
-    fn open_settings(&self, section: i32) {
+    /// closed, and at `target` in it when given (settings search).
+    fn open_settings(&self, section: i32, target: Option<menu_bar::SettingsTarget>) {
         let ctx = self.clone();
         self.update(move |app| {
             app.studio.settings_opened();
@@ -1619,6 +1621,7 @@ impl Ctx {
                     vcam_page::opened(app);
                 }
                 app.studio.monitor_page_shown(section == SECTION_AUDIO);
+                show_settings_target(&ctx, app, section, target);
                 return;
             }
             let Ok(w) = SettingsWindow::new() else {
@@ -1675,6 +1678,30 @@ impl Ctx {
             vcam_page::install(&w.global::<VirtualCamera>(), &ctx);
             replay_page::install(&w.global::<ReplayBuffer>(), &ctx);
             let c = ctx.clone();
+            w.on_search_edited(move |text| {
+                entry::guard(|| {
+                    c.update(move |app| settings_search(app, &text));
+                });
+            });
+            let c = ctx.clone();
+            w.on_hit_chosen(move |i| {
+                entry::guard(|| {
+                    // The next sync opens it, as `ui.settings.open` does.
+                    c.update(move |app| {
+                        let Some(found) = usize::try_from(i)
+                            .ok()
+                            .and_then(|i| app.settings_found.get(i).copied())
+                        else {
+                            return;
+                        };
+                        let (section, target) = settings_found_target(found);
+                        if let Some(section) = section {
+                            app.open_settings = Some((Some(section), target));
+                        }
+                    });
+                });
+            });
+            let c = ctx.clone();
             w.on_section_shown(move |s| {
                 c.update(move |app| app.studio.monitor_page_shown(s == SECTION_AUDIO));
                 if s == SECTION_VIRTUAL_CAMERA {
@@ -1710,6 +1737,7 @@ impl Ctx {
                 vcam_page::opened(app);
             }
             app.studio.monitor_page_shown(section == SECTION_AUDIO);
+            show_settings_target(&ctx, app, section, target);
         });
     }
 
@@ -2328,13 +2356,12 @@ impl Ctx {
             self.show_all(&mut app);
             app.open_name_prompt(ask);
         }
-        // TODO(settings search step 2): show the target's row, not only its section.
-        if let Some((section, _target)) = app.open_settings.take() {
+        if let Some((section, target)) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).
             let section = section
                 .or_else(|| app.settings.as_ref().map(|w| w.get_section()))
                 .unwrap_or(SECTION_GENERAL);
-            self.open_settings(section);
+            self.open_settings(section, target);
         }
         if let Some(id) = app.open_source_settings.take() {
             self.show_all(&mut app);
@@ -4041,11 +4068,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     {
         let ctx = ctx.clone();
-        g.on_open_settings(move || entry::guard(|| ctx.open_settings(SECTION_RECORDING)));
+        g.on_open_settings(move || entry::guard(|| ctx.open_settings(SECTION_RECORDING, None)));
     }
     {
         let ctx = ctx.clone();
-        g.on_open_stream_settings(move || entry::guard(|| ctx.open_settings(SECTION_STREAM)));
+        g.on_open_stream_settings(move || entry::guard(|| ctx.open_settings(SECTION_STREAM, None)));
     }
     // Record and Go live in the frame are `record.toggle` and `stream.toggle`: with
     // "Main + vertical" they also act on the vertical canvas (ADR-0111).
@@ -4506,6 +4533,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             select_density: None,
             density: user.data().appearance().0.density,
             open_settings: None,
+            settings_found: Vec::new(),
             open_source_settings: None,
             open_app_menu: false,
             open_vertical: false,
@@ -4800,6 +4828,94 @@ fn cursor_pos() -> Option<(i32, i32)> {
     #[cfg(not(windows))]
     {
         None
+    }
+}
+
+/// The Settings window's search field changed: its results (settings search step 3).
+fn settings_search(app: &mut App, text: &str) {
+    use rbs_ui::command::settings_section_title;
+    use rbs_ui::settings_index::{Found, window_search};
+    let Some(w) = &app.settings else { return };
+    app.settings_found = window_search(text, &settings_section_title);
+    let section = |name: &str| menu_bar::settings_section(name).unwrap_or_default();
+    let hits: Vec<SettingsHit> = app
+        .settings_found
+        .iter()
+        .map(|f| match f {
+            Found::Section(name) => SettingsHit {
+                title: settings_section_title(name).into(),
+                path: slint::SharedString::new(),
+                section: section(name),
+            },
+            Found::Setting(hit) => SettingsHit {
+                title: hit.setting.title.into(),
+                path: match hit.card_title() {
+                    Some(card) => format!("{} › {card}", settings_section_title(hit.place.section)),
+                    None => settings_section_title(hit.place.section),
+                }
+                .into(),
+                section: section(hit.place.section),
+            },
+            Found::Command(_, title) => SettingsHit {
+                title: (*title).into(),
+                path: settings_section_title("shortcuts").into(),
+                section: SECTION_SHORTCUTS,
+            },
+        })
+        .collect();
+    w.set_hits(slint::ModelRc::new(slint::VecModel::from(hits)));
+}
+
+/// Where a Settings window search result opens: its section and target.
+fn settings_found_target(
+    found: rbs_ui::settings_index::Found,
+) -> (Option<i32>, Option<menu_bar::SettingsTarget>) {
+    use rbs_ui::settings_index::Found;
+    match found {
+        Found::Section(name) => (menu_bar::settings_section(name), None),
+        Found::Setting(hit) => (
+            menu_bar::settings_section(hit.place.section),
+            Some(menu_bar::SettingsTarget::Setting(
+                hit.setting.key.to_owned(),
+            )),
+        ),
+        Found::Command(id, _) => (
+            Some(SECTION_SHORTCUTS),
+            Some(menu_bar::SettingsTarget::Command(id.to_owned())),
+        ),
+    }
+}
+
+/// Shows a settings search target in the open Settings window, at `section` (spec
+/// `settings-search.md`, step 2): a setting's row or card through
+/// `SettingsWindow.show-setting`, a command through the Shortcuts page's search.
+fn show_settings_target(
+    ctx: &Ctx,
+    app: &App,
+    section: i32,
+    target: Option<menu_bar::SettingsTarget>,
+) {
+    let Some(w) = &app.settings else { return };
+    match target {
+        None => {}
+        Some(menu_bar::SettingsTarget::Setting(key)) => {
+            let Some(s) = rbs_ui::settings_index::find(&key) else {
+                return;
+            };
+            let place = s
+                .places
+                .iter()
+                .find(|p| menu_bar::settings_section(p.section) == Some(section))
+                .or(s.places.first());
+            let card = place.map(|p| p.card).unwrap_or_default();
+            let level = match s.level {
+                rbs_ui::settings_index::Level::Simple => 0,
+                rbs_ui::settings_index::Level::Advanced => 1,
+                rbs_ui::settings_index::Level::Expert => 2,
+            };
+            w.invoke_show_setting(key.into(), card.into(), level);
+        }
+        Some(menu_bar::SettingsTarget::Command(id)) => shortcuts_page::show_command(ctx, app, &id),
     }
 }
 

@@ -8,6 +8,8 @@
 //! - A fixed label equals the index title.
 //! - The row's level is the `advanced` or `expert` branch it is drawn in.
 //! - The row's card is one of the index places of that key.
+//! - A keyed row inside a `Shown` (hidden, not removed) says when it can be found
+//!   (`findable:`).
 //! - Every card (`SettingsCard` with an `id: "settings.…"`) is an index card with the
 //!   same title, and every index card is in the pages.
 
@@ -95,6 +97,8 @@ struct Row {
     label: Option<String>,
     find: Option<String>,
     none: bool,
+    findable: bool,
+    in_shown: bool,
     card: Option<String>,
     level: Level,
 }
@@ -137,6 +141,8 @@ fn scan(name: &str, text: &str, rows: &mut Vec<Row>, cards: &mut Vec<Card>) {
                         Some(quoted(v).unwrap_or_else(|| panic!("{at}: find takes a plain key")));
                 } else if trimmed.starts_with("// find: none (") {
                     rows[r].none = true;
+                } else if trimmed.starts_with("findable:") {
+                    rows[r].findable = true;
                 }
             }
             if let Some(&(d, c)) = open_cards.last()
@@ -195,6 +201,8 @@ fn scan(name: &str, text: &str, rows: &mut Vec<Row>, cards: &mut Vec<Card>) {
                             label: None,
                             find: None,
                             none: false,
+                            findable: false,
+                            in_shown: stack.iter().any(|o| o.header.ends_with("Shown")),
                             card,
                             level,
                         });
@@ -267,6 +275,11 @@ fn settings_search_index_matches_the_ui_files() {
             continue;
         };
         assert!(!r.none, "{}: a row with a key is not left out", r.at);
+        assert!(
+            !r.in_shown || r.findable,
+            "{}: {key} sits in a `Shown`, which hides it without removing it: set `findable:` to its condition",
+            r.at
+        );
         let s = find(key).unwrap_or_else(|| panic!("{}: {key} is not in the settings index", r.at));
         assert!(!s.is_card(), "{}: {key} is a card key", r.at);
         if let Some(label) = label {

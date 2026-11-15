@@ -41,6 +41,39 @@ export global FocusReveal {
     }
 }
 
+// The Settings search target (docs/specs/settings-search.md, step 2). The window
+// sets `key` (a row key or card id) and steps `serial`; the row or card with that
+// key, when drawn, answers: it sets `found`, reports itself through FocusReveal so
+// its scroll area brings it into view, and is marked while `marked` holds its key.
+// Rows also answer when they are made, so a section switched to at the same time
+// works. Nothing runs while `key` is empty.
+export global SettingsFind {
+    in-out property <string> key;
+    in-out property <int> serial;
+    in-out property <bool> found;
+    in-out property <string> marked;
+    // Called by the row or card with `key` (absolute position and size).
+    public function answer(key: string, x: length, y: length, w: length, h: length) {
+        self.found = true;
+        self.marked = key;
+        FocusReveal.row(x, y, w, h);
+    }
+}
+
+// The mark of a row or card found by Settings search: a focus-coloured outline that
+// fades out (docs/specs/settings-search.md). `on` holds while the target is marked.
+// The user places it `space.2` outside the target's sides.
+export component FindMark inherits Rectangle {
+    in property <bool> on;
+    in property <length> radius: Tokens.radius-md;
+    border-radius: root.radius;
+    border-width: Tokens.size-focus-ring;
+    border-color: Theme.border-focus;
+    opacity: root.on ? 1 : 0;
+    animate opacity { duration: Tokens.motion-normal; }
+    accessible-role: none;
+}
+
 export component RingFocus inherits FocusScope {
     out property <bool> ring: self.has-focus && !by-pointer;
     // The focus came from the keyboard and is not just back with its window: a tooltip
@@ -4536,6 +4569,9 @@ export component SettingRow inherits Rectangle {
     // Its key in the settings search index (docs/specs/settings-search.md), or "" for
     // a row search does not find. A test checks the keys against the index.
     in property <string> find;
+    // Off while a parent hides the row without removing it (`Shown`): search then
+    // shows the card instead. A test asks every keyed row in a `Shown` to set it.
+    in property <bool> findable: true;
     // A few words under the name saying what the setting does, one line (owner
     // decision 2026-11-14): with `hint`, the usual pair for a short setting.
     in property <string> summary;
@@ -4590,6 +4626,22 @@ export component SettingRow inherits Rectangle {
         if FocusReveal.x >= p.x && FocusReveal.x < p.x + self.width && FocusReveal.y >= p.y && FocusReveal.y < p.y + self.height {
             FocusReveal.row(p.x, p.y, self.width, self.height);
         }
+    }
+    // Settings search: this row answers when its key is asked for (SettingsFind).
+    property <int> find-serial: SettingsFind.serial;
+    changed find-serial => { root.answer-find(); }
+    init => { root.answer-find(); }
+    function answer-find() {
+        if root.findable && root.find != "" && root.find == SettingsFind.key {
+            SettingsFind.answer(root.find, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+        }
+    }
+    FindMark {
+        x: -Tokens.space-2;
+        y: 0px;
+        width: root.width + 2 * Tokens.space-2;
+        height: root.height;
+        on: root.find != "" && SettingsFind.marked == root.find;
     }
     if root.divider: Rectangle {
         y: 0;

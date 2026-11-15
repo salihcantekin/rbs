@@ -816,6 +816,56 @@ pub fn search(query: &str, context: &str, section_title: &dyn Fn(&str) -> String
     first
 }
 
+/// One result of the Settings window's search field (step 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Found {
+    /// A section whose title holds every word.
+    Section(&'static str),
+    /// A card or setting.
+    Setting(Hit),
+    /// A command of the registry, shown in Shortcuts: its id and title.
+    Command(&'static str, &'static str),
+}
+
+/// Most settings and commands [`window_search`] lists.
+pub const MAX_WINDOW_SETTINGS: usize = 30;
+/// Most commands [`window_search`] lists, after the settings.
+pub const MAX_WINDOW_COMMANDS: usize = 8;
+
+/// The Settings window's search: sections whose title holds every word, then the
+/// index hits ([`search`], at most [`MAX_WINDOW_SETTINGS`]), then registry commands
+/// whose title holds every word (at most [`MAX_WINDOW_COMMANDS`]), which open in
+/// Shortcuts. None for a blank query.
+pub fn window_search(query: &str, section_title: &dyn Fn(&str) -> String) -> Vec<Found> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let all = |text: &str| {
+        let text = text.to_lowercase();
+        words.iter().all(|w| text.contains(w.as_str()))
+    };
+    let mut out: Vec<Found> = crate::command::SETTINGS_SECTIONS
+        .iter()
+        .filter(|s| all(&section_title(s)))
+        .map(|s| Found::Section(s))
+        .collect();
+    out.extend(
+        search(query, "", section_title)
+            .into_iter()
+            .take(MAX_WINDOW_SETTINGS)
+            .map(Found::Setting),
+    );
+    out.extend(
+        crate::command::ENTRIES
+            .iter()
+            .filter(|e| all(e.title))
+            .take(MAX_WINDOW_COMMANDS)
+            .map(|e| Found::Command(e.id, e.title)),
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,6 +950,31 @@ mod tests {
             assert!(own < 20, "{q}: {own}");
         }
         assert_eq!(hits("settings keyframe"), 2);
+    }
+
+    #[test]
+    fn the_window_lists_sections_settings_then_commands() {
+        assert!(window_search(" ", &settings_section_title).is_empty());
+        let found = window_search("record", &settings_section_title);
+        assert_eq!(found[0], Found::Section("recording"));
+        let first_command = found
+            .iter()
+            .position(|f| matches!(f, Found::Command(..)))
+            .unwrap_or(found.len());
+        assert!(
+            found[1..first_command]
+                .iter()
+                .all(|f| matches!(f, Found::Setting(_)))
+        );
+        assert!(
+            found[first_command..]
+                .iter()
+                .all(|f| matches!(f, Found::Command(..)))
+        );
+        assert!(first_command < found.len(), "a record command");
+        assert!(found.len() <= 1 + MAX_WINDOW_SETTINGS + MAX_WINDOW_COMMANDS);
+        let found = window_search("keyframe", &settings_section_title);
+        assert_eq!(found.len(), 2);
     }
 
     #[test]

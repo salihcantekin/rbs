@@ -225,6 +225,11 @@ format = 4
 # Not motion: how long a toast stays before it closes, and how often the time left steps.
 "delay.toast" = 8000
 "delay.toast-tick" = 1000
+# Not motion: Settings search (settings-search.md). How long the window waits for the
+# setting's row to answer before it shows the card instead, and how long the row
+# found stays marked.
+"delay.find-fallback" = 120
+"delay.find-mark" = 2000
 
 # Size and line height in logical pixels, weight 100-900.
 [type]
