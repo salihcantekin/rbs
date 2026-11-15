@@ -712,3 +712,30 @@ fn the_wheel_outside_an_open_hint_closes_it() {
     wheel(&p, 380.0, 280.0, -40.0);
     assert!(!o.get_hint_open());
 }
+
+#[test]
+fn a_fast_spinning_wheel_moves_a_long_select_while_it_spins() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    open_long_select(&p, 60, 3);
+    let c = o.get_select_cover();
+    let (x, mid) = (c.x + c.width / 2.0, c.y + c.height / 2.0);
+    // A free-spinning wheel: many wheel steps a few milliseconds apart, each with
+    // the animated scrolling of a real mouse wheel (the public event has no phase).
+    for _ in 0..60 {
+        let step = i_slint_core::input::BackendMouseEvent::Wheel {
+            position: i_slint_core::lengths::LogicalPoint::new(x, mid),
+            delta_x: 0.0,
+            delta_y: -40.0,
+            phase: i_slint_core::input::TouchPhase::Moved,
+        };
+        p.window().dispatch_event(WindowEvent::internal(step));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(8));
+        settle();
+    }
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+    settle();
+    click(&p, x - 10.0, c.y + c.height - 12.0);
+    settle();
+    assert_eq!(p.get_select_index(), 59, "the list reached its end");
+}

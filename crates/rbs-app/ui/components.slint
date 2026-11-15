@@ -3623,10 +3623,14 @@ export component ListBox inherits Rectangle {
     property <length> content-h: max(0px, root.lines * root.pitch - root.spacing);
     property <int> lines-in-view: max(1, Math.floor((area.height + root.spacing) / root.pitch));
     // The rows to build: all of them, or with `virtual` the ones in view and a page around.
-    out property <int> first-shown: !root.virtual ? 0
-        : max(0, (Math.floor(area.offset / root.pitch) - root.lines-in-view) * root.columns-shown);
+    // The number of rows never depends on the scroll offset: Slint rebuilds every row of a
+    // `for` whose count is evaluated again, so a count that followed the offset rebuilt
+    // all rows on each wheel step and a fast wheel froze the list. Only `first-shown`
+    // follows the offset; the rows keep their elements and take other items.
     out property <int> shown-count: !root.virtual ? root.count
-        : min(root.count - root.first-shown, (3 * root.lines-in-view + 1) * root.columns-shown);
+        : min(root.count, (3 * root.lines-in-view + 1) * root.columns-shown);
+    out property <int> first-shown: !root.virtual ? 0
+        : clamp((Math.floor(area.offset / root.pitch) - root.lines-in-view) * root.columns-shown, 0, max(0, root.count - root.shown-count));
     preferred-height: root.inline ? root.content-h
         : root.max-rows > 0 ? max(0px, min(root.lines, root.max-rows) * root.pitch - root.spacing) : root.content-h;
     min-height: root.inline ? root.content-h : 0px;
