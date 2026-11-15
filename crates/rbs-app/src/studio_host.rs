@@ -1532,6 +1532,7 @@ impl RecordingMarkers {
         };
         let format = match project {
             crate::record_profile::EditorProject::Fcpxml => rbs_project::Format::Fcpxml,
+            crate::record_profile::EditorProject::Xmeml => rbs_project::Format::Xmeml,
         };
         rbs_project::export(&self.dir, &self.name, format, false)
             .map(|done| {
@@ -5713,6 +5714,7 @@ impl Host {
         }
         let format = match format {
             api::ProjectFormat::Fcpxml => rbs_project::Format::Fcpxml,
+            api::ProjectFormat::Xmeml => rbs_project::Format::Xmeml,
         };
         match rbs_project::export(&dir, &manifest, format, false) {
             Ok(done) => Ok(rbs_api::request::ProjectExported {

@@ -32,12 +32,12 @@ pub enum Command {
     Help,
 }
 
-/// `rbs-cli project --manifest <path> [--format fcpxml] [--strict]`.
+/// `rbs-cli project --manifest <path> [--format fcpxml|xmeml] [--strict]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectArgs {
     /// The recording manifest (`recording.rbs.toml` or `<stem>.rbs.toml`).
     pub manifest: std::path::PathBuf,
-    /// The project format; only `fcpxml` today.
+    /// The project format: `fcpxml` (the default) or `xmeml`.
     pub format: rbs_project::Format,
     /// A separate file missing from the folder is an error instead of left out.
     pub strict: bool,
@@ -225,7 +225,7 @@ usage:
   rbs-cli remote fingerprint
   rbs-cli app stream start|stop|status [--json]
   rbs-cli vcam status|add|format|remove [--size WxH] [--fps N]
-  rbs-cli project --manifest <recording.rbs.toml> [--format fcpxml] [--strict]
+  rbs-cli project --manifest <recording.rbs.toml> [--format fcpxml|xmeml] [--strict]
 
 record options:
   --seconds N          stop after N seconds (default: Enter or Ctrl+C)
@@ -506,7 +506,7 @@ fn project<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<ProjectArgs, Str
             "--format" => {
                 let name = it.next().ok_or("project: --format needs a name")?;
                 format = rbs_project::Format::parse(name)
-                    .ok_or_else(|| format!("project: unknown format {name:?} (fcpxml)"))?;
+                    .ok_or_else(|| format!("project: unknown format {name:?} (fcpxml or xmeml)"))?;
             }
             "--strict" => strict = true,
             other => return Err(format!("project: unexpected {other:?}")),
@@ -1164,13 +1164,21 @@ mod tests {
                 strict: true,
             })
         );
+        assert_eq!(
+            parse(["project", "--manifest", "a.rbs.toml", "--format", "xmeml"]).unwrap(),
+            Command::Project(ProjectArgs {
+                manifest: "a.rbs.toml".into(),
+                format: rbs_project::Format::Xmeml,
+                strict: false,
+            })
+        );
         for (args, want) in [
             (&["token"][..], "list, create or revoke"),
             (&["remote"][..], "needs fingerprint"),
             (&["project"][..], "needs --manifest"),
             (&["project", "--manifest"][..], "needs a path"),
             (
-                &["project", "--manifest", "a", "--format", "xmeml"][..],
+                &["project", "--manifest", "a", "--format", "aaf"][..],
                 "unknown format",
             ),
             (&["project", "--manifest", "a", "--loose"][..], "unexpected"),

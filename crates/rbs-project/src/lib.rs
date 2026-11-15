@@ -10,6 +10,7 @@
 mod fcpxml;
 mod time;
 mod url;
+mod xmeml;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -22,8 +23,12 @@ pub use url::MediaFolder;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
-    /// FCPXML 1.9, one `.fcpxml` file (Final Cut Pro, DaVinci Resolve).
+    /// FCPXML 1.9, one `.fcpxml` file (Final Cut Pro). DaVinci Resolve 21 imports
+    /// its clips but drops its markers.
     Fcpxml,
+    /// FCP7 XML (`xmeml` version 5), one `.xml` file (DaVinci Resolve with markers,
+    /// Premiere Pro).
+    Xmeml,
 }
 
 impl Format {
@@ -31,13 +36,15 @@ impl Format {
     pub fn extension(self) -> &'static str {
         match self {
             Self::Fcpxml => "fcpxml",
+            Self::Xmeml => "xml",
         }
     }
 
-    /// Parses a control API or command line name (`fcpxml`).
+    /// Parses a control API or command line name (`fcpxml`, `xmeml`).
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "fcpxml" => Some(Self::Fcpxml),
+            "xmeml" => Some(Self::Xmeml),
             _ => None,
         }
     }
@@ -59,6 +66,9 @@ pub enum ProjectError {
     NoPicture,
     /// A file has a role this build does not place.
     UnknownRole(String),
+    /// The format cannot express the recording's frame rate (xmeml takes whole and
+    /// NTSC rates only), as `num/den`.
+    UnsupportedRate(String),
     /// The media folder is not an absolute path.
     NotAbsolute,
     /// `--strict` and a separate file is missing.
@@ -80,6 +90,9 @@ impl fmt::Display for ProjectError {
             Self::MissingMaster => f.write_str("the master file is not in the folder"),
             Self::NoPicture => f.write_str("a recording without a picture has no project yet"),
             Self::UnknownRole(role) => write!(f, "a file has the unknown role {role}"),
+            Self::UnsupportedRate(rate) => {
+                write!(f, "this project format cannot hold the frame rate {rate}")
+            }
             Self::NotAbsolute => f.write_str("the recording folder is not an absolute path"),
             Self::MissingFile(name) => write!(f, "{name} is not in the folder"),
             Self::Manifest(e) => e.fmt(f),
@@ -100,6 +113,7 @@ pub fn build(
 ) -> Result<String, ProjectError> {
     match format {
         Format::Fcpxml => fcpxml::write(manifest, folder, title),
+        Format::Xmeml => xmeml::write(manifest, folder, title),
     }
 }
 

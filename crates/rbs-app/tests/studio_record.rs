@@ -1573,6 +1573,15 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
     let project = std::fs::read_to_string(dir.join("take").join("take.fcpxml")).unwrap();
     assert!(project.contains("<fcpxml version=\"1.9\">"), "{project}");
     assert!(project.contains("master.mkv"), "{project}");
+    // FCP7 XML, the format DaVinci Resolve reads markers from.
+    let xml = api.call(
+        "project.export",
+        serde_json::json!({"recording": "take", "format": "xmeml"}),
+    );
+    assert_eq!(xml["result"]["file"], "take.xml", "{xml}");
+    let project = std::fs::read_to_string(dir.join("take").join("take.xml")).unwrap();
+    assert!(project.contains("<xmeml version=\"5\">"), "{project}");
+    assert!(project.contains("master.mkv"), "{project}");
 
     // The editor project setting: a plain take keeps its timing and writes its
     // project when it stops, with no marker.

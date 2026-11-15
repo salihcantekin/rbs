@@ -257,7 +257,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `record.status {canvas?}` | `read` | Recording state; a running main recording lists its separate files in `tracks` and marked sources without a file in `skipped` (protocol 1.46) |
 | `source.set_record_separately {source, enabled?, video?, audio?, video_as?}` | `control` | Record the source's sound or picture as a file of its own next to the main recording, from the next recording on (protocol 1.46, ADR-0086; picture files and `video`, `audio`, `video_as` 1.52, ADR-0117); see "Protocol 1.46" and "Protocol 1.52" |
 | `marker.add {label?, color?, canvas?}`, `marker.remove {canvas, index}` | `control` | A marker in the running recordings, and taking one back (protocol 1.50, ADR-0089); see "Protocol 1.50" |
-| `project.export {recording, format}` | `control` | An editor project from a finished recording's manifest (protocol 1.58, ADR-0089); see "Protocol 1.58" |
+| `project.export {recording, format}` | `control` | An editor project from a finished recording's manifest (protocol 1.58, ADR-0089; `xmeml` 1.60); see "Protocol 1.58" and "Protocol 1.60" |
 | `stream.start {canvas?}`, `stream.stop {canvas?}` | `control` | Go live with the saved stream settings and the key in the system's credential store, and end the stream (protocol 1.1); `canvas: "all"` from protocol 1.42 |
 | `output.set_with_vertical {kind, on}` | `control` | Whether Record (`kind: "record"`) or Go live (`"stream"`) also starts and stops the vertical canvas's output; saved in the output profile; not undoable; allowed while outputs run (protocol 1.42, ADR-0111) |
 | `stream.status {canvas?}` | `read` | Stream state (protocol 1.1) |
@@ -502,12 +502,18 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Refusals.** `not_found` for an unknown scene (the canvas's global scene included, which no method lists) or source; `invalid_params` for `scene.audio.set` with neither `volume` nor `muted`, a volume outside `0..=1` or not finite, or unknown keys.
 - **Older clients and servers.** A 1.47 client sees the same objects as before for a collection without Own levels; on a scene in Own levels its `volume` and `muted` remain the source's own values, which may differ from what is heard. A 1.47 server answers `method_not_found` and omits the fields. 1.47 was the loudness meter. A collection that uses Own levels is saved as scene format 17, which older builds refuse to open.
 
-### Protocol 1.60 (planned; the number is final at merge): pause a recording, hold a stream (ADR-0124)
+### Protocol 1.61 (planned; the number is final at merge): pause a recording, hold a stream (ADR-0124)
 
 - **Methods** (`control`, live class): `record.pause {canvas?}`, `record.resume {canvas?}`, `record.pause_toggle {canvas?}` (`canvas` as in 1.29, `all` as in 1.42); `stream.hold {canvas?, picture?}` (`freeze` by default, `black`; `scene` with phase 2b), `stream.resume {canvas?}`, `stream.hold_toggle {canvas?}`; `output.break_toggle` (holds every live stream and pauses every recording; when all of them already are, resumes them all). Holding a stream that shares an encoder with a recording pauses that recording, and `stream.resume` resumes it, unless the user had paused it before the hold. Additive: a minor version. The stream methods change what is on air and take the on-air permission check. `conflict` when nothing runs to pause or hold, it is already in the asked state, or the pause is refused because a shared video encoder cannot make a keyframe on request (the message says so); `invalid_params` for an unknown `picture`.
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `stream.state` and `stream.canvas_state` add `held` and `held_ms`. Published on each change, never per frame.
 - **Markers.** `marker.add` while paused is accepted; the marker sits on that pause's join with `while_paused: true`.
-- **Registry.** Each method is a command, so shortcuts, the RBS menu, Stream Deck and MCP get it. A server older than 1.60 answers `method_not_found`.
+- **Registry.** Each method is a command, so shortcuts, the RBS menu, Stream Deck and MCP get it. A server older than 1.61 answers `method_not_found`.
+
+### Protocol 1.60: FCP7 XML editor projects (ADR-0089 decision 9, format 2)
+
+- **`format: "xmeml"`** for `project.export` and for a recording profile's `editor_project`: an FCP7 XML (`xmeml` version 5) project, `<stem>.xml` (then `<stem> 2.xml`, ...), the format DaVinci Resolve reads markers from (recording spec, "Editor project"). `failed` also when the recording's frame rate is neither whole nor NTSC (`N*1000/1001`), which xmeml cannot hold. `"fcpxml"` is unchanged and stays the Final Cut Pro format.
+- **Rust crate.** `ProjectFormat::Xmeml`. Exhaustive matches on `ProjectFormat` must add it (a breaking change of the crate, not of the protocol).
+- **Older clients and servers.** A server older than 1.60 answers `invalid_params` for `"xmeml"`. A client older than 1.60 that reads a profile whose `editor_project` is `"xmeml"` sees an unknown name; the `rbs-api` crate before 1.60 refuses it, so a client checks for 1.60 before setting it.
 
 ### Protocol 1.59: loudness target and limit, Show loudness saved (ADR-0092 decisions 5 and 7)
 

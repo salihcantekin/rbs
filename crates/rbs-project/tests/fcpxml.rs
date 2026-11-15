@@ -201,6 +201,33 @@ fn a_master_that_starts_late_puts_earlier_items_on_a_gap() {
     golden("late-master-30.fcpxml", &text);
 }
 
+/// FCP7 XML (ADR-0089 format 2): the same two recordings.
+#[test]
+fn xmeml_places_the_same_recordings_with_markers_on_the_master() {
+    let folder = MediaFolder::from_text(r"C:\Users\Salih\Videos\RBS\Interview 2026-11-14").unwrap();
+    let text = build(&interview(), &folder, Format::Xmeml, "Interview 2026-11-14").unwrap();
+    golden("interview-5994.xml", &text);
+    let folder = MediaFolder::from_text("/Users/salih/Movies/RBS/Konuşma").unwrap();
+    let text = build(&late_master(), &folder, Format::Xmeml, "Konuşma").unwrap();
+    golden("late-master-30.xml", &text);
+}
+
+/// xmeml has whole and NTSC rates only.
+#[test]
+fn xmeml_refuses_a_rate_it_cannot_hold() {
+    let mut m = late_master();
+    let odd = picture(1080, 1920, FrameRate::new(100, 3).unwrap());
+    m.completion = Some(Completion {
+        duration_ns: 10_100 * MS,
+        picture: Some(odd),
+    });
+    let folder = MediaFolder::from_text("/tmp/x").unwrap();
+    assert!(matches!(
+        build(&m, &folder, Format::Xmeml, "x"),
+        Err(ProjectError::UnsupportedRate(_))
+    ));
+}
+
 #[test]
 fn incomplete_or_unplaceable_manifests_are_refused() {
     let folder = MediaFolder::from_text("/tmp/x").unwrap();

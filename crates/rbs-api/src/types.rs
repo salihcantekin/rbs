@@ -820,8 +820,11 @@ pub struct RecordingProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectFormat {
-    /// FCPXML 1.9, one `.fcpxml` file (DaVinci Resolve, Final Cut Pro).
+    /// FCPXML 1.9, one `.fcpxml` file (Final Cut Pro).
     Fcpxml,
+    /// FCP7 XML (xmeml version 5), one `.xml` file (DaVinci Resolve, Premiere Pro;
+    /// protocol 1.60).
+    Xmeml,
 }
 
 /// The video codec of a recording or a stream. H.264 is omitted on the wire.
