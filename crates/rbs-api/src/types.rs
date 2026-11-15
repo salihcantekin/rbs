@@ -1750,10 +1750,15 @@ pub struct MaxTracks {
     /// The growing resources whose limit is unknown.
     pub unknown: Vec<EstimateResource>,
     /// Video only: the most separate video files a start with these settings opens
-    /// now, however many are marked (at most 3 while the encoder's capacity is
-    /// unknown). Absent without a picture file template.
+    /// now, however many are marked (while the encoder's capacity is unknown, at
+    /// most 3, or `known_count` when a measurement reached further). Absent without
+    /// a picture file template.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_most_now: Option<u32>,
+    /// The largest total at which the encoder capacity rows (`encoder_sessions`,
+    /// `cpu_load`) were known at every step (protocol 1.55); absent when none was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_count: Option<u32>,
 }
 
 /// Both kinds of [`MaxTracks`].

@@ -27,8 +27,9 @@ pub enum LimitCause {
 }
 
 /// How many separate video files fit and what bounds them, the smaller bound winning:
-/// the estimate's "at most N", capped at [`UNKNOWN_SESSIONS_VIDEO_LIMIT`] while an
-/// encoder's capacity is unknown (ADR-0087 Review, 2026-11-14). `plan` tells whether
+/// the estimate's "at most N", capped at [`UNKNOWN_SESSIONS_VIDEO_LIMIT`] (or the
+/// measured `known_count` when higher) while an encoder's capacity is unknown
+/// (ADR-0087 Review, 2026-11-14). `plan` tells whether
 /// any encoder can take a file (its video template).
 pub fn separate_video_bound(plan: &EstimatePlan, e: &Estimate) -> (usize, LimitCause) {
     if plan.video_template.is_none() {
@@ -43,9 +44,10 @@ pub fn separate_video_bound(plan: &EstimatePlan, e: &Estimate) -> (usize, LimitC
         | None => LimitCause::Encoder,
         Some(_) => LimitCause::Resource,
     };
+    let cap = max.unknown_capacity_cap();
     match (count, unknown_capacity) {
-        (Some(c), true) if c < UNKNOWN_SESSIONS_VIDEO_LIMIT => (c, cause_of(max.limit)),
-        (_, true) => (UNKNOWN_SESSIONS_VIDEO_LIMIT, LimitCause::Encoder),
+        (Some(c), true) if c < cap => (c, cause_of(max.limit)),
+        (_, true) => (cap, LimitCause::Encoder),
         (Some(c), false) => (c, cause_of(max.limit)),
         (None, false) => (UNKNOWN_SESSIONS_VIDEO_LIMIT, LimitCause::Encoder),
     }

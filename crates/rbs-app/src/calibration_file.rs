@@ -11,7 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rbs_record::estimate::{Calibration, EncoderMeasure, FpsClass, RateClass, SizeClass};
+use rbs_record::estimate::{
+    Calibration, EncoderMeasure, FpsClass, RateClass, SizeClass, StopReason,
+};
 use serde::{Deserialize, Serialize};
 
 /// The file's format version.
@@ -47,9 +49,44 @@ pub struct EncoderEntry {
     pub frame_time_us: u64,
     /// When it was measured, in seconds since the Unix epoch.
     pub measured_at: u64,
-    /// The run stopped at its time limit before this entry finished.
+    /// The series ended before a step failed or an open was refused (the time
+    /// limit, a cancel or an error after step 1): `sessions` is a lower bound.
     #[serde(default)]
     pub partial: bool,
+    /// Why the series stopped (`refused`, `late`, `ceiling`, `limit`, `cancelled`,
+    /// `error`). Absent in a file written by hand: `limit` when `partial`, else
+    /// `late`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
+}
+
+impl EncoderEntry {
+    /// What [`EncoderEntry::stopped_by`] says, with the reading for an absent or
+    /// unknown value.
+    pub fn stop_reason(&self) -> StopReason {
+        match self.stopped_by.as_deref() {
+            Some("refused") => StopReason::Refused,
+            Some("late") => StopReason::Late,
+            Some("ceiling") => StopReason::Ceiling,
+            Some("limit") => StopReason::Limit,
+            Some("cancelled") => StopReason::Cancelled,
+            Some("error") => StopReason::Error,
+            _ if self.partial => StopReason::Limit,
+            _ => StopReason::Late,
+        }
+    }
+}
+
+/// The file name of a [`StopReason`].
+pub fn stop_reason_name(r: StopReason) -> &'static str {
+    match r {
+        StopReason::Refused => "refused",
+        StopReason::Late => "late",
+        StopReason::Ceiling => "ceiling",
+        StopReason::Limit => "limit",
+        StopReason::Cancelled => "cancelled",
+        StopReason::Error => "error",
+    }
 }
 
 /// One ISO export result.
@@ -194,6 +231,7 @@ fn encoder_measure(e: &EncoderEntry) -> Option<EncoderMeasure> {
         sessions: e.sessions,
         pixels_per_second: e.pixels_per_second,
         frame_time: std::time::Duration::from_micros(e.frame_time_us),
+        stopped_by: e.stop_reason(),
     })
 }
 
@@ -276,6 +314,7 @@ mod tests {
             frame_time_us: 2_000,
             measured_at: at,
             partial: false,
+            stopped_by: None,
         }
     }
 

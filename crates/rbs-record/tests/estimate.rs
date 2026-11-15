@@ -8,7 +8,8 @@ use std::time::Duration;
 use rbs_record::IsoRole;
 use rbs_record::estimate::{
     AudioEncode, Calibration, DeclaredAdapter, EncoderMeasure, EstimatePlan, FpsClass, Level,
-    Limits, RateClass, ReasonCode, Resource, Row, SizeClass, TrackRef, Use, VideoEncode, estimate,
+    Limits, RateClass, ReasonCode, Resource, Row, SizeClass, StopReason, TrackRef, Use,
+    VideoEncode, estimate, separate_video_limit,
 };
 use rbs_scene::model::SourceId;
 
@@ -106,6 +107,7 @@ fn measure(sessions: u32, pixels_per_second: u64, frame_time: Duration) -> Encod
         sessions,
         pixels_per_second,
         frame_time,
+        stopped_by: StopReason::Late,
     }
 }
 
@@ -186,7 +188,11 @@ fn rate_levels_turn_heavy_at_seven_tenths_and_over_past_the_limit() {
 fn a_calibration_overrides_the_declared_limits_and_says_measured() {
     let mut limits = declared(Some(8));
     limits.calibration = Some(Calibration {
-        encoders: vec![measure(3, 1_000_000_000, Duration::from_millis(2))],
+        // A refused open: a session cap of 3 beats the declared 8.
+        encoders: vec![EncoderMeasure {
+            stopped_by: StopReason::Refused,
+            ..measure(3, 1_000_000_000, Duration::from_millis(2))
+        }],
         exports: vec![(SizeClass::L1080, Duration::from_millis(1))],
         write_speed: Some(100_000_000),
     });
@@ -348,7 +354,7 @@ fn every_separate_track_lists_what_it_adds() {
 
 #[test]
 fn the_separate_video_limit_is_three_until_the_encoder_is_known() {
-    use rbs_record::estimate::{UNKNOWN_SESSIONS_VIDEO_LIMIT, separate_video_limit};
+    use rbs_record::estimate::UNKNOWN_SESSIONS_VIDEO_LIMIT;
     // Hardware, nothing declared or measured.
     let e = estimate(&plan(HW, 0), &declared(None));
     assert_eq!(separate_video_limit(&e), UNKNOWN_SESSIONS_VIDEO_LIMIT);
@@ -471,4 +477,187 @@ fn with_no_encoder_for_the_files_older_requests_skip_them_and_new_ones_are_refus
     assert!(older.keep.is_empty() && older.refusal.is_none());
     let asked = gate(&p, &declared(None), &marked, asked(true, GatePolicy::Skip));
     assert_eq!(asked.refusal.unwrap().0, GateRefusal::OverLimit);
+}
+
+// ADR-0087 step D1: what a calibration entry's stop reason means
+// (`output-estimate.md`, "What a stop reason means").
+
+fn measured(size: SizeClass, pixels: u64, sessions: u32, stopped_by: StopReason) -> EncoderMeasure {
+    EncoderMeasure {
+        size,
+        pixels_per_second: u64::from(sessions) * pixels * 60,
+        stopped_by,
+        ..measure(sessions, 0, Duration::from_millis(2))
+    }
+}
+
+fn with_calibration(encoders: Vec<EncoderMeasure>) -> Limits {
+    let mut limits = declared(None);
+    limits.calibration = Some(Calibration {
+        encoders,
+        ..Calibration::default()
+    });
+    limits
+}
+
+fn sized(mut e: VideoEncode, width: u32, height: u32) -> VideoEncode {
+    e.width = width;
+    e.height = height;
+    e
+}
+
+#[test]
+fn mixed_classes_combine_by_share_and_a_late_count_is_not_a_session_cap() {
+    // Master 1080p, three 720p files and one 2160p file on one adapter.
+    let mut p = plan(HW, 0);
+    for i in 0..3 {
+        p.video.push(sized(
+            video(Use::Iso(track(i + 1, IsoRole::Video)), HW, Some(0)),
+            1280,
+            720,
+        ));
+    }
+    p.video.push(sized(
+        video(Use::Iso(track(4, IsoRole::Video)), HW, Some(1)),
+        3840,
+        2160,
+    ));
+    let limits = with_calibration(vec![
+        measured(SizeClass::L1080, 1920 * 1080, 12, StopReason::Late),
+        measured(SizeClass::L720, 1280 * 720, 20, StopReason::Ceiling),
+        measured(SizeClass::L2160, 3840 * 2160, 3, StopReason::Late),
+    ]);
+    let e = estimate(&p, &limits);
+    let s = row(&e.resources, Resource::EncoderSessions);
+    assert_eq!((s.level, s.measured), (Some(Level::Fits), true));
+    // 1/12 + 3/20 + 1/3 = 0.57 of the adapter.
+    let t = row(&e.resources, Resource::EncoderThroughput);
+    assert_eq!((t.level, t.measured), (Some(Level::Fits), true));
+    let share = t.need / t.limit.unwrap_or(f64::NAN);
+    assert!(
+        (share - (1.0 / 12.0 + 3.0 / 20.0 + 1.0 / 3.0)).abs() < 1e-9,
+        "{share}"
+    );
+}
+
+#[test]
+fn a_late_count_limits_the_files_by_throughput_not_to_three() {
+    let limits = with_calibration(vec![measured(
+        SizeClass::L1080,
+        1920 * 1080,
+        12,
+        StopReason::Late,
+    )]);
+    let e = estimate(&plan(HW, 1), &limits);
+    assert_eq!(e.max_video.count, Some(11));
+    assert_eq!(e.max_video.limit, Some(Resource::EncoderThroughput));
+    assert!(!e.max_video.unknown.contains(&Resource::EncoderSessions));
+    assert_eq!(separate_video_limit(&e), 11);
+}
+
+#[test]
+fn a_lower_bound_raises_the_limit_to_what_was_measured() {
+    // `iso_render_share` stays unknown (no export measured): it must not hold the
+    // known count at 0.
+    let limits = with_calibration(vec![measured(
+        SizeClass::L1080,
+        1920 * 1080,
+        9,
+        StopReason::Limit,
+    )]);
+    let e = estimate(&plan(HW, 1), &limits);
+    assert!(e.max_video.unknown.contains(&Resource::EncoderSessions));
+    assert!(e.max_video.unknown.contains(&Resource::IsoRenderShare));
+    assert_eq!(e.max_video.known_count, Some(8));
+    assert_eq!(separate_video_limit(&e), 8);
+}
+
+#[test]
+fn a_small_lower_bound_keeps_the_cap_of_three() {
+    let limits = with_calibration(vec![measured(
+        SizeClass::L1080,
+        1920 * 1080,
+        2,
+        StopReason::Cancelled,
+    )]);
+    let e = estimate(&plan(HW, 1), &limits);
+    assert_eq!(e.max_video.known_count, Some(1));
+    assert_eq!(separate_video_limit(&e), 3);
+}
+
+#[test]
+fn every_class_at_the_ceiling_has_no_session_cap() {
+    let limits = with_calibration(vec![measured(
+        SizeClass::L1080,
+        1920 * 1080,
+        20,
+        StopReason::Ceiling,
+    )]);
+    let e = estimate(&plan(HW, 15), &limits);
+    let s = row(&e.resources, Resource::EncoderSessions);
+    assert_eq!((s.level, s.measured), (Some(Level::Fits), true));
+    assert!(!e.max_video.unknown.contains(&Resource::EncoderSessions));
+    assert!(separate_video_limit(&e) > 3);
+}
+
+#[test]
+fn a_refused_open_is_the_session_cap() {
+    let limits = with_calibration(vec![measured(
+        SizeClass::L1080,
+        1920 * 1080,
+        4,
+        StopReason::Refused,
+    )]);
+    let e = estimate(&plan(HW, 4), &limits);
+    let s = row(&e.resources, Resource::EncoderSessions);
+    assert_eq!(
+        (s.limit, s.level, s.measured),
+        (Some(4.0), Some(Level::Over), true)
+    );
+    assert_eq!(e.max_video.count, Some(3));
+    assert_eq!(e.max_video.limit, Some(Resource::EncoderSessions));
+}
+
+#[test]
+fn a_software_adapter_keeps_unlimited_sessions_above_its_measure() {
+    let limits = with_calibration(vec![EncoderMeasure {
+        adapter: SW.to_owned(),
+        ..measured(SizeClass::L1080, 1920 * 1080, 5, StopReason::Late)
+    }]);
+    let e = estimate(&plan(SW, 8), &limits);
+    let s = row(&e.resources, Resource::EncoderSessions);
+    assert_eq!(s.level, Some(Level::Fits));
+    let c = row(&e.resources, Resource::CpuLoad);
+    assert_eq!(c.level, Some(Level::Over));
+    assert_eq!(e.max_video.count, Some(4));
+    assert_eq!(e.max_video.limit, Some(Resource::CpuLoad));
+}
+
+#[test]
+fn a_measured_zero_is_over_and_measured() {
+    let limits = with_calibration(vec![measured(
+        SizeClass::L1080,
+        1920 * 1080,
+        0,
+        StopReason::Late,
+    )]);
+    let e = estimate(&plan(HW, 0), &limits);
+    let t = row(&e.resources, Resource::EncoderThroughput);
+    assert_eq!(
+        (t.limit, t.level, t.measured),
+        (Some(0.0), Some(Level::Over), true)
+    );
+}
+
+#[test]
+fn throughput_above_a_lower_bound_is_unknown_not_over() {
+    let limits = with_calibration(vec![measured(
+        SizeClass::L1080,
+        1920 * 1080,
+        3,
+        StopReason::Limit,
+    )]);
+    let e = estimate(&plan(HW, 4), &limits);
+    let t = row(&e.resources, Resource::EncoderThroughput);
+    assert_eq!((t.limit, t.level), (None, Some(Level::Unknown)));
 }

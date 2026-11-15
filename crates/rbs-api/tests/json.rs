@@ -2013,6 +2013,7 @@ fn the_estimate_answer_writes_whole_counts_and_reads_unknown_names_as_other() {
                 partial: true,
                 unknown: vec![EstimateResource::EncoderSessions],
                 at_most_now: Some(3),
+                known_count: None,
             },
             audio: MaxTracks {
                 count: Some(32),
@@ -2020,6 +2021,7 @@ fn the_estimate_answer_writes_whole_counts_and_reads_unknown_names_as_other() {
                 partial: false,
                 unknown: vec![],
                 at_most_now: None,
+                known_count: None,
             },
         },
         tracks: vec![],

@@ -37,18 +37,28 @@ pub const DEFAULT_PLANNED_DURATION: Duration = Duration::from_secs(3600);
 pub const UNKNOWN_SESSIONS_VIDEO_LIMIT: usize = 3;
 
 /// How many separate video files a start may open, from its estimate: the
-/// estimate's "at most N", and at most [`UNKNOWN_SESSIONS_VIDEO_LIMIT`] while
-/// `encoder_sessions` or `cpu_load` is unknown (ADR-0087 Review, 2026-11-14).
+/// estimate's "at most N", and while `encoder_sessions` or `cpu_load` is unknown at
+/// most [`UNKNOWN_SESSIONS_VIDEO_LIMIT`], or the measured `known_count` when that is
+/// higher (ADR-0087 Review, 2026-11-14: a measured limit decides, above or below 3).
 pub fn separate_video_limit(estimate: &Estimate) -> usize {
     let max = &estimate.max_video;
     let count = max.count.map(|c| c as usize);
     if max.unknown.contains(&Resource::EncoderSessions) || max.unknown.contains(&Resource::CpuLoad)
     {
-        count.map_or(UNKNOWN_SESSIONS_VIDEO_LIMIT, |c| {
-            c.min(UNKNOWN_SESSIONS_VIDEO_LIMIT)
-        })
+        let cap = max.unknown_capacity_cap();
+        count.map_or(cap, |c| c.min(cap))
     } else {
         count.unwrap_or(UNKNOWN_SESSIONS_VIDEO_LIMIT)
+    }
+}
+
+impl MaxTracks {
+    /// The cap while an encoder's capacity is unknown: [`UNKNOWN_SESSIONS_VIDEO_LIMIT`],
+    /// raised to `known_count` when a measured lower bound reached further.
+    pub fn unknown_capacity_cap(&self) -> usize {
+        self.known_count
+            .map_or(UNKNOWN_SESSIONS_VIDEO_LIMIT, |k| k as usize)
+            .max(UNKNOWN_SESSIONS_VIDEO_LIMIT)
     }
 }
 
@@ -500,6 +510,32 @@ pub struct EncoderMeasure {
     pub pixels_per_second: u64,
     /// Encode time of one frame with one session.
     pub frame_time: Duration,
+    /// Why the measurement stopped, which says what `sessions` means.
+    pub stopped_by: StopReason,
+}
+
+/// Why a calibration series stopped (ADR-0087 decision 4, `output-estimate.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StopReason {
+    /// An open was refused: `sessions` is the adapter's session cap.
+    Refused,
+    /// The next step was late: `sessions` is a throughput limit.
+    Late,
+    /// The plan's ceiling passed: no session cap for any plan.
+    Ceiling,
+    /// The time share or the run limit ended it: a lower bound.
+    Limit,
+    /// A cancel ended it: a lower bound.
+    Cancelled,
+    /// An error after step 1 ended it: a lower bound.
+    Error,
+}
+
+impl StopReason {
+    /// `sessions` and `pixels_per_second` are only a lower bound.
+    pub const fn lower_bound(self) -> bool {
+        matches!(self, Self::Limit | Self::Cancelled | Self::Error)
+    }
 }
 
 /// What the last calibration measured, already filtered to this computer's adapters
@@ -592,6 +628,11 @@ pub struct MaxTracks {
     pub partial: bool,
     /// Those resources.
     pub unknown: Vec<Resource>,
+    /// The largest track count such that at every probe step up to it neither the
+    /// `encoder_sessions` nor the `cpu_load` row was unknown (a row the plan does
+    /// not have counts as known); `None` when no step beyond 0 was. It lets a
+    /// measured lower bound raise [`separate_video_limit`] above the cap of 3.
+    pub known_count: Option<u32>,
 }
 
 /// What one separate track adds.
@@ -703,34 +744,120 @@ fn adapters_of(plan: &EstimatePlan) -> Vec<&str> {
     ids
 }
 
-/// Pixel rate need, and the limit that holds the same share, of `encodes` against
-/// per-session limits (`None` when one is unknown).
+/// What the calibration says about an adapter's session count for these encodes
+/// (`output-estimate.md`, "What a stop reason means").
+enum MeasuredSessions {
+    /// No class of these encodes is measured.
+    None,
+    /// An open was refused: the lowest refused count is the cap.
+    Cap(u32),
+    /// Every class passed the plan's ceiling: no cap.
+    NoCap,
+    /// At least this many sessions opened on the adapter (the largest count of any
+    /// class); above it nothing is known.
+    AtLeast(u32),
+}
+
+fn measured_sessions(encodes: &[&VideoEncode], cal: Option<&Calibration>) -> MeasuredSessions {
+    let measures: Vec<&EncoderMeasure> = encodes
+        .iter()
+        .filter_map(|e| cal.and_then(|c| c.encoder(e)))
+        .collect();
+    if measures.is_empty() {
+        return MeasuredSessions::None;
+    }
+    if let Some(cap) = measures
+        .iter()
+        .filter(|m| m.stopped_by == StopReason::Refused)
+        .map(|m| m.sessions)
+        .min()
+    {
+        return MeasuredSessions::Cap(cap);
+    }
+    let all_classes_measured = encodes
+        .iter()
+        .all(|e| cal.and_then(|c| c.encoder(e)).is_some());
+    if all_classes_measured && measures.iter().all(|m| m.stopped_by == StopReason::Ceiling) {
+        return MeasuredSessions::NoCap;
+    }
+    MeasuredSessions::AtLeast(measures.iter().map(|m| m.sessions).max().unwrap_or(0))
+}
+
+/// A per-session pixel rate limit: the rate, whether it is measured, and whether it
+/// is only a lower bound (a calibration series that was not stopped by a late frame).
+#[derive(Clone, Copy)]
+struct RateLimit {
+    rate: f64,
+    measured: bool,
+    lower_bound: bool,
+}
+
+impl RateLimit {
+    fn of(m: &EncoderMeasure) -> Self {
+        Self {
+            rate: m.pixels_per_second as f64,
+            measured: true,
+            lower_bound: m.stopped_by != StopReason::Late,
+        }
+    }
+
+    fn declared(rate: f64) -> Self {
+        Self {
+            rate,
+            measured: false,
+            lower_bound: false,
+        }
+    }
+}
+
+/// Pixel rate need of `encodes`, the limit that holds the same share (`None` when one
+/// is unknown), whether every limit is measured, and whether some limit is only a
+/// lower bound.
 fn throughput<'a>(
     encodes: impl Iterator<Item = &'a VideoEncode>,
-    limit_of: impl Fn(&VideoEncode) -> Option<(f64, bool)>,
-) -> (f64, Option<f64>, bool) {
+    limit_of: impl Fn(&VideoEncode) -> Option<RateLimit>,
+) -> (f64, Option<f64>, bool, bool) {
     let mut need = 0.0;
     let mut share = 0.0;
     let mut known = true;
     let mut measured = true;
+    let mut lower_bound = false;
+    let mut zero = false;
     for e in encodes {
         let rate = e.pixel_rate();
         need += rate;
         match limit_of(e) {
-            Some((limit, m)) if limit > 0.0 => {
-                share += rate / limit;
-                measured &= m;
+            Some(l) if l.rate > 0.0 => {
+                share += rate / l.rate;
+                measured &= l.measured;
+                lower_bound |= l.lower_bound;
             }
+            // A measured limit of 0 (one session did not keep up) is known: `over`.
+            Some(l) if l.measured && !l.lower_bound => zero = true,
             _ => known = false,
         }
     }
     if !known {
-        return (need, None, false);
+        return (need, None, false, false);
+    }
+    if zero {
+        return (need, Some(0.0), true, false);
     }
     // A single class gives its own limit; mixed classes give the limit at which the
     // same share is used.
     let limit = if share > 0.0 { need / share } else { 0.0 };
-    (need, Some(limit), measured)
+    (need, Some(limit), measured, lower_bound)
+}
+
+/// The level of a throughput row: a limit that is only a lower bound says `fits` up
+/// to it and nothing above it.
+fn throughput_level(need: f64, limit: Option<f64>, lower_bound: bool) -> Level {
+    match limit {
+        None => Level::Unknown,
+        Some(l) if lower_bound && need > l => Level::Unknown,
+        Some(l) if lower_bound => Level::Fits,
+        Some(l) => rate_level(need, l),
+    }
 }
 
 fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
@@ -746,24 +873,23 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
         let declared = limits.adapters.iter().find(|a| a.id == id);
         let hardware = encodes.iter().any(|e| e.hardware);
         let need = encodes.len() as f64;
-        let measured_sessions = encodes
-            .iter()
-            .filter_map(|e| cal.and_then(|c| c.encoder(e)).map(|m| m.sessions))
-            .min();
+        let sessions = measured_sessions(&encodes, cal);
         let (limit, measured, level, reason) =
-            match (measured_sessions, declared.and_then(|d| d.sessions_max)) {
-                (Some(m), _) => {
+            match (sessions, declared.and_then(|d| d.sessions_max)) {
+                (MeasuredSessions::Cap(m), _) => {
                     let l = f64::from(m);
                     (Some(l), true, count_level(need, l), ReasonCode::Sessions)
                 }
-                (None, Some(d)) => {
+                (MeasuredSessions::NoCap, _) => (None, true, Level::Fits, ReasonCode::Sessions),
+                (MeasuredSessions::AtLeast(m), _) if need <= f64::from(m) => {
+                    (Some(f64::from(m)), true, Level::Fits, ReasonCode::Sessions)
+                }
+                (MeasuredSessions::AtLeast(_), Some(d)) | (MeasuredSessions::None, Some(d)) => {
                     let l = f64::from(d);
                     (Some(l), false, count_level(need, l), ReasonCode::Sessions)
                 }
-                (None, None) if hardware => {
-                    (None, false, Level::Unknown, ReasonCode::SessionsUnknown)
-                }
-                (None, None) => (None, false, Level::Fits, ReasonCode::Sessions),
+                (_, None) if hardware => (None, false, Level::Unknown, ReasonCode::SessionsUnknown),
+                (_, None) => (None, false, Level::Fits, ReasonCode::Sessions),
             };
         out.push(
             Row {
@@ -780,13 +906,28 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
 
         if hardware {
             let declared_rate = declared.and_then(|d| d.pixel_rate_max).map(|r| r as f64);
-            let (need, limit, measured) = throughput(encodes.iter().copied(), |e| {
-                match cal.and_then(|c| c.encoder(e)) {
-                    Some(m) => Some((m.pixels_per_second as f64, true)),
-                    None => declared_rate.map(|r| (r, false)),
-                }
-            });
-            let level = limit.map_or(Level::Unknown, |l| rate_level(need, l));
+            let (need, mut limit, mut measured, lower_bound) =
+                throughput(encodes.iter().copied(), |e| {
+                    match cal.and_then(|c| c.encoder(e)) {
+                        Some(m) => Some(RateLimit::of(m)),
+                        None => declared_rate.map(RateLimit::declared),
+                    }
+                });
+            let mut level = throughput_level(need, limit, lower_bound);
+            // Above a measured lower bound, a declared rate decides when there is one.
+            if level == Level::Unknown
+                && lower_bound
+                && let Some(r) = declared_rate
+            {
+                limit = Some(r);
+                measured = false;
+                level = rate_level(need, r);
+            }
+            let limit = if level == Level::Unknown && lower_bound {
+                None
+            } else {
+                limit
+            };
             out.push(
                 Row {
                     resource: Resource::EncoderThroughput,
@@ -804,11 +945,12 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
 
     // CPU load of software video encoding.
     if plan.video.iter().any(|e| !e.hardware) {
-        let (need, limit, _) = throughput(plan.video.iter().filter(|e| !e.hardware), |e| {
-            cal.and_then(|c| c.encoder(e))
-                .map(|m| (m.pixels_per_second as f64, true))
-        });
-        let level = limit.map_or(Level::Unknown, |l| rate_level(need, l));
+        let (need, limit, _, lower_bound) =
+            throughput(plan.video.iter().filter(|e| !e.hardware), |e| {
+                cal.and_then(|c| c.encoder(e)).map(RateLimit::of)
+            });
+        let level = throughput_level(need, limit, lower_bound);
+        let limit = if level == Level::Unknown { None } else { limit };
         out.push(
             Row {
                 resource: Resource::CpuLoad,
@@ -1063,6 +1205,9 @@ fn max_tracks(plan: &EstimatePlan, limits: &Limits, video: bool) -> MaxTracks {
     let mut unknown: Vec<Resource> = Vec::new();
     let mut known_growing = false;
     let mut result = None;
+    // Capacity rows stayed known at every step so far.
+    let mut capacity_known = true;
+    let mut known_count: Option<u32> = None;
     for n in 0..=ceiling + 1 {
         let Some(p) = with_tracks(plan, n, video) else {
             return MaxTracks {
@@ -1070,6 +1215,7 @@ fn max_tracks(plan: &EstimatePlan, limits: &Limits, video: bool) -> MaxTracks {
                 limit: None,
                 partial: false,
                 unknown: Vec::new(),
+                known_count: None,
             };
         };
         let rows = rows_of(&p, limits).rows;
@@ -1079,6 +1225,23 @@ fn max_tracks(plan: &EstimatePlan, limits: &Limits, video: bool) -> MaxTracks {
                 && (r.resource != Resource::IsoCeiling
                     || r.scope.as_deref() == Some(if video { "video" } else { "audio" }))
         });
+        // The unknown rows of the step where a known row is `over` cannot change the
+        // count (ADR-0087 step D1, `output-estimate.md` "At most N").
+        if let Some(r) = over {
+            result = Some((n.saturating_sub(1), r.resource));
+            break;
+        }
+        if capacity_known
+            && rows.iter().any(|r| {
+                matches!(r.resource, Resource::EncoderSessions | Resource::CpuLoad)
+                    && r.level == Some(Level::Unknown)
+            })
+        {
+            capacity_known = false;
+        }
+        if capacity_known && n > 0 {
+            known_count = u32::try_from(n).ok();
+        }
         for r in &rows {
             if !grows_with(r.resource, video) || r.resource == Resource::IsoCeiling {
                 continue;
@@ -1091,10 +1254,6 @@ fn max_tracks(plan: &EstimatePlan, limits: &Limits, video: bool) -> MaxTracks {
                 known_growing = true;
             }
         }
-        if let Some(r) = over {
-            result = Some((n.saturating_sub(1), r.resource));
-            break;
-        }
     }
     let (count, limit) = result.unwrap_or((ceiling, Resource::IsoCeiling));
     let count = u32::try_from(count).unwrap_or(u32::MAX);
@@ -1105,6 +1264,7 @@ fn max_tracks(plan: &EstimatePlan, limits: &Limits, video: bool) -> MaxTracks {
             limit: None,
             partial,
             unknown,
+            known_count,
         };
     }
     MaxTracks {
@@ -1112,6 +1272,7 @@ fn max_tracks(plan: &EstimatePlan, limits: &Limits, video: bool) -> MaxTracks {
         limit: Some(limit),
         partial,
         unknown,
+        known_count,
     }
 }
 

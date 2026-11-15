@@ -9825,6 +9825,7 @@ fn api_estimate(
         partial: m.partial,
         unknown: m.unknown.iter().copied().map(api_resource).collect(),
         at_most_now: now.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+        known_count: m.known_count,
     };
     api::EstimateAnswer {
         level: api_level(e.level),
