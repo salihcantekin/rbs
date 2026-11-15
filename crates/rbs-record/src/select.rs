@@ -113,6 +113,21 @@ pub(crate) fn likely_video_encoder(
         .cloned()
 }
 
+/// Every video encoder a selection for `config` would try, in its order (hardware
+/// first), without those whose declared size range excludes the picture: what a
+/// calibration run measures (ADR-0087 decision 4).
+pub(crate) fn video_candidates(
+    registry: &Registry<dyn VideoEncoderFactory>,
+    config: &VideoEncoderConfig,
+) -> Vec<Arc<dyn VideoEncoderFactory>> {
+    registry
+        .select(&video_requirement(config))
+        .candidates
+        .into_iter()
+        .filter(|f| picture_outside(registry.capabilities(&f.id()), config.format.size).is_none())
+        .collect()
+}
+
 /// True when `adapter` is a candidate of an audio encoder selection for `config`.
 pub(crate) fn is_audio_candidate(
     registry: &Registry<dyn AudioEncoderFactory>,

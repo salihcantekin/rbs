@@ -18,6 +18,7 @@
 //! Every stream is timestamped on the engine's master clock, so the muxer keeps them
 //! in sync (ADR-0004).
 
+pub mod calibration;
 mod clip;
 pub mod estimate;
 mod iso;

@@ -423,7 +423,7 @@ impl VideoEncode {
         f64::from(self.width) * f64::from(self.height) * self.fps
     }
 
-    fn class(&self) -> (SizeClass, FpsClass, RateClass) {
+    pub(crate) fn class(&self) -> (SizeClass, FpsClass, RateClass) {
         (
             SizeClass::of(self.height),
             FpsClass::of(self.fps),
@@ -855,7 +855,7 @@ fn throughput_level(need: f64, limit: Option<f64>, lower_bound: bool) -> Level {
     match limit {
         None => Level::Unknown,
         Some(l) if lower_bound && need > l => Level::Unknown,
-        Some(l) if lower_bound => Level::Fits,
+        Some(_) if lower_bound => Level::Fits,
         Some(l) => rate_level(need, l),
     }
 }
