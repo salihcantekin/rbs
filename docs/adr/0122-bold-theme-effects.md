@@ -551,3 +551,7 @@ The review is complete.
 ### Owner approval
 
 2026-11-14 23:20: owner approval (Salih: "merge et. onaylıyorum"). Status Accepted.
+
+### Measurement note: gradient hover cost (2026-11-15)
+
+The Mac measurement of decision 9, repeated past the first-run page (main `ad0a0402`, M4 Pro, 12 runs): idle 0 frames, resize, redraw and hover within the gates, the max rise at most +0.90 ms. The gradient sweep exceeds the p95 gate of +0.5 ms for Glass (+0.63 ms) and Tactile (+0.57 ms); the worst frame is 4.15 ms against a 16.7 ms budget, drawn only when a hover state changes. Owner (Salih, 2026-11-15): "çok sorun değil bu taşmalar", so the overrun is accepted and the gate stays as written. Numbers: `docs/ui/screenshots/effects/measurements-adr-0122.md`. The AMD iGPU, skia-software and Windows runs remain open.
