@@ -1,7 +1,7 @@
 //! The UI measure mode (ADR-0120 decision 13): `RBS_MEASURE_UI=<seconds>` measures the
 //! main window as the user sees it and quits.
 //!
-//! After 3 s of warm-up it runs three phases of `<seconds>` each and prints one line per
+//! After 3 s of warm-up it runs five phases of `<seconds>` each and prints one line per
 //! phase:
 //!
 //! - **idle**: nothing is sent; frames counted here are redraws nobody asked for;
@@ -9,7 +9,11 @@
 //!   tick (x and y bounce between the edges with different periods), so the hover fills
 //!   change whichever page is showing, the first-run page included;
 //! - **resize**: the window grows and shrinks by up to 200 logical pixels, one step per
-//!   tick.
+//!   tick;
+//! - **sweep**: the pointer runs along the frame bar's row of buttons and back, so the
+//!   gradient faces change their hover state one after another (ADR-0122 decision 9);
+//! - **redraw**: a redraw of the whole window is asked for every tick, as a moving meter
+//!   causes where the GPU path redraws everything (ADR-0122 decision 9).
 //!
 //! For each phase: frames drawn, and the render time (Slint's before- to after-rendering
 //! notification, the work a theme's effects add) and the frame interval as p50, p95, p99
@@ -41,6 +45,9 @@ const HOVER_STEPS: u32 = 120;
 const HOVER_STEPS_Y: u32 = 43;
 const RESIZE_REACH: f32 = 200.0;
 const RESIZE_STEPS: u32 = 60;
+/// Where the sweep runs, in logical pixels from the window's top: inside the frame bar's
+/// buttons in every effects setting (the bar is taller in Glow, its buttons centred).
+const SWEEP_Y: f32 = 24.0;
 
 #[derive(Default)]
 struct Phase {
@@ -135,7 +142,7 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
         }
         let at = elapsed - WARM_UP;
         let index = (at.as_secs_f64() / phase_len.as_secs_f64()) as usize;
-        let names = ["idle", "hover", "resize"];
+        let names = ["idle", "hover", "resize", "sweep", "redraw"];
         if index >= names.len() {
             // The quit takes effect after this tick returns; report once.
             if !st.reported {
@@ -181,6 +188,16 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
                     base.height + grow / 2.0,
                 ));
             }
+            "sweep" => {
+                if let Some(size) = base_size.take() {
+                    window.set_size(size);
+                }
+                let x = size.width * bounce(tick, HOVER_STEPS);
+                window.dispatch_event(WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(x, SWEEP_Y),
+                });
+            }
+            "redraw" => window.request_redraw(),
             _ => {}
         }
     });
