@@ -28,6 +28,7 @@ pub mod export;
 pub mod image_track;
 pub mod media;
 pub mod output;
+pub mod output_cut;
 pub mod preview;
 pub mod replay;
 pub mod replay_node;

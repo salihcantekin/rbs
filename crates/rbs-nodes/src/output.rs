@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use crate::output_cut::{CutGate, Gated, NoCut, OutputCut, PacketGate};
 use rbs_core::media::{
     ContainerId, EncodedPacket, MuxChunk, StreamDescriptor, StreamIndex, StreamParams,
 };
@@ -208,6 +209,10 @@ struct MuxerSetup {
 pub trait SpanPolicy: Send + 'static {
     /// Widens the span by one delivered packet of stream `stream`.
     fn extend(&mut self, stream: usize, packet: &EncodedPacket, stats: &OutputNodeStats);
+    /// The same policy, for a node rebuilt with another gate.
+    fn clone_policy(&self) -> Self
+    where
+        Self: Sized;
 }
 
 /// The default: no span is kept and [`OutputNodeStats::span`] stays `None`. No code
@@ -218,6 +223,9 @@ pub struct NoSpan;
 impl SpanPolicy for NoSpan {
     #[inline(always)]
     fn extend(&mut self, _: usize, _: &EncodedPacket, _: &OutputNodeStats) {}
+    fn clone_policy(&self) -> Self {
+        NoSpan
+    }
 }
 
 /// Keeps the earliest `pts` and the latest end delivered, mirrored into
@@ -261,12 +269,15 @@ impl SpanPolicy for TrackSpan {
             stats.end_ns.store(end, Ordering::Relaxed);
         }
     }
+    fn clone_policy(&self) -> Self {
+        self.clone()
+    }
 }
 
 /// Delivers the packets of its inputs through a muxer (for container transports such
 /// as files) and a transport. `S` decides whether it keeps the span of what it
 /// delivered ([`OutputNode::track_span`]).
-pub struct OutputNode<S: SpanPolicy = NoSpan> {
+pub struct OutputNode<S: SpanPolicy = NoSpan, G: PacketGate = NoCut> {
     descriptor: NodeDescriptor,
     streams: Vec<StreamDescriptor>,
     transport_factory: Arc<dyn TransportFactory>,
@@ -287,6 +298,8 @@ pub struct OutputNode<S: SpanPolicy = NoSpan> {
     start: Start,
     held: VecDeque<(usize, EncodedPacket)>,
     span: S,
+    /// Which packets are written (ADR-0124: a recording that shares an encoder).
+    gate: G,
     stats: Arc<OutputNodeStats>,
 }
 
@@ -305,6 +318,7 @@ impl OutputNode {
         Self {
             descriptor: output_descriptor(streams.len()),
             span: NoSpan,
+            gate: NoCut,
             video,
             start: Start::Open,
             held: VecDeque::new(),
@@ -330,6 +344,27 @@ impl OutputNode {
     /// it; the default output runs no span code (P13).
     pub fn track_span(self) -> OutputNode<TrackSpan> {
         let span = TrackSpan::new(&self.streams);
+        self.with_policies(span, NoCut)
+    }
+}
+
+impl<S: SpanPolicy> OutputNode<S> {
+    /// The same output cutting the streams `cut` names in its pause windows
+    /// (ADR-0124, a recording that shares an encoder). Built only for a pausable
+    /// recording; other outputs run no cut code.
+    pub fn with_cut(self, cut: Arc<OutputCut>) -> OutputNode<S, CutGate> {
+        let gate = CutGate::new(cut, &self.streams);
+        let span = self.span.clone_policy();
+        self.with_policies(span, gate)
+    }
+}
+
+impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
+    fn with_policies<S2: SpanPolicy, G2: PacketGate>(
+        self,
+        span: S2,
+        gate: G2,
+    ) -> OutputNode<S2, G2> {
         OutputNode {
             descriptor: self.descriptor,
             streams: self.streams,
@@ -349,12 +384,13 @@ impl OutputNode {
             start: self.start,
             held: self.held,
             span,
+            gate,
             stats: self.stats,
         }
     }
 }
 
-impl<S: SpanPolicy> OutputNode<S> {
+impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
     /// Muxes into `container` before the transport. Required when the transport's input
     /// is `TransportInput::Container`, and the container must match.
     pub fn with_muxer(
@@ -579,7 +615,7 @@ fn count(stats: &OutputNodeStats, outcome: SendOutcome) {
     }
 }
 
-impl<S: SpanPolicy, X: Runtime> Node<X> for OutputNode<S> {
+impl<S: SpanPolicy, G: PacketGate, X: Runtime> Node<X> for OutputNode<S, G> {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }
@@ -659,9 +695,14 @@ impl<S: SpanPolicy, X: Runtime> Node<X> for OutputNode<S> {
     fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
         let inputs = ctx.inputs();
         self.drain_backlog()?;
+        self.gate.tick();
         for stream in 0..self.streams.len() {
             for packet in inputs.packets(stream) {
-                self.accept(stream, packet)?;
+                match self.gate.pass(stream, packet) {
+                    Gated::Pass => self.accept(stream, packet)?,
+                    Gated::Drop => {}
+                    Gated::Restamped(packet) => self.accept(stream, &packet)?,
+                }
             }
         }
         let transport = self.transport.as_mut().ok_or(NodeError::NotReady)?;

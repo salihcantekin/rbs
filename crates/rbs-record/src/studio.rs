@@ -35,6 +35,7 @@ use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::encode::KeyframeAt;
 use rbs_nodes::export::{ExportEnd, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
+use rbs_nodes::output_cut::OutputCut;
 use rbs_nodes::{
     MediaStats, OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode,
     VirtualCameraNode, VirtualCameraNodeStats,
@@ -493,8 +494,12 @@ enum VideoPlan {
     New {
         export: Box<VideoExportNode>,
         encoder: Box<VideoEncoderNode>,
-        /// The encoder's keyframe requests, for a pausable recording (ADR-0124).
-        keyframes: Option<Arc<KeyframeAt>>,
+        /// The encoder's keyframe requests and whether its adapter honours them
+        /// (ADR-0124 decision 7).
+        keyframes: Arc<KeyframeAt>,
+        keyframe_capable: bool,
+        /// The chain's own pause window, for a pausable recording's new chain.
+        chain_pause: Option<Arc<PauseWindow>>,
         chosen: Chosen,
         settings: VideoSettings,
         /// Resolved output size the encoder is opened with.
@@ -510,6 +515,8 @@ enum AudioPlan {
         node: Box<dyn Node<()>>,
         /// The node's packet losses, end-of-stream flushes and tail losses.
         counters: AudioCounters,
+        /// The chain's own pause window, for a pausable recording's new chain.
+        chain_pause: Option<Arc<PauseWindow>>,
         chosen: Chosen,
         settings: AudioSettings,
         stream: StreamDescriptor,
@@ -562,38 +569,38 @@ fn video_encoder_config(
 
 /// An output node as built for its settings: one that keeps the span of what it
 /// writes only when asked (P13).
-enum OutputNodePlan {
-    Plain(OutputNode),
-    Span(OutputNode<rbs_nodes::output::TrackSpan>),
+/// A prepared output node, boxed with what the studio keeps of it.
+struct OutputNodePlan {
+    node: Box<dyn Node<()>>,
+    stats: Arc<OutputNodeStats>,
+    streams: Vec<rbs_core::media::StreamDescriptor>,
 }
 
 impl OutputNodePlan {
-    fn stats(&self) -> Arc<OutputNodeStats> {
-        match self {
-            Self::Plain(o) => o.stats(),
-            Self::Span(o) => o.stats(),
+    fn of<S: rbs_nodes::output::SpanPolicy, G: rbs_nodes::output_cut::PacketGate>(
+        node: OutputNode<S, G>,
+    ) -> Self {
+        Self {
+            stats: node.stats(),
+            streams: node.streams().to_vec(),
+            node: Box::new(node),
         }
+    }
+
+    fn stats(&self) -> Arc<OutputNodeStats> {
+        Arc::clone(&self.stats)
     }
 
     fn streams(&self) -> &[rbs_core::media::StreamDescriptor] {
-        match self {
-            Self::Plain(o) => o.streams(),
-            Self::Span(o) => o.streams(),
-        }
+        &self.streams
     }
 
     fn descriptor(&self) -> &rbs_graph::node::NodeDescriptor {
-        match self {
-            Self::Plain(o) => Node::<()>::descriptor(o),
-            Self::Span(o) => Node::<()>::descriptor(o),
-        }
+        self.node.descriptor()
     }
 
     fn into_node(self) -> Box<dyn Node<()>> {
-        match self {
-            Self::Plain(o) => Box::new(o),
-            Self::Span(o) => Box::new(o),
-        }
+        self.node
     }
 }
 
@@ -609,6 +616,8 @@ pub(crate) struct Prepared {
     /// The recording's pause window (ADR-0124), when `pausable`; followed by its new
     /// export and audio encoder.
     pause: Option<Arc<PauseWindow>>,
+    /// Its cut at the output node, for the streams it shares (ADR-0124).
+    cut: Option<Arc<OutputCut>>,
 }
 
 impl Prepared {
@@ -675,17 +684,24 @@ impl Prepared {
                         let (encoder, chosen) =
                             select::video_encoder(&adapters.video_encoders, &video_config)?;
                         streams.push(encoder.stream().clone());
-                        let (export, encoder, keyframes) = match &pause {
-                            Some(p) => {
-                                let (encoder, keyframes) = encoder.with_keyframe_requests();
-                                (export.with_pause(Arc::clone(p)), encoder, Some(keyframes))
+                        // Every output's encoder takes keyframe requests: a recording
+                        // sharing it later resumes at one (ADR-0124 decisions 7 and 8).
+                        let keyframe_capable =
+                            select::declares_keyframe(&adapters.video_encoders, &chosen.adapter);
+                        let (encoder, keyframes) = encoder.with_keyframe_requests();
+                        let (export, chain_pause) = match &pause {
+                            Some(_) => {
+                                let window = Arc::new(PauseWindow::default());
+                                (export.with_pause(Arc::clone(&window)), Some(window))
                             }
-                            None => (export, encoder, None),
+                            None => (export, None),
                         };
                         VideoPlan::New {
                             export: Box::new(export),
                             encoder: Box::new(encoder),
                             keyframes,
+                            keyframe_capable,
+                            chain_pause,
                             chosen,
                             settings: video.clone(),
                             size: (width, height),
@@ -719,7 +735,8 @@ impl Prepared {
                         let stream = session.stream().clone();
                         streams.push(stream.clone());
                         let node = EncoderNode::new(session, AUDIO_ENCODER_PACKETS);
-                        let (node, counters): (Box<dyn Node<()>>, _) = match &pause {
+                        let chain_pause = pause.as_ref().map(|_| Arc::new(PauseWindow::default()));
+                        let (node, counters): (Box<dyn Node<()>>, _) = match &chain_pause {
                             Some(p) => {
                                 let node = node
                                     .with_pause(Arc::clone(p), audio_graph.block_frames as usize);
@@ -734,6 +751,7 @@ impl Prepared {
                         AudioPlan::New {
                             node,
                             counters,
+                            chain_pause,
                             chosen,
                             settings: a.clone(),
                             stream,
@@ -757,10 +775,13 @@ impl Prepared {
             }
             None => None,
         };
-        let output = if out.track_span {
-            OutputNodePlan::Span(output.track_span())
-        } else {
-            OutputNodePlan::Plain(output)
+        // A pausable recording cuts at its output the streams it shares (ADR-0124).
+        let cut = out.pausable.then(|| Arc::new(OutputCut::default()));
+        let output = match (out.track_span, &cut) {
+            (true, Some(c)) => OutputNodePlan::of(output.track_span().with_cut(Arc::clone(c))),
+            (true, None) => OutputNodePlan::of(output.track_span()),
+            (false, Some(c)) => OutputNodePlan::of(output.with_cut(Arc::clone(c))),
+            (false, None) => OutputNodePlan::of(output),
         };
         Ok(Self {
             canvas,
@@ -770,6 +791,7 @@ impl Prepared {
             muxer,
             transport,
             pause,
+            cut,
         })
     }
 }
@@ -797,10 +819,12 @@ struct VideoChain {
     encoder_stats: Arc<EncoderNodeStats>,
     /// The queue into the encoder's partition, found after the apply that scheduled it.
     queue: Option<Arc<QueueStats>>,
-    /// The pause window its export follows and the encoder's keyframe requests, for a
-    /// pausable recording's own chain (ADR-0124).
+    /// The pause window its export follows, for a pausable recording's new chain
+    /// (ADR-0124); written only while that recording is its only user.
     pause: Option<Arc<PauseWindow>>,
-    keyframes: Option<Arc<KeyframeAt>>,
+    /// The encoder's keyframe requests, and whether its adapter honours them.
+    keyframes: Arc<KeyframeAt>,
+    keyframe_capable: bool,
 }
 
 /// A running audio encoder, used by one or more outputs.
@@ -814,7 +838,8 @@ struct AudioChain {
     flushes: Arc<AtomicU64>,
     tail_lost: Arc<AtomicU64>,
     queue: Option<Arc<QueueStats>>,
-    /// The pause window its encoder node follows (ADR-0124).
+    /// The pause window its encoder node follows, for a pausable recording's new
+    /// chain (ADR-0124); written only while that recording is its only user.
     pause: Option<Arc<PauseWindow>>,
 }
 
@@ -890,8 +915,14 @@ struct Attached {
     base: Base,
     /// When it started, on the master clock.
     started: Timestamp,
-    /// Its pause window, when it was started `pausable` (ADR-0124).
+    /// Its pause window, when it was started `pausable` (ADR-0124): every pause of
+    /// the recording, followed by its separate files.
     pause: Option<Arc<PauseWindow>>,
+    /// Its cut at the output node, for the streams it shares.
+    cut: Option<Arc<OutputCut>>,
+    /// Where the open (or last) pause was written: its own video chain, its own
+    /// audio chain, the output cut.
+    paused_at: pause::Targets,
 }
 
 /// The cross-partition queues feeding an output's encoders.
@@ -2996,6 +3027,8 @@ impl Studio {
                 export,
                 encoder,
                 keyframes,
+                keyframe_capable,
+                chain_pause,
                 chosen,
                 settings,
                 size,
@@ -3024,8 +3057,9 @@ impl Studio {
                 end,
                 encoder_stats,
                 queue: None,
-                pause: p.pause.clone(),
+                pause: chain_pause,
                 keyframes,
+                keyframe_capable,
             });
         }
         let mut audio_chain = None;
@@ -3039,6 +3073,7 @@ impl Studio {
                         flushes,
                         tail_lost,
                     },
+                chain_pause,
                 chosen,
                 settings,
                 stream,
@@ -3058,7 +3093,7 @@ impl Studio {
                 flushes,
                 tail_lost,
                 queue: None,
-                pause: p.pause.clone(),
+                pause: chain_pause,
             });
         }
         let r = self
@@ -3126,6 +3161,8 @@ impl Studio {
             base,
             started: self.engine.clock().now(),
             pause: p.pause,
+            cut: p.cut,
+            paused_at: pause::Targets::default(),
         });
         Ok((id, nodes))
     }

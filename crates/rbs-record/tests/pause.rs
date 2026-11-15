@@ -120,7 +120,7 @@ fn a_pause_cancelled_before_it_began_leaves_nothing_out() {
 }
 
 #[test]
-fn streams_shared_encoders_and_ended_outputs_are_not_paused() {
+fn streams_ended_outputs_and_shared_encoders_without_keyframes_are_not_paused() {
     if gpu().is_none() {
         return;
     }
@@ -133,15 +133,77 @@ fn streams_shared_encoders_and_ended_outputs_are_not_paused() {
     assert_eq!(studio.output_pause(live), None);
     assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0) >= 4));
 
-    // A pausable recording that joins the stream's encoders cannot pause yet.
+    // A pausable recording that joins the stream's encoders: this encoder cannot
+    // make a keyframe on request, so the file could not resume at the join.
     let mut out = recording();
     out.video = OutputSettings::packets("x").video;
     let rec = studio.start_output(&r.adapters, &out).unwrap();
     assert!(studio.output(rec).unwrap().video_shared);
-    assert_eq!(studio.pause_output(rec), Err(PauseRefused::SharedEncoder));
+    assert_eq!(
+        studio.pause_output(rec),
+        Err(PauseRefused::KeyframeUnsupported)
+    );
     studio.end_output(rec);
     assert_eq!(studio.pause_output(rec), Err(PauseRefused::Ending));
     studio.shutdown();
+}
+
+#[test]
+fn a_recording_sharing_the_streams_encoders_is_cut_at_its_output() {
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig_with_keyframes();
+    let (mut studio, clock) = start(&r);
+    let live = studio
+        .start_output(&r.adapters, &OutputSettings::packets("stream://live/app"))
+        .unwrap();
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0) >= 4));
+    let mut out = recording();
+    out.video = OutputSettings::packets("x").video;
+    let rec = studio.start_output(&r.adapters, &out).unwrap();
+    let report = studio.output(rec).unwrap();
+    assert!(report.video_shared && report.audio_shared, "{report:?}");
+    assert!(run_until(&mut studio, &clock, |_| r.log.count(0) >= 10
+        && r.log.count(1) >= 10));
+
+    let pause_at = studio.pause_output(rec).unwrap();
+    let resume_after = pause_at + std::time::Duration::from_secs(1);
+    assert!(run_until(&mut studio, &clock, |_| clock.now() >= resume_after));
+    let resume_at = studio.resume_output(rec).unwrap();
+    let before = r.log.count(0);
+    assert!(run_until(&mut studio, &clock, |_| r.log.count(0) >= before + 10));
+    let left_out = resume_at.as_nanos() - pause_at.as_nanos();
+    assert_eq!(studio.output_pause(rec).unwrap().paused_ns, left_out);
+
+    // The stream never paused: its packets run on without a gap.
+    let stream_video = pts_of(&r.stream_log, 0);
+    assert!(
+        largest_step(&stream_video) <= 1_000_000_000 / 30 + 1,
+        "{stream_video:?}"
+    );
+    // The recording's file has no gap either, resumes on a keyframe, and its
+    // timeline is a second short of the master clock.
+    let video = pts_of(&r.log, 0);
+    let audio = pts_of(&r.log, 1);
+    let frame = 1_000_000_000 / 30 + 1;
+    assert!(largest_step(&video) <= frame, "{video:?}");
+    assert!(largest_step(&audio) <= 50_000_000, "{audio:?}");
+    let join = r
+        .log
+        .packets
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| p.stream == 0)
+        .find(|p| p.pts.as_nanos() + 1 >= pause_at.as_nanos())
+        .copied()
+        .unwrap();
+    assert!(join.keyframe, "the file resumes on a keyframe: {join:?}");
+    let v = video.last().unwrap();
+    assert!(v.as_nanos() + left_out <= clock.now().as_nanos());
+    studio.shutdown();
+    let _ = live;
 }
 
 #[test]
