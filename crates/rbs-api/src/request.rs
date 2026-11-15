@@ -10,11 +10,11 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
-    Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, FilterTypeList, Library,
-    LoudnessStatus, MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputKind,
-    OutputProfile, OutputTarget, OutputsResult, ProtectionStatus, RecordState, RecordingProfile,
-    ReplayStatus, SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind,
-    StreamSettingsPatch, StreamState, StudioInfo, VcamStatus,
+    Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, EstimateAnswer, EstimateSummary,
+    FilterTypeList, Library, LoudnessStatus, MonitorDeviceList, MonitorMode, MonitorStatus,
+    OutputCanvas, OutputKind, OutputProfile, OutputTarget, OutputsResult, ProtectionStatus,
+    RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap, Settings, SkippedTrack,
+    Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo, VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -1358,6 +1358,8 @@ pub enum Command {
     OutputProfiles,
     /// `record.start`.
     RecordStart(RecordStart),
+    /// `record.estimate` (protocol 1.53, ADR-0087).
+    RecordEstimate(RecordStart),
     /// `record.start_to_file`.
     RecordStartToFile(RecordStartToFile),
     /// `record.stop`.
@@ -1531,6 +1533,7 @@ impl Command {
             Command::EditRedo => "edit.redo",
             Command::OutputProfiles => "output.profiles",
             Command::RecordStart(_) => "record.start",
+            Command::RecordEstimate(_) => "record.estimate",
             Command::RecordStartToFile(_) => "record.start_to_file",
             Command::RecordStop(_) => "record.stop",
             Command::RecordStatus(_) => "record.status",
@@ -1698,6 +1701,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("edit.redo", Some(Scope::Control)),
     m("output.profiles", Some(Scope::Read)),
     m("record.start", Some(Scope::Control)),
+    m("record.estimate", Some(Scope::Read)),
     m("record.start_to_file", Some(Scope::Admin)),
     m("record.stop", Some(Scope::Control)),
     m("record.status", Some(Scope::Read)),
@@ -1969,6 +1973,8 @@ enum WireRequest {
     OutputProfiles(Empty),
     #[serde(rename = "record.start")]
     RecordStart(RecordStart),
+    #[serde(rename = "record.estimate")]
+    RecordEstimate(RecordStart),
     #[serde(rename = "record.start_to_file")]
     RecordStartToFile(RecordStartToFile),
     #[serde(rename = "record.stop")]
@@ -2150,6 +2156,7 @@ impl From<WireRequest> for Request {
             WireRequest::EditRedo(_) => Request::Command(C::EditRedo),
             WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
             WireRequest::RecordStart(p) => Request::Command(C::RecordStart(p)),
+            WireRequest::RecordEstimate(p) => Request::Command(C::RecordEstimate(p)),
             WireRequest::RecordStartToFile(p) => Request::Command(C::RecordStartToFile(p)),
             WireRequest::RecordStop(p) => Request::Command(C::RecordStop(p)),
             WireRequest::RecordStatus(p) => Request::Command(C::RecordStatus(p)),
@@ -2280,6 +2287,7 @@ impl From<Request> for WireRequest {
                 C::EditRedo => WireRequest::EditRedo(Empty {}),
                 C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
                 C::RecordStart(p) => WireRequest::RecordStart(p),
+                C::RecordEstimate(p) => WireRequest::RecordEstimate(p),
                 C::RecordStartToFile(p) => WireRequest::RecordStartToFile(p),
                 C::RecordStop(p) => WireRequest::RecordStop(p),
                 C::RecordStatus(p) => WireRequest::RecordStatus(p),
@@ -2452,6 +2460,13 @@ pub struct RecordStarted {
     pub video_encoder: String,
     /// The audio encoder's name, when audio is recorded.
     pub audio_encoder: Option<String>,
+    /// The estimate of the plan the start decided to open (protocol 1.53, ADR-0087).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<EstimateSummary>,
+    /// Marked sources left without a file, as `record.status` lists them (protocol
+    /// 1.53).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedTrack>,
 }
 
 /// `stream.start`'s answer: the stream runs and connects in the background
@@ -2572,6 +2587,8 @@ pub enum Response {
     RecordCanvasStatus(Snapshot<CanvasRecordState>),
     /// `record.status`.
     RecordStatus(Snapshot<RecordState>),
+    /// `record.estimate` (protocol 1.53).
+    RecordEstimate(EstimateAnswer),
     /// `stream.start`.
     StreamStarted(StreamStarted),
     /// `stream.status` for a canvas other than the main one (protocol 1.29).

@@ -97,6 +97,8 @@ pub struct IsoAudioStarted {
 
 pub(super) struct IsoAudioRun {
     nodes: Vec<Added>,
+    /// What each open file costs, for the estimate of a later start (ADR-0087).
+    pub(super) encodes: Vec<crate::estimate::AudioEncode>,
 }
 
 /// Marked sources the program mix does not hear, with their display names.
@@ -187,7 +189,27 @@ impl super::Studio {
         let (transport, _) = select::transport(&adapters.transports, &start.folder_url, input)?;
         self.ensure_iso_partitions()?;
         let nodes = self.install_audio(&taps, sessions, &transport, &muxer, start)?;
-        self.iso_audio = Some(IsoAudioRun { nodes });
+        let bytes_per_second = start.audio.bitrate_bps / 8
+            + if start.audio.bitrate_bps == 0 {
+                let format = self.settings.audio_graph.format;
+                u64::from(format.sample_rate.hz())
+                    * format.channels.channels() as u64
+                    * u64::from(start.audio.bit_depth.unwrap_or(16))
+                    / 8
+            } else {
+                0
+            };
+        let encodes = taps
+            .iter()
+            .map(|tap| crate::estimate::AudioEncode {
+                used_by: crate::estimate::Use::Iso(crate::estimate::TrackRef {
+                    source: tap.source,
+                    role: crate::iso::IsoRole::Audio,
+                }),
+                bytes_per_second,
+            })
+            .collect();
+        self.iso_audio = Some(IsoAudioRun { nodes, encodes });
         if let Some(dir) = &start.manifest_dir
             && let Err(e) = iso::write_manifest(dir, &manifest)
         {

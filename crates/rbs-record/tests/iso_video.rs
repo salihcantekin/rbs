@@ -14,7 +14,7 @@ use rbs_core::media::{CodecId, ContainerId};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     ISO_OUTPUT, ISO_VIDEO_ENCODERS, IsoError, IsoRole, IsoSkip, IsoVideoStart, OutputSettings,
-    RecordError, Studio, StudioSettings, VideoSettings,
+    PlannedOutput, RecordError, StartPlanRequest, Studio, StudioSettings, VideoSettings,
 };
 use rbs_scene::model::{ItemContent, Layout, RecordSeparately, SettingValue, Settings, VideoAs};
 use rbs_sources::types::{self, keys};
@@ -342,6 +342,38 @@ fn files_past_the_limit_and_sources_without_a_picture_are_skipped_when_asked() {
         .map(|s| (s.source, s.role, s.reason))
         .collect();
     assert_eq!(skipped, expected);
+
+    // The plan of a whole start (ADR-0087 step C2): what runs counts, the running
+    // separate file included; an added recording with the master's settings shares
+    // its encoder; one that replaces the running recording leaves its encoder and
+    // files out and opens its own.
+    let split = |plan: &rbs_record::estimate::EstimatePlan| {
+        let iso = plan
+            .video
+            .iter()
+            .filter(|e| matches!(e.used_by, rbs_record::estimate::Use::Iso(_)))
+            .count();
+        (plan.video.len() - iso, iso)
+    };
+    let mut whole = StartPlanRequest::default();
+    let (plan, _) = studio.start_plan(&r.adapters, &col, &whole);
+    assert_eq!(split(&plan), (1, 1), "{:#?}", plan.video);
+    assert!(plan.video_template.is_none());
+    let same = OutputSettings::new("mem://again", ContainerId::Matroska);
+    whole.outputs = vec![PlannedOutput::new(&same, None)];
+    let (plan, _) = studio.start_plan(&r.adapters, &col, &whole);
+    assert_eq!(split(&plan), (1, 1), "{:#?}", plan.video);
+    let mut other = OutputSettings::new("mem://other", ContainerId::Matroska);
+    other.size = Some((640, 360));
+    whole.outputs = vec![PlannedOutput::new(&other, None)];
+    let (plan, _) = studio.start_plan(&r.adapters, &col, &whole);
+    assert_eq!(split(&plan), (2, 1), "{:#?}", plan.video);
+    whole.outputs = vec![PlannedOutput::new(&same, None)];
+    whole.replacing = vec![master];
+    whole.replacing_separate = true;
+    let (plan, _) = studio.start_plan(&r.adapters, &col, &whole);
+    assert_eq!(split(&plan), (1, 0), "{:#?}", plan.video);
+
     assert!(studio.stop_iso_video());
     studio.stop_output(master).unwrap();
     let (_, errors) = studio.shutdown();
