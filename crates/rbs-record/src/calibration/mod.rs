@@ -25,8 +25,8 @@ pub use driver::{
 };
 pub use session::{FrameOutcome, SessionReport, SessionRunner, noise_ring};
 pub use write::{
-    CALIBRATION_WRITE_BYTES, FileSink, FolderResult, LEFTOVER_AGE, WriteSink, measure_write_speed,
-    temp_name,
+    CALIBRATION_WRITE_BYTES, FileSink, FolderResult, LEFTOVER_AGE, PARTIAL_MIN_BYTES, WriteSink,
+    measure_write_speed, temp_name,
 };
 
 use crate::estimate::{FpsClass, RateClass, SizeClass};
