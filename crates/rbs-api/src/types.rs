@@ -1707,6 +1707,11 @@ pub struct EstimateRow {
     pub level: Option<EstimateLevel>,
     /// The limit was measured on this computer (`calibration.toml`), not declared.
     pub measured: bool,
+    /// The row is unknown and *Test this computer* can measure what is missing
+    /// (protocol 1.57); false on known and informational rows. Absent from older
+    /// servers, read as false.
+    #[serde(default)]
+    pub calibrate: bool,
 }
 
 /// Writes a whole finite number as an integer (`4`, not `4.0`).
@@ -1847,6 +1852,8 @@ pub enum CalibrationPart {
     Encoder,
     /// The folder write.
     Write,
+    /// The export of separate video files (protocol 1.57).
+    Export,
     /// A part this client does not know.
     #[serde(other)]
     Other,
@@ -1894,6 +1901,66 @@ pub struct CalibrationSkip {
     pub class: Option<CalibrationClass>,
 }
 
+/// One measured export class (protocol 1.57, ADR-0087 step D2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalibrationExport {
+    /// Size class: `720`, `1080`, `1440`, `2160` or `above-2160`.
+    pub size: String,
+    /// The export format.
+    pub format: CalibrationExportFormat,
+    /// The render thread's time of one export per frame, in microseconds (at least a
+    /// frame period when it did not keep up).
+    pub time_us: u64,
+    /// The GPU's sustained time per export in microseconds, for diagnosis; judged by
+    /// nothing. `null` with too few conversions.
+    pub gpu_us: Option<u64>,
+    /// No conversion found every readback in flight and the frames arrived.
+    pub kept_up: bool,
+}
+
+/// The format of an export (protocol 1.57).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationExportFormat {
+    /// 8-bit 4:2:0.
+    Nv12,
+    /// 10-bit 4:2:0.
+    P010,
+    /// A format this client does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// An export class with no result (protocol 1.57).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalibrationExportSkip {
+    /// Size class.
+    pub size: String,
+    /// The export format.
+    pub format: CalibrationExportFormat,
+    /// Why.
+    pub code: CalibrationExportCode,
+}
+
+/// Why an export class has no result (protocol 1.57): its own closed list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationExportCode {
+    /// No throwaway GPU device could be made.
+    GpuUnavailable,
+    /// The export could not be built or failed.
+    ExportFailed,
+    /// The throwaway device was lost; the run went on.
+    DeviceLost,
+    /// The time budget ended it first, or the GPU did not answer in time.
+    TimeLimit,
+    /// A cancel ended it first.
+    Cancelled,
+    /// A code this client does not know.
+    #[serde(other)]
+    Other,
+}
+
 /// `calibration.status` and the topic `calibration.state` (protocol 1.55, ADR-0087
 /// decisions 4 and 7). No member carries a path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1931,6 +1998,12 @@ pub enum CalibrationState {
         write_partial: bool,
         /// The parts with no full result.
         skipped: Vec<CalibrationSkip>,
+        /// The export classes measured (protocol 1.57).
+        #[serde(default)]
+        exports: Vec<CalibrationExport>,
+        /// The export classes with no result (protocol 1.57).
+        #[serde(default)]
+        exports_skipped: Vec<CalibrationExportSkip>,
     },
     /// The last run failed; nothing was written. It stays until the next run.
     Failed {

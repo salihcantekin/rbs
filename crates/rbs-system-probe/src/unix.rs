@@ -42,6 +42,34 @@ fn parse_mem_available(text: &str) -> Option<u64> {
     Some(kib.saturating_mul(1024))
 }
 
+pub(crate) fn os_version() -> Result<String, ProbeError> {
+    let mut u = std::mem::MaybeUninit::<libc::utsname>::zeroed();
+    // SAFETY: `u` points to writable memory the size of `utsname`, which the call
+    // fills on success.
+    let rc = unsafe { libc::uname(u.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(ProbeError::Failed(std::io::Error::last_os_error()));
+    }
+    // SAFETY: `uname` returned 0, so it initialised `u`.
+    let u = unsafe { u.assume_init() };
+    let field = |f: &[libc::c_char]| {
+        // `c_char` is `i8` or `u8` by platform; each is one byte of the C string.
+        #[allow(clippy::unnecessary_cast)]
+        let bytes: Vec<u8> = f
+            .iter()
+            .take_while(|c| **c != 0)
+            .map(|c| *c as u8)
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    Ok(format!(
+        "{} {} {}",
+        field(&u.sysname),
+        field(&u.release),
+        field(&u.version)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

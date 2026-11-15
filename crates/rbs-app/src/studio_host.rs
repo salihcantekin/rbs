@@ -1495,7 +1495,7 @@ fn marker_color(c: Option<rbs_api::request::MarkerColor>) -> Option<rbs_manifest
 }
 
 /// The canvas an output records or streams (ADR-0093 decision 6).
-pub use calibration::CalibrationSetup;
+pub use calibration::{CalibrationSetup, ExportRigMaker};
 pub use rbs_api::types::OutputCanvas;
 
 /// `c`'s place in the host's per-canvas state.
@@ -5537,7 +5537,8 @@ impl Host {
         folder: &Path,
     ) -> rbs_record::estimate::Limits {
         let this = self.this_computer();
-        let calibration = self.calibration.for_estimate(&this, folder);
+        let mut calibration = self.calibration.for_estimate(&this, folder);
+        calibration.exports_unmeasurable = self.calibration_run.exports_unmeasurable;
         let now = self.clock.now();
         let free_space = self
             .disk_probe
@@ -5562,6 +5563,13 @@ impl Host {
                 .map(|id| (id.as_str().to_owned(), None))
                 .collect(),
             rbs_version: env!("CARGO_PKG_VERSION").to_owned(),
+            // The GPU, its driver and the OS: export measurements hold only on the
+            // same (step D2). `uname` is a quick local call.
+            gpu: Some(format!(
+                "{}|{}",
+                self.gpu.adapter_key(),
+                rbs_system_probe::os_version().unwrap_or_default()
+            )),
         }
     }
 
@@ -9887,6 +9895,7 @@ fn api_estimate(
                     unit: api_enum(r.unit.as_str()).unwrap_or(api::EstimateUnit::Other),
                     level,
                     measured: r.measured,
+                    calibrate: r.calibrate,
                 }
             })
             .collect(),

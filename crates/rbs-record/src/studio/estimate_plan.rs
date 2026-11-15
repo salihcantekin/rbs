@@ -445,6 +445,7 @@ impl super::Studio {
             falls_to_cpu: false,
             worker: None,
             export_buffers: 0,
+            format: settings.format.into(),
         }
     }
 }
@@ -559,6 +560,43 @@ impl super::Studio {
                 }
             })
             .collect();
-        crate::calibration::CalibrationPlan { classes, folder }
+        // The export classes of the separate video files (step D2): one per size
+        // class, at its bound size or the largest planned size, largest first.
+        let mut exports: Vec<crate::calibration::ExportClass> = Vec::new();
+        if let Some(s) = request.separate {
+            for e in plan
+                .video
+                .iter()
+                .filter(|e| matches!(e.used_by, Use::Iso(_)))
+            {
+                let size = crate::estimate::SizeClass::of(e.height);
+                let (width, height) =
+                    crate::calibration::ExportClass::bound(size, (e.width, e.height));
+                match exports.iter_mut().find(|x| x.size == size) {
+                    Some(x) => {
+                        if u64::from(width) * u64::from(height)
+                            > u64::from(x.width) * u64::from(x.height)
+                        {
+                            (x.width, x.height) = (width, height);
+                        }
+                    }
+                    None => exports.push(crate::calibration::ExportClass {
+                        size,
+                        width,
+                        height,
+                        format: s.video.format,
+                        color: s.video.color,
+                        open_shadows: s.video.open_shadows,
+                    }),
+                }
+            }
+        }
+        exports.sort_by_key(|x| std::cmp::Reverse(u64::from(x.width) * u64::from(x.height)));
+        crate::calibration::CalibrationPlan {
+            classes,
+            folder,
+            exports,
+            frame_rate: self.fps,
+        }
     }
 }

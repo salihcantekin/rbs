@@ -42,8 +42,15 @@ impl GpuContext {
     pub fn metrics(&self) -> &Arc<GpuMetrics>;
     pub fn poll(&self);                              // non-blocking, once per render tick
     pub fn wait_idle(&self) -> Result<(), GpuError>; // blocking, never on real-time threads
+    pub fn sibling(&self) -> Result<GpuContext, GpuError>;            // new device, same adapter
+    pub fn wait_until(&self, timeout: Duration) -> Result<bool, GpuError>; // bounded wait
+    pub fn adapter_key(&self) -> String;             // calibration validity key
 }
 ```
+
+- `sibling` opens a new device and queue on the same `wgpu::Adapter` (same instance, same features, limits and capabilities), for throwaway work that must not share the live device's queue: ADR-0087's export measurement in *Test this computer* ([output-estimate.md](output-estimate.md#calibration-run)). On D3D12 the driver may give the same native device. Dropping a context may wait for its queue without a bound, so a caller whose sibling timed out or was lost drops it on a thread of its own.
+- `wait_until` waits for the latest submission for at most `timeout` (`PollType::Wait` with a timeout): `Ok(true)` when the queue is idle, `Ok(false)` on timeout. Never on real-time threads.
+- `adapter_key` is `vendor:device:backend:driver:driver_info` from `wgpu::AdapterInfo` (numeric ids in hex), never the adapter name (P3). Two contexts on one adapter have the same key.
 
 - Adapter choice uses capabilities only. Vendor or device names are reported for diagnostics and never branched on (P3).
 - Among adapters of the same kind, the backend whose native interop RBS implements comes first: on Windows D3D12 before Vulkan (every shared surface there is a D3D12 object).

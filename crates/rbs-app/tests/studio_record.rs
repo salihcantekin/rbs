@@ -1984,6 +1984,129 @@ fn calibration_setup(
         }),
         write_bytes: 64 * 1024 * 1024,
         now_unix: Arc::new(|| 1_000_000),
+        export_rig: fake_export_rig(clock, true),
+    }
+}
+
+/// A scripted export rig on the run's clock (step D2): each tick costs 400 µs of the
+/// render thread and each conversion 300 µs of the GPU; `works: false` has no device.
+fn fake_export_rig(clock: &TestClock, works: bool) -> rbs_app::studio_host::ExportRigMaker {
+    use rbs_record::calibration::{ExportClass, ExportCounters, ExportRig, RigError};
+    struct Rig {
+        clock: TestClock,
+        counters: ExportCounters,
+        in_flight: u64,
+    }
+    impl ExportRig for Rig {
+        fn begin(&mut self, _: &ExportClass) -> Result<(), RigError> {
+            Ok(())
+        }
+        fn tick(&mut self) -> Result<(), RigError> {
+            self.counters.frames += self.in_flight;
+            self.in_flight = 1;
+            self.clock.advance(Duration::from_micros(400));
+            Ok(())
+        }
+        fn wait(&mut self, _: Duration) -> Result<bool, RigError> {
+            self.clock.advance(Duration::from_micros(300));
+            Ok(true)
+        }
+        fn counters(&self) -> ExportCounters {
+            self.counters
+        }
+        fn end(&mut self) {}
+    }
+    let clock = clock.clone();
+    Arc::new(move |_, _| {
+        if works {
+            Ok(Box::new(Rig {
+                clock: clock.clone(),
+                counters: ExportCounters::default(),
+                in_flight: 0,
+            }) as Box<dyn ExportRig>)
+        } else {
+            Err(RigError::Failed)
+        }
+    })
+}
+
+/// ADR-0087 step D2 (control API 1.57): with a screen marked, *Test this computer*
+/// measures the export of its size class first, saves it, and the estimate's render
+/// share row no longer asks for a test (the previous tick, step E, is still unknown).
+/// Without a throwaway device the class is skipped and the row stops asking.
+#[test]
+fn test_this_computer_measures_the_export_of_separate_files() {
+    for works in [true, false] {
+        let Some(gpu) = gpu() else { return };
+        let clock = TestClock::new();
+        let cal = TestClock::new();
+        let dir = temp_dir(if works { "export" } else { "export-none" });
+        let mut config = HostConfig::desktop();
+        config.config_dir = Some(dir.join("config"));
+        let mut setup = calibration_setup(&cal, None);
+        setup.export_rig = fake_export_rig(&cal, works);
+        config.calibration_setup = Some(setup);
+        let (host, rx) = spawn_host(gpu, &clock, config);
+        mark_screens(&host, &rx, 1);
+        profile_in(&host, &rx, dir.join("rec"));
+        let mut api = ApiClient::attach(&host);
+        api.call(
+            "events.subscribe",
+            serde_json::json!({"topics": ["calibration.state"]}),
+        );
+        let share = |api: &mut ApiClient| {
+            let e = api.call("record.estimate", serde_json::json!({"profile": "default"}));
+            e["result"]["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["resource"] == "iso_render_share")
+                .cloned()
+                .unwrap_or_else(|| panic!("{e}"))
+        };
+        let before = share(&mut api);
+        assert_eq!(before["level"], "unknown", "{before}");
+        assert_eq!(before["calibrate"], true, "{before}");
+
+        let run = api.call("calibration.run", serde_json::json!({"profile": "default"}));
+        assert!(run.get("error").is_none(), "{run}");
+        let done = api.event("calibration.state", |d| d["state"] == "done");
+        let after = share(&mut api);
+        assert_eq!(after["level"], "unknown", "{after}");
+        assert_eq!(after["calibrate"], false, "{after}");
+        if works {
+            let exports = done["exports"].as_array().unwrap();
+            assert_eq!(exports.len(), 1, "{done}");
+            assert_eq!(exports[0]["format"], "nv12", "{done}");
+            assert_eq!(exports[0]["time_us"], 400, "{done}");
+            assert!(
+                done["exports_skipped"].as_array().unwrap().is_empty(),
+                "{done}"
+            );
+            // The export part leaves the 1.55 list as it was.
+            assert!(
+                done["skipped"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|s| s.get("size").is_none()),
+                "{done}"
+            );
+            let text =
+                std::fs::read_to_string(dir.join("config").join("calibration.toml")).unwrap();
+            assert!(
+                text.contains("[[exports]]") && text.contains("time_us = 400"),
+                "{text}"
+            );
+            assert!(after["need"].as_f64().unwrap() > 0.0, "{after}");
+        } else {
+            assert_eq!(
+                done["exports_skipped"][0]["code"], "gpu_unavailable",
+                "{done}"
+            );
+            assert!(done["exports"].as_array().unwrap().is_empty(), "{done}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

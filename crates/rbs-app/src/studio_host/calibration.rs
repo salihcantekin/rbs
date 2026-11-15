@@ -20,16 +20,27 @@ use rbs_api::types as api;
 use rbs_codec::{CreateError, EncodeError, VideoEncoderConfig, VideoEncoderFactory};
 use rbs_core::media::SystemFrame;
 use rbs_core::time::{Clock, MonotonicClock, Timestamp};
+use rbs_core::timing::FrameRate;
+use rbs_gpu::GpuContext;
 use rbs_record::calibration::{
     CALIBRATION_LIMIT, CALIBRATION_WRITE_BYTES, CalibrationEvent, CalibrationOutcome,
-    CalibrationPlan, EncoderResult, FileSink, FolderResult, Lanes, LanesFailure, Pacer,
+    CalibrationPlan, EncoderResult, ExportResult, ExportRig, ExportSkip, ExportSkipCode,
+    ExportsEnd, FileSink, FolderResult, GpuExportRig, Lanes, LanesFailure, Pacer, RigError,
     RoundRequest, SessionReport, SessionRunner, SkipCode, Skipped, WriteSink, measure_write_speed,
-    run_encoders,
+    run_encoders, run_exports,
 };
 use rbs_record::estimate::StopReason;
 
 use super::{Host, Msg, OutputCanvas, slot};
-use crate::calibration_file::{EncoderEntry, FolderEntry, stop_reason_name};
+use crate::calibration_file::{EncoderEntry, ExportEntry, FolderEntry, stop_reason_name};
+
+/// Makes the export part's rig from the live GPU context (step D2).
+pub type ExportRigMaker =
+    Arc<dyn Fn(&Arc<GpuContext>, FrameRate) -> Result<Box<dyn ExportRig>, RigError> + Send + Sync>;
+
+/// After a lost throwaway device, how long the live one is watched before it is taken
+/// as intact: several live render ticks.
+const LIVE_LOSS_WATCH: Duration = Duration::from_millis(100);
 
 /// The refusal of a start while a run is active (glossary: *Test this computer*).
 pub(super) const RUNNING: &str = "Test this computer is running";
@@ -52,6 +63,9 @@ pub struct CalibrationSetup {
     pub write_bytes: u64,
     /// The wall time in seconds since the Unix epoch.
     pub now_unix: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// Makes the export part's rig: in the app a throwaway device on the live GPU's
+    /// adapter ([`GpuContext::sibling`]); a fake in tests.
+    pub export_rig: ExportRigMaker,
 }
 
 impl std::fmt::Debug for CalibrationSetup {
@@ -99,6 +113,10 @@ impl CalibrationSetup {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_secs())
             }),
+            export_rig: Arc::new(|live: &Arc<GpuContext>, rate: FrameRate| {
+                let sibling = live.sibling().map_err(|_| RigError::Failed)?;
+                Ok(Box::new(GpuExportRig::new(Arc::new(sibling), rate)) as Box<dyn ExportRig>)
+            }),
         }
     }
 }
@@ -126,6 +144,10 @@ struct ActiveRun {
     encoders: Vec<EncoderResult>,
     skipped: Vec<Skipped>,
     write: Option<FolderResult>,
+    /// Steps the export part used, before the encoder steps.
+    export_steps: u32,
+    exports: Vec<ExportResult>,
+    exports_skipped: Vec<ExportSkip>,
 }
 
 /// The host's calibration state.
@@ -134,6 +156,9 @@ pub(super) struct CalibrationHost {
     run: Option<ActiveRun>,
     state: api::CalibrationState,
     next_id: u64,
+    /// The last run could not measure exports on this computer (no throwaway device,
+    /// or the export failed); kept for the app run (`calibrate`, step D2).
+    pub(super) exports_unmeasurable: bool,
 }
 
 impl CalibrationHost {
@@ -143,6 +168,7 @@ impl CalibrationHost {
             run: None,
             state: api::CalibrationState::Idle,
             next_id: 1,
+            exports_unmeasurable: false,
         }
     }
 
@@ -338,6 +364,7 @@ struct WorkerInput {
     start: Timestamp,
     free_space: Option<u64>,
     inbox: Weak<Sender<Msg>>,
+    live: Arc<GpuContext>,
 }
 
 fn send(inbox: &Weak<Sender<Msg>>, id: u64, msg: WorkerMsg) {
@@ -346,8 +373,74 @@ fn send(inbox: &Weak<Sender<Msg>>, id: u64, msg: WorkerMsg) {
     }
 }
 
+/// Drops a rig on a thread of its own that may never end: dropping a device whose
+/// queue still has work waits for it without a bound (a hung driver), so the worker
+/// never does it itself.
+fn reap(rig: Box<dyn ExportRig>) {
+    let spawned = std::thread::Builder::new()
+        .name("rbs-calibration-reaper".into())
+        .spawn(move || {
+            rbs_crash::report_panics_on_this_thread();
+            let _ = rbs_crash::contain(move || drop(rig));
+        });
+    // No thread: leaking the device is better than blocking the worker on it.
+    if let Err(e) = spawned {
+        drop(e);
+    }
+}
+
+/// The export part (step D2): on a throwaway device, before the encoders.
+fn export_part(w: &WorkerInput) -> Result<(), ()> {
+    let send = |m| send(&w.inbox, w.id, m);
+    if w.plan.exports.is_empty() {
+        return Ok(());
+    }
+    let period = w.plan.frame_rate.frame_duration();
+    let maker = Arc::clone(&w.setup.export_rig);
+    let live = Arc::clone(&w.live);
+    let rate = w.plan.frame_rate;
+    let mut open = || maker(&live, rate);
+    let clock = Arc::clone(&w.setup.clock);
+    let pacer = Arc::clone(&w.setup.pacer);
+    let mut live_lost = || {
+        if w.live.metrics().device_lost() {
+            return true;
+        }
+        // Let the live render loop run a few ticks, then look again.
+        pacer.wait_until(clock.now() + LIVE_LOSS_WATCH);
+        w.live.metrics().device_lost()
+    };
+    let (rig, end) = run_exports(
+        &w.plan.exports,
+        period,
+        &mut open,
+        &mut live_lost,
+        &*w.setup.clock,
+        &*w.setup.pacer,
+        &w.stop,
+        w.start,
+        &mut |e| send(WorkerMsg::Event(e)),
+    );
+    match (rig, end) {
+        (Some(rig), ExportsEnd::Clean) => drop(rig),
+        (Some(rig), _) => reap(rig),
+        (None, _) => {}
+    }
+    if end == ExportsEnd::LiveLost {
+        send(WorkerMsg::Failed(
+            api::CalibrationCode::DeviceLost,
+            "the graphics device was lost",
+        ));
+        return Err(());
+    }
+    Ok(())
+}
+
 fn worker(w: &WorkerInput) {
     let send = |m| send(&w.inbox, w.id, m);
+    if export_part(w).is_err() {
+        return;
+    }
     if !w.plan.classes.is_empty() {
         let mut lanes = match ThreadLanes::new(&w.setup.clock, &w.setup.pacer, &w.stop) {
             Ok(l) => l,
@@ -432,6 +525,28 @@ fn api_code(c: SkipCode) -> api::CalibrationCode {
     }
 }
 
+/// Whole microseconds, rounded up.
+fn micros_up(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos().div_ceil(1000)).unwrap_or(u64::MAX)
+}
+
+fn api_format(f: rbs_record::estimate::ExportFormat) -> api::CalibrationExportFormat {
+    match f {
+        rbs_record::estimate::ExportFormat::Nv12 => api::CalibrationExportFormat::Nv12,
+        rbs_record::estimate::ExportFormat::P010 => api::CalibrationExportFormat::P010,
+    }
+}
+
+fn api_export_code(c: ExportSkipCode) -> api::CalibrationExportCode {
+    match c {
+        ExportSkipCode::GpuUnavailable => api::CalibrationExportCode::GpuUnavailable,
+        ExportSkipCode::ExportFailed => api::CalibrationExportCode::ExportFailed,
+        ExportSkipCode::DeviceLost => api::CalibrationExportCode::DeviceLost,
+        ExportSkipCode::TimeLimit => api::CalibrationExportCode::TimeLimit,
+        ExportSkipCode::Cancelled => api::CalibrationExportCode::Cancelled,
+    }
+}
+
 fn api_stop(s: StopReason) -> api::CalibrationStop {
     match s {
         StopReason::Refused => api::CalibrationStop::Refused,
@@ -510,6 +625,11 @@ impl Host {
         let stop = Arc::new(AtomicBool::new(false));
         let start = setup.clock.now();
         let steps = plan.steps();
+        let first_part = if plan.exports.is_empty() {
+            api::CalibrationPart::Encoder
+        } else {
+            api::CalibrationPart::Export
+        };
         let input = WorkerInput {
             id,
             plan,
@@ -518,6 +638,7 @@ impl Host {
             start,
             free_space,
             inbox: self.inbox.clone(),
+            live: Arc::clone(&self.gpu),
         };
         std::thread::Builder::new()
             .name("rbs-calibration".into())
@@ -544,11 +665,14 @@ impl Host {
             folder,
             step: 0,
             steps,
-            part: api::CalibrationPart::Encoder,
+            part: first_part,
             adapter: None,
             encoders: Vec::new(),
             skipped: Vec::new(),
             write: None,
+            export_steps: 0,
+            exports: Vec::new(),
+            exports_skipped: Vec::new(),
         });
         self.publish_calibration_running();
         Ok(())
@@ -581,10 +705,23 @@ impl Host {
         }
         match msg {
             WorkerMsg::Event(CalibrationEvent::Step { step, adapter }) => {
-                r.step = step;
+                r.part = api::CalibrationPart::Encoder;
+                r.step = r.export_steps + step;
                 r.adapter = Some(adapter.as_str().to_owned());
                 self.publish_calibration_running();
             }
+            WorkerMsg::Event(CalibrationEvent::ExportStep { step }) => {
+                r.part = api::CalibrationPart::Export;
+                r.step = step;
+                r.export_steps = step;
+                r.adapter = None;
+                self.publish_calibration_running();
+            }
+            WorkerMsg::Event(CalibrationEvent::Export(x)) => {
+                r.exports.push(x);
+                self.publish_calibration_running();
+            }
+            WorkerMsg::Event(CalibrationEvent::ExportSkipped(x)) => r.exports_skipped.push(x),
             WorkerMsg::Event(CalibrationEvent::Series(s)) => {
                 r.encoders.push(s);
                 self.publish_calibration_running();
@@ -613,7 +750,7 @@ impl Host {
         // The worker did not answer in time: stop it, keep what arrived, detach.
         r.stop.store(true, Ordering::Relaxed);
         let cancelled = r.cancel_at.is_some();
-        if r.encoders.is_empty() && r.write.is_none() && !cancelled {
+        if r.encoders.is_empty() && r.exports.is_empty() && r.write.is_none() && !cancelled {
             self.fail_calibration(
                 api::CalibrationCode::Hung,
                 "the test did not answer; encoder sessions it held may stay open until RBS restarts",
@@ -664,6 +801,34 @@ impl Host {
         let this = self.this_computer();
         self.calibration
             .merge_run(&this, entries, folder, |p: &Path| p.exists());
+        let gpu = this.gpu.clone();
+        self.calibration.merge_exports(
+            r.exports
+                .iter()
+                .map(|x| ExportEntry {
+                    size: x.class.size.as_str().to_owned(),
+                    format: Some(x.class.export_format().as_str().to_owned()),
+                    time_us: micros_up(x.time),
+                    gpu_us: x.gpu.map(micros_up),
+                    kept_up: x.kept_up,
+                    pixels: Some(u64::from(x.class.width) * u64::from(x.class.height)),
+                    gpu: gpu.clone(),
+                    measured_at: now_unix,
+                    partial: false,
+                })
+                .collect(),
+        );
+        // Whether a test can still help a missing export (`calibrate`).
+        if !r.exports.is_empty() {
+            self.calibration_run.exports_unmeasurable = false;
+        } else if r.exports_skipped.iter().any(|x| {
+            matches!(
+                x.code,
+                ExportSkipCode::GpuUnavailable | ExportSkipCode::ExportFailed
+            )
+        }) {
+            self.calibration_run.exports_unmeasurable = true;
+        }
         let saved = match &self.config_dir {
             Some(dir) => crate::calibration_file::save(dir, &self.calibration).is_ok(),
             None => false,
@@ -689,7 +854,13 @@ impl Host {
             || r.skipped
                 .iter()
                 .any(|s| matches!(s.code, SkipCode::TimeLimit | SkipCode::Cancelled))
-            || matches!(write_skip, Some(SkipCode::TimeLimit | SkipCode::Cancelled));
+            || matches!(write_skip, Some(SkipCode::TimeLimit | SkipCode::Cancelled))
+            || r.exports_skipped.iter().any(|x| {
+                matches!(
+                    x.code,
+                    ExportSkipCode::TimeLimit | ExportSkipCode::Cancelled
+                )
+            });
         self.set_calibration_state(api::CalibrationState::Done {
             partial,
             cancelled,
@@ -708,6 +879,26 @@ impl Host {
             write_speed,
             write_partial,
             skipped,
+            exports: r
+                .exports
+                .iter()
+                .map(|x| api::CalibrationExport {
+                    size: x.class.size.as_str().to_owned(),
+                    format: api_format(x.class.export_format()),
+                    time_us: micros_up(x.time),
+                    gpu_us: x.gpu.map(micros_up),
+                    kept_up: x.kept_up,
+                })
+                .collect(),
+            exports_skipped: r
+                .exports_skipped
+                .iter()
+                .map(|x| api::CalibrationExportSkip {
+                    size: x.class.size.as_str().to_owned(),
+                    format: api_format(x.class.export_format()),
+                    code: api_export_code(x.code),
+                })
+                .collect(),
         });
     }
 

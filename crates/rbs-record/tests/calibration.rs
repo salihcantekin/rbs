@@ -398,6 +398,8 @@ fn plan(candidates: Vec<Candidate>) -> CalibrationPlan {
             candidates,
         }],
         folder: PathBuf::from("/rec"),
+        exports: Vec::new(),
+        frame_rate: FrameRate::FPS_60,
     }
 }
 
