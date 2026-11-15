@@ -119,6 +119,10 @@ format = 3
 "radius.lg" = 12
 "radius.button" = 8
 "size.button.chip" = 20
+# The switch: the size of the state mark in its track (the bar's length, the ring's
+# diameter), and how much the knob grows while it is pressed.
+"size.toggle.mark" = 8
+"size.toggle.stretch" = 4
 "size.border" = 1
 "size.focus-ring" = 2
 "size.icon.box" = 16

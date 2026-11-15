@@ -74,6 +74,8 @@ fn gpu() -> Option<Arc<GpuContext>> {
 struct FakeVideoFactory {
     id: &'static str,
     broken: bool,
+    /// Declares itself a hardware encoder (ranked before the others).
+    hardware: bool,
 }
 
 fn set(values: &[&str]) -> CapabilityValue {
@@ -88,10 +90,15 @@ impl AdapterFactory for FakeVideoFactory {
         self.id
     }
     fn probe(&self) -> Result<CapabilitySet, ProbeError> {
-        Ok(CapabilitySet::new()
+        let caps = CapabilitySet::new()
             .with(codec_caps::VIDEO_ENCODE, set(&["h264"]))
             .with(codec_caps::INPUT_MEMORY, set(&["system"]))
-            .with(codec_caps::INPUT_PIXEL_FORMAT, set(&["nv12"])))
+            .with(codec_caps::INPUT_PIXEL_FORMAT, set(&["nv12"]));
+        Ok(if self.hardware {
+            caps.with(codec_caps::HARDWARE, CapabilityValue::Flag(true))
+        } else {
+            caps
+        })
     }
 }
 
@@ -226,14 +233,25 @@ fn host_with(
 fn spawn_host(
     gpu: Arc<GpuContext>,
     clock: &TestClock,
+    config: HostConfig,
+) -> (StudioHost, Receiver<Update>) {
+    spawn_host_hw(gpu, clock, config, false)
+}
+
+/// [`spawn_host`], the broken encoder declaring itself a hardware one when
+/// `broken_hardware`: a separate file then never falls to the working (software) one.
+fn spawn_host_hw(
+    gpu: Arc<GpuContext>,
+    clock: &TestClock,
     mut config: HostConfig,
+    broken_hardware: bool,
 ) -> (StudioHost, Receiver<Update>) {
     let (tx, rx) = mpsc::channel();
     let clock = clock.clone();
     config.preview = None;
     let host = StudioHost::spawn(
         config,
-        || {
+        move || {
             let mut a = RecordAdapters::new();
             a.sources
                 .register_capture(Arc::new(TestCaptureFactory::new()))
@@ -243,7 +261,11 @@ fn spawn_host(
                 .unwrap();
             for (id, broken) in [(BROKEN, true), (WORKING, false)] {
                 a.video_encoders
-                    .register(Arc::new(FakeVideoFactory { id, broken }))
+                    .register(Arc::new(FakeVideoFactory {
+                        id,
+                        broken,
+                        hardware: broken && broken_hardware,
+                    }))
                     .unwrap();
             }
             a.audio_encoders
@@ -1442,6 +1464,427 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
     assert!(manifest.markers[0].t_ns >= 2_000_000_000, "{text}");
 
     drop(api);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `record.estimate` (protocol 1.53, ADR-0087 step C2a): the plan of a start of the
+/// saved profile next to what runs, its separate files listed with their cost, and
+/// the live limit of separate video files (3 while the encoder's capacity is
+/// unknown). It opens nothing.
+#[test]
+fn the_estimate_lists_a_start_and_its_separate_files_without_opening_anything() {
+    let Some(gpu) = gpu() else { return };
+    let clock = TestClock::new();
+    let (host, rx, display, mic) = marked(gpu, &clock, None);
+    host.send(Command::SetRecordSeparately {
+        id: display.id,
+        patch: RecordPatch {
+            video: Some(true),
+            ..RecordPatch::default()
+        },
+    });
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == display.id && r.record_separately.video)
+    });
+    let mut api = ApiClient::attach(&host);
+
+    let answer = api.call("record.estimate", serde_json::json!({"profile": "default"}));
+    let e = &answer["result"];
+    assert!(answer.get("error").is_none(), "{answer}");
+    assert!(
+        ["fits", "heavy"].contains(&e["level"].as_str().unwrap()),
+        "{answer}"
+    );
+    assert_eq!(e["max_tracks"]["video"]["at_most_now"], 3, "{answer}");
+    let tracks: Vec<(u64, &str)> = e["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["source"].as_u64().unwrap(), t["role"].as_str().unwrap()))
+        .collect();
+    assert!(
+        tracks.contains(&(u64::from(display.id.get()), "video")),
+        "{answer}"
+    );
+    assert!(
+        tracks.contains(&(u64::from(mic.id.get()), "audio")),
+        "{answer}"
+    );
+    // The master and the screen's file, each one session on the test encoder; whole
+    // numbers on the wire.
+    let sessions = e["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["resource"] == "encoder_sessions")
+        .unwrap_or_else(|| panic!("{answer}"));
+    assert_eq!(sessions["need"], 2, "{answer}");
+    assert!(sessions["scope"].is_string(), "{answer}");
+
+    // Without the separate files: the master alone, no live limit.
+    let plain = api.call(
+        "record.estimate",
+        serde_json::json!({"profile": "default", "iso": false}),
+    );
+    assert_eq!(plain["result"]["tracks"], serde_json::json!([]), "{plain}");
+    assert!(
+        plain["result"]["max_tracks"]["video"]
+            .get("at_most_now")
+            .is_none(),
+        "{plain}"
+    );
+    // `all` without a vertical canvas is the main one; an explicit vertical is not
+    // found; an unknown profile too.
+    let all = api.call(
+        "record.estimate",
+        serde_json::json!({"profile": "default", "canvas": "all"}),
+    );
+    assert_eq!(all["result"]["tracks"], e["tracks"], "{all}");
+    let vertical = api.call(
+        "record.estimate",
+        serde_json::json!({"profile": "default", "canvas": "vertical"}),
+    );
+    assert_eq!(error_kind(&vertical), "not_found", "{vertical}");
+    let other = api.call("record.estimate", serde_json::json!({"profile": "other"}));
+    assert_eq!(error_kind(&other), "not_found", "{other}");
+    // Nothing started.
+    let status = api.call("record.status", serde_json::json!({}));
+    assert_eq!(status["result"]["data"]["state"], "idle", "{status}");
+}
+
+/// Points the API's `default` profile at `folder`, and waits until the host has it.
+fn profile_in(host: &StudioHost, rx: &Receiver<Update>, folder: PathBuf) {
+    let mut p = rbs_app::record_profile::RecordProfile::new();
+    p.folder = folder;
+    host.send(Command::SetProfile(p));
+    // The host takes commands in order: once this answer comes, the profile is set.
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(rx, |u| match u {
+        Update::Targets(SourceKind::Screen, _) => Some(()),
+        _ => None,
+    });
+}
+
+/// The one take folder in `folder`, and its manifest.
+fn take_manifest(folder: &std::path::Path) -> (PathBuf, rbs_manifest::RecordingManifest) {
+    let takes: Vec<PathBuf> = std::fs::read_dir(folder)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(takes.len(), 1, "{takes:?}");
+    let text = std::fs::read_to_string(takes[0].join("recording.rbs.toml")).unwrap();
+    (
+        takes[0].clone(),
+        rbs_manifest::RecordingManifest::from_toml(&text).unwrap(),
+    )
+}
+
+/// A host with `n` screens, each marked to record its picture separately; their ids in
+/// order.
+fn screens(
+    gpu: Arc<GpuContext>,
+    clock: &TestClock,
+    n: usize,
+) -> (StudioHost, Receiver<Update>, Vec<u32>) {
+    let (host, rx) = host(gpu, clock);
+    let ids = mark_screens(&host, &rx, n);
+    (host, rx, ids)
+}
+
+/// Adds `n` screens to a host that just spawned, each marked to record its picture
+/// separately; their ids in order.
+fn mark_screens(host: &StudioHost, rx: &Receiver<Update>, n: usize) -> Vec<u32> {
+    next(rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::ListTargets(SourceKind::Screen));
+    let target = next(rx, |u| match u {
+        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
+        _ => None,
+    });
+    for _ in 0..n {
+        host.send(Command::AddSource {
+            kind: SourceKind::Screen,
+            target: target.clone(),
+        });
+    }
+    let rows = rows_where(rx, |r| r.len() == n);
+    for r in &rows {
+        host.send(Command::SetRecordSeparately {
+            id: r.id,
+            patch: RecordPatch::enabled(true),
+        });
+    }
+    rows_where(rx, |r| {
+        r.iter().filter(|r| r.record_separately.video).count() == n
+    });
+    let mut ids: Vec<u32> = rows.iter().map(|r| r.id.get()).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Control API 1.54 (ADR-0087 decisions 5 and 7): with four screens marked and the
+/// encoder's capacity unknown (cap 3), `ask` refuses before anything is on disk,
+/// `skip` and an older request start with three files and list the fourth, also in
+/// the manifest's `[[skipped]]`; `cpu` is refused.
+#[test]
+fn the_start_gate_refuses_or_skips_video_files_past_the_encoder_cap() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-gate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx, ids) = screens(gpu, &clock, 4);
+    let mut api = ApiClient::attach(&host);
+    let fourth = serde_json::json!([{"source": ids[3], "role": "video"}]);
+
+    profile_in(&host, &rx, dir.join("cpu"));
+    let cpu = api.call(
+        "record.start",
+        serde_json::json!({"profile": "default", "on_hardware_limit": "cpu"}),
+    );
+    assert_eq!(error_kind(&cpu), "invalid_params", "{cpu}");
+
+    let ask_dir = dir.join("ask");
+    profile_in(&host, &rx, ask_dir.clone());
+    let ask = api.call(
+        "record.start",
+        serde_json::json!({"profile": "default", "on_hardware_limit": "ask"}),
+    );
+    assert_eq!(ask["error"]["code"], -32040, "{ask}");
+    assert_eq!(error_kind(&ask), "failed", "{ask}");
+    assert_eq!(ask["error"]["data"]["reason"], "hardware_limit", "{ask}");
+    assert_eq!(ask["error"]["data"]["tracks"], fourth, "{ask}");
+    assert!(
+        ask["error"]["data"]["estimate"]["level"].is_string(),
+        "{ask}"
+    );
+    // Refused before the folder was made.
+    assert!(
+        std::fs::read_dir(&ask_dir).map_or(true, |mut d| d.next().is_none()),
+        "nothing on disk"
+    );
+    let status = api.call("record.status", serde_json::json!({}));
+    assert_eq!(status["result"]["data"]["state"], "idle", "{status}");
+
+    for (name, params) in [
+        (
+            "skip",
+            serde_json::json!({"profile": "default", "on_hardware_limit": "skip"}),
+        ),
+        (
+            "older",
+            serde_json::json!({"profile": "default", "acknowledge_heavy": null, "on_hardware_limit": null}),
+        ),
+    ] {
+        let folder = dir.join(name);
+        profile_in(&host, &rx, folder.clone());
+        let started = api.call("record.start", params);
+        assert!(started.get("error").is_none(), "{name}: {started}");
+        // The UI is told as if its own button started it.
+        assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+        assert_eq!(
+            started["result"]["skipped"],
+            serde_json::json!([{"source": ids[3], "role": "video", "reason": "limit"}]),
+            "{name}: {started}"
+        );
+        assert!(
+            started["result"]["estimate"].is_object(),
+            "{name}: {started}"
+        );
+        let (take, manifest) = take_manifest(&folder);
+        let videos = manifest.files.iter().filter(|f| f.role == "video").count();
+        assert_eq!(videos, 3, "{name}: {manifest:?}");
+        assert_eq!(manifest.skipped.len(), 1, "{name}: {manifest:?}");
+        assert_eq!(manifest.skipped[0].source.get(), ids[3]);
+        assert_eq!(manifest.skipped[0].reason, "limit");
+        assert_eq!(manifest.skipped[0].role, "video");
+        match stop_recording(&host, &rx, &clock) {
+            RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None, "{name}"),
+            other => panic!("{name}: {other:?}"),
+        }
+        // The stop rewrite keeps the skipped source.
+        let text = std::fs::read_to_string(take.join("recording.rbs.toml")).unwrap();
+        let after = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+        assert_eq!(after.skipped, manifest.skipped, "{name}");
+    }
+
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Control API 1.54 (ADR-0087 decisions 6 and 7), with a calibrated recording folder
+/// whose write speed makes the master with one separate file heavy and the master
+/// alone fit: a new request without `acknowledge_heavy` is refused (`heavy`), one with
+/// it starts the file; an older request is never refused, trims the file and, with
+/// nothing else marked, records one file as 1.46 does.
+#[test]
+fn a_heavy_plan_is_refused_without_acknowledgement_and_an_older_start_trims_to_one_file() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-heavy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let folder = dir.join("takes");
+    let clock = TestClock::new();
+    let disk_need = |answer: &serde_json::Value| {
+        answer["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["resource"] == "disk_speed")
+            .unwrap_or_else(|| panic!("{answer}"))["need"]
+            .as_f64()
+            .unwrap()
+    };
+    // What the start writes, from an uncalibrated host's estimate.
+    let (full, alone) = {
+        let (host, rx, _) = screens(gpu.clone(), &clock, 1);
+        profile_in(&host, &rx, folder.clone());
+        let mut api = ApiClient::attach(&host);
+        let full = api.call("record.estimate", serde_json::json!({"profile": "default"}));
+        let alone = api.call(
+            "record.estimate",
+            serde_json::json!({"profile": "default", "iso": false}),
+        );
+        (disk_need(&full), disk_need(&alone))
+    };
+    assert!(full > alone && alone > 0.0, "{full} {alone}");
+    // The master with its file at 85 % of the disk: heavy; the master alone fits.
+    let write_speed = (full / 0.85).ceil() as u64;
+    assert!(alone < 0.7 * write_speed as f64, "{alone} of {write_speed}");
+    let mut config = HostConfig::desktop();
+    config
+        .calibration
+        .folders
+        .push(rbs_app::calibration_file::FolderEntry {
+            path: folder.clone(),
+            write_speed,
+            measured_at: 0,
+            partial: false,
+        });
+    let (host, rx) = spawn_host(gpu, &clock, config);
+    let ids = mark_screens(&host, &rx, 1);
+    profile_in(&host, &rx, folder.clone());
+    let mut api = ApiClient::attach(&host);
+
+    let heavy = api.call(
+        "record.start",
+        serde_json::json!({"profile": "default", "on_hardware_limit": "skip"}),
+    );
+    assert_eq!(heavy["error"]["data"]["reason"], "heavy", "{heavy}");
+    assert_eq!(
+        heavy["error"]["data"]["estimate"]["gate_level"], "heavy",
+        "{heavy}"
+    );
+    assert!(heavy["error"]["data"].get("tracks").is_none(), "{heavy}");
+    assert!(
+        std::fs::read_dir(&folder).map_or(true, |mut d| d.next().is_none()),
+        "nothing on disk"
+    );
+
+    let acknowledged = api.call(
+        "record.start",
+        serde_json::json!({"profile": "default", "acknowledge_heavy": true}),
+    );
+    assert!(acknowledged.get("error").is_none(), "{acknowledged}");
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    assert!(
+        acknowledged["result"].get("skipped").is_none(),
+        "{acknowledged}"
+    );
+    let (_, manifest) = take_manifest(&folder);
+    assert_eq!(
+        manifest.files.iter().filter(|f| f.role == "video").count(),
+        1,
+        "{manifest:?}"
+    );
+    stop_recording(&host, &rx, &clock);
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    let older = api.call("record.start", serde_json::json!({"profile": "default"}));
+    assert!(older.get("error").is_none(), "{older}");
+    match recording(&rx) {
+        RecordingUpdate::Started { path, separate, .. } => {
+            // One file, not a folder (ADR-0087 decision 7).
+            assert_eq!(path.parent(), Some(folder.as_path()), "{path:?}");
+            assert_eq!(path.extension().and_then(|e| e.to_str()), Some("mkv"));
+            assert!(separate.is_empty(), "{separate:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let skipped = serde_json::json!([{"source": ids[0], "role": "video", "reason": "limit"}]);
+    assert_eq!(older["result"]["skipped"], skipped, "{older}");
+    let status = api.call("record.status", serde_json::json!({}));
+    assert_eq!(status["result"]["data"]["skipped"], skipped, "{status}");
+    stop_recording(&host, &rx, &clock);
+
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Control API 1.54 (ADR-0087 decision 5, control API "Opening the files"): a file
+/// whose hardware encoder refuses a session never falls to a software encoder. Under
+/// `ask` the start is refused after the master ran, and what opened is stopped and
+/// removed; an older request skips the file (`open_failed`) and keeps its folder.
+#[test]
+fn a_file_whose_hardware_encoder_refuses_is_skipped_or_refuses_the_start_under_ask() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-hw-stop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = spawn_host_hw(gpu, &clock, HostConfig::desktop(), true);
+    let ids = mark_screens(&host, &rx, 1);
+    let mut api = ApiClient::attach(&host);
+    let fallback = |answer: &serde_json::Value, at: &str| {
+        answer[at]["estimate"]["reasons"]
+            .as_array()
+            .is_some_and(|r| {
+                r.iter()
+                    .any(|r| r["code"] == "software_fallback" && r["track"]["source"] == ids[0])
+            })
+    };
+
+    let ask_dir = dir.join("ask");
+    profile_in(&host, &rx, ask_dir.clone());
+    let ask = api.call(
+        "record.start",
+        serde_json::json!({"profile": "default", "on_hardware_limit": "ask"}),
+    );
+    assert_eq!(ask["error"]["data"]["reason"], "hardware_limit", "{ask}");
+    assert_eq!(
+        ask["error"]["data"]["tracks"],
+        serde_json::json!([{"source": ids[0], "role": "video"}]),
+        "{ask}"
+    );
+    assert!(fallback(&ask["error"], "data"), "{ask}");
+    // The master ran and was stopped; its folder is gone; nothing is recording.
+    assert!(
+        std::fs::read_dir(&ask_dir).map_or(true, |mut d| d.next().is_none()),
+        "{:?}",
+        std::fs::read_dir(&ask_dir).map(|d| d.map(|e| e.unwrap().path()).collect::<Vec<_>>())
+    );
+    let status = api.call("record.status", serde_json::json!({}));
+    assert_eq!(status["result"]["data"]["state"], "idle", "{status}");
+
+    let older_dir = dir.join("older");
+    profile_in(&host, &rx, older_dir.clone());
+    let older = api.call("record.start", serde_json::json!({"profile": "default"}));
+    assert!(older.get("error").is_none(), "{older}");
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    assert_eq!(
+        older["result"]["skipped"],
+        serde_json::json!([{"source": ids[0], "role": "video", "reason": "open_failed"}]),
+        "{older}"
+    );
+    assert!(fallback(&older, "result"), "{older}");
+    let (_, manifest) = take_manifest(&older_dir);
+    assert_eq!(manifest.skipped.len(), 1, "{manifest:?}");
+    assert_eq!(manifest.skipped[0].reason, "open_failed");
+    stop_recording(&host, &rx, &clock);
+
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }

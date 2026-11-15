@@ -1165,14 +1165,20 @@ pub struct OutputError {
 pub struct OutputErrorData {
     /// The machine-readable error.
     pub kind: crate::error::ErrorKind,
+    /// The members a single-canvas call adds beside `kind` (protocol 1.54), such as a
+    /// refused start's `reason`, `estimate` and `tracks`.
+    #[serde(flatten)]
+    pub more: serde_json::Map<String, serde_json::Value>,
 }
 
 impl From<&crate::error::ApiError> for OutputError {
     fn from(e: &crate::error::ApiError) -> Self {
+        let mut more = e.wire_data();
+        more.remove("kind");
         Self {
             code: e.kind.code(),
             message: e.message.clone(),
-            data: OutputErrorData { kind: e.kind },
+            data: OutputErrorData { kind: e.kind, more },
         }
     }
 }
@@ -1193,6 +1199,13 @@ pub struct OutputEntry {
     /// On `refused`: why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<OutputError>,
+    /// On a started main recording: the estimate of its plan (protocol 1.53).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<EstimateSummary>,
+    /// On a started main recording: marked sources left without a file (protocol
+    /// 1.53).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedTrack>,
 }
 
 /// The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with
@@ -1552,4 +1565,300 @@ pub struct VcamStatus {
     /// While sending, the session's counters when the adapter shares them; always
     /// `null` in `vcam.changed`.
     pub frames: Option<VcamFrames>,
+}
+
+/// The level of a plan or of one resource in `record.estimate` (protocol 1.53,
+/// ADR-0087 decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateLevel {
+    /// Below 70 % of a rate limit, or within a count limit.
+    Fits,
+    /// Between 70 % and 100 % of a rate limit.
+    Heavy,
+    /// Past the limit.
+    Over,
+    /// The limit is not known (a resource row only).
+    Unknown,
+    /// A level this client does not know (a later minor).
+    #[serde(other)]
+    Other,
+}
+
+/// A resource the estimate counts (protocol 1.53).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateResource {
+    /// Encoder sessions on one adapter.
+    EncoderSessions,
+    /// Pixels per second on one hardware adapter.
+    EncoderThroughput,
+    /// The busiest encode worker of the separate files.
+    IsoWorkers,
+    /// The render partition's share taken by the separate files' exports.
+    IsoRenderShare,
+    /// Software video encoders' pixel rate.
+    CpuLoad,
+    /// Export buffers of the separate files (informational).
+    Memory,
+    /// The recording folder's write speed.
+    DiskSpeed,
+    /// The recording folder's free space.
+    DiskSpace,
+    /// The most separate files of one kind.
+    IsoCeiling,
+    /// Sources kept active for their files (informational).
+    ActiveSources,
+    /// A resource this client does not know (a later minor).
+    #[serde(other)]
+    Other,
+}
+
+/// The unit of a resource row (protocol 1.53).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateUnit {
+    /// Encoder sessions.
+    Sessions,
+    /// Pixels per second.
+    PixelsPerSecond,
+    /// A share of one (a worker's time, the render budget).
+    Ratio,
+    /// Bytes per second.
+    BytesPerSecond,
+    /// Bytes.
+    Bytes,
+    /// Separate tracks.
+    Tracks,
+    /// Sources.
+    Sources,
+    /// A unit this client does not know (a later minor).
+    #[serde(other)]
+    Other,
+}
+
+/// Why a resource is not `fits`, or what is missing (protocol 1.53, a closed list).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateCode {
+    /// A limit no calibration can measure is not known.
+    Unknown,
+    /// No adapter can open the track.
+    NoAdapter,
+    /// The track's file could not open.
+    OpenFailed,
+    /// Encoder sessions are heavy or over.
+    Sessions,
+    /// A hardware encoder's session limit is not known.
+    SessionsUnknown,
+    /// Encoder throughput is heavy or over.
+    Throughput,
+    /// A track would fall to a software encoder.
+    SoftwareFallback,
+    /// The software encoders' load is heavy or over.
+    CpuLoad,
+    /// An encode worker of the separate files is heavy or over.
+    Workers,
+    /// The separate files' render share is heavy or over.
+    RenderShare,
+    /// The recording folder's speed or free space is not known.
+    DiskUnknown,
+    /// The recording folder is (nearly) full.
+    DiskFull,
+    /// The recording folder is too slow.
+    DiskSlow,
+    /// More separate tracks than the ceiling.
+    Ceiling,
+    /// A marked source cannot be kept active.
+    SourceInactive,
+    /// A code this client does not know (a later minor).
+    #[serde(other)]
+    Other,
+}
+
+/// A separate track named by the estimate: its source and what it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EstimateTrack {
+    /// The source's id.
+    pub source: u32,
+    /// What the file carries.
+    pub role: TrackRole,
+}
+
+/// One resource of `record.estimate` (protocol 1.53).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EstimateRow {
+    /// The resource.
+    pub resource: EstimateResource,
+    /// The adapter id for `encoder_sessions` and `encoder_throughput`; `video` or
+    /// `audio` for `iso_ceiling`; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// What the plan needs, in `unit`. Count units and bytes are whole numbers.
+    #[serde(serialize_with = "whole_if_integral")]
+    pub need: f64,
+    /// The limit, `None` when unknown or unlimited (`level` says which).
+    #[serde(serialize_with = "whole_if_integral_opt")]
+    pub limit: Option<f64>,
+    /// The unit of `need` and `limit`.
+    pub unit: EstimateUnit,
+    /// The level; absent on informational rows (`memory`, `active_sources`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<EstimateLevel>,
+    /// The limit was measured on this computer (`calibration.toml`), not declared.
+    pub measured: bool,
+}
+
+/// Writes a whole finite number as an integer (`4`, not `4.0`).
+fn whole_if_integral<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.0e15 {
+        s.serialize_i64(*v as i64)
+    } else {
+        s.serialize_f64(*v)
+    }
+}
+
+fn whole_if_integral_opt<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(v) => whole_if_integral(v, s),
+        None => s.serialize_none(),
+    }
+}
+
+/// A reason of `record.estimate` (protocol 1.53).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EstimateReason {
+    /// The code.
+    pub code: EstimateCode,
+    /// The resource it concerns, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<EstimateResource>,
+    /// The track it concerns, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<EstimateTrack>,
+}
+
+/// How many separate tracks of one kind fit (protocol 1.53, ADR-0087 decision 3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaxTracks {
+    /// The total that fits; `None` when no resource that grows with them is known.
+    pub count: Option<u32>,
+    /// The resource that stops the count.
+    pub limit: Option<EstimateResource>,
+    /// Some growing resource is unknown: `count` is an upper bound.
+    pub partial: bool,
+    /// The growing resources whose limit is unknown.
+    pub unknown: Vec<EstimateResource>,
+    /// Video only: the most separate video files a start with these settings opens
+    /// now, however many are marked (at most 3 while the encoder's capacity is
+    /// unknown). Absent without a picture file template.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_most_now: Option<u32>,
+}
+
+/// Both kinds of [`MaxTracks`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaxTracksByKind {
+    /// Separate video files.
+    pub video: MaxTracks,
+    /// Separate sound files.
+    pub audio: MaxTracks,
+}
+
+/// What one separate track adds (protocol 1.53).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackCost {
+    /// The source's id.
+    pub source: u32,
+    /// What the file carries.
+    pub role: TrackRole,
+    /// What it adds per resource, keyed by resource name. A client skips a key it
+    /// does not know.
+    pub cost: std::collections::BTreeMap<String, f64>,
+}
+
+/// Why the start gate refused a `record.start` (protocol 1.54, ADR-0087 decisions 5
+/// and 6): `error.data.reason` of a `failed` error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalReason {
+    /// More video files than their encoder can take (hardware sessions or software
+    /// load), under `on_hardware_limit: "ask"`.
+    HardwareLimit,
+    /// A limit that no setting lifts: another resource past its limit under `ask`, no
+    /// encoder for the files, or a measured resource still over.
+    OverLimit,
+    /// The plan is heavy and the request did not set `acknowledge_heavy`.
+    Heavy,
+    /// A file could not open after the recording started, under `ask`; what opened
+    /// was stopped and removed.
+    OpenFailed,
+    /// A reason this version does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// The typed view of a refused `record.start` (protocol 1.54): the members of its
+/// `error.data` beside `kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StartRefusal {
+    /// Why.
+    pub reason: RefusalReason,
+    /// The `record.estimate` answer of the plan that was judged.
+    pub estimate: EstimateAnswer,
+    /// The files concerned; empty when the whole plan was judged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<EstimateTrack>,
+}
+
+impl StartRefusal {
+    /// The refusal an error carries, or `None` when it is not a refused start.
+    pub fn from_error(e: &crate::error::ApiError) -> Option<Self> {
+        let data = e.data.as_ref()?;
+        data.get("reason")?;
+        serde_json::from_value(serde_json::Value::Object(data.clone())).ok()
+    }
+
+    /// The error that carries this refusal: `failed` with `data`.
+    pub fn into_error(self, message: impl Into<String>) -> crate::error::ApiError {
+        let data = match serde_json::to_value(&self) {
+            Ok(serde_json::Value::Object(map)) => map,
+            // A refusal holds only strings, finite numbers and lists, which always
+            // encode to an object; anything else leaves the error without data.
+            _ => serde_json::Map::new(),
+        };
+        crate::error::ApiError::with_data(crate::error::ErrorKind::Failed, message, data)
+    }
+}
+
+/// `record.estimate`'s answer (protocol 1.53, ADR-0087 decision 7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EstimateAnswer {
+    /// The plan's level (`fits`, `heavy` or `over`), free disk space included.
+    pub level: EstimateLevel,
+    /// The level a start's gate judges: the same without the disk space row.
+    pub gate_level: EstimateLevel,
+    /// The resources whose limit is unknown.
+    pub unknown: Vec<EstimateResource>,
+    /// One row per resource (and adapter).
+    pub resources: Vec<EstimateRow>,
+    /// Coded reasons, for clients to localise.
+    pub reasons: Vec<EstimateReason>,
+    /// How many separate tracks fit.
+    pub max_tracks: MaxTracksByKind,
+    /// What each separate video and sound file of the plan adds.
+    pub tracks: Vec<TrackCost>,
+}
+
+/// The estimate in `record.start`'s answer (protocol 1.53).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EstimateSummary {
+    /// The plan's level.
+    pub level: EstimateLevel,
+    /// The resources whose limit is unknown.
+    #[serde(default)]
+    pub unknown: Vec<EstimateResource>,
+    /// Coded reasons.
+    #[serde(default)]
+    pub reasons: Vec<EstimateReason>,
 }

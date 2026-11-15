@@ -72,7 +72,9 @@ use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
 use crate::monitor_settings::MonitorSettings;
 use crate::recent_targets::{Recent, RecentTargets};
-use crate::record_profile::{API_PROFILE_ID, RecordProfile, output_size_matches};
+use crate::record_profile::{
+    API_PROFILE_ID, LimitPolicy, RecordProfile, SeparateFiles, output_size_matches,
+};
 use crate::remote_control::ApiTokens;
 use crate::stream_key::{self, KeyStore, MemoryKeyStore};
 use crate::stream_profile::{Protocol, StreamProfile, parse_server};
@@ -1048,10 +1050,11 @@ pub enum Command {
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// output profile saved them. Sent at start and after each change.
     SetVerticalFlags(VerticalFlags),
-    /// Whether Record and `record.start` without `iso` write the separate files
-    /// (Settings › Recording › Separate files, ADR-0086 decision 4). Sent at start
-    /// and after each change.
-    SetSeparateFiles(bool),
+    /// The output profile's Separate files settings: whether Record and
+    /// `record.start` without `iso` write the separate files (ADR-0086 decision 4),
+    /// and the hardware limit policy (ADR-0087 decision 5). Sent at start and after
+    /// each change.
+    SetSeparateFiles(SeparateFiles),
     /// The vertical canvas's panel shows (`true`) or not (ADR-0093 decision 7): its
     /// picture runs only while it shows, so a closed panel costs nothing. Kept while
     /// there is no vertical canvas, for the next one.
@@ -1305,6 +1308,75 @@ struct IsoFiles {
     /// The image tracks, whose pictures go into the manifest at stop (ADR-0117
     /// decision 6).
     images: Vec<rbs_record::IsoImageTrack>,
+    /// The start gate's decision for the picture files, used once when they open.
+    gate: Option<PictureGate>,
+    /// Video files skipped because their encoder would have fallen to a software one
+    /// (ADR-0087 decision 5): `software_fallback` in the start answer's estimate.
+    software_stopped: Vec<SourceId>,
+}
+
+/// How a `record.start` asks for its separate video files (control API 1.54,
+/// ADR-0087 decisions 5 and 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartGate {
+    /// Neither `acknowledge_heavy` nor `on_hardware_limit` (older clients, the
+    /// desktop buttons, hotkeys): never refused because of separate video files.
+    Older,
+    /// With either parameter.
+    Asked {
+        /// The caller accepts a `heavy` plan.
+        acknowledge_heavy: bool,
+        /// What to do with files past their encoder's capacity.
+        policy: LimitPolicy,
+    },
+}
+
+/// Why a recording did not start.
+#[derive(Debug)]
+enum StartError {
+    /// In words.
+    Message(String),
+    /// The start gate refused it (control API 1.54): `failed` with `data`.
+    Refused(String, Box<api::StartRefusal>),
+}
+
+impl From<String> for StartError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl StartError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Message(m) | Self::Refused(m, _) => m,
+        }
+    }
+
+    fn into_api(self) -> ApiError {
+        match self {
+            Self::Message(m) => failed(m),
+            Self::Refused(m, r) => r.into_error(m),
+        }
+    }
+}
+
+/// The start gate's decision for the separate video files, applied once the master
+/// runs (pictures resolve only then).
+#[derive(Debug, Clone)]
+struct PictureGate {
+    /// The only sources that may open a video file (a request with the 1.54
+    /// parameters); `None`: every marked source in source id order, a later one taking
+    /// the slot of one without a picture (1.52's behaviour).
+    keep: Option<Vec<SourceId>>,
+    /// Most video files to open.
+    count: usize,
+    /// No encoder can take a separate video file: the gate's skips are `open_failed`.
+    no_encoder: bool,
+    /// `on_hardware_limit: "ask"`: a file that cannot open refuses the start.
+    ask: bool,
+    /// The plan the gate judged, for a refusal found while files open.
+    judged: rbs_record::estimate::Estimate,
 }
 
 /// Separate video files a take may open while the encoder session limit of this
@@ -2098,10 +2170,27 @@ pub struct HostConfig {
     /// Reads free disk space and memory for recording protection (ADR-0090); `None`:
     /// disk and memory are reported unavailable and only lag is watched.
     pub system_probe: Option<protection::SystemProbeFactory>,
+    /// The last calibration of this computer (`calibration.toml`, ADR-0087 decision
+    /// 4), read with `app.toml` before the control thread starts; empty by default.
+    pub calibration: crate::calibration_file::CalibrationFile,
+    /// Reads a recording folder's free space for the estimate's disk probe (ADR-0087
+    /// decision 1), on the probe's own short-lived thread; `None`: free space is
+    /// unknown.
+    pub read_free_space: Option<FreeSpaceReader>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fault: Option<Fault>,
+}
+
+/// Reads a recording folder's free space for the estimate ([`HostConfig::read_free_space`]).
+#[derive(Clone)]
+pub struct FreeSpaceReader(pub rbs_record::estimate::ReadFreeSpace);
+
+impl std::fmt::Debug for FreeSpaceReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FreeSpaceReader")
+    }
 }
 
 impl HostConfig {
@@ -2128,6 +2217,8 @@ impl HostConfig {
             swap_after_transition: false,
             monitor: MonitorSettings::default(),
             system_probe: None,
+            calibration: crate::calibration_file::CalibrationFile::default(),
+            read_free_space: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -2446,6 +2537,11 @@ struct Host {
     /// The recent targets per source type and the folder they are saved in.
     recent: RecentTargets,
     recent_dir: Option<PathBuf>,
+    /// The last calibration of this computer (ADR-0087 decision 4).
+    calibration: crate::calibration_file::CalibrationFile,
+    /// Free space of recording folders for the estimate; `None` when the app gave no
+    /// reader. Starts a thread only while a read runs (P13).
+    disk_probe: Option<rbs_record::estimate::DiskProbe>,
     /// A transition also puts the old program scene in preview (ADR-0098).
     swap_after_transition: bool,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
@@ -2488,6 +2584,9 @@ struct Host {
     vertical_flags: VerticalFlags,
     /// The output profile's Separate files switch (ADR-0086 decision 4).
     separate_files: bool,
+    /// The profile's `recording.iso.on_hardware_limit` (ADR-0087 decision 5), and
+    /// whether this build knows the saved value.
+    limit_policy: (LimitPolicy, bool),
     /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
     vertical_shared: Vec<SceneId>,
     vertical_sent: Option<Option<VerticalState>>,
@@ -2998,6 +3097,7 @@ fn start(
         vertical_restore_error: None,
         vertical_flags: VerticalFlags::default(),
         separate_files: true,
+        limit_policy: (LimitPolicy::Ask, true),
         vertical_shared: Vec::new(),
         vertical_sent: None,
         master_sent: None,
@@ -3037,6 +3137,10 @@ fn start(
             .map(|d| crate::recent_targets::load(d).0)
             .unwrap_or_default(),
         recent_dir: config.recent_dir,
+        calibration: config.calibration,
+        disk_probe: config
+            .read_free_space
+            .map(|r| rbs_record::estimate::DiskProbe::new(r.0)),
         swap_after_transition: config.swap_after_transition,
         thumbs: Arc::new(AtomicU64::new(0)),
         region_grabs: Arc::new(AtomicU64::new(0)),
@@ -3671,7 +3775,10 @@ impl Host {
                     self.settings_changed();
                 }
             }
-            Command::SetSeparateFiles(on) => self.separate_files = on,
+            Command::SetSeparateFiles(files) => {
+                self.separate_files = files.enabled;
+                self.limit_policy = files.limit_policy();
+            }
             Command::SetVerticalPicture(on) => {
                 // Turning the picture off cannot leave anything to report: the node
                 // goes with the next update at the latest.
@@ -4492,24 +4599,84 @@ impl Host {
         Ok(())
     }
 
-    /// Starts recording to `r.path`; the file's folder is made first.
+    /// Starts recording to `r.path`; the file's folder is made first. `gate` is how
+    /// a control API start asked for its separate video files (protocol 1.54).
     fn start_recording(
         &mut self,
         c: OutputCanvas,
         r: &RecordRequest,
         profile: Option<String>,
-    ) -> Result<RecordingUpdate, String> {
+        gate: StartGate,
+    ) -> Result<RecordingUpdate, StartError> {
         if self.outs[slot(c)].recording.is_some() {
-            return Err("A recording is already running.".into());
+            return Err(StartError::Message(
+                "A recording is already running.".into(),
+            ));
         }
         let canvas = self.output_canvas(c)?;
         if !r.path.is_absolute() {
-            return Err(format!("{} is not a full path.", r.path.display()));
+            return Err(format!("{} is not a full path.", r.path.display()).into());
         }
         if c == OutputCanvas::Main && r.iso && self.marks_separate() {
-            return self.start_recording_with_tracks(c, r, profile);
+            return self.start_recording_with_tracks(c, r, profile, gate);
         }
         self.start_master(c, canvas, r, &r.path, profile, None)
+    }
+
+    /// The start gate of a main recording with separate video files (ADR-0087
+    /// decisions 5 and 7, control API 1.54): the plan of the whole start, judged once
+    /// before anything is on disk.
+    fn gate_start(
+        &mut self,
+        r: &RecordRequest,
+        video: VideoSettings,
+        marked: &[SourceId],
+        sound: bool,
+        gate: StartGate,
+    ) -> rbs_record::estimate::GateDecision {
+        use rbs_record::estimate as est;
+        let out = self.master_settings(None, r, &r.path);
+        let separate = rbs_record::IsoVideoStart::new(String::new(), r.container, video);
+        let mut request = rbs_record::StartPlanRequest::default();
+        request.outputs = vec![rbs_record::PlannedOutput::new(&out, r.encoder.as_deref())];
+        request.separate = Some(&separate);
+        request.sound_files = sound;
+        let (plan, declared) = self
+            .studio
+            .start_plan(&self.adapters, &self.collection, &request);
+        // The profile's recording folder: the take folder is new on every start.
+        let folder = r.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let limits = self.estimate_limits(declared, &folder);
+        let request = match gate {
+            StartGate::Older => est::GateRequest::Older,
+            StartGate::Asked {
+                acknowledge_heavy,
+                policy,
+            } => est::GateRequest::Asked {
+                acknowledge_heavy,
+                policy: match policy {
+                    LimitPolicy::Ask => est::GatePolicy::Ask,
+                    LimitPolicy::Skip => est::GatePolicy::Skip,
+                },
+            },
+        };
+        est::gate(&plan, &limits, marked, request)
+    }
+
+    /// The `[[skipped]]` entries of the take manifest for `skipped`.
+    fn manifest_skipped(&self, skipped: &[api::SkippedTrack]) -> Vec<rbs_manifest::SkippedEntry> {
+        skipped
+            .iter()
+            .map(|t| rbs_manifest::SkippedEntry {
+                source: rbs_manifest::SourceRef::new(t.source),
+                source_name: self
+                    .collection
+                    .source(SourceId::from_raw(t.source))
+                    .map(|s| s.name.clone()),
+                role: wire_name(&t.role),
+                reason: wire_name(&t.reason),
+            })
+            .collect()
     }
 
     /// A source of the collection is marked to record its picture or its sound
@@ -4520,21 +4687,112 @@ impl Host {
             .any(|s| !s.record_separately.is_none())
     }
 
-    /// The main recording with its separate audio files (ADR-0086 decisions 5 to 7):
-    /// one folder named like the file would be, holding `master.<ext>`, one file per
-    /// track and `recording.rbs.toml`. The folder is made here and must not exist, so
-    /// nothing outside it is touched. The tracks open first; any failure stops what
-    /// was opened, removes the files this start may have made and refuses the
-    /// recording. A marked source the program mix does not hear is left out and
-    /// listed in `skipped` (keeping it running is decision 8, a later step).
+    /// The main recording with its separate files (ADR-0086 decisions 5 to 7): one
+    /// folder named like the file would be, holding `master.<ext>`, one file per track
+    /// and `recording.rbs.toml`. The start gate (ADR-0087 decisions 5 and 7) decides
+    /// first, before the folder is made, so its refusal leaves nothing on disk; when it
+    /// skips every video file and nothing else is marked, the take is one file. The
+    /// folder must not exist, so nothing outside it is touched. The sound files open
+    /// first; a failure stops what was opened, removes the files this start may have
+    /// made and refuses the recording (a request with `on_hardware_limit: "skip"`
+    /// skips them instead). A marked source the program mix does not hear is left out
+    /// and listed in `skipped` (keeping it running is decision 8, a later step).
     fn start_recording_with_tracks(
         &mut self,
         c: OutputCanvas,
         r: &RecordRequest,
         profile: Option<String>,
-    ) -> Result<RecordingUpdate, String> {
+        gate: StartGate,
+    ) -> Result<RecordingUpdate, StartError> {
         let canvas = self.output_canvas(c)?;
         let folder = r.path.with_extension("");
+        let iso_plan = rbs_record::plan(&self.collection).ok();
+        let marked = |role: rbs_record::IsoRole| -> Vec<SourceId> {
+            let mut v: Vec<SourceId> = iso_plan
+                .iter()
+                .flat_map(|p| p.tracks.iter())
+                .filter(|t| t.role == role)
+                .map(|t| t.source)
+                .collect();
+            v.sort();
+            v
+        };
+        let marked_video = marked(rbs_record::IsoRole::Video);
+        let has_images = !marked(rbs_record::IsoRole::Image).is_empty();
+        let sound = marked(rbs_record::IsoRole::Audio);
+        let skip_audio_on_failure = matches!(
+            gate,
+            StartGate::Asked {
+                policy: LimitPolicy::Skip,
+                ..
+            }
+        );
+        let video_skip = |sources: &[SourceId], reason| -> Vec<api::SkippedTrack> {
+            sources
+                .iter()
+                .map(|s| api::SkippedTrack {
+                    source: s.get(),
+                    role: api::TrackRole::Video,
+                    reason,
+                })
+                .collect()
+        };
+        // The gate: once, before the folder is made and before any file opens.
+        let mut pictures = None;
+        let mut decided: Vec<api::SkippedTrack> = Vec::new();
+        if let Some(video) = r.video.clone()
+            && !marked_video.is_empty()
+        {
+            let decision = self.gate_start(r, video, &marked_video, !sound.is_empty(), gate);
+            if let Some((why, judged, tracks)) = decision.refusal {
+                return Err(gate_refusal(api_refusal(why), &judged, &tracks, &[]));
+            }
+            let no_encoder = !decision.no_encoder.is_empty();
+            let keep = match gate {
+                StartGate::Older if !no_encoder => None,
+                _ => Some(decision.keep.clone()),
+            };
+            if no_encoder {
+                decided = video_skip(&marked_video, api::SkipReason::OpenFailed);
+            } else if keep.is_some() {
+                decided = video_skip(&decision.limit, api::SkipReason::Limit);
+            }
+            let nothing_left = match &keep {
+                Some(k) => k.is_empty(),
+                None => decision.count == 0,
+            };
+            if nothing_left && !has_images && sound.is_empty() {
+                // One file, as 1.46 writes (ADR-0087 decision 7): nothing separate is
+                // left. Its skipped files are only in the answer and `record.status`.
+                let skipped = if decided.is_empty() {
+                    video_skip(&marked_video, api::SkipReason::Limit)
+                } else {
+                    decided
+                };
+                let started = self.start_master(c, canvas, r, &r.path, profile, None)?;
+                if let api::RecordState::Recording { skipped: s, .. } =
+                    &mut self.outs[slot(c)].record_state
+                {
+                    *s = skipped;
+                    let state = self.outs[slot(c)].record_state.clone();
+                    self.set_record_state(c, state);
+                }
+                return Ok(started);
+            }
+            pictures = Some(PictureGate {
+                keep,
+                count: decision.count,
+                no_encoder,
+                ask: matches!(
+                    gate,
+                    StartGate::Asked {
+                        policy: LimitPolicy::Ask,
+                        ..
+                    }
+                ),
+                judged: decision.estimate,
+            });
+        }
         if let Some(parent) = folder.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Cannot make the folder {}: {e}", parent.display()))?;
@@ -4547,7 +4805,8 @@ impl Host {
         })?;
         let master_name = format!("{}.{}", rbs_record::MASTER_STEM, container_ext(r.container));
         // Every name this start may write, for the cleanup of a refused start.
-        let mut planned: Vec<String> = rbs_record::plan(&self.collection)
+        let mut planned: Vec<String> = iso_plan
+            .as_ref()
             .map(|p| {
                 p.tracks
                     .iter()
@@ -4572,7 +4831,7 @@ impl Host {
             rbs_transport_file::file_url(&folder),
             ContainerId::Wav,
             master_name.clone(),
-            t0_utc,
+            t0_utc.clone(),
             t0_ns,
         );
         // WAV, 24-bit PCM: an editor's format with no generation loss. A profile
@@ -4581,32 +4840,57 @@ impl Host {
         start.audio.bitrate_bps = 0;
         start.audio.bit_depth = Some(24);
         start.skip_unheard = true;
-        let started = match self.studio.start_iso_audio(&self.adapters, &start) {
-            Ok(started) => started,
+        let (mut manifest, mut skipped) = match self.studio.start_iso_audio(&self.adapters, &start)
+        {
+            Ok(started) => {
+                let skipped: Vec<api::SkippedTrack> = started
+                    .not_heard
+                    .iter()
+                    .map(|(source, _)| api::SkippedTrack {
+                        source: source.get(),
+                        role: api::TrackRole::Audio,
+                        reason: api::SkipReason::NotHeard,
+                    })
+                    .collect();
+                (started.manifest, skipped)
+            }
             Err(e) => {
-                remove_recording_folder(&folder, &planned);
-                return Err(format!("The separate files could not start: {e}"));
+                // `on_hardware_limit: "skip"` (ADR-0087 decision 5): the take goes on
+                // without its sound files.
+                let without_sound = iso_plan
+                    .as_ref()
+                    .filter(|_| skip_audio_on_failure)
+                    .and_then(|plan| {
+                        rbs_record::manifest_at_start(plan, &master_name, &t0_utc, t0_ns).ok()
+                    });
+                let Some(mut manifest) = without_sound else {
+                    remove_recording_folder(&folder, &planned);
+                    return Err(format!("The separate files could not start: {e}").into());
+                };
+                manifest.files.retain(|f| f.role != "audio");
+                let skipped = sound
+                    .iter()
+                    .map(|s| api::SkippedTrack {
+                        source: s.get(),
+                        role: api::TrackRole::Audio,
+                        reason: api::SkipReason::OpenFailed,
+                    })
+                    .collect();
+                (manifest, skipped)
             }
         };
-        let skipped: Vec<api::SkippedTrack> = started
-            .not_heard
-            .iter()
-            .map(|(source, _)| api::SkippedTrack {
-                source: source.get(),
-                role: api::TrackRole::Audio,
-                reason: api::SkipReason::NotHeard,
-            })
-            .collect();
-        let mut manifest = started.manifest;
+        skipped.extend(decided);
+        skipped.sort_by_key(|s| s.source);
         // Picture tracks open once the master runs (sources draw only then); until
         // then the manifest lists only the files that are open.
         manifest
             .files
             .retain(|f| f.role != "video" && f.role != "image");
+        manifest.skipped = self.manifest_skipped(&skipped);
         if let Err(e) = rbs_record::write_manifest(&folder, &manifest) {
             self.studio.stop_iso_audio();
             remove_recording_folder(&folder, &planned);
-            return Err(format!("{e}."));
+            return Err(format!("{e}.").into());
         }
         let tracks = manifest
             .files
@@ -4626,26 +4910,41 @@ impl Host {
             manifest: manifest.clone(),
             folder: folder.clone(),
             images: Vec::new(),
+            gate: pictures,
+            software_stopped: Vec::new(),
         };
         let master = folder.join(&master_name);
-        let result = self.start_master(c, canvas, r, &master, profile, Some(iso));
-        if result.is_err() {
-            self.studio.stop_iso_audio();
-            remove_recording_folder(&folder, &planned);
+        match self.start_master(c, canvas, r, &master, profile, Some(iso)) {
+            Ok(started) => Ok(started),
+            Err(e) => {
+                self.studio.stop_iso_audio();
+                let left = remove_recording_folder(&folder, &planned);
+                Err(match e {
+                    StartError::Refused(m, why) if !left.is_empty() => StartError::Refused(
+                        format!("{m} These files could not be removed: {}.", left.join(", ")),
+                        why,
+                    ),
+                    e => e,
+                })
+            }
         }
-        result
     }
 
     /// Opens the separate video files and image tracks of the main recording, once its
-    /// master runs (ADR-0086 step 3.5, ADR-0117). The take never fails here (ADR-0087
-    /// decision 7 for requests without the new start parameters): a source with no
-    /// picture, a file past the estimate's limit ([`SEPARATE_VIDEO_LIMIT`] while the
-    /// session limit is unknown), a recording with no picture or
-    /// files that cannot open are listed in `skipped`, and the manifest is written
-    /// again with what is open.
-    fn start_separate_pictures(&mut self, files: &mut IsoFiles, r: &RecordRequest) {
+    /// master runs (ADR-0086 step 3.5, ADR-0117), as the start gate decided (ADR-0087
+    /// decisions 5 and 7). A source with no picture, a file the gate skipped, a
+    /// recording with no picture or files that cannot open are listed in `skipped`, and
+    /// the manifest is written again with what is open. Only a request with
+    /// `on_hardware_limit: "ask"` is refused here, when a file cannot open; the video
+    /// files that did open are still open and the caller stops them.
+    fn start_separate_pictures(
+        &mut self,
+        files: &mut IsoFiles,
+        r: &RecordRequest,
+    ) -> Result<(), StartError> {
+        let gate = files.gate.take();
         let Ok(plan) = rbs_record::plan(&self.collection) else {
-            return;
+            return Ok(());
         };
         let pictures: Vec<_> = plan
             .tracks
@@ -4658,21 +4957,33 @@ impl Host {
             })
             .collect();
         if pictures.is_empty() {
-            return;
+            return Ok(());
         }
+        let already = |files: &IsoFiles, source: u32, role: api::TrackRole| {
+            files
+                .skipped
+                .iter()
+                .any(|s| s.source == source && s.role == role)
+        };
         let skip_all = |files: &mut IsoFiles, reason: api::SkipReason| {
             for t in &pictures {
-                files.skipped.push(api::SkippedTrack {
-                    source: t.source.get(),
-                    role: api_track_role(t.role),
-                    reason,
-                });
+                let role = api_track_role(t.role);
+                if !already(files, t.source.get(), role) {
+                    files.skipped.push(api::SkippedTrack {
+                        source: t.source.get(),
+                        role,
+                        reason,
+                    });
+                }
             }
         };
         // A WAV or FLAC take draws no picture and has no encoder settings to match.
         let Some(video) = r.video.clone() else {
             skip_all(files, api::SkipReason::AudioOnly);
-            return;
+            files.skipped.sort_by_key(|s| s.source);
+            files.manifest.skipped = self.manifest_skipped(&files.skipped);
+            let _ = rbs_record::write_manifest(&files.folder, &files.manifest);
+            return Ok(());
         };
         let mut start = rbs_record::IsoVideoStart::new(
             rbs_transport_file::file_url(&files.folder),
@@ -4681,33 +4992,98 @@ impl Host {
         );
         start.image_dir = Some(files.folder.clone());
         start.t0 = Timestamp::from_nanos(files.manifest.t0_ns);
-        // The estimate of what runs now plus these files (ADR-0087). Not calibrated yet
-        // (step D): the declared session limit, else SEPARATE_VIDEO_LIMIT.
-        let (estimate_plan, declared) =
-            self.studio
-                .separate_video_plan(&self.adapters, &self.collection, &start);
-        let limits = rbs_record::estimate::Limits {
-            adapters: declared,
-            ..rbs_record::estimate::Limits::default()
-        };
-        let estimate = rbs_record::estimate::estimate(&estimate_plan, &limits);
-        start.max_video = rbs_record::estimate::separate_video_limit(&estimate);
         start.skip_no_picture = true;
+        // A file whose hardware encoder refuses a session is skipped, never moved to a
+        // software encoder (ADR-0087 decision 5).
+        start.stop_before_software = true;
+        start.skip_unopened = true;
+        let ask = gate.as_ref().is_some_and(|g| g.ask);
+        let no_encoder = gate.as_ref().is_some_and(|g| g.no_encoder);
+        if let Some(g) = &gate {
+            start.keep.clone_from(&g.keep);
+            start.max_video = g.count;
+        }
+        let kept_video = || -> Vec<rbs_record::estimate::TrackRef> {
+            gate.as_ref()
+                .and_then(|g| g.keep.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|source| rbs_record::estimate::TrackRef {
+                    source,
+                    role: rbs_record::IsoRole::Video,
+                })
+                .collect()
+        };
         let started = match self.studio.start_iso_video(&self.adapters, &start) {
             Ok(started) => started,
-            Err(_) => {
+            Err(e) => {
+                if let Some(g) = gate.as_ref().filter(|g| g.ask) {
+                    let mut refusal = gate_refusal(
+                        api::RefusalReason::OpenFailed,
+                        &g.judged,
+                        &kept_video(),
+                        &[],
+                    );
+                    if let StartError::Refused(m, _) = &mut refusal {
+                        *m = format!("The separate video files could not open: {e}. {m}");
+                    }
+                    return Err(refusal);
+                }
                 skip_all(files, api::SkipReason::OpenFailed);
-                return;
+                files.skipped.sort_by_key(|s| s.source);
+                files.manifest.skipped = self.manifest_skipped(&files.skipped);
+                let _ = rbs_record::write_manifest(&files.folder, &files.manifest);
+                return Ok(());
             }
         };
+        let unopened: Vec<&rbs_record::IsoSkipped> = started
+            .skipped
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.reason,
+                    rbs_record::IsoSkip::EncoderRefused | rbs_record::IsoSkip::SoftwareStopped
+                )
+            })
+            .collect();
+        let software: Vec<SourceId> = unopened
+            .iter()
+            .filter(|s| s.reason == rbs_record::IsoSkip::SoftwareStopped)
+            .map(|s| s.source)
+            .collect();
+        if ask
+            && !unopened.is_empty()
+            && let Some(g) = &gate
+        {
+            let tracks: Vec<_> = unopened
+                .iter()
+                .map(|s| rbs_record::estimate::TrackRef {
+                    source: s.source,
+                    role: s.role,
+                })
+                .collect();
+            return Err(gate_refusal(
+                api::RefusalReason::HardwareLimit,
+                &g.judged,
+                &tracks,
+                &software,
+            ));
+        }
+        files.software_stopped = software;
         for s in &started.skipped {
+            let role = api_track_role(s.role);
+            if already(files, s.source.get(), role) {
+                continue;
+            }
             files.skipped.push(api::SkippedTrack {
                 source: s.source.get(),
-                role: api_track_role(s.role),
+                role,
                 reason: match s.reason {
+                    rbs_record::IsoSkip::Limit if no_encoder => api::SkipReason::OpenFailed,
                     rbs_record::IsoSkip::Limit => api::SkipReason::Limit,
                     rbs_record::IsoSkip::NoPicture => api::SkipReason::NoPicture,
-                    // A reason added later to the engine, not yet named here.
+                    // An encoder that refused, a stop before a software encoder, or a
+                    // reason added later to the engine, not yet named here.
                     _ => api::SkipReason::OpenFailed,
                 },
             });
@@ -4736,29 +5112,21 @@ impl Host {
         files.images = started.images;
         files.tracks.sort_by_key(|t| t.source);
         files.skipped.sort_by_key(|s| s.source);
+        files.manifest.skipped = self.manifest_skipped(&files.skipped);
         // The start manifest named only the files open before the master. The same
         // folder took that write a moment ago; if this one fails, the files are still
         // valid and the stop write lists the image tracks.
         let _ = rbs_record::write_manifest(&files.folder, &files.manifest);
+        Ok(())
     }
 
-    /// Starts the recording of `c` into `path` with `r`'s settings.
-    fn start_master(
-        &mut self,
-        c: OutputCanvas,
+    /// The output settings of a recording of `r` into `path` on `canvas`.
+    fn master_settings(
+        &self,
         canvas: Option<CanvasId>,
         r: &RecordRequest,
         path: &Path,
-        profile: Option<String>,
-        mut iso: Option<IsoFiles>,
-    ) -> Result<RecordingUpdate, String> {
-        if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder)
-                .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
-        }
-        if path.exists() {
-            return Err(format!("{} already exists.", path.display()));
-        }
+    ) -> OutputSettings {
         let mut out = OutputSettings::new(rbs_transport_file::file_url(path), r.container);
         out.canvas = canvas;
         out.video = r.video.clone();
@@ -4781,12 +5149,134 @@ impl Host {
         // next start (ADR-0102). `None` stays the canvas, including a side above 7680.
         // An audio-only file has no picture size.
         out.size = if r.video.is_none() { None } else { r.size };
+        out
+    }
+
+    /// The estimate of a start of the saved recording profile on `c` (or on every
+    /// canvas with `all`), next to what runs (`record.estimate`, ADR-0087 decision 7).
+    /// A recording that runs on a canvas the start covers is left out, as if it had
+    /// stopped. Opens nothing and never waits.
+    fn record_estimate(
+        &mut self,
+        c: OutputCanvas,
+        all: bool,
+        iso: Option<bool>,
+    ) -> Result<api::EstimateAnswer, String> {
+        let canvases: Vec<OutputCanvas> = if all { self.output_canvases() } else { vec![c] };
+        let mut settings = Vec::new();
+        let mut encoders = Vec::new();
+        let mut replacing = Vec::new();
+        let mut separate = None;
+        let mut sound_files = false;
+        let mut folder = None;
+        let mut replacing_separate = false;
+        for one in canvases {
+            let path = self.recording_file(one);
+            let r = self.profile_request(one, path.clone())?;
+            let canvas = self.output_canvas(one)?;
+            settings.push(self.master_settings(canvas, &r, &path));
+            encoders.push(r.encoder.clone());
+            if let Some((_, id)) = self.outs[slot(one)].recording {
+                replacing.push(id);
+            }
+            if one == OutputCanvas::Main {
+                folder = path.parent().map(Path::to_path_buf);
+                replacing_separate = self.outs[slot(one)].recording.is_some();
+                if iso.unwrap_or(self.separate_files) && self.marks_separate() {
+                    sound_files = true;
+                    separate = r.video.clone().map(|video| {
+                        rbs_record::IsoVideoStart::new(String::new(), r.container, video)
+                    });
+                }
+            }
+        }
+        let mut request = rbs_record::StartPlanRequest::default();
+        request.outputs = settings
+            .iter()
+            .zip(&encoders)
+            .map(|(s, e)| rbs_record::PlannedOutput::new(s, e.as_deref()))
+            .collect();
+        request.separate = separate.as_ref();
+        request.sound_files = sound_files;
+        request.replacing = replacing;
+        request.replacing_separate = replacing_separate;
+        let (plan, declared) = self
+            .studio
+            .start_plan(&self.adapters, &self.collection, &request);
+        let folder = folder.unwrap_or_default();
+        let limits = self.estimate_limits(declared, &folder);
+        let estimate = rbs_record::estimate::estimate(&plan, &limits);
+        let at_most_now = plan
+            .video_template
+            .is_some()
+            .then(|| rbs_record::estimate::separate_video_limit(&estimate));
+        Ok(api_estimate(&estimate, at_most_now))
+    }
+
+    /// The estimate of what runs now, for `record.start`'s answer (protocol 1.53): the
+    /// plan of what the start decided to open, which now runs.
+    fn running_estimate(&mut self, c: OutputCanvas) -> Option<api::EstimateSummary> {
+        let folder = self.outs[slot(c)].recording.as_ref().and_then(|(p, _)| {
+            // A take with separate files is a folder inside the profile's folder.
+            let parent = p.parent()?;
+            Some(if self.iso.is_some() && c == OutputCanvas::Main {
+                parent.parent().unwrap_or(parent).to_path_buf()
+            } else {
+                parent.to_path_buf()
+            })
+        })?;
+        let request = rbs_record::StartPlanRequest::default();
+        let (plan, declared) = self
+            .studio
+            .start_plan(&self.adapters, &self.collection, &request);
+        let limits = self.estimate_limits(declared, &folder);
+        let e = rbs_record::estimate::estimate(&plan, &limits);
+        let mut a = api_estimate(&e, None);
+        if c == OutputCanvas::Main
+            && let Some(files) = &self.iso
+        {
+            add_software_fallback(&mut a.reasons, &files.software_stopped);
+        }
+        Some(api::EstimateSummary {
+            level: a.level,
+            unknown: a.unknown,
+            reasons: a.reasons,
+        })
+    }
+
+    /// Starts the recording of `c` into `path` with `r`'s settings.
+    fn start_master(
+        &mut self,
+        c: OutputCanvas,
+        canvas: Option<CanvasId>,
+        r: &RecordRequest,
+        path: &Path,
+        profile: Option<String>,
+        mut iso: Option<IsoFiles>,
+    ) -> Result<RecordingUpdate, StartError> {
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
+        }
+        if path.exists() {
+            return Err(format!("{} already exists.", path.display()).into());
+        }
+        let out = self.master_settings(canvas, r, path);
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
-        if started.is_ok()
+        if let Ok((id, _, _)) = &started
             && let Some(files) = iso.as_mut()
         {
-            self.start_separate_pictures(files, r);
+            let id = *id;
+            if let Err(refusal) = self.start_separate_pictures(files, r) {
+                // A refusal after the master runs (`on_hardware_limit: "ask"`): stop the
+                // video files that opened and the master; the caller stops the sound
+                // files and removes the folder. An encoder the master shares with a
+                // running stream keeps running for it (ADR-0047).
+                self.studio.stop_iso_video();
+                let _ = self.studio.stop_output(id);
+                return Err(refusal);
+            }
         }
         let separate: Vec<String> = iso
             .as_ref()
@@ -4863,7 +5353,7 @@ impl Host {
             // The output may have made the file before a later node failed.
             let _ = std::fs::remove_file(path);
         }
-        started.map(|(_, update)| update)
+        started.map(|(_, update)| update).map_err(StartError::from)
     }
 
     /// The studio canvas `c`'s outputs use (`None`: the main one); refused in words
@@ -5011,6 +5501,39 @@ impl Host {
     }
 
     /// A new file for a recording of `c` with its saved settings, named for now.
+    /// What the estimate knows about this computer for a start that records into
+    /// `folder` (ADR-0087 decision 1): the adapters' declared capabilities, the
+    /// calibration entries that still hold and the folder's cached free space. Never
+    /// waits: a folder with no fresh reading is unknown now and read for the next call.
+    fn estimate_limits(
+        &mut self,
+        adapters: Vec<rbs_record::estimate::DeclaredAdapter>,
+        folder: &Path,
+    ) -> rbs_record::estimate::Limits {
+        let this = crate::calibration_file::ThisComputer {
+            // No adapter reports `adapter.version` yet (ADR-0087 decision 4).
+            adapters: self
+                .adapters
+                .video_encoders
+                .ids()
+                .map(|id| (id.as_str().to_owned(), None))
+                .collect(),
+            rbs_version: env!("CARGO_PKG_VERSION").to_owned(),
+        };
+        let calibration = self.calibration.for_estimate(&this, folder);
+        let now = self.clock.now();
+        let free_space = self
+            .disk_probe
+            .as_mut()
+            .and_then(|p| p.free_space(folder, now).bytes());
+        rbs_record::estimate::Limits {
+            adapters,
+            calibration: Some(calibration),
+            free_space,
+            previous_tick: None,
+        }
+    }
+
     fn recording_file(&self, c: OutputCanvas) -> PathBuf {
         let now = chrono::Local::now().naive_local();
         let p = self.record_profile(c);
@@ -5022,9 +5545,10 @@ impl Host {
 
     /// The UI's Record for `c`: starts the recording and says how it went.
     fn record_asked(&mut self, c: OutputCanvas, r: &RecordRequest, notify: &dyn Fn(Update)) {
-        let update = match self.start_recording(c, r, Some(API_PROFILE_ID.into())) {
+        let update = match self.start_recording(c, r, Some(API_PROFILE_ID.into()), StartGate::Older)
+        {
             Ok(update) => update,
-            Err(why) => RecordingUpdate::NotStarted(why),
+            Err(why) => RecordingUpdate::NotStarted(why.into_message()),
         };
         notify(recording_update(c, update));
         self.publish(notify);
@@ -5199,7 +5723,10 @@ impl Host {
             Err(why.clone())
         } else {
             self.profile_request(c, self.recording_file(c))
-                .and_then(|r| self.start_recording(c, &r, Some(API_PROFILE_ID.into())))
+                .and_then(|r| {
+                    self.start_recording(c, &r, Some(API_PROFILE_ID.into()), StartGate::Older)
+                        .map_err(StartError::into_message)
+                })
         };
         let update = match started {
             Ok(update) => {
@@ -9262,6 +9789,98 @@ fn rounded_rate(fps: FrameRate) -> u32 {
         .map_or(0, |r| u32::try_from(r).unwrap_or(u32::MAX))
 }
 
+/// An estimate enum as the API's, through its wire name: a name the API types do
+/// not know reads as their `Other`.
+fn api_enum<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+}
+
+fn api_resource(r: rbs_record::estimate::Resource) -> api::EstimateResource {
+    api_enum(r.as_str()).unwrap_or(api::EstimateResource::Other)
+}
+
+fn api_level(l: rbs_record::estimate::Level) -> api::EstimateLevel {
+    api_enum(l.as_str()).unwrap_or(api::EstimateLevel::Other)
+}
+
+/// A number the API may send: finite, else `None` (ADR-0087: never NaN or infinity).
+fn finite(v: f64) -> Option<f64> {
+    v.is_finite().then_some(v)
+}
+
+/// `record.estimate`'s answer from the estimate (protocol 1.53). `at_most_now` is the
+/// most separate video files a start opens now, when the plan has a picture template.
+fn api_estimate(
+    e: &rbs_record::estimate::Estimate,
+    at_most_now: Option<usize>,
+) -> api::EstimateAnswer {
+    use rbs_record::estimate as est;
+    let track = |t: &est::TrackRef| api::EstimateTrack {
+        source: t.source.get(),
+        role: api_track_role(t.role),
+    };
+    let max = |m: &est::MaxTracks, now: Option<usize>| api::MaxTracks {
+        count: m.count,
+        limit: m.limit.map(api_resource),
+        partial: m.partial,
+        unknown: m.unknown.iter().copied().map(api_resource).collect(),
+        at_most_now: now.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+    };
+    api::EstimateAnswer {
+        level: api_level(e.level),
+        gate_level: api_level(e.gate_level),
+        unknown: e.unknown.iter().copied().map(api_resource).collect(),
+        resources: e
+            .resources
+            .iter()
+            .map(|r| {
+                let need = finite(r.need).unwrap_or(0.0);
+                let limit = r.limit.and_then(finite);
+                // A limit that is not a finite number is reported as unknown.
+                let level = match (r.limit, limit) {
+                    (Some(_), None) => Some(api::EstimateLevel::Unknown),
+                    _ => r.level.map(api_level),
+                };
+                api::EstimateRow {
+                    resource: api_resource(r.resource),
+                    scope: r.scope.clone(),
+                    need,
+                    limit,
+                    unit: api_enum(r.unit.as_str()).unwrap_or(api::EstimateUnit::Other),
+                    level,
+                    measured: r.measured,
+                }
+            })
+            .collect(),
+        reasons: e
+            .reasons
+            .iter()
+            .map(|r| api::EstimateReason {
+                code: api_enum(r.code.as_str()).unwrap_or(api::EstimateCode::Other),
+                resource: r.resource.map(api_resource),
+                track: r.track.as_ref().map(track),
+            })
+            .collect(),
+        max_tracks: api::MaxTracksByKind {
+            video: max(&e.max_video, at_most_now),
+            audio: max(&e.max_audio, None),
+        },
+        tracks: e
+            .tracks
+            .iter()
+            .map(|t| api::TrackCost {
+                source: t.track.source.get(),
+                role: api_track_role(t.track.role),
+                cost: t
+                    .cost
+                    .iter()
+                    .filter_map(|(r, v)| Some((r.as_str().to_owned(), finite(*v)?)))
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
 fn failed(message: impl Into<String>) -> ApiError {
     ApiError::new(ErrorKind::Failed, message)
 }
@@ -10158,18 +10777,30 @@ impl ApiTarget<'_> {
             })),
             C::RecordStart(p) => {
                 check_profile(&p.profile)?;
+                let gate = start_gate(&p, host.limit_policy)?;
                 match p.canvas.unwrap_or_default().single() {
                     Some(one) => {
                         let c = host.api_canvas_of(Some(one))?;
                         let path = host.recording_file(c);
                         let iso = p.iso.unwrap_or(host.separate_files);
-                        self.record(c, path, false, iso)
+                        self.record(c, path, false, iso, gate)
                     }
                     None => {
                         let iso = p.iso.unwrap_or(host.separate_files);
-                        self.start_all(api::OutputKind::Record, iso)
+                        self.start_all(api::OutputKind::Record, iso, gate)
                     }
                 }
+            }
+            C::RecordEstimate(p) => {
+                check_profile(&p.profile)?;
+                let target = p.canvas.unwrap_or_default();
+                let (c, all) = match target.single() {
+                    Some(one) => (host.api_canvas_of(Some(one))?, false),
+                    None => (OutputCanvas::Main, true),
+                };
+                host.record_estimate(c, all, p.iso)
+                    .map(Response::RecordEstimate)
+                    .map_err(failed)
             }
             C::RecordStartToFile(p) => {
                 check_profile(&p.profile)?;
@@ -10181,7 +10812,7 @@ impl ApiTarget<'_> {
                         format!("{} is not a full path", p.path),
                     ));
                 }
-                self.record(c, path, true, false)
+                self.record(c, path, true, false, StartGate::Older)
             }
             C::RecordStop(p) => {
                 let Some(one) = p.target().single() else {
@@ -10219,7 +10850,7 @@ impl ApiTarget<'_> {
             }
             C::StreamStart(p) => {
                 let Some(one) = p.target().single() else {
-                    return self.start_all(api::OutputKind::Stream, false);
+                    return self.start_all(api::OutputKind::Stream, false, StartGate::Older);
                 };
                 let c = host.api_canvas_of(Some(one))?;
                 self.stream(c)
@@ -10625,6 +11256,7 @@ impl ApiTarget<'_> {
         path: PathBuf,
         explicit: bool,
         iso: bool,
+        gate: StartGate,
     ) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
@@ -10657,7 +11289,7 @@ impl ApiTarget<'_> {
         })?;
         request.iso = iso;
         let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
-        let result = host.start_recording(c, &request, profile);
+        let result = host.start_recording(c, &request, profile, gate);
         host.publish(notify);
         match result {
             Ok(update) => {
@@ -10669,6 +11301,13 @@ impl ApiTarget<'_> {
                     } => RecordStarted {
                         video_encoder: video_encoder.clone(),
                         audio_encoder: audio_encoder.clone(),
+                        estimate: host.running_estimate(c),
+                        // A one-file take (every video file skipped, ADR-0087
+                        // decision 7) has its skipped files only in its state.
+                        skipped: match &host.outs[slot(c)].record_state {
+                            api::RecordState::Recording { skipped, .. } => skipped.clone(),
+                            _ => Vec::new(),
+                        },
                     },
                     _ => return Err(failed("the recording did not start")),
                 };
@@ -10676,16 +11315,57 @@ impl ApiTarget<'_> {
                 notify(recording_update(c, update));
                 Ok(Response::RecordStarted(started))
             }
-            Err(why) => Err(failed(why)),
+            Err(why) => Err(why.into_api()),
         }
     }
+}
+
+/// How a `record.start` asks for its separate video files (protocol 1.54): with
+/// neither new parameter it is an older request; `cpu` is refused until the CPU
+/// encoder for separate files exists (ADR-0119 step (c), owner record on ADR-0087).
+fn start_gate(
+    p: &rbs_api::request::RecordStart,
+    profile: (LimitPolicy, bool),
+) -> Result<StartGate, ApiError> {
+    use rbs_api::request::HardwareLimitPolicy as P;
+    if p.acknowledge_heavy.is_none() && p.on_hardware_limit.is_none() {
+        return Ok(StartGate::Older);
+    }
+    let policy = match p.on_hardware_limit {
+        Some(P::Ask) => LimitPolicy::Ask,
+        Some(P::Skip) => LimitPolicy::Skip,
+        Some(P::Cpu) => {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                "the CPU encoder for separate files comes with a later version",
+            ));
+        }
+        None => {
+            if !profile.1 {
+                eprintln!(
+                    "rbs: recording.iso.on_hardware_limit has a value this version does not \
+                     know; it behaves as \"ask\""
+                );
+            }
+            profile.0
+        }
+    };
+    Ok(StartGate::Asked {
+        acknowledge_heavy: p.acknowledge_heavy.unwrap_or(false),
+        policy,
+    })
 }
 
 impl ApiTarget<'_> {
     /// `record.start` or `stream.start` with `canvas: "all"` (ADR-0111 decision 3): the
     /// main canvas first, whose refusal fails the call; then the vertical one, whose
     /// refusal is only its entry. One step on the control thread.
-    fn start_all(&mut self, kind: api::OutputKind, iso: bool) -> Result<Response, ApiError> {
+    fn start_all(
+        &mut self,
+        kind: api::OutputKind,
+        iso: bool,
+        gate: StartGate,
+    ) -> Result<Response, ApiError> {
         let mut outputs = Vec::new();
         for c in self.host.output_canvases() {
             let out = &self.host.outs[slot(c)];
@@ -10699,6 +11379,8 @@ impl ApiTarget<'_> {
                 video_encoder: None,
                 audio_encoder: None,
                 error: None,
+                estimate: None,
+                skipped: Vec::new(),
             };
             if ending {
                 let e = ApiError::new(ErrorKind::Conflict, "the recording is still ending");
@@ -10728,7 +11410,7 @@ impl ApiTarget<'_> {
             let started = match kind {
                 api::OutputKind::Record => {
                     let path = self.host.recording_file(c);
-                    self.record(c, path, false, iso)
+                    self.record(c, path, false, iso, gate)
                 }
                 api::OutputKind::Stream => self.stream(c),
             };
@@ -10736,6 +11418,8 @@ impl ApiTarget<'_> {
                 Ok(Response::RecordStarted(r)) => outputs.push(api::OutputEntry {
                     video_encoder: Some(r.video_encoder),
                     audio_encoder: r.audio_encoder,
+                    estimate: r.estimate,
+                    skipped: r.skipped,
                     ..entry(api::OutputOutcome::Started)
                 }),
                 Ok(Response::StreamStarted(r)) => outputs.push(api::OutputEntry {
@@ -10793,6 +11477,8 @@ impl ApiTarget<'_> {
                 video_encoder: None,
                 audio_encoder: None,
                 error: None,
+                estimate: None,
+                skipped: Vec::new(),
             });
         }
         if !outputs
@@ -11454,16 +12140,95 @@ fn container_ext(container: ContainerId) -> &'static str {
 /// Removes what a refused start left in the recording folder it made: the named files,
 /// the manifest and its temporary file, then the folder when nothing else is in it.
 /// A delete that fails is left for the user (the start already answers `failed`).
-fn remove_recording_folder(folder: &Path, names: &[String]) {
+/// Removes the files a refused start may have made and its folder. Returns the names
+/// still there (a file another program holds, on Windows).
+fn remove_recording_folder(folder: &Path, names: &[String]) -> Vec<String> {
     const MANIFEST_FILE: &str = "recording.rbs.toml";
+    let mut left = Vec::new();
     for name in names
         .iter()
         .map(String::as_str)
         .chain([MANIFEST_FILE, &format!(".{MANIFEST_FILE}.tmp")])
     {
-        let _ = std::fs::remove_file(folder.join(name));
+        let path = folder.join(name);
+        if std::fs::remove_file(&path).is_err() && path.exists() {
+            left.push(name.to_owned());
+        }
     }
     let _ = std::fs::remove_dir(folder);
+    left
+}
+
+/// The wire name of a control API enum value (`limit`, `video`, ...).
+fn wire_name<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(s)) => s,
+        _ => String::new(),
+    }
+}
+
+/// The control API reason of a gate refusal.
+fn api_refusal(why: rbs_record::estimate::GateRefusal) -> api::RefusalReason {
+    use rbs_record::estimate::GateRefusal as G;
+    match why {
+        G::HardwareLimit => api::RefusalReason::HardwareLimit,
+        G::OverLimit => api::RefusalReason::OverLimit,
+        G::Heavy => api::RefusalReason::Heavy,
+    }
+}
+
+/// A start refused by the gate (control API 1.54): `judged` is the plan it judged,
+/// `tracks` the files concerned, `software` the video files whose encoder would have
+/// fallen to a software one (`software_fallback` reasons).
+fn gate_refusal(
+    reason: api::RefusalReason,
+    judged: &rbs_record::estimate::Estimate,
+    tracks: &[rbs_record::estimate::TrackRef],
+    software: &[SourceId],
+) -> StartError {
+    let mut estimate = api_estimate(judged, None);
+    add_software_fallback(&mut estimate.reasons, software);
+    let tracks: Vec<api::EstimateTrack> = tracks
+        .iter()
+        .map(|t| api::EstimateTrack {
+            source: t.source.get(),
+            role: api_track_role(t.role),
+        })
+        .collect();
+    let message = match reason {
+        api::RefusalReason::HardwareLimit => format!(
+            "{} separate video file(s) are more than their encoder can take; start with \
+             on_hardware_limit \"skip\" to record without them",
+            tracks.len()
+        ),
+        api::RefusalReason::Heavy => "the recording would be heavy for this computer; start \
+             with acknowledge_heavy to record anyway"
+            .to_owned(),
+        api::RefusalReason::OpenFailed => "nothing was recorded".to_owned(),
+        _ => "the separate video files are over a limit of this computer".to_owned(),
+    };
+    StartError::Refused(
+        message,
+        Box::new(api::StartRefusal {
+            reason,
+            estimate,
+            tracks,
+        }),
+    )
+}
+
+/// Adds a `software_fallback` reason for each video file of `software`.
+fn add_software_fallback(reasons: &mut Vec<api::EstimateReason>, software: &[SourceId]) {
+    for source in software {
+        reasons.push(api::EstimateReason {
+            code: api::EstimateCode::SoftwareFallback,
+            resource: None,
+            track: Some(api::EstimateTrack {
+                source: source.get(),
+                role: api::TrackRole::Video,
+            }),
+        });
+    }
 }
 
 #[cfg(test)]

@@ -480,6 +480,20 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
     drop(host);
 }
 
+/// Turns the swap setting on through the UI's queue and waits until the control
+/// thread has taken it: UI commands and API requests reach the control thread on
+/// different queues, so an API call sent next could otherwise be served first. A
+/// target list asked after it on the same queue answers only once it was applied.
+fn set_swap(host: &StudioHost, updates: &Receiver<Update>) {
+    use rbs_app::studio_host::{Command, SourceKind};
+    host.send(Command::SetSwapAfterTransition(true));
+    host.send(Command::ListTargets(SourceKind::AudioInput));
+    next(updates, |u| match u {
+        Update::Targets(SourceKind::AudioInput, _) => Some(()),
+        _ => None,
+    });
+}
+
 #[test]
 fn studio_mode_previews_a_scene_and_the_transition_puts_it_on_air() {
     let Some((host, updates, _api, mut c)) = start() else {
@@ -539,7 +553,7 @@ fn studio_mode_previews_a_scene_and_the_transition_puts_it_on_air() {
 
     // With the swap setting on (ADR-0098), the transition swaps program and preview;
     // it is not on the undo stack.
-    host.send(rbs_app::studio_host::Command::SetSwapAfterTransition(true));
+    set_swap(&host, &updates);
     ok(&c.call("canvas.transition", json!({})));
     let after = scenes(&mut c);
     assert_eq!(after["program"], two);
@@ -606,7 +620,7 @@ fn by_default_the_transition_keeps_the_preview_scene() {
     assert_eq!(list["program"], one);
     assert_eq!(list["preview"], one);
     // A transition of the scene with itself, swap on: one scene, nothing swaps.
-    host.send(rbs_app::studio_host::Command::SetSwapAfterTransition(true));
+    set_swap(&host, &updates);
     ok(&c.call("canvas.transition", json!({})));
     let list = scenes(&mut c);
     assert_eq!(list["program"], one);

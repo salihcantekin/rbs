@@ -1,6 +1,8 @@
 //! The output cost estimate (ADR-0087 decisions 1 to 3, spec
 //! `docs/specs/output-estimate.md`): levels, unknown limits and "at most N".
 
+#![allow(clippy::unwrap_used)] // Tests fail by panicking.
+
 use std::time::Duration;
 
 use rbs_record::IsoRole;
@@ -366,4 +368,107 @@ fn the_separate_video_limit_is_three_until_the_encoder_is_known() {
     });
     let e = estimate(&plan(HW, 0), &limits);
     assert_eq!(separate_video_limit(&e), 5);
+}
+
+// ---- The start gate (ADR-0087 decisions 5 and 7, control API 1.54) ---------------
+
+use rbs_record::estimate::{GatePolicy, GateRefusal, GateRequest, LimitCause, gate};
+
+fn ids(range: std::ops::RangeInclusive<u32>) -> Vec<SourceId> {
+    range.map(SourceId::from_raw).collect()
+}
+
+fn asked(acknowledge_heavy: bool, policy: GatePolicy) -> GateRequest {
+    GateRequest::Asked {
+        acknowledge_heavy,
+        policy,
+    }
+}
+
+#[test]
+fn the_gate_skips_or_refuses_files_past_the_encoder_cap() {
+    // Nothing declared, nothing measured: 3 files, the cause is the encoder.
+    let p = plan(HW, 5);
+    let limits = declared(None);
+    let marked = ids(1..=5);
+    let older = gate(&p, &limits, &marked, GateRequest::Older);
+    assert_eq!(
+        (older.keep.clone(), older.limit.clone()),
+        (ids(1..=3), ids(4..=5))
+    );
+    assert_eq!(older.count, 3);
+    assert!(older.refusal.is_none());
+
+    let skip = gate(&p, &limits, &marked, asked(false, GatePolicy::Skip));
+    assert_eq!((skip.keep, skip.limit), (ids(1..=3), ids(4..=5)));
+    assert!(skip.refusal.is_none());
+
+    let ask = gate(&p, &limits, &marked, asked(true, GatePolicy::Ask));
+    let (why, _, tracks) = ask.refusal.unwrap();
+    assert_eq!(why, GateRefusal::HardwareLimit);
+    assert_eq!(
+        tracks.iter().map(|t| t.source).collect::<Vec<_>>(),
+        ids(4..=5)
+    );
+
+    // A declared session limit decides: 3 sessions, the master takes one.
+    let declared3 = declared(Some(3));
+    let e = estimate(&p, &declared3);
+    assert_eq!(
+        rbs_record::estimate::separate_video_bound(&p, &e),
+        (2, LimitCause::Encoder)
+    );
+    let older = gate(&p, &declared3, &marked, GateRequest::Older);
+    assert_eq!(older.keep, ids(1..=2));
+}
+
+#[test]
+fn disk_space_never_gates_but_a_slow_disk_trims_older_requests() {
+    // A nearly full disk is heavy for the plan, never for the gate.
+    let p = plan(HW, 2);
+    let mut limits = declared(Some(8));
+    limits.free_space = Some(1);
+    let marked = ids(1..=2);
+    let d = gate(&p, &limits, &marked, asked(false, GatePolicy::Skip));
+    assert_eq!(d.estimate.level, Level::Heavy);
+    assert_eq!(d.estimate.gate_level, Level::Fits);
+    assert!(d.refusal.is_none());
+    assert_eq!(d.keep, marked);
+    assert_eq!(gate(&p, &limits, &marked, GateRequest::Older).keep, marked);
+
+    // A disk of 4 MB/s: master and audio 1.02 MB/s fit, each file adds 1 MB/s, so
+    // two files are heavy (3.02 ≥ 2.8) and one fits.
+    let mut limits = declared(Some(8));
+    limits.calibration = Some(Calibration {
+        write_speed: Some(4_000_000),
+        ..Calibration::default()
+    });
+    let older = gate(&p, &limits, &marked, GateRequest::Older);
+    assert_eq!((older.keep, older.limit), (ids(1..=1), ids(2..=2)));
+    let (why, judged, _) = gate(&p, &limits, &marked, asked(false, GatePolicy::Skip))
+        .refusal
+        .unwrap();
+    assert_eq!(why, GateRefusal::Heavy);
+    assert_eq!(judged.gate_level, Level::Heavy);
+    let acknowledged = gate(&p, &limits, &marked, asked(true, GatePolicy::Ask));
+    assert!(acknowledged.refusal.is_none());
+    assert_eq!(acknowledged.keep, marked);
+    // Three files would be over: a resource limit, refused under `ask`.
+    let three = plan(HW, 3);
+    let (why, _, tracks) = gate(&three, &limits, &ids(1..=3), asked(true, GatePolicy::Ask))
+        .refusal
+        .unwrap();
+    assert_eq!((why, tracks.len()), (GateRefusal::OverLimit, 1));
+}
+
+#[test]
+fn with_no_encoder_for_the_files_older_requests_skip_them_and_new_ones_are_refused() {
+    let mut p = plan(HW, 0);
+    p.video_template = None;
+    let marked = ids(1..=2);
+    let older = gate(&p, &declared(None), &marked, GateRequest::Older);
+    assert_eq!(older.no_encoder, marked);
+    assert!(older.keep.is_empty() && older.refusal.is_none());
+    let asked = gate(&p, &declared(None), &marked, asked(true, GatePolicy::Skip));
+    assert_eq!(asked.refusal.unwrap().0, GateRefusal::OverLimit);
 }

@@ -9,8 +9,12 @@
 //! *unknown*, a [`Level`], and how many separate video and audio tracks fit
 //! ([`MaxTracks`]). Nothing here runs unless the caller asks (P13).
 
+mod gate;
 mod probe;
 
+pub use gate::{
+    GateDecision, GatePolicy, GateRefusal, GateRequest, LimitCause, gate, separate_video_bound,
+};
 pub use probe::{CACHE_FOR, DiskProbe, FreeSpace, PROBE_TIMEOUT, ReadFreeSpace};
 
 use std::time::Duration;
@@ -604,6 +608,10 @@ pub struct TrackCost {
 pub struct Estimate {
     /// The worst row level (`fits`, `heavy` or `over`).
     pub level: Level,
+    /// The level a start's gate judges: `level` without the `disk_space` row, which
+    /// is planned against a guessed duration and never gates a start (ADR-0087
+    /// decision 2).
+    pub gate_level: Level,
     /// Resources whose limit is unknown, reported beside `level`.
     pub unknown: Vec<Resource>,
     /// The rows.
@@ -999,7 +1007,7 @@ fn worst(rows: &[Row]) -> (Level, Vec<Resource>) {
 }
 
 /// The resources that grow with the separate tracks of one kind.
-fn grows_with(resource: Resource, video: bool) -> bool {
+pub(crate) fn grows_with(resource: Resource, video: bool) -> bool {
     match resource {
         Resource::DiskSpeed | Resource::IsoCeiling => true,
         Resource::EncoderSessions
@@ -1143,9 +1151,18 @@ fn track_costs(plan: &EstimatePlan, limits: &Limits) -> Vec<TrackCost> {
 pub fn estimate(plan: &EstimatePlan, limits: &Limits) -> Estimate {
     let Rows { rows, mut reasons } = rows_of(plan, limits);
     let (mut level, unknown) = worst(&rows);
+    let gate_rows: Vec<Row> = rows
+        .iter()
+        .filter(|r| r.resource != Resource::DiskSpace)
+        .cloned()
+        .collect();
+    let (mut gate_level, _) = worst(&gate_rows);
     for e in plan.video.iter().filter(|e| e.falls_to_cpu) {
         if level == Level::Fits {
             level = Level::Heavy;
+        }
+        if gate_level == Level::Fits {
+            gate_level = Level::Heavy;
         }
         reasons.push(Reason {
             code: ReasonCode::SoftwareFallback,
@@ -1158,6 +1175,7 @@ pub fn estimate(plan: &EstimatePlan, limits: &Limits) -> Estimate {
     }
     for t in &plan.inactive {
         level = Level::Over;
+        gate_level = Level::Over;
         reasons.push(Reason {
             code: ReasonCode::SourceInactive,
             resource: Some(Resource::ActiveSources),
@@ -1166,6 +1184,7 @@ pub fn estimate(plan: &EstimatePlan, limits: &Limits) -> Estimate {
     }
     Estimate {
         level,
+        gate_level,
         unknown,
         max_video: max_tracks(plan, limits, true),
         max_audio: max_tracks(plan, limits, false),
