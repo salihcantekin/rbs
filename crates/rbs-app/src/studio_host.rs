@@ -673,6 +673,18 @@ pub enum Command {
         /// Muted.
         muted: bool,
     },
+    /// Show loudness on or off (`loudness.set_enabled`, ADR-0092), saved.
+    SetLoudnessShown(bool),
+    /// Restart the loudness measurement (`loudness.reset`).
+    ResetLoudness,
+    /// The loudness target (LUFS) and true-peak limit (dBTP), saved (`settings.set`
+    /// `loudness`, protocol 1.59).
+    SetLoudnessSettings {
+        /// LUFS.
+        target: f32,
+        /// dBTP.
+        true_peak_limit: f32,
+    },
     /// Whether a source is heard on the monitor (ADR-0097 decision 5). A live control:
     /// not on the undo stack; the device opens or closes on the host's next round.
     SetSourceMonitor {
@@ -1915,6 +1927,32 @@ pub struct MainDisplay {
     pub scale: Option<rbs_capture::DisplayScale>,
 }
 
+/// What the Mixer and Settings › Audio show of the loudness meter ([`Update::Loudness`]).
+#[derive(Clone, Debug)]
+pub struct LoudnessView {
+    /// Show loudness is on (`loudness.set_enabled`, saved in `loudness.toml`).
+    pub shown: bool,
+    /// The running meter's values; `None` while it is off or the studio has no audio.
+    pub readout: Option<Arc<rbs_audio::LoudnessReadout>>,
+    /// The target, LUFS.
+    pub target: f32,
+    /// The true-peak limit, dBTP.
+    pub true_peak_limit: f32,
+}
+
+impl PartialEq for LoudnessView {
+    fn eq(&self, o: &Self) -> bool {
+        let same = match (&self.readout, &o.readout) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        same && self.shown == o.shown
+            && self.target.to_bits() == o.target.to_bits()
+            && self.true_peak_limit.to_bits() == o.true_peak_limit.to_bits()
+    }
+}
+
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
@@ -1932,6 +1970,10 @@ pub enum Update {
     /// The studio mixer's master meter, when the studio has one and each time it is
     /// made again (ADR-0081); `None` while there is no mixer.
     MasterMeter(Option<Arc<rbs_audio::LevelMeter>>),
+    /// The loudness meter for the Mixer (ADR-0092 decision 7): whether it is shown,
+    /// the running meter's values (`None` while off or without audio), the target and
+    /// the true-peak limit. Sent once at the start and when any of them changes.
+    Loudness(LoudnessView),
     /// The answer to [`Command::SetSourceBox`] number `seq`: `ok` when the box is the
     /// source's now (changed or already so), else it was refused (an
     /// [`Update::Error`] says why).
@@ -2270,6 +2312,9 @@ pub struct HostConfig {
     /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
     /// is opened only while a source is monitored or soloed.
     pub monitor: MonitorSettings,
+    /// The loudness meter's saved settings (ADR-0092; `loudness.toml`): Show loudness,
+    /// the target and the true-peak limit.
+    pub loudness: crate::loudness_settings::LoudnessSettings,
     /// Reads free disk space and memory for recording protection (ADR-0090); `None`:
     /// disk and memory are reported unavailable and only lag is watched.
     pub system_probe: Option<protection::SystemProbeFactory>,
@@ -2322,6 +2367,7 @@ impl HostConfig {
             config_dir: None,
             swap_after_transition: false,
             monitor: MonitorSettings::default(),
+            loudness: crate::loudness_settings::LoudnessSettings::default(),
             system_probe: None,
             calibration: crate::calibration_file::CalibrationFile::default(),
             read_free_space: None,
@@ -2781,9 +2827,12 @@ struct Host {
     /// The monitor output: its saved device and volume, when its device opens, what
     /// the API saw last (ADR-0097).
     monitor: monitor::MonitorHost,
-    /// The main canvas's loudness meter runs (`loudness.set_enabled`; session state,
-    /// ADR-0092 stage 1).
+    /// The main canvas's loudness meter runs (`loudness.set_enabled`), with its saved
+    /// target and limit (ADR-0092; `loudness.toml`, where `shown` is `loudness_on`).
     loudness_on: bool,
+    loudness_settings: crate::loudness_settings::LoudnessSettings,
+    /// What the UI was last told of the loudness meter ([`Update::Loudness`]).
+    loudness_sent: Option<LoudnessView>,
     /// The camera as the app's settings know it; `None` until the app sent it.
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
@@ -3231,7 +3280,9 @@ fn start(
         camera: None,
         camera_due: None,
         monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
-        loudness_on: false,
+        loudness_on: config.loudness.shown,
+        loudness_settings: config.loudness,
+        loudness_sent: None,
         camera_setup: None,
         camera_published: None,
         replay: replay::ReplayHost::new(),
@@ -3282,6 +3333,8 @@ fn start(
     };
     // A vertical canvas saved with the collection runs again (ADR-0093 decision 9).
     host.restore_vertical();
+    // Show loudness is saved: the meter runs again from the start.
+    host.restore_loudness();
     Ok((host, update))
 }
 
@@ -3516,6 +3569,32 @@ impl Host {
                 self.run_ui_api(
                     rbs_api::Command::CanvasSetMasterMuted(rbs_api::request::SetMasterMuted {
                         muted,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetLoudnessShown(on) => {
+                self.run_ui_api(
+                    rbs_api::Command::LoudnessSetEnabled(rbs_api::request::SetLoudnessEnabled {
+                        on,
+                    }),
+                    notify,
+                );
+            }
+            Command::ResetLoudness => {
+                self.run_ui_api(rbs_api::Command::LoudnessReset, notify);
+            }
+            Command::SetLoudnessSettings {
+                target,
+                true_peak_limit,
+            } => {
+                self.run_ui_api(
+                    rbs_api::Command::SettingsSet(rbs_api::request::SettingsPatch {
+                        loudness: Some(api::LoudnessSettings {
+                            target,
+                            true_peak_limit,
+                        }),
+                        ..Default::default()
                     }),
                     notify,
                 );
@@ -4409,6 +4488,10 @@ impl Host {
             canvas: self.api_canvas(),
             stream: self.stream_profile.as_ref().map(StreamProfile::to_api),
             vertical: Some(self.vertical_flags.to_api()),
+            loudness: Some(api::LoudnessSettings {
+                target: self.loudness_settings.target,
+                true_peak_limit: self.loudness_settings.true_peak_limit,
+            }),
         }
     }
 
@@ -9661,6 +9744,11 @@ impl Host {
             self.master_sent = master.clone();
             notify(Update::MasterMeter(master));
         }
+        let loudness = self.loudness_view();
+        if self.loudness_sent.as_ref() != Some(&loudness) {
+            self.loudness_sent = Some(loudness.clone());
+            notify(Update::Loudness(loudness));
+        }
         let scenes = self.scene_list();
         if self.scenes_shown.as_ref() != Some(&scenes) {
             self.scenes_shown = Some(scenes.clone());
@@ -10466,7 +10554,9 @@ impl ApiTarget<'_> {
             }
             C::LoudnessStatus => Ok(Response::LoudnessStatus(host.api_loudness())),
             C::LoudnessSetEnabled(p) => {
-                host.set_loudness_enabled(p.on).map_err(|e| refused(&e))?;
+                let done = host.set_loudness_enabled(p.on).map_err(|e| refused(&e));
+                host.publish(notify);
+                done?;
                 Ok(Response::Done(Empty {}))
             }
             C::LoudnessReset => {
@@ -11323,30 +11413,54 @@ impl ApiTarget<'_> {
                     }
                     None => None,
                 };
-                // The canvas goes first: it is the part that can still fail, and then
-                // nothing of the patch has been applied.
-                if let Some(canvas) = &patch.canvas {
-                    let c = canvas_profile(canvas)?;
-                    let same = host
-                        .collection
-                        .canvas(host.canvas)
-                        .is_some_and(|k| k.size == c.size() && k.frame_rate == c.frame_rate());
-                    if !same {
-                        if host.any_recording() {
+                if let Some(l) = &patch.loudness
+                    && let Some(why) =
+                        crate::loudness_settings::problem(l.target, l.true_peak_limit)
+                {
+                    return Err(ApiError::new(ErrorKind::InvalidParams, why));
+                }
+                // A canvas change is checked here; applying it is the part that can
+                // still fail, and then nothing of the patch has been applied.
+                let canvas = match &patch.canvas {
+                    Some(canvas) => {
+                        let c = canvas_profile(canvas)?;
+                        let same = host
+                            .collection
+                            .canvas(host.canvas)
+                            .is_some_and(|k| k.size == c.size() && k.frame_rate == c.frame_rate());
+                        if same {
+                            None
+                        } else if host.any_recording() {
                             return Err(ApiError::new(
                                 ErrorKind::Conflict,
                                 "stop the recording before changing the canvas",
                             ));
-                        }
-                        if host.any_streaming() {
+                        } else if host.any_streaming() {
                             return Err(ApiError::new(
                                 ErrorKind::Conflict,
                                 "end the stream before changing the canvas",
                             ));
+                        } else {
+                            Some(c)
                         }
-                        host.change_canvas(c.size(), c.frame_rate(), notify)
-                            .map_err(failed)?;
                     }
+                    None => None,
+                };
+                // The loudness file is written before anything is applied (a failed
+                // save changes nothing); a canvas change that then fails puts it back.
+                let loudness = match &patch.loudness {
+                    Some(l) => host
+                        .save_loudness_settings(l.target, l.true_peak_limit)
+                        .map_err(|e| refused(&e))?,
+                    None => None,
+                };
+                if let Some(c) = canvas
+                    && let Err(e) = host.change_canvas(c.size(), c.frame_rate(), notify)
+                {
+                    if loudness.is_some() {
+                        host.undo_loudness_save();
+                    }
+                    return Err(failed(e));
                 }
                 if let Some(profile) = profile
                     && profile != host.profile
@@ -11361,6 +11475,10 @@ impl ApiTarget<'_> {
                     host.stream_profile = Some(stream.clone());
                     notify(Update::StreamProfile(stream));
                     host.settings_changed();
+                }
+                if let Some(saved) = loudness {
+                    host.apply_loudness_settings(saved);
+                    host.publish(notify);
                 }
                 Ok(Response::Settings(api::Snapshot {
                     seq: host.events.seq_map([Topic::SettingsChanged]),

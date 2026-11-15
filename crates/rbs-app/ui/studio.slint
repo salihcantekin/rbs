@@ -70,6 +70,24 @@ export struct MeterRow {
     live: bool,
 }
 export struct ScaleMark { label: string, at: float }
+// The master's loudness (ADR-0092 decision 7), shown while `on`. Bar positions follow the
+// meter law (rbs_ui::meter::position), so a LUFS value sits at its dB on the dBFS scale.
+// `has` is false until the meter has a short-term value (silence reads none).
+// The texts are ready to show ("−14.2", "−0.6 dBTP"); an empty text has no value yet.
+export struct LoudnessData {
+    on: bool,
+    has: bool,
+    short-text: string,
+    at: float,
+    target-at: float,
+    target-text: string,
+    over: bool,
+    momentary: string,
+    integrated: string,
+    range: string,
+    true-peak: string,
+    limit-text: string,
+}
 // The encoder fields of one output (a recording or a stream): the options offered and
 // the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
 export struct EncoderData {
@@ -420,6 +438,26 @@ export global Studio {
     // The master's fader position (0 to 1, the strips' fader law) and its mute (ADR-0081).
     callback set-master-volume(float);
     callback set-master-muted(bool);
+    // The master's loudness meter (ADR-0092): Show loudness (`loudness.set_enabled`),
+    // Reset loudness (`loudness.reset`) and what both show.
+    // One row while Show loudness is on (a model, so the Mixer's 30 Hz refresh does not
+    // touch the global); `loudness` reads it.
+    in property <[LoudnessData]> loudness-rows;
+    property <LoudnessData> loudness-off;
+    out property <LoudnessData> loudness: Studio.loudness-rows.length > 0 ? Studio.loudness-rows[0] : Studio.loudness-off;
+    callback set-loudness-shown(bool);
+    callback reset-loudness();
+    // Settings › Audio › Loudness (`ui.settings.open {setting}`).
+    callback open-loudness-settings();
+    // Settings › Audio › Loudness (ADR-0092 decision 5): the target presets and Custom
+    // (the last option), the chosen one, its value in LUFS and the true-peak limit (dBTP).
+    in property <[string]> loudness-targets;
+    in property <int> loudness-target;
+    in property <float> loudness-target-lufs;
+    in property <float> loudness-limit;
+    callback set-loudness-target(int);
+    callback set-loudness-target-lufs(float);
+    callback set-loudness-limit(float);
     // The fader position (0 to 1) of a level the user typed, such as "-6 dB"; -1 when the
     // text is not a level. Pure: it reads nothing from the app.
     pure callback level-position(string) -> float;
@@ -1549,6 +1587,125 @@ component MonitorBox inherits VerticalLayout {
     }
 }
 
+// The master's short-term loudness in a column strip (ADR-0092 decision 7): a dot that
+// lights while the true peak has passed the limit since the last reset, then the number.
+// The slot has no room for a button; the details open from the Loudness strip beside
+// the master.
+export component LoudnessReadout inherits Rectangle {
+    in property <bool> compact: true;
+    property <string> number: Studio.loudness.has ? Studio.loudness.short-text : "—";
+    property <color> lamp: Studio.loudness.over ? Theme.meter-clip : Theme.text-disabled;
+    accessible-role: text;
+    accessible-label: Studio.loudness.has ? @tr("Loudness {} LUFS", Studio.loudness.short-text) : @tr("Loudness, no value yet");
+    if root.compact: HorizontalLayout {
+        spacing: 0px;
+        alignment: center;
+        Icon { name: IconName.dot; ink: root.lamp; }
+        Text {
+            text: root.number;
+            color: Theme.text-primary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+}
+
+// The same in a row: the dot, then a button with the value in LUFS that opens or
+// closes the loudness details under the master.
+export component LoudnessButton inherits HorizontalLayout {
+    property <string> number: Studio.loudness.has ? Studio.loudness.short-text : "—";
+    spacing: 0px;
+    VerticalLayout {
+        alignment: center;
+        Icon { name: IconName.dot; ink: Studio.loudness.over ? Theme.meter-clip : Theme.text-disabled; }
+    }
+    Button {
+        kind: "ghost";
+        dense: true;
+        small: true;
+        text: @tr("{} LUFS", root.number);
+        tooltip: Studio.loudness.over ? @tr("True peak passed {}", Studio.loudness.limit-text) : @tr("Short-term loudness");
+        accessible-name: Studio.loudness.has ? @tr("Loudness {} LUFS", Studio.loudness.short-text) : @tr("Loudness, no value yet");
+        clicked => { Sections.set-closed("mixer.loudness", !Sections.closed("mixer.loudness", Sections.rev)); }
+    }
+}
+
+// The master's loudness bar: short-term loudness on the meter law, and the target as a
+// mark across it. Vertical in a column strip, horizontal in a row.
+export component LoudnessBar inherits Rectangle {
+    in property <bool> vertical;
+    background: Theme.surface-sunken;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    border-radius: Tokens.radius-sm;
+    clip: true;
+    accessible-role: none;
+    if Studio.loudness.has && root.vertical: Rectangle {
+        y: parent.height * (1 - Studio.loudness.at);
+        height: parent.height * Studio.loudness.at;
+        background: Theme.loudness-fill;
+    }
+    if Studio.loudness.has && !root.vertical: Rectangle {
+        x: 0;
+        width: parent.width * Studio.loudness.at;
+        background: Theme.loudness-fill;
+    }
+    if root.vertical: Rectangle {
+        y: max(0px, parent.height * (1 - Studio.loudness.target-at) - Tokens.size-meter-target / 2);
+        height: Tokens.size-meter-target;
+        background: Theme.loudness-target;
+    }
+    if !root.vertical: Rectangle {
+        x: max(0px, parent.width * Studio.loudness.target-at - Tokens.size-meter-target / 2);
+        width: Tokens.size-meter-target;
+        background: Theme.loudness-target;
+    }
+}
+
+// One line of the loudness details: what, and its value or a dash.
+component LoudnessLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> strong;
+    spacing: Tokens.space-3;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        horizontal-stretch: 1;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.value == "" ? "—" : root.value;
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+        font-weight: root.strong ? Tokens.type-label-weight : Tokens.type-body-weight;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+// The loudness details (ADR-0092): every value of `loudness.status`, the target, and
+// Reset. Drawn in the Mixer under its own "Loudness" header (closed by default) after
+// the master: under it in rows, as a column beside it in columns.
+export component LoudnessDetails inherits VerticalLayout {
+    spacing: Tokens.space-1;
+    LoudnessLine { label: @tr("Short-term"); value: Studio.loudness.has ? @tr("{} LUFS", Studio.loudness.short-text) : ""; strong: true; }
+    LoudnessLine { label: @tr("Momentary"); value: Studio.loudness.momentary; }
+    LoudnessLine { label: @tr("Integrated"); value: Studio.loudness.integrated; strong: true; }
+    LoudnessLine { label: @tr("Range"); value: Studio.loudness.range; }
+    LoudnessLine { label: @tr("True peak"); value: Studio.loudness.true-peak; }
+    LoudnessLine { label: @tr("Target"); value: Studio.loudness.target-text; }
+    HorizontalLayout {
+        padding-top: Tokens.space-1;
+        spacing: Tokens.space-2;
+        alignment: end;
+        Button { kind: "ghost"; dense: true; icon: IconName.gear; text: @tr("Settings"); clicked => { Studio.open-loudness-settings(); } }
+        Button { kind: "secondary"; dense: true; icon: IconName.reset; text: @tr("Reset"); clicked => { Studio.reset-loudness(); } }
+    }
+}
+
 // The mixer's level in words ("0 dB", "−6.0 dB", "Silent"). A fixed width, so a longer
 // reading does not resize the fader. Not a field: the fader is the only control.
 // The accessible name includes the level.
@@ -1630,6 +1787,11 @@ component StripControls inherits HorizontalLayout {
         horizontal-stretch: 1;
         min-width: 0px;
     }
+    if root.master && Studio.loudness.on: VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        LoudnessButton { }
+    }
     VerticalLayout {
         alignment: center;
         horizontal-stretch: 0;
@@ -1668,7 +1830,7 @@ component StripControls inherits HorizontalLayout {
             clicked => { root.toggle-muted(); }
         }
     }
-    if !root.master: VerticalLayout {
+    VerticalLayout {
         alignment: center;
         horizontal-stretch: 0;
         IconButton {
@@ -1685,7 +1847,7 @@ component StripControls inherits HorizontalLayout {
 component MeterView inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
-    // The master strip (ADR-0081): its own callbacks, no menu, no "more" button.
+    // The master strip (ADR-0081): its own callbacks and its own menu (ADR-0092).
     in property <bool> master;
     property <string> title: root.master ? @tr("Master") : data.name;
     function set-volume(v: float) {
@@ -1698,13 +1860,14 @@ component MeterView inherits Rectangle {
     accessible-label: root.title;
     accessible-value: data.value;
     // The source's menu (ADR-0080): the "more" button, a right-click or the Menu key.
+    // A source's menu, or the master's (ADR-0092: Show loudness and more).
     menu := CommandMenu {
-        context: "mixer-source";
-        target: "source=" + data.id;
+        context: root.master ? "mixer-master" : "mixer-source";
+        target: root.master ? "" : "source=" + data.id;
     }
     TouchArea {
         pointer-event(e) => {
-            if !root.master && e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                 menu.open({ x: self.mouse-x, y: self.mouse-y });
             }
         }
@@ -1750,6 +1913,11 @@ component MeterView inherits Rectangle {
                     width: Tokens.size-meter-peak;
                     background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
                 }
+            }
+            // The loudness bar (ADR-0092) under the level bar, on the same scale.
+            if root.master && Studio.loudness.on: LoudnessBar {
+                height: Tokens.size-meter-loudness;
+                vertical: false;
             }
             // The fader under the bar, the same width (ADR-0059 fader law, -60 to 0 dB).
             Slider {
@@ -1859,7 +2027,7 @@ component HiddenRow inherits Rectangle {
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
-    // The master strip (ADR-0081): its own callbacks, no menu, no "more" button.
+    // The master strip (ADR-0081): its own callbacks and its own menu (ADR-0092).
     in property <bool> master;
     property <string> title: root.master ? @tr("Master") : data.name;
     function set-volume(v: float) {
@@ -1870,7 +2038,10 @@ component MeterStrip inherits Rectangle {
     }
     // The panel sets the height. Width stays the token, so a long name cannot widen the column.
     // VSlider centres its track in its own width, so that width stays `size.control.sm`.
-    width: Tokens.size-mixer-strip;
+    // The master with its loudness bar (ADR-0092) is that bar and a gap wider.
+    property <bool> loud: root.master && Studio.loudness.on;
+    property <length> loud-w: root.loud ? Tokens.size-meter-loudness + Tokens.space-1 : 0px;
+    width: Tokens.size-mixer-strip + root.loud-w;
     horizontal-stretch: 0;
     clip: true;
     property <bool> quiet: data.muted || (!root.master && !data.live);
@@ -1889,13 +2060,14 @@ component MeterStrip inherits Rectangle {
     accessible-role: progress-indicator;
     accessible-label: root.title;
     accessible-value: data.live ? data.value : data.volume-text;
+    // A source's menu, or the master's (ADR-0092: Show loudness and more).
     menu := CommandMenu {
-        context: "mixer-source";
-        target: "source=" + data.id;
+        context: root.master ? "mixer-master" : "mixer-source";
+        target: root.master ? "" : "source=" + data.id;
     }
     TouchArea {
         pointer-event(e) => {
-            if !root.master && e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                 menu.open({ x: self.mouse-x, y: self.mouse-y });
             }
         }
@@ -1945,8 +2117,15 @@ component MeterStrip inherits Rectangle {
             background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
         }
     }
-    VSlider {
+    if root.loud: LoudnessBar {
         x: root.pad + Tokens.size-meter-bar + root.gap;
+        y: root.body-y;
+        width: Tokens.size-meter-loudness;
+        height: root.body-h;
+        vertical: true;
+    }
+    VSlider {
+        x: root.pad + Tokens.size-meter-bar + root.gap + root.loud-w;
         y: root.body-y;
         width: Tokens.size-control-sm;
         height: root.body-h;
@@ -1989,6 +2168,14 @@ component MeterStrip inherits Rectangle {
         data: data;
         title: root.title;
     }
+    // The master's monitor slot holds its loudness readout (ADR-0092).
+    if root.loud: LoudnessReadout {
+        x: root.controls-x;
+        y: root.controls-y + 2 * root.step;
+        width: root.controls-w;
+        height: root.slot;
+        compact: true;
+    }
     IconButton {
         x: root.controls-x + (root.controls-w - self.width) / 2;
         y: root.controls-y + 3 * root.step;
@@ -1998,7 +2185,7 @@ component MeterStrip inherits Rectangle {
         framed: true;
         clicked => { root.toggle-muted(); }
     }
-    if !root.master: IconButton {
+    IconButton {
         x: root.controls-x + (root.controls-w - self.width) / 2;
         y: root.controls-y + 4 * root.step;
         icon: IconName.more;
@@ -2043,7 +2230,7 @@ component MixerGroupCluster inherits Rectangle {
     property <int> count: root.kind == 2 ? Studio.master-meter.length : root.kind == 0 ? Studio.meter-scenes : Studio.meter-globals;
     property <length> strip-w: Tokens.size-mixer-strip + Tokens.size-field-gap;
     property <length> body-y: Tokens.size-control-sm + Tokens.size-field-gap;
-    width: root.count > 0 ? (root.kind == 2 ? Tokens.size-mixer-strip : root.count * root.strip-w) : 0px;
+    width: root.count > 0 ? (root.kind == 2 ? Tokens.size-mixer-strip + (Studio.loudness.on ? Tokens.size-meter-loudness + Tokens.space-1 : 0px) : root.count * root.strip-w) : 0px;
     height: root.col-h;
     horizontal-stretch: 0;
     clip: true;
@@ -2145,6 +2332,9 @@ export component MixerPanel inherits Rectangle {
     // Rows still fold This scene / Global; columns keep them open.
     property <bool> scene-closed: Sections.closed("mixer.scene", Sections.rev);
     property <bool> global-closed: Sections.closed("mixer.global", Sections.rev);
+    // The loudness details after the master (ADR-0092), closed by default.
+    property <bool> loudness-closed: Sections.closed("mixer.loudness", Sections.rev);
+    property <bool> loudness-shown: Studio.loudness.on && Studio.master-meter.length > 0;
     property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
     if !root.any: EmptyState {
         width: parent.width;
@@ -2217,6 +2407,45 @@ export component MixerPanel inherits Rectangle {
                     title: @tr("Master");
                     kind: 2;
                     col-h: row.col-h;
+                }
+                // The loudness details (ADR-0092): a folded strip, or a column.
+                if root.loudness-shown: Rectangle {
+                    width: Tokens.size-border;
+                    height: row.col-h;
+                    horizontal-stretch: 0;
+                    background: Theme.border-subtle;
+                }
+                if root.loudness-shown && root.loudness-closed: MixerGroupStrip {
+                    height: row.col-h;
+                    title: @tr("Loudness");
+                    open => { Sections.set-closed("mixer.loudness", false); }
+                }
+                if root.loudness-shown && !root.loudness-closed: VerticalLayout {
+                    width: Tokens.size-menu-sm;
+                    height: row.col-h;
+                    horizontal-stretch: 0;
+                    spacing: Tokens.size-field-gap;
+                    HorizontalLayout {
+                        height: Tokens.size-control-sm;
+                        spacing: Tokens.space-1;
+                        IconButton {
+                            icon: IconName.chevron-down;
+                            name: @tr("Hide the loudness details");
+                            clicked => { Sections.set-closed("mixer.loudness", true); }
+                        }
+                        Text {
+                            text: @tr("Loudness");
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                            font-weight: Tokens.type-label-weight;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            overflow: elide;
+                        }
+                    }
+                    LoudnessDetails { }
+                    Rectangle { vertical-stretch: 1; }
                 }
                 if Studio.monitor-wanted: Rectangle {
                     width: Tokens.size-border;
@@ -2368,6 +2597,18 @@ export component MixerPanel inherits Rectangle {
                     font-size: Tokens.size-meter-scale;
                     vertical-alignment: center;
                 }
+            }
+            // The loudness details (ADR-0092), folded by default; the master's LUFS
+            // button opens them too.
+            if root.loudness-shown: VerticalLayout {
+                padding-top: Tokens.size-section-gap;
+                SectionHeader {
+                    title: @tr("Loudness");
+                    collapsible: true;
+                    open: !root.loudness-closed;
+                    toggled(o) => { Sections.set-closed("mixer.loudness", !o); }
+                }
+                if !root.loudness-closed: LoudnessDetails { }
             }
             // The monitor (ADR-0097), under the scale while it is wanted.
             if Studio.monitor-wanted: VerticalLayout {

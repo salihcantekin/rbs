@@ -643,6 +643,8 @@ impl App {
                 self.session.set_mixer_orientation(o);
                 self.changed();
             }
+            Run::LoudnessShown(on) => self.studio.set_loudness_shown(on),
+            Run::ResetLoudness => self.studio.reset_loudness(),
             Run::MixerBulk(bulk) => match bulk {
                 menu_bar::MixerBulk::HideAll => self.studio.hide_in_mixer(true, false),
                 menu_bar::MixerBulk::HideMuted => self.studio.hide_in_mixer(true, true),
@@ -3405,7 +3407,7 @@ fn close_preview() {
 
 /// Sections that start closed (ADR-0078): the workspace lists them when the user
 /// opens them, under the id with this suffix, so an old file keeps them closed.
-const CLOSED_BY_DEFAULT: [&str; 2] = ["sources.global", "mixer.hidden"];
+const CLOSED_BY_DEFAULT: [&str; 3] = ["sources.global", "mixer.hidden", "mixer.loudness"];
 const OPENED_SUFFIX: &str = "-open";
 
 /// The key a section is stored under, and whether listing it means "closed".
@@ -3419,9 +3421,10 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 26] = [
+const SETTINGS_SECTIONS: [&str; 27] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
+    "settings.audio.loudness",
     "settings.appearance.themes",
     "settings.general.capture",
     "settings.general.experience",
@@ -3797,6 +3800,24 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_reset_master_clip, |app| {
         app.studio.reset_master_clip();
+    });
+    on!(on_set_loudness_shown, |app, on: bool| {
+        app.studio.set_loudness_shown(on);
+    });
+    on!(on_reset_loudness, |app| {
+        app.studio.reset_loudness();
+    });
+    on!(on_open_loudness_settings, |app| {
+        app.run_command("ui.settings.open?setting=settings.audio.loudness");
+    });
+    on!(on_set_loudness_target, |app, index: i32| {
+        app.studio.set_loudness_target(index);
+    });
+    on!(on_set_loudness_target_lufs, |app, lufs: f32| {
+        app.studio.set_loudness_target_lufs(lufs);
+    });
+    on!(on_set_loudness_limit, |app, dbtp: f32| {
+        app.studio.set_loudness_limit(dbtp);
     });
     on!(on_set_source_volume, |app, id: i32, position: f32| {
         app.studio.set_source_volume(id, position);
@@ -4627,6 +4648,12 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             eprintln!("rbs: monitor settings: {why}");
         }
         config.monitor = monitor;
+        // Show loudness, the target and the true-peak limit (ADR-0092; `loudness.toml`).
+        let (loudness, note) = rbs_app::loudness_settings::load(&ctx.app.borrow().config);
+        if let Some(why) = note {
+            eprintln!("rbs: loudness settings: {why}");
+        }
+        config.loudness = loudness;
         // This computer's calibration (ADR-0087 decision 4), read with `app.toml`
         // before the control thread serves anything.
         let (calibration, note) = rbs_app::calibration_file::load(&ctx.app.borrow().config);

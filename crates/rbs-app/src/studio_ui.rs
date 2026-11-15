@@ -62,6 +62,7 @@ const REPORT_EVERY: u32 = 30;
 /// Codes of `Studio.rec-state`.
 pub(crate) mod add_picker;
 pub(crate) mod filters;
+pub(crate) mod loudness;
 pub(crate) mod monitor;
 
 pub mod rec_state {
@@ -294,6 +295,8 @@ pub struct StudioUi {
     heard_names: Vec<(u32, String)>,
     /// The monitor output (ADR-0097): the Mixer's row and Settings › Audio.
     pub monitor: monitor::MonitorUi,
+    /// The loudness meter (ADR-0092): the Master strip and Settings › Audio.
+    loudness: loudness::LoudnessUi,
     meters: Rc<VecModel<MeterRow>>,
     /// Sources hidden from the Mixer (ADR-0080): names only, no meter slot.
     hidden_meters: Rc<VecModel<MeterRow>>,
@@ -570,6 +573,7 @@ impl StudioUi {
             heard: Vec::new(),
             heard_names: Vec::new(),
             monitor: monitor::MonitorUi::default(),
+            loudness: loudness::LoudnessUi::default(),
             meters: Rc::new(VecModel::default()),
             hidden_meters: Rc::new(VecModel::default()),
             stats: Rc::new(VecModel::default()),
@@ -687,6 +691,7 @@ impl StudioUi {
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
         g.set_master_meter(ModelRc::from(self.master_meter.clone()));
+        g.set_loudness_rows(ModelRc::from(self.loudness.rows.clone()));
         g.set_stats(ModelRc::from(self.stats.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
         g.set_rc_tokens(ModelRc::from(self.tokens.clone()));
@@ -891,6 +896,7 @@ impl StudioUi {
         self.push_remote(g);
         self.push_stream(g);
         self.push_monitor(g);
+        self.push_loudness(g);
         g.set_picture_panel(picture_panel.into());
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
@@ -4894,12 +4900,12 @@ impl StudioUi {
             self.edit.reset();
             self.vedit.reset();
         }
-        if self.monitor_update(&u) {
+        if self.monitor_update(&u) || self.loudness_update(&u) {
             return out;
         }
         match u {
             // Taken above.
-            Update::Monitor(_) | Update::MonitorDevices(_) => {}
+            Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {}
             Update::Thumbnail {
                 adapter,
                 target,
@@ -5736,6 +5742,7 @@ impl StudioUi {
                 self.master_meter.set_row_data(0, row);
             }
         }
+        self.tick_loudness();
     }
 }
 

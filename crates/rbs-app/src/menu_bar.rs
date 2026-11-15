@@ -586,6 +586,15 @@ impl CommandState for Shown<'_> {
                     Err("The source has no sound in the Mixer.".to_owned())
                 }
             }
+            "loudness.shown.toggle" => self.running(),
+            "loudness.reset" => {
+                self.running()?;
+                if s.loudness_shown() {
+                    Ok(())
+                } else {
+                    Err("Loudness is not shown.".to_owned())
+                }
+            }
             "mixer.hide_all" | "mixer.hide_muted" | "mixer.unhide_all" => {
                 self.running()?;
                 let (shown, muted, hidden) = s.mixer_counts();
@@ -823,6 +832,7 @@ impl CommandState for Shown<'_> {
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
             "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.soloed),
+            "loudness.shown.toggle" => self.studio.loudness_shown(),
             // The resolved toggles show the main canvas's state (ADR-0111 decision 5).
             "stream.toggle" | "stream.main.toggle" => {
                 matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING)
@@ -1609,6 +1619,10 @@ pub enum Run {
     SourceSolo(i32, bool),
     /// Hide every shown source, only the muted ones, or show every hidden one.
     MixerBulk(MixerBulk),
+    /// Show loudness on or off (`loudness.shown.toggle`, ADR-0092).
+    LoudnessShown(bool),
+    /// Restart the loudness measurement (`loudness.reset`).
+    ResetLoudness,
     /// The Mixer's layout (ADR-0083); view state, not layout history.
     MixerOrientation(MixerOrientation),
     /// Go live; `true`: also the vertical stream (ADR-0111, resolved at the press).
@@ -1853,6 +1867,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
         "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
         "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
+        "loudness.shown.toggle" => Run::LoudnessShown(!on),
+        "loudness.reset" => Run::ResetLoudness,
         "mixer.hide_all" => Run::MixerBulk(MixerBulk::HideAll),
         "mixer.hide_muted" => Run::MixerBulk(MixerBulk::HideMuted),
         "mixer.unhide_all" => Run::MixerBulk(MixerBulk::ShowAll),

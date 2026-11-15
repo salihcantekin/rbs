@@ -324,6 +324,7 @@ Planned contract; nothing below exists yet.
 - **Start.** `start_loudness` adds a `LoudnessTapNode` Active on the audio partition and links the main canvas mixer's `main` output to it, beside the meter sink and the encoders, then applies. The mixer instance is kept and nothing it feeds changes, so the stream and recordings do not dip. It answers `Ok(true)` when it started, `Ok(false)` when it was already running (the measurement goes on), and `NotBound("mixer")` without audio; a refused apply takes the node back.
 - **Tap point.** The mixer's `main` output, after the master volume and mute: what the encoders get while the master has no filter chain. When a master chain exists (ADR-0092 decision 2, a later step), the tap moves to the chain's tail.
 - **Reading.** `loudness()` is `Some(Loudness)` while it runs (rbs-audio spec, "Loudness meter"); `reset_loudness` asks the tap to restart the measurement at its next block and is false while it is off.
+- **Readout.** `loudness_readout()` gives the running meter's shared values (`Arc<LoudnessReadout>`, `None` while off) so the desktop app's Mixer reads them at its own rate; a new run is a new handle.
 - **Stop.** `stop_loudness` removes the node with a plain apply and takes it back like the monitor. `shutdown` stops it. While it is off the studio has no loudness node (ADR-0013).
 
 ### Invariants

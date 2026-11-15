@@ -1,9 +1,10 @@
 // Settings › Audio (ADR-0097 F1, docs/specs/ui-design-system.md): the Monitor card,
-// with the monitor's device, its volume and its state. These settings belong to this
-// computer (`monitor.toml`), not to the scene collection. Rust pushes the state into
+// with the monitor's device, its volume and its state, and the Loudness card (ADR-0092:
+// Show loudness, the target and the true-peak limit). These settings belong to this
+// computer (`monitor.toml`, `loudness.toml`), not to the scene collection. Rust pushes the state into
 // the `Studio` global and lists the devices when the page is shown.
 import { Theme, Tokens } from "tokens.slint";
-import { Select, Slider, ValueReadout, SettingRow } from "components.slint";
+import { NumberField, Select, Slider, Toggle, ValueReadout, SettingRow } from "components.slint";
 import { SettingsCard, SettingsStatus } from "settings.slint";
 import { Studio } from "studio.slint";
 
@@ -80,6 +81,69 @@ export component AudioSettings inherits Rectangle {
                     color: Studio.monitor-latency != "" ? Theme.text-primary : Theme.text-secondary;
                     font-size: Tokens.type-body-size;
                     vertical-alignment: center;
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Loudness");
+            id: "settings.audio.loudness";
+            description: @tr("How loud the program sounds, the way streaming sites and broadcasters measure it (LUFS).");
+            SettingRow {
+                find: "audio.loudness-show";
+                divider: false;
+                label: @tr("Show loudness");
+                summary: @tr("On the Master strip");
+                hint: @tr("Measures the master mix while shown. It uses a little CPU and changes nothing you hear.");
+                fill: false;
+                Toggle {
+                    label: @tr("Show loudness");
+                    checked: Studio.loudness.on;
+                    toggled(on) => { Studio.set-loudness-shown(on); }
+                }
+            }
+            SettingRow {
+                find: "audio.loudness-target";
+                label: @tr("Target");
+                summary: @tr("The mark on the loudness bar");
+                hint: @tr("YouTube and most streaming sites play at about −14 LUFS, podcasts at −16.");
+                changed: Studio.loudness-target != 0;
+                default-text: @tr("Streaming");
+                reset => { Studio.set-loudness-target(0); }
+                Select {
+                    label: @tr("Loudness target");
+                    options: Studio.loudness-targets;
+                    index: Studio.loudness-target;
+                    selected(i) => { Studio.set-loudness-target(i); }
+                }
+            }
+            if Studio.loudness-target == Studio.loudness-targets.length - 1: SettingRow {
+                find: "audio.loudness-custom";
+                label: @tr("Custom target");
+                summary: @tr("In LUFS");
+                fill: false;
+                NumberField {
+                    label: @tr("Custom target");
+                    unit: "LUFS";
+                    value: Studio.loudness-target-lufs;
+                    step: 0.5;
+                    edited(v) => { Studio.set-loudness-target-lufs(v); }
+                }
+            }
+            SettingRow {
+                find: "audio.loudness-limit";
+                label: @tr("True-peak limit");
+                summary: @tr("Lights the dot when passed");
+                hint: @tr("Peaks above this may distort after encoding. −1 dBTP suits most sites.");
+                changed: Studio.loudness-limit != -1;
+                default-text: @tr("−1 dBTP");
+                reset => { Studio.set-loudness-limit(-1); }
+                fill: false;
+                NumberField {
+                    label: @tr("True-peak limit");
+                    unit: "dBTP";
+                    value: Studio.loudness-limit;
+                    step: 0.1;
+                    edited(v) => { Studio.set-loudness-limit(v); }
                 }
             }
         }
