@@ -1270,6 +1270,8 @@ pub struct RecordRequest {
     /// Write an editor project when it stops (ADR-0089 decision 10). Also what makes
     /// the master keep its timing for the manifest; `None` adds no work (P13).
     pub editor_project: Option<crate::record_profile::EditorProject>,
+    /// The reaction-time offset and the automatic markers (ADR-0089 decision 3).
+    pub markers: crate::record_profile::MarkerSettings,
 }
 
 /// A change to a source's separate-file marks (`source.set_record_separately`): an
@@ -1431,6 +1433,10 @@ struct RecordingMarkers {
     ended: Option<(Option<rbs_record::MediaSpan>, SeparateMedia)>,
     /// The editor project to write after the stop rewrite (ADR-0089 decision 10).
     project: Option<crate::record_profile::EditorProject>,
+    /// The automatic markers this recording takes (ADR-0089 decision 3).
+    settings: crate::record_profile::MarkerSettings,
+    /// The program scene last marked (or on air at the start), for scene markers.
+    scene: Option<SceneId>,
 }
 
 impl RecordingMarkers {
@@ -1442,8 +1448,10 @@ impl RecordingMarkers {
         t0_utc: String,
         iso: Option<&IsoFiles>,
         project: Option<crate::record_profile::EditorProject>,
+        settings: crate::record_profile::MarkerSettings,
+        scene: Option<SceneId>,
     ) -> Option<Self> {
-        let log = rbs_manifest::MarkerLog::new(t0_ns, std::time::Duration::ZERO).ok()?;
+        let log = rbs_manifest::MarkerLog::new(t0_ns, settings.lead()).ok()?;
         if let Some(iso) = iso {
             return Some(Self {
                 log,
@@ -1454,6 +1462,8 @@ impl RecordingMarkers {
                 dirty: false,
                 ended: None,
                 project,
+                settings,
+                scene,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1471,6 +1481,8 @@ impl RecordingMarkers {
             dirty: false,
             ended: None,
             project,
+            settings,
+            scene,
         })
     }
 
@@ -5614,8 +5626,16 @@ impl Host {
                 },
                 |f| (f.manifest.t0_ns, f.manifest.t0_utc.clone()),
             );
-            self.outs[slot(c)].markers =
-                RecordingMarkers::new(path, t0_ns, t0_utc, iso.as_ref(), r.editor_project);
+            let scene = self.program_for(c);
+            self.outs[slot(c)].markers = RecordingMarkers::new(
+                path,
+                t0_ns,
+                t0_utc,
+                iso.as_ref(),
+                r.editor_project,
+                r.markers,
+                scene,
+            );
             // Tracked together with the master, after the last panic point of the
             // start, so recovery never finds files without their master (ADR-0055).
             let (tracks, skipped) = iso
@@ -5690,6 +5710,79 @@ impl Host {
     /// `marker.add` (ADR-0089 decisions 1 and 11): a manual marker in every running
     /// recording `p.canvas` names (absent: all). Checked on every target before any
     /// marker is added, so a refusal adds none.
+    /// The program scene canvas `c` shows: the main canvas's, which a following
+    /// vertical canvas shows too, or the vertical canvas's own.
+    fn program_for(&self, c: OutputCanvas) -> Option<SceneId> {
+        match c {
+            OutputCanvas::Main => Some(self.scene),
+            OutputCanvas::Vertical => {
+                let v = self.vertical.as_ref()?;
+                if v.follow {
+                    Some(self.scene)
+                } else {
+                    self.collection.canvas(v.canvas).and_then(|c| c.program)
+                }
+            }
+        }
+    }
+
+    /// Scene markers (ADR-0089 decision 3): a recording whose canvas now shows
+    /// another program scene than it last marked gets a `scene` marker named after
+    /// it. Runs after every change that reaches the studio, so a switch, a transition
+    /// and an undo each mark once; nested scenes are not program scenes.
+    fn mark_scene_changes(&mut self) {
+        let now = self.clock.now().as_nanos();
+        for c in OutputCanvas::ALL {
+            let program = self.program_for(c);
+            let name = program
+                .and_then(|id| self.collection.scene(id))
+                .map(|s| s.name.clone());
+            let Some(state) = self.outs[slot(c)].markers.as_mut() else {
+                continue;
+            };
+            if program == state.scene {
+                continue;
+            }
+            state.scene = program;
+            let Some(name) = name.filter(|_| state.settings.scene_changes) else {
+                continue;
+            };
+            // A full log refuses it; the recording goes on.
+            let _ = state.log.add_auto(
+                now,
+                rbs_manifest::MarkerKind::Scene,
+                &name,
+                rbs_manifest::MarkerColor::Purple,
+            );
+        }
+    }
+
+    /// Stream markers (ADR-0089 decision 3): the recording on the stream's canvas
+    /// gets `stream_start` or `stream_end` when its settings ask for them.
+    fn mark_stream(&mut self, c: OutputCanvas, started: bool) {
+        let now = self.clock.now().as_nanos();
+        let Some(state) = self.outs[slot(c)].markers.as_mut() else {
+            return;
+        };
+        if !state.settings.stream_events {
+            return;
+        }
+        let (kind, label, color) = if started {
+            (
+                rbs_manifest::MarkerKind::StreamStart,
+                "Stream started",
+                rbs_manifest::MarkerColor::Green,
+            )
+        } else {
+            (
+                rbs_manifest::MarkerKind::StreamEnd,
+                "Stream ended",
+                rbs_manifest::MarkerColor::Red,
+            )
+        };
+        let _ = state.log.add_auto(now, kind, label, color);
+    }
+
     fn add_marker(
         &mut self,
         p: &rbs_api::request::MarkerAdd,
@@ -6062,6 +6155,7 @@ impl Host {
             size: start.size,
             iso: self.separate_files,
             editor_project: p.editor_project,
+            markers: p.markers,
         })
     }
 
@@ -6193,6 +6287,7 @@ impl Host {
                 audio_encoder: audio_encoder.clone(),
             },
         );
+        self.mark_stream(c, true);
         Ok(StreamUpdate::Started {
             url: r.url.clone(),
             video_encoder,
@@ -6467,6 +6562,7 @@ impl Host {
         });
         let failure = failure.or(failed);
         self.outs[slot(c)].streaming = None;
+        self.mark_stream(c, false);
         // A recording started with the stream outlives a stream that failed: it is the
         // copy of what the viewers missed. From now on it is the user's to stop.
         self.outs[slot(c)].auto_recording = false;
@@ -9786,6 +9882,7 @@ impl Host {
 
     fn apply(&mut self, notify: &dyn Fn(Update)) {
         self.prune_monitor_solo();
+        self.mark_scene_changes();
         let run = self.run_collection();
         let running = run.as_ref().unwrap_or(&self.collection);
         match self.studio.update(running, &self.adapters.sources) {

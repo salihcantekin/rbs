@@ -959,6 +959,62 @@ pub struct RecordProfile {
     /// Write an editor project when the recording stops. Omitted when off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor_project: Option<EditorProject>,
+    /// Markers (ADR-0089 decisions 3 and 4): the reaction-time offset and the
+    /// automatic markers. A file without the section takes the defaults.
+    #[serde(default)]
+    pub markers: MarkerSettings,
+}
+
+/// The `[markers]` section of a recording profile (ADR-0089 decisions 3 and 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkerSettings {
+    /// Moves a manual marker this many milliseconds earlier, 0 to 30 000: a person
+    /// presses the key after the moment.
+    pub lead_ms: u32,
+    /// A marker, named after the scene, each time the program scene changes.
+    pub scene_changes: bool,
+    /// A marker when a stream starts and when it ends during the recording.
+    pub stream_events: bool,
+}
+
+/// The longest reaction-time offset, in milliseconds.
+pub const MAX_MARKER_LEAD_MS: u32 = 30_000;
+
+impl Default for MarkerSettings {
+    /// No offset, scene changes on, stream events off (ADR-0089 decision 3).
+    fn default() -> Self {
+        Self {
+            lead_ms: 0,
+            scene_changes: true,
+            stream_events: false,
+        }
+    }
+}
+
+impl MarkerSettings {
+    /// The control API's form.
+    pub fn to_api(self) -> rbs_api::types::RecordingMarkers {
+        rbs_api::types::RecordingMarkers {
+            lead_ms: self.lead_ms,
+            scene_changes: self.scene_changes,
+            stream_events: self.stream_events,
+        }
+    }
+
+    /// From the control API's form.
+    pub fn from_api(m: rbs_api::types::RecordingMarkers) -> Self {
+        Self {
+            lead_ms: m.lead_ms,
+            scene_changes: m.scene_changes,
+            stream_events: m.stream_events,
+        }
+    }
+
+    /// The offset as a duration.
+    pub fn lead(self) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(self.lead_ms))
+    }
 }
 
 impl RecordProfile {
@@ -989,6 +1045,7 @@ impl RecordProfile {
             open_shadows: false,
             output_size: None,
             editor_project: None,
+            markers: MarkerSettings::default(),
         };
         p.set_encoding(Encoding::new(12_000));
         p
@@ -1107,6 +1164,12 @@ impl RecordProfile {
         }
         if !self.folder.is_absolute() {
             return Some("The folder must be a full path, for example C:\\Videos.".into());
+        }
+        if self.markers.lead_ms > MAX_MARKER_LEAD_MS {
+            return Some(format!(
+                "The marker offset of {} ms is more than 30 seconds.",
+                self.markers.lead_ms
+            ));
         }
         if self.format == Format::Flac {
             return (!FLAC_BITS.contains(&self.bit_depth))
@@ -1229,6 +1292,7 @@ impl RecordProfile {
                 height: s.height,
             }),
             editor_project: self.editor_project.map(EditorProject::to_api),
+            markers: self.markers.to_api(),
         }
     }
 
@@ -1297,6 +1361,7 @@ impl RecordProfile {
                 height: s.height,
             }),
             editor_project: p.editor_project.map(EditorProject::from_api),
+            markers: MarkerSettings::from_api(p.markers),
         };
         profile.remember_active();
         profile
@@ -1453,6 +1518,29 @@ pub fn save(config: &Path, profile: &RecordProfile) -> std::io::Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    /// ADR-0089 decisions 3 and 4: a file without `[markers]` takes the defaults, the
+    /// section round-trips, and an offset past 30 s is a problem.
+    #[test]
+    fn markers_default_round_trip_and_cap_the_lead() {
+        let mut p = RecordProfile::new();
+        let text = toml::to_string(&p).unwrap();
+        let without: String = text.split("\n[markers]").next().unwrap().to_owned();
+        let old: RecordProfile = toml::from_str(&without).unwrap();
+        assert_eq!(old.markers, MarkerSettings::default());
+        assert!(old.markers.scene_changes && !old.markers.stream_events);
+        p.markers = MarkerSettings {
+            lead_ms: 3_000,
+            scene_changes: false,
+            stream_events: true,
+        };
+        let back: RecordProfile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.markers, p.markers);
+        assert_eq!(MarkerSettings::from_api(p.markers.to_api()), p.markers);
+        assert_eq!(p.problem(), None);
+        p.markers.lead_ms = MAX_MARKER_LEAD_MS + 1;
+        assert!(p.problem().is_some_and(|w| w.contains("30 seconds")));
+    }
     use rbs_core::media::ColorSpace;
 
     #[test]

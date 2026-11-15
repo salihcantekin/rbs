@@ -449,6 +449,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         size: None,
         iso: false,
         editor_project: None,
+        markers: Default::default(),
     }));
     let recording = |rx: &_| {
         next(rx, |u| match u {
@@ -760,6 +761,7 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
         size: None,
         iso: false,
         editor_project: None,
+        markers: Default::default(),
     }));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     host.send(Command::StartStream(request()));
@@ -1755,4 +1757,88 @@ fn a_control_api_client_pauses_and_resumes_a_recording() {
     assert!(c.call("record.stop", main)["result"].is_object());
     drop(host);
     drop(api);
+}
+
+/// ADR-0089 decision 3: with the profile's stream markers on, a recording that runs
+/// while a stream starts and ends gets `stream_start` and `stream_end` markers at
+/// those moments; with them off (the default) it gets none.
+#[test]
+fn stream_markers_mark_a_running_recording_when_the_profile_asks() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    add_display(&host, &rx);
+    let dir = std::env::temp_dir().join(format!("rbs-app-stream-markers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    for (name, on) in [("on.mkv", true), ("off.mkv", false)] {
+        let markers = rbs_app::record_profile::MarkerSettings {
+            stream_events: on,
+            ..Default::default()
+        };
+        host.send(Command::StartRecording(RecordRequest {
+            path: dir.join(name),
+            container: ContainerId::Matroska,
+            encoder: None,
+            video: Some(VideoSettings::default()),
+            audio_bitrate_bps: 128_000,
+            bit_depth: None,
+            size: None,
+            iso: false,
+            editor_project: None,
+            markers,
+        }));
+        assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+        clock.advance(Duration::from_secs(2));
+        host.send(Command::StartStream(request()));
+        assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+        clock.advance(Duration::from_secs(3));
+        host.send(Command::EndStream);
+        assert!(matches!(stream(&rx), StreamUpdate::Ended { .. }));
+        host.send(Command::StopRecording);
+        let stopped = next_while(
+            &rx,
+            || clock.advance(END_TAIL_LIMIT),
+            |u| match u {
+                Update::Recording(r @ RecordingUpdate::Stopped { .. }) => Some(r),
+                _ => None,
+            },
+        );
+        assert!(
+            matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+            "{stopped:?}"
+        );
+    }
+    let text = std::fs::read_to_string(dir.join("on.rbs.toml")).unwrap();
+    let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    let marks: Vec<_> = manifest
+        .markers
+        .iter()
+        .map(|m| (m.kind, m.t_ns, m.label.as_str()))
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            (
+                rbs_manifest::MarkerKind::StreamStart,
+                2_000_000_000,
+                "Stream started"
+            ),
+            (
+                rbs_manifest::MarkerKind::StreamEnd,
+                5_000_000_000,
+                "Stream ended"
+            ),
+        ],
+        "{text}"
+    );
+    // Off: no marker, so a plain recording writes no manifest.
+    assert!(!dir.join("off.rbs.toml").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+    drop(host);
 }

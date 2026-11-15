@@ -361,6 +361,7 @@ fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
         size: None,
         iso: false,
         editor_project: None,
+        markers: Default::default(),
     }
 }
 
@@ -2395,5 +2396,86 @@ fn a_run_that_does_not_answer_ends_at_the_host_deadline() {
     assert!(!done["encoders"].as_array().unwrap().is_empty(), "{done}");
     let a = api.call("record.status", serde_json::json!({}));
     assert!(a.get("error").is_none(), "{a}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR-0089 decisions 3 and 4: scene changes mark a running recording (on by
+/// default) with the new program scene's name, the lead moves a manual marker
+/// earlier and keeps the press time, and with scene markers off a switch adds none.
+#[test]
+fn scene_markers_and_the_marker_lead_follow_the_request() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-auto-markers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = TestClock::new();
+    let (host, rx, _display, _mic) = marked(gpu, &clock, None);
+    let mut api = ApiClient::attach(&host);
+    let list = api.call("scene.list", serde_json::json!({}));
+    let first = list["result"]["data"]["program"].clone();
+    assert!(first.is_u64(), "{list}");
+    let added = api.call("scene.add", serde_json::json!({"name": "Break"}));
+    let second = added["result"]["scene"].clone();
+    assert!(second.is_u64(), "{added}");
+
+    let mut with_lead = request(dir.join("auto.mkv"), None);
+    with_lead.markers.lead_ms = 2_000;
+    host.send(Command::StartRecording(with_lead));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(5));
+    let switched = api.call("scene.switch", serde_json::json!({"scene": second}));
+    assert!(switched.get("error").is_none(), "{switched}");
+    clock.advance(Duration::from_secs(1));
+    api.reconnect();
+    let late = api.call("marker.add", serde_json::json!({"label": "Late"}));
+    assert_eq!(
+        late["result"]["markers"][0]["t_ns"], 4_000_000_000u64,
+        "{late}"
+    );
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+    let text = std::fs::read_to_string(dir.join("auto.rbs.toml")).unwrap();
+    let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    let marks: Vec<_> = manifest
+        .markers
+        .iter()
+        .map(|m| (m.kind, m.t_ns, m.pressed_ns, m.label.as_str()))
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            (
+                rbs_manifest::MarkerKind::Scene,
+                5_000_000_000,
+                None,
+                "Break"
+            ),
+            (
+                rbs_manifest::MarkerKind::Manual,
+                4_000_000_000,
+                Some(6_000_000_000),
+                "Late"
+            ),
+        ],
+        "{text}"
+    );
+
+    // Scene markers off: a switch marks nothing, so the plain take writes no manifest.
+    let mut quiet = request(dir.join("quiet.mkv"), None);
+    quiet.markers.scene_changes = false;
+    host.send(Command::StartRecording(quiet));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(1));
+    let back = api.call("scene.switch", serde_json::json!({"scene": first}));
+    assert!(back.get("error").is_none(), "{back}");
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(matches!(
+        stopped,
+        RecordingUpdate::Stopped { failure: None, .. }
+    ));
+    assert!(!dir.join("quiet.rbs.toml").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
