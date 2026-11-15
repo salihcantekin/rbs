@@ -53,6 +53,10 @@ pub struct IsoAudioStart {
     /// [`IsoAudioStarted::not_heard`] instead of failing the start with
     /// [`IsoError::NotHeard`]. False by default.
     pub skip_unheard: bool,
+    /// The recording these files belong to (ADR-0124): they follow its pause window.
+    /// `None`, or a recording that is not pausable: the files are never paused, and
+    /// a pause of any recording is refused while they run.
+    pub pause_with: Option<super::OutputId>,
 }
 
 impl IsoAudioStart {
@@ -73,6 +77,7 @@ impl IsoAudioStart {
             t0_ns,
             manifest_dir: None,
             skip_unheard: false,
+            pause_with: None,
         }
     }
 }
@@ -101,6 +106,8 @@ pub(super) struct IsoAudioRun {
     pub(super) encodes: Vec<crate::estimate::AudioEncode>,
     /// Each file's output counters, for the manifest at stop (ADR-0089).
     files: Vec<super::IsoFileOut>,
+    /// The recording's pause window the files follow (ADR-0124).
+    pub(super) pause: Option<Arc<rbs_core::pause::PauseWindow>>,
 }
 
 /// Marked sources the program mix does not hear, with their display names.
@@ -212,10 +219,12 @@ impl super::Studio {
                 bytes_per_second,
             })
             .collect();
+        let pause = self.iso_audio_pause(start);
         self.iso_audio = Some(IsoAudioRun {
             nodes,
             encodes,
             files,
+            pause,
         });
         if let Some(dir) = &start.manifest_dir
             && let Err(e) = iso::write_manifest(dir, &manifest)
@@ -297,6 +306,14 @@ impl super::Studio {
         Ok((taps, not_heard))
     }
 
+    /// The pause window of the recording `start` names, when it is pausable.
+    fn iso_audio_pause(&self, start: &IsoAudioStart) -> Option<Arc<rbs_core::pause::PauseWindow>> {
+        start
+            .pause_with
+            .and_then(|id| self.attached(id))
+            .and_then(|r| r.pause.clone())
+    }
+
     pub(super) fn ensure_iso_partitions(&mut self) -> Result<(), RecordError> {
         // An empty partition starts no thread (ADR-0013). A worker starts when the
         // apply below schedules nodes, and stops when [`Self::stop_iso_audio`] removes them.
@@ -326,8 +343,14 @@ impl super::Studio {
     ) -> Result<Vec<Added>, RecordError> {
         let mut graph = self.graph.clone();
         let mut adopted = Vec::with_capacity(taps.len() * 2);
+        let pause = self.iso_audio_pause(start);
+        let block_frames = self.settings.audio_graph.block_frames as usize;
         for (tap, (session, stream)) in taps.iter().zip(sessions) {
-            let encoder = EncoderNode::new(session, AUDIO_ENCODER_PACKETS);
+            let plain = EncoderNode::new(session, AUDIO_ENCODER_PACKETS);
+            let encoder: Box<dyn Node<()>> = match &pause {
+                Some(p) => Box::new(plain.with_pause(Arc::clone(p), block_frames)),
+                None => Box::new(plain),
+            };
             let output = OutputNode::new(
                 vec![stream],
                 Arc::clone(transport),
@@ -341,11 +364,7 @@ impl super::Studio {
             // the editor's timeline (ADR-0086 decision 5, ADR-0089 decision 6).
             .track_span();
             files.push(super::IsoFileOut::of(&tap.file_name, &output));
-            let enc_id = match add_active(
-                &mut graph,
-                Node::<()>::descriptor(&encoder),
-                ISO_AUDIO_ENCODER,
-            ) {
+            let enc_id = match add_active(&mut graph, encoder.descriptor(), ISO_AUDIO_ENCODER) {
                 Ok(id) => id,
                 Err(e) => {
                     self.abandon(adopted);
@@ -376,10 +395,7 @@ impl super::Studio {
                 partition: ISO_OUTPUT,
                 gpu: false,
             };
-            if let Err(e) = self
-                .engine
-                .adopt::<()>(ISO_AUDIO_ENCODER, enc_id, Box::new(encoder))
-            {
+            if let Err(e) = self.engine.adopt::<()>(ISO_AUDIO_ENCODER, enc_id, encoder) {
                 self.abandon(adopted);
                 return Err(e.into());
             }

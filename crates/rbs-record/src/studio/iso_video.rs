@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::ContainerId;
+use rbs_core::pause::PauseWindow;
 use rbs_core::time::Timestamp;
 use rbs_core::timing::Cadence;
 use rbs_engine::Pacing;
@@ -37,7 +38,8 @@ use rbs_graph::runtime::queue::QueueStats;
 use rbs_nodes::OutputNode;
 use rbs_nodes::VideoEncoderNode;
 use rbs_nodes::encode::EncoderNodeStats;
-use rbs_nodes::export::{ExportNodeStats, VideoExportNode};
+use rbs_nodes::encode::KeyframeAt;
+use rbs_nodes::export::{ExportEnd, ExportNodeStats, VideoExportNode};
 use rbs_nodes::{ImageTrackNode, ImageTrackStats};
 use rbs_scene::model::SourceId;
 use rbs_transport::{TransportConfig, TransportInput};
@@ -102,6 +104,11 @@ pub struct IsoVideoStart {
     /// [`IsoSkip::SoftwareStopped`]) and the others open, instead of the whole set
     /// failing.
     pub skip_unopened: bool,
+    /// The recording these files belong to (ADR-0124): they follow its pause window,
+    /// so [`super::Studio::pause_output`] pauses them at the same instant. `None`, or
+    /// a recording that is not pausable: the files are never paused, and a pause of
+    /// any recording is refused while they run.
+    pub pause_with: Option<super::OutputId>,
 }
 
 impl IsoVideoStart {
@@ -124,6 +131,7 @@ impl IsoVideoStart {
             keep: None,
             stop_before_software: false,
             skip_unopened: false,
+            pause_with: None,
         }
     }
 }
@@ -219,6 +227,11 @@ pub(super) struct IsoVideoRun {
     /// when the binder replaces its node (a new colour or file builds a new still
     /// node; ADR-0117 decision 4).
     relinks: Vec<Relink>,
+    /// The recording's pause window the files follow, their exports' ends (woken at
+    /// a pause) and their encoders' keyframe requests (one at each join), ADR-0124.
+    pub(super) pause: Option<Arc<PauseWindow>>,
+    pub(super) ends: Vec<Arc<ExportEnd>>,
+    pub(super) keyframes: Vec<Arc<KeyframeAt>>,
 }
 
 /// Where a track reads its source's picture from.
@@ -414,12 +427,21 @@ impl super::Studio {
         let masters: rbs_nodes::export::MasterDrops =
             Arc::new(move || queues.iter().map(|q| q.video_drops()).sum());
         let hold = (Duration::from_secs(1).as_nanos() / period.as_nanos().max(1)) as u64;
+        let pause = start
+            .pause_with
+            .and_then(|id| self.attached(id))
+            .and_then(|r| r.pause.clone());
+        let mut ends = Vec::new();
+        let mut keyframes = Vec::new();
         let images: Vec<_> = image_taps
             .iter()
             .map(|tap| {
-                let node = ImageTrackNode::new(tap.picture.0, tap.picture.1)
+                let mut node = ImageTrackNode::new(tap.picture.0, tap.picture.1)
                     .give_way_after(budget)
                     .yield_to(masters.clone());
+                if let Some(p) = &pause {
+                    node = node.with_pause(Arc::clone(p));
+                }
                 let writer = PngWriterNode::new(
                     image_dir.clone().unwrap_or_default(),
                     &tap.file_name,
@@ -481,6 +503,16 @@ impl super::Studio {
             e.worker = Some(encodes.len() % SHARED_ENGINE_PARTITIONS);
             e.export_buffers = rbs_gpu::download::DOWNLOAD_BUFFERS as u32;
             encodes.push(e);
+            let (export, encoder) = match &pause {
+                Some(p) => {
+                    let export = export.with_pause(Arc::clone(p));
+                    ends.push(export.end());
+                    let (encoder, k) = encoder.with_keyframe_requests();
+                    keyframes.push(k);
+                    (export, encoder)
+                }
+                None => (export, encoder),
+            };
             chains.push((export, encoder, size));
             opened_taps.push(tap);
         }
@@ -526,6 +558,9 @@ impl super::Studio {
             encodes,
             relinks,
             files,
+            pause,
+            ends,
+            keyframes,
         });
         skipped.sort_by_key(|s| s.source);
         Ok(IsoVideoStarted {

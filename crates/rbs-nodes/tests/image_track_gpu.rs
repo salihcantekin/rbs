@@ -202,3 +202,88 @@ fn changes_are_taken_once_each_and_at_most_once_per_interval() {
     assert_eq!(sys.plane(0).unwrap().0, [200; (W * H * 4) as usize]);
     assert_eq!(stats.failed.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn a_change_inside_a_pause_is_taken_at_the_join_in_file_time() {
+    let Some(ctx) = gpu() else { return };
+    let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
+    let mut ctl: Controller<GpuRuntime> = ctl;
+    let mut exec: Executor<GpuRuntime> = exec;
+    let mut graph = GraphDescription::new();
+    let mut add = |node: Box<dyn Node<GpuRuntime>>| {
+        let id = graph.add_node(Arc::new(node.descriptor().clone())).unwrap();
+        graph.set_state(id, Lifecycle::Standby).unwrap();
+        graph.set_state(id, Lifecycle::Active).unwrap();
+        ctl.adopt(id, node).unwrap();
+        id
+    };
+    let generation = Arc::new(AtomicU64::new(1));
+    let feed = add(Box::new(Feed {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.feed"),
+            NodeKind::Source,
+            vec![],
+            vec![Pin::one("video", LinkKind::Video)],
+        ),
+        texture: None,
+        generation: Arc::clone(&generation),
+    }));
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    let pause = Arc::new(rbs_core::pause::PauseWindow::default());
+    // Paused from tick 10 to tick 40.
+    pause.pause(cadence.time_of(10).as_nanos()).unwrap();
+    pause.resume(cadence.time_of(40).as_nanos()).unwrap();
+    let node = ImageTrackNode::new(W, H).with_pause(Arc::clone(&pause));
+    let stats = node.stats();
+    let track = add(Box::new(node));
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let probe = add(Box::new(Probe {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.probe"),
+            NodeKind::Output,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![],
+        ),
+        frames: Arc::clone(&frames),
+        last: None,
+    }));
+    graph.connect(feed, "video", track, "picture").unwrap();
+    graph.connect(track, "video", probe, "in").unwrap();
+    let report = ctl.apply(&graph).unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    exec.swap_pending();
+    let _ = ctl.collect();
+
+    for tick in 0..50 {
+        if tick == 20 {
+            // A change while paused.
+            generation.fetch_add(1, Ordering::Relaxed);
+        }
+        exec.run_tick(Tick::of(&cadence, tick));
+        ctx.wait_idle().unwrap();
+        ctx.poll();
+        let _ = ctl.collect();
+        if tick == 39 {
+            assert_eq!(
+                stats.taken.load(Ordering::Relaxed),
+                1,
+                "nothing taken while paused"
+            );
+        }
+    }
+    assert_eq!(stats.taken.load(Ordering::Relaxed), 2);
+    let times: Vec<u64> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|f| f.timestamp().as_nanos())
+        .collect();
+    // The first at tick 0; the change taken at the join (tick 40) and stamped in file
+    // time, where the join is tick 10's time.
+    assert_eq!(times.len(), 2, "{times:?}");
+    assert_eq!(times[0], 0);
+    assert!(
+        times[1].abs_diff(cadence.time_of(10).as_nanos()) <= 1,
+        "{times:?}"
+    );
+}

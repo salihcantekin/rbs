@@ -133,7 +133,9 @@ Counters are those of the capture node: `picture_size` is known from constructio
 | `process` | 1. A completed readback goes on "video" (`System`, `Rgba8`, sRGB, straight alpha, stamped with the tick's time and index of the submit). 2. The input's `(timestamp, sequence)` equal to the last taken: nothing more (one compare). 3. Otherwise, at `MAX_IMAGES_PER_TRACK` (1 000) taken: counted in `over_cap`, not taken. 4. Inside `MIN_IMAGE_INTERVAL` (100 ms of tick time) of the last taken, with a readback in flight, or giving way (the previous render tick over the budget, or `master_drops` grew): the change waits for a later tick, counted once in `coalesced` (`gave_way` counts the ticks it gave way); a newer change replaces it. 5. Otherwise `submit_at` with the tick's time and index (`taken`). A failed conversion is counted in `failed` and not retried for that picture |
 | `release` | A readback still in flight is counted in `failed` |
 
-Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (an unchanged picture is taken once over 30 ticks; a change on every tick for one second at 60 fps gives one image per interval, each change in between waits and is counted, images stamped at least 100 ms apart, bytes copied as published).
+Pause (ADR-0124, `with_pause(window)`, separate files of a pausable recording): in step 4 the window is read (only when the picture changed, so the steady state stays one compare); a change on a tick inside the window waits like a change inside the interval and is taken on the first tick after it, at the join. Every picture taken is stamped earlier by the time left out, so the writer's `at_ns` is file time.
+
+Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (`a_change_inside_a_pause_*`; an unchanged picture is taken once over 30 ticks; a change on every tick for one second at 60 fps gives one image per interval, each change in between waits and is counted, images stamped at least 100 ms apart, bytes copied as published).
 
 ### Video export node
 
