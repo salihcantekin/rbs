@@ -2674,12 +2674,14 @@ export component SettingsWindow inherits Window {
                     Rectangle { height: Tokens.space-2; }
                     // Search (U17): sections, cards, settings and Shortcuts commands. While
                     // it has text, its results cover the section list below it.
-                    field-row := HorizontalLayout {
+                    // The Clear button sits inside the field, at its trailing end (as
+                    // the fill field's copy button in Properties).
+                    field-row := Rectangle {
                         visible: !root.nav-collapsed;
-                        height: root.nav-collapsed ? 0px : self.preferred-height;
-                        spacing: Tokens.space-2;
+                        height: root.nav-collapsed ? 0px : search-field.height;
                         search-field := TextField {
-                            horizontal-stretch: 1;
+                            width: parent.width;
+                            end-inset: root.search != "" ? Tokens.size-control-sm + Tokens.space-1 : 0px;
                             label: @tr("Search settings");
                             placeholder: @tr("Search settings");
                             text <=> root.search;
@@ -2688,8 +2690,9 @@ export component SettingsWindow inherits Window {
                                 if root.hits.length > 0 { root.hit-chosen(0); }
                             }
                         }
-                        if root.search != "": IconButton {
-                            horizontal-stretch: 0;
+                        if root.search != "": clear := IconButton {
+                            x: parent.width - self.width - Tokens.space-1;
+                            y: (parent.height - self.height) / 2;
                             icon: IconName.close;
                             name: @tr("Clear the search");
                             clicked => {
