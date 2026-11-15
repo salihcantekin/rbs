@@ -107,3 +107,11 @@ Declared capabilities are upper bounds, not promises: a driver may allow 8 sessi
   5. The same GPU as the studio: the throwaway context is a new device and queue on the live context's adapter (`GpuContext::sibling`), created when the export part starts and dropped when it ends (P13). Entries hold only for the same GPU and OS key.
   6. The preview keeps running during the export part, as during the encoder part, so the number may be slightly pessimistic, the safe side.
   - One implementation detail differs from the proposal's text, with the same meaning: conversions in the GPU part are counted as ticks minus the growth of `busy` (an `every_tick` export converts on every tick that finds a free readback slot), not as `Δframes + Δlost`, so readbacks still completing at the end of the part are not missed and no counter is added to `VideoExportNode` (a hot path).
+- 2026-11-15, D2 acceptance on the owner's Mac (M4 Pro, Metal, 60 fps, `export_trace` example, release build, no studio running): every class kept up; no hang or error; the GPU tests passed with `RBS_REQUIRE_GPU=1`.
+  | Class | `time_us` | `gpu_us` | Part's time |
+  | --- | --- | --- | --- |
+  | 2160 NV12 (3840×2160) | 2634 | 17368 | 1.75 s |
+  | 1080 NV12 (1920×1080) | 1204 | 4210 | 0.99 s |
+  | 1080 P010 (1920×1080) | 1390 | 6357 | 1.27 s |
+
+  `time_us` at 1080p is about three times the 0.3 to 0.4 ms per file that step 3's `iso_cost` estimate suggested, so the throwaway graph (its own executor, feed, normalisation and export, each tick's submit and poll) costs the render thread more than the live track, or the earlier figure was low; it is the safe side and is compared with the live render tick before step E uses it. `gpu_us` is larger than a period at 2160 while the paced part kept up, so it measures the conversion rate through the 4-slot readback ring (latency included), not the GPU's busy time; it is stored only (record 2), and the spec says so.
