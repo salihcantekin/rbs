@@ -5,8 +5,8 @@
 use std::time::{Duration, Instant};
 
 use rbs_ui::tokens::{
-    Base, Color, ColorRule, FONT_FAMILY, Group, Kind, ResolvedTheme, THEMEABLE, ThemeBody,
-    ThemeProblem, Tokens as TokenFile, TypeStyle,
+    Base, Color, ColorRule, EFFECTS_KEY, Effects, FONT_FAMILY, Group, Kind, ResolvedTheme,
+    Severity, THEMEABLE, ThemeBody, ThemeProblem, Tokens as TokenFile, TypeStyle,
 };
 use rbs_user_data::{Appearance, AppearanceMode, EntryId, ThemeId, UserData};
 
@@ -235,7 +235,7 @@ impl AppearanceUi {
         self.entries
             .get(index)
             .and_then(|e| e.resolved.as_ref().ok())
-            .map_or(0, |r| r.warnings.len())
+            .map_or(0, |r| r.colour_warnings().count())
     }
 
     /// What to tell the user after importing the theme `id`: its name and warnings,
@@ -248,13 +248,12 @@ impl AppearanceUi {
         let Ok(r) = &e.resolved else {
             return String::new();
         };
-        let total = r.warnings.len();
+        let total = r.colour_warnings().count();
         if total == 0 {
             return String::new();
         }
         let live = r
-            .warnings
-            .iter()
+            .colour_warnings()
             .filter(|w| {
                 matches!(
                     &w.rule,
@@ -576,7 +575,19 @@ impl AppearanceUi {
     }
 
     /// Removes an override (the token takes the base's value again).
+    /// Sets the theme's effects (ADR-0120 decision 5): applied at once, like a colour
+    /// edit, with no "Keep this look?".
+    pub fn set_effects(&mut self, file: &TokenFile, index: usize) -> bool {
+        let Some(setting) = Effects::ALL.get(index).copied() else {
+            return false;
+        };
+        self.change(file, |d| d.set_effects(setting))
+    }
+
     pub fn reset(&mut self, file: &TokenFile, name: &str, now: Instant) -> bool {
+        if name == EFFECTS_KEY {
+            return self.change(file, |d| d.effects = None);
+        }
         self.change_looked(file, now, |d| {
             d.colors.remove(name);
             d.length.remove(name);
@@ -656,7 +667,7 @@ impl AppearanceUi {
         };
         let base = file.built_in_theme(ed.draft.base);
         let group = GROUPS[self.group.min(GROUPS.len() - 1)];
-        THEMEABLE
+        let mut rows: Vec<TokenRow> = THEMEABLE
             .iter()
             .filter(|t| t.group == group)
             .map(|t| {
@@ -738,14 +749,19 @@ impl AppearanceUi {
                     fixable,
                 }
             })
-            .collect()
+            .collect();
+        // Effects (ADR-0120 decision 5): its own row in Shapes, not a token.
+        if group == Group::Shapes {
+            rows.push(effects_row(file, ed));
+        }
+        rows
     }
 
     /// The number of warnings of the draft (ADR-0072).
     pub fn warning_count(&self) -> usize {
-        self.editor
-            .as_ref()
-            .map_or(0, |ed| ed.problems.iter().filter(|p| !p.is_error()).count())
+        self.editor.as_ref().map_or(0, |ed| {
+            ed.problems.iter().filter(|p| p.is_warning()).count()
+        })
     }
 
     /// Problems of the draft that belong to no row of any group.
@@ -756,9 +772,9 @@ impl AppearanceUi {
                 ed.problems
                     .iter()
                     .filter(|p| {
-                        p.token
-                            .as_deref()
-                            .is_none_or(|t| rbs_ui::tokens::themeable(t).is_none())
+                        p.token.as_deref().is_none_or(|t| {
+                            rbs_ui::tokens::themeable(t).is_none() && t != EFFECTS_KEY
+                        })
                     })
                     .map(|p| p.reason.clone())
                     .collect()
@@ -780,7 +796,7 @@ fn label_of(token: &str) -> &'static str {
 pub fn warnings_for(problems: &[ThemeProblem], token: &str) -> Vec<String> {
     let mut live = Vec::new();
     let mut other = Vec::new();
-    for p in problems.iter().filter(|p| !p.is_error()) {
+    for p in problems.iter().filter(|p| p.is_warning()) {
         let (words, about_live) = match &p.rule {
             Some(ColorRule::Contrast {
                 fg,
@@ -865,6 +881,48 @@ pub enum RowValue {
     Style(TypeStyle),
     /// Font families, comma-separated.
     Fonts(String),
+    /// The theme's effects (ADR-0120): the setting shown (an unknown stored one shows
+    /// as Calm) and why the control is disabled, empty when it is not.
+    Effects {
+        /// Position in [`Effects::ALL`].
+        choice: usize,
+        /// Why effects cannot apply at all; empty when they can.
+        disabled: String,
+    },
+}
+
+/// The Effects row: the stored setting, disabled for high contrast and for a token file
+/// without effect tables, with the effects notice as its warning.
+fn effects_row(file: &TokenFile, ed: &Editor) -> TokenRow {
+    let disabled = if ed.draft.base == Base::HighContrast {
+        "High contrast always uses Calm effects, so every control stays plain.".to_owned()
+    } else if file.effects.is_none() {
+        "This build's token file has no effects.".to_owned()
+    } else {
+        String::new()
+    };
+    let warning = if disabled.is_empty() {
+        ed.problems
+            .iter()
+            .filter(|p| p.severity == Severity::Notice)
+            .map(|p| p.reason.clone())
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        String::new()
+    };
+    TokenRow {
+        name: EFFECTS_KEY,
+        label: "Effects",
+        value: RowValue::Effects {
+            choice: ed.draft.effects_choice().index(),
+            disabled,
+        },
+        overridden: ed.draft.effects.is_some(),
+        problem: String::new(),
+        warning,
+        fixable: false,
+    }
 }
 
 /// One editor row.
@@ -966,6 +1024,89 @@ mod tests {
         let k = ui.keep.as_ref().unwrap();
         assert!(!k.expired(t0 + Duration::from_secs(14)));
         assert!(k.expired(t0 + KEEP_LOOK_TIMEOUT));
+    }
+
+    /// ADR-0120 decision 5: the Effects row is in Shapes, applies at once without
+    /// "Keep this look?", and Reset takes it back to Calm.
+    #[test]
+    fn the_effects_row_sets_and_resets_the_theme_effects() {
+        let (_d, _data, file, mut ui, id) = setup("effects-row");
+        ui.selected = Some(3);
+        assert!(ui.edit(&file));
+        ui.choice.dark = ThemeId::User(id);
+        ui.group = GROUPS.iter().position(|g| *g == Group::Shapes).unwrap();
+        let row = |ui: &AppearanceUi| {
+            ui.rows(&file)
+                .into_iter()
+                .find(|r| r.name == EFFECTS_KEY)
+                .expect("the Effects row")
+        };
+        assert_eq!(
+            row(&ui).value,
+            RowValue::Effects {
+                choice: 0,
+                disabled: String::new()
+            }
+        );
+        assert!(ui.set_effects(&file, 2));
+        assert!(ui.keep.is_none());
+        let r = row(&ui);
+        assert_eq!(
+            r.value,
+            RowValue::Effects {
+                choice: 2,
+                disabled: String::new()
+            }
+        );
+        assert!(r.overridden && r.warning.is_empty());
+        assert_eq!(
+            ui.editor.as_ref().unwrap().draft.effects.as_deref(),
+            Some("tactile")
+        );
+        assert!(ui.reset(&file, EFFECTS_KEY, Instant::now()));
+        assert_eq!(ui.editor.as_ref().unwrap().draft.effects, None);
+        // No other group has the row.
+        ui.group = 0;
+        assert!(ui.rows(&file).iter().all(|r| r.name != EFFECTS_KEY));
+    }
+
+    #[test]
+    fn high_contrast_disables_the_effects_row_and_an_unknown_value_shows_its_notice() {
+        let (_d, _data, file, mut ui, _id) = setup("effects-hc");
+        ui.selected = Some(3);
+        assert!(ui.edit(&file));
+        ui.group = GROUPS.iter().position(|g| *g == Group::Shapes).unwrap();
+        let ed = ui.editor.as_mut().unwrap();
+        ed.draft.effects = Some("glossy".into());
+        ui.recheck(&file);
+        let r = ui
+            .rows(&file)
+            .into_iter()
+            .find(|r| r.name == EFFECTS_KEY)
+            .unwrap();
+        assert_eq!(
+            r.value,
+            RowValue::Effects {
+                choice: 0,
+                disabled: String::new()
+            }
+        );
+        assert!(r.warning.contains("does not have"));
+        // The notice is not a colour warning and not a general problem.
+        assert_eq!(ui.warning_count(), 0);
+        assert!(ui.general_problems().is_empty());
+        let ed = ui.editor.as_mut().unwrap();
+        ed.draft.base = Base::HighContrast;
+        ed.draft.effects = Some("vivid".into());
+        ui.recheck(&file);
+        let r = ui
+            .rows(&file)
+            .into_iter()
+            .find(|r| r.name == EFFECTS_KEY)
+            .unwrap();
+        assert!(
+            matches!(r.value, RowValue::Effects { choice: 1, ref disabled } if !disabled.is_empty())
+        );
     }
 
     #[test]

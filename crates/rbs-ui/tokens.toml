@@ -2,7 +2,7 @@
 # The single source of visual values. Shells generate their toolkit format from
 # this file; UI code refers to tokens by name only (rule U6). Values are initial
 # and are tuned in usability testing; names are a contract.
-format = 2
+format = 3
 
 # Live and recording colours are the same in every theme (rule U12): themes cannot change them.
 [fixed]
@@ -272,3 +272,34 @@ format = 2
 # Empty: the OS UI font.
 [font]
 "font.family" = []
+
+# Theme effects (ADR-0120): the values of the lively settings a theme may choose. Calm has
+# no table: it is all zero. Lengths in logical pixels, fractions 0 to 1. Each table keeps
+# effects.press <= effects.key.edge and
+# effects.key.edge + max(effects.shadow.blur + effects.shadow.offset, effects.glow.blur) <= 4.
+# Every value is scaled down into a slot's extent (4 px regular and roomy, 2 px compact).
+[effects.vivid]
+"effects.shadow.blur" = 3
+"effects.shadow.offset" = 1
+"effects.shadow.alpha.dark" = 0.5
+"effects.shadow.alpha.light" = 0.3
+"effects.glow.blur" = 4
+"effects.glow.alpha" = 0.5
+"effects.sheen.alpha" = 0.3
+"effects.sheen.band" = 4
+"effects.key.edge" = 0
+"effects.key.shade" = 0
+"effects.press" = 0
+
+[effects.tactile]
+"effects.shadow.blur" = 1
+"effects.shadow.offset" = 1
+"effects.shadow.alpha.dark" = 0.5
+"effects.shadow.alpha.light" = 0.25
+"effects.glow.blur" = 0
+"effects.glow.alpha" = 0
+"effects.sheen.alpha" = 0.12
+"effects.sheen.band" = 4
+"effects.key.edge" = 2
+"effects.key.shade" = 0.4
+"effects.press" = 2

@@ -106,3 +106,4 @@ Today a secondary button is `surface.raised` with a `border.strong` outline (ADR
   - Nits: the ADR-0120 reference marked as a draft; focus rules listed (6); forward notes added to ADR-0112 and ADR-0076. Dark `text.secondary` on `button.pressed` stays at 4.54:1, above the 4.5:1 rule.
   - Left open (nit, round 1 #11): the icon chip is close to `button.hover` under the pointer. The icon keeps its accent colour, so the button still reads.
 - 2026-11-14: owner approval ("onaylıyorum bekleyenleri", 17:07) of the screenshots and this ADR. Status Accepted.
+- 2026-11-14: decision 3 superseded in part for the Glow theme effect by [ADR-0122](0122-bold-theme-effects.md) (the rim).

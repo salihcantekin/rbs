@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 use rbs_ui::tokens::{
-    BUILT_IN, Base, Color, ColorRule, FONT_FAMILY, Kind, MAX_UNKNOWN_TOKENS, Severity,
-    THEME_COLORS, THEMEABLE, ThemeBody, Tokens, TypeStyle, delta_e_2000, themeable,
+    BUILT_IN, Base, Color, ColorRule, EFFECTS_KEY, Effects, FONT_FAMILY, Kind, MAX_UNKNOWN_TOKENS,
+    Severity, THEME_COLORS, THEMEABLE, ThemeBody, Tokens, TypeStyle, delta_e_2000, themeable,
 };
 
 fn tokens() -> Tokens {
@@ -393,14 +393,15 @@ fn too_many_unknown_names_fail_the_theme() {
 fn format_1_token_files_still_parse_with_the_os_font() {
     let base = BUILT_IN.replace("\r\n", "\n");
     let v1 = base
-        .replacen("format = 2", "format = 1", 1)
+        .replacen("format = 3", "format = 1", 1)
         .split("\n[font]")
         .next()
         .unwrap()
         .to_owned();
     let t = Tokens::parse(&v1).unwrap();
     assert!(t.font_family.is_empty());
-    assert!(Tokens::parse(&base.replacen("format = 2", "format = 1", 1)).is_err());
+    assert!(t.effects.is_none());
+    assert!(Tokens::parse(&format_2(&base).replacen("format = 2", "format = 1", 1)).is_err());
     let no_font = base.split("\n[font]").next().unwrap();
     assert!(Tokens::parse(no_font).is_err());
 }
@@ -497,17 +498,38 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
                 }
             }
         }
-        match t.resolve(&theme) {
-            Ok(r) if !r.warnings.is_empty() => {
+        // The effects dimension (ADR-0120): none, each setting, and an unknown name.
+        theme.effects = [None, Some("vivid"), Some("tactile"), Some("glossy")]
+            [(next() % 4) as usize]
+            .map(str::to_owned);
+        let result = t.resolve(&theme);
+        if let Ok(r) = &result {
+            // A notice always means calm; high contrast is always calm; a known lively
+            // setting without a notice is drawn.
+            if r.effects_notice().is_some() || base == Base::HighContrast {
+                assert_eq!(r.effects, Effects::Calm, "{theme:?}");
+            }
+            if r.effects != Effects::Calm {
+                assert_eq!(Some(r.effects.name()), theme.effects.as_deref());
+                assert!(!r.effect_values.is_calm());
+            }
+            if theme.effects.as_deref() == Some("glossy") {
+                assert!(r.effects_notice().is_some());
+            }
+            assert!(r.warnings.iter().all(|w| !w.is_error()));
+        }
+        match result {
+            Ok(r) if r.colour_warnings().next().is_some() => {
                 // Only colour rules warn (ADR-0072); the theme is used as it is.
                 warned += 1;
                 assert!(
-                    r.warnings
-                        .iter()
-                        .all(|w| w.severity == Severity::Warning && w.rule.is_some()),
+                    r.colour_warnings().all(|w| w.rule.is_some()),
                     "{:?}",
                     r.warnings
                 );
+                assert!(r.warnings.iter().all(|w| w.is_warning()
+                    || (w.severity == Severity::Notice
+                        && w.token.as_deref() == Some(EFFECTS_KEY))));
             }
             Ok(r) => {
                 passed += 1;
@@ -704,4 +726,154 @@ fn secondary_buttons_keep_an_outline_where_the_fill_does_not_separate() {
     assert!(!t.built_in_theme(Base::Dark).button_outline());
     assert!(t.built_in_theme(Base::Light).button_outline());
     assert!(t.built_in_theme(Base::HighContrast).button_outline());
+}
+
+/// The built-in file as format 2: no effect tables.
+fn format_2(base: &str) -> String {
+    let cut = base.find("\n# Theme effects").expect("the effects section");
+    base[..cut].replacen("format = 3", "format = 2", 1) + "\n"
+}
+
+fn with_effects(base: Base, effects: &str) -> ThemeBody {
+    let mut theme = ThemeBody::new(base);
+    theme.effects = Some(effects.to_owned());
+    theme
+}
+
+#[test]
+fn a_missing_or_calm_key_is_calm_and_lively_settings_resolve_on_dark_and_light() {
+    let t = tokens();
+    for base in [Base::Dark, Base::Light] {
+        let r = t.resolve(&ThemeBody::new(base)).unwrap();
+        assert_eq!(r.effects, Effects::Calm);
+        assert!(r.effect_values.is_calm());
+        assert!(!r.effect_draw().on);
+        for e in Effects::LIVELY {
+            let r = t.resolve(&with_effects(base, e.name())).unwrap();
+            assert_eq!(r.effects, e);
+            assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+            let d = r.effect_draw();
+            assert!(d.on);
+            assert!(d.key_edge + (d.shadow_blur + d.shadow_offset).max(d.glow_blur) <= d.extent);
+        }
+    }
+    // "calm" reads as no key and is written as none.
+    let body: toml::Table = toml::from_str("base = \"dark\"\neffects = \"calm\"").unwrap();
+    let theme = ThemeBody::from_body(body).unwrap();
+    assert_eq!(theme.effects, None);
+    assert!(!theme.to_body().contains_key(EFFECTS_KEY));
+}
+
+#[test]
+fn high_contrast_is_always_calm_and_keeps_the_key() {
+    let t = tokens();
+    for e in Effects::LIVELY {
+        let theme = with_effects(Base::HighContrast, e.name());
+        let r = t.resolve(&theme).unwrap();
+        assert_eq!(r.effects, Effects::Calm);
+        assert!(r.effects_notice().is_none());
+        assert_eq!(theme.to_body()[EFFECTS_KEY].as_str(), Some(e.name()));
+        assert_eq!(theme.stored_effects(), Some(e.name()));
+    }
+}
+
+#[test]
+fn an_unknown_setting_reads_as_calm_with_a_notice_and_round_trips() {
+    let t = tokens();
+    let body: toml::Table = toml::from_str("base = \"dark\"\neffects = \"glossy\"").unwrap();
+    let theme = ThemeBody::from_body(body).unwrap();
+    assert_eq!(theme.effects_choice(), Effects::Calm);
+    let r = t.resolve(&theme).unwrap();
+    assert_eq!(r.effects, Effects::Calm);
+    let notice = r.effects_notice().expect("a notice");
+    assert_eq!(notice.severity, Severity::Notice);
+    assert_eq!(notice.token.as_deref(), Some(EFFECTS_KEY));
+    assert!(notice.rule.is_none());
+    assert_eq!(r.colour_warnings().count(), 0);
+    assert_eq!(theme.to_body()[EFFECTS_KEY].as_str(), Some("glossy"));
+    // Not a string, or not a valid name: refused like a bad base.
+    for bad in ["effects = 3", "effects = \"Glossy!\""] {
+        let body: toml::Table = toml::from_str(&format!("base = \"dark\"\n{bad}")).unwrap();
+        assert!(ThemeBody::from_body(body).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_format_2_token_file_resolves_every_theme_to_calm_with_a_notice() {
+    let t = Tokens::parse(&format_2(&BUILT_IN.replace("\r\n", "\n"))).unwrap();
+    assert!(t.effects.is_none());
+    for e in Effects::LIVELY {
+        let r = t.resolve(&with_effects(Base::Dark, e.name())).unwrap();
+        assert_eq!(r.effects, Effects::Calm);
+        assert!(r.effects_notice().unwrap().reason.contains("no effects"));
+    }
+    // A calm theme asks for nothing, so it gets no notice.
+    let r = t.resolve(&ThemeBody::new(Base::Dark)).unwrap();
+    assert!(r.effects_notice().is_none());
+}
+
+#[test]
+fn effect_tables_need_format_3_and_their_bounds() {
+    let base = BUILT_IN.replace("\r\n", "\n");
+    // Tables in a format 2 file, and a format 3 file without them, are refused.
+    assert!(Tokens::parse(&base.replacen("format = 3", "format = 2", 1)).is_err());
+    let cut = base.find("\n# Theme effects").unwrap();
+    assert!(Tokens::parse(&base[..cut]).is_err());
+    let wide = base.replacen("\"effects.glow.blur\" = 4", "\"effects.glow.blur\" = 5", 1);
+    assert!(
+        Tokens::parse(&wide)
+            .unwrap_err()
+            .0
+            .contains("effects.glow.blur")
+    );
+    let extent = base.replacen(
+        "\"effects.shadow.offset\" = 1",
+        "\"effects.shadow.offset\" = 2",
+        1,
+    );
+    assert!(
+        Tokens::parse(&extent)
+            .unwrap_err()
+            .0
+            .contains("more than 4")
+    );
+}
+
+#[test]
+fn a_failed_effect_check_drops_to_calm_and_leaves_the_colour_warnings_alone() {
+    let t = tokens();
+    // An accent that looks like the live colour: the glow would spread "live red".
+    let mut calm = ThemeBody::new(Base::Dark);
+    calm.colors
+        .insert("color.accent".into(), Color::parse("#c62a30").unwrap());
+    let mut vivid = calm.clone();
+    vivid.effects = Some("vivid".into());
+    let (c, v) = (t.resolve(&calm).unwrap(), t.resolve(&vivid).unwrap());
+    assert_eq!(v.effects, Effects::Calm);
+    assert!(v.effects_notice().unwrap().reason.contains("glow"));
+    assert_eq!(
+        c.colour_warnings().collect::<Vec<_>>(),
+        v.colour_warnings().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn derived_effect_colours_stay_away_from_live_and_live_takes_no_colour() {
+    let t = tokens();
+    let live = t.fixed["color.state.live"];
+    for base in [Base::Dark, Base::Light] {
+        for e in Effects::LIVELY {
+            let d = t
+                .resolve(&with_effects(base, e.name()))
+                .unwrap()
+                .effect_draw();
+            for k in d.key {
+                assert!(delta_e_2000(k, live) >= 15.0);
+            }
+            // The shadow is neutral and the glow is the accent: neither is the live colour.
+            assert_eq!((d.shadow.r, d.shadow.g, d.shadow.b), (0, 0, 0));
+            let glow = Color { a: 255, ..d.glow };
+            assert!(delta_e_2000(glow, live) >= 15.0);
+        }
+    }
 }
