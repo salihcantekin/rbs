@@ -803,6 +803,19 @@ pub struct RecordingProfile {
     /// (protocol 1.39, ADR-0102).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_size: Option<Dimensions>,
+    /// Write an editor project next to the recording when it stops (protocol 1.58,
+    /// ADR-0089 decision 10). Omitted or `null`: off. Also what makes a plain
+    /// recording keep its files' timing for a later `project.export`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_project: Option<ProjectFormat>,
+}
+
+/// An editor project format (protocol 1.58, ADR-0089 decision 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectFormat {
+    /// FCPXML 1.9, one `.fcpxml` file (DaVinci Resolve, Final Cut Pro).
+    Fcpxml,
 }
 
 /// The video codec of a recording or a stream. H.264 is omitted on the wire.

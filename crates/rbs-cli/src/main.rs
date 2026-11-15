@@ -45,6 +45,25 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 
 use crate::args::{Command, RecordArgs, StreamTarget};
 
+/// `rbs-cli project`: writes the editor project next to the manifest and names it;
+/// separate files missing from the folder are listed (ADR-0089 decision 10).
+fn project(p: &args::ProjectArgs) -> Result<(), String> {
+    let manifest =
+        std::path::absolute(&p.manifest).map_err(|e| format!("{}: {e}", p.manifest.display()))?;
+    let (Some(folder), Some(name)) = (
+        manifest.parent(),
+        manifest.file_name().and_then(|n| n.to_str()),
+    ) else {
+        return Err(format!("{} is not a manifest file", p.manifest.display()));
+    };
+    let done = rbs_project::export(folder, name, p.format, p.strict).map_err(|e| e.to_string())?;
+    println!("wrote {}", done.path.display());
+    for file in &done.missing {
+        println!("left out (not in the folder): {file}");
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     match args::parse(raw.iter().map(String::as_str)) {
@@ -97,6 +116,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Ok(Command::Project(p)) => match project(&p) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("project: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Command::RemoteFingerprint) => {
             match remote::fingerprint(&rbs_remote_settings::config_dir(), &mut std::io::stdout()) {
                 Ok(()) => ExitCode::SUCCESS,

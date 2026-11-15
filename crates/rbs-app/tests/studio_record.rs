@@ -360,6 +360,7 @@ fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
         bit_depth: None,
         size: None,
         iso: false,
+        editor_project: None,
     }
 }
 
@@ -1379,13 +1380,29 @@ impl ApiClient {
     }
 }
 
+/// Moves the clock in frame-sized steps until the running recording's output took
+/// packets (the Stats update counts them), so its file has a span.
+fn written_some(rx: &Receiver<Update>, clock: &TestClock) {
+    next_while(
+        rx,
+        || clock.advance(Duration::from_millis(5)),
+        |u| match u {
+            Update::Stats(s) if s.recording.is_some_and(|r| r.packets >= 4) => Some(()),
+            _ => None,
+        },
+    );
+}
+
 fn error_kind(answer: &serde_json::Value) -> &serde_json::Value {
     &answer["error"]["data"]["kind"]
 }
 
-/// ADR-0089 first slice: `marker.add` and `marker.remove` on the running recording;
-/// the markers go into `<stem>.rbs.toml` beside a plain recording, and into the
-/// recording folder's `recording.rbs.toml`, when it stops. No marker, no sidecar.
+/// ADR-0089: `marker.add` and `marker.remove` on the running recording; the markers
+/// go into `<stem>.rbs.toml` beside a plain recording, and into the recording folder's
+/// `recording.rbs.toml`, when it stops. No marker, no sidecar. The stop rewrite
+/// completes the manifest of a take that kept its timing (separate files, or the
+/// editor project setting), which writes its project or makes one with
+/// `project.export`; a plain take without the setting stays incomplete.
 #[test]
 fn markers_go_into_the_manifest_when_the_recording_stops() {
     let Some(gpu) = gpu() else { return };
@@ -1393,6 +1410,10 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
     let _ = std::fs::remove_dir_all(&dir);
     let clock = TestClock::new();
     let (host, rx, _display, mic) = marked(gpu, &clock, None);
+    // `project.export` looks in the profile's recordings folder.
+    let mut profile = rbs_app::record_profile::RecordProfile::new();
+    profile.folder = dir.clone();
+    host.send(Command::SetProfile(profile));
     let mut api = ApiClient::attach(&host);
 
     let idle = api.call("marker.add", serde_json::json!({}));
@@ -1462,7 +1483,28 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
         !text.contains(&dir.display().to_string()),
         "no path: {text}"
     );
-    assert!(!manifest.is_complete(), "the stop rewrite is a later step");
+    assert!(
+        !manifest.is_complete(),
+        "no timing without separate files or the editor project setting: {text}"
+    );
+    assert!(manifest.files[0].timing.is_none(), "{text}");
+    api.reconnect();
+    let refused = api.call(
+        "project.export",
+        serde_json::json!({"recording": "plain.mkv", "format": "fcpxml"}),
+    );
+    assert_eq!(error_kind(&refused), "failed", "{refused}");
+    for (name, kind) in [
+        ("../plain.mkv", "invalid_params"),
+        ("quiet.mkv", "not_found"),
+        ("nothing", "not_found"),
+    ] {
+        let answer = api.call(
+            "project.export",
+            serde_json::json!({"recording": name, "format": "fcpxml"}),
+        );
+        assert_eq!(error_kind(&answer), kind, "{name}: {answer}");
+    }
 
     // No marker: no sidecar.
     let quiet = dir.join("quiet.mkv");
@@ -1480,6 +1522,7 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
     clock.advance(Duration::from_secs(2));
     let added = api.call("marker.add", serde_json::json!({"canvas": "main"}));
     assert_eq!(added["result"]["markers"][0]["index"], 1, "{added}");
+    written_some(&rx, &clock);
     stop_recording(&host, &rx, &clock);
     let text = std::fs::read_to_string(dir.join("take").join("recording.rbs.toml")).unwrap();
     let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
@@ -1493,6 +1536,65 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
         "{text}"
     );
     assert!(manifest.markers[0].t_ns >= 2_000_000_000, "{text}");
+    // The stop rewrite: complete, and every file placed from `t0` with its format.
+    assert!(manifest.is_complete(), "{text}");
+    let master = manifest.files.iter().find(|f| f.role == "master").unwrap();
+    let timing = master.timing.unwrap_or_else(|| panic!("{text}"));
+    assert!(timing.duration_ns > 0, "{text}");
+    // Nothing renders on the still clock, so the first frame comes once the clock
+    // moves (after the marker): seconds after `t0` here, a frame or so in real use.
+    assert!(timing.start_offset_ns < 5_000_000_000, "{text}");
+    assert!(timing.picture.is_some() && timing.sound.is_some(), "{text}");
+    let audio = manifest.files.iter().find(|f| f.role == "audio").unwrap();
+    let sound = audio.timing.unwrap_or_else(|| panic!("{text}"));
+    assert!(sound.picture.is_none() && sound.sound.is_some(), "{text}");
+    let done = manifest.completion.unwrap();
+    assert_eq!(done.picture, timing.picture);
+    assert!(
+        done.duration_ns >= timing.start_offset_ns + timing.duration_ns,
+        "{text}"
+    );
+    // `project.export` writes the project next to the manifest, never replacing one.
+    api.reconnect();
+    let first = api.call(
+        "project.export",
+        serde_json::json!({"recording": "take", "format": "fcpxml"}),
+    );
+    assert_eq!(
+        first["result"],
+        serde_json::json!({"file": "take.fcpxml", "missing": []}),
+        "{first}"
+    );
+    let second = api.call(
+        "project.export",
+        serde_json::json!({"recording": "take", "format": "fcpxml"}),
+    );
+    assert_eq!(second["result"]["file"], "take 2.fcpxml", "{second}");
+    let project = std::fs::read_to_string(dir.join("take").join("take.fcpxml")).unwrap();
+    assert!(project.contains("<fcpxml version=\"1.9\">"), "{project}");
+    assert!(project.contains("master.mkv"), "{project}");
+
+    // The editor project setting: a plain take keeps its timing and writes its
+    // project when it stops, with no marker.
+    let mut with_project = request(dir.join("edit.mkv"), None);
+    with_project.editor_project = Some(rbs_app::record_profile::EditorProject::Fcpxml);
+    host.send(Command::StartRecording(with_project));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    written_some(&rx, &clock);
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+    let text = std::fs::read_to_string(dir.join("edit.rbs.toml")).unwrap();
+    let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    assert!(manifest.is_complete(), "{text}");
+    assert!(manifest.markers.is_empty(), "{text}");
+    assert!(
+        manifest.files[0].timing.unwrap().start_offset_ns < 5_000_000_000,
+        "{text}"
+    );
+    assert!(dir.join("edit.fcpxml").is_file());
 
     drop(api);
     drop(host);

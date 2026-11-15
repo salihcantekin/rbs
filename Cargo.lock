@@ -4354,6 +4354,7 @@ dependencies = [
  "rbs-mux-mpegts",
  "rbs-mux-wav",
  "rbs-params",
+ "rbs-project",
  "rbs-record",
  "rbs-remote-settings",
  "rbs-scene",
@@ -4618,6 +4619,7 @@ dependencies = [
  "rbs-mux-matroska",
  "rbs-mux-mpegts",
  "rbs-mux-wav",
+ "rbs-project",
  "rbs-record",
  "rbs-remote-settings",
  "rbs-scene",
@@ -4948,6 +4950,7 @@ version = "0.0.1"
 dependencies = [
  "allocation-counter",
  "bytes",
+ "criterion 0.8.2",
  "rbs-capture",
  "rbs-capture-mf",
  "rbs-capture-test",

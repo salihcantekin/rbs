@@ -22,6 +22,7 @@ pub mod calibration;
 mod clip;
 pub mod estimate;
 mod iso;
+mod media_span;
 mod png_writer;
 pub mod protection;
 mod recording;
@@ -34,6 +35,7 @@ pub use iso::{
     IsoError, IsoPlan, IsoRole, IsoTrack, MASTER_STEM, MAX_ISO_AUDIO, MAX_ISO_IMAGES,
     MAX_ISO_VIDEO, manifest_at_start, plan, write_manifest,
 };
+pub use media_span::MediaSpan;
 pub use png_writer::{ImageFiles, PNG_WRITER_NODE_TYPE, PngWriterNode};
 /// The recording manifest model (ADR-0086, ADR-0089), owned by `rbs-manifest`.
 pub use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};

@@ -99,6 +99,8 @@ pub(super) struct IsoAudioRun {
     nodes: Vec<Added>,
     /// What each open file costs, for the estimate of a later start (ADR-0087).
     pub(super) encodes: Vec<crate::estimate::AudioEncode>,
+    /// Each file's output counters, for the manifest at stop (ADR-0089).
+    files: Vec<super::IsoFileOut>,
 }
 
 /// Marked sources the program mix does not hear, with their display names.
@@ -188,7 +190,8 @@ impl super::Studio {
         let input = TransportInput::Container(start.container);
         let (transport, _) = select::transport(&adapters.transports, &start.folder_url, input)?;
         self.ensure_iso_partitions()?;
-        let nodes = self.install_audio(&taps, sessions, &transport, &muxer, start)?;
+        let mut files = Vec::with_capacity(taps.len());
+        let nodes = self.install_audio(&taps, sessions, &transport, &muxer, start, &mut files)?;
         let bytes_per_second = start.audio.bitrate_bps / 8
             + if start.audio.bitrate_bps == 0 {
                 let format = self.settings.audio_graph.format;
@@ -209,7 +212,11 @@ impl super::Studio {
                 bytes_per_second,
             })
             .collect();
-        self.iso_audio = Some(IsoAudioRun { nodes, encodes });
+        self.iso_audio = Some(IsoAudioRun {
+            nodes,
+            encodes,
+            files,
+        });
         if let Some(dir) = &start.manifest_dir
             && let Err(e) = iso::write_manifest(dir, &manifest)
         {
@@ -232,9 +239,10 @@ impl super::Studio {
     /// Closes separate audio files and drops their nodes. False when none were open.
     /// The partitions stay, with no worker (ADR-0013).
     pub fn stop_iso_audio(&mut self) -> bool {
-        let Some(run) = self.iso_audio.take() else {
+        let Some(mut run) = self.iso_audio.take() else {
             return false;
         };
+        self.iso_ended.append(&mut run.files);
         for node in &run.nodes {
             let _ = self.graph.set_state(node.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(node.node);
@@ -314,6 +322,7 @@ impl super::Studio {
         transport: &Arc<dyn rbs_transport::TransportFactory>,
         muxer: &Arc<dyn rbs_mux::MuxerFactory>,
         start: &IsoAudioStart,
+        files: &mut Vec<super::IsoFileOut>,
     ) -> Result<Vec<Added>, RecordError> {
         let mut graph = self.graph.clone();
         let mut adopted = Vec::with_capacity(taps.len() * 2);
@@ -327,7 +336,11 @@ impl super::Studio {
                     TransportInput::Container(start.container),
                 ),
             )
-            .with_muxer(Arc::clone(muxer), start.container, None);
+            .with_muxer(Arc::clone(muxer), start.container, None)
+            // Separate files always keep their span: the manifest places each one on
+            // the editor's timeline (ADR-0086 decision 5, ADR-0089 decision 6).
+            .track_span();
+            files.push(super::IsoFileOut::of(&tap.file_name, &output));
             let enc_id = match add_active(
                 &mut graph,
                 Node::<()>::descriptor(&encoder),

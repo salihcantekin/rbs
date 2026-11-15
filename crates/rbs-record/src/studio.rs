@@ -197,6 +197,10 @@ pub struct OutputSettings {
     /// Not a [`VideoSettings`] field: two outputs share an encoder only when this
     /// resolves to the same size as well.
     pub size: Option<(u32, u32)>,
+    /// Keep the span of what the output writes ([`FinishReport::media`]), for the
+    /// recording manifest's stop rewrite (ADR-0089 decision 6). Off: the output node
+    /// runs no span code (P13) and `media` is `None`.
+    pub track_span: bool,
 }
 
 /// Smallest side of an explicit output size (ADR-0102 decision 7).
@@ -250,6 +254,7 @@ impl OutputSettings {
             audio: Some(AudioSettings::default()),
             canvas: None,
             size: None,
+            track_span: false,
         }
     }
 
@@ -524,13 +529,50 @@ fn video_encoder_config(
     }
 }
 
+/// An output node as built for its settings: one that keeps the span of what it
+/// writes only when asked (P13).
+enum OutputNodePlan {
+    Plain(OutputNode),
+    Span(OutputNode<rbs_nodes::output::TrackSpan>),
+}
+
+impl OutputNodePlan {
+    fn stats(&self) -> Arc<OutputNodeStats> {
+        match self {
+            Self::Plain(o) => o.stats(),
+            Self::Span(o) => o.stats(),
+        }
+    }
+
+    fn streams(&self) -> &[rbs_core::media::StreamDescriptor] {
+        match self {
+            Self::Plain(o) => o.streams(),
+            Self::Span(o) => o.streams(),
+        }
+    }
+
+    fn descriptor(&self) -> &rbs_graph::node::NodeDescriptor {
+        match self {
+            Self::Plain(o) => Node::<()>::descriptor(o),
+            Self::Span(o) => Node::<()>::descriptor(o),
+        }
+    }
+
+    fn into_node(self) -> Box<dyn Node<()>> {
+        match self {
+            Self::Plain(o) => Box::new(o),
+            Self::Span(o) => Box::new(o),
+        }
+    }
+}
+
 /// Adapters chosen for an output, nothing in the graph yet.
 pub(crate) struct Prepared {
     /// The canvas the video comes from.
     canvas: CanvasId,
     video: VideoPlan,
     audio: AudioPlan,
-    output: OutputNode,
+    output: OutputNodePlan,
     muxer: Option<Chosen>,
     transport: Chosen,
 }
@@ -655,6 +697,11 @@ impl Prepared {
             }
             None => None,
         };
+        let output = if out.track_span {
+            OutputNodePlan::Span(output.track_span())
+        } else {
+            OutputNodePlan::Plain(output)
+        };
         Ok(Self {
             canvas,
             video,
@@ -720,6 +767,26 @@ struct Base {
     audio_tail_lost: u64,
 }
 
+/// A separate file's output, kept so its span can be read once it is closed.
+pub(crate) struct IsoFileOut {
+    pub(crate) file_name: String,
+    pub(crate) stats: Arc<OutputNodeStats>,
+    pub(crate) formats: (Option<rbs_manifest::Picture>, Option<rbs_manifest::Sound>),
+}
+
+impl IsoFileOut {
+    pub(crate) fn of<S: rbs_nodes::output::SpanPolicy>(
+        file_name: &str,
+        output: &rbs_nodes::OutputNode<S>,
+    ) -> Self {
+        Self {
+            file_name: file_name.to_owned(),
+            stats: output.stats(),
+            formats: crate::media_span::formats(output.streams()),
+        }
+    }
+}
+
 /// A running output, its encoder chains and counters.
 struct Attached {
     id: OutputId,
@@ -730,6 +797,8 @@ struct Attached {
     report: StartReport,
     output: Added,
     output_stats: Arc<OutputNodeStats>,
+    /// The picture and sound of its streams, for the manifest at stop.
+    formats: (Option<rbs_manifest::Picture>, Option<rbs_manifest::Sound>),
     /// Slots of the chains it takes packets from. `video` is `None` for audio only.
     video: Option<usize>,
     audio: Option<usize>,
@@ -892,6 +961,8 @@ pub struct Studio {
     /// no worker. Not one of [`MAX_OUTPUTS`].
     iso_audio: Option<iso_audio::IsoAudioRun>,
     iso_video: Option<iso_video::IsoVideoRun>,
+    /// The separate files closed since the last [`Studio::take_iso_media`] (ADR-0089).
+    iso_ended: Vec<IsoFileOut>,
     /// Soloed sources (session state, never saved; ADR-0097 decision 5).
     solo: BTreeSet<SourceId>,
     /// One cap of two browser helpers for every source this studio instantiates
@@ -1208,6 +1279,7 @@ impl Studio {
             loudness: None,
             iso_audio: None,
             iso_video: None,
+            iso_ended: Vec::new(),
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
             browser_tree,
@@ -2729,8 +2801,9 @@ impl Studio {
         let mut nodes: Vec<Added> = Vec::new();
 
         let output_stats = p.output.stats();
+        let formats = crate::media_span::formats(p.output.streams());
         let output_part = parts.slot(slot).output;
-        let output_id = add_active(&mut graph, Node::<()>::descriptor(&p.output), output_part)?;
+        let output_id = add_active(&mut graph, p.output.descriptor(), output_part)?;
         let output = Added {
             node: output_id,
             partition: output_part,
@@ -2905,7 +2978,7 @@ impl Studio {
         }
         let r = self
             .engine
-            .adopt::<()>(output.partition, output.node, Box::new(p.output));
+            .adopt::<()>(output.partition, output.node, p.output.into_node());
         adopt(&mut self.engine, output, r)?;
 
         // Committed: the graph, the chains and the output.
@@ -2952,6 +3025,7 @@ impl Studio {
             },
             output,
             output_stats,
+            formats,
             video: video_slot,
             audio: audio_slot,
             failure: None,
@@ -3162,6 +3236,7 @@ impl Studio {
             shutdown_errors: errors,
             flush_lost,
             finish_lost,
+            media: crate::MediaSpan::of(&r.output_stats, r.formats),
         }
     }
 
@@ -3242,6 +3317,20 @@ impl Studio {
     pub fn stop_output(&mut self, id: OutputId) -> Option<FinishReport> {
         let (r, errors, drained_video) = self.detach(id, true)?;
         Some(self.finish_report(&r, errors, drained_video))
+    }
+
+    /// The separate files closed by [`Studio::stop_iso_audio`] and
+    /// [`Studio::stop_iso_video`] since the last call, by file name, with what each
+    /// holds (`None`: nothing was written), for the manifest's stop rewrite (ADR-0089
+    /// decision 6). Image tracks are not files with a span and are not listed.
+    pub fn take_iso_media(&mut self) -> Vec<(String, Option<crate::MediaSpan>)> {
+        std::mem::take(&mut self.iso_ended)
+            .into_iter()
+            .map(|f| {
+                let span = crate::MediaSpan::of(&f.stats, f.formats);
+                (f.file_name, span)
+            })
+            .collect()
     }
 
     /// A running output's connection; `None` when `id` does not run.

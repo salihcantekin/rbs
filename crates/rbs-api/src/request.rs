@@ -282,6 +282,27 @@ pub struct MarkersAdded {
     pub markers: Vec<MarkerPlaced>,
 }
 
+/// `project.export` (protocol 1.58, ADR-0089 decisions 8 and 11): an editor project
+/// from a finished recording's manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExport {
+    /// The recording's folder name, or a plain recording's file name, inside the
+    /// profile's recordings folder: one path segment.
+    pub recording: String,
+    /// The project format.
+    pub format: crate::types::ProjectFormat,
+}
+
+/// `project.export`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectExported {
+    /// The project's file name, next to the manifest (never an absolute path).
+    pub file: String,
+    /// Separate files the manifest names that were not in the folder; left out.
+    pub missing: Vec<String>,
+}
+
 /// `source.get_region`'s answer (protocol 1.41).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRegionInfo {
@@ -1485,6 +1506,8 @@ pub enum Command {
     MarkerAdd(MarkerAdd),
     /// `marker.remove` (protocol 1.50, ADR-0089).
     MarkerRemove(MarkerRemove),
+    /// `project.export` (protocol 1.58, ADR-0089).
+    ProjectExport(ProjectExport),
     /// `source.get_region` (protocol 1.41).
     SourceGetRegion(SourceRef),
     /// `source.set_chrome` (protocol 1.41, ADR-0104).
@@ -1626,6 +1649,7 @@ impl Command {
             Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
             Command::MarkerAdd(_) => "marker.add",
             Command::MarkerRemove(_) => "marker.remove",
+            Command::ProjectExport(_) => "project.export",
             Command::SourceGetRegion(_) => "source.get_region",
             Command::SourceSetChrome(_) => "source.set_chrome",
             Command::SourceGetChrome(_) => "source.get_chrome",
@@ -1797,6 +1821,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_record_separately", Some(Scope::Control)),
     m("marker.add", Some(Scope::Control)),
     m("marker.remove", Some(Scope::Control)),
+    m("project.export", Some(Scope::Control)),
     m("source.get_region", Some(Scope::Control)),
     m("source.set_chrome", Some(Scope::Control)),
     m("source.get_chrome", Some(Scope::Control)),
@@ -2112,6 +2137,8 @@ enum WireRequest {
     MarkerAdd(MarkerAdd),
     #[serde(rename = "marker.remove")]
     MarkerRemove(MarkerRemove),
+    #[serde(rename = "project.export")]
+    ProjectExport(ProjectExport),
     #[serde(rename = "source.get_region")]
     SourceGetRegion(SourceRef),
     #[serde(rename = "source.set_chrome")]
@@ -2263,6 +2290,7 @@ impl From<WireRequest> for Request {
             }
             WireRequest::MarkerAdd(p) => Request::Command(C::MarkerAdd(p)),
             WireRequest::MarkerRemove(p) => Request::Command(C::MarkerRemove(p)),
+            WireRequest::ProjectExport(p) => Request::Command(C::ProjectExport(p)),
             WireRequest::SourceGetRegion(p) => Request::Command(C::SourceGetRegion(p)),
             WireRequest::SourceSetChrome(p) => Request::Command(C::SourceSetChrome(p)),
             WireRequest::SourceGetChrome(p) => Request::Command(C::SourceGetChrome(p)),
@@ -2395,6 +2423,7 @@ impl From<Request> for WireRequest {
                 C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
                 C::MarkerAdd(p) => WireRequest::MarkerAdd(p),
                 C::MarkerRemove(p) => WireRequest::MarkerRemove(p),
+                C::ProjectExport(p) => WireRequest::ProjectExport(p),
                 C::SourceGetRegion(p) => WireRequest::SourceGetRegion(p),
                 C::SourceSetChrome(p) => WireRequest::SourceSetChrome(p),
                 C::SourceGetChrome(p) => WireRequest::SourceGetChrome(p),
@@ -2645,6 +2674,8 @@ pub enum Response {
     AutoLayoutDone(AutoLayoutDone),
     /// `marker.add` (protocol 1.50).
     MarkersAdded(MarkersAdded),
+    /// `project.export` (protocol 1.58).
+    ProjectExported(ProjectExported),
     /// `item.remove`, `global.remove` (protocol 1.10).
     ItemRemoved(ItemRemoved),
     /// `output.profiles`.
