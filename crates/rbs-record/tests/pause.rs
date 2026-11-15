@@ -162,3 +162,65 @@ fn a_chain_once_paused_is_not_shared_with_a_later_output() {
     assert!(!report.video_shared && !report.audio_shared, "{report:?}");
     studio.shutdown();
 }
+
+#[test]
+fn separate_files_pause_with_their_recording_and_others_refuse_a_pause() {
+    use rbs_record::{IsoVideoStart, VideoSettings};
+    use rbs_scene::model::RecordSeparately;
+    use std::sync::atomic::Ordering;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let rec = studio.start_output(&r.adapters, &recording()).unwrap();
+    let display = col.sources().find(|s| s.name == "Display").unwrap().id;
+    col.set_source_record_separately(display, RecordSeparately::new(true, false))
+        .unwrap();
+    let updated = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(updated.failed.is_empty(), "{updated:?}");
+    assert!(run_until(&mut studio, &clock, |s| s
+        .picture_size(display)
+        .is_some()));
+
+    // Files not started with the recording: a pause would leave them running.
+    let request = IsoVideoStart::new("mem://iso", ContainerId::Matroska, VideoSettings::default());
+    studio.start_iso_video(&r.adapters, &request).unwrap();
+    assert_eq!(studio.pause_output(rec), Err(PauseRefused::SeparateFiles));
+    assert!(studio.stop_iso_video());
+
+    // Files started with it pause at the same instant: their export takes nothing
+    // inside the window.
+    let mut request = request;
+    request.pause_with = Some(rec);
+    let started = studio.start_iso_video(&r.adapters, &request).unwrap();
+    let frames = &started.tracks[0].stats.frames;
+    assert!(run_until(&mut studio, &clock, |_| frames
+        .load(Ordering::Relaxed)
+        >= 5));
+    let pause_at = studio.pause_output(rec).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| clock.now()
+        > pause_at + std::time::Duration::from_millis(100)));
+    let at_pause = frames.load(Ordering::Relaxed);
+    assert!(run_until(&mut studio, &clock, |_| clock.now()
+        > pause_at + std::time::Duration::from_millis(500)));
+    assert_eq!(
+        frames.load(Ordering::Relaxed),
+        at_pause,
+        "nothing exported while paused"
+    );
+    studio.resume_output(rec).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| frames
+        .load(Ordering::Relaxed)
+        >= at_pause + 5));
+    assert!(studio.stop_iso_video());
+    studio.shutdown();
+}

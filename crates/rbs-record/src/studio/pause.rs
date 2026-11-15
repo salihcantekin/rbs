@@ -10,9 +10,12 @@
 //!
 //! This first step pauses a recording whose encoders are its own. A recording that
 //! shares an encoder with another output is refused with
-//! [`PauseRefused::SharedEncoder`] until the cut at the output node is built, and
-//! one with separate files running with [`PauseRefused::SeparateFiles`] until those
-//! follow the window.
+//! [`PauseRefused::SharedEncoder`] until the cut at the output node is built.
+//! Separate files started with [`IsoVideoStart::pause_with`](super::IsoVideoStart::pause_with)
+//! or [`IsoAudioStart::pause_with`](super::IsoAudioStart::pause_with) naming the
+//! recording follow the same window: their exports, audio encoders and image tracks
+//! cut at the same instants, and their encoders get a keyframe at each join. Other
+//! separate files make a pause [`PauseRefused::SeparateFiles`].
 
 use std::fmt;
 
@@ -35,7 +38,9 @@ pub enum PauseRefused {
     NotPausable,
     /// The recording shares its video or audio encoder with another output.
     SharedEncoder,
-    /// Separate video or audio files run (ADR-0086); they do not follow a pause yet.
+    /// Separate video or audio files run that were not started with this recording
+    /// ([`IsoVideoStart::pause_with`](super::IsoVideoStart::pause_with)), so they
+    /// would not pause with it.
     SeparateFiles,
     /// The output was ended (ADR-0045).
     Ending,
@@ -51,7 +56,7 @@ impl fmt::Display for PauseRefused {
             Self::NotRunning => "the output does not run",
             Self::NotPausable => "the output cannot be paused",
             Self::SharedEncoder => "the recording shares an encoder with another output",
-            Self::SeparateFiles => "separate files are recorded; they cannot pause yet",
+            Self::SeparateFiles => "separate files run that do not belong to this recording",
             Self::Ending => "the output is ending",
             Self::AlreadyPaused => "the recording is already paused",
             Self::NotPaused => "the recording is not paused",
@@ -116,6 +121,11 @@ impl Studio {
         {
             c.end.wake_at(at);
         }
+        if let Some(v) = &self.iso_video {
+            for end in &v.ends {
+                end.wake_at(at);
+            }
+        }
         Ok(at)
     }
 
@@ -127,6 +137,13 @@ impl Studio {
         let at = self.next_pause_instant();
         let pause = self.own_pause(id)?;
         let w = pause.resume(at.as_nanos())?;
+        if w.pause_at != u64::MAX
+            && let Some(v) = &self.iso_video
+        {
+            for keyframes in &v.keyframes {
+                keyframes.request(Timestamp::from_nanos(w.pause_at - w.before));
+            }
+        }
         if w.pause_at != u64::MAX
             && let Some(r) = self.attached(id)
             && let Some(c) = r.video.and_then(|v| self.chains.video[v].as_ref())
@@ -178,7 +195,16 @@ impl Studio {
             return Err(PauseRefused::Ending);
         }
         let pause = r.pause.as_ref().ok_or(PauseRefused::NotPausable)?;
-        if self.iso_video_running() || self.iso_audio_running() {
+        // Separate files pause with their recording, or no pause is allowed.
+        let follows = |iso: Option<&Arc<PauseWindow>>| iso.is_some_and(|p| Arc::ptr_eq(p, pause));
+        if let Some(v) = &self.iso_video
+            && !follows(v.pause.as_ref())
+        {
+            return Err(PauseRefused::SeparateFiles);
+        }
+        if let Some(a) = &self.iso_audio
+            && !follows(a.pause.as_ref())
+        {
             return Err(PauseRefused::SeparateFiles);
         }
         let users = |video: bool, slot: usize| {

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use rbs_core::pause::{PauseWindow, Place};
 use rbs_core::time::Timestamp;
 use rbs_gpu::RgbaDownload;
 use rbs_gpu::node::GpuRuntime;
@@ -81,6 +82,8 @@ pub struct ImageTrackNode {
     master_drops: Option<MasterDrops>,
     seen_drops: u64,
     stats: Arc<ImageTrackStats>,
+    /// The recording's pause window (ADR-0124); read only when the picture changed.
+    pause: Option<Arc<PauseWindow>>,
 }
 
 impl ImageTrackNode {
@@ -98,7 +101,19 @@ impl ImageTrackNode {
             master_drops: None,
             seen_drops: 0,
             stats: Arc::default(),
+            pause: None,
         }
+    }
+
+    /// A track that follows a recording's pause window (ADR-0124): a change inside a
+    /// window waits, like a change inside [`MIN_IMAGE_INTERVAL`], and is taken on the
+    /// first tick after it, at the join; every picture is stamped earlier by the time
+    /// left out, so the writer times it in file time. The steady state stays one
+    /// compare: the window is read only when the picture changed.
+    #[must_use]
+    pub fn with_pause(mut self, pause: Arc<PauseWindow>) -> Self {
+        self.pause = Some(pause);
+        self
     }
 
     /// Waits with a change while the render partition's previous tick ran longer than
@@ -189,8 +204,14 @@ impl Node<GpuRuntime> for ImageTrackNode {
                 < u64::try_from(MIN_IMAGE_INTERVAL.as_nanos()).unwrap_or(u64::MAX)
         });
         let busy = download.in_flight();
-        let gives_way = !too_soon && !busy && self.gives_way(&tick);
-        if too_soon || busy || gives_way {
+        // Inside a pause window the change waits for the join (ADR-0124).
+        let place = match self.pause.as_ref().and_then(|p| p.read()) {
+            Some(w) => w.place(tick.time.as_nanos()),
+            None => Place::Kept(0),
+        };
+        let paused = place == Place::Cut;
+        let gives_way = !too_soon && !busy && !paused && self.gives_way(&tick);
+        if too_soon || busy || paused || gives_way {
             if gives_way {
                 self.stats.gave_way.fetch_add(1, Ordering::Relaxed);
             }
@@ -203,7 +224,11 @@ impl Node<GpuRuntime> for ImageTrackNode {
             return result;
         }
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
-        match download.submit_at(gpu, &local.pool, picture, tick.time, tick.index) {
+        let stamped = match place {
+            Place::Kept(shift) => Timestamp::from_nanos(tick.time.as_nanos().saturating_sub(shift)),
+            Place::Cut => tick.time,
+        };
+        match download.submit_at(gpu, &local.pool, picture, stamped, tick.index) {
             Ok(true) => {
                 self.stats.taken.fetch_add(1, Ordering::Relaxed);
                 self.last = Some(key);
