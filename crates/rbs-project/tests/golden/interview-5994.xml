@@ -6,26 +6,27 @@
     <duration>3596</duration>
     <rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate>
     <timecode><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode>
+    <marker><name>Interview</name><comment></comment><in>599</in><out>-1</out></marker>
+    <marker><name>Marker 1</name><comment></comment><in>779</in><out>-1</out></marker>
+    <marker><name>Great &lt;answer&gt;</name><comment></comment><in>1678</in><out>-1</out></marker>
+    <marker><name>Stream ended</name><comment></comment><in>2397</in><out>-1</out></marker>
+    <marker><name>After the end</name><comment></comment><in>3595</in><out>-1</out></marker>
     <media>
       <video>
         <format><samplecharacteristics><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><width>1920</width><height>1080</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>
         <track>
           <clipitem id="clipitem-1">
             <name>master</name><enabled>TRUE</enabled><duration>3596</duration><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><start>0</start><end>3596</end><in>0</in><out>3596</out>
-            <file id="file-1"><name>master.mkv</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/master.mkv</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>3596</duration><media><video><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></video><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>
-            <marker><name>Interview</name><comment></comment><in>599</in><out>-1</out></marker>
-            <marker><name>Marker 1</name><comment></comment><in>779</in><out>-1</out></marker>
-            <marker><name>Great &lt;answer&gt;</name><comment></comment><in>1678</in><out>-1</out></marker>
-            <marker><name>Stream ended</name><comment></comment><in>2397</in><out>-1</out></marker>
-            <marker><name>After the end</name><comment></comment><in>3595</in><out>-1</out></marker>
+            <file id="file-1"><name>master.mkv</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/master.mkv</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>3596</duration><timecode><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode><media><video><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></video><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>
             <link><linkclipref>clipitem-1</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>1</clipindex></link>
-            <link><linkclipref>clipitem-2</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
+            <link><linkclipref>clipitem-3</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
+            <link><linkclipref>clipitem-4</linkclipref><mediatype>audio</mediatype><trackindex>2</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
           </clipitem>
         </track>
         <track>
-          <clipitem id="clipitem-3">
+          <clipitem id="clipitem-2">
             <name>Screen</name><enabled>TRUE</enabled><duration>3595</duration><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><start>1</start><end>3596</end><in>0</in><out>3595</out>
-            <file id="file-2"><name>Screen.mkv</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/Screen.mkv</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>3595</duration><media><video><samplecharacteristics><width>2560</width><height>1440</height></samplecharacteristics></video></media></file>
+            <file id="file-2"><name>Screen.mkv</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/Screen.mkv</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>3595</duration><timecode><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode><media><video><samplecharacteristics><width>2560</width><height>1440</height></samplecharacteristics></video></media></file>
           </clipitem>
         </track>
       </video>
@@ -33,23 +34,33 @@
         <numOutputChannels>2</numOutputChannels>
         <format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format>
         <track>
-          <clipitem id="clipitem-2">
+          <clipitem id="clipitem-3">
             <name>master</name><enabled>TRUE</enabled><duration>3596</duration><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><start>0</start><end>3596</end><in>0</in><out>3596</out>
             <file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
             <link><linkclipref>clipitem-1</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>1</clipindex></link>
-            <link><linkclipref>clipitem-2</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
+            <link><linkclipref>clipitem-3</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
+            <link><linkclipref>clipitem-4</linkclipref><mediatype>audio</mediatype><trackindex>2</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
           </clipitem>
         </track>
         <track>
           <clipitem id="clipitem-4">
-            <name>Mic &quot;Host&quot;</name><enabled>TRUE</enabled><duration>3596</duration><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><start>0</start><end>3596</end><in>0</in><out>3596</out>
-            <file id="file-3"><name>Mic &quot;Host&quot;.wav</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/Mic%20%22Host%22.wav</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>3596</duration><media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
+            <name>master</name><enabled>TRUE</enabled><duration>3596</duration><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><start>0</start><end>3596</end><in>0</in><out>3596</out>
+            <file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>2</trackindex></sourcetrack>
+            <link><linkclipref>clipitem-1</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>1</clipindex></link>
+            <link><linkclipref>clipitem-3</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
+            <link><linkclipref>clipitem-4</linkclipref><mediatype>audio</mediatype><trackindex>2</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>
           </clipitem>
         </track>
         <track>
           <clipitem id="clipitem-5">
+            <name>Mic &quot;Host&quot;</name><enabled>TRUE</enabled><duration>3596</duration><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><start>0</start><end>3596</end><in>0</in><out>3596</out>
+            <file id="file-3"><name>Mic &quot;Host&quot;.wav</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/Mic%20%22Host%22.wav</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>3596</duration><timecode><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode><media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
+          </clipitem>
+        </track>
+        <track>
+          <clipitem id="clipitem-6">
             <name>Guest &amp; Co</name><enabled>TRUE</enabled><duration>2997</duration><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><start>54</start><end>3051</end><in>0</in><out>2997</out>
-            <file id="file-4"><name>Guest &amp; Co.wav</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/Guest%20%26%20Co.wav</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>2997</duration><media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
+            <file id="file-4"><name>Guest &amp; Co.wav</name><pathurl>file://localhost/C:/Users/Salih/Videos/RBS/Interview%202026-11-14/Guest%20%26%20Co.wav</pathurl><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><duration>2997</duration><timecode><rate><timebase>60</timebase><ntsc>TRUE</ntsc></rate><string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode><media><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio></media></file><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
           </clipitem>
         </track>
       </audio>

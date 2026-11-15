@@ -4,13 +4,15 @@
 //! tested 2026-11-15). Premiere Pro reads it too.
 //!
 //! Layout: one sequence at the master's rate. Video track 1 holds the master's
-//! picture from the frame nearest its start offset; audio track 1 its sound, linked
-//! to the picture so they move together. Each separate picture file is its own video
-//! track (2, 3, ...), each separate sound file its own audio track (2, 3, ...), every
-//! clip at the frame nearest its start offset. Positions are whole frames, so a
-//! separate sound file can sit up to half a frame from its real place (FCPXML keeps
-//! the exact sample). Markers become clip markers of the master's picture, in its
-//! frames; a marker before the master's first frame becomes a sequence marker.
+//! picture from the frame nearest its start offset. Every file with sound gets one
+//! audio track per channel (`sourcetrack` 1, 2, ...): Resolve makes a mono track of
+//! each. The master's sound tracks come first and are linked to its picture, so they
+//! move together; a separate file's channels are linked to each other. Each separate
+//! picture file is its own video track (2, 3, ...). Every clip sits at the frame
+//! nearest its start offset, so a separate sound file can be up to half a frame from
+//! its real place (FCPXML keeps the exact sample). Each `file` carries a timecode,
+//! without which Resolve does not find the file on disk. Markers are sequence markers
+//! in sequence frames: Resolve 21 drops clip markers of a clip it imports from disk.
 //! Colours and kinds are dropped: the format has none.
 
 use std::fmt::Write as _;
@@ -155,7 +157,6 @@ pub(crate) fn write(
 
     let mut markers: Vec<_> = manifest.markers.iter().collect();
     markers.sort_by_key(|m| (m.t_ns, m.index));
-    let marker_at = |t_ns: u64| floor_frame(t_ns, rate).min(end - 1);
 
     let mut x = String::new();
     x.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n");
@@ -164,14 +165,13 @@ pub(crate) fn write(
     el(&mut x, "name", title);
     let _ = write!(x, "\n    <duration>{end}</duration>\n    ");
     rate_el(&mut x, tb);
-    x.push_str("\n    <timecode>");
-    rate_el(&mut x, tb);
-    x.push_str(
-        "<string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode>\n",
-    );
-    for m in markers.iter().filter(|m| marker_at(m.t_ns) < gap) {
+    x.push_str("\n    ");
+    timecode_el(&mut x, tb);
+    x.push('\n');
+    // Sequence markers: Resolve 21 keeps these and drops a clip's.
+    for m in &markers {
         x.push_str("    ");
-        marker(&mut x, &m.label, marker_at(m.t_ns));
+        marker(&mut x, &m.label, floor_frame(m.t_ns, rate).min(end - 1));
         x.push('\n');
     }
     x.push_str("    <media>\n      <video>\n        <format><samplecharacteristics>");
@@ -182,10 +182,37 @@ pub(crate) fn write(
         seq_picture.width, seq_picture.height
     );
 
-    // Ids: the master's picture is clipitem-1 and its sound clipitem-2.
+    // Tracks and ids. The master's picture is video track 1; every file with sound
+    // has one audio track per channel (Resolve makes a mono track of each), its
+    // clips linked to each other and, for the master, to its picture.
     let master_sound = master_timing.sound;
+    let mut next_id = 1u32;
+    let mut take_id = || {
+        let id = next_id;
+        next_id += 1;
+        id
+    };
+    let master_video_id = take_id();
+    let mut video_ids = Vec::with_capacity(video.len());
+    for _ in &video {
+        video_ids.push(take_id());
+    }
+    let mut next_audio_track = 1u32;
+    // (clip, ids of its channel clips, first audio track)
+    let mut sounds: Vec<(&Clip<'_>, Vec<u32>, u32)> = Vec::new();
+    for clip in std::iter::once(&master_clip)
+        .filter(|_| master_sound.is_some())
+        .chain(&audio)
+    {
+        let channels = timing(&manifest.files[clip.file])?
+            .sound
+            .map_or(1, |s| s.channels.max(1));
+        let ids = (0..channels).map(|_| take_id()).collect();
+        sounds.push((clip, ids, next_audio_track));
+        next_audio_track += u32::from(channels);
+    }
+
     let mut written = vec![false; manifest.files.len()];
-    let mut next_id = 3u32;
     let file_el = |x: &mut String, i: usize, written: &mut Vec<bool>| {
         let file = &manifest.files[i];
         if written[i] {
@@ -202,9 +229,12 @@ pub(crate) fn write(
         rate_el(x, tb);
         let _ = write!(
             x,
-            "<duration>{}</duration><media>",
+            "<duration>{}</duration>",
             nearest_frame(t.duration_ns, rate)
         );
+        // Resolve finds the file on disk only with a timecode.
+        timecode_el(x, tb);
+        x.push_str("<media>");
         if let Some(p) = t.picture {
             let _ = write!(
                 x,
@@ -221,8 +251,8 @@ pub(crate) fn write(
         }
         x.push_str("</media></file>");
     };
-    let clip_open = |x: &mut String, id: &str, clip: &Clip<'_>| {
-        let _ = write!(x, "          <clipitem id=\"{id}\">\n            ");
+    let clip_open = |x: &mut String, id: u32, clip: &Clip<'_>| {
+        let _ = write!(x, "          <clipitem id=\"clipitem-{id}\">\n            ");
         el(x, "name", clip.name);
         x.push_str("<enabled>TRUE</enabled>");
         let _ = write!(x, "<duration>{}</duration>", clip.frames);
@@ -235,30 +265,35 @@ pub(crate) fn write(
             clip.frames
         );
     };
-    let master_links = |x: &mut String| {
-        x.push_str("            <link><linkclipref>clipitem-1</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>1</clipindex></link>\n");
-        x.push_str("            <link><linkclipref>clipitem-2</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>\n");
+    // The links of one group: an optional picture, then each channel's clip.
+    let links = |x: &mut String, video_id: Option<u32>, ids: &[u32], first_track: u32| {
+        if let Some(v) = video_id {
+            let _ = writeln!(
+                x,
+                "            <link><linkclipref>clipitem-{v}</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>1</clipindex></link>"
+            );
+        }
+        for (n, id) in (0u32..).zip(ids) {
+            let _ = writeln!(
+                x,
+                "            <link><linkclipref>clipitem-{id}</linkclipref><mediatype>audio</mediatype><trackindex>{}</trackindex><clipindex>1</clipindex><groupindex>1</groupindex></link>",
+                first_track + n
+            );
+        }
     };
 
-    // Video track 1: the master's picture with the markers.
+    // Video track 1: the master's picture.
     x.push_str("        <track>\n");
-    clip_open(&mut x, "clipitem-1", &master_clip);
+    clip_open(&mut x, master_video_id, &master_clip);
     file_el(&mut x, master_index, &mut written);
     x.push('\n');
-    for m in markers.iter().filter(|m| marker_at(m.t_ns) >= gap) {
-        x.push_str("            ");
-        marker(&mut x, &m.label, marker_at(m.t_ns) - gap);
-        x.push('\n');
-    }
-    if master_sound.is_some() {
-        master_links(&mut x);
+    if let Some((_, ids, first)) = sounds.first().filter(|_| master_sound.is_some()) {
+        links(&mut x, Some(master_video_id), ids, *first);
     }
     x.push_str("          </clipitem>\n        </track>\n");
-    for clip in &video {
+    for (clip, id) in video.iter().zip(&video_ids) {
         x.push_str("        <track>\n");
-        let id = format!("clipitem-{next_id}");
-        next_id += 1;
-        clip_open(&mut x, &id, clip);
+        clip_open(&mut x, *id, clip);
         file_el(&mut x, clip.file, &mut written);
         x.push_str("\n          </clipitem>\n        </track>\n");
     }
@@ -268,28 +303,32 @@ pub(crate) fn write(
         x,
         "        <numOutputChannels>{channels}</numOutputChannels>\n        <format><samplecharacteristics><depth>16</depth><samplerate>{sample_rate}</samplerate></samplecharacteristics></format>\n"
     );
-    let source_track =
-        "<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>";
-    if master_sound.is_some() {
-        x.push_str("        <track>\n");
-        clip_open(&mut x, "clipitem-2", &master_clip);
-        file_el(&mut x, master_index, &mut written);
-        x.push_str(source_track);
-        x.push('\n');
-        master_links(&mut x);
-        x.push_str("          </clipitem>\n        </track>\n");
-    }
-    for clip in &audio {
-        x.push_str("        <track>\n");
-        let id = format!("clipitem-{next_id}");
-        next_id += 1;
-        clip_open(&mut x, &id, clip);
-        file_el(&mut x, clip.file, &mut written);
-        x.push_str(source_track);
-        x.push_str("\n          </clipitem>\n        </track>\n");
+    for (group, (clip, ids, first)) in sounds.iter().enumerate() {
+        let video_id = (group == 0 && master_sound.is_some()).then_some(master_video_id);
+        for (n, id) in (1u32..).zip(ids) {
+            x.push_str("        <track>\n");
+            clip_open(&mut x, *id, clip);
+            file_el(&mut x, clip.file, &mut written);
+            let _ = writeln!(
+                x,
+                "<sourcetrack><mediatype>audio</mediatype><trackindex>{n}</trackindex></sourcetrack>"
+            );
+            if ids.len() > 1 || video_id.is_some() {
+                links(&mut x, video_id, ids, *first);
+            }
+            x.push_str("          </clipitem>\n        </track>\n");
+        }
     }
     x.push_str("      </audio>\n    </media>\n  </sequence>\n</xmeml>\n");
     Ok(x)
+}
+
+fn timecode_el(out: &mut String, tb: (u64, bool)) {
+    out.push_str("<timecode>");
+    rate_el(out, tb);
+    out.push_str(
+        "<string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode>",
+    );
 }
 
 fn marker(out: &mut String, label: &str, frame: u64) {
