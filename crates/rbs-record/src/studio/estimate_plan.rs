@@ -151,7 +151,7 @@ impl super::Studio {
         collection: &SceneCollection,
         request: &StartPlanRequest<'_>,
     ) -> (EstimatePlan, Vec<DeclaredAdapter>) {
-        let fps = 1.0 / self.fps.frame_duration().as_secs_f64();
+        let fps = self.fps.per_second().as_f64();
         let graph_format = self.settings.audio_graph.format;
         let mut ids: Vec<rbs_core::registry::AdapterId> = Vec::new();
         let note = |ids: &mut Vec<rbs_core::registry::AdapterId>,
