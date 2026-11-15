@@ -1263,6 +1263,8 @@ struct ApiClient {
     handle: rbs_api::transport::ConnectionHandle,
     rx: Receiver<serde_json::Value>,
     next: i64,
+    /// Events that arrived while an answer was awaited.
+    events: Vec<serde_json::Value>,
 }
 
 struct JsonSender(mpsc::Sender<serde_json::Value>);
@@ -1295,6 +1297,7 @@ impl ApiClient {
             handle,
             rx,
             next: 1,
+            events: Vec::new(),
         };
         c.hello();
         c
@@ -1343,6 +1346,34 @@ impl ApiClient {
             let v = self.rx.recv_timeout(LIMIT).expect("an answer");
             if v["id"] == id {
                 return v;
+            }
+            if v["method"] == "event" {
+                self.events.push(v);
+            }
+        }
+    }
+
+    /// The data of the next `topic` event that `ok` accepts (earlier ones are
+    /// dropped); waits with the hang guard only.
+    fn event(
+        &mut self,
+        topic: &str,
+        mut ok: impl FnMut(&serde_json::Value) -> bool,
+    ) -> serde_json::Value {
+        if let Some(i) = self
+            .events
+            .iter()
+            .position(|e| e["params"]["topic"] == topic && ok(&e["params"]["data"]))
+        {
+            let e = self.events.remove(i);
+            self.events.drain(..i);
+            return e["params"]["data"].clone();
+        }
+        self.events.clear();
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an event");
+            if v["params"]["topic"] == topic && ok(&v["params"]["data"]) {
+                return v["params"]["data"].clone();
             }
         }
     }
@@ -1886,5 +1917,249 @@ fn a_file_whose_hardware_encoder_refuses_is_skipped_or_refuses_the_start_under_a
     stop_recording(&host, &rx, &clock);
 
     drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------------
+// ADR-0087 step D1: *Test this computer* (control API 1.55).
+
+/// The calibration run's clock moves only through its pacer and sink.
+struct CalPacer(TestClock);
+
+impl rbs_record::calibration::Pacer for CalPacer {
+    fn yield_now(&self) {
+        self.0.advance(Duration::from_micros(50));
+    }
+    fn wait_until(&self, t: rbs_core::time::Timestamp) {
+        use rbs_core::time::Clock as _;
+        if self.0.now() < t {
+            self.0.set(t);
+        }
+    }
+}
+
+/// A write sink in memory; `create` waits on `gate` when one is given.
+struct CalSink {
+    clock: TestClock,
+    gate: Option<Arc<std::sync::Mutex<Receiver<()>>>>,
+}
+
+impl rbs_record::calibration::WriteSink for CalSink {
+    fn list(&mut self, _: &std::path::Path) -> std::io::Result<Vec<(String, u64)>> {
+        Ok(Vec::new())
+    }
+    fn remove(&mut self, _: &std::path::Path) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn create(&mut self, _: &std::path::Path) -> std::io::Result<()> {
+        if let Some(g) = &self.gate {
+            let _ = g.lock().unwrap().recv();
+        }
+        Ok(())
+    }
+    fn write(&mut self, _: &[u8]) -> std::io::Result<()> {
+        self.clock.advance(Duration::from_millis(10));
+        Ok(())
+    }
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.clock.advance(Duration::from_millis(10));
+        Ok(())
+    }
+}
+
+fn calibration_setup(
+    clock: &TestClock,
+    gate: Option<Receiver<()>>,
+) -> rbs_app::studio_host::CalibrationSetup {
+    let gate = gate.map(|g| Arc::new(std::sync::Mutex::new(g)));
+    let sink_clock = clock.clone();
+    rbs_app::studio_host::CalibrationSetup {
+        clock: Arc::new(clock.clone()),
+        pacer: Arc::new(CalPacer(clock.clone())),
+        sink: Arc::new(move || {
+            Box::new(CalSink {
+                clock: sink_clock.clone(),
+                gate: gate.clone(),
+            })
+        }),
+        write_bytes: 64 * 1024 * 1024,
+        now_unix: Arc::new(|| 1_000_000),
+    }
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rbs-cal-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn calibration_host(
+    gpu: Arc<GpuContext>,
+    clock: &TestClock,
+    cal_clock: &TestClock,
+    gate: Option<Receiver<()>>,
+    name: &str,
+) -> (StudioHost, Receiver<Update>, PathBuf) {
+    let dir = temp_dir(name);
+    let mut config = HostConfig::desktop();
+    config.config_dir = Some(dir.join("config"));
+    config.calibration_setup = Some(calibration_setup(cal_clock, gate));
+    let (host, rx) = spawn_host(gpu, clock, config);
+    profile_in(&host, &rx, dir.join("rec"));
+    (host, rx, dir)
+}
+
+#[test]
+fn test_this_computer_measures_saves_and_the_estimate_uses_it() {
+    let Some(gpu) = gpu() else { return };
+    let clock = TestClock::new();
+    let cal = TestClock::new();
+    let (host, _rx, dir) = calibration_host(gpu, &clock, &cal, None, "measure");
+    let mut api = ApiClient::attach(&host);
+    let sub = api.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["calibration.state"]}),
+    );
+    assert!(sub.get("error").is_none(), "{sub}");
+    let idle = api.call("calibration.status", serde_json::json!({}));
+    assert_eq!(idle["result"]["data"]["state"], "idle", "{idle}");
+
+    // One canvas per run; an unknown profile is not found.
+    let all = api.call(
+        "calibration.run",
+        serde_json::json!({"profile": "default", "canvas": "all"}),
+    );
+    assert_eq!(error_kind(&all), "invalid_params", "{all}");
+    let other = api.call("calibration.run", serde_json::json!({"profile": "other"}));
+    assert_eq!(error_kind(&other), "not_found", "{other}");
+
+    let run = api.call("calibration.run", serde_json::json!({"profile": "default"}));
+    assert!(run.get("error").is_none(), "{run}");
+    let done = api.event("calibration.state", |d| d["state"] == "done");
+    assert_eq!(done["saved"], true, "{done}");
+    assert_eq!(done["cancelled"], false, "{done}");
+    // The working fake keeps up to the ceiling; the broken one is unsupported.
+    let encoders = done["encoders"].as_array().unwrap();
+    let working = encoders
+        .iter()
+        .find(|e| e["adapter"] == WORKING)
+        .unwrap_or_else(|| panic!("{done}"));
+    assert_eq!(working["stopped_by"], "ceiling", "{done}");
+    assert_eq!(working["sessions"], 20, "{done}");
+    assert!(
+        done["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["code"] == "unsupported" && s["adapter"] == BROKEN),
+        "{done}"
+    );
+    assert!(done["write_speed"].as_u64().unwrap() > 0, "{done}");
+    // No path in the state.
+    assert!(!done.to_string().contains("rbs-cal-"), "{done}");
+    let text = std::fs::read_to_string(dir.join("config").join("calibration.toml")).unwrap();
+    assert!(text.contains("stopped_by = \"ceiling\""), "{text}");
+
+    // The next estimate reads the measurement.
+    let e = api.call("record.estimate", serde_json::json!({"profile": "default"}));
+    // The likely master encoder is the broken fake (unsupported, so unmeasured);
+    // the folder speed is measured either way.
+    let disk = e["result"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["resource"] == "disk_speed")
+        .cloned()
+        .unwrap_or_else(|| panic!("{e}"));
+    assert_eq!(disk["measured"], true, "{e}");
+    assert!(text.contains(WORKING), "{text}");
+    let status = api.call("calibration.status", serde_json::json!({}));
+    assert_eq!(status["result"]["data"], done, "{status}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn starts_are_refused_while_the_test_runs_and_a_cancel_ends_it() {
+    let Some(gpu) = gpu() else { return };
+    let clock = TestClock::new();
+    let cal = TestClock::new();
+    let (gate_tx, gate_rx) = mpsc::channel();
+    let (host, rx, dir) = calibration_host(gpu, &clock, &cal, Some(gate_rx), "refuse");
+    let mut api = ApiClient::attach(&host);
+    api.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["calibration.state"]}),
+    );
+    let run = api.call("calibration.run", serde_json::json!({"profile": "default"}));
+    assert!(run.get("error").is_none(), "{run}");
+    // The write part waits on the gate: the run stays active.
+    api.event("calibration.state", |d| {
+        d["state"] == "running" && d["part"] == "write"
+    });
+    for (method, params) in [
+        ("record.start", serde_json::json!({"profile": "default"})),
+        ("stream.start", serde_json::json!({})),
+        ("replay.arm", serde_json::json!({})),
+        ("calibration.run", serde_json::json!({"profile": "default"})),
+    ] {
+        let a = api.call(method, params);
+        assert_eq!(error_kind(&a), "conflict", "{method}: {a}");
+    }
+    // The desktop's Record says why.
+    let path = dir.join("rec").join("x.mkv");
+    host.send(Command::StartRecording(request(path, None)));
+    match recording(&rx) {
+        RecordingUpdate::NotStarted(why) => {
+            assert!(why.contains("Test this computer is running"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let cancel = api.call("calibration.cancel", serde_json::json!({}));
+    assert!(cancel.get("error").is_none(), "{cancel}");
+    let cancelling = api.call("calibration.status", serde_json::json!({}));
+    assert_eq!(
+        cancelling["result"]["data"]["state"], "running",
+        "{cancelling}"
+    );
+    assert_eq!(
+        cancelling["result"]["data"]["cancelling"], true,
+        "{cancelling}"
+    );
+    gate_tx.send(()).unwrap();
+    let done = api.event("calibration.state", |d| d["state"] == "done");
+    assert_eq!(done["cancelled"], true, "{done}");
+    assert_eq!(done["partial"], true, "{done}");
+    // Starts are allowed again.
+    let status = api.call("record.status", serde_json::json!({}));
+    assert!(status.get("error").is_none(), "{status}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_run_that_does_not_answer_ends_at_the_host_deadline() {
+    let Some(gpu) = gpu() else { return };
+    let clock = TestClock::new();
+    let cal = TestClock::new();
+    let (_gate_tx, gate_rx) = mpsc::channel::<()>();
+    let (host, _rx, dir) = calibration_host(gpu, &clock, &cal, Some(gate_rx), "hung");
+    let mut api = ApiClient::attach(&host);
+    api.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["calibration.state"]}),
+    );
+    api.call("calibration.run", serde_json::json!({"profile": "default"}));
+    api.event("calibration.state", |d| {
+        d["state"] == "running" && d["part"] == "write"
+    });
+    // The write never returns; past the limit and the grace the host ends the run
+    // with what it received.
+    cal.advance(Duration::from_secs(70));
+    let done = api.event("calibration.state", |d| d["state"] == "done");
+    assert_eq!(done["partial"], true, "{done}");
+    assert!(!done["encoders"].as_array().unwrap().is_empty(), "{done}");
+    let a = api.call("record.status", serde_json::json!({}));
+    assert!(a.get("error").is_none(), "{a}");
     let _ = std::fs::remove_dir_all(&dir);
 }

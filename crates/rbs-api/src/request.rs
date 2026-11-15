@@ -10,11 +10,12 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
-    Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, EstimateAnswer, EstimateSummary,
-    FilterTypeList, Library, LoudnessStatus, MonitorDeviceList, MonitorMode, MonitorStatus,
-    OutputCanvas, OutputKind, OutputProfile, OutputTarget, OutputsResult, ProtectionStatus,
-    RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap, Settings, SkippedTrack,
-    Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo, VcamStatus,
+    CalibrationState, Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, EstimateAnswer,
+    EstimateSummary, FilterTypeList, Library, LoudnessStatus, MonitorDeviceList, MonitorMode,
+    MonitorStatus, OutputCanvas, OutputKind, OutputProfile, OutputTarget, OutputsResult,
+    ProtectionStatus, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap, Settings,
+    SkippedTrack, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
+    VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -1090,6 +1091,17 @@ pub struct ShowItem {
     pub item: u32,
 }
 
+/// `calibration.run` (protocol 1.55, ADR-0087 decision 4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalibrationRun {
+    /// The recording profile whose plan is measured (`output.profiles`).
+    pub profile: String,
+    /// The canvas; the main one when absent or `null`. `all` is `invalid_params`:
+    /// one canvas per run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputTarget>,
+}
+
 /// `record.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordStart {
@@ -1413,6 +1425,12 @@ pub enum Command {
     ReplayStatus,
     /// `protection.status` (protocol 1.49, ADR-0090).
     ProtectionStatus,
+    /// `calibration.run` (protocol 1.55, ADR-0087 decision 4): *Test this computer*.
+    CalibrationRun(CalibrationRun),
+    /// `calibration.cancel` (protocol 1.55).
+    CalibrationCancel,
+    /// `calibration.status` (protocol 1.55).
+    CalibrationStatus,
     /// `source.set_monitor` (protocol 1.30).
     SourceSetMonitor(SetSourceMonitor),
     /// `monitor.status` (protocol 1.30).
@@ -1578,6 +1596,9 @@ impl Command {
             Command::StreamStatus(_) => "stream.status",
             Command::ReplayStatus => "replay.status",
             Command::ProtectionStatus => "protection.status",
+            Command::CalibrationRun(_) => "calibration.run",
+            Command::CalibrationCancel => "calibration.cancel",
+            Command::CalibrationStatus => "calibration.status",
             Command::SourceSetMonitor(_) => "source.set_monitor",
             Command::MonitorStatus => "monitor.status",
             Command::MonitorDevices => "monitor.devices",
@@ -1746,6 +1767,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("output.set_with_vertical", Some(Scope::Control)),
     m("replay.status", Some(Scope::Read)),
     m("protection.status", Some(Scope::Read)),
+    m("calibration.run", Some(Scope::Admin)),
+    m("calibration.cancel", Some(Scope::Admin)),
+    m("calibration.status", Some(Scope::Read)),
     m("source.set_monitor", Some(Scope::Control)),
     m("monitor.status", Some(Scope::Read)),
     m("monitor.devices", Some(Scope::Read)),
@@ -2028,6 +2052,12 @@ enum WireRequest {
     ReplayStatus(Empty),
     #[serde(rename = "protection.status")]
     ProtectionStatus(Empty),
+    #[serde(rename = "calibration.run")]
+    CalibrationRun(CalibrationRun),
+    #[serde(rename = "calibration.cancel")]
+    CalibrationCancel(Empty),
+    #[serde(rename = "calibration.status")]
+    CalibrationStatus(Empty),
     #[serde(rename = "source.set_monitor")]
     SourceSetMonitor(SetSourceMonitor),
     #[serde(rename = "monitor.status")]
@@ -2201,6 +2231,9 @@ impl From<WireRequest> for Request {
             WireRequest::OutputSetWithVertical(p) => Request::Command(C::OutputSetWithVertical(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
             WireRequest::ProtectionStatus(_) => Request::Command(C::ProtectionStatus),
+            WireRequest::CalibrationRun(p) => Request::Command(C::CalibrationRun(p)),
+            WireRequest::CalibrationCancel(_) => Request::Command(C::CalibrationCancel),
+            WireRequest::CalibrationStatus(_) => Request::Command(C::CalibrationStatus),
             WireRequest::SourceSetMonitor(p) => Request::Command(C::SourceSetMonitor(p)),
             WireRequest::MonitorStatus(_) => Request::Command(C::MonitorStatus),
             WireRequest::MonitorDevices(_) => Request::Command(C::MonitorDevices),
@@ -2332,6 +2365,9 @@ impl From<Request> for WireRequest {
                 C::OutputSetWithVertical(p) => WireRequest::OutputSetWithVertical(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
                 C::ProtectionStatus => WireRequest::ProtectionStatus(Empty {}),
+                C::CalibrationRun(p) => WireRequest::CalibrationRun(p),
+                C::CalibrationCancel => WireRequest::CalibrationCancel(Empty {}),
+                C::CalibrationStatus => WireRequest::CalibrationStatus(Empty {}),
                 C::SourceSetMonitor(p) => WireRequest::SourceSetMonitor(p),
                 C::MonitorStatus => WireRequest::MonitorStatus(Empty {}),
                 C::MonitorDevices => WireRequest::MonitorDevices(Empty {}),
@@ -2636,6 +2672,8 @@ pub enum Response {
     ReplayStatus(Snapshot<ReplayStatus>),
     /// `protection.status` (protocol 1.49).
     ProtectionStatus(Snapshot<ProtectionStatus>),
+    /// `calibration.status` (protocol 1.55).
+    CalibrationStatus(Snapshot<CalibrationState>),
     /// `monitor.status` (protocol 1.30).
     MonitorStatus(Snapshot<MonitorStatus>),
     /// `monitor.devices` (protocol 1.30).

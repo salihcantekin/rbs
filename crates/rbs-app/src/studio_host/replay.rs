@@ -116,6 +116,10 @@ impl Host {
         if self.studio.replay_armed() {
             return Ok(());
         }
+        // Also covers the re-arm after a studio restart (ADR-0087 step D1).
+        if let Some(why) = self.calibration_blocks() {
+            return Err(format!("{why}."));
+        }
         let settings = self.replay_settings()?;
         self.studio
             .arm_replay(&self.adapters, &settings)

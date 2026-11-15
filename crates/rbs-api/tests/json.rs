@@ -414,6 +414,16 @@ fn every_request() -> Vec<Request> {
         c(Command::LoudnessSetEnabled(SetLoudnessEnabled { on: true })),
         c(Command::LoudnessReset),
         c(Command::ReplayArm),
+        c(Command::CalibrationRun(CalibrationRun {
+            profile: "default".into(),
+            canvas: None,
+        })),
+        c(Command::CalibrationRun(CalibrationRun {
+            profile: "default".into(),
+            canvas: Some(OutputTarget::Vertical),
+        })),
+        c(Command::CalibrationCancel),
+        c(Command::CalibrationStatus),
         c(Command::ReplayDisarm),
         c(Command::ReplaySave(ReplaySave { seconds: None })),
         c(Command::VcamStatus),
@@ -865,6 +875,8 @@ fn every_result_and_event_type_round_trips() {
             canvas: OutputCanvas::Vertical,
             state: StreamState::Idle { last: None },
         }),
+        EventPayload::CalibrationState(calibration_done()),
+        EventPayload::CalibrationState(CalibrationState::Idle),
     ] {
         round_trip(&Event {
             object: None,
@@ -2133,4 +2145,104 @@ fn a_refused_start_carries_reason_estimate_and_tracks_beside_kind() {
         StartRefusal::from_error(&ApiError::new(ErrorKind::Failed, "x")),
         None
     );
+}
+
+fn calibration_class() -> CalibrationClass {
+    CalibrationClass {
+        codec: "h264".into(),
+        size: "1080".into(),
+        fps: "60".into(),
+        rate: "cbr".into(),
+    }
+}
+
+fn calibration_done() -> CalibrationState {
+    CalibrationState::Done {
+        partial: true,
+        cancelled: false,
+        saved: true,
+        encoders: vec![CalibrationEncoder {
+            adapter: "org.rbs.test".into(),
+            class: calibration_class(),
+            sessions: 4,
+            pixels_per_second: 4 * 1920 * 1080 * 60,
+            stopped_by: CalibrationStop::Late,
+        }],
+        write_speed: Some(1_000_000_000),
+        write_partial: false,
+        skipped: vec![
+            CalibrationSkip {
+                code: CalibrationCode::TimeLimit,
+                adapter: Some("org.rbs.other".into()),
+                class: Some(calibration_class()),
+            },
+            CalibrationSkip {
+                code: CalibrationCode::NoRoom,
+                adapter: None,
+                class: None,
+            },
+        ],
+    }
+}
+
+/// `calibration.*` (protocol 1.55): the state's shape, its round trip, and names a
+/// client does not know read as `other`.
+#[test]
+fn the_calibration_state_is_flat_and_reads_unknown_names_as_other() {
+    for state in [
+        CalibrationState::Idle,
+        CalibrationState::Running {
+            step: 3,
+            steps: 21,
+            part: CalibrationPart::Encoder,
+            adapter: Some("org.rbs.test".into()),
+            cancelling: false,
+        },
+        CalibrationState::Running {
+            step: 21,
+            steps: 21,
+            part: CalibrationPart::Write,
+            adapter: None,
+            cancelling: true,
+        },
+        calibration_done(),
+        CalibrationState::Failed {
+            code: CalibrationCode::DeviceLost,
+            message: "The device was lost".into(),
+        },
+    ] {
+        round_trip(&state);
+        round_trip(&Snapshot {
+            seq: BTreeMap::from([("calibration.state".to_string(), 7)]),
+            data: state,
+        });
+    }
+    let v = serde_json::to_value(calibration_done()).unwrap();
+    assert_eq!(v["state"], "done");
+    // The class is flattened into the encoder entry.
+    assert_eq!(v["encoders"][0]["codec"], "h264");
+    assert_eq!(v["encoders"][0]["stopped_by"], "late");
+    assert_eq!(v["skipped"][0]["code"], "time_limit");
+    assert!(v["skipped"][1].get("adapter").is_none());
+    assert_eq!(
+        serde_json::to_value(CalibrationCode::OpenFailed).unwrap(),
+        "open_failed"
+    );
+
+    let later: CalibrationState = serde_json::from_value(json!({"state": "paused"})).unwrap();
+    assert_eq!(later, CalibrationState::Other);
+    let code: CalibrationCode = serde_json::from_value(json!("thermal")).unwrap();
+    assert_eq!(code, CalibrationCode::Other);
+    let stop: CalibrationStop = serde_json::from_value(json!("thermal")).unwrap();
+    assert_eq!(stop, CalibrationStop::Other);
+    let part: CalibrationPart = serde_json::from_value(json!("export")).unwrap();
+    assert_eq!(part, CalibrationPart::Other);
+
+    // `canvas` is optional and left out when absent.
+    let run = serde_json::to_value(CalibrationRun {
+        profile: "default".into(),
+        canvas: None,
+    })
+    .unwrap();
+    assert_eq!(run, json!({"profile": "default"}));
 }
