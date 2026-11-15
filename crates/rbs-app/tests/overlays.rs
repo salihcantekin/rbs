@@ -615,3 +615,127 @@ fn a_long_select_opens_a_list_that_stays_in_the_window_and_chooses_by_keyboard()
     assert!(!o.get_select_open());
     assert_eq!(p.get_select_index(), 38);
 }
+
+fn wheel(p: &Probe, x: f32, y: f32, delta_y: f32) {
+    point(p, x, y);
+    p.window().dispatch_event(WindowEvent::PointerScrolled {
+        position: slint::LogicalPosition::new(x, y),
+        delta_x: 0.0,
+        delta_y,
+    });
+    settle();
+}
+
+fn open_long_select(p: &Probe, count: usize, chosen: i32) {
+    let options: Vec<slint::SharedString> =
+        (0..count).map(|i| format!("Mode {i}").into()).collect();
+    p.set_select_options(slint::ModelRc::new(slint::VecModel::from(options)));
+    p.set_select_index(chosen);
+    p.invoke_focus_select();
+    key(p, Key::Return);
+    settle();
+    assert!(p.global::<Overlays>().get_select_open());
+}
+
+#[test]
+fn the_wheel_scrolls_a_long_select_to_its_last_option() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    // The highlight sits on a chosen row near the top: scrolling must not be pulled
+    // back to it when the rows in view are rebuilt.
+    open_long_select(&p, 60, 3);
+    let c = o.get_select_cover();
+    let (x, top) = (c.x + c.width / 2.0, c.y);
+    for _ in 0..200 {
+        wheel(&p, x, top + c.height / 2.0, -40.0);
+    }
+    // The bottom row in view is the last option.
+    click(&p, x - 10.0, top + c.height - 12.0);
+    settle();
+    assert!(!o.get_select_open());
+    assert_eq!(p.get_select_index(), 59, "the list reached its end");
+}
+
+#[test]
+fn dragging_the_scrollbar_reaches_the_last_option() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    open_long_select(&p, 60, 3);
+    let c = o.get_select_cover();
+    // The bar is the trailing strip of the list; its thumb starts at the top.
+    let bar_x = c.x + c.width - 8.0;
+    let top = c.y + 12.0;
+    point(&p, bar_x, top);
+    let button = slint::platform::PointerEventButton::Left;
+    p.window().dispatch_event(WindowEvent::PointerPressed {
+        position: slint::LogicalPosition::new(bar_x, top),
+        button,
+    });
+    // Small steps, as a hand moves: each one rebuilds only a few rows.
+    for step in 1..=400 {
+        point(&p, bar_x, top + step as f32);
+        settle();
+    }
+    p.window().dispatch_event(WindowEvent::PointerReleased {
+        position: slint::LogicalPosition::new(bar_x, top + 400.0),
+        button,
+    });
+    settle();
+    click(&p, c.x + c.width / 2.0, c.y + c.height - 12.0);
+    settle();
+    assert_eq!(p.get_select_index(), 59, "the thumb reached the end");
+}
+
+#[test]
+fn the_wheel_outside_an_open_select_list_closes_it() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    open_long_select(&p, 60, 3);
+    let c = o.get_select_cover();
+    // Over the list itself the wheel scrolls the list and keeps it open.
+    wheel(&p, c.x + c.width / 2.0, c.y + c.height / 2.0, -40.0);
+    assert!(o.get_select_open());
+    // Outside it the page would move under the list: the list closes instead of
+    // staying where the field was.
+    wheel(&p, 380.0, 20.0, -40.0);
+    assert!(!o.get_select_open());
+    assert_eq!(p.get_select_index(), 3, "no choice was made");
+}
+
+#[test]
+fn the_wheel_outside_an_open_hint_closes_it() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    p.invoke_focus_hint();
+    key(&p, Key::Return);
+    assert!(o.get_hint_open());
+    wheel(&p, 380.0, 280.0, -40.0);
+    assert!(!o.get_hint_open());
+}
+
+#[test]
+fn a_fast_spinning_wheel_moves_a_long_select_while_it_spins() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    open_long_select(&p, 60, 3);
+    let c = o.get_select_cover();
+    let (x, mid) = (c.x + c.width / 2.0, c.y + c.height / 2.0);
+    // A free-spinning wheel: many wheel steps a few milliseconds apart, each with
+    // the animated scrolling of a real mouse wheel (the public event has no phase).
+    for _ in 0..60 {
+        let step = i_slint_core::input::BackendMouseEvent::Wheel {
+            position: i_slint_core::lengths::LogicalPoint::new(x, mid),
+            delta_x: 0.0,
+            delta_y: -40.0,
+            phase: i_slint_core::input::TouchPhase::Moved,
+        };
+        p.window().dispatch_event(WindowEvent::internal(step));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(8));
+        settle();
+    }
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+    settle();
+    click(&p, x - 10.0, c.y + c.height - 12.0);
+    settle();
+    assert_eq!(p.get_select_index(), 59, "the list reached its end");
+}
