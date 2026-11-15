@@ -10,7 +10,9 @@
 //!
 //! This first step pauses a recording whose encoders are its own. A recording that
 //! shares an encoder with another output is refused with
-//! [`PauseRefused::SharedEncoder`] until the cut at the output node is built.
+//! [`PauseRefused::SharedEncoder`] until the cut at the output node is built, and
+//! one with separate files running with [`PauseRefused::SeparateFiles`] until those
+//! follow the window.
 
 use std::fmt;
 
@@ -33,6 +35,8 @@ pub enum PauseRefused {
     NotPausable,
     /// The recording shares its video or audio encoder with another output.
     SharedEncoder,
+    /// Separate video or audio files run (ADR-0086); they do not follow a pause yet.
+    SeparateFiles,
     /// The output was ended (ADR-0045).
     Ending,
     /// The recording is already paused.
@@ -47,6 +51,7 @@ impl fmt::Display for PauseRefused {
             Self::NotRunning => "the output does not run",
             Self::NotPausable => "the output cannot be paused",
             Self::SharedEncoder => "the recording shares an encoder with another output",
+            Self::SeparateFiles => "separate files are recorded; they cannot pause yet",
             Self::Ending => "the output is ending",
             Self::AlreadyPaused => "the recording is already paused",
             Self::NotPaused => "the recording is not paused",
@@ -173,6 +178,9 @@ impl Studio {
             return Err(PauseRefused::Ending);
         }
         let pause = r.pause.as_ref().ok_or(PauseRefused::NotPausable)?;
+        if self.iso_video_running() || self.iso_audio_running() {
+            return Err(PauseRefused::SeparateFiles);
+        }
         let users = |video: bool, slot: usize| {
             self.outputs
                 .iter()
