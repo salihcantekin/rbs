@@ -135,7 +135,22 @@ impl GpuContext {
                 (rank(&info, request.power), backend_rank(info.backend))
             })
             .ok_or(GpuError::NoAdapter)?;
+        Self::on_adapter(instance, adapter)
+    }
 
+    /// A second, independent device and queue on this context's adapter, with the same
+    /// features and limits: the throwaway context of *Test this computer* (ADR-0087
+    /// decision 9), so a measurement never touches the live device's pool or queue.
+    ///
+    /// On some backends (D3D12) both share one native device, so a device removal
+    /// reaches both. Dropping it waits for its queue without a bound: a caller that
+    /// cannot rule out a hung driver hands it to a thread it can abandon.
+    pub fn sibling(&self) -> Result<Self, GpuError> {
+        Self::on_adapter(self.instance.clone(), self.adapter.clone())
+    }
+
+    /// Creates the device on `adapter` and the objects every pass shares.
+    fn on_adapter(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Result<Self, GpuError> {
         let info = adapter.get_info();
         // Optional features that cost nothing until used.
         let features = adapter.features()
@@ -257,6 +272,18 @@ impl GpuContext {
         &self.capabilities
     }
 
+    /// An opaque key of the adapter and its driver: numeric vendor and device ids, the
+    /// backend and the driver strings (empty on Metal), never the name. It changes
+    /// when the GPU or its driver changes, so a measurement on it can be dropped
+    /// (ADR-0087 step D2). Never branch on its content (P3).
+    pub fn adapter_key(&self) -> String {
+        let i = self.adapter.get_info();
+        format!(
+            "{:04x}:{:04x}:{:?}:{}:{}",
+            i.vendor, i.device, i.backend, i.driver, i.driver_info
+        )
+    }
+
     /// The adapter's name, for diagnostics only. Never branch on it (P3).
     pub fn adapter_name(&self) -> &str {
         &self.adapter_name
@@ -307,6 +334,19 @@ impl GpuContext {
     pub fn poll(&self) {
         // A poll error only means the device is lost, which the lost callback reports.
         let _ = self.device.poll(wgpu::PollType::Poll);
+    }
+
+    /// Waits at most `timeout` for the work submitted so far to finish. `Ok(true)` when it
+    /// finished, `Ok(false)` on timeout. Not for real-time threads.
+    pub fn wait_until(&self, timeout: std::time::Duration) -> Result<bool, GpuError> {
+        match self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(timeout),
+        }) {
+            Ok(_) => Ok(true),
+            Err(wgpu::PollError::Timeout) => Ok(false),
+            Err(e) => Err(GpuError::Readback(e.to_string())),
+        }
     }
 
     /// Blocks until all submitted work finished. Not for real-time threads.

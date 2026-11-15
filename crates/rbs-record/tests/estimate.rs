@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use rbs_record::IsoRole;
 use rbs_record::estimate::{
-    AudioEncode, Calibration, DeclaredAdapter, EncoderMeasure, EstimatePlan, FpsClass, Level,
-    Limits, RateClass, ReasonCode, Resource, Row, SizeClass, StopReason, TrackRef, Use,
-    VideoEncode, estimate, separate_video_limit,
+    AudioEncode, Calibration, DeclaredAdapter, EncoderMeasure, EstimatePlan, ExportFormat,
+    FpsClass, Level, Limits, RateClass, ReasonCode, Resource, Row, SizeClass, StopReason, TrackRef,
+    Use, VideoEncode, estimate, separate_video_limit,
 };
 use rbs_scene::model::SourceId;
 
@@ -37,6 +37,7 @@ fn video(used_by: Use, adapter: &str, worker: Option<usize>) -> VideoEncode {
         falls_to_cpu: false,
         worker,
         export_buffers: 3,
+        format: ExportFormat::Nv12,
     }
 }
 
@@ -193,8 +194,13 @@ fn a_calibration_overrides_the_declared_limits_and_says_measured() {
             stopped_by: StopReason::Refused,
             ..measure(3, 1_000_000_000, Duration::from_millis(2))
         }],
-        exports: vec![(SizeClass::L1080, Duration::from_millis(1))],
+        exports: vec![(
+            SizeClass::L1080,
+            ExportFormat::Nv12,
+            Duration::from_millis(1),
+        )],
         write_speed: Some(100_000_000),
+        exports_unmeasurable: false,
     });
     limits.previous_tick = Some(Duration::from_millis(5));
     let e = estimate(&plan(HW, 3), &limits);
@@ -225,18 +231,71 @@ fn a_calibration_overrides_the_declared_limits_and_says_measured() {
 fn the_render_share_is_unknown_until_the_previous_tick_time_is_published() {
     let mut limits = declared(Some(8));
     limits.calibration = Some(Calibration {
-        exports: vec![(SizeClass::L1080, Duration::from_millis(1))],
+        exports: vec![(
+            SizeClass::L1080,
+            ExportFormat::Nv12,
+            Duration::from_millis(1),
+        )],
         ..Calibration::default()
     });
     let e = estimate(&plan(HW, 1), &limits);
     let r = row(&e.resources, Resource::IsoRenderShare);
     assert_eq!((r.limit, r.level), (None, Some(Level::Unknown)));
+    // Every export is measured: only the previous tick is missing, which no test
+    // measures (step E).
+    assert!(!r.calibrate);
     assert!(
         e.reasons
             .iter()
             .any(|x| x.code == ReasonCode::Unknown && x.resource == Some(Resource::IsoRenderShare))
     );
     assert!(!Resource::IsoRenderShare.calibration_measures());
+}
+
+#[test]
+fn a_missing_export_of_the_tracks_format_advises_a_test_once_it_can_help() {
+    let mut p = plan(HW, 1);
+    for e in &mut p.video {
+        if matches!(e.used_by, Use::Iso(_)) {
+            e.format = ExportFormat::P010;
+        }
+    }
+    // Only NV12 measured: the P010 track's export is missing, and a test measures it.
+    let mut limits = declared(Some(8));
+    limits.calibration = Some(Calibration {
+        exports: vec![(
+            SizeClass::L1080,
+            ExportFormat::Nv12,
+            Duration::from_millis(1),
+        )],
+        ..Calibration::default()
+    });
+    let e = estimate(&p, &limits);
+    let r = row(&e.resources, Resource::IsoRenderShare);
+    assert_eq!(r.level, Some(Level::Unknown));
+    assert!(r.calibrate);
+    assert!(
+        e.reasons
+            .iter()
+            .any(|x| x.code == ReasonCode::Unknown && x.resource == Some(Resource::IsoRenderShare))
+    );
+    assert!(
+        e.tracks
+            .iter()
+            .all(|t| t.cost.iter().all(|(r, _)| *r != Resource::IsoRenderShare))
+    );
+    // The last test could not measure exports: no advice.
+    limits.calibration = Some(Calibration {
+        exports_unmeasurable: true,
+        ..Calibration::default()
+    });
+    let e = estimate(&p, &limits);
+    assert!(!row(&e.resources, Resource::IsoRenderShare).calibrate);
+    // Known and informational rows never advise; an unknown session count does.
+    let e = estimate(&plan(HW, 1), &declared(None));
+    assert!(row(&e.resources, Resource::EncoderSessions).calibrate);
+    assert!(!row(&e.resources, Resource::IsoCeiling).calibrate);
+    assert!(!row(&e.resources, Resource::Memory).calibrate);
 }
 
 #[test]

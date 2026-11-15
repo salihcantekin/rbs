@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use rbs_record::estimate::{
-    Calibration, EncoderMeasure, FpsClass, RateClass, SizeClass, StopReason,
+    Calibration, EncoderMeasure, ExportFormat, FpsClass, RateClass, SizeClass, StopReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -89,18 +89,47 @@ pub fn stop_reason_name(r: StopReason) -> &'static str {
     }
 }
 
-/// One ISO export result.
+/// One ISO export result (ADR-0087 step D2), keyed by size class and format.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportEntry {
     /// Size class.
     pub size: String,
-    /// Export time of one frame, in microseconds.
+    /// `nv12` or `p010`; absent is `nv12`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// The render thread's time of one export per frame, in microseconds.
     pub time_us: u64,
+    /// The GPU's sustained time per export in microseconds, for diagnosis only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_us: Option<u64>,
+    /// The export kept up when it ran alone; when not, `time_us` is at least a frame
+    /// period.
+    #[serde(default = "yes")]
+    pub kept_up: bool,
+    /// Width × height measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixels: Option<u64>,
+    /// The GPU, its driver and the OS it was measured on (an opaque key); an entry
+    /// holds only on the same key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
     /// When it was measured, in seconds since the Unix epoch.
     pub measured_at: u64,
     /// The run stopped at its time limit before this entry finished.
     #[serde(default)]
     pub partial: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl ExportEntry {
+    fn format(&self) -> Option<ExportFormat> {
+        self.format
+            .as_deref()
+            .map_or(Some(ExportFormat::Nv12), ExportFormat::parse)
+    }
 }
 
 /// One recording folder's write speed. The path stays in this local file only.
@@ -160,9 +189,18 @@ pub struct ThisComputer {
     pub adapters: Vec<(String, Option<String>)>,
     /// The running RBS version.
     pub rbs_version: String,
+    /// The live GPU's key (adapter, driver and OS version); `None` without a GPU.
+    pub gpu: Option<String>,
 }
 
 impl ThisComputer {
+    fn export_holds(&self, e: &ExportEntry) -> bool {
+        match (&e.gpu, &self.gpu) {
+            (Some(was), Some(now)) => was == now,
+            _ => true,
+        }
+    }
+
     fn encoder_holds(&self, e: &EncoderEntry, file_version: &str) -> bool {
         self.adapters.iter().any(|(id, version)| {
             *id == e.adapter
@@ -259,9 +297,11 @@ impl CalibrationFile {
             exports: if same_rbs {
                 self.exports
                     .iter()
+                    .filter(|e| now.export_holds(e))
                     .filter_map(|e| {
                         Some((
                             SizeClass::parse(&e.size)?,
+                            e.format()?,
                             std::time::Duration::from_micros(e.time_us),
                         ))
                     })
@@ -269,6 +309,7 @@ impl CalibrationFile {
             } else {
                 Vec::new()
             },
+            exports_unmeasurable: false,
             write_speed: self
                 .folders
                 .iter()
@@ -289,6 +330,7 @@ impl CalibrationFile {
         if file_version != now.rbs_version {
             self.exports.clear();
         }
+        self.exports.retain(|e| now.export_holds(e));
         self.folders.retain(|f| folder_exists(&f.path));
         keep_newest(&mut self.encoders, |e| e.measured_at);
         keep_newest(&mut self.exports, |e| e.measured_at);
@@ -339,6 +381,23 @@ impl CalibrationFile {
             }
         }
         self.prune(now, &folder_exists);
+    }
+
+    /// Takes a run's export results (ADR-0087 step D2), after [`Self::merge_run`]
+    /// stamped the file: each replaces the entry of the same size class and format.
+    pub fn merge_exports(&mut self, exports: Vec<ExportEntry>) {
+        for new in exports {
+            let key = (new.size.clone(), new.format());
+            match self
+                .exports
+                .iter_mut()
+                .find(|e| (e.size.clone(), e.format()) == key)
+            {
+                Some(old) => *old = new,
+                None => self.exports.push(new),
+            }
+        }
+        keep_newest(&mut self.exports, |e| e.measured_at);
     }
 }
 
@@ -420,7 +479,63 @@ mod tests {
                 ("vt".to_owned(), None),
             ],
             rbs_version: rbs.to_owned(),
+            gpu: Some("gpu-a".to_owned()),
         }
+    }
+
+    fn export(size: &str, format: Option<&str>, time_us: u64, gpu: Option<&str>) -> ExportEntry {
+        ExportEntry {
+            size: size.to_owned(),
+            format: format.map(str::to_owned),
+            time_us,
+            gpu_us: None,
+            kept_up: true,
+            pixels: None,
+            gpu: gpu.map(str::to_owned),
+            measured_at: 5,
+            partial: false,
+        }
+    }
+
+    #[test]
+    fn exports_are_keyed_by_size_and_format_and_hold_on_the_same_gpu() {
+        let now = computer("0.1.0");
+        let mut f = CalibrationFile::default();
+        f.merge_run(&now, vec![], None, |_| true);
+        f.merge_exports(vec![
+            export("1080", None, 900, Some("gpu-a")),
+            export("1080", Some("p010"), 1500, Some("gpu-a")),
+        ]);
+        // Same size and format (absent is nv12): replaced; others kept.
+        f.merge_exports(vec![export("1080", Some("nv12"), 700, Some("gpu-a"))]);
+        assert_eq!(f.exports.len(), 2);
+        let c = f.for_estimate(&now, Path::new("/rec"));
+        assert_eq!(
+            c.exports,
+            [
+                (
+                    SizeClass::L1080,
+                    ExportFormat::Nv12,
+                    std::time::Duration::from_micros(700)
+                ),
+                (
+                    SizeClass::L1080,
+                    ExportFormat::P010,
+                    std::time::Duration::from_micros(1500)
+                ),
+            ]
+        );
+        // Another GPU, driver or OS version: not used, and dropped at the next write.
+        let other = ThisComputer {
+            gpu: Some("gpu-b".to_owned()),
+            ..computer("0.1.0")
+        };
+        assert!(f.for_estimate(&other, Path::new("/rec")).exports.is_empty());
+        f.prune(&other, |_| true);
+        assert!(f.exports.is_empty());
+        // An unknown format name is skipped, not read as NV12.
+        f.merge_exports(vec![export("1080", Some("yuv444"), 1, None)]);
+        assert!(f.for_estimate(&now, Path::new("/rec")).exports.is_empty());
     }
 
     fn sample() -> CalibrationFile {
@@ -432,12 +547,7 @@ mod tests {
                 encoder("vt", None, 3),
                 encoder("gone", None, 4),
             ],
-            exports: vec![ExportEntry {
-                size: "1080".to_owned(),
-                time_us: 900,
-                measured_at: 5,
-                partial: false,
-            }],
+            exports: vec![export("1080", None, 900, None)],
             folders: vec![FolderEntry {
                 path: PathBuf::from("/rec"),
                 write_speed: 200,
@@ -460,7 +570,11 @@ mod tests {
         );
         assert_eq!(
             c.exports,
-            [(SizeClass::L1080, std::time::Duration::from_micros(900))]
+            [(
+                SizeClass::L1080,
+                ExportFormat::Nv12,
+                std::time::Duration::from_micros(900)
+            )]
         );
         assert_eq!(c.write_speed, Some(200));
         assert_eq!(

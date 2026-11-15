@@ -2012,6 +2012,7 @@ fn the_estimate_answer_writes_whole_counts_and_reads_unknown_names_as_other() {
             unit: EstimateUnit::Sessions,
             level: Some(EstimateLevel::Unknown),
             measured: false,
+            calibrate: true,
         }],
         reasons: vec![EstimateReason {
             code: EstimateCode::SessionsUnknown,
@@ -2052,6 +2053,9 @@ fn the_estimate_answer_writes_whole_counts_and_reads_unknown_names_as_other() {
     assert_eq!(later.resource, EstimateResource::Other);
     assert_eq!(later.unit, EstimateUnit::Other);
     assert_eq!(later.level, Some(EstimateLevel::Other));
+    // A 1.56 server sends no `calibrate`: read as false (protocol 1.57).
+    assert!(!later.calibrate);
+    assert_eq!(v["resources"][0]["calibrate"], json!(true));
 }
 
 #[test]
@@ -2182,6 +2186,18 @@ fn calibration_done() -> CalibrationState {
                 class: None,
             },
         ],
+        exports: vec![CalibrationExport {
+            size: "1080".into(),
+            format: CalibrationExportFormat::Nv12,
+            time_us: 410,
+            gpu_us: Some(290),
+            kept_up: true,
+        }],
+        exports_skipped: vec![CalibrationExportSkip {
+            size: "2160".into(),
+            format: CalibrationExportFormat::P010,
+            code: CalibrationExportCode::TimeLimit,
+        }],
     }
 }
 
@@ -2235,8 +2251,27 @@ fn the_calibration_state_is_flat_and_reads_unknown_names_as_other() {
     assert_eq!(code, CalibrationCode::Other);
     let stop: CalibrationStop = serde_json::from_value(json!("thermal")).unwrap();
     assert_eq!(stop, CalibrationStop::Other);
-    let part: CalibrationPart = serde_json::from_value(json!("export")).unwrap();
+    let part: CalibrationPart = serde_json::from_value(json!("thermal")).unwrap();
     assert_eq!(part, CalibrationPart::Other);
+    // Protocol 1.57: the export part, its results and skips in their own lists, so a
+    // 1.55 client never reads an export skip as the write.
+    let part: CalibrationPart = serde_json::from_value(json!("export")).unwrap();
+    assert_eq!(part, CalibrationPart::Export);
+    assert_eq!(v["exports"][0]["format"], "nv12");
+    assert_eq!(v["exports"][0]["time_us"], 410);
+    assert_eq!(v["exports_skipped"][0]["code"], "time_limit");
+    assert_eq!(v["skipped"].as_array().unwrap().len(), 2);
+    let code: CalibrationExportCode = serde_json::from_value(json!("thermal")).unwrap();
+    assert_eq!(code, CalibrationExportCode::Other);
+    let format: CalibrationExportFormat = serde_json::from_value(json!("rgb")).unwrap();
+    assert_eq!(format, CalibrationExportFormat::Other);
+    // A 1.56 server's `done` has neither list.
+    let older: CalibrationState = serde_json::from_value(json!({
+        "state": "done", "partial": false, "cancelled": false, "saved": true,
+        "encoders": [], "write_speed": null, "write_partial": false, "skipped": []
+    }))
+    .unwrap();
+    assert!(matches!(older, CalibrationState::Done { ref exports, .. } if exports.is_empty()));
 
     // `canvas` is optional and left out when absent.
     let run = serde_json::to_value(CalibrationRun {

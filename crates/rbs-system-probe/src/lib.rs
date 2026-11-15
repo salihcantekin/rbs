@@ -6,6 +6,7 @@
 //! a reading answers [`ProbeError::Unsupported`], never a guess.
 //!
 //! - Windows: `GetVolumePathNameW`, `GetDiskFreeSpaceExW`, `GlobalMemoryStatusEx`.
+//! - The OS version (`os_version`): `uname` on Unix, unsupported on Windows.
 //! - macOS and other Unix: `statvfs` and the folder's device id; available memory is
 //!   `MemAvailable` from `/proc/meminfo` on Linux and unsupported on macOS (free pages
 //!   alone understate what macOS can give back).
@@ -79,6 +80,21 @@ pub fn available_memory() -> Result<u64, ProbeError> {
     }
 }
 
+/// The operating system's name, release and build, as one opaque string that changes
+/// when the system is updated (ADR-0087 step D2: export measurements are dropped after
+/// an update). Unix: `uname`. Windows: unsupported (the GPU driver's version, which
+/// Windows reports, covers what changes there).
+pub fn os_version() -> Result<String, ProbeError> {
+    #[cfg(unix)]
+    {
+        unix::os_version()
+    }
+    #[cfg(not(unix))]
+    {
+        Err(ProbeError::Unsupported)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
@@ -98,6 +114,18 @@ mod tests {
     fn a_missing_folder_fails_instead_of_guessing() {
         let missing = std::env::temp_dir().join("rbs-system-probe-no-such-folder-7c1f");
         assert!(matches!(volume_space(&missing), Err(ProbeError::Failed(_))));
+    }
+
+    #[test]
+    fn the_os_version_is_stable_or_unsupported() {
+        match (os_version(), os_version()) {
+            (Ok(a), Ok(b)) => {
+                assert!(!a.trim().is_empty());
+                assert_eq!(a, b);
+            }
+            (Err(ProbeError::Unsupported), _) => {}
+            (a, b) => panic!("{a:?} {b:?}"),
+        }
     }
 
     #[test]

@@ -369,6 +369,8 @@ fn main() {
     let plan = CalibrationPlan {
         classes: vec![class],
         folder: full.folder,
+        exports: Vec::new(),
+        frame_rate: full.frame_rate,
     };
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
     let pacer: Arc<dyn Pacer> = Arc::new(RealPacer(Arc::clone(&clock)));
@@ -391,7 +393,7 @@ fn main() {
                     r.sessions, r.stopped_by, r.frame_time
                 ),
                 CalibrationEvent::Skipped(s) => println!("  SKIPPED {s:?}"),
-                CalibrationEvent::Step { .. } => {}
+                _ => {}
             },
         );
         println!(

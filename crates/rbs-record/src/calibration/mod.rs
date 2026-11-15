@@ -9,6 +9,7 @@
 //! run is asked for (P13).
 
 mod driver;
+mod export;
 mod session;
 mod write;
 
@@ -22,6 +23,12 @@ use rbs_core::registry::AdapterId;
 pub use driver::{
     CalibrationEvent, CalibrationOutcome, EncoderResult, Lanes, LanesFailure, Pacer, RoundRequest,
     SeriesKey, SkipCode, Skipped, run_encoders,
+};
+pub use export::{
+    EXPORT_FEED_FRAMES, EXPORT_LIMIT, ExportClass, ExportCounters, ExportResult, ExportRig,
+    ExportSkip, ExportSkipCode, ExportsEnd, GPU_FRAMES, GPU_MIN_FRAMES, GPU_PART_LIMIT,
+    GpuExportRig, RigError, SIBLING_RESERVE, WAIT_SLICE, class_estimate, export_rounds,
+    export_warmup, run_exports,
 };
 pub use session::{FrameOutcome, SessionReport, SessionRunner, moving_ring};
 pub use write::{
@@ -136,15 +143,21 @@ pub struct CalibrationPlan {
     pub classes: Vec<ClassPlan>,
     /// The profile's recording folder for the canvas.
     pub folder: PathBuf,
+    /// The export classes of the separate video files (step D2), largest first.
+    pub exports: Vec<ExportClass>,
+    /// The canvas frame rate the exports are paced at.
+    pub frame_rate: rbs_core::timing::FrameRate,
 }
 
 impl CalibrationPlan {
-    /// The upper bound of steps: every series to the ceiling, and the folder.
+    /// The upper bound of steps: one per export class, every series to the ceiling,
+    /// and the folder.
     pub fn steps(&self) -> u32 {
         let series: usize = self.classes.iter().map(|c| c.candidates.len()).sum();
         u32::try_from(series)
             .unwrap_or(u32::MAX)
             .saturating_mul(SESSION_CEILING)
             .saturating_add(1)
+            .saturating_add(u32::try_from(self.exports.len()).unwrap_or(u32::MAX))
     }
 }

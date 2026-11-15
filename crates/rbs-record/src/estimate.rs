@@ -386,6 +386,43 @@ impl RateClass {
     }
 }
 
+/// The format a separate file's export reads back (ADR-0087 step D2): its export
+/// time is measured and looked up per size class and format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ExportFormat {
+    /// 8-bit 4:2:0.
+    #[default]
+    Nv12,
+    /// 10-bit 4:2:0 (twice the readback of NV12).
+    P010,
+}
+
+impl ExportFormat {
+    /// The name in `calibration.toml` and the control API.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Nv12 => "nv12",
+            Self::P010 => "p010",
+        }
+    }
+
+    /// The format of a name; `None` for one this build does not know.
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Nv12, Self::P010]
+            .into_iter()
+            .find(|f| f.as_str() == s)
+    }
+}
+
+impl From<rbs_gpu::YuvFormat> for ExportFormat {
+    fn from(f: rbs_gpu::YuvFormat) -> Self {
+        match f {
+            rbs_gpu::YuvFormat::Nv12 => Self::Nv12,
+            rbs_gpu::YuvFormat::P010 => Self::P010,
+        }
+    }
+}
+
 /// One video encoder session the start would run. Encoders shared by several outputs
 /// (ADR-0047) are one session: the caller lists them once.
 #[derive(Clone, Debug, PartialEq)]
@@ -416,6 +453,9 @@ pub struct VideoEncode {
     pub worker: Option<usize>,
     /// Pooled export buffers it holds (separate tracks), for the memory row.
     pub export_buffers: u32,
+    /// The format its export reads back (separate tracks; the master's is not
+    /// looked up).
+    pub format: ExportFormat,
 }
 
 impl VideoEncode {
@@ -544,8 +584,13 @@ impl StopReason {
 pub struct Calibration {
     /// Encoder results.
     pub encoders: Vec<EncoderMeasure>,
-    /// ISO export time per frame per size class.
-    pub exports: Vec<(SizeClass, Duration)>,
+    /// ISO export time per frame per size class and format: the render thread's time
+    /// of one track's export (ADR-0087 step D2).
+    pub exports: Vec<(SizeClass, ExportFormat, Duration)>,
+    /// The last test on this computer could not measure exports (no throwaway GPU
+    /// context, or the export failed): a row unknown for lack of an export then does
+    /// not advise a test.
+    pub exports_unmeasurable: bool,
     /// The recording folder's write speed in bytes per second.
     pub write_speed: Option<u64>,
 }
@@ -562,12 +607,12 @@ impl Calibration {
         })
     }
 
-    fn export(&self, height: u32) -> Option<Duration> {
+    fn export(&self, height: u32, format: ExportFormat) -> Option<Duration> {
         let size = SizeClass::of(height);
         self.exports
             .iter()
-            .find(|(s, _)| *s == size)
-            .map(|(_, t)| *t)
+            .find(|(s, f, _)| *s == size && *f == format)
+            .map(|(_, _, t)| *t)
     }
 }
 
@@ -602,6 +647,9 @@ pub struct Row {
     pub level: Option<Level>,
     /// The limit was measured on this computer, not declared.
     pub measured: bool,
+    /// The row is unknown and *Test this computer* can measure what is missing
+    /// (control API 1.57). Set by the estimate; false on known and informational rows.
+    pub calibrate: bool,
 }
 
 /// One reason a row is not `fits`.
@@ -707,8 +755,11 @@ struct Rows {
 }
 
 impl Rows {
-    fn push(&mut self, row: Row, reason: Option<ReasonCode>) {
+    fn push(&mut self, mut row: Row, reason: Option<ReasonCode>) {
         let resource = row.resource;
+        // A test helps only an unknown row whose missing part it measures.
+        row.calibrate =
+            row.level == Some(Level::Unknown) && (row.calibrate || resource.calibration_measures());
         match row.level {
             Some(Level::Unknown) => {
                 let code = reason.unwrap_or(ReasonCode::Unknown);
@@ -900,6 +951,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
                 unit: Unit::Sessions,
                 level: Some(level),
                 measured,
+                calibrate: false,
             },
             Some(reason),
         );
@@ -937,6 +989,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
                     unit: Unit::PixelsPerSecond,
                     level: Some(level),
                     measured,
+                    calibrate: false,
                 },
                 (level != Level::Unknown).then_some(ReasonCode::Throughput),
             );
@@ -960,6 +1013,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
                 unit: Unit::PixelsPerSecond,
                 level: Some(level),
                 measured: limit.is_some(),
+                calibrate: false,
             },
             (level != Level::Unknown).then_some(ReasonCode::CpuLoad),
         );
@@ -998,6 +1052,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
                 unit: Unit::Ratio,
                 level: Some(level),
                 measured: known,
+                calibrate: false,
             },
             known.then_some(ReasonCode::Workers),
         );
@@ -1007,10 +1062,12 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
         let exports: Option<f64> = iso
             .iter()
             .map(|e| {
-                cal.and_then(|c| c.export(e.height))
+                cal.and_then(|c| c.export(e.height, e.format))
                     .map(|t| t.as_secs_f64())
             })
             .sum();
+        // A test can measure a missing export (step D2), never the previous tick.
+        let export_missing = exports.is_none() && cal.is_none_or(|c| !c.exports_unmeasurable);
         let (need, level) = match (limits.previous_tick, exports) {
             (Some(prev), Some(ex)) if tick > 0.0 => {
                 let need = (prev.as_secs_f64() + ex) / tick;
@@ -1028,6 +1085,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
                 unit: Unit::Ratio,
                 level: Some(level),
                 measured: level != Level::Unknown,
+                calibrate: export_missing,
             },
             (level != Level::Unknown).then_some(ReasonCode::RenderShare),
         );
@@ -1046,6 +1104,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
                 unit: Unit::Bytes,
                 level: None,
                 measured: false,
+                calibrate: false,
             },
             None,
         );
@@ -1066,6 +1125,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
             unit: Unit::BytesPerSecond,
             level: Some(level),
             measured: speed.is_some(),
+            calibrate: false,
         },
         Some(if level == Level::Unknown {
             ReasonCode::DiskUnknown
@@ -1090,6 +1150,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
             unit: Unit::Bytes,
             level: Some(level),
             measured: free.is_some(),
+            calibrate: false,
         },
         Some(if level == Level::Unknown {
             ReasonCode::DiskUnknown
@@ -1113,6 +1174,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
                 unit: Unit::Tracks,
                 level: Some(count_level(need, limit)),
                 measured: false,
+                calibrate: false,
             },
             Some(ReasonCode::Ceiling),
         );
@@ -1126,6 +1188,7 @@ fn rows_of(plan: &EstimatePlan, limits: &Limits) -> Rows {
         unit: Unit::Sources,
         level: None,
         measured: false,
+        calibrate: false,
     });
     out
 }
@@ -1291,7 +1354,7 @@ fn track_costs(plan: &EstimatePlan, limits: &Limits) -> Vec<TrackCost> {
                 (e.frame_bytes() * u64::from(e.export_buffers)) as f64,
             ),
         ];
-        if let Some(t) = cal.and_then(|c| c.export(e.height))
+        if let Some(t) = cal.and_then(|c| c.export(e.height, e.format))
             && tick > 0.0
         {
             cost.push((Resource::IsoRenderShare, t.as_secs_f64() / tick));

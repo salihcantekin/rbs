@@ -161,6 +161,15 @@ pub enum CalibrationEvent {
     Series(EncoderResult),
     /// A series or part was skipped.
     Skipped(Skipped),
+    /// An export class started (`step` counts from 1 over the export part; step D2).
+    ExportStep {
+        /// The step.
+        step: u32,
+    },
+    /// An export class was measured.
+    Export(super::ExportResult),
+    /// An export class was skipped.
+    ExportSkipped(super::ExportSkip),
 }
 
 /// How the encoder part ended.
@@ -517,7 +526,9 @@ pub fn run_encoders(
     events: &mut dyn FnMut(CalibrationEvent),
 ) -> CalibrationOutcome {
     let encoder_end = start + CALIBRATION_LIMIT.saturating_sub(WRITE_RESERVE);
-    let pass1_end = (start + FIRST_PASS).min(encoder_end);
+    // The export part runs first (step D2): the first pass keeps its whole time after
+    // it, and the second pass keeps its end, so the export time comes out of pass 2.
+    let pass1_end = (clock.now().max(start) + FIRST_PASS).min(encoder_end);
     let first: Vec<(&ClassPlan, &Candidate)> = plan
         .classes
         .iter()
