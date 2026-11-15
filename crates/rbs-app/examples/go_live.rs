@@ -212,6 +212,7 @@ fn main() -> ExitCode {
                         size: None,
                         iso: true,
                         editor_project: None,
+                        markers: Default::default(),
                     }));
                     record_state = Some(1);
                 }

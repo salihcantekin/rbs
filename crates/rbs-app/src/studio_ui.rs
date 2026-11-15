@@ -6051,6 +6051,7 @@ fn request_of(
         size: start.size,
         iso: true,
         editor_project: profile.editor_project,
+        markers: profile.markers,
     }
 }
 

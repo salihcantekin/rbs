@@ -169,6 +169,7 @@ fn take(
         size: None,
         iso: false,
         editor_project: Some(EditorProject::Xmeml),
+        markers: Default::default(),
     }));
     let start = Instant::now();
     let length = Duration::from_secs(seconds.max(4));

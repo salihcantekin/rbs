@@ -84,6 +84,7 @@ fn profile() -> RecordingProfile {
         open_shadows: false,
         output_size: None,
         editor_project: None,
+        markers: Default::default(),
     }
 }
 
@@ -2108,6 +2109,28 @@ fn project_export_round_trips_and_the_profile_omits_an_unset_editor_project() {
         json!("xmeml")
     );
     round_trip(&p);
+    // Markers (protocol 1.62): the defaults are omitted, a change is written whole.
+    assert!(serde_json::to_value(&p).unwrap().get("markers").is_none());
+    p.markers.lead_ms = 1_500;
+    p.markers.stream_events = true;
+    assert_eq!(
+        serde_json::to_value(&p).unwrap()["markers"],
+        json!({"lead_ms": 1500, "scene_changes": true, "stream_events": true})
+    );
+    round_trip(&p);
+    let partial: rbs_api::types::RecordingMarkers =
+        serde_json::from_value(json!({"scene_changes": false})).unwrap();
+    assert_eq!(
+        (
+            partial.lead_ms,
+            partial.scene_changes,
+            partial.stream_events
+        ),
+        (0, false, false)
+    );
+    assert!(
+        serde_json::from_value::<rbs_api::types::RecordingMarkers>(json!({"lead": 1})).is_err()
+    );
 }
 
 /// `record.estimate`'s answer (protocol 1.53): counts and bytes are written as whole

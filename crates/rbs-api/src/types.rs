@@ -814,6 +814,39 @@ pub struct RecordingProfile {
     /// recording keep its files' timing for a later `project.export`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor_project: Option<ProjectFormat>,
+    /// Markers: the reaction-time offset and the automatic markers (protocol 1.62,
+    /// ADR-0089 decisions 3 and 4). Absent: the defaults.
+    #[serde(default, skip_serializing_if = "RecordingMarkers::is_default")]
+    pub markers: RecordingMarkers,
+}
+
+/// A recording profile's markers (protocol 1.62, ADR-0089 decisions 3 and 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecordingMarkers {
+    /// Moves a manual marker this many milliseconds earlier, 0 to 30 000.
+    pub lead_ms: u32,
+    /// A marker each time the program scene changes (on by default).
+    pub scene_changes: bool,
+    /// A marker when a stream starts and when it ends (off by default).
+    pub stream_events: bool,
+}
+
+impl Default for RecordingMarkers {
+    fn default() -> Self {
+        Self {
+            lead_ms: 0,
+            scene_changes: true,
+            stream_events: false,
+        }
+    }
+}
+
+impl RecordingMarkers {
+    /// The defaults, which the wire omits.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// An editor project format (protocol 1.58, ADR-0089 decision 9).
