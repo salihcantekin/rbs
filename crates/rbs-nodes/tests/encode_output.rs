@@ -16,7 +16,7 @@ use rbs_core::timing::{Cadence, FrameRate};
 use rbs_graph::runtime::{JoinError, PER_TICK_EVENTS, Tick};
 use rbs_nodes::encode::CARRY_PACKETS;
 use rbs_nodes::output::WaitClock;
-use rbs_nodes::{OutputNode, VideoEncoderNode};
+use rbs_nodes::{KeyframeAt, OutputNode, VideoEncoderNode};
 use rbs_transport::TransportEvent;
 use std::time::Duration;
 use support::{
@@ -36,6 +36,17 @@ struct Chain {
 
 /// source (new frame every `every` ticks) -> encoder -> output (fake muxer + transport).
 fn chain(every: u64, packets_per_frame: u64, backlog: usize, tx: Arc<TransportState>) -> Chain {
+    chain_with(every, packets_per_frame, backlog, tx, false).0
+}
+
+/// [`chain`], with keyframe requests on the encoder when `keyframes` is set.
+fn chain_with(
+    every: u64,
+    packets_per_frame: u64,
+    backlog: usize,
+    tx: Arc<TransportState>,
+    keyframes: bool,
+) -> (Chain, Option<Arc<KeyframeAt>>) {
     let mut rig = Rig::new();
     let enc_state = Arc::new(EncoderState::default());
     enc_state
@@ -46,6 +57,12 @@ fn chain(every: u64, packets_per_frame: u64, backlog: usize, tx: Arc<TransportSt
         encoder_config(),
     )
     .unwrap();
+    let (encoder, keyframe_at) = if keyframes {
+        let (encoder, handle) = encoder.with_keyframe_requests();
+        (encoder, Some(handle))
+    } else {
+        (encoder, None)
+    };
     let stream = encoder.stream().clone();
     let enc_stats = encoder.stats();
     let output = OutputNode::new(
@@ -66,15 +83,18 @@ fn chain(every: u64, packets_per_frame: u64, backlog: usize, tx: Arc<TransportSt
     rig.graph.connect(encoder, "packets", output, "s0").unwrap();
     let report = rig.apply();
     assert!(report.failed.is_empty(), "{report:?}");
-    Chain {
-        rig,
-        encoder,
-        output,
-        enc_state,
-        tx_state: tx,
-        enc_stats,
-        out_stats,
-    }
+    (
+        Chain {
+            rig,
+            encoder,
+            output,
+            enc_state,
+            tx_state: tx,
+            enc_stats,
+            out_stats,
+        },
+        keyframe_at,
+    )
 }
 
 fn media_times(got: &[Got]) -> Vec<u64> {
@@ -511,4 +531,93 @@ fn a_flush_past_the_per_tick_limit_counts_what_one_final_tick_cannot_pass() {
     let lost = c.enc_stats.flush_lost.load(Ordering::Relaxed);
     assert_eq!(delivered + lost, 11 * 10);
     assert_eq!(lost, 30 - PER_TICK_EVENTS as u64);
+}
+
+// ---- Keyframe at a time (ADR-0124 decision 7) ----------------------------------------
+
+fn forced(c: &Chain) -> Vec<u64> {
+    c.enc_state.forced.lock().unwrap().clone()
+}
+
+#[test]
+fn a_keyframe_request_lands_on_the_first_frame_at_or_after_its_time() {
+    let (mut c, k) = chain_with(1, 1, 64, TransportState::logging(), true);
+    let k = k.unwrap();
+    k.request(Timestamp::from_nanos(frame_time(5)));
+    c.rig.ticks(10);
+    assert_eq!(forced(&c), vec![frame_time(5)]);
+    assert_eq!(c.enc_stats.keyframes_requested.load(Ordering::Relaxed), 1);
+    assert_eq!(k.pending(), None, "a served request is gone");
+    assert_eq!(c.enc_state.submitted.load(Ordering::Relaxed), 10);
+}
+
+#[test]
+fn a_time_between_frames_is_served_by_the_next_frame() {
+    // A new frame every second tick: frames at 0, 2, 4, 6, ...
+    let (mut c, k) = chain_with(2, 1, 64, TransportState::logging(), true);
+    k.unwrap().request(Timestamp::from_nanos(frame_time(3)));
+    c.rig.ticks(10);
+    assert_eq!(forced(&c), vec![frame_time(4)]);
+}
+
+#[test]
+fn a_time_already_passed_is_served_by_the_next_frame() {
+    let (mut c, k) = chain_with(1, 1, 64, TransportState::logging(), true);
+    let k = k.unwrap();
+    c.rig.ticks(6);
+    k.request(Timestamp::ZERO);
+    c.rig.ticks(2);
+    assert_eq!(forced(&c), vec![frame_time(6)]);
+}
+
+#[test]
+fn of_two_waiting_requests_the_earlier_wins_and_a_later_one_after_it_is_kept() {
+    let (mut c, k) = chain_with(1, 1, 64, TransportState::logging(), true);
+    let k = k.unwrap();
+    k.request(Timestamp::from_nanos(frame_time(7)));
+    k.request(Timestamp::from_nanos(frame_time(3)));
+    assert_eq!(k.pending(), Some(Timestamp::from_nanos(frame_time(3))));
+    c.rig.ticks(5);
+    assert_eq!(forced(&c), vec![frame_time(3)]);
+    k.request(Timestamp::from_nanos(frame_time(8)));
+    c.rig.ticks(5);
+    assert_eq!(forced(&c), vec![frame_time(3), frame_time(8)]);
+    assert_eq!(c.enc_stats.keyframes_requested.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn a_refused_keyframe_request_is_counted_and_the_stream_goes_on() {
+    let (mut c, k) = chain_with(1, 1, 64, TransportState::logging(), true);
+    c.enc_state
+        .refuse_reconfigure
+        .store(true, Ordering::Relaxed);
+    k.unwrap().request(Timestamp::from_nanos(frame_time(2)));
+    c.rig.ticks(5);
+    assert_eq!(c.enc_stats.keyframes_refused.load(Ordering::Relaxed), 1);
+    assert_eq!(c.enc_stats.keyframes_requested.load(Ordering::Relaxed), 0);
+    assert_eq!(c.enc_state.submitted.load(Ordering::Relaxed), 5);
+    assert_eq!(media_times(&c.tx_state.got()).len(), 5);
+}
+
+#[test]
+fn keyframe_requests_add_no_allocation_per_tick() {
+    let tx = Arc::new(TransportState::default()); // no logging
+    let (mut c, k) = chain_with(1, 1, 64, tx, true);
+    let k = k.unwrap();
+    c.rig.ticks(4);
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    let start = c.rig.tick;
+    k.request(Timestamp::from_nanos(frame_time(start + 50)));
+    // The fake encoder's record of forced frames is the test's, not the node's.
+    c.enc_state.forced.lock().unwrap().reserve(8);
+    let steady = allocation_counter::measure(|| {
+        for i in start..start + 200 {
+            c.rig.exec.run_tick(Tick::of(&cadence, i));
+        }
+    });
+    assert_eq!(
+        steady.count_total, 0,
+        "ticks with a keyframe request allocated"
+    );
+    assert_eq!(c.enc_stats.keyframes_requested.load(Ordering::Relaxed), 1);
 }

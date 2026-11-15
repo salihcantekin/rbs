@@ -141,6 +141,10 @@ pub struct EncoderState {
     pub refuse_next: AtomicBool,
     /// Frames the encoder holds back until later frames or a flush (encoder delay).
     pub hold_frames: AtomicU64,
+    /// Times (ns) of the frames submitted right after a keyframe request.
+    pub forced: Mutex<Vec<u64>>,
+    /// While set, `reconfigure` refuses (`Unsupported`).
+    pub refuse_reconfigure: AtomicBool,
 }
 
 pub struct FakeEncoderFactory(pub Arc<EncoderState>);
@@ -164,6 +168,7 @@ impl VideoEncoderFactory for FakeEncoderFactory {
             ),
             pending: Vec::with_capacity(256),
             count: 0,
+            force_next: false,
             payload: Bytes::from_static(b"frame"),
         }))
     }
@@ -174,6 +179,7 @@ pub struct FakeEncoder {
     stream: StreamDescriptor,
     pending: Vec<EncodedPacket>,
     count: u64,
+    force_next: bool,
     payload: Bytes,
 }
 
@@ -193,6 +199,13 @@ impl VideoEncoder for FakeEncoder {
         }
         if !matches!(frame.payload(), FramePayload::System(_)) || *frame.format() != nv12() {
             return Err(EncodeError::InvalidInput("format".into()));
+        }
+        if std::mem::take(&mut self.force_next) {
+            self.state
+                .forced
+                .lock()
+                .unwrap()
+                .push(frame.timestamp().as_nanos());
         }
         let n = self.state.packets_per_frame.load(Ordering::Relaxed).max(1);
         for i in 0..n {
@@ -221,8 +234,12 @@ impl VideoEncoder for FakeEncoder {
         Ok(())
     }
     fn reconfigure(&mut self, change: &EncoderChange) -> Result<(), EncodeError> {
+        if self.state.refuse_reconfigure.load(Ordering::Relaxed) {
+            return Err(EncodeError::Unsupported);
+        }
         if matches!(change, EncoderChange::RequestKeyframe) {
             self.state.keyframe_requests.fetch_add(1, Ordering::Relaxed);
+            self.force_next = true;
         }
         Ok(())
     }
