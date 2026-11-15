@@ -1200,6 +1200,15 @@ component ToolbarCell inherits HorizontalLayout {
     callback open-vertical(length);
     property <bool> go-live: item.id == "stream.toggle" && !item.live;
     property <bool> record: item.id == "record.toggle" && !item.live;
+    // This position keeps the halo's clear zone round its button (ADR-0122 decision 8):
+    // the cell pads its sides so that, with the row's `space.2`, nothing lies within
+    // `Theme.halo-clear + size.focus-ring` of the button. The zone belongs to the
+    // position, whatever the button's kind is now, so going live moves nothing. 0 unless
+    // the theme draws a halo.
+    in property <bool> halo-room: false;
+    property <length> halo-pad: halo-room && Theme.halo-clear > 0 ? max(Tokens.space-2, Theme.halo-clear + Tokens.size-focus-ring) - Tokens.space-2 : 0px;
+    padding-left: halo-pad;
+    padding-right: halo-pad;
     horizontal-stretch: item.kind == 3 ? 1 : 0;
     if (item.kind == 0 || item.kind == 4) && item.icon-only: Button {
         // Round, like every icon-only button (ADR-0118).
@@ -1223,6 +1232,7 @@ component ToolbarCell inherits HorizontalLayout {
         enabled: item.enabled;
         checked: item.checked && !item.live;
         kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
+        halo-room: root.halo-room;
         clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
     }
     if (item.kind == 0 || item.kind == 4) && !item.icon-only && vertical-menu: SplitButton {
@@ -1233,6 +1243,7 @@ component ToolbarCell inherits HorizontalLayout {
         enabled: item.enabled;
         checked: item.checked && !item.live;
         kind: go-live ? "primary" : "secondary";
+        halo-room: root.halo-room;
         menu-name: item.id == "stream.toggle" ? @tr("Vertical stream") : @tr("Vertical recording");
         // A running vertical output shows as its own chip beside the buttons (ADR-0111).
         menu-text: "";
@@ -1243,11 +1254,12 @@ component ToolbarCell inherits HorizontalLayout {
     if item.kind == 1: WorkspacePicker {
         clicked => { root.open-workspaces(self.absolute-position.x); }
     }
+    // The separator keeps its height when the row grows (ADR-0122 decision 8).
     if item.kind == 2: VerticalLayout {
-        padding-top: Tokens.space-1;
-        padding-bottom: Tokens.space-1;
+        alignment: center;
         Rectangle {
             width: Tokens.size-border;
+            height: Tokens.size-control-md - 2 * Tokens.space-1;
             background: Theme.border-subtle;
         }
     }
@@ -1364,7 +1376,15 @@ component FrameBar inherits Rectangle {
     changed max-x => { publish-regions(); }
     property <bool> caption-on: Shell.custom-caption;
     changed caption-on => { publish-regions(); }
-    height: Tokens.size-control-md + 2 * Tokens.space-1 + Tokens.size-border;
+    // The row grows while the theme draws a halo (ADR-0122 decision 8), and the caption
+    // row reported to Windows is this height.
+    changed height => { publish-regions(); }
+    // The room above and below the row's items: `space.1`, or the clear zone of Go
+    // live's halo (plus `size.focus-ring`, for a SplitButton's outside rings) while the
+    // theme draws one. Every item keeps its size, centred; only the window buttons span
+    // the row.
+    property <length> row-pad: Theme.halo-clear > 0 ? max(Tokens.space-1, Theme.halo-clear + Tokens.size-focus-ring) : Tokens.space-1;
+    height: Tokens.size-control-md + 2 * row-pad + Tokens.size-border;
     background: Theme.surface-base;
     Rectangle {
         y: parent.height - Tokens.size-border;
@@ -1384,8 +1404,8 @@ component FrameBar inherits Rectangle {
         // the in-row prompts and status texts.
         lead := HorizontalLayout {
             horizontal-stretch: 0;
-            padding-top: Tokens.space-1;
-            padding-bottom: Tokens.space-1;
+            padding-top: root.row-pad;
+            padding-bottom: root.row-pad;
             spacing: Tokens.space-2;
             // The RBS menu (spec, "RBS menu"): every command, with search. Part of the
             // frame, not a toolbar item, so it cannot be removed.
@@ -1454,8 +1474,8 @@ component FrameBar inherits Rectangle {
         // spacing.
         end := HorizontalLayout {
             horizontal-stretch: 0;
-            padding-top: Tokens.space-1;
-            padding-bottom: Tokens.space-1;
+            padding-top: root.row-pad;
+            padding-bottom: root.row-pad;
             spacing: Tokens.space-2;
             for item in Shell.toolbar-visible ? Shell.toolbar-end : []: ToolbarCell {
                 item: item;
@@ -1469,6 +1489,8 @@ component FrameBar inherits Rectangle {
             // with the toolbar hidden or customised (U1, ADR-0073).
             for item in Shell.toolbar-fixed: ToolbarCell {
                 item: item;
+                // Go live's position opts in to the halo; Record's does not.
+                halo-room: item.id == "stream.toggle";
                 vertical-menu: Shell.vertical-outputs;
                 vertical-on: item.id == "stream.toggle" ? Shell.vertical-live : Shell.vertical-rec;
                 open-workspaces(x) => { }

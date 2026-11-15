@@ -223,14 +223,22 @@ impl Color {
 
     /// WCAG 2 relative luminance (alpha ignored).
     pub fn luminance(self) -> f64 {
-        let ch = |c: u8| {
-            let c = f64::from(c) / 255.0;
-            if c <= 0.04045 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
+        // One table of the 256 channel values: the effect searches (ADR-0122) take
+        // thousands of ratios per theme, and `powf` per channel was most of their time.
+        static LINEAR: std::sync::OnceLock<[f64; 256]> = std::sync::OnceLock::new();
+        let linear = LINEAR.get_or_init(|| {
+            let mut table = [0.0; 256];
+            for (i, slot) in table.iter_mut().enumerate() {
+                let c = i as f64 / 255.0;
+                *slot = if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                };
             }
-        };
+            table
+        });
+        let ch = |c: u8| linear[usize::from(c)];
         0.2126 * ch(self.r) + 0.7152 * ch(self.g) + 0.0722 * ch(self.b)
     }
 
@@ -508,7 +516,7 @@ impl Tokens {
         let font_family = match (raw.format, raw.font) {
             (1, None) => Vec::new(),
             (1, Some(_)) => return Err(TokenError("[font] needs format 2".into())),
-            (2 | 3, Some(mut font)) => {
+            (2..=4, Some(mut font)) => {
                 let family = font
                     .remove(FONT_FAMILY)
                     .ok_or_else(|| TokenError(format!("[font] is missing {FONT_FAMILY}")))?;
@@ -517,13 +525,15 @@ impl Tokens {
                 }
                 family
             }
-            (2 | 3, None) => return Err(TokenError("[font] is missing".into())),
+            (2..=4, None) => return Err(TokenError("[font] is missing".into())),
             (f, _) => return Err(TokenError(format!("unsupported format {f}"))),
         };
-        // Effect tables (ADR-0120 decision 6): format 3 has both, older formats none.
+        // Effect tables (ADR-0122 decision 2): format 4 has Glow, Glass and Tactile; a
+        // format 3 file's Vivid and Tactile are carried over; older formats have none.
         let effects = match (raw.format, raw.effects) {
-            (3, Some(t)) => Some(EffectTables::parse(t)?),
-            (3, None) => return Err(TokenError("[effects] is missing".into())),
+            (4, Some(t)) => Some(EffectTables::parse(t)?),
+            (3, Some(t)) => Some(EffectTables::parse_v3(t)?),
+            (3 | 4, None) => return Err(TokenError("[effects] is missing".into())),
             (_, Some(_)) => return Err(TokenError("[effects] needs format 3".into())),
             (_, None) => None,
         };
@@ -609,28 +619,24 @@ impl Tokens {
         Tokens::parse(BUILT_IN)
     }
 
-    /// A shipped file cannot make a lively setting silently calm: every built-in base
-    /// passes the effect checks in every setting (ADR-0120 decision 9).
+    /// A shipped file cannot make a lively setting silently calm or flat: every
+    /// built-in base passes the effect checks in every setting and density, with no
+    /// notice (ADR-0120 decision 9, ADR-0122 decision 6).
     fn check_effects(&self) -> Result<(), TokenError> {
         let Some(tables) = &self.effects else {
             return Ok(());
         };
-        let label_line = self
-            .type_styles
-            .get("type.label")
-            .map_or(0.0, |s| f32::from(s.line));
         for base in Base::ALL {
+            let theme = self.built_in_theme(base);
             for setting in Effects::LIVELY {
-                if let Some(why) = check(
-                    &tables.values(setting),
-                    &self.themes[base.index()].1,
-                    &self.length,
-                    label_line,
-                    base == Base::Dark,
-                    self.fixed["color.state.live"],
-                ) {
+                if !tables.has(setting) {
+                    continue;
+                }
+                if let Some(notice) =
+                    effects_notice(setting, &tables.values(setting), &theme, &self.length)
+                {
                     return Err(TokenError(format!(
-                        "theme {} with {} effects: {why}",
+                        "theme {} with {} effects: {notice}",
                         base.name(),
                         setting.name()
                     )));
