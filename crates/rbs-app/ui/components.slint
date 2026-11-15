@@ -1447,10 +1447,36 @@ export component Toggle inherits Rectangle {
                 border-width: root.checked && root.enabled ? 0px : Tokens.size-border;
                 border-color: !root.enabled ? Theme.border-subtle
                     : touch.has-hover ? Theme.accent : Theme.border-strong;
-                background: !root.enabled || !root.checked ? Theme.surface-sunken
-                    : touch.pressed ? Theme.accent-pressed
+                // Effects (ADR-0120 decision 14, owner 2026-11-15): the on track is drawn as
+                // a primary Button is (key edge, shadow, gradient face) and the knob gets
+                // the soft shadow of a raised thumb. The off track stays a flat, sunken
+                // well, and Calm draws neither.
+                property <bool> fx-track: Theme.effects-on && root.enabled && root.checked;
+                property <color> face-fill: touch.pressed ? Theme.accent-pressed
                     : touch.has-hover ? Theme.accent-hover : Theme.accent;
+                background: self.fx-track ? transparent
+                    : !root.enabled || !root.checked ? Theme.surface-sunken : self.face-fill;
                 animate background { duration: Tokens.motion-fast; }
+                if track.fx-track: Rectangle {
+                    width: parent.width;
+                    height: parent.height + Theme.effects-key-edge;
+                    border-radius: parent.border-radius;
+                    background: Theme.effects-key-primary;
+                    drop-shadow-blur: Theme.effects-shadow-blur;
+                    drop-shadow-offset-y: Theme.effects-shadow-offset;
+                    drop-shadow-color: Theme.effects-shadow;
+                }
+                if track.fx-track: Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    border-radius: parent.border-radius;
+                    background: Theme.effects-shade-primary
+                        ? @linear-gradient(180deg,
+                            (touch.pressed ? Theme.effects-top-primary-pressed : touch.has-hover ? Theme.effects-top-primary-hover : Theme.effects-top-primary-rest) 0%,
+                            parent.face-fill Theme.effects-stop-primary * 100%,
+                            (touch.pressed ? Theme.effects-bottom-primary-pressed : touch.has-hover ? Theme.effects-bottom-primary-hover : Theme.effects-bottom-primary-rest) 100%)
+                        : parent.face-fill;
+                }
                 // The state mark, centred in the side the knob leaves free: a bar
                 // while on, a ring while off.
                 if root.checked: Rectangle {
@@ -1478,6 +1504,10 @@ export component Toggle inherits Rectangle {
                     animate x, width { duration: Tokens.motion-fast; easing: ease-out; }
                     border-radius: Tokens.radius-sm;
                     background: root.checked && root.enabled ? Theme.text-inverse : root.off-ink;
+                    // The raised thumb's shadow, only with effects.
+                    drop-shadow-blur: Theme.effects-on && root.enabled ? Theme.effects-shadow-blur : 0px;
+                    drop-shadow-offset-y: Theme.effects-on && root.enabled ? Theme.effects-shadow-offset : 0px;
+                    drop-shadow-color: Theme.effects-on && root.enabled ? Theme.effects-shadow : transparent;
                 }
             }
         }
