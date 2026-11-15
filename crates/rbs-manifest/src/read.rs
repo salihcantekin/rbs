@@ -7,7 +7,8 @@ use toml::{Table, Value};
 
 use crate::{
     Completion, FORMAT, FileTiming, ImageCounts, ImageEntry, KIND, ManifestFile, Marker,
-    MarkerColor, MarkerKind, Picture, RecordingManifest, Sound, SourceRef, checked_label,
+    MarkerColor, MarkerKind, Picture, RecordingManifest, SkippedEntry, Sound, SourceRef,
+    checked_label,
 };
 
 /// Why a manifest could not be read. Messages name keys, never paths.
@@ -228,6 +229,19 @@ pub(crate) fn parse(text: &str) -> Result<RecordingManifest, ReadError> {
             .map(marker)
             .collect::<Result<_, _>>()?,
         completion,
+        skipped: tables(&t, "skipped")?
+            .into_iter()
+            .map(skipped)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn skipped(t: &Table) -> Result<SkippedEntry, ReadError> {
+    Ok(SkippedEntry {
+        source: SourceRef::new(need(u32_of(t, "source")?, "source")?),
+        source_name: string(t, "source_name")?,
+        role: need(string(t, "role")?, "role")?,
+        reason: need(string(t, "reason")?, "reason")?,
     })
 }
 

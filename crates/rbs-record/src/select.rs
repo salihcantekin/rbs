@@ -196,6 +196,54 @@ pub(crate) fn video_encoder(
     })
 }
 
+/// A separate video file's encoder (ADR-0087 decision 5): as [`video_encoder`], but
+/// with `stop_before_software`, when the best candidate is hardware the selection
+/// stops at the first candidate that is not. The error says whether it stopped there.
+pub(crate) fn iso_video_encoder(
+    registry: &Registry<dyn VideoEncoderFactory>,
+    config: &VideoEncoderConfig,
+    stop_before_software: bool,
+) -> Result<(VideoEncoderNode, Chosen), (RecordError, bool)> {
+    let selection = registry.select(&video_requirement(config));
+    let mut tried = rejected(&selection);
+    let hardware = |id: &AdapterId| {
+        matches!(
+            registry
+                .capabilities(id)
+                .and_then(|c| c.get(&rbs_core::registry::HARDWARE)),
+            Some(rbs_core::capability::CapabilityValue::Flag(true))
+        )
+    };
+    let wants_hardware = stop_before_software
+        && selection
+            .candidates
+            .first()
+            .is_some_and(|f| hardware(&f.id()));
+    let mut stopped = false;
+    for factory in &selection.candidates {
+        if wants_hardware && !hardware(&factory.id()) {
+            stopped = true;
+            break;
+        }
+        if let Some(why) = picture_outside(registry.capabilities(&factory.id()), config.format.size)
+        {
+            tried.push((factory.id(), why));
+            continue;
+        }
+        match VideoEncoderNode::open(Arc::clone(factory), config.clone()) {
+            Ok(node) => return Ok((node, Chosen::of(factory.as_ref()))),
+            Err(e) => tried.push((factory.id(), e.to_string())),
+        }
+    }
+    Err((
+        RecordError::NoAdapter {
+            port: Port::VideoEncoder,
+            tried,
+        },
+        stopped,
+    ))
+}
+
 /// The first audio encoder, best first, that lists the codec and creates a session
 /// for `config`.
 pub(crate) fn audio_encoder(

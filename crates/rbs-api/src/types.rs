@@ -1165,14 +1165,20 @@ pub struct OutputError {
 pub struct OutputErrorData {
     /// The machine-readable error.
     pub kind: crate::error::ErrorKind,
+    /// The members a single-canvas call adds beside `kind` (protocol 1.54), such as a
+    /// refused start's `reason`, `estimate` and `tracks`.
+    #[serde(flatten)]
+    pub more: serde_json::Map<String, serde_json::Value>,
 }
 
 impl From<&crate::error::ApiError> for OutputError {
     fn from(e: &crate::error::ApiError) -> Self {
+        let mut more = e.wire_data();
+        more.remove("kind");
         Self {
             code: e.kind.code(),
             message: e.message.clone(),
-            data: OutputErrorData { kind: e.kind },
+            data: OutputErrorData { kind: e.kind, more },
         }
     }
 }
@@ -1769,6 +1775,60 @@ pub struct TrackCost {
     /// What it adds per resource, keyed by resource name. A client skips a key it
     /// does not know.
     pub cost: std::collections::BTreeMap<String, f64>,
+}
+
+/// Why the start gate refused a `record.start` (protocol 1.54, ADR-0087 decisions 5
+/// and 6): `error.data.reason` of a `failed` error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalReason {
+    /// More video files than their encoder can take (hardware sessions or software
+    /// load), under `on_hardware_limit: "ask"`.
+    HardwareLimit,
+    /// A limit that no setting lifts: another resource past its limit under `ask`, no
+    /// encoder for the files, or a measured resource still over.
+    OverLimit,
+    /// The plan is heavy and the request did not set `acknowledge_heavy`.
+    Heavy,
+    /// A file could not open after the recording started, under `ask`; what opened
+    /// was stopped and removed.
+    OpenFailed,
+    /// A reason this version does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// The typed view of a refused `record.start` (protocol 1.54): the members of its
+/// `error.data` beside `kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StartRefusal {
+    /// Why.
+    pub reason: RefusalReason,
+    /// The `record.estimate` answer of the plan that was judged.
+    pub estimate: EstimateAnswer,
+    /// The files concerned; empty when the whole plan was judged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<EstimateTrack>,
+}
+
+impl StartRefusal {
+    /// The refusal an error carries, or `None` when it is not a refused start.
+    pub fn from_error(e: &crate::error::ApiError) -> Option<Self> {
+        let data = e.data.as_ref()?;
+        data.get("reason")?;
+        serde_json::from_value(serde_json::Value::Object(data.clone())).ok()
+    }
+
+    /// The error that carries this refusal: `failed` with `data`.
+    pub fn into_error(self, message: impl Into<String>) -> crate::error::ApiError {
+        let data = match serde_json::to_value(&self) {
+            Ok(serde_json::Value::Object(map)) => map,
+            // A refusal holds only strings, finite numbers and lists, which always
+            // encode to an object; anything else leaves the error without data.
+            _ => serde_json::Map::new(),
+        };
+        crate::error::ApiError::with_data(crate::error::ErrorKind::Failed, message, data)
+    }
 }
 
 /// `record.estimate`'s answer (protocol 1.53, ADR-0087 decision 7).
