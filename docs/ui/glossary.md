@@ -30,6 +30,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Projector | A full-screen or window view of a canvas, scene or source on any display | External view | - |
 | Track | One of the audio mixes written to a recording or sent to an output | Channel | Audio bus output |
 | Separate files / Record separately | Files a recording writes beside its main file, one per marked source, in a folder named like the recording; a source is marked with Record separately | ISO (in UI text), iso track | ISO recording (ADR-0086) |
+| Test this computer | The Settings action that measures how many encoder sessions this computer keeps up with and how fast the recording folder writes, so the estimate and the separate files use measured numbers; it takes up to about a minute and nothing can start while it runs | Benchmark, calibrate, speed test | `calibration.run` (ADR-0087 decision 4) |
 | Monitor | Listening to a source locally without sending it to outputs | Cue | Monitoring send |
 | Monitor off / Monitor and output / Monitor only | A source's monitor modes: not on the monitor; on the monitor and the outputs; on the monitor only, off the outputs while the monitor plays | Cue, Listen | `SourceMonitor::Off` / `Also` / `Only` |
 | Solo in monitor | While any source is soloed, the monitor plays only soloed sources; the outputs are unchanged | Cue, PFL | Monitor solo (session state) |

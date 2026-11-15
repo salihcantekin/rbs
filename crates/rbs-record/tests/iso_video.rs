@@ -359,6 +359,16 @@ fn files_past_the_limit_and_sources_without_a_picture_are_skipped_when_asked() {
     let (plan, _) = studio.start_plan(&r.adapters, &col, &whole);
     assert_eq!(split(&plan), (1, 1), "{:#?}", plan.video);
     assert!(plan.video_template.is_none());
+    // The exact canvas rate, not one rounded through the frame period: 30 fps is the
+    // 30 class (a 60 fps canvas measured as `above-60` matched no entry).
+    assert!(
+        plan.video
+            .iter()
+            .all(|e| rbs_record::estimate::FpsClass::of(e.fps)
+                == rbs_record::estimate::FpsClass::F30),
+        "{:#?}",
+        plan.video
+    );
     let same = OutputSettings::new("mem://again", ContainerId::Matroska);
     whole.outputs = vec![PlannedOutput::new(&same, None)];
     let (plan, _) = studio.start_plan(&r.adapters, &col, &whole);

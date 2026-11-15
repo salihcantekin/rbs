@@ -151,7 +151,7 @@ impl super::Studio {
         collection: &SceneCollection,
         request: &StartPlanRequest<'_>,
     ) -> (EstimatePlan, Vec<DeclaredAdapter>) {
-        let fps = 1.0 / self.fps.frame_duration().as_secs_f64();
+        let fps = self.fps.per_second().as_f64();
         let graph_format = self.settings.audio_graph.format;
         let mut ids: Vec<rbs_core::registry::AdapterId> = Vec::new();
         let note = |ids: &mut Vec<rbs_core::registry::AdapterId>,
@@ -446,5 +446,119 @@ impl super::Studio {
             worker: None,
             export_buffers: 0,
         }
+    }
+}
+
+impl super::Studio {
+    /// What a calibration run for `request` measures (ADR-0087 decision 4, spec
+    /// `output-estimate.md` "Calibration run"): the classes of the plan
+    /// [`Self::start_plan`] builds, the master's first, each at the largest planned
+    /// size of its class, with every candidate the selection would consider. Reads
+    /// only the studio's state and the registries; nothing opens. `folder` is the
+    /// profile's recording folder for the canvas.
+    pub fn calibration_plan(
+        &self,
+        adapters: &RecordAdapters,
+        collection: &SceneCollection,
+        request: &StartPlanRequest<'_>,
+        folder: std::path::PathBuf,
+    ) -> crate::calibration::CalibrationPlan {
+        use crate::calibration::{Candidate, ClassKey, ClassPlan};
+
+        let (plan, _) = self.start_plan(adapters, collection, request);
+        let master = request
+            .outputs
+            .iter()
+            .find_map(|o| o.settings.video.as_ref().map(|v| (v, o.encoder)));
+        struct Class<'s> {
+            key: ClassKey,
+            settings: &'s VideoSettings,
+            size: (u32, u32),
+            picked: Option<&'s str>,
+            likely: String,
+        }
+        let mut classes: Vec<Class<'_>> = Vec::new();
+        for e in &plan.video {
+            let (settings, picked) = match e.used_by {
+                Use::Recording => match master {
+                    Some((v, picked)) => (v, picked),
+                    None => continue,
+                },
+                Use::Iso(_) => match request.separate {
+                    Some(s) => (&s.video, None),
+                    None => continue,
+                },
+                // A calibration plans a recording; nothing streams while it runs.
+                Use::Stream => continue,
+            };
+            let (size, fps, rate) = e.class();
+            let key = ClassKey {
+                codec: e.codec.clone(),
+                size,
+                fps,
+                rate,
+            };
+            match classes.iter_mut().find(|c| c.key == key) {
+                Some(c) => {
+                    let pixels = |s: (u32, u32)| u64::from(s.0) * u64::from(s.1);
+                    if pixels((e.width, e.height)) > pixels(c.size) {
+                        c.size = (e.width, e.height);
+                    }
+                    // A class served by a picked encoder and by the selection is
+                    // measured on every candidate.
+                    if picked.is_none() {
+                        c.picked = None;
+                    }
+                }
+                None => classes.push(Class {
+                    key,
+                    settings,
+                    size: (e.width, e.height),
+                    picked,
+                    likely: e.adapter.clone(),
+                }),
+            }
+        }
+        let classes = classes
+            .into_iter()
+            .map(|c| {
+                let Class {
+                    key,
+                    settings,
+                    size,
+                    picked,
+                    likely,
+                } = c;
+                let config = super::video_encoder_config(
+                    settings,
+                    VideoFormat::new(
+                        Size::new(size.0, size.1),
+                        settings.format.pixel_format(),
+                        settings.color,
+                    ),
+                    self.fps,
+                );
+                let candidates = select::video_candidates(&adapters.video_encoders, &config)
+                    .into_iter()
+                    .filter(|f| picked.is_none_or(|p| f.id().as_str() == p))
+                    .map(|f| {
+                        let id = f.id();
+                        Candidate {
+                            version: None,
+                            hardware: declared(adapters, &id).hardware,
+                            likely: id.as_str() == likely,
+                            adapter: id,
+                            factory: f,
+                        }
+                    })
+                    .collect();
+                ClassPlan {
+                    key,
+                    config,
+                    candidates,
+                }
+            })
+            .collect();
+        crate::calibration::CalibrationPlan { classes, folder }
     }
 }

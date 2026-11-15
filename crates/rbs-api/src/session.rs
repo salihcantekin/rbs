@@ -27,6 +27,11 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.55 adds *Test this computer* (ADR-0087 step D1): `calibration.run`,
+/// `calibration.cancel`, `calibration.status`, the topic `calibration.state`, and
+/// `known_count` on `record.estimate`'s `max_tracks`.
+/// 1.54 adds the start gate (ADR-0087 step C2b): `acknowledge_heavy` and
+/// `on_hardware_limit` on `record.start`.
 /// 1.53 adds the output cost estimate (ADR-0087 step C2a): `record.estimate`, and
 /// `estimate` and `skipped` on `record.start`'s answer.
 /// 1.52 adds separate picture files (ADR-0086 step 3.5, ADR-0117): `video`, `audio`
@@ -46,7 +51,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.54";
+pub const PROTOCOL_VERSION: &str = "1.55";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

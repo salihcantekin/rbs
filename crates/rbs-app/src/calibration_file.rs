@@ -11,7 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rbs_record::estimate::{Calibration, EncoderMeasure, FpsClass, RateClass, SizeClass};
+use rbs_record::estimate::{
+    Calibration, EncoderMeasure, FpsClass, RateClass, SizeClass, StopReason,
+};
 use serde::{Deserialize, Serialize};
 
 /// The file's format version.
@@ -47,9 +49,44 @@ pub struct EncoderEntry {
     pub frame_time_us: u64,
     /// When it was measured, in seconds since the Unix epoch.
     pub measured_at: u64,
-    /// The run stopped at its time limit before this entry finished.
+    /// The series ended before a step failed or an open was refused (the time
+    /// limit, a cancel or an error after step 1): `sessions` is a lower bound.
     #[serde(default)]
     pub partial: bool,
+    /// Why the series stopped (`refused`, `late`, `ceiling`, `limit`, `cancelled`,
+    /// `error`). Absent in a file written by hand: `limit` when `partial`, else
+    /// `late`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
+}
+
+impl EncoderEntry {
+    /// What [`EncoderEntry::stopped_by`] says, with the reading for an absent or
+    /// unknown value.
+    pub fn stop_reason(&self) -> StopReason {
+        match self.stopped_by.as_deref() {
+            Some("refused") => StopReason::Refused,
+            Some("late") => StopReason::Late,
+            Some("ceiling") => StopReason::Ceiling,
+            Some("limit") => StopReason::Limit,
+            Some("cancelled") => StopReason::Cancelled,
+            Some("error") => StopReason::Error,
+            _ if self.partial => StopReason::Limit,
+            _ => StopReason::Late,
+        }
+    }
+}
+
+/// The file name of a [`StopReason`].
+pub fn stop_reason_name(r: StopReason) -> &'static str {
+    match r {
+        StopReason::Refused => "refused",
+        StopReason::Late => "late",
+        StopReason::Ceiling => "ceiling",
+        StopReason::Limit => "limit",
+        StopReason::Cancelled => "cancelled",
+        StopReason::Error => "error",
+    }
 }
 
 /// One ISO export result.
@@ -194,6 +231,7 @@ fn encoder_measure(e: &EncoderEntry) -> Option<EncoderMeasure> {
         sessions: e.sessions,
         pixels_per_second: e.pixels_per_second,
         frame_time: std::time::Duration::from_micros(e.frame_time_us),
+        stopped_by: e.stop_reason(),
     })
 }
 
@@ -257,6 +295,51 @@ impl CalibrationFile {
         keep_newest(&mut self.folders, |e| e.measured_at);
         self.rbs_version.clone_from(&now.rbs_version);
     }
+
+    /// Takes a run's results (ADR-0087 step D1): drops what no longer holds first (so
+    /// the new entries are stamped with this RBS version), then merges. A new encoder
+    /// entry replaces the one of the same adapter, version and class, except that a
+    /// lower bound (`limit`, `cancelled`, `error`) replaces it only with a higher
+    /// count. A complete folder entry replaces the old one; a partial one only a
+    /// partial one.
+    pub fn merge_run(
+        &mut self,
+        now: &ThisComputer,
+        encoders: Vec<EncoderEntry>,
+        folder: Option<FolderEntry>,
+        folder_exists: impl Fn(&Path) -> bool,
+    ) {
+        self.prune(now, &folder_exists);
+        for new in encoders {
+            let same = |e: &EncoderEntry| {
+                e.adapter == new.adapter
+                    && e.version == new.version
+                    && e.codec == new.codec
+                    && e.size == new.size
+                    && e.fps == new.fps
+                    && e.rate == new.rate
+            };
+            match self.encoders.iter_mut().find(|e| same(e)) {
+                Some(old) => {
+                    if !new.stop_reason().lower_bound() || new.sessions > old.sessions {
+                        *old = new;
+                    }
+                }
+                None => self.encoders.push(new),
+            }
+        }
+        if let Some(new) = folder {
+            match self.folders.iter_mut().find(|f| f.path == new.path) {
+                Some(old) => {
+                    if !new.partial || old.partial {
+                        *old = new;
+                    }
+                }
+                None => self.folders.push(new),
+            }
+        }
+        self.prune(now, &folder_exists);
+    }
 }
 
 #[cfg(test)]
@@ -276,7 +359,58 @@ mod tests {
             frame_time_us: 2_000,
             measured_at: at,
             partial: false,
+            stopped_by: None,
         }
+    }
+
+    #[test]
+    fn a_lower_bound_replaces_only_with_a_higher_count() {
+        let now = computer("1.0");
+        let mut f = CalibrationFile::default();
+        let late = EncoderEntry {
+            stopped_by: Some("late".into()),
+            ..encoder("vt", None, 1)
+        };
+        f.merge_run(&now, vec![late.clone()], None, |_| true);
+        let same = EncoderEntry {
+            stopped_by: Some("cancelled".into()),
+            partial: true,
+            ..encoder("vt", None, 2)
+        };
+        f.merge_run(&now, vec![same], None, |_| true);
+        assert_eq!(f.encoders, vec![late]);
+        let higher = EncoderEntry {
+            stopped_by: Some("limit".into()),
+            partial: true,
+            sessions: 5,
+            ..encoder("vt", None, 3)
+        };
+        f.merge_run(&now, vec![higher.clone()], None, |_| true);
+        assert_eq!(f.encoders, vec![higher]);
+        let full = EncoderEntry {
+            stopped_by: Some("refused".into()),
+            sessions: 2,
+            ..encoder("vt", None, 4)
+        };
+        f.merge_run(&now, vec![full.clone()], None, |_| true);
+        assert_eq!(f.encoders, vec![full]);
+    }
+
+    #[test]
+    fn a_partial_folder_entry_does_not_replace_a_complete_one() {
+        let now = computer("1.0");
+        let mut f = CalibrationFile::default();
+        let folder = |partial, speed| FolderEntry {
+            path: PathBuf::from("/rec"),
+            write_speed: speed,
+            measured_at: 1,
+            partial,
+        };
+        f.merge_run(&now, vec![], Some(folder(false, 100)), |_| true);
+        f.merge_run(&now, vec![], Some(folder(true, 50)), |_| true);
+        assert_eq!(f.folders[0].write_speed, 100);
+        f.merge_run(&now, vec![], Some(folder(false, 70)), |_| true);
+        assert_eq!(f.folders[0].write_speed, 70);
     }
 
     fn computer(rbs: &str) -> ThisComputer {

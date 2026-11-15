@@ -236,7 +236,7 @@ impl Host {
     /// Writes `settings` to the config folder; without one (tests, a headless host)
     /// they are kept in memory only.
     fn save_monitor(&self, settings: &MonitorSettings) -> Result<(), Refusal> {
-        let Some(dir) = &self.recent_dir else {
+        let Some(dir) = &self.config_dir else {
             return Ok(());
         };
         monitor_settings::save(dir, settings)

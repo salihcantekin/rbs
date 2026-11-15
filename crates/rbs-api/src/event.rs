@@ -7,8 +7,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Canvas, CanvasRecordState, CanvasStreamState, MonitorStatus, ProtectionStatus, RecordState,
-    ReplayStatus, SceneList, Settings, SourceInfo, SourceLevels, StreamState, VcamStatus,
+    CalibrationState, Canvas, CanvasRecordState, CanvasStreamState, MonitorStatus,
+    ProtectionStatus, RecordState, ReplayStatus, SceneList, Settings, SourceInfo, SourceLevels,
+    StreamState, VcamStatus,
 };
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
@@ -57,11 +58,14 @@ pub enum Topic {
     /// ADR-0090).
     #[serde(rename = "protection.changed")]
     ProtectionChanged,
+    /// The calibration run, *Test this computer* (state, protocol 1.55, ADR-0087).
+    #[serde(rename = "calibration.state")]
+    CalibrationState,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 13] = [
+    pub const ALL: [Topic; 14] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -75,6 +79,7 @@ impl Topic {
         Topic::StreamCanvasState,
         Topic::MonitorChanged,
         Topic::ProtectionChanged,
+        Topic::CalibrationState,
     ];
 
     /// Its name on the wire.
@@ -93,6 +98,7 @@ impl Topic {
             Topic::StreamCanvasState => "stream.canvas_state",
             Topic::MonitorChanged => "monitor.changed",
             Topic::ProtectionChanged => "protection.changed",
+            Topic::CalibrationState => "calibration.state",
         }
     }
 
@@ -256,6 +262,9 @@ pub enum EventPayload {
     /// Recording protection (protocol 1.49).
     #[serde(rename = "protection.changed")]
     ProtectionChanged(ProtectionStatus),
+    /// The calibration run (protocol 1.55).
+    #[serde(rename = "calibration.state")]
+    CalibrationState(CalibrationState),
 }
 
 impl EventPayload {
@@ -275,6 +284,7 @@ impl EventPayload {
             EventPayload::StreamCanvasState(_) => Topic::StreamCanvasState,
             EventPayload::MonitorChanged(_) => Topic::MonitorChanged,
             EventPayload::ProtectionChanged(_) => Topic::ProtectionChanged,
+            EventPayload::CalibrationState(_) => Topic::CalibrationState,
         }
     }
 }

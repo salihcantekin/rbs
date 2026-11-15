@@ -461,7 +461,7 @@ impl super::Studio {
                 }
                 Err((e, _)) => return Err(e),
             };
-            let fps = 1.0 / self.fps.frame_duration().as_secs_f64();
+            let fps = self.fps.per_second().as_f64();
             let mut e = self.encode_of(
                 adapters,
                 crate::estimate::Use::Iso(crate::estimate::TrackRef {

@@ -1,6 +1,6 @@
 # Output cost estimate
 
-Status: Draft. Decision: [ADR-0087](../adr/0087-output-cost-estimate-and-hardware-limits.md) (Accepted). This spec covers the estimate function (step A), the disk probe and the `calibration.toml` file (step B), the plan of a start and `record.estimate` (step C, control API 1.53); the start gate, the calibration run and the UI are later steps, listed at the end.
+Status: Draft. Decision: [ADR-0087](../adr/0087-output-cost-estimate-and-hardware-limits.md) (Accepted). This spec covers the estimate function (step A), the disk probe and the `calibration.toml` file (step B), the plan of a start and `record.estimate` (step C, control API 1.53), the start gate (control API 1.54) and the calibration run *Test this computer* (step D1, control API 1.55); the export measurement and the UI are later steps, listed at the end.
 
 ## Purpose
 
@@ -17,7 +17,9 @@ Say before a start what it will cost on this computer, which resource sets the l
 | The start gate in the host | `rbs-app` (`studio_host`) | Decided once before the take folder is made; the desktop buttons are older requests until step F |
 | `DiskProbe` (free space per folder, short-lived thread, cache) | `rbs-record` (`estimate`) | Takes the caller's master-clock time and a `ReadFreeSpace` function (`rbs-system-probe` in the app, a fake in tests) |
 | `calibration.toml` (`CalibrationFile`, `load`, `save`, `for_estimate`, `prune`) | `rbs-app` (`calibration_file`) | Beside `app.toml`, outside the `UserData` library |
-| Calibration run | later step | ADR-0087 decision 4 |
+| `calibration::run_encoders`, `measure_write_speed`, `CalibrationPlan` | `rbs-record` (`calibration`) | The calibration run (ADR-0087 decision 4, step D1): plain functions over injected `Lanes`, `Clock`, `Pacer`, `WriteSink` and a stop flag; threads belong to the caller |
+| `Studio::calibration_plan` | `rbs-record` (`studio::estimate_plan`) | What a run measures: the classes of a start's plan and each class's candidates |
+| The run in the host (`calibration.run`, worker and session threads, merge and save) | `rbs-app` (`studio_host::calibration`) | Control API 1.55 |
 
 ## Inputs
 
@@ -46,8 +48,8 @@ Every row has a resource, an optional scope (the adapter id, or `video`/`audio` 
 
 | Resource | Scope | Unit | Need | Limit | Kind |
 | --- | --- | --- | --- | --- | --- |
-| `encoder_sessions` | adapter | `sessions` | sessions on the adapter | measured sessions (the lowest of the classes used), else declared `codec.sessions.max`; absent on hardware is unknown, on software unlimited (level `fits`) | count |
-| `encoder_throughput` | hardware adapter | `pixels_per_second` | sum of width × height × fps | measured pixel rate per class, else declared `codec.video.pixel_rate.max`; mixed classes give the limit at which the same share is used | rate |
+| `encoder_sessions` | adapter | `sessions` | sessions on the adapter | measured, read by `stopped_by` ("Measured encoder entries"), else declared `codec.sessions.max`; absent on hardware is unknown, on software unlimited (level `fits`) | count |
+| `encoder_throughput` | hardware adapter | `pixels_per_second` | sum of width × height × fps | measured pixel rate per class (a limit or a lower bound, "Measured encoder entries"), else declared `codec.video.pixel_rate.max`; mixed classes give the limit at which the same share is used | rate |
 | `cpu_load` | none | `pixels_per_second` | software video encoders' pixel rate | measured pixel rate of the software encoders; unknown without a calibration | rate |
 | `iso_workers` | none | `ratio` | the busiest ISO encode worker: sum of frame time × fps of its tracks | 1.0; unknown without a calibration of every track's class | rate |
 | `iso_render_share` | none | `ratio` | (previous tick + export time per track of its size class) / tick | `give_way_share`; unknown until both the previous tick and the export times are known | rate |
@@ -58,6 +60,25 @@ Every row has a resource, an optional scope (the adapter id, or `video`/`audio` 
 | `active_sources` | none | `sources` | sources kept active | none | informational |
 
 `iso_workers`, `iso_render_share` and `memory` are present only when the plan has separate video tracks; `encoder_throughput` only for hardware adapters; `cpu_load` only when a video encoder is software.
+
+## Measured encoder entries
+
+Each `[[encoders]]` entry of `calibration.toml` (an `EncoderMeasure`) carries `stopped_by` (`StopReason`), which says what its `sessions` and `pixels_per_second` mean:
+
+| `stopped_by` | Cause | `sessions` means |
+| --- | --- | --- |
+| `refused` | an open of session `n ≥ 2` refused (`ResourceExhausted` or `Unsupported`) | a session cap: exactly `n - 1` |
+| `late` | step `n` failed (a late round or a lost frame) | a throughput limit: `n - 1` keep up |
+| `ceiling` | step 20 passed (`SESSION_CEILING`, `MAX_OUTPUTS + MAX_ISO_VIDEO`) | no session cap for any plan |
+| `limit` | the series' share or the run's time ended it during step `n ≥ 2` | a lower bound: at least `n - 1` |
+| `cancelled` | a cancel during step `n ≥ 2` | a lower bound |
+| `error` | an open or encode error after step 1 | a lower bound |
+
+- **`encoder_sessions`, hardware adapter.** The cap is the lowest `sessions` of the adapter's `refused` entries among the plan's classes; the row is measured against it. Without one: when every class the adapter serves in the plan has a `ceiling` entry, the row `fits` (measured, no cap); otherwise the largest `sessions` among the adapter's entries is a lower bound (a session cap belongs to the adapter): a need up to it `fits` (measured), above it the declared `codec.sessions.max` decides, else the row is unknown (`sessions_unknown`).
+- **`encoder_sessions`, software adapter**: unlimited unless `codec.sessions.max` is declared.
+- **`encoder_throughput` and `cpu_load`** combine the classes by share. A `late` entry's `pixels_per_second` is a limit, any other entry's a lower bound. When the combined share is at most 1 the row is measured; above 1 it is `over` only when every entry in the sum is `late`, else unknown (hardware falls back to a declared `pixel_rate_max` first).
+- **A measured 0** (`late` with `sessions = 0`: one session of the class does not keep up) makes the throughput or CPU row `over` with limit 0, never unknown. A refusal at step 1 writes no entry, so `encoder_sessions` is never measured 0.
+- An entry written before 1.55 or by hand without `stopped_by` reads as `limit` when `partial` is true and as `late` otherwise.
 
 ## Levels
 
@@ -84,7 +105,8 @@ Closed codes, as ADR-0087 decision 7: `unknown`, `no_adapter`, `open_failed`, `s
 - The plan is evaluated with n tracks of the kind, n from 0 to the ceiling: the plan's own tracks first, then copies of the template (video copies take workers in turn).
 - Resources that grow with video tracks: `encoder_sessions`, `encoder_throughput`, `iso_workers`, `iso_render_share`, `cpu_load`, `disk_speed` and the video ceiling. With audio tracks: `disk_speed` and the audio ceiling.
 - `count` is n − 1 at the first n with such a resource `over`, and `limit` is that resource. When none is `over` up to the ceiling, `count` is the ceiling and `limit` is `iso_ceiling`.
-- `partial` is true, and `unknown` lists them, when a growing resource is unknown: the count is then an upper bound.
+- `partial` is true, and `unknown` lists them, when a growing resource is unknown: the count is then an upper bound. The unknown rows of the step where a known row is `over` are left out of `unknown`: they cannot change the count.
+- `known_count` is the largest n such that at every step up to n neither the `encoder_sessions` nor the `cpu_load` row (the two that `separate_video_limit` checks) was unknown; a row the plan does not have counts as known, and other rows do not matter (`iso_render_share` stays unknown until the export measurement). `None` when no step beyond 0 was known.
 - `count` and `limit` are `None` when no growing resource other than the ceiling is known.
 - No template (no picture or no sound): `count` 0.
 
@@ -109,7 +131,7 @@ Each separate track lists what it adds per resource: a video track one session, 
 `separate_video_limit(estimate)` is the number of separate video files a start opens; marked sources past it are skipped with the reason `limit`, in source id order.
 
 - It is `max_video.count` when what an encoder can take is known.
-- While `encoder_sessions` or `cpu_load` is among `max_video.unknown` (a hardware encoder whose session limit is neither measured nor declared, or a software encoder whose load is not measured), it is at most `UNKNOWN_SESSIONS_VIDEO_LIMIT` (3), and 3 when the count is `None`: the owner's choice of 2026-11-14 (ADR-0087 Review). Three 1080p60 files kept the master whole on an M4 Pro with its hardware encoder; four did not.
+- While `encoder_sessions` or `cpu_load` is among `max_video.unknown` (a hardware encoder whose session limit is neither measured nor declared, or a software encoder whose load is not measured), it is `min(count, max(known_count, 3))` (`MaxTracks::unknown_capacity_cap`, with `UNKNOWN_SESSIONS_VIDEO_LIMIT` = 3), and 3 when the count is `None`: the owner's choice of 2026-11-14 (ADR-0087 Review). A measured lower bound raises it above 3 up to what was measured; with no measurement it stays 3. Three 1080p60 files kept the master whole on an M4 Pro with its hardware encoder; four did not.
 - A measured or declared session limit decides, above or below 3.
 - `separate_video_bound(plan, estimate)` returns the same number with its cause: `Encoder` (the cap of 3, or `encoder_sessions`, `encoder_throughput`, `cpu_load`), `Resource` (another growing resource) or `NoEncoder` (the plan has no video template: no encoder can take a file). The start gate (control API 1.54) refuses or skips by cause.
 
@@ -121,7 +143,7 @@ Each separate track lists what it adds per resource: a video track one session, 
 - `GateRequest::Older`: never refused. Extra files are skipped; with `NoEncoder` every file. Then, per row (resource, scope) that grows with the files, while it is `heavy` or `over` with the kept files and was neither with none, the last kept file is skipped. `count` is how many files open, a later source taking the slot of one without a picture.
 - The decision carries the estimate of the kept plan, and for a refusal the plan that was judged and the files concerned.
 
-- Until the calibration (step D) no encoder entry is measured, and no adapter in the tree declares `codec.sessions.max`, so every computer gets 3 today. The Settings card still shows the fixed 3 (`SEPARATE_VIDEO_LIMIT`); the live number comes with the UI step.
+- Until *Test this computer* runs (step D1) no encoder entry is measured, and no adapter in the tree declares `codec.sessions.max`, so a computer gets 3; after a run it gets the measured number, which may be more or fewer than 3. The Settings card still shows the fixed 3 (`SEPARATE_VIDEO_LIMIT`); the live number comes with the UI step.
 
 ## Disk probe
 
@@ -151,7 +173,8 @@ sessions = 3
 pixels_per_second = 373248000
 frame_time_us = 2100
 measured_at = 1763150000     # seconds since the Unix epoch
-partial = false              # the run stopped at its time limit
+partial = false              # stopped_by is limit, cancelled or error
+stopped_by = "late"          # refused, late, ceiling, limit, cancelled, error
 
 [[exports]]
 size = "1080"
@@ -162,12 +185,29 @@ measured_at = 1763150000
 path = "D:/Recordings"       # kept in this local file only
 write_speed = 412000000      # bytes per second
 measured_at = 1763150000
+partial = false              # the write stopped early
 ```
 
 - **Read** (`load`): a missing file is empty. A file that cannot be read, of another `kind` or another `format` is taken as empty with a message, and replaced when a calibration next writes.
 - **For the estimate** (`for_estimate(this computer, folder)`): an encoder entry holds when its adapter still probes with the same `version`; an entry without a version holds only while `rbs_version` equals the running version. Export entries hold while `rbs_version` is unchanged. The write speed is the entry of the start's recording folder. Entries with a class name this build does not know are skipped.
 - **Before a write** (`prune`): entries that no longer hold are dropped, folder entries whose folder no longer exists are dropped, the newest `MAX_ENTRIES` (64) of each kind are kept, and `rbs_version` is stamped.
+- **After a run** (`merge_run`): the file is pruned, then each encoder entry replaces the one with the same key (adapter, version, codec, size, fps, rate), except that an entry with a lower-bound reason (`limit`, `cancelled`, `error`) replaces an old one only when its `sessions` is higher, so a cancelled run never lowers a full measurement. A complete folder entry replaces the old one; a partial one only a partial one. Then the file is pruned again and written.
 - Written in one step (a temporary file, then a rename).
+
+## Calibration run
+
+*Test this computer* (ADR-0087 decision 4, step D1, control API 1.55 `calibration.run`) measures what the plan of a start with a recording profile can use on this computer, and merges it into `calibration.toml`.
+
+- **What.** `Studio::calibration_plan` takes the plan of `record.estimate` for the profile and canvas: the master and every separate video file of a marked source. The classes are the distinct (codec, size class, frame-rate class, rate-control class) of its video encodes, the master's first; each class uses the profile's video settings at the canvas frame rate, NV12 in system memory, at the largest planned size of the class. The candidates of a class are the encoders the selection would consider for it (hardware first, `picture_outside` applied; only the picked one when the profile picks one); the one the plan uses is `likely`. Stream encodes are not measured. No graph and no GPU work: frames are pre-filled system-memory frames, the default recording path (ADR-0038).
+- **Layout.** As a take: session 1 on its own lane (the master's partition), session `i ≥ 2` on lane `1 + (i - 2) % 2`, the `SHARED_ENGINE_PARTITIONS` (2) shared workers. When ADR-0119 steps (c) and (d) give files partitions of their own, the layout follows. Stream outputs on their own partitions are not modelled, which is conservative.
+- **Frames.** A ring of `RING_FRAMES` (8) frames of a moving picture (`moving_ring`: a diagonal gradient that shifts each frame and a bright block moving across it), used in order. It costs an encoder about what a screen or a camera does; noise cost VideoToolbox about 40 % more than any real picture on an M4 Pro (2026-11-15 measurement, the owner's choice in ADR-0087's Review). Every frame differs; timestamps increase per session for the life of the series. Sessions stay open across steps: step `n + 1` opens one more. Frame memory is per class and freed before the next.
+- **A step** `n` (1 to `SESSION_CEILING`, 20) opens session `n`, runs a warm-up (unjudged rounds until no session's backlog has grown for `WARMUP_STABLE` (10) rounds, at least `WARMUP_MIN` 10, at most `WARMUP_MAX` 120, each bounded by `WARMUP_ROUND_LIMIT` 1 s; a backlog still growing at the end fails the step as late), then `JUDGED_SECONDS` × fps (2 s of video) judged rounds back to back. Each session's backlog at the end of warm-up is its `L`.
+- **A late frame** (decision 4's definition). With period `P = 1 / fps`, the round's duration `d_k` (all waiting inside it included) and `e_{-1} = t_start`: `e_k = max(e_{k-1}, t_start + k·P) + d_k`. A judged round is late when (a) `e_k > t_start + (k + Q)·P` with `Q` = `JITTER_DEPTH` (3), so slack is never banked and a single round of up to `Q·P` passes; or (b) any session holds more than `L + Q` frames not yet drained. The step also fails when (a') the mean `d_k` without the `Q` longest is above `P` (a steady shortfall), or (c) a judged frame older than the newest drained one minus `LOST_WINDOW` (16) frames has no packet (a lost frame, checked again at the next step and after the flush). A step stops at its first late round. Two runs on one machine can differ by one step.
+- **`Busy`.** A refused submit drains and retries, yielding, until the frame is accepted, the round can no longer be on time (late), or the stop flag is set. The method runs unpaced, so an encoder that clocks down when idle may measure higher than it runs (decision 10).
+- **The entry** of a series: `sessions` the highest passing step, `pixels_per_second` = `sessions × width × height × fps`, `stopped_by` ("Measured encoder entries"), and `frame_time_us`: after step 1, session 1 runs `FRAME_TIME_SETTLE + FRAME_TIME_ROUNDS` (5 + 30) rounds paced at `P` and the mean submit-plus-drain call time of the last 30 is the worker's own cost per frame. A series that does not finish step 1 for a reason other than `late` or `refused` writes no entry; it is `skipped` (`busy` or `unsupported` for a refused first open, `open_failed`, `encode_failed`, `time_limit`, `cancelled`). A lost device ends the whole run `failed` (`device_lost`) and nothing is written.
+- **Time.** `CALIBRATION_LIMIT` 60 s for the run; `WRITE_RESERVE` 15 s is kept for the write, which runs last. Pass 1 measures the likely candidate of each class (`FIRST_PASS` 30 s shared equally), pass 2 the other candidates with the rest up to 45 s; unused time passes to the next series. A series whose share is below its estimated step-1 cost (`(WARMUP_MIN + 2 × fps) × frame_time` of the class's first measured series, or 1 s) is skipped with `time_limit`.
+- **The folder write** (`measure_write_speed`). Skipped (`no_room`) when the probe's free space is known and below twice `CALIBRATION_WRITE_BYTES`. Left-over `.rbs-calibration-<pid>.tmp` files of other processes older than `LEFTOVER_AGE` (10 min) are removed. Then `.rbs-calibration-<this pid>.tmp` gets 256 MiB of incompressible data in 8 MiB chunks, is synced (`sync_all`, `F_FULLFSYNC` on macOS) and removed in every case; the speed is bytes over the time to the end of the sync. A stop between chunks syncs what was written and records it as `partial` from `PARTIAL_MIN_BYTES` (32 MiB); an unsynced rate is never recorded.
+- **In the app.** A worker thread and two session threads, each body inside `rbs_crash::contain`, talk over channels; a panicked or disconnected lane ends the run `failed` (`panicked`). The worker reports to the control thread through its message channel. The host ends a run that has not ended by its deadline (start + 65 s, or 5 s after a cancel) itself, with what it received, and detaches the threads; sessions a hung worker holds stay open until the app restarts. Nothing runs while no test runs (P13), and the run never touches the render loop or a running encoder: it is refused while any output runs and every start is refused while it runs.
 
 ## Cost
 
@@ -176,6 +216,7 @@ Nothing runs unless the caller asks. The function is called by the control threa
 ## Later steps
 
 - C: the desktop app's and the API's picture files take their limit from the estimate (C1, done); `calibration.toml` read at app start, the disk probe in the host, the plan of a whole start and `record.estimate` (C2a, control API 1.53, done). The start gate (`acknowledge_heavy`, `on_hardware_limit`), the profile setting `recording.iso.on_hardware_limit`, the per-file open rules and the manifest's `[[skipped]]` (C2b, control API 1.54, done).
-- D: *Test this computer* (`calibration.run`, `calibration.cancel`, `calibration.status`, topic `calibration.state`).
+- D1: *Test this computer* (`calibration.run`, `calibration.cancel`, `calibration.status`, topic `calibration.state`, control API 1.55): the encoder sessions and the folder write speed (done; see "Calibration run").
+- D2: the export time per size class in a throwaway GPU context and the native-surface path (ADR-0087 decisions 4 and 9); until then `[[exports]]` stays empty and `iso_render_share` unknown after a run.
 - E: the render partition's previous-tick time published for the estimate (hot path: measurements and sign-off).
 - F: the meter, the sentence, the button and the start confirmation in the desktop app.

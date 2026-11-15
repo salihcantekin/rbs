@@ -62,6 +62,7 @@ use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
+mod calibration;
 pub mod filters;
 mod loudness;
 mod monitor;
@@ -1494,6 +1495,7 @@ fn marker_color(c: Option<rbs_api::request::MarkerColor>) -> Option<rbs_manifest
 }
 
 /// The canvas an output records or streams (ADR-0093 decision 6).
+pub use calibration::CalibrationSetup;
 pub use rbs_api::types::OutputCanvas;
 
 /// `c`'s place in the host's per-canvas state.
@@ -2129,6 +2131,11 @@ enum Msg {
         id: SourceId,
         picture: Option<rbs_capture::RegionGrab>,
     },
+    /// The worker of calibration run `id` reports (ADR-0087 step D1).
+    Calibration {
+        id: u64,
+        msg: calibration::WorkerMsg,
+    },
 }
 
 /// How the studio starts.
@@ -2158,9 +2165,9 @@ pub struct HostConfig {
     /// The platform's virtual camera, `None` where there is none: the studio sends
     /// to it on [`Command::StartVirtualCamera`].
     pub virtual_camera: Option<CameraFactory>,
-    /// The config folder where the recent targets are kept
-    /// ([`crate::recent_targets`]); `None`: they are kept in memory only.
-    pub recent_dir: Option<PathBuf>,
+    /// The config folder where the recent targets ([`crate::recent_targets`]) and
+    /// `calibration.toml` are kept; `None`: they are kept in memory only.
+    pub config_dir: Option<PathBuf>,
     /// A transition also puts the old program scene in preview (ADR-0098); false by
     /// default.
     pub swap_after_transition: bool,
@@ -2177,6 +2184,9 @@ pub struct HostConfig {
     /// decision 1), on the probe's own short-lived thread; `None`: free space is
     /// unknown.
     pub read_free_space: Option<FreeSpaceReader>,
+    /// The calibration run's clock, pacer, file system and wall time (ADR-0087 step
+    /// D1); `None`: the real ones. Tests inject a test clock and a fake sink.
+    pub calibration_setup: Option<calibration::CalibrationSetup>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -2213,12 +2223,13 @@ impl HostConfig {
             collection: None,
             autosave: None,
             virtual_camera: None,
-            recent_dir: None,
+            config_dir: None,
             swap_after_transition: false,
             monitor: MonitorSettings::default(),
             system_probe: None,
             calibration: crate::calibration_file::CalibrationFile::default(),
             read_free_space: None,
+            calibration_setup: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -2536,9 +2547,11 @@ struct Host {
     autosave: Option<CollectionSaver>,
     /// The recent targets per source type and the folder they are saved in.
     recent: RecentTargets,
-    recent_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     /// The last calibration of this computer (ADR-0087 decision 4).
     calibration: crate::calibration_file::CalibrationFile,
+    /// The calibration run, *Test this computer* (ADR-0087 step D1).
+    calibration_run: calibration::CalibrationHost,
     /// Free space of recording folders for the estimate; `None` when the app gave no
     /// reader. Starts a thread only while a read runs (P13).
     disk_probe: Option<rbs_record::estimate::DiskProbe>,
@@ -2725,7 +2738,8 @@ fn run(
                     | Msg::PickFailed(_)
                     | Msg::ReplayWritten(_)
                     | Msg::Thumbnail { .. }
-                    | Msg::RegionPreview { .. } => {}
+                    | Msg::RegionPreview { .. }
+                    | Msg::Calibration { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -2764,6 +2778,8 @@ fn run(
             }
         }
     }
+    // A calibration run stops; the app does not wait for its worker.
+    host.calibration_run.stop();
     // Closing while recording: keep the tails too, as Stop does.
     let ending: Vec<OutputId> = host
         .outs
@@ -2861,6 +2877,7 @@ fn round(
                 });
             }
         }
+        Some(Msg::Calibration { id, msg }) => host.calibration_msg(id, msg),
         Some(Msg::ApiWake) | None => {}
     }
     // One API request per round: a UI command that arrived meanwhile is taken by the
@@ -2881,10 +2898,12 @@ fn round(
         notify(Update::Failed(why));
     }
     if failed.is_some() {
+        // A run still meets its deadline while the studio is failed.
+        let calibration = host.drive_calibration();
         return if served_api {
             Duration::ZERO
         } else {
-            Duration::from_secs(3600)
+            calibration.unwrap_or(Duration::from_secs(3600))
         };
     }
     let serviced = host.studio.service();
@@ -2944,6 +2963,9 @@ fn round(
         wait = wait.min(left);
     }
     if let Some(left) = host.drive_monitor(now) {
+        wait = wait.min(left);
+    }
+    if let Some(left) = host.drive_calibration() {
         wait = wait.min(left);
     }
     host.report_monitor(notify);
@@ -3132,12 +3154,13 @@ fn start(
         fault: config_fault,
         autosave: config.autosave,
         recent: config
-            .recent_dir
+            .config_dir
             .as_deref()
             .map(|d| crate::recent_targets::load(d).0)
             .unwrap_or_default(),
-        recent_dir: config.recent_dir,
+        config_dir: config.config_dir,
         calibration: config.calibration,
+        calibration_run: calibration::CalibrationHost::new(config.calibration_setup),
         disk_probe: config
             .read_free_space
             .map(|r| rbs_record::estimate::DiskProbe::new(r.0)),
@@ -4608,6 +4631,9 @@ impl Host {
         profile: Option<String>,
         gate: StartGate,
     ) -> Result<RecordingUpdate, StartError> {
+        if let Some(why) = self.calibration_blocks() {
+            return Err(StartError::Message(format!("{why}.")));
+        }
         if self.outs[slot(c)].recording.is_some() {
             return Err(StartError::Message(
                 "A recording is already running.".into(),
@@ -5510,16 +5536,7 @@ impl Host {
         adapters: Vec<rbs_record::estimate::DeclaredAdapter>,
         folder: &Path,
     ) -> rbs_record::estimate::Limits {
-        let this = crate::calibration_file::ThisComputer {
-            // No adapter reports `adapter.version` yet (ADR-0087 decision 4).
-            adapters: self
-                .adapters
-                .video_encoders
-                .ids()
-                .map(|id| (id.as_str().to_owned(), None))
-                .collect(),
-            rbs_version: env!("CARGO_PKG_VERSION").to_owned(),
-        };
+        let this = self.this_computer();
         let calibration = self.calibration.for_estimate(&this, folder);
         let now = self.clock.now();
         let free_space = self
@@ -5531,6 +5548,20 @@ impl Host {
             calibration: Some(calibration),
             free_space,
             previous_tick: None,
+        }
+    }
+
+    /// This computer's adapters and RBS version, for the calibration file.
+    fn this_computer(&self) -> crate::calibration_file::ThisComputer {
+        crate::calibration_file::ThisComputer {
+            // No adapter reports `adapter.version` yet (ADR-0087 decision 4).
+            adapters: self
+                .adapters
+                .video_encoders
+                .ids()
+                .map(|id| (id.as_str().to_owned(), None))
+                .collect(),
+            rbs_version: env!("CARGO_PKG_VERSION").to_owned(),
         }
     }
 
@@ -5754,6 +5785,9 @@ impl Host {
     /// stream's encoders and output to the running studio. The connection is made in
     /// the background; [`Host::report_link`] tells the UI how it goes.
     fn start_stream(&mut self, c: OutputCanvas, r: &StreamRequest) -> Result<StreamUpdate, String> {
+        if let Some(why) = self.calibration_blocks() {
+            return Err(format!("{why}."));
+        }
         if self.outs[slot(c)].streaming.is_some() {
             return Err("A stream is already running.".into());
         }
@@ -5986,6 +6020,9 @@ impl Host {
 
     /// Starts sending to the virtual camera with `settings`.
     fn start_camera(&mut self, settings: VirtualCameraSettings) -> Result<(), String> {
+        if let Some(why) = self.calibration_blocks() {
+            return Err(format!("{why}."));
+        }
         let factory = self
             .camera_factory
             .clone()
@@ -6137,7 +6174,7 @@ impl Host {
         let changed = self
             .recent
             .push(kind.type_id().as_str(), adapter, target, &name);
-        if changed && let Some(dir) = &self.recent_dir {
+        if changed && let Some(dir) = &self.config_dir {
             // A list that cannot be saved is still kept for this run.
             let _ = crate::recent_targets::save(dir, &self.recent);
         }
@@ -6157,7 +6194,7 @@ impl Host {
     /// Forgets the recent targets of `kind` and saves the list.
     fn clear_recent_targets(&mut self, kind: SourceKind) {
         if self.recent.clear(kind.type_id().as_str())
-            && let Some(dir) = &self.recent_dir
+            && let Some(dir) = &self.config_dir
         {
             let _ = crate::recent_targets::save(dir, &self.recent);
         }
@@ -9825,6 +9862,7 @@ fn api_estimate(
         partial: m.partial,
         unknown: m.unknown.iter().copied().map(api_resource).collect(),
         at_most_now: now.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+        known_count: m.known_count,
     };
     api::EstimateAnswer {
         level: api_level(e.level),
@@ -9901,6 +9939,18 @@ impl ApiTarget<'_> {
                 ErrorKind::Conflict,
                 "a switch of output profiles or scene collections is still being made; try again",
             ));
+        }
+        // No output starts while *Test this computer* runs (ADR-0087 step D1).
+        if matches!(
+            command,
+            C::RecordStart(_)
+                | C::RecordStartToFile(_)
+                | C::StreamStart(_)
+                | C::VcamStart
+                | C::ReplayArm
+        ) && let Some(why) = host.calibration_blocks()
+        {
+            return Err(ApiError::new(ErrorKind::Conflict, why));
         }
         match command {
             C::StudioGet => Ok(Response::Studio(api::Snapshot {
@@ -10949,6 +10999,40 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::CalibrationRun(p) => {
+                check_profile(&p.profile)?;
+                let Some(one) = p.canvas.unwrap_or_default().single() else {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "one canvas per run: main or vertical",
+                    ));
+                };
+                let c = host.api_canvas_of(Some(one))?;
+                if host.switch_pending.is_some() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the studio is restarting",
+                    ));
+                }
+                host.run_calibration(c).map_err(|e| match e {
+                    calibration::RunRefusal::Conflict(why) => {
+                        ApiError::new(ErrorKind::Conflict, why)
+                    }
+                    calibration::RunRefusal::NotFound(why) => {
+                        ApiError::new(ErrorKind::NotFound, why)
+                    }
+                    calibration::RunRefusal::Failed(why) => failed(why),
+                })?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::CalibrationCancel => {
+                host.cancel_calibration();
+                Ok(Response::Done(Empty {}))
+            }
+            C::CalibrationStatus => Ok(Response::CalibrationStatus(api::Snapshot {
+                seq: host.events.seq_map([Topic::CalibrationState]),
+                data: host.api_calibration(),
+            })),
             C::ProtectionStatus => Ok(Response::ProtectionStatus(api::Snapshot {
                 seq: host.events.seq_map([Topic::ProtectionChanged]),
                 data: host.api_protection(),
