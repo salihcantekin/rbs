@@ -3184,6 +3184,13 @@ export component InfoHint inherits Rectangle {
 // click, rename in place, the remove question asked in place, and drag and drop
 // feedback. What an item does is its owner's: the row only reports it.
 export component ListRow inherits Rectangle {
+    // Off screen, a row's whole subtree is skipped (rule 17, lean): Slint visits every
+    // item of a layout on each frame and each pointer move, also rows scrolled out of
+    // view, unless an item clips its children. Nothing of a row is drawn outside it
+    // (its focus ring, plates and effects stay inside; popovers are window layers;
+    // a render with and without the clip differs only in icon anti-aliasing). Not on
+    // SettingRow: a control flush with its edge has effects that reach past it.
+    clip: true;
     // Leading part: `lead` text when set, otherwise `icon` when `has-icon`.
     in property <string> lead;
     in property <bool> has-icon;
@@ -3730,10 +3737,14 @@ export component ListBox inherits Rectangle {
     property <length> content-h: max(0px, root.lines * root.pitch - root.spacing);
     property <int> lines-in-view: max(1, Math.floor((area.height + root.spacing) / root.pitch));
     // The rows to build: all of them, or with `virtual` the ones in view and a page around.
-    out property <int> first-shown: !root.virtual ? 0
-        : max(0, (Math.floor(area.offset / root.pitch) - root.lines-in-view) * root.columns-shown);
+    // The number of rows never depends on the scroll offset: Slint rebuilds every row of a
+    // `for` whose count is evaluated again, so a count that followed the offset rebuilt
+    // all rows on each wheel step and a fast wheel froze the list. Only `first-shown`
+    // follows the offset; the rows keep their elements and take other items.
     out property <int> shown-count: !root.virtual ? root.count
-        : min(root.count - root.first-shown, (3 * root.lines-in-view + 1) * root.columns-shown);
+        : min(root.count, (3 * root.lines-in-view + 1) * root.columns-shown);
+    out property <int> first-shown: !root.virtual ? 0
+        : clamp((Math.floor(area.offset / root.pitch) - root.lines-in-view) * root.columns-shown, 0, max(0, root.count - root.shown-count));
     preferred-height: root.inline ? root.content-h
         : root.max-rows > 0 ? max(0px, min(root.lines, root.max-rows) * root.pitch - root.spacing) : root.content-h;
     min-height: root.inline ? root.content-h : 0px;
@@ -3793,6 +3804,9 @@ export component SelectList inherits Rectangle {
     in property <length> room;
     property <length> pad: Tokens.space-1;
     property <int> count: Overlays.select-options.length;
+    // Set when the list opens and when a key moves the highlight; the highlighted row
+    // takes the focus once and clears it.
+    property <bool> focus-wanted: true;
     height: min(root.count * Tokens.size-control-md, Tokens.size-select-list-h, root.room - 2 * root.pad) + 2 * root.pad;
     function report() {
         Overlays.select-cover = { x: self.x, y: self.y, width: self.width, height: self.height };
@@ -3815,15 +3829,27 @@ export component SelectList inherits Rectangle {
             virtual: true;
             drag-pan: false;
             current: Overlays.select-current;
-            current-changed(i) => { Overlays.select-current = i; }
+            current-changed(i) => {
+                Overlays.select-current = i;
+                root.focus-wanted = true;
+            }
             accessible-label: Overlays.select-label;
             accessible-description: @tr("{} options", root.count);
             for k in box.shown-count: row := ListRow {
                 property <int> i: box.first-shown + k;
                 property <bool> current: self.i == Overlays.select-current;
-                // The highlighted row takes the focus, also when it is built after a jump.
-                init => { if self.current { self.focus-row(); } }
-                changed current => { if self.current { self.focus-row(); } }
+                // The highlighted row takes the focus when the list opens or a key moves
+                // the highlight, also when its row is built after a jump. Not when the
+                // wheel or the bar only rebuilds the rows in view: focusing a row
+                // scrolls it into view, which would pull the list back to it.
+                function take-focus() {
+                    if self.current && root.focus-wanted {
+                        root.focus-wanted = false;
+                        self.focus-row();
+                    }
+                }
+                init => { self.take-focus(); }
+                changed current => { self.take-focus(); }
                 x: box.cell-x(self.i);
                 y: box.cell-y(self.i);
                 width: box.cell-width;
@@ -3832,7 +3858,9 @@ export component SelectList inherits Rectangle {
                 icon: self.i == Overlays.select-chosen ? IconName.check : IconName.none;
                 name: Overlays.select-options[self.i];
                 selected: self.i == Overlays.select-chosen;
-                activated => { Overlays.choose-select(self.i); }
+                // A click chooses the row under the pointer. Return or Space chooses the
+                // highlighted option: after the wheel this row may hold another option.
+                activated => { Overlays.choose-select(self.keyboard-focus ? Overlays.select-current : self.i); }
                 key(e) => {
                     if e.text == Key.Escape { Overlays.select-open = false; return accept; }
                     box.key(e)
@@ -4207,7 +4235,15 @@ export component OverlayHost inherits Rectangle {
     if Overlays.hint-open: hint := Rectangle {
         width: root.width;
         height: root.height;
-        TouchArea { clicked => { Overlays.close-hint(); } }
+        // The wheel outside closes it too: the page would move under a popover that
+        // stays where its control was. The event goes on, so the page still scrolls.
+        TouchArea {
+            clicked => { Overlays.close-hint(); }
+            scroll-event(e) => {
+                Overlays.close-hint();
+                reject
+            }
+        }
         box := MenuSurface {
             width: Tokens.size-menu-md;
             height: body.preferred-height;
@@ -4252,21 +4288,35 @@ export component OverlayHost inherits Rectangle {
     if Overlays.color-open: Rectangle {
         width: root.width;
         height: root.height;
-        TouchArea { clicked => { Overlays.color-open = false; } }
+        TouchArea {
+            clicked => { Overlays.color-open = false; }
+            // As for the hint: the wheel outside closes it and scrolls the page.
+            scroll-event(e) => {
+                Overlays.color-open = false;
+                reject
+            }
+        }
         ColorPopover {
             x: clamp(Overlays.color-x, Tokens.space-1, root.width - self.width - Tokens.space-1);
             y: Overlays.color-y + Overlays.color-h + Tokens.space-1 + self.height > root.height ? max(Tokens.space-1, Overlays.color-y - Tokens.space-1 - self.height) : Overlays.color-y + Overlays.color-h + Tokens.space-1;
         }
     }
     // The long list of a Select: under its field, or above it when there is more room
-    // there; a click outside closes it.
+    // there; a click or the wheel outside closes it (the wheel then scrolls the page,
+    // as for the hint), so the list never stays behind while its field moves.
     if Overlays.select-open: Rectangle {
         width: root.width;
         height: root.height;
         property <length> below: root.height - Overlays.select-y - Overlays.select-h - Tokens.space-1;
         property <length> above: Overlays.select-y - Tokens.space-1;
         property <bool> down: self.below >= Tokens.size-select-list-h || self.below >= self.above;
-        TouchArea { clicked => { Overlays.select-open = false; } }
+        TouchArea {
+            clicked => { Overlays.select-open = false; }
+            scroll-event(e) => {
+                Overlays.select-open = false;
+                reject
+            }
+        }
         SelectList {
             room: parent.down ? parent.below : parent.above;
             width: min(max(Overlays.select-w, Tokens.size-menu-sm), root.width - 2 * Tokens.space-1);
