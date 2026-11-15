@@ -525,7 +525,8 @@ component TokenEditorRow inherits Rectangle {
             if item.kind == 4: VerticalLayout {
                 alignment: center;
                 SegmentedControl {
-                    width: Tokens.size-menu-sm;
+                    // Never narrower than its labels (a fixed width cut "Tactile" off).
+                    width: max(Tokens.size-menu-sm, self.min-width);
                     label: item.label;
                     options: [@tr("Calm"), @tr("Glow"), @tr("Glass"), @tr("Tactile")];
                     index: item.choice;

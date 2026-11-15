@@ -3151,6 +3151,13 @@ export component InfoHint inherits Rectangle {
 // click, rename in place, the remove question asked in place, and drag and drop
 // feedback. What an item does is its owner's: the row only reports it.
 export component ListRow inherits Rectangle {
+    // Off screen, a row's whole subtree is skipped (rule 17, lean): Slint visits every
+    // item of a layout on each frame and each pointer move, also rows scrolled out of
+    // view, unless an item clips its children. Nothing of a row is drawn outside it
+    // (its focus ring, plates and effects stay inside; popovers are window layers;
+    // a render with and without the clip differs only in icon anti-aliasing). Not on
+    // SettingRow: a control flush with its edge has effects that reach past it.
+    clip: true;
     // Leading part: `lead` text when set, otherwise `icon` when `has-icon`.
     in property <string> lead;
     in property <bool> has-icon;
