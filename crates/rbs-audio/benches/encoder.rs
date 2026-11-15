@@ -15,6 +15,7 @@ use rbs_core::media::{
     AudioBlock, AudioFormat, BitstreamFormat, Bytes, CodecId, EncodedPacket, StreamDescriptor,
     StreamParams,
 };
+use rbs_core::pause::PauseWindow;
 use rbs_core::time::Timestamp;
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
@@ -97,7 +98,34 @@ fn active(g: &mut GraphDescription, d: &NodeDescriptor, p: PartitionId) -> NodeI
     id
 }
 
+fn null_encoder() -> EncoderNode {
+    EncoderNode::new(
+        Box::new(Null(StreamDescriptor::new(
+            CodecId::Aac,
+            BitstreamFormat::Raw,
+            Bytes::new(),
+            StreamParams::audio(AudioFormat::STEREO_48K, 1024),
+        ))),
+        64,
+    )
+}
+
 fn encoder_side(c: &mut Criterion) {
+    run(
+        c,
+        "audio_encoder_block/queue_reader_and_encoder_node",
+        Box::new(null_encoder()),
+    );
+    // A recording never paused (ADR-0124 decision 8): what the pause gate adds.
+    let frames = AudioGraphConfig::default().block_frames as usize;
+    run(
+        c,
+        "audio_encoder_block/queue_reader_and_pausable_encoder_node",
+        Box::new(null_encoder().with_pause(Arc::new(PauseWindow::default()), frames)),
+    );
+}
+
+fn run(c: &mut Criterion, name: &str, enc: Box<dyn Node<()>>) {
     let config = AudioGraphConfig::default();
     let frames = config.block_frames as usize;
     let tone: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
@@ -110,15 +138,6 @@ fn encoder_side(c: &mut Criterion) {
         ),
         [tone.clone(), tone],
     );
-    let enc = EncoderNode::new(
-        Box::new(Null(StreamDescriptor::new(
-            CodecId::Aac,
-            BitstreamFormat::Raw,
-            Bytes::new(),
-            StreamParams::audio(AudioFormat::STEREO_48K, 1024),
-        ))),
-        64,
-    );
     let out = Out(NodeDescriptor::new(
         NodeTypeId::new("org.rbs.bench.packet-out"),
         NodeKind::Output,
@@ -127,7 +146,7 @@ fn encoder_side(c: &mut Criterion) {
     ));
     let mut g = GraphDescription::new();
     let b = active(&mut g, &block.0, AUDIO);
-    let e = active(&mut g, Node::<()>::descriptor(&enc), ENCODER);
+    let e = active(&mut g, enc.descriptor(), ENCODER);
     let o = active(&mut g, &out.0, ENCODER);
     g.connect(b, "out", e, "in").unwrap();
     g.connect(e, "packets", o, "in").unwrap();
@@ -142,7 +161,7 @@ fn encoder_side(c: &mut Criterion) {
     audio.0.set_audio_block_frames(config.block_frames);
     encoder.0.set_audio_block_frames(config.block_frames);
     audio.0.adopt(b, Box::new(block)).unwrap();
-    encoder.0.adopt(e, Box::new(enc)).unwrap();
+    encoder.0.adopt(e, enc).unwrap();
     encoder.0.adopt(o, Box::new(out)).unwrap();
     let new = lowered.created.pop().unwrap();
     let (w, r) = new.ends.writer::<()>();
@@ -166,16 +185,13 @@ fn encoder_side(c: &mut Criterion) {
     // One block written, then the reader and the encoder node take it: the measured
     // part is the encoder partition's tick (the writer's tick is included, as on the
     // audio thread it runs elsewhere; `audio_mixer_block` shows its share).
-    c.bench_function(
-        "audio_encoder_block/queue_reader_and_encoder_node",
-        |bench| {
-            bench.iter(|| {
-                audio.1.run_tick(Tick::of(&cadence, i));
-                encoder.1.run_tick(Tick::new(i, cadence.time_of(i)));
-                i += 1;
-            })
-        },
-    );
+    c.bench_function(name, |bench| {
+        bench.iter(|| {
+            audio.1.run_tick(Tick::of(&cadence, i));
+            encoder.1.run_tick(Tick::new(i, cadence.time_of(i)));
+            i += 1;
+        })
+    });
     std::hint::black_box(bell.wait(std::time::Duration::ZERO));
 }
 

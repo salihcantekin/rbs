@@ -10,6 +10,7 @@ use rbs_capture::{CaptureRequest, TargetId};
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{FramePayload, PixelFormat, Size, VideoFrame};
+use rbs_core::pause::PauseWindow;
 use rbs_core::time::{TestClock, Timestamp};
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_gpu::node::{CompositorNode, GpuRuntime, NodeLayer, RenderLocal};
@@ -29,6 +30,9 @@ const H: u32 = 72;
 struct Probe {
     desc: NodeDescriptor,
     frames: Arc<Mutex<Vec<VideoFrame>>>,
+    /// Set: only the frames' times are kept, so the export's frame buffers come back
+    /// (a held frame keeps its buffer, and the ring has a few).
+    times: Option<Times>,
     last: Option<(Timestamp, u64)>,
 }
 
@@ -44,7 +48,10 @@ impl Node<GpuRuntime> for Probe {
             let key = (frame.timestamp(), frame.sequence());
             if self.last != Some(key) {
                 self.last = Some(key);
-                self.frames.lock().unwrap().push(frame.share().unwrap());
+                match &self.times {
+                    Some(times) => times.lock().unwrap().push(frame.timestamp()),
+                    None => self.frames.lock().unwrap().push(frame.share().unwrap()),
+                }
             }
         }
         Ok(())
@@ -76,6 +83,7 @@ fn gpu() -> Option<Arc<GpuContext>> {
 }
 
 type Frames = Arc<Mutex<Vec<VideoFrame>>>;
+type Times = Arc<Mutex<Vec<Timestamp>>>;
 
 /// The test pipeline's export gives way after a previous tick this long (an ISO track's
 /// rule, ADR-0086 decision 9); the other tests' ticks take no time, so it never does.
@@ -138,8 +146,14 @@ fn pipeline(
     size: Option<Size>,
     formats: &[PixelFormat],
 ) -> Option<(Rig, Frames, NodeId, Arc<ExportEnd>)> {
-    pipeline_from(Arc::new(TestCaptureFactory::new()), target, size, formats)
-        .map(|(rig, frames, export, end, _)| (rig, frames, export, end))
+    pipeline_from(
+        Arc::new(TestCaptureFactory::new()),
+        target,
+        size,
+        formats,
+        None,
+    )
+    .map(|(rig, frames, export, end, _)| (rig, frames, export, end))
 }
 
 /// A pipeline, its frames, the export node, its end and the capture node's counters.
@@ -151,7 +165,9 @@ fn pipeline_from(
     target: &str,
     size: Option<Size>,
     formats: &[PixelFormat],
+    pause: Option<Arc<PauseWindow>>,
 ) -> Option<Built> {
+    let paused_times = pause.is_some();
     let ctx = gpu()?;
     let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
     let clock = TestClock::new();
@@ -185,6 +201,11 @@ fn pipeline_from(
     let comp = rig.add(Box::new(comp));
     let export = VideoExportNode::new(YuvFormat::Nv12, W, H, W, H)
         .give_way_after(std::time::Duration::from_millis(GIVE_WAY_MS));
+    let export = match pause {
+        Some(pause) => export.with_pause(pause),
+        None => export,
+    };
+    let times = paused_times.then(Times::default);
     let end = export.end();
     let export = rig.add(Box::new(export));
     let frames = Arc::new(Mutex::new(Vec::new()));
@@ -196,6 +217,7 @@ fn pipeline_from(
             vec![],
         ),
         frames: Arc::clone(&frames),
+        times: times.clone(),
         last: None,
     }));
     rig.graph.connect(capture, "video", comp, "layers").unwrap();
@@ -205,7 +227,15 @@ fn pipeline_from(
     assert!(report.failed.is_empty(), "{report:?}");
     rig.exec.swap_pending();
     let _ = rig.ctl.collect();
+    if let Some(times) = times {
+        TIMES.with(|t| *t.borrow_mut() = Some(times));
+    }
     Some((rig, frames, export, end, stats))
+}
+
+thread_local! {
+    /// The times the probe of this thread's last paused pipeline kept.
+    static TIMES: std::cell::RefCell<Option<Times>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The luma and chroma bytes at the centre of an NV12 system frame.
@@ -346,6 +376,7 @@ fn the_capture_node_reports_its_picture_size_and_follows_a_resize() {
         "test-window-0",
         None,
         &[PixelFormat::Bgra8],
+        None,
     ) else {
         return;
     };
@@ -389,4 +420,145 @@ fn an_export_that_gives_way_skips_the_canvas_after_a_long_tick() {
     assert_eq!(delivered, vec![cadence.time_of(0), cadence.time_of(2)]);
     let health = rig.exec.health(export).unwrap();
     assert_eq!(health.errors, 0, "{health:?}");
+}
+
+// ---- Pause windows (ADR-0124 decision 4) ---------------------------------------------
+
+type Paused = (Rig, Frames, NodeId, Arc<ExportEnd>, Arc<PauseWindow>);
+
+fn paused_pipeline() -> Option<Paused> {
+    let pause = Arc::new(PauseWindow::default());
+    pipeline_from(
+        Arc::new(TestCaptureFactory::new()),
+        "test-window-0",
+        None,
+        &[PixelFormat::Bgra8],
+        Some(Arc::clone(&pause)),
+    )
+    .map(|(rig, frames, export, end, _)| (rig, frames, export, end, pause))
+}
+
+/// The times delivered by this thread's last paused pipeline.
+fn delivered(_frames: &Frames) -> Vec<Timestamp> {
+    TIMES.with(|t| t.borrow().as_ref().unwrap().lock().unwrap().clone())
+}
+
+/// `a` and `b` agree within 1 ns per frame: a shift by a pause's length lands within
+/// one nanosecond of the frame grid (`Cadence` rounds each position down).
+fn assert_times(a: &[Timestamp], b: &[Timestamp]) {
+    assert_eq!(a.len(), b.len(), "{a:?} != {b:?}");
+    for (x, y) in a.iter().zip(b) {
+        assert!(x.as_nanos().abs_diff(y.as_nanos()) <= 1, "{a:?} != {b:?}");
+    }
+}
+
+fn times(range: std::ops::Range<u64>) -> Vec<Timestamp> {
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    range.map(|i| cadence.time_of(i)).collect()
+}
+
+#[test]
+fn a_paused_export_takes_nothing_in_the_window_and_continues_without_a_gap() {
+    let Some((mut rig, frames, export, end, pause)) = paused_pipeline() else {
+        return;
+    };
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    // Pause from tick 3, written while tick 0 is still ahead.
+    pause.pause(cadence.time_of(3).as_nanos()).unwrap();
+    end.wake_at(cadence.time_of(3));
+    for _ in 0..5 {
+        rig.tick();
+    }
+    // Resume at tick 6, written while paused: ticks 3, 4 and 5 are left out.
+    pause.resume(cadence.time_of(6).as_nanos()).unwrap();
+    for _ in 0..7 {
+        rig.tick();
+    }
+    // Twelve ticks deliver the canvases of ticks 0..=10 (a readback is out one tick
+    // later): 0, 1, 2, then 6..=10 stamped three frames earlier (3..=7).
+    assert_times(&delivered(&frames), &times(0..8));
+    assert!(!end.ended(), "a paused export is never ended");
+    assert_eq!(end.requested(), None);
+    let health = rig.exec.health(export).unwrap();
+    assert_eq!(health.errors, 0, "{health:?}");
+}
+
+#[test]
+fn two_pauses_add_up() {
+    let Some((mut rig, frames, _, end, pause)) = paused_pipeline() else {
+        return;
+    };
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    pause.pause(cadence.time_of(2).as_nanos()).unwrap();
+    pause.resume(cadence.time_of(4).as_nanos()).unwrap();
+    end.wake_at(cadence.time_of(2));
+    for _ in 0..6 {
+        rig.tick();
+    }
+    pause.pause(cadence.time_of(8).as_nanos()).unwrap();
+    end.wake_at(cadence.time_of(8));
+    pause.resume(cadence.time_of(9).as_nanos()).unwrap();
+    for _ in 0..6 {
+        rig.tick();
+    }
+    // Canvases of ticks 0..=10: 0, 1, then 4..=7 (as 2..=5), then 9 and 10 (as 6, 7).
+    assert_times(&delivered(&frames), &times(0..8));
+}
+
+#[test]
+fn a_pause_cancelled_before_it_began_leaves_the_export_as_it_was() {
+    let Some((mut rig, frames, _, end, pause)) = paused_pipeline() else {
+        return;
+    };
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    pause.pause(cadence.time_of(5).as_nanos()).unwrap();
+    end.wake_at(cadence.time_of(5));
+    rig.tick();
+    pause.resume(cadence.time_of(5).as_nanos()).unwrap();
+    for _ in 0..7 {
+        rig.tick();
+    }
+    // Eight ticks deliver the canvases of ticks 0..=6, unshifted.
+    assert_times(&delivered(&frames), &times(0..7));
+}
+
+#[test]
+fn an_end_while_paused_ends_at_once_and_an_end_after_a_pause_still_ends() {
+    let Some((mut rig, frames, _, end, pause)) = paused_pipeline() else {
+        return;
+    };
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    pause.pause(cadence.time_of(3).as_nanos()).unwrap();
+    end.wake_at(cadence.time_of(3));
+    for _ in 0..5 {
+        rig.tick();
+    }
+    end.end_at(cadence.time_of(5));
+    let mut ticks = 0;
+    while !end.ended() {
+        assert!(ticks < 4, "the export never ended");
+        rig.tick();
+        ticks += 1;
+    }
+    assert_times(&delivered(&frames), &times(0..3));
+
+    // A recording paused and resumed before its end: the end applies in master time.
+    let Some((mut rig, frames, _, end, pause)) = paused_pipeline() else {
+        return;
+    };
+    pause.pause(cadence.time_of(2).as_nanos()).unwrap();
+    pause.resume(cadence.time_of(4).as_nanos()).unwrap();
+    end.wake_at(cadence.time_of(2));
+    for _ in 0..6 {
+        rig.tick();
+    }
+    end.end_at(cadence.time_of(7));
+    let mut ticks = 0;
+    while !end.ended() {
+        assert!(ticks < 4, "the export never ended");
+        rig.tick();
+        ticks += 1;
+    }
+    // Canvases 0, 1, 4..=7 (stamped 0..6).
+    assert_times(&delivered(&frames), &times(0..6));
 }

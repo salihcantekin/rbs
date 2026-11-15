@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rbs_core::media::{ColorSpace, Size, VideoFormat};
+use rbs_core::pause::{PauseWindow, Place, Window};
 use rbs_core::time::Timestamp;
 use rbs_gpu::download::{DownloadStats, YuvDownload};
 use rbs_gpu::node::GpuRuntime;
@@ -55,10 +56,18 @@ pub struct ExportNodeStats {
 /// takes only canvases up to that time, keeps passing on the readbacks still in flight,
 /// and reports [`ExportEnd::ended`] once every canvas it took is on its output. The
 /// encoder then gets the last one on its own next tick, or on its final tick.
+///
+/// It also carries the export's one run-path value, `next` (ADR-0124 decision 3): the
+/// earliest of the end time and the next pause instant, `u64::MAX` when neither is
+/// set. The run path loads only `next`; at or past it the export reads the end and its
+/// pause window. Only the end sets [`ExportEnd::ended`] and [`ExportEnd::requested`],
+/// so a paused export never looks ended.
 #[derive(Debug)]
 pub struct ExportEnd {
     /// Nanoseconds of the last canvas time taken; `u64::MAX` while not ending.
     at: AtomicU64,
+    /// The earliest of `at` and the next pause instant; `u64::MAX` for neither.
+    next: AtomicU64,
     ended: AtomicBool,
 }
 
@@ -66,6 +75,7 @@ impl Default for ExportEnd {
     fn default() -> Self {
         Self {
             at: AtomicU64::new(u64::MAX),
+            next: AtomicU64::new(u64::MAX),
             ended: AtomicBool::new(false),
         }
     }
@@ -75,8 +85,29 @@ impl ExportEnd {
     /// Takes no canvas later than `at`. An earlier call with an earlier time wins.
     pub fn end_at(&self, at: Timestamp) {
         // `u64::MAX` means "open", so the latest representable end is one below it.
-        self.at
-            .fetch_min(at.as_nanos().min(u64::MAX - 1), Ordering::Relaxed);
+        let at = at.as_nanos().min(u64::MAX - 1);
+        self.at.fetch_min(at, Ordering::SeqCst);
+        self.next.fetch_min(at, Ordering::SeqCst);
+    }
+
+    /// Makes the export read its pause window from `at` on (ADR-0124): called by the
+    /// control thread after it wrote a window whose pause begins at `at`. Lowers the
+    /// run-path value with a compare-and-swap, never above an end.
+    pub fn wake_at(&self, at: Timestamp) {
+        self.next
+            .fetch_min(at.as_nanos().min(u64::MAX - 1), Ordering::SeqCst);
+    }
+
+    /// Raises the run-path value from `seen` to the end (or "open") once the export
+    /// has left a pause window behind. A failed swap means the end or a new window
+    /// lowered it meanwhile: the lower value stays.
+    fn settle(&self, seen: u64) {
+        let end = self.at.load(Ordering::SeqCst);
+        if end > seen {
+            let _ = self
+                .next
+                .compare_exchange(seen, end, Ordering::SeqCst, Ordering::SeqCst);
+        }
     }
 
     /// The time asked for by [`ExportEnd::end_at`], if any.
@@ -121,6 +152,14 @@ pub struct VideoExportNode {
     /// An ISO track's rules (ADR-0086); `None` for the master's export, which then
     /// pays one branch per tick for them.
     track: Option<Box<Track>>,
+    /// The recording's pause window (ADR-0124); `None` for an export that is never
+    /// paused (a stream, the replay buffer, the virtual camera).
+    pause: Option<Arc<PauseWindow>>,
+    /// The last window read; kept when a read finds a write in progress.
+    window: Window,
+    /// Nanoseconds every frame is stamped earlier by: the time left out by the pauses
+    /// already behind the export. 0 for an export never paused.
+    shift: u64,
 }
 
 /// How an ISO track's export differs from the master's (ADR-0086 decisions 3 and 9).
@@ -246,7 +285,19 @@ impl VideoExportNode {
             stats: Arc::default(),
             end: Arc::default(),
             track: None,
+            pause: None,
+            window: Window::NONE,
+            shift: 0,
         }
+    }
+
+    /// An export that follows `pause` (ADR-0124 decision 4): it takes no canvas inside
+    /// a window and stamps later frames earlier by the time left out. The control
+    /// thread writes the window, then calls [`ExportEnd::wake_at`] with its start.
+    #[must_use]
+    pub fn with_pause(mut self, pause: Arc<PauseWindow>) -> Self {
+        self.pause = Some(pause);
+        self
     }
 
     fn track(&mut self) -> &mut Track {
@@ -335,6 +386,40 @@ impl VideoExportNode {
     }
 }
 
+/// `t` stamped earlier by a kept place's shift.
+fn shifted(t: Timestamp, place: Place) -> Timestamp {
+    match place {
+        Place::Kept(shift) => Timestamp::from_nanos(t.as_nanos().saturating_sub(shift)),
+        Place::Cut => t,
+    }
+}
+
+impl VideoExportNode {
+    /// Reads the pause window on the slow path. Returns the window to place this
+    /// tick's canvas with, and, once the export has left the window behind, takes its
+    /// shift and raises `next` again (ADR-0124 decision 3).
+    fn read_window(&mut self, ctx_time: u64, seen_next: u64) -> Option<Window> {
+        let pause = self.pause.as_ref()?;
+        if let Some(w) = pause.read() {
+            self.window = w;
+        }
+        let w = self.window;
+        if w.is_over_at(ctx_time) {
+            self.shift = w.total();
+            self.end.settle(seen_next);
+            // A window written after this read lowers `next` itself (`wake_at`); one
+            // written between the read and the swap is caught here.
+            if let Some(again) = pause.read()
+                && again.epoch != w.epoch
+                && !again.is_over_at(ctx_time)
+            {
+                self.end.wake_at(Timestamp::from_nanos(again.pause_at));
+            }
+        }
+        Some(w)
+    }
+}
+
 impl Node<GpuRuntime> for VideoExportNode {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
@@ -385,12 +470,19 @@ impl Node<GpuRuntime> for VideoExportNode {
             None => (false, false),
             Some(track) => (track.gives_way(&tick), track.every_tick),
         };
+        // `u64::MAX` (the run path) takes every canvas: one load and one compare. Set,
+        // the end and the pause window are read (ADR-0124 decision 3).
+        let next = self.end.next.load(Ordering::Acquire);
+        let (end, window) = if next == u64::MAX {
+            (u64::MAX, None)
+        } else {
+            let end = self.end.at.load(Ordering::SeqCst);
+            (end, self.read_window(ctx_time, next))
+        };
         let gpu = ctx.shared();
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
 
-        // `u64::MAX` (the run path) takes every canvas: one load and one compare.
-        let end = self.end.at.load(Ordering::Relaxed);
         // Frames submitted on earlier ticks first, so their staging buffers are free.
         // Ending, every frame is passed on in order (ADR-0045); otherwise the newest.
         let ready = if end == u64::MAX {
@@ -418,12 +510,18 @@ impl Node<GpuRuntime> for VideoExportNode {
             } else {
                 (canvas.timestamp(), canvas.sequence())
             };
+            let place = match window {
+                Some(w) => w.place(key.0.as_nanos()),
+                None => Place::Kept(self.shift),
+            };
             if self.last != Some(key) && key.0.as_nanos() <= end {
                 self.last = Some(key);
-                if give_way {
+                if place == Place::Cut {
+                    // Inside a pause window: nothing is converted (ADR-0124).
+                } else if give_way {
                     self.stats.gave_way.fetch_add(1, Ordering::Relaxed);
                 } else if download
-                    .submit_at(gpu, &local.pool, canvas, key.0, key.1)
+                    .submit_at(gpu, &local.pool, canvas, shifted(key.0, place), key.1)
                     .is_err()
                 {
                     result = Err(NodeError::Backend("video export conversion failed"));

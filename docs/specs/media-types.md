@@ -90,7 +90,7 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 
 - Inside the engine, samples are `f32`. Device formats are converted at the edge by audio adapters.
 - `AudioFormat { sample_rate, channels: ChannelLayout }`; at most `MAX_CHANNELS = 8` channels; default graph block `DEFAULT_BLOCK_FRAMES = 480` at 48 kHz (10 ms).
-- `AudioBlock<'a>`: a borrowed view with `format`, `timestamp` (master time of the first sample frame), `frames`, and `AudioSamples::Planar(PlanarChannels)` (one slice per channel, the graph's layout) or `AudioSamples::Interleaved`. `PlanarChannels` hides its fixed array, so `MAX_CHANNELS` can grow without breaking users. Constructors check channel count and lengths and never allocate.
+- `AudioBlock<'a>`: a borrowed view with `format`, `timestamp` (master time of the first sample frame), `frames`, and `AudioSamples::Planar(PlanarChannels)` (one slice per channel, the graph's layout) or `AudioSamples::Interleaved`. `PlanarChannels` hides its fixed array, so `MAX_CHANNELS` can grow without breaking users. Constructors check channel count and lengths and never allocate. `range(from, to)` lends frames `from..to` stamped at frame `from`'s time and `with_timestamp(t)` the same samples at another time (both used by the pause gate, ADR-0124); neither allocates.
 - Owned audio storage: each audio output pin of a schedule owns a pre-allocated planar block buffer, and audio queues between partitions own pre-allocated block buffers (`rbs-graph`, [audio graph spec](audio-graph.md)); input FIFOs belong to `rbs-audio`. No owned block type is needed in core.
 
 ### Packets (`rbs_core::media::packet`)
