@@ -387,7 +387,7 @@ fn too_many_unknown_names_fail_the_theme() {
 fn format_1_token_files_still_parse_with_the_os_font() {
     let base = BUILT_IN.replace("\r\n", "\n");
     let v1 = base
-        .replacen("format = 3", "format = 1", 1)
+        .replacen("format = 4", "format = 1", 1)
         .split("\n[font]")
         .next()
         .unwrap()
@@ -492,9 +492,16 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
                 }
             }
         }
-        // The effects dimension (ADR-0120): none, each setting, and an unknown name.
-        theme.effects = [None, Some("vivid"), Some("tactile"), Some("glossy")]
-            [(next() % 4) as usize]
+        // The effects dimension (ADR-0120, ADR-0122): none, each setting, the old name
+        // of Glow, and an unknown name.
+        theme.effects = [
+            None,
+            Some("glow"),
+            Some("glass"),
+            Some("tactile"),
+            Some("vivid"),
+            Some("glossy"),
+        ][(next() % 6) as usize]
             .map(str::to_owned);
         let result = t.resolve(&theme);
         if let Ok(r) = &result {
@@ -503,9 +510,12 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
             if r.effects_notice().is_some() {
                 assert_eq!(r.effects, Effects::Calm, "{theme:?}");
             }
+            let asked = theme.effects.as_deref().and_then(Effects::from_name);
             if r.effects != Effects::Calm {
-                assert_eq!(Some(r.effects.name()), theme.effects.as_deref());
+                assert_eq!(Some(r.effects), asked);
                 assert!(!r.effect_values.is_calm());
+            } else if asked.is_some() {
+                assert!(r.effects_notice().is_some(), "{theme:?}");
             }
             if theme.effects.as_deref() == Some("glossy") {
                 assert!(r.effects_notice().is_some());
@@ -724,7 +734,7 @@ fn secondary_buttons_keep_an_outline_where_the_fill_does_not_separate() {
 /// The built-in file as format 2: no effect tables.
 fn format_2(base: &str) -> String {
     let cut = base.find("\n# Theme effects").expect("the effects section");
-    base[..cut].replacen("format = 3", "format = 2", 1) + "\n"
+    base[..cut].replacen("format = 4", "format = 2", 1) + "\n"
 }
 
 fn with_effects(base: Base, effects: &str) -> ThemeBody {
@@ -747,7 +757,13 @@ fn a_missing_or_calm_key_is_calm_and_lively_settings_resolve_on_dark_and_light()
             assert!(r.warnings.is_empty(), "{:?}", r.warnings);
             let d = r.effect_draw();
             assert!(d.on);
-            assert!(d.key_edge + (d.shadow_blur + d.shadow_offset).max(d.glow_blur) <= d.extent);
+            assert!(d.key_edge + d.shadow_blur + d.shadow_offset <= d.extent);
+            // Only Glow draws a halo, and it keeps its clear zone.
+            assert_eq!(d.halo_clear > 0.0, e == Effects::Glow);
+            assert_eq!(
+                d.halo_clear,
+                if d.halo.a > 0 { d.halo_blur + 1.0 } else { 0.0 }
+            );
         }
     }
     // "calm" reads as no key and is written as none.
@@ -793,18 +809,24 @@ fn a_format_2_token_file_resolves_every_theme_to_calm_with_a_notice() {
 }
 
 #[test]
-fn effect_tables_need_format_3_and_their_bounds() {
+fn effect_tables_need_format_4_and_their_bounds() {
     let base = BUILT_IN.replace("\r\n", "\n");
-    // Tables in a format 2 file, and a format 3 file without them, are refused.
-    assert!(Tokens::parse(&base.replacen("format = 3", "format = 2", 1)).is_err());
+    // Tables in a format 2 file, and a format 4 file without them, are refused.
+    assert!(Tokens::parse(&base.replacen("format = 4", "format = 2", 1)).is_err());
     let cut = base.find("\n# Theme effects").unwrap();
     assert!(Tokens::parse(&base[..cut]).is_err());
-    let wide = base.replacen("\"effects.glow.blur\" = 4", "\"effects.glow.blur\" = 5", 1);
+    // A format 3 file has other tables and tokens: the format 4 ones are refused there.
+    assert!(Tokens::parse(&base.replacen("format = 4", "format = 3", 1)).is_err());
+    let wide = base.replacen(
+        "\"effects.halo.blur\" = 12",
+        "\"effects.halo.blur\" = 17",
+        1,
+    );
     assert!(
         Tokens::parse(&wide)
             .unwrap_err()
             .0
-            .contains("effects.glow.blur")
+            .contains("effects.halo.blur")
     );
     let extent = base.replacen(
         "\"effects.shadow.offset\" = 1",
@@ -816,6 +838,126 @@ fn effect_tables_need_format_3_and_their_bounds() {
             .unwrap_err()
             .0
             .contains("more than 4")
+    );
+    // A halo needs key.edge 0 (ADR-0122 decision 8).
+    let edge = base.replacen("\"effects.key.edge\" = 0", "\"effects.key.edge\" = 0.5", 1);
+    assert!(
+        Tokens::parse(&edge)
+            .unwrap_err()
+            .0
+            .contains("effects.key.edge must be 0")
+    );
+    // The removed tokens and the old table name are refused.
+    let sheen = base.replacen(
+        "\"effects.gloss\" = 0\n",
+        "\"effects.gloss\" = 0\n\"effects.sheen.alpha\" = 0.1\n",
+        1,
+    );
+    assert!(
+        Tokens::parse(&sheen)
+            .unwrap_err()
+            .0
+            .contains("effects.sheen.alpha")
+    );
+    let vivid = base.replacen("[effects.glow]", "[effects.vivid]", 1);
+    assert!(Tokens::parse(&vivid).is_err());
+}
+
+/// The built-in file as a format 3 file (ADR-0120's tables).
+fn format_3(base: &str) -> String {
+    let cut = base.find("\n# Theme effects").expect("the effects section");
+    base[..cut].replacen("format = 4", "format = 3", 1)
+        + r#"
+[effects.vivid]
+"effects.shadow.blur" = 3
+"effects.shadow.offset" = 1
+"effects.shadow.alpha.dark" = 0.5
+"effects.shadow.alpha.light" = 0.3
+"effects.glow.blur" = 4
+"effects.glow.alpha" = 0.5
+"effects.sheen.alpha" = 0.3
+"effects.sheen.band" = 4
+"effects.key.edge" = 0
+"effects.key.shade" = 0
+"effects.press" = 0
+
+[effects.tactile]
+"effects.shadow.blur" = 1
+"effects.shadow.offset" = 1
+"effects.shadow.alpha.dark" = 0.5
+"effects.shadow.alpha.light" = 0.25
+"effects.glow.blur" = 0
+"effects.glow.alpha" = 0
+"effects.sheen.alpha" = 0.12
+"effects.sheen.band" = 4
+"effects.key.edge" = 2
+"effects.key.shade" = 0.4
+"effects.press" = 2
+"#
+}
+
+#[test]
+fn a_format_3_token_file_reads_vivid_as_glow_and_has_no_glass() {
+    let t = Tokens::parse(&format_3(&BUILT_IN.replace("\r\n", "\n"))).unwrap();
+    let tables = t.effects.unwrap();
+    assert_eq!((tables.glow.halo_blur, tables.glow.halo_alpha), (4.0, 0.5));
+    assert_eq!((tables.tactile.key_edge, tables.tactile.press), (2.0, 2.0));
+    for v in [tables.glow, tables.tactile] {
+        assert_eq!(
+            (v.gloss, v.face_dark, v.rim_mix, v.inner_blur, v.inner_alpha),
+            (0.0, 0.0, 0.0, 0.0, 0.0)
+        );
+    }
+    // Glow under either name and Tactile are drawn; Glass is calm and says why.
+    for name in ["glow", "vivid", "tactile"] {
+        let r = t.resolve(&with_effects(Base::Dark, name)).unwrap();
+        assert_eq!(Some(r.effects), Effects::from_name(name));
+        assert!(r.effects_notice().is_none());
+        assert!(r.effect_draw().faces_are_flat());
+    }
+    let r = t.resolve(&with_effects(Base::Dark, "glass")).unwrap();
+    assert_eq!(r.effects, Effects::Calm);
+    assert_eq!(
+        r.effects_notice().unwrap().reason,
+        "This build's token file has no Glass effects"
+    );
+}
+
+#[test]
+fn a_stored_vivid_is_glow_and_is_kept_until_the_user_picks() {
+    let t = tokens();
+    let theme = body("base = \"dark\"\neffects = \"vivid\"");
+    // It shows and resolves as Glow, and is written back as stored.
+    assert_eq!(theme.effects_choice(), Effects::Glow);
+    assert_eq!(t.resolve(&theme).unwrap().effects, Effects::Glow);
+    assert_eq!(theme.stored_effects(), Some("vivid"));
+    assert_eq!(theme.to_body()[EFFECTS_KEY].as_str(), Some("vivid"));
+    assert_eq!(ThemeBody::from_body(theme.to_body()).unwrap(), theme);
+    // Picking a segment, even Glow itself, writes the new name.
+    let mut picked = theme.clone();
+    picked.set_effects(Effects::Glow);
+    assert_eq!(picked.to_body()[EFFECTS_KEY].as_str(), Some("glow"));
+    assert_eq!(
+        t.resolve(&picked).unwrap().effect_draw(),
+        t.resolve(&theme).unwrap().effect_draw()
+    );
+}
+
+#[test]
+fn the_built_in_file_is_refused_when_a_setting_would_need_a_notice() {
+    let base = BUILT_IN.replace("\r\n", "\n");
+    // Glass with nothing to shade a face with.
+    let flat = base
+        .replacen("\"effects.gloss\" = 0.3", "\"effects.gloss\" = 0", 1)
+        .replacen(
+            "\"effects.face.dark\" = 0.3",
+            "\"effects.face.dark\" = 0",
+            1,
+        );
+    let e = Tokens::parse(&flat).unwrap_err().0;
+    assert!(
+        e.contains("glass") && e.contains("no room for Glass shading"),
+        "{e}"
     );
 }
 
@@ -850,10 +992,23 @@ fn derived_effect_colours_stay_away_from_live_and_live_takes_no_colour() {
             for k in d.key {
                 assert!(delta_e_2000(k, live) >= 15.0);
             }
-            // The shadow is neutral and the glow is the accent: neither is the live colour.
+            // The shadow is neutral and the halo is the accent: neither is the live colour.
             assert_eq!((d.shadow.r, d.shadow.g, d.shadow.b), (0, 0, 0));
-            let glow = Color { a: 255, ..d.glow };
-            assert!(delta_e_2000(glow, live) >= 15.0);
+            let halo = Color { a: 255, ..d.halo };
+            assert!(delta_e_2000(halo, live) >= 15.0);
+            // Every other derived colour as well (ADR-0122 decision 6).
+            let faces = d
+                .faces
+                .iter()
+                .flat_map(|f| f.top.into_iter().chain(f.bottom));
+            let inner = d
+                .inner
+                .iter()
+                .filter(|c| c.a > 0)
+                .map(|c| Color { a: 255, ..*c });
+            for c in faces.chain(d.rim).chain(inner) {
+                assert!(delta_e_2000(c, live) >= 15.0, "{base:?} {e:?} {c}");
+            }
         }
     }
 }

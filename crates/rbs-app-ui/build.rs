@@ -21,44 +21,128 @@ fn themeable(name: &str) -> bool {
     rbs_ui::tokens::themeable(name).is_some()
 }
 
-/// The effect fields of a slot (ADR-0120): Slint name, Slint type, calm default, and
-/// the Rust expression on `rbs_ui::tokens::EffectDraw` (`fx`) that fills it.
-const EFFECT_FIELDS: &[(&str, &str, &str, &str)] = &[
-    ("effects-on", "bool", "false", "fx.on"),
-    ("effects-shadow-blur", "length", "0px", "fx.shadow_blur"),
-    ("effects-shadow-offset", "length", "0px", "fx.shadow_offset"),
-    ("effects-shadow", "color", "#00000000", "argb(fx.shadow)"),
-    ("effects-glow-blur", "length", "0px", "fx.glow_blur"),
-    ("effects-glow", "color", "#00000000", "argb(fx.glow)"),
-    ("effects-sheen", "color", "#00000000", "argb(fx.sheen)"),
-    ("effects-sheen-band", "length", "0px", "fx.sheen_band"),
-    ("effects-key-edge", "length", "0px", "fx.key_edge"),
-    ("effects-press", "length", "0px", "fx.press"),
-    (
-        "effects-key-primary",
-        "color",
-        "#00000000",
-        "argb(fx.key[0])",
-    ),
-    (
-        "effects-key-secondary",
-        "color",
-        "#00000000",
-        "argb(fx.key[1])",
-    ),
-    (
-        "effects-key-danger",
-        "color",
-        "#00000000",
-        "argb(fx.key[2])",
-    ),
-    (
-        "effects-key-checked",
-        "color",
-        "#00000000",
-        "argb(fx.key[3])",
-    ),
-];
+/// One effect field of a slot: Slint name, Slint type, calm default, and the Rust
+/// expression on `rbs_ui::tokens::EffectDraw` (`fx`) that fills it.
+type EffectField = (String, &'static str, &'static str, String);
+
+/// The effect fields of a slot (ADR-0120, ADR-0122). Every derived colour is computed
+/// in Rust; Slint mixes nothing (ADR-0122 decision 4).
+fn effect_fields() -> Vec<EffectField> {
+    const CLEAR: &str = "#00000000";
+    let mut f: Vec<EffectField> = vec![
+        ("effects-on".into(), "bool", "false", "fx.on".into()),
+        (
+            "effects-shadow-blur".into(),
+            "length",
+            "0px",
+            "fx.shadow_blur".into(),
+        ),
+        (
+            "effects-shadow-offset".into(),
+            "length",
+            "0px",
+            "fx.shadow_offset".into(),
+        ),
+        (
+            "effects-shadow".into(),
+            "color",
+            CLEAR,
+            "argb(fx.shadow)".into(),
+        ),
+        (
+            "effects-halo-blur".into(),
+            "length",
+            "0px",
+            "fx.halo_blur".into(),
+        ),
+        (
+            "effects-halo".into(),
+            "color",
+            CLEAR,
+            "argb(fx.halo)".into(),
+        ),
+        (
+            "effects-key-edge".into(),
+            "length",
+            "0px",
+            "fx.key_edge".into(),
+        ),
+        ("effects-press".into(), "length", "0px", "fx.press".into()),
+        ("effects-rim-on".into(), "bool", "false", "fx.rim_on".into()),
+        (
+            "effects-inner-blur".into(),
+            "length",
+            "0px",
+            "fx.inner_blur".into(),
+        ),
+    ];
+    // Per kind, in `rbs_ui::tokens::FACE_KINDS` order. Checked and danger have no
+    // pressed fill of their own, so they have no pressed stops either.
+    for (i, (kind, states)) in [
+        ("primary", 3),
+        ("secondary", 3),
+        ("checked", 2),
+        ("danger", 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        f.push((
+            format!("effects-key-{kind}"),
+            "color",
+            CLEAR,
+            format!("argb(fx.key[{i}])"),
+        ));
+        // The face is shaded: some stop differs from its fill.
+        f.push((
+            format!("effects-shade-{kind}"),
+            "bool",
+            "false",
+            format!("!fx.faces[{i}].is_flat()"),
+        ));
+        // The searched gloss stop, as a fraction of the height.
+        f.push((
+            format!("effects-stop-{kind}"),
+            "float",
+            "0",
+            format!("fx.faces[{i}].stop"),
+        ));
+        for (s, state) in ["rest", "hover", "pressed"]
+            .into_iter()
+            .take(states)
+            .enumerate()
+        {
+            f.push((
+                format!("effects-top-{kind}-{state}"),
+                "color",
+                CLEAR,
+                format!("argb(fx.faces[{i}].top[{s}])"),
+            ));
+            f.push((
+                format!("effects-bottom-{kind}-{state}"),
+                "color",
+                CLEAR,
+                format!("argb(fx.faces[{i}].bottom[{s}])"),
+            ));
+        }
+        // Only a secondary or danger button takes a rim and an inner glow.
+        if kind == "secondary" || kind == "danger" {
+            f.push((
+                format!("effects-rim-{kind}"),
+                "color",
+                CLEAR,
+                format!("argb(fx.rim[{i}])"),
+            ));
+            f.push((
+                format!("effects-inner-{kind}"),
+                "color",
+                CLEAR,
+                format!("argb(fx.inner[{i}])"),
+            ));
+        }
+    }
+    f
+}
 
 /// `tokens.slint`: the `Theme` and `Tokens` globals. Every value has the built-in
 /// token file as its default, so the files compile and preview on their own; the app
@@ -85,7 +169,9 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(s, "    panel-outline: bool,")?;
     writeln!(s, "    button-outline: bool,")?;
     writeln!(s, "    font-family: string,")?;
-    for (id, ty, _, _) in EFFECT_FIELDS {
+    writeln!(s, "    halo-clear: length,")?;
+    let effects = effect_fields();
+    for (id, ty, _, _) in &effects {
         writeln!(s, "    {id}: {ty},")?;
     }
     for name in &colors {
@@ -121,7 +207,8 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
                 .any(|f| BUTTON_SURFACES.iter().any(|n| button_outline(c[*f], c[*n])))
         )?;
         // Built-in themes are calm (ADR-0120 decision 4).
-        for (id, _, calm, _) in EFFECT_FIELDS {
+        write!(s, ", halo-clear: 0px")?;
+        for (id, _, calm, _) in &effects {
             write!(s, ", {id}: {calm}")?;
         }
         for n in &colors {
@@ -172,9 +259,19 @@ fn generate(t: &Tokens) -> Result<String, std::fmt::Error> {
         s,
         "    // Theme effects (ADR-0120): drawn only by library components (check-ui)."
     )?;
-    for (id, ty, _, _) in EFFECT_FIELDS {
+    for (id, ty, _, _) in &effects {
         writeln!(s, "    out property <{ty}> {id}: slots[active].{id};")?;
     }
+    writeln!(
+        s,
+        "    // The clear zone a position that opts in to the primary's halo keeps round it\
+         \n    // (ADR-0122 decision 8): 0 unless the theme draws a halo. A length for layouts,\
+         \n    // not an effect."
+    )?;
+    writeln!(
+        s,
+        "    out property <length> halo-clear: slots[active].halo-clear;"
+    )?;
     writeln!(s, "    // The window font: empty is the OS UI font.")?;
     writeln!(
         s,
@@ -276,7 +373,8 @@ fn generate_apply(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(s, "        panel_outline: theme.panel_outline(),")?;
     writeln!(s, "        button_outline: theme.button_outline(),")?;
     writeln!(s, "        font_family: font.into(),")?;
-    for (id, _, _, expr) in EFFECT_FIELDS {
+    writeln!(s, "        halo_clear: fx.halo_clear,")?;
+    for (id, _, _, expr) in effect_fields() {
         writeln!(s, "        {}: {expr},", id.replace('-', "_"))?;
     }
     for name in t.themes[0].1.keys() {
@@ -352,10 +450,10 @@ fn generate_apply(t: &Tokens) -> Result<String, std::fmt::Error> {
     writeln!(s, "];")?;
     writeln!(
         s,
-        "/// The effect fields of a slot (ADR-0120), for the golden test (`look`)."
+        "/// The effect fields of a slot (ADR-0120, ADR-0122), for the golden test (`look`)."
     )?;
     write!(s, "pub const SLOT_EFFECTS: &[&str] = &[")?;
-    for (id, _, _, _) in EFFECT_FIELDS {
+    for (id, _, _, _) in effect_fields() {
         write!(s, "\"{id}\", ")?;
     }
     writeln!(s, "];")?;

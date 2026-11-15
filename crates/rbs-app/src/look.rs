@@ -6,7 +6,7 @@
 //! both hold its `theme`. A user theme that cannot be used falls back to the built-in
 //! theme of its base, so a light user keeps light. `RBS_TOKENS=<file>`
 //! (another complete token file), `RBS_THEME=<dark|light>` and
-//! `RBS_EFFECTS=<calm|vivid|tactile>` (both slots' effects, for the UI measure mode,
+//! `RBS_EFFECTS=<calm|glow|glass|tactile>` (both slots' effects, for the UI measure mode,
 //! ADR-0120 decision 13) are development aids that win over the appearance choice.
 
 use std::path::Path;
@@ -498,39 +498,58 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// The effect fields of a slot (ADR-0120), listed explicitly: they are not
-    /// themeable one by one, so they are not in `SLOT_TOKENS`.
+    /// The effect fields of a slot (ADR-0120, ADR-0122), listed explicitly: they are not
+    /// themeable one by one, so they are not in `SLOT_TOKENS`. Per kind: the key edge,
+    /// whether the face is shaded, its gloss stop and its stops per state; a secondary
+    /// and a danger button also have a rim and an inner glow.
     #[test]
     fn the_slot_has_the_effect_fields() {
-        assert_eq!(
-            SLOT_EFFECTS,
-            [
-                "effects-on",
-                "effects-shadow-blur",
-                "effects-shadow-offset",
-                "effects-shadow",
-                "effects-glow-blur",
-                "effects-glow",
-                "effects-sheen",
-                "effects-sheen-band",
-                "effects-key-edge",
-                "effects-press",
-                "effects-key-primary",
-                "effects-key-secondary",
-                "effects-key-danger",
-                "effects-key-checked",
-            ]
-        );
+        let mut expected: Vec<String> = [
+            "effects-on",
+            "effects-shadow-blur",
+            "effects-shadow-offset",
+            "effects-shadow",
+            "effects-halo-blur",
+            "effects-halo",
+            "effects-key-edge",
+            "effects-press",
+            "effects-rim-on",
+            "effects-inner-blur",
+        ]
+        .map(str::to_owned)
+        .into();
+        for (kind, states) in [
+            ("primary", &["rest", "hover", "pressed"][..]),
+            ("secondary", &["rest", "hover", "pressed"]),
+            ("checked", &["rest", "hover"]),
+            ("danger", &["rest", "hover"]),
+        ] {
+            for part in ["key", "shade", "stop"] {
+                expected.push(format!("effects-{part}-{kind}"));
+            }
+            for state in states {
+                expected.push(format!("effects-top-{kind}-{state}"));
+                expected.push(format!("effects-bottom-{kind}-{state}"));
+            }
+            if kind == "secondary" || kind == "danger" {
+                expected.push(format!("effects-rim-{kind}"));
+                expected.push(format!("effects-inner-{kind}"));
+            }
+        }
+        assert_eq!(SLOT_EFFECTS, expected);
     }
 
-    /// Built-in themes are calm; a vivid theme's slot carries what `effect_draw` gives,
+    /// Built-in themes are calm; a lively theme's slot carries what `effect_draw` gives,
     /// and compact density scales the effects into its smaller extent.
     #[test]
     fn a_theme_with_effects_fills_the_slot() {
+        use rbs_ui::tokens::{KIND_DANGER, KIND_PRIMARY, KIND_SECONDARY};
         let file = TokenFile::built_in().unwrap();
         let calm = slot(&file.built_in_theme(Base::Dark), "").unwrap();
         assert!(!calm.effects_on);
         assert_eq!(calm.effects_press, 0.0);
+        assert_eq!(calm.halo_clear, 0.0);
+        assert!(!calm.effects_shade_primary && !calm.effects_rim_on);
         let mut body = ThemeBody::new(Base::Dark);
         body.effects = Some("tactile".into());
         let mut r = file.resolve(&body).unwrap();
@@ -540,11 +559,53 @@ mod tests {
         assert_eq!(s.effects_key_edge, fx.key_edge);
         assert_eq!(s.effects_press, fx.press);
         assert_eq!(s.effects_shadow, argb(fx.shadow));
-        assert_eq!(s.effects_key_primary, argb(fx.key[0]));
+        assert_eq!(s.effects_key_primary, argb(fx.key[KIND_PRIMARY]));
+        assert_eq!(s.effects_key_danger, argb(fx.key[KIND_DANGER]));
+        assert_eq!(s.halo_clear, 0.0);
         rbs_ui::tokens::apply_density(&mut r.length, rbs_ui::tokens::Density::Compact, 1);
         let compact = slot(&r, "").unwrap();
         assert!(compact.effects_key_edge < s.effects_key_edge);
         assert!(compact.effects_press <= compact.effects_key_edge);
+        // Glass: the finished stops of each kind and state, and its searched stop.
+        body.effects = Some("glass".into());
+        let r = file.resolve(&body).unwrap();
+        let (s, fx) = (slot(&r, "").unwrap(), r.effect_draw());
+        assert!(s.effects_shade_primary && s.effects_shade_secondary);
+        assert_eq!(s.effects_stop_primary, fx.faces[KIND_PRIMARY].stop);
+        assert_eq!(
+            s.effects_top_primary_hover,
+            argb(fx.faces[KIND_PRIMARY].top[1])
+        );
+        assert_eq!(
+            s.effects_bottom_secondary_pressed,
+            argb(fx.faces[KIND_SECONDARY].bottom[2])
+        );
+        assert_eq!(
+            s.effects_bottom_danger_rest,
+            argb(fx.faces[KIND_DANGER].bottom[0])
+        );
+        assert!(!s.effects_rim_on);
+        // Glow: the halo, its clear zone, the rims and (in Light) the inner glow.
+        for base in [Base::Dark, Base::Light] {
+            let mut body = ThemeBody::new(base);
+            body.effects = Some("glow".into());
+            let mut r = file.resolve(&body).unwrap();
+            let (s, fx) = (slot(&r, "").unwrap(), r.effect_draw());
+            assert_eq!((s.halo_clear, s.effects_halo_blur), (13.0, 12.0));
+            assert_eq!(s.effects_halo, argb(fx.halo));
+            assert!(s.effects_rim_on && !s.effects_shade_primary);
+            assert_eq!(s.effects_rim_secondary, argb(fx.rim[KIND_SECONDARY]));
+            assert_eq!(s.effects_rim_danger, argb(fx.rim[KIND_DANGER]));
+            assert_eq!(s.effects_inner_secondary, argb(fx.inner[KIND_SECONDARY]));
+            assert_eq!(
+                s.effects_inner_secondary.alpha() > 0,
+                base == Base::Light,
+                "{base:?}"
+            );
+            // The clear zone is the same in every density, because the halo is.
+            rbs_ui::tokens::apply_density(&mut r.length, rbs_ui::tokens::Density::Compact, 3);
+            assert_eq!(slot(&r, "").unwrap().halo_clear, 13.0);
+        }
     }
 
     /// A user theme changes colours, lengths, durations, text styles and the font of

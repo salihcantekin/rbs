@@ -568,7 +568,8 @@ impl AppearanceUi {
 
     /// Removes an override (the token takes the base's value again).
     /// Sets the theme's effects (ADR-0120 decision 5): applied at once, like a colour
-    /// edit, with no "Keep this look?".
+    /// edit, with no "Keep this look?". Only this writes a name over a stored one
+    /// (ADR-0122 decision 1: a stored "vivid" stays until the user picks a segment).
     pub fn set_effects(&mut self, file: &TokenFile, index: usize) -> bool {
         let Some(setting) = Effects::ALL.get(index).copied() else {
             return false;
@@ -1039,13 +1040,13 @@ mod tests {
                 disabled: String::new()
             }
         );
-        assert!(ui.set_effects(&file, 2));
+        assert!(ui.set_effects(&file, 3));
         assert!(ui.keep.is_none());
         let r = row(&ui);
         assert_eq!(
             r.value,
             RowValue::Effects {
-                choice: 2,
+                choice: 3,
                 disabled: String::new()
             }
         );
@@ -1059,6 +1060,47 @@ mod tests {
         // No other group has the row.
         ui.group = 0;
         assert!(ui.rows(&file).iter().all(|r| r.name != EFFECTS_KEY));
+    }
+
+    /// ADR-0122 decision 1: a stored "vivid" shows as Glow and stays as stored until
+    /// the user picks a segment, which writes the new name.
+    #[test]
+    fn a_stored_vivid_shows_as_glow_and_is_rewritten_only_by_a_pick() {
+        let (_d, _data, file, mut ui, _id) = setup("effects-vivid");
+        ui.selected = Some(2);
+        assert!(ui.edit(&file));
+        ui.group = GROUPS.iter().position(|g| *g == Group::Shapes).unwrap();
+        ui.editor.as_mut().unwrap().draft.effects = Some("vivid".into());
+        ui.recheck(&file);
+        let row = |ui: &AppearanceUi| {
+            ui.rows(&file)
+                .into_iter()
+                .find(|r| r.name == EFFECTS_KEY)
+                .expect("the Effects row")
+        };
+        let r = row(&ui);
+        assert!(matches!(r.value, RowValue::Effects { choice: 1, .. }));
+        assert!(r.warning.is_empty(), "{}", r.warning);
+        assert_eq!(
+            ui.editor.as_ref().unwrap().draft.effects.as_deref(),
+            Some("vivid")
+        );
+        // Another edit leaves the stored name alone.
+        assert!(ui.set_fonts(&file, "Inter", Instant::now()));
+        assert_eq!(
+            ui.editor.as_ref().unwrap().draft.effects.as_deref(),
+            Some("vivid")
+        );
+        // Picking Glow itself writes "glow".
+        ui.set_effects(&file, 1);
+        assert_eq!(
+            ui.editor.as_ref().unwrap().draft.effects.as_deref(),
+            Some("glow")
+        );
+        assert!(matches!(
+            row(&ui).value,
+            RowValue::Effects { choice: 1, .. }
+        ));
     }
 
     #[test]
