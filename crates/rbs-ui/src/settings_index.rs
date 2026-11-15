@@ -772,16 +772,19 @@ impl Hit {
 }
 
 /// The entries whose words hold every word of `query` (case-insensitive), one hit per
-/// place. A hit's words are its section's title, its card's title, its own title and
-/// its extra words, and `context` (the RBS menu passes "File Settings", so "settings
-/// encoder" finds the encoder). Hits whose own title holds every word come first, then
-/// the rest, each group in index order. None for a blank query. `section_title` names
-/// a section (`rbs_ui::command::settings_section_title`).
+/// place. A hit's own words are its section's title, its card's title, its own title
+/// and its extra words; `context` (the RBS menu passes "File Settings") also counts,
+/// but only for an entry that some query word finds in its own words, so "settings"
+/// alone matches no entry and "settings encoder" finds the encoder. Hits whose own
+/// title holds every word come first, then the rest, each group in index order. None
+/// for a blank query. `section_title` names a section
+/// (`rbs_ui::command::settings_section_title`).
 pub fn search(query: &str, context: &str, section_title: &dyn Fn(&str) -> String) -> Vec<Hit> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     if words.is_empty() {
         return Vec::new();
     }
+    let context = context.to_lowercase();
     let mut first = Vec::new();
     let mut rest = Vec::new();
     for s in SETTINGS {
@@ -792,13 +795,14 @@ pub fn search(query: &str, context: &str, section_title: &dyn Fn(&str) -> String
                 place: *p,
             };
             let card = hit.card_title().unwrap_or("");
-            let text = format!(
-                "{context} {} {card} {own} {}",
-                section_title(p.section),
-                s.words
-            )
-            .to_lowercase();
-            if !words.iter().all(|w| text.contains(w.as_str())) {
+            let text =
+                format!("{} {card} {own} {}", section_title(p.section), s.words).to_lowercase();
+            let in_text = |w: &String| text.contains(w.as_str());
+            if !words.iter().any(in_text)
+                || !words
+                    .iter()
+                    .all(|w| in_text(w) || context.contains(w.as_str()))
+            {
                 continue;
             }
             if words.iter().all(|w| own.contains(w.as_str())) {
@@ -887,6 +891,15 @@ mod tests {
         // Extra words count.
         assert_eq!(titles("nvenc"), titles("videotoolbox"));
         assert!(titles("no such thing").is_empty());
+        // The context counts only beside a word the entry has itself: "file" finds
+        // the settings about files, not every entry through the menu's "File".
+        let hits = |q: &str| search(q, "File Settings", &settings_section_title).len();
+        for q in ["file", "settings"] {
+            let own: usize = search(q, "", &settings_section_title).len();
+            assert_eq!(hits(q), own, "{q}");
+            assert!(own < 20, "{q}: {own}");
+        }
+        assert_eq!(hits("settings keyframe"), 2);
     }
 
     #[test]

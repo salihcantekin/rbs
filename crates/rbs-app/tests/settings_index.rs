@@ -61,7 +61,31 @@ fn code(line: &str) -> String {
 struct Open {
     header: String,
     card: Option<String>,
+    is_card: bool,
     row: Option<usize>,
+}
+
+/// The level a block header sets: only the conditions the pages use for levels
+/// (ADR-0113). Any other mention of a level, a negated one included, stops the test so
+/// the scan is taught the new form instead of guessing.
+fn header_level(at: &str, header: &str) -> Option<Level> {
+    const EXPERT: &[&str] = &["if root.expert:", "if Experience.expert:"];
+    const ADVANCED: &[&str] = &[
+        "if root.advanced:",
+        "if Experience.advanced:",
+        "if Experience.advanced || conn-card.show-all:",
+    ];
+    if EXPERT.iter().any(|f| header.starts_with(f)) {
+        return Some(Level::Expert);
+    }
+    if ADVANCED.iter().any(|f| header.starts_with(f)) {
+        return Some(Level::Advanced);
+    }
+    assert!(
+        !header.contains("expert") && !header.contains("advanced"),
+        "{at}: a level condition the settings index scan does not know: {header:?}"
+    );
+    None
 }
 
 /// One row found in a page.
@@ -140,20 +164,32 @@ fn scan(name: &str, text: &str, rows: &mut Vec<Row>, cards: &mut Vec<Card>) {
                     let mut open = Open {
                         header: header.clone(),
                         card: None,
+                        is_card: false,
                         row: None,
                     };
                     let element = header.trim_end();
                     if element.ends_with("SettingRow") || element.ends_with("SettingBlock") {
-                        let headers = stack.iter().map(|o| o.header.as_str()).chain([element]);
+                        let rest = code[code.find('{').unwrap_or(0)..].trim_start_matches('{');
+                        assert!(
+                            rest.trim().is_empty() || rest.trim() == "}",
+                            "{at}: write a row's properties on their own lines, so the settings index scan reads them"
+                        );
                         let mut level = Level::Simple;
-                        for h in headers {
-                            if h.contains("expert") {
-                                level = Level::Expert;
-                            } else if h.contains("advanced") && level == Level::Simple {
-                                level = Level::Advanced;
+                        for h in stack.iter().map(|o| o.header.as_str()).chain([element]) {
+                            match header_level(&at, h) {
+                                Some(Level::Expert) => level = Level::Expert,
+                                Some(Level::Advanced) if level == Level::Simple => {
+                                    level = Level::Advanced;
+                                }
+                                _ => {}
                             }
                         }
+                        let in_card = stack.iter().any(|o| o.is_card);
                         let card = stack.iter().rev().find_map(|o| o.card.clone());
+                        assert!(
+                            !in_card || card.is_some(),
+                            "{at}: put the card's `id:` before its rows, so the settings index scan knows the card"
+                        );
                         rows.push(Row {
                             at: at.clone(),
                             label: None,
@@ -165,6 +201,7 @@ fn scan(name: &str, text: &str, rows: &mut Vec<Row>, cards: &mut Vec<Card>) {
                         open.row = Some(rows.len() - 1);
                     }
                     if element.ends_with("SettingsCard") {
+                        open.is_card = true;
                         cards.push(Card {
                             at: at.clone(),
                             id: String::new(),
@@ -286,7 +323,9 @@ component A {
             label: @tr("One // {two}");
         }
         if root.advanced: VerticalLayout {
-            if root.expert: SettingRow { label: root.dynamic; }
+            if root.expert: SettingRow {
+                label: root.dynamic;
+            }
         }
     }
     SettingBlock {
@@ -313,4 +352,28 @@ component A {
     assert_eq!(rows[1].card.as_deref(), Some("settings.x.files"));
     assert!(rows[2].none);
     assert_eq!(rows[2].card, None);
+}
+
+fn scan_text(text: &str) {
+    scan("t.slint", text, &mut Vec::new(), &mut Vec::new());
+}
+
+#[test]
+#[should_panic(expected = "on their own lines")]
+fn the_scan_refuses_a_row_on_one_line() {
+    scan_text("A {\n    SettingRow { label: @tr(\"X\"); }\n}\n");
+}
+
+#[test]
+#[should_panic(expected = "level condition")]
+fn the_scan_refuses_an_unknown_level_condition() {
+    scan_text("A {\n    if !root.advanced: SettingRow {\n        find: \"x\";\n    }\n}\n");
+}
+
+#[test]
+#[should_panic(expected = "card's `id:` before its rows")]
+fn the_scan_refuses_rows_before_the_card_id() {
+    scan_text(
+        "A {\n    SettingsCard {\n        SettingRow {\n            find: \"x\";\n        }\n        id: \"settings.x.y\";\n    }\n}\n",
+    );
 }

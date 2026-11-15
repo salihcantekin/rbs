@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-ui` (`settings_index`, `command::search`), `rbs-app` (`find:` keys in `ui/`, `menu_bar::open_settings`, the Settings window)
-- Related ADRs: ADR-0050 (command registry), ADR-0069 (RBS menu and its search), ADR-0078 (foldable cards), ADR-0113 (experience levels), ADR-0013 (zero cost when unused)
+- Related ADRs: ADR-0050 (command registry), ADR-0069 (RBS menu and its search; this spec extends its decision 2 results, "in menu order", with index hits after the commands, as its placeholder "Type a command, setting or panel" foresaw), ADR-0078 (foldable cards), ADR-0113 (experience levels), ADR-0013 (zero cost when unused)
 - Principles: U17 (one Settings window with a search field; a setting is never more than one section away), U2, U7
 
 ## Purpose
@@ -19,11 +19,11 @@ Out of scope: searching setting values ("6000 kbit/s"), the Source settings wind
 
 | Step | What | State |
 | --- | --- | --- |
-| 1 | Index, sync test, results in the RBS menu, `ui.settings.open {setting}` | This change |
+| 1 | Index, sync test, results in the RBS menu, `ui.settings.open {setting, command}` | This change |
 | 2 | Showing the setting: section, card opened, level revealed, row scrolled into view and marked; Shortcuts at a command | Planned |
 | 3 | The search field and its results in the Settings window, with the Shortcuts page's commands | Planned; visual proposal to the owner first (rule 16) |
 
-Until step 2, opening Settings at a setting shows its section.
+Until step 2, opening Settings at a setting shows its section. The RBS menu lists every match, rows above the shown level included; until step 2 such a hit opens the section, where that row is not drawn yet. That is expected for step 1.
 
 ## Contract
 
@@ -48,7 +48,7 @@ pub fn search(query: &str, context: &str, section_title: &dyn Fn(&str) -> String
 ```
 
 - **Entries.** Every foldable card (`SettingsCard` with an `id: "settings.…"`, ADR-0078) is an entry whose key is that card id. A setting row is an entry when a user would look for it by name. Status lines, empty states, list items and the fields of an Add or Create form are left out; their card is the entry.
-- **Keys** are stable once released: `ui.settings.open {setting}` names them. A row key is `<area>.<name>` in lower case with `-` (`encoding.video-encoder`, `replay.folder`). Keys are unique.
+- **Keys** are stable once released: `ui.settings.open {setting}` names them. Keys are unique. The prefix `settings.` is reserved for card ids. A card key is the card's fold-state id (ADR-0078), so renaming a card id breaks both its saved fold state and API callers; don't. A row key is opaque: it reads `<area>.<name>` in lower case with `-` (`encoding.video-encoder`, `replay.folder`), but the area is not a section id (`vcam`, `remote`) and the key does not change when a row moves to another section.
 - **Places.** A card has one place, itself. A row shown in more than one section lists each place in section list order: the Encoding card's rows (`EncoderFields`) are in Recording and Stream.
 - **Level** is the ADR-0113 level the row is drawn at: `Advanced` rows at Standard and Pro, `Expert` rows at Pro, and both once the card's "More options are hidden" line was answered.
 - **Order** follows the section list (`rbs_ui::command::SETTINGS_SECTIONS`), each card before its rows.
@@ -60,6 +60,7 @@ Each indexed row in `crates/rbs-app/ui` carries its key, `find: "<key>";` (a pro
 `crates/rbs-app/tests/settings_index.rs` reads every `.slint` file except the component library (`components.slint`, `settings.slint`), the test probes and the Source settings window, and fails when:
 
 - a row with a fixed `@tr("…")` label has neither a key nor a `find: none` comment;
+- a row writes properties on the line of its `{` (the scan reads properties on their own lines), a row sits in a card before the card's `id:` line, or a block header mentions a level in a form the scan does not know (only `if root.advanced:`, `if root.expert:`, `if Experience.advanced:`, `if Experience.expert:` and the Connection card's `if Experience.advanced || conn-card.show-all:`), so the scan never guesses;
 - a key is not in the index, a row key of the index is named by no row, or a row names a card key;
 - a fixed label differs from the index title (a computed label, such as the bitrate row's, is not compared);
 - the level differs from the `advanced` or `expert` branch the row is drawn in;
@@ -70,13 +71,13 @@ Each indexed row in `crates/rbs-app/ui` carries its key, `find: "<key>";` (a pro
 
 ### Search
 
-`search` splits the query at white space and matches without case. An entry matches in a place when every word is in the text made of `context`, the section title, the card title (for a row), its own title and its words. One hit per matching place. Hits whose own title holds every word come first, then the others, each group in index order. A blank query has no hits.
+`search` splits the query at white space and matches without case. An entry's own text is its section title, its card title (for a row), its own title and its words. An entry matches in a place when at least one query word is in its own text and every word is in its own text or in `context`. So the menu's "File Settings" never matches every entry by itself, and "settings keyframe" still finds the keyframe interval. One hit per matching place. Hits whose own title holds every word come first, then the others, each group in index order. A blank query has no hits.
 
 The cost is a scan of the table (under 100 entries, one short string built per place) per call; nothing is kept between calls.
 
 ### Results in the RBS menu
 
-`rbs_ui::command::search` (ADR-0069) adds the index hits after every command and choice, so a common word does not push commands past the limit of 40 results. Each hit is a `ui.settings.open` command:
+`rbs_ui::command::search` (ADR-0069) adds the index hits after every command and choice, so a common word does not push commands past the limit of 40 results. When commands alone would fill the list, the last `SETTINGS_SEARCH_ROOM` (5) places go to the first index hits, title matches first. Each hit is a `ui.settings.open` command:
 
 - id `ui.settings.open?section=<section>&setting=<key>`;
 - title `Settings: <section> › <card> › <setting>` for a row and `Settings: <section> › <card>` for a card (`command::settings_hit_title`);
@@ -84,12 +85,13 @@ The cost is a scan of the table (under 100 entries, one short string built per p
 
 The menu's words count as context ("File Settings"), as they do for sections: "settings keyframe" finds the keyframe interval.
 
-### `ui.settings.open {section?, setting?}` (protocol 1.56)
+### `ui.settings.open {section?, setting?, command?}` (protocol 1.56)
 
 - `setting` (optional) is an index key. With `section`, the key must show in that section (`invalid_params` otherwise); without one, Settings opens at the key's first place.
-- In the Shortcuts section, `setting` is a command id (`record.main.toggle`) instead: Shortcuts shows that command's row.
-- An unknown key or command id is `invalid_params`. From a menu, toolbar or shortcut, such an id runs nothing.
-- The registry entry `ui.settings.open` declares the optional text parameter `setting` beside `section`.
+- `command` (optional) is a command id of the registry without parameters (`record.main.toggle`): Settings opens at Shortcuts and shows that command's row. `section` may be absent or `shortcuts`. A parameterised id (a picker choice) has no row of its own and is `invalid_params`; so are an unknown id, `command` with another section, and `setting` and `command` together.
+- An unknown key is `invalid_params`. From a menu, toolbar or shortcut, an id with a bad `setting` or `command` runs nothing.
+- The registry entry `ui.settings.open` declares the optional text parameters `setting` and `command` beside `section`.
+- Routed `ui.*` methods are not served over the API yet ([status](../status.md)); until they are, this path is specified only, and the registry path (menus, toolbar, shortcuts, `menu_bar::open_settings`) is built and tested.
 
 ### Showing a setting (step 2)
 
@@ -111,3 +113,7 @@ Zero cost when unused (ADR-0013): the index is static data in the binary (a few 
 ## Open questions
 
 - Translated titles (Project Fluent, U-principles): the index titles are the English source strings; when translations come, search matches the translated title and the English one.
+
+## Review
+
+- 2026-11-15, step 1, independent AI review (a fresh session given only the change, specs, ADRs and code; ADR-0014): approve with changes, no blockers. Fixed in the same change: a separate `command` parameter instead of overloading `setting` (only bare ids), the menu's words no longer match every entry, the sync scan refuses forms it cannot read (properties on the row's `{` line, an unknown level condition, rows before the card's `id:`), room for 5 settings in a full result list, key rules written down (reserved `settings.` prefix, opaque row keys, card keys are fold-state ids), the API path stated as specified only until `ui.*` routing exists, ADR-0069 extension named, and level-hidden hits in step 1 stated as expected. Owner approval of the contract is pending.

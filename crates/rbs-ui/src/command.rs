@@ -192,9 +192,17 @@ const SECTION: Param = Param {
 
 /// The place to show in the Settings window (spec `settings-search.md`): a key of the
 /// settings index (`crate::settings_index`), shown in `section` when given, else in
-/// its first section; in the Shortcuts section, a command id, whose row is shown.
+/// its first section.
 const SETTING: Param = Param {
     name: "setting",
+    ty: ParamType::Text,
+    required: false,
+};
+
+/// The command whose row the Shortcuts section shows (spec `settings-search.md`): a
+/// registry entry id without parameters.
+const COMMAND: Param = Param {
+    name: "command",
     ty: ParamType::Text,
     required: false,
 };
@@ -517,7 +525,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::File,
         kind: action("ui.settings.open"),
-        params: &[SECTION, SETTING],
+        params: &[SECTION, SETTING, COMMAND],
         checkable: false,
         fixed: &[],
     },
@@ -2470,7 +2478,7 @@ pub fn settings_hit_title(settings: &str, hit: &crate::settings_index::Hit) -> S
 /// as its own command ("Workspace: Live"), each Settings section ("Settings:
 /// Appearance"), and each card and setting of the settings index that matches
 /// (`settings_index::search`, "Settings: Recording › Encoding › Video encoder"), after
-/// every command. A command's menu title counts as one of its words, so "view" finds
+/// every command, with room for at least [`SETTINGS_SEARCH_ROOM`] of them. A command's menu title counts as one of its words, so "view" finds
 /// the View menu's commands. In menu order; at most [`MAX_SEARCH_RESULTS`]; none for
 /// a blank query.
 pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
@@ -2566,10 +2574,16 @@ pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
             }
         }
     }
+    // Keep room for a few settings when the commands alone fill the list.
+    let keep = settings.len().min(SETTINGS_SEARCH_ROOM);
+    out.truncate(MAX_SEARCH_RESULTS - keep);
     out.extend(settings);
     out.truncate(MAX_SEARCH_RESULTS);
     out
 }
+
+/// Results [`search`] keeps for cards and settings when commands alone would fill it.
+pub const SETTINGS_SEARCH_ROOM: usize = 5;
 
 /// Where a context menu opens (ADR-0050 decision 4; spec "Context menus"). Each has
 /// its layout in [`CONTEXT_LAYOUT`]; what was right-clicked comes as a target.
@@ -3367,6 +3381,14 @@ mod tests {
             )
         );
         assert!(first_setting > 0);
+        // A word in many commands still leaves room for settings.
+        let found = search(&Fake, "e");
+        assert_eq!(found.len(), MAX_SEARCH_RESULTS);
+        let settings = found
+            .iter()
+            .filter(|i| matches!(i, MenuItem::Command { id, .. } if id.param("setting").is_some()))
+            .count();
+        assert!(settings >= SETTINGS_SEARCH_ROOM, "{settings}");
         // Ids parse back with both parameters.
         let id =
             CommandId::parse("ui.settings.open?section=stream&setting=encoding.b-frames").unwrap();

@@ -176,9 +176,9 @@ struct App {
     /// The density in use, as the registry shows it (View › Spacing).
     density: rbs_ui::tokens::Density,
     /// `ui.settings.open` ran; the next sync shows Settings, at this section when
-    /// given. The setting key it names is not used yet: Settings opens at its section
-    /// (spec `settings-search.md`, step 2 shows the row).
-    open_settings: Option<(Option<i32>, Option<String>)>,
+    /// given. The setting or command it names is not used yet: Settings opens at its
+    /// section (spec `settings-search.md`; step 2 shows the row).
+    open_settings: Option<(Option<i32>, Option<menu_bar::SettingsTarget>)>,
     /// `source.settings` ran; the next sync opens the Source settings window.
     open_source_settings: Option<i32>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
@@ -2328,7 +2328,8 @@ impl Ctx {
             self.show_all(&mut app);
             app.open_name_prompt(ask);
         }
-        if let Some((section, _setting)) = app.open_settings.take() {
+        // TODO(settings search step 2): show the target's row, not only its section.
+        if let Some((section, _target)) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).
             let section = section
                 .or_else(|| app.settings.as_ref().map(|w| w.get_section()))
