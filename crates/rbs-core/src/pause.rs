@@ -188,6 +188,13 @@ impl std::fmt::Display for PauseError {
 impl std::error::Error for PauseError {}
 
 impl PauseWindow {
+    /// A value that changes with every write: one relaxed load. A node that keeps the
+    /// last [`Window`] it read compares this with `2 * epoch` and reads again only on
+    /// a change (ADR-0124 decision 8).
+    pub fn version(&self) -> u64 {
+        self.seq.load(Ordering::Relaxed)
+    }
+
     /// Reads the current window. `None` only while a write is in progress on every
     /// try; the caller then keeps its last good window for this tick. Never blocks.
     pub fn read(&self) -> Option<Window> {

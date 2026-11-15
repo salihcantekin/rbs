@@ -221,6 +221,40 @@ impl<'a> AudioBlock<'a> {
         self.samples
     }
 
+    /// The same samples stamped with another time (a pause gate, ADR-0124).
+    #[must_use]
+    pub fn with_timestamp(self, timestamp: Timestamp) -> Self {
+        Self { timestamp, ..self }
+    }
+
+    /// Sample frames `from..to` of this block (clamped to it), stamped at the time of
+    /// frame `from` (`timestamp + rate.duration_of(from)`). Never allocates.
+    #[must_use]
+    pub fn range(&self, from: usize, to: usize) -> Self {
+        let to = to.min(self.frames);
+        let from = from.min(to);
+        let offset = self.format.sample_rate.duration_of(from as u64);
+        let timestamp = self.timestamp + offset;
+        let samples = match self.samples {
+            AudioSamples::Planar(mut planar) => {
+                for channel in &mut planar.channels[..planar.count] {
+                    *channel = &channel[from..to];
+                }
+                AudioSamples::Planar(planar)
+            }
+            AudioSamples::Interleaved(all) => {
+                let n = self.format.channels.channels();
+                AudioSamples::Interleaved(&all[from * n..to * n])
+            }
+        };
+        Self {
+            format: self.format,
+            timestamp,
+            frames: to - from,
+            samples,
+        }
+    }
+
     /// Channel `index` of a planar block, or `None` for interleaved blocks and
     /// out-of-range channels.
     pub fn channel(&self, index: usize) -> Option<&'a [f32]> {
@@ -280,5 +314,35 @@ mod tests {
         assert!(block.channel(0).is_none());
         assert!(matches!(block.samples(), AudioSamples::Interleaved(s) if s.len() == 960));
         assert!(AudioBlock::interleaved(AudioFormat::STEREO_48K, t, &samples[..959]).is_err());
+    }
+
+    #[test]
+    fn a_range_of_a_block_starts_at_its_first_frame() {
+        let left: Vec<f32> = (0..480).map(|i| i as f32).collect();
+        let right: Vec<f32> = (0..480).map(|i| -(i as f32)).collect();
+        let t = Timestamp::from_nanos(1_000);
+        let Ok(block) = AudioBlock::planar(AudioFormat::STEREO_48K, t, &[&left, &right]) else {
+            panic!("valid stereo block");
+        };
+        let part = block.range(240, 480);
+        assert_eq!(part.frames(), 240);
+        assert_eq!(part.timestamp(), t + SampleRate::HZ_48000.duration_of(240));
+        assert_eq!(part.channel(0).map(|c| c[0]), Some(240.0));
+        assert_eq!(part.channel(1).map(|c| c[239]), Some(-479.0));
+        assert_eq!(block.range(500, 600).frames(), 0);
+        assert_eq!(
+            part.with_timestamp(Timestamp::ZERO).timestamp(),
+            Timestamp::ZERO
+        );
+
+        let interleaved: Vec<f32> = (0..960).map(|i| i as f32).collect();
+        let Ok(block) = AudioBlock::interleaved(AudioFormat::STEREO_48K, t, &interleaved) else {
+            panic!("valid interleaved block");
+        };
+        let part = block.range(1, 3);
+        assert_eq!(part.frames(), 2);
+        assert!(
+            matches!(part.samples(), AudioSamples::Interleaved(s) if s == [2.0, 3.0, 4.0, 5.0])
+        );
     }
 }

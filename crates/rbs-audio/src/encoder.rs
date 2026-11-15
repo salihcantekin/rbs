@@ -9,6 +9,9 @@ use rbs_core::media::EncodedPacket;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 
+use crate::gate::{AudioGate, NoGate, PauseGate};
+use rbs_core::pause::PauseWindow;
+
 /// Node type id of [`EncoderNode`].
 pub const ENCODER_NODE_TYPE: &str = "org.rbs.audio.encoder";
 
@@ -20,7 +23,11 @@ pub const ENCODER_NODE_TYPE: &str = "org.rbs.audio.encoder";
 /// on its input is the end of its input (the audio queue's reader rings for one more
 /// final tick after its last block). On it the node flushes the session, passes the
 /// tail on and takes no more blocks until it is prepared again.
-pub struct EncoderNode {
+///
+/// The gate `G` decides which samples reach the session (ADR-0124): [`NoGate`] for a
+/// stream or the replay buffer, [`PauseGate`] for a recording
+/// ([`EncoderNode::with_pause`]).
+pub struct EncoderNode<G: AudioGate = NoGate> {
     desc: NodeDescriptor,
     encoder: Box<dyn AudioEncoder>,
     /// Packets drained but not passed on yet (`PER_TICK_EVENTS` per tick).
@@ -32,6 +39,7 @@ pub struct EncoderNode {
     ended: bool,
     flushes: Arc<AtomicU64>,
     tail_lost: Arc<AtomicU64>,
+    gate: G,
 }
 
 /// The descriptor of audio encoder nodes.
@@ -59,9 +67,31 @@ impl EncoderNode {
             ended: false,
             flushes: Arc::default(),
             tail_lost: Arc::default(),
+            gate: NoGate,
         }
     }
 
+    /// The same node following a recording's pause window (ADR-0124 decision 4):
+    /// samples inside a window are left out, later ones stamped earlier by the time
+    /// left out, with a 5 ms fade on each side of a cut. `frames` is the graph's
+    /// block length; the fade's scratch buffer is reserved here.
+    pub fn with_pause(self, pause: Arc<PauseWindow>, frames: usize) -> EncoderNode<PauseGate> {
+        EncoderNode {
+            desc: self.desc,
+            encoder: self.encoder,
+            waiting: self.waiting,
+            drained: self.drained,
+            capacity: self.capacity,
+            dropped: self.dropped,
+            ended: self.ended,
+            flushes: self.flushes,
+            tail_lost: self.tail_lost,
+            gate: PauseGate::new(pause, frames),
+        }
+    }
+}
+
+impl<G: AudioGate> EncoderNode<G> {
     /// Packets lost because more were waiting than the node holds.
     pub fn dropped(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.dropped)
@@ -80,7 +110,7 @@ impl EncoderNode {
     }
 }
 
-impl<X: Runtime> Node<X> for EncoderNode {
+impl<X: Runtime, G: AudioGate> Node<X> for EncoderNode<G> {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.desc
     }
@@ -116,8 +146,9 @@ impl<X: Runtime> Node<X> for EncoderNode {
         };
         let ended = match block {
             Some(block) => {
-                self.encoder
-                    .submit(&block)
+                let encoder = &mut self.encoder;
+                self.gate
+                    .pass(&block, |part| encoder.submit(part))
                     .map_err(|_| NodeError::Backend("audio encoder submit failed"))?;
                 false
             }

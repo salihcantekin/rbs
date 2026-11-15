@@ -23,6 +23,7 @@
 
 mod config;
 mod encoder;
+pub mod gate;
 mod input;
 pub mod loudness;
 mod meter;
@@ -33,6 +34,7 @@ mod sink;
 
 pub use config::{AudioGraphConfig, AudioGraphError, DEFAULT_LATENCY, MAX_LATENCY, MIN_LATENCY};
 pub use encoder::{ENCODER_NODE_TYPE, EncoderNode, encoder_descriptor};
+pub use gate::{AudioGate, NoGate, PAUSE_FADE, PauseGate};
 pub use input::{
     INPUT_NODE_TYPE, InputCounters, InputNode, InputParams, InputStats, MAP_TOLERANCE,
     MAX_CORRECTION, MAX_PACKET, RESYNC_THRESHOLD, STEER_GAIN, input_descriptor,
