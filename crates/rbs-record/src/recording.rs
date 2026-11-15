@@ -432,6 +432,7 @@ impl RecordSettings {
             // RecordSettings does not store an output size. A recording started this
             // way encodes at its canvas. Studio outputs carry the size themselves.
             size: None,
+            track_span: false,
         }
     }
 }
@@ -740,6 +741,9 @@ pub struct FinishReport {
     pub flush_lost: u64,
     /// Output items not delivered when the output finished.
     pub finish_lost: u64,
+    /// What the file holds, for the manifest's stop rewrite (ADR-0089 decision 6);
+    /// `None` when no packet went out.
+    pub media: Option<crate::MediaSpan>,
 }
 
 /// Adds `desc` to `graph`, Active, in `partition`.
@@ -997,6 +1001,7 @@ impl Recording {
             shutdown_errors: Vec::new(),
             flush_lost: 0,
             finish_lost: 0,
+            media: None,
         });
         report.shutdown_errors.extend(errors);
         report.failure = report.failure.or(studio_failure);

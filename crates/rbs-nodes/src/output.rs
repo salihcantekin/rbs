@@ -46,7 +46,7 @@ pub fn output_descriptor(streams: usize) -> NodeDescriptor {
 }
 
 /// Counters of an output node, readable from any thread.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct OutputNodeStats {
     /// Packets taken from the inputs.
     pub packets: AtomicU64,
@@ -74,6 +74,61 @@ pub struct OutputNodeStats {
     pub start_drops: AtomicU64,
     /// Why the output stopped for good, set once at the first permanent failure.
     pub failure: OnceLock<String>,
+    /// The earliest `pts` delivered (muxed, or forwarded without a muxer), in
+    /// nanoseconds on the master clock; `u64::MAX` before the first packet. A muxer
+    /// starts its media time at this sample (recording spec, "Recording manifest").
+    pub first_pts_ns: AtomicU64,
+    /// The latest end delivered: `pts` plus the packet's duration (or its stream's
+    /// nominal one: a video frame, an audio packet's samples), in nanoseconds on the
+    /// master clock; 0 before the first packet.
+    pub end_ns: AtomicU64,
+}
+
+impl Default for OutputNodeStats {
+    fn default() -> Self {
+        Self {
+            packets: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
+            transport_drops: AtomicU64::new(0),
+            mux_drops: AtomicU64::new(0),
+            backlog_peak: AtomicU64::new(0),
+            keyframe_requests: AtomicU64::new(0),
+            connects: AtomicU64::new(0),
+            reconnect_attempts: AtomicU64::new(0),
+            connected: AtomicBool::new(false),
+            finish_lost: AtomicU64::new(0),
+            start_drops: AtomicU64::new(0),
+            failure: OnceLock::new(),
+            first_pts_ns: AtomicU64::new(u64::MAX),
+            end_ns: AtomicU64::new(0),
+        }
+    }
+}
+
+impl OutputNodeStats {
+    /// The media delivered so far, `(first pts, end)` in nanoseconds on the master
+    /// clock; `None` before the first packet.
+    pub fn span(&self) -> Option<(u64, u64)> {
+        let first = self.first_pts_ns.load(Ordering::Relaxed);
+        let end = self.end_ns.load(Ordering::Relaxed);
+        (first != u64::MAX).then_some((first, end.max(first)))
+    }
+}
+
+/// A stream's nominal packet length in nanoseconds, for packets without a duration:
+/// one frame of video, `frame_size` samples of audio (0 when unknown).
+fn nominal_duration_ns(stream: &StreamDescriptor) -> u64 {
+    match stream.params {
+        StreamParams::Video { frame_rate, .. } => {
+            u64::try_from(frame_rate.frame_duration().as_nanos()).unwrap_or(0)
+        }
+        StreamParams::Audio {
+            format, frame_size, ..
+        } => (u64::from(frame_size) * 1_000_000_000)
+            .checked_div(u64::from(format.sample_rate.hz()))
+            .unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// The time source of an output's blocking waits in `prepare` and `release` (control
@@ -147,9 +202,71 @@ struct MuxerSetup {
     fragment_duration: Option<Duration>,
 }
 
+/// How an output follows the span of the media it delivers (recording spec, "Recording
+/// manifest"; ADR-0089 decision 6). Chosen when the output is built, never checked per
+/// packet (P13): [`NoSpan`] compiles to nothing, [`TrackSpan`] keeps the span.
+pub trait SpanPolicy: Send + 'static {
+    /// Widens the span by one delivered packet of stream `stream`.
+    fn extend(&mut self, stream: usize, packet: &EncodedPacket, stats: &OutputNodeStats);
+}
+
+/// The default: no span is kept and [`OutputNodeStats::span`] stays `None`. No code
+/// runs per packet.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoSpan;
+
+impl SpanPolicy for NoSpan {
+    #[inline(always)]
+    fn extend(&mut self, _: usize, _: &EncodedPacket, _: &OutputNodeStats) {}
+}
+
+/// Keeps the earliest `pts` and the latest end delivered, mirrored into
+/// [`OutputNodeStats::first_pts_ns`] and [`OutputNodeStats::end_ns`].
+#[derive(Debug, Clone)]
+pub struct TrackSpan {
+    /// Each stream's nominal packet length in nanoseconds, for packets without a
+    /// duration.
+    nominal_ns: Vec<u64>,
+    first_ns: u64,
+    end_ns: u64,
+}
+
+impl TrackSpan {
+    fn new(streams: &[StreamDescriptor]) -> Self {
+        Self {
+            nominal_ns: streams.iter().map(nominal_duration_ns).collect(),
+            first_ns: u64::MAX,
+            end_ns: 0,
+        }
+    }
+}
+
+impl SpanPolicy for TrackSpan {
+    /// Two compares, and a relaxed store only when an edge moves (no
+    /// read-modify-write, no lock, no allocation).
+    #[inline]
+    fn extend(&mut self, stream: usize, packet: &EncodedPacket, stats: &OutputNodeStats) {
+        let pts = packet.pts().as_nanos();
+        if pts < self.first_ns {
+            self.first_ns = pts;
+            stats.first_pts_ns.store(pts, Ordering::Relaxed);
+        }
+        let length = match packet.duration() {
+            Some(d) => u64::try_from(d.as_nanos()).unwrap_or(u64::MAX),
+            None => self.nominal_ns.get(stream).copied().unwrap_or(0),
+        };
+        let end = pts.saturating_add(length);
+        if end > self.end_ns {
+            self.end_ns = end;
+            stats.end_ns.store(end, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Delivers the packets of its inputs through a muxer (for container transports such
-/// as files) and a transport.
-pub struct OutputNode {
+/// as files) and a transport. `S` decides whether it keeps the span of what it
+/// delivered ([`OutputNode::track_span`]).
+pub struct OutputNode<S: SpanPolicy = NoSpan> {
     descriptor: NodeDescriptor,
     streams: Vec<StreamDescriptor>,
     transport_factory: Arc<dyn TransportFactory>,
@@ -169,6 +286,7 @@ pub struct OutputNode {
     video: Option<usize>,
     start: Start,
     held: VecDeque<(usize, EncodedPacket)>,
+    span: S,
     stats: Arc<OutputNodeStats>,
 }
 
@@ -186,6 +304,7 @@ impl OutputNode {
             .filter(|_| streams.len() > 1);
         Self {
             descriptor: output_descriptor(streams.len()),
+            span: NoSpan,
             video,
             start: Start::Open,
             held: VecDeque::new(),
@@ -206,6 +325,36 @@ impl OutputNode {
         }
     }
 
+    /// The same output keeping the span of what it delivers, for the recording
+    /// manifest (ADR-0089 decision 6). Built this way only for recordings that need
+    /// it; the default output runs no span code (P13).
+    pub fn track_span(self) -> OutputNode<TrackSpan> {
+        let span = TrackSpan::new(&self.streams);
+        OutputNode {
+            descriptor: self.descriptor,
+            streams: self.streams,
+            transport_factory: self.transport_factory,
+            transport_config: self.transport_config,
+            muxer_setup: self.muxer_setup,
+            backlog_limit: self.backlog_limit,
+            finish_timeout: self.finish_timeout,
+            clock: self.clock,
+            wrote_media: self.wrote_media,
+            transport: self.transport,
+            muxer: self.muxer,
+            backlog: self.backlog,
+            chunks: self.chunks,
+            events: self.events,
+            video: self.video,
+            start: self.start,
+            held: self.held,
+            span,
+            stats: self.stats,
+        }
+    }
+}
+
+impl<S: SpanPolicy> OutputNode<S> {
     /// Muxes into `container` before the transport. Required when the transport's input
     /// is `TransportInput::Container`, and the container must match.
     pub fn with_muxer(
@@ -239,6 +388,11 @@ impl OutputNode {
     pub fn with_wait_clock(mut self, clock: Arc<dyn WaitClock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// The streams it delivers, in pin order.
+    pub fn streams(&self) -> &[StreamDescriptor] {
+        &self.streams
     }
 
     /// The node's counters.
@@ -363,6 +517,7 @@ impl OutputNode {
         let Some(muxer) = self.muxer.as_mut() else {
             // Shares the payload; no copy.
             self.wrote_media = true;
+            self.span.extend(stream, packet, &self.stats);
             return self.send(Item::Packet(index, packet.clone()));
         };
         match muxer.write(index, packet, &mut self.chunks) {
@@ -378,6 +533,7 @@ impl OutputNode {
             }
         }
         self.wrote_media = true;
+        self.span.extend(stream, packet, &self.stats);
         let mut chunks = std::mem::take(&mut self.chunks);
         let mut result = Ok(());
         for chunk in chunks.drain(..) {
@@ -423,7 +579,7 @@ fn count(stats: &OutputNodeStats, outcome: SendOutcome) {
     }
 }
 
-impl<X: Runtime> Node<X> for OutputNode {
+impl<S: SpanPolicy, X: Runtime> Node<X> for OutputNode<S> {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }

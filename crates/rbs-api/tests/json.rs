@@ -83,6 +83,7 @@ fn profile() -> RecordingProfile {
         delivery: Delivery::Video,
         open_shadows: false,
         output_size: None,
+        editor_project: None,
     }
 }
 
@@ -474,6 +475,10 @@ fn every_request() -> Vec<Request> {
         c(Command::MarkerRemove(rbs_api::request::MarkerRemove {
             canvas: rbs_api::types::OutputCanvas::Vertical,
             index: 2,
+        })),
+        c(Command::ProjectExport(rbs_api::request::ProjectExport {
+            recording: "take".into(),
+            format: rbs_api::types::ProjectFormat::Fcpxml,
         })),
         c(Command::SourceSetChrome(SetSourceChrome {
             source: 3,
@@ -1990,6 +1995,59 @@ fn markers_round_trip_and_unknown_colours_are_refused() {
         rbs_api::request::method_scope("marker.remove"),
         Some(Some(rbs_api::Scope::Control))
     );
+}
+
+#[test]
+fn project_export_round_trips_and_the_profile_omits_an_unset_editor_project() {
+    use rbs_api::request::{ProjectExport, ProjectExported};
+    use rbs_api::types::ProjectFormat;
+    let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
+        Ok(Request::Command(c)) => Ok(c),
+        Ok(other) => panic!("not a command: {other:?}"),
+        Err(e) => Err(e.error.kind),
+    };
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"recording":"RBS 2026-11-15 20-00-00","format":"fcpxml"}}"#
+        ),
+        Ok(Command::ProjectExport(ProjectExport {
+            recording: "RBS 2026-11-15 20-00-00".into(),
+            format: ProjectFormat::Fcpxml,
+        }))
+    );
+    for bad in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"recording":"x","format":"xmeml"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"recording":"x"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"project.export","params":{"format":"fcpxml"}}"#,
+    ] {
+        assert_eq!(decode(bad), Err(ErrorKind::InvalidParams), "{bad}");
+    }
+    let answer = ProjectExported {
+        file: "take.fcpxml".into(),
+        missing: vec!["Mic.wav".into()],
+    };
+    round_trip(&answer);
+    assert_eq!(
+        serde_json::to_value(&answer).unwrap(),
+        json!({"file": "take.fcpxml", "missing": ["Mic.wav"]})
+    );
+    assert_eq!(
+        rbs_api::request::method_scope("project.export"),
+        Some(Some(rbs_api::Scope::Control))
+    );
+    let mut p = profile();
+    assert!(
+        serde_json::to_value(&p)
+            .unwrap()
+            .get("editor_project")
+            .is_none()
+    );
+    p.editor_project = Some(ProjectFormat::Fcpxml);
+    assert_eq!(
+        serde_json::to_value(&p).unwrap()["editor_project"],
+        json!("fcpxml")
+    );
+    round_trip(&p);
 }
 
 /// `record.estimate`'s answer (protocol 1.53): counts and bytes are written as whole

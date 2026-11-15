@@ -6043,6 +6043,7 @@ fn request_of(
         bit_depth: start.bit_depth,
         size: start.size,
         iso: true,
+        editor_project: profile.editor_project,
     }
 }
 

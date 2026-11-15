@@ -142,6 +142,9 @@ pub struct IsoVideoTrack {
     pub stats: Arc<ExportNodeStats>,
     /// The track's encoder counters: `submitted` is the frames in the file.
     pub encoder: Arc<EncoderNodeStats>,
+    /// The file's output counters: what it holds, for the manifest at stop
+    /// (ADR-0089 decision 6).
+    pub output: Arc<rbs_nodes::output::OutputNodeStats>,
     /// The queue into the track's encoder: `video_drops` counts frames the export
     /// passed on that the encoder never took (its partition was busy with the other
     /// tracks on it). `None` only if the engine did not report the crossing.
@@ -210,6 +213,8 @@ pub(super) struct IsoVideoRun {
     nodes: Vec<Added>,
     /// What each open video file costs, for the estimate of a later start (ADR-0087).
     pub(super) encodes: Vec<crate::estimate::VideoEncode>,
+    /// Each video file's output counters, for the manifest at stop (ADR-0089).
+    files: Vec<super::IsoFileOut>,
     /// The first node of each track after the source's chain, to follow the source
     /// when the binder replaces its node (a new colour or file builds a new still
     /// node; ADR-0117 decision 4).
@@ -500,10 +505,27 @@ impl super::Studio {
         self.ensure_iso_video_partitions(taps.len())?;
         let (nodes, tracks, images, relinks) =
             self.install_video(&taps, chains, &image_taps, images, sinks.as_ref(), start)?;
+        let fps = self.fps;
+        let files = tracks
+            .iter()
+            .map(|t| super::IsoFileOut {
+                file_name: t.file_name.clone(),
+                stats: Arc::clone(&t.output),
+                formats: (
+                    Some(rbs_manifest::Picture {
+                        width: t.size.0,
+                        height: t.size.1,
+                        frame_rate: fps,
+                    }),
+                    None,
+                ),
+            })
+            .collect();
         self.iso_video = Some(IsoVideoRun {
             nodes,
             encodes,
             relinks,
+            files,
         });
         skipped.sort_by_key(|s| s.source);
         Ok(IsoVideoStarted {
@@ -557,9 +579,10 @@ impl super::Studio {
     /// Closes separate video files and drops their nodes. False when none were open.
     /// The partitions stay, with no worker (ADR-0013).
     pub fn stop_iso_video(&mut self) -> bool {
-        let Some(run) = self.iso_video.take() else {
+        let Some(mut run) = self.iso_video.take() else {
             return false;
         };
+        self.iso_ended.append(&mut run.files);
         for node in &run.nodes {
             let _ = self.graph.set_state(node.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(node.node);
@@ -662,7 +685,11 @@ impl super::Studio {
                     TransportInput::Container(start.container),
                 ),
             )
-            .with_muxer(Arc::clone(muxer), start.container, None);
+            .with_muxer(Arc::clone(muxer), start.container, None)
+            // Separate files always keep their span: the manifest places each one on
+            // the editor's timeline (ADR-0086 decision 5, ADR-0089 decision 6).
+            .track_span();
+            let output_stats = output.stats();
             let stats = export.stats();
             let encoder_stats = encoder.stats();
             let encoder_node = self.add_track(
@@ -698,6 +725,7 @@ impl super::Studio {
                 size,
                 stats,
                 encoder: encoder_stats,
+                output: output_stats,
                 queue: None,
             });
         }
@@ -793,7 +821,7 @@ impl super::Studio {
         export: VideoExportNode,
         encoder: VideoEncoderNode,
         encoder_part: rbs_graph::description::PartitionId,
-        output: OutputNode,
+        output: OutputNode<rbs_nodes::output::TrackSpan>,
     ) -> Result<(NodeId, NodeId), RecordError> {
         // The normalisation pass draws the source's picture into the canvas format
         // (decision 9, case b); a filter tail already is (case a).

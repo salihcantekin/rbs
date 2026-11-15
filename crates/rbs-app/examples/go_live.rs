@@ -211,6 +211,7 @@ fn main() -> ExitCode {
                         bit_depth: None,
                         size: None,
                         iso: true,
+                        editor_project: None,
                     }));
                     record_state = Some(1);
                 }

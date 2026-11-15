@@ -1255,6 +1255,9 @@ pub struct RecordRequest {
     /// Write the separate files of the sources marked to record separately
     /// (ADR-0086). Only the main canvas's recording has them.
     pub iso: bool,
+    /// Write an editor project when it stops (ADR-0089 decision 10). Also what makes
+    /// the master keep its timing for the manifest; `None` adds no work (P13).
+    pub editor_project: Option<crate::record_profile::EditorProject>,
 }
 
 /// A change to a source's separate-file marks (`source.set_record_separately`): an
@@ -1388,6 +1391,9 @@ struct PictureGate {
 /// files are not counted.
 pub const SEPARATE_VIDEO_LIMIT: usize = rbs_record::estimate::UNKNOWN_SESSIONS_VIDEO_LIMIT;
 
+/// Each separate file's media when the recording stopped, by file name.
+type SeparateMedia = Vec<(String, Option<rbs_record::MediaSpan>)>;
+
 /// The markers of a running recording and where its manifest goes (ADR-0089
 /// decisions 1 and 5). The recording's state on the control thread owns them.
 #[derive(Debug, Clone)]
@@ -1403,14 +1409,25 @@ struct RecordingMarkers {
     /// writes one only when it has markers.
     folder: bool,
     /// The manifest changed since start for another reason than markers (the
-    /// pictures of image tracks), so the stop writes it.
+    /// pictures of image tracks, the stop fields), so the stop writes it.
     dirty: bool,
+    /// What each file holds, once the recording stopped (ADR-0089 decision 6): the
+    /// master's, then each separate file's by name.
+    ended: Option<(Option<rbs_record::MediaSpan>, SeparateMedia)>,
+    /// The editor project to write after the stop rewrite (ADR-0089 decision 10).
+    project: Option<crate::record_profile::EditorProject>,
 }
 
 impl RecordingMarkers {
     /// The markers' state for a recording that started at `t0_ns` into `path`, or into
     /// the recording folder of `iso`.
-    fn new(path: &Path, t0_ns: u64, t0_utc: String, iso: Option<&IsoFiles>) -> Option<Self> {
+    fn new(
+        path: &Path,
+        t0_ns: u64,
+        t0_utc: String,
+        iso: Option<&IsoFiles>,
+        project: Option<crate::record_profile::EditorProject>,
+    ) -> Option<Self> {
         let log = rbs_manifest::MarkerLog::new(t0_ns, std::time::Duration::ZERO).ok()?;
         if let Some(iso) = iso {
             return Some(Self {
@@ -1420,6 +1437,8 @@ impl RecordingMarkers {
                 name: rbs_manifest::FOLDER_MANIFEST.to_owned(),
                 folder: true,
                 dirty: false,
+                ended: None,
+                project,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1435,17 +1454,94 @@ impl RecordingMarkers {
             name,
             folder: false,
             dirty: false,
+            ended: None,
+            project,
         })
+    }
+
+    /// Keeps what the closed files hold, for the stop rewrite in [`Self::write`].
+    fn set_ended(&mut self, master: Option<rbs_record::MediaSpan>, separate: SeparateMedia) {
+        self.ended = Some((master, separate));
+        self.dirty = true;
+    }
+
+    /// The stop rewrite (ADR-0089 decision 6): each file's offset, length and format,
+    /// and `complete = true`. A file that wrote nothing keeps no timing. When a file
+    /// began before `t0` (a plain recording's first audio packet before the moment its
+    /// markers count from), `t0` moves to it so no offset is negative.
+    fn apply_ended(&mut self) {
+        let Some((master, separate)) = self.ended.take() else {
+            return;
+        };
+        let span_of = |file: &rbs_manifest::ManifestFile| {
+            if file.role == "master" {
+                master
+            } else {
+                separate
+                    .iter()
+                    .find(|(name, _)| *name == file.file_name)
+                    .and_then(|(_, span)| *span)
+            }
+        };
+        let earliest = self
+            .manifest
+            .files
+            .iter()
+            .filter_map(span_of)
+            .map(|s| s.first_ns)
+            .min();
+        if let Some(first) = earliest {
+            self.manifest.move_origin(first);
+        }
+        let t0 = self.manifest.t0_ns;
+        let timings: Vec<_> = self
+            .manifest
+            .files
+            .iter()
+            .map(|f| span_of(f).map(|s| s.timing(t0)))
+            .collect();
+        for (file, timing) in self.manifest.files.iter_mut().zip(timings) {
+            if file.role != "image" {
+                file.timing = timing;
+            }
+        }
+        // Without the master's timing (a take that did not keep it, or wrote nothing)
+        // the manifest stays incomplete, so no project is ever guessed.
+        if master.is_some() {
+            self.manifest.complete();
+        }
+    }
+
+    /// Writes the editor project next to the manifest, when the setting asked for
+    /// one and the stop rewrite made the manifest complete. `Ok(None)`: none asked.
+    fn write_project(&self) -> Result<Option<String>, String> {
+        let Some(project) = self.project else {
+            return Ok(None);
+        };
+        let format = match project {
+            crate::record_profile::EditorProject::Fcpxml => rbs_project::Format::Fcpxml,
+        };
+        rbs_project::export(&self.dir, &self.name, format, false)
+            .map(|done| {
+                done.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Writes the manifest with the markers, at stop. Nothing to write is `Ok`.
     fn write(&mut self) -> Result<(), String> {
-        if !self.dirty
-            && (!self.log.has_pending() || (!self.folder && self.log.markers().is_empty()))
-        {
+        // A plain recording writes a manifest only when it has markers or writes an
+        // editor project (ADR-0089 decision 5, owner choice 1).
+        if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
+            return Ok(());
+        }
+        if !self.dirty && !self.log.has_pending() {
             return Ok(());
         }
         self.manifest.markers = self.log.markers().to_vec();
+        self.apply_ended();
         rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
         self.log.mark_flushed();
         self.dirty = false;
@@ -5287,7 +5383,10 @@ impl Host {
         if path.exists() {
             return Err(format!("{} already exists.", path.display()).into());
         }
-        let out = self.master_settings(canvas, r, path);
+        let mut out = self.master_settings(canvas, r, path);
+        // The master keeps its timing only for a take that can become an editor
+        // project: one with separate files or with the project setting on (P13).
+        out.track_span = r.editor_project.is_some() || iso.is_some();
         let started = self.start_output(&out, r.encoder.as_deref());
         inject!(self, Fault::AfterOutputStart);
         if let Ok((id, _, _)) = &started
@@ -5355,7 +5454,8 @@ impl Host {
                 },
                 |f| (f.manifest.t0_ns, f.manifest.t0_utc.clone()),
             );
-            self.outs[slot(c)].markers = RecordingMarkers::new(path, t0_ns, t0_utc, iso.as_ref());
+            self.outs[slot(c)].markers =
+                RecordingMarkers::new(path, t0_ns, t0_utc, iso.as_ref(), r.editor_project);
             // Tracked together with the master, after the last panic point of the
             // start, so recovery never finds files without their master (ADR-0055).
             let (tracks, skipped) = iso
@@ -5491,6 +5591,60 @@ impl Host {
                 ErrorKind::NotFound,
                 format!("the recording has no marker {index}"),
             ))
+        }
+    }
+
+    /// `project.export` (ADR-0089 decisions 8 and 11): an editor project from a
+    /// finished recording in the profile's recordings folder. `recording` is one path
+    /// segment: a recording folder's name, a plain recording's file name or its
+    /// manifest's name. Runs on the control thread; writing takes milliseconds.
+    fn export_project(
+        &self,
+        recording: &str,
+        format: api::ProjectFormat,
+    ) -> Result<rbs_api::request::ProjectExported, ApiError> {
+        if !rbs_manifest::single_file_name(recording) {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                "recording is one name inside the recordings folder",
+            ));
+        }
+        let folder = &self.profile.folder;
+        let named = folder.join(recording);
+        let (dir, manifest) = if named.is_dir() {
+            (named, rbs_manifest::FOLDER_MANIFEST.to_owned())
+        } else if recording.ends_with(rbs_manifest::FILE_SUFFIX) {
+            (folder.clone(), recording.to_owned())
+        } else {
+            let Some(name) = rbs_manifest::manifest_name_for(recording) else {
+                return Err(ApiError::new(ErrorKind::NotFound, "no such recording"));
+            };
+            (folder.clone(), name)
+        };
+        if !dir.join(&manifest).is_file() {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                "the recording has no manifest: it was recorded without separate files, \
+                 markers or the editor project setting",
+            ));
+        }
+        let format = match format {
+            api::ProjectFormat::Fcpxml => rbs_project::Format::Fcpxml,
+        };
+        match rbs_project::export(&dir, &manifest, format, false) {
+            Ok(done) => Ok(rbs_api::request::ProjectExported {
+                file: done
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                missing: done.missing,
+            }),
+            Err(rbs_project::ProjectError::Incomplete) => Err(failed(
+                "the recording has no timing for an editor project: it was recorded without \
+                 separate files or the editor project setting, or it did not stop cleanly",
+            )),
+            Err(e) => Err(failed(e.to_string())),
         }
     }
 
@@ -5644,14 +5798,19 @@ impl Host {
         };
         let report = self.studio.stop_output(id);
         // The separate files end with their master (ADR-0086 decision 5).
+        let mut separate = Vec::new();
         if c == OutputCanvas::Main
             && let Some(files) = self.iso.take()
         {
             self.studio.stop_iso_video();
             self.studio.stop_iso_audio();
+            separate = self.studio.take_iso_media();
             if let Some(markers) = self.outs[slot(c)].markers.as_mut() {
                 markers.set_images(&files.images);
             }
+        }
+        if let Some(markers) = self.outs[slot(c)].markers.as_mut() {
+            markers.set_ended(report.as_ref().and_then(|r| r.media), separate);
         }
         inject!(self, Fault::InRecordingStop);
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
@@ -5665,14 +5824,21 @@ impl Host {
         let mut failure = failure.or(failed).or(protected);
         // The markers go into the manifest once the media is closed (ADR-0089
         // decision 5); a failure there does not touch the media.
-        if let Some(mut markers) = self.outs[slot(c)].markers.take()
-            && let Err(e) = markers.write()
-        {
-            let why = format!("The markers could not be saved: {e}.");
-            failure = Some(match failure {
-                Some(f) => format!("{f} {why}"),
-                None => why,
-            });
+        if let Some(mut markers) = self.outs[slot(c)].markers.take() {
+            let why = match markers.write() {
+                Err(e) => Some(format!("The markers could not be saved: {e}.")),
+                // The project only after the manifest is on disk (ADR-0089 decision 10).
+                Ok(()) => markers
+                    .write_project()
+                    .err()
+                    .map(|e| format!("The editor project was not written: {e}.")),
+            };
+            if let Some(why) = why {
+                failure = Some(match failure {
+                    Some(f) => format!("{f} {why}"),
+                    None => why,
+                });
+            }
         }
         self.set_record_state(
             c,
@@ -5731,6 +5897,7 @@ impl Host {
             bit_depth: start.bit_depth,
             size: start.size,
             iso: self.separate_files,
+            editor_project: p.editor_project,
         })
     }
 
@@ -10890,6 +11057,9 @@ impl ApiTarget<'_> {
                 host.remove_marker(p.canvas, p.index)?;
                 Ok(Response::Done(Empty {}))
             }
+            C::ProjectExport(p) => host
+                .export_project(&p.recording, p.format)
+                .map(Response::ProjectExported),
             C::RecordStatus(p) => {
                 let c = host.api_canvas_of(p.canvas)?;
                 let data = host.outs[slot(c)].record_state.clone();

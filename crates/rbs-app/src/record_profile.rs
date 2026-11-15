@@ -563,6 +563,32 @@ impl VideoCodec {
     }
 }
 
+/// The editor project a recording writes when it stops (ADR-0089 decision 10).
+/// Absent in a saved profile means none: the recording's outputs keep no timing
+/// (P13), and only a take with separate files can be exported later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorProject {
+    /// FCPXML 1.9 (DaVinci Resolve first, then Final Cut Pro).
+    Fcpxml,
+}
+
+impl EditorProject {
+    /// The control API's name for it.
+    pub fn to_api(self) -> rbs_api::types::ProjectFormat {
+        match self {
+            Self::Fcpxml => rbs_api::types::ProjectFormat::Fcpxml,
+        }
+    }
+
+    /// From the control API's name.
+    pub fn from_api(f: rbs_api::types::ProjectFormat) -> Self {
+        match f {
+            rbs_api::types::ProjectFormat::Fcpxml => Self::Fcpxml,
+        }
+    }
+}
+
 /// How an output encodes colour. Absent in a saved profile means [`Delivery::Video`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -926,6 +952,9 @@ pub struct RecordProfile {
     /// recording's canvas (ADR-0102).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_size: Option<OutputSize>,
+    /// Write an editor project when the recording stops. Omitted when off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_project: Option<EditorProject>,
 }
 
 impl RecordProfile {
@@ -955,6 +984,7 @@ impl RecordProfile {
             delivery: Delivery::Video,
             open_shadows: false,
             output_size: None,
+            editor_project: None,
         };
         p.set_encoding(Encoding::new(12_000));
         p
@@ -1194,6 +1224,7 @@ impl RecordProfile {
                 width: s.width,
                 height: s.height,
             }),
+            editor_project: self.editor_project.map(EditorProject::to_api),
         }
     }
 
@@ -1261,6 +1292,7 @@ impl RecordProfile {
                 width: s.width,
                 height: s.height,
             }),
+            editor_project: p.editor_project.map(EditorProject::from_api),
         };
         profile.remember_active();
         profile

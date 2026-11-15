@@ -207,6 +207,53 @@ impl RecordingManifest {
         self.completion.is_some()
     }
 
+    /// Moves `t0` earlier to `t0_ns` (a plain recording whose first sample came before
+    /// the moment its markers count from): every time from `t0` (markers, file
+    /// offsets, image times) grows by the difference, so nothing moves on the master
+    /// clock. A later `t0_ns` changes nothing. `t0_utc` is kept: it names the start to
+    /// the millisecond and is not a timeline position.
+    pub fn move_origin(&mut self, t0_ns: u64) {
+        let Some(shift) = self.t0_ns.checked_sub(t0_ns).filter(|s| *s > 0) else {
+            return;
+        };
+        self.t0_ns = t0_ns;
+        for m in &mut self.markers {
+            m.t_ns = m.t_ns.saturating_add(shift);
+            m.pressed_ns = m.pressed_ns.map(|p| p.saturating_add(shift));
+        }
+        for f in &mut self.files {
+            if let Some(t) = &mut f.timing {
+                t.start_offset_ns = t.start_offset_ns.saturating_add(shift);
+            }
+            for image in &mut f.images {
+                image.at_ns = image.at_ns.saturating_add(shift);
+            }
+        }
+    }
+
+    /// The stop rewrite's top level (ADR-0089 decision 6): `complete = true`, the
+    /// recording's length (the latest end of a file with timing) and the master's
+    /// picture. Call after each file's `timing` is set.
+    pub fn complete(&mut self) {
+        let duration_ns = self
+            .files
+            .iter()
+            .filter_map(|f| f.timing.as_ref())
+            .map(|t| t.start_offset_ns.saturating_add(t.duration_ns))
+            .max()
+            .unwrap_or(0);
+        let picture = self
+            .files
+            .iter()
+            .find(|f| f.role == "master")
+            .and_then(|f| f.timing.as_ref())
+            .and_then(|t| t.picture);
+        self.completion = Some(Completion {
+            duration_ns,
+            picture,
+        });
+    }
+
     /// TOML with `format` and `kind`. Names are file names only. Fields that are not
     /// known yet are left out.
     pub fn to_toml(&self) -> String {
@@ -487,6 +534,46 @@ mod tests {
         let back = RecordingManifest::from_toml(&text).unwrap();
         assert!(!back.is_complete());
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn moving_the_origin_earlier_keeps_every_time_on_the_master_clock() {
+        let mut m = complete();
+        let before = m.clone();
+        m.move_origin(6_000);
+        assert_eq!(m, before, "a later origin changes nothing");
+        m.move_origin(4_000);
+        assert_eq!(m.t0_ns, 4_000);
+        assert_eq!(m.markers[0].t_ns, before.markers[0].t_ns + 1_000);
+        assert_eq!(
+            m.markers[0].pressed_ns,
+            before.markers[0].pressed_ns.map(|p| p + 1_000)
+        );
+        let offset = |m: &RecordingManifest, i: usize| m.files[i].timing.unwrap().start_offset_ns;
+        assert_eq!(offset(&m, 2), offset(&before, 2) + 1_000);
+        assert_eq!(m.files[1].images[1].at_ns, 4_200_001_000);
+    }
+
+    #[test]
+    fn completing_takes_the_latest_end_and_the_master_picture() {
+        let mut m = complete();
+        let expected = m.completion;
+        m.completion = None;
+        m.complete();
+        assert_eq!(m.completion, expected);
+        // The microphone ends after the master: the recording is as long as it.
+        m.files[2].timing.as_mut().unwrap().duration_ns = 10_000_000_000;
+        m.complete();
+        assert_eq!(m.completion.unwrap().duration_ns, 10_002_500_000);
+        let mut empty = RecordingManifest::new("t", 0);
+        empty.complete();
+        assert_eq!(
+            empty.completion,
+            Some(Completion {
+                duration_ns: 0,
+                picture: None
+            })
+        );
     }
 
     #[test]

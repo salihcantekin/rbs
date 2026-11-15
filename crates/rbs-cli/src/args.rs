@@ -25,8 +25,22 @@ pub enum Command {
     RemoteFingerprint,
     /// `rbs-cli vcam ...`: the RBS virtual camera (ADR-0066, Windows).
     Vcam(VcamCommand),
+    /// `rbs-cli project ...`: an editor project from a recording manifest (ADR-0089
+    /// decision 10).
+    Project(ProjectArgs),
     /// `rbs-cli help` or `--help`.
     Help,
+}
+
+/// `rbs-cli project --manifest <path> [--format fcpxml] [--strict]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectArgs {
+    /// The recording manifest (`recording.rbs.toml` or `<stem>.rbs.toml`).
+    pub manifest: std::path::PathBuf,
+    /// The project format; only `fcpxml` today.
+    pub format: rbs_project::Format,
+    /// A separate file missing from the folder is an error instead of left out.
+    pub strict: bool,
 }
 
 /// `rbs-cli token ...` (ADR-0044 decision 9): the access tokens apps use to control
@@ -211,6 +225,7 @@ usage:
   rbs-cli remote fingerprint
   rbs-cli app stream start|stop|status [--json]
   rbs-cli vcam status|add|format|remove [--size WxH] [--fps N]
+  rbs-cli project --manifest <recording.rbs.toml> [--format fcpxml] [--strict]
 
 record options:
   --seconds N          stop after N seconds (default: Enter or Ctrl+C)
@@ -465,6 +480,7 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
         Some("token") => token(it).map(Command::Token),
         Some("app") => app(it).map(Command::App),
         Some("vcam") => vcam(it).map(Command::Vcam),
+        Some("project") => project(it).map(Command::Project),
         Some("remote") => match (it.next(), it.next()) {
             (Some("fingerprint"), None) => Ok(Command::RemoteFingerprint),
             (Some("fingerprint"), Some(extra)) => {
@@ -475,6 +491,33 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
         },
         Some(other) => Err(format!("unknown command {other:?}")),
     }
+}
+
+fn project<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<ProjectArgs, String> {
+    let mut manifest = None;
+    let mut format = rbs_project::Format::Fcpxml;
+    let mut strict = false;
+    while let Some(arg) = it.next() {
+        match arg {
+            "--manifest" => {
+                let path = it.next().ok_or("project: --manifest needs a path")?;
+                manifest = Some(std::path::PathBuf::from(path));
+            }
+            "--format" => {
+                let name = it.next().ok_or("project: --format needs a name")?;
+                format = rbs_project::Format::parse(name)
+                    .ok_or_else(|| format!("project: unknown format {name:?} (fcpxml)"))?;
+            }
+            "--strict" => strict = true,
+            other => return Err(format!("project: unexpected {other:?}")),
+        }
+    }
+    let manifest = manifest.ok_or("project needs --manifest <recording.rbs.toml>")?;
+    Ok(ProjectArgs {
+        manifest,
+        format,
+        strict,
+    })
 }
 
 fn vcam_size(text: &str, flag: &str) -> Result<Size, String> {
@@ -1107,9 +1150,30 @@ mod tests {
                 name: "Deck".into()
             })
         );
+        assert_eq!(
+            parse([
+                "project",
+                "--strict",
+                "--manifest",
+                "take/recording.rbs.toml"
+            ])
+            .unwrap(),
+            Command::Project(ProjectArgs {
+                manifest: "take/recording.rbs.toml".into(),
+                format: rbs_project::Format::Fcpxml,
+                strict: true,
+            })
+        );
         for (args, want) in [
             (&["token"][..], "list, create or revoke"),
             (&["remote"][..], "needs fingerprint"),
+            (&["project"][..], "needs --manifest"),
+            (&["project", "--manifest"][..], "needs a path"),
+            (
+                &["project", "--manifest", "a", "--format", "xmeml"][..],
+                "unknown format",
+            ),
+            (&["project", "--manifest", "a", "--loose"][..], "unexpected"),
             (&["remote", "pin"][..], "unknown command"),
             (&["remote", "fingerprint", "x"][..], "unexpected"),
             (&["token", "show"][..], "unknown command"),

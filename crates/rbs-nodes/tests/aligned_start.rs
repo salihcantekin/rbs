@@ -107,6 +107,16 @@ fn run(
     packets: Vec<(u64, usize, EncodedPacket)>,
     ticks: u64,
 ) -> (Vec<Got>, Arc<OutputNodeStats>) {
+    run_with(streams, packets, ticks, true)
+}
+
+/// `track`: the output keeps the span of what it delivers (`track_span`).
+fn run_with(
+    streams: Vec<StreamDescriptor>,
+    packets: Vec<(u64, usize, EncodedPacket)>,
+    ticks: u64,
+    track: bool,
+) -> (Vec<Got>, Arc<OutputNodeStats>) {
     let pins = streams.len();
     let tx = TransportState::logging();
     let mut rig = Rig::new();
@@ -128,7 +138,11 @@ fn run(
         TransportConfig::new("rtmp://never.invalid/x", TransportInput::Packets),
     );
     let stats = output.stats();
-    let output = rig.add(Box::new(output));
+    let output = if track {
+        rig.add(Box::new(output.track_span()))
+    } else {
+        rig.add(Box::new(output))
+    };
     for i in 0..pins {
         rig.graph
             .connect(script, &format!("p{i}"), output, &format!("s{i}"))
@@ -177,6 +191,33 @@ fn audio_before_the_first_video_packet_is_dropped() {
         ]
     );
     assert_eq!(stats.start_drops.load(Ordering::Relaxed), 6);
+    // The span starts at the earliest packet delivered (AAC frame 6, before the
+    // video) and ends at the last audio frame's end, past the last video frame's.
+    assert_eq!(stats.span(), Some((aac(6), aac(10) + 21_333_333)));
+}
+
+#[test]
+fn the_span_takes_a_frame_for_video_without_a_duration_and_ignores_dropped_packets() {
+    let (_, stats) = run(vec![h264_stream()], Vec::new(), 2);
+    assert_eq!(stats.span(), None, "nothing delivered");
+    // B-frames: presentation order differs from arrival order.
+    let script = vec![
+        (0, 0, video(1000)),
+        (1, 0, video(1050)),
+        (1, 0, video(1017)),
+    ];
+    let (_, stats) = run(vec![h264_stream()], script, 3);
+    let frame = 16_666_666;
+    assert_eq!(stats.span(), Some((1_000_000_000, 1_050_000_000 + frame)));
+    // Audio dropped at the aligned start is not in the span.
+    let script = vec![(0, 1, audio(aac(0))), (1, 0, video(1100))];
+    let (_, stats) = run(vec![h264_stream(), aac_stream()], script, 3);
+    assert_eq!(stats.span(), Some((1_100_000_000, 1_100_000_000 + frame)));
+    // The default output keeps no span: nothing runs per packet for it.
+    let script = vec![(0, 0, video(1000)), (1, 0, video(1017))];
+    let (got, stats) = run_with(vec![h264_stream()], script, 3, false);
+    assert_eq!(packets(&got).len(), 2);
+    assert_eq!(stats.span(), None);
 }
 
 #[test]
