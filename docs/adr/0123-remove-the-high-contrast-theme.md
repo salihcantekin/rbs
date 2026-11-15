@@ -1,6 +1,6 @@
 # ADR-0123: Remove the built-in high-contrast theme; Dark and Light are the built-in themes
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-15
 - Deciders: Salih (owner)
 - Supersedes in part:
@@ -64,4 +64,4 @@ Round 1: independent AI session (fresh context, given only the ADR, the specs, t
 8. Follow-up wording differed from the themes spec. Resolved: the Consequences point to the spec's Scope line.
 9. Older ADRs list high-contrast screenshots in their procedures. Resolved: decision 5 says they follow it.
 
-Owner approval: pending.
+Owner approval: Salih, 2026-11-15 (ADR, screenshots in dark and light, and the merge).

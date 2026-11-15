@@ -130,4 +130,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0119](0119-where-separate-files-are-encoded.md) | Separate files take the cheapest path per source, and the user picks where the rest is encoded | Accepted |
 | [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted; superseded in part by ADR-0122 and ADR-0123 (decision 3) |
 | [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Accepted; its high-contrast lines superseded by ADR-0123 |
-| [0123](0123-remove-the-high-contrast-theme.md) | Remove the built-in high-contrast theme; Dark and Light are the built-in themes | Proposed |
+| [0123](0123-remove-the-high-contrast-theme.md) | Remove the built-in high-contrast theme; Dark and Light are the built-in themes | Accepted |
