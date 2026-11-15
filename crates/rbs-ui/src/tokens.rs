@@ -109,6 +109,8 @@ pub const LENGTHS: &[&str] = &[
     "radius.lg",
     "radius.button",
     "size.button.chip",
+    "size.toggle.mark",
+    "size.toggle.stretch",
     "size.border",
     "size.focus-ring",
     "size.icon.box",

@@ -1406,12 +1406,15 @@ export component Checkbox inherits Rectangle {
     FocusRing { show: focus.ring; }
 }
 
-// Toggle: an on/off setting that applies at once, drawn as a switch. The label beside
-// it is optional (a settings row shows its label on the left and passes it as
-// `label`, the accessible name). The knob's side shows the state as well as the
-// fill (never colour alone, U7). Toggled by click, Space or Enter. States: off, on,
-// hover (accent border), focused (focus ring) and disabled (subtle border, disabled
-// ink, no input).
+// Toggle: an on/off setting that applies at once, drawn as a switch (Block look, owner
+// decision 2026-11-15). The label beside it is optional (a settings row shows its label
+// on the left and passes it as `label`, the accessible name). The shape follows the
+// buttons: a soft-square track with a soft-square knob. Three things show the state,
+// never colour alone (U7): the knob's side, the fill, and a mark on the free side of
+// the track (a bar for on, a ring for off). Toggled by click, Space or Enter. States:
+// off, on, hover (accent border when off, hover fill when on), pressed (pressed fill
+// when on, the knob grows towards the other side), focused (focus ring) and disabled
+// (subtle border, disabled ink, no input).
 export component Toggle inherits Rectangle {
     in property <string> label;
     // Shown beside the switch; empty when the owner shows the label itself.
@@ -1426,34 +1429,55 @@ export component Toggle inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-default => { if enabled { toggled(!checked); } }
     forward-focus: focus;
-    // The track is two knobs wide; the knob sits one focus-ring width inside it.
+    // The track is two track heights wide; the knob sits one focus-ring width inside it.
     property <length> track-h: Tokens.size-icon-box + Tokens.space-1;
     property <length> inset: Tokens.size-focus-ring;
+    property <length> knob-d: track-h - inset * 2;
+    // Ink of the knob and the mark on the off track.
+    property <color> off-ink: enabled ? Theme.text-secondary : Theme.text-disabled;
     HorizontalLayout {
         spacing: Tokens.space-2;
         alignment: start;
         VerticalLayout {
             alignment: center;
             track := Rectangle {
-                width: root.track-h * 2 - root.inset * 2;
+                width: root.track-h * 2;
                 height: root.track-h;
-                border-radius: self.height / 2;
+                border-radius: Tokens.radius-md;
                 border-width: root.checked && root.enabled ? 0px : Tokens.size-border;
                 border-color: !root.enabled ? Theme.border-subtle
-                    : touch.has-hover ? Theme.accent : Theme.border-subtle;
-                background: !root.enabled ? Theme.surface-sunken
-                    : root.checked ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
-                    : Theme.surface-sunken;
+                    : touch.has-hover ? Theme.accent : Theme.border-strong;
+                background: !root.enabled || !root.checked ? Theme.surface-sunken
+                    : touch.pressed ? Theme.accent-pressed
+                    : touch.has-hover ? Theme.accent-hover : Theme.accent;
                 animate background { duration: Tokens.motion-fast; }
+                // The state mark, centred in the side the knob leaves free: a bar
+                // while on, a ring while off.
+                if root.checked: Rectangle {
+                    x: (parent.width - root.knob-d - root.inset - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: Tokens.size-icon-stroke;
+                    height: Tokens.size-toggle-mark;
+                    border-radius: self.width / 2;
+                    background: root.enabled ? Theme.text-inverse : Theme.text-disabled;
+                }
+                if !root.checked: Rectangle {
+                    x: (parent.width + root.knob-d + root.inset - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: Tokens.size-toggle-mark;
+                    height: Tokens.size-toggle-mark;
+                    border-radius: self.width / 2;
+                    border-width: Tokens.size-icon-stroke;
+                    border-color: root.off-ink;
+                }
                 knob := Rectangle {
-                    width: root.track-h - root.inset * 2;
-                    height: self.width;
+                    width: root.knob-d + (touch.pressed ? Tokens.size-toggle-stretch : 0px);
+                    height: root.knob-d;
                     y: root.inset;
                     x: root.checked ? parent.width - self.width - root.inset : root.inset;
-                    animate x { duration: Tokens.motion-fast; easing: ease-out; }
-                    border-radius: self.height / 2;
-                    background: !root.enabled ? Theme.text-disabled
-                        : root.checked ? Theme.text-primary : Theme.text-secondary;
+                    animate x, width { duration: Tokens.motion-fast; easing: ease-out; }
+                    border-radius: Tokens.radius-sm;
+                    background: root.checked && root.enabled ? Theme.text-inverse : root.off-ink;
                 }
             }
         }
@@ -1477,7 +1501,7 @@ export component Toggle inherits Rectangle {
         enabled: root.enabled;
         clicked => { focus.focus-pointer(); root.toggled(!root.checked); }
     }
-    FocusRing { show: focus.ring; border-radius: track.height / 2; }
+    FocusRing { show: focus.ring; border-radius: track.border-radius; }
 }
 
 // One option of a SegmentedControl.
