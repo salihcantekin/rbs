@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_audio::{
@@ -621,6 +621,7 @@ fn video_encoder_config(
 struct OutputNodePlan {
     node: Box<dyn Node<()>>,
     stats: Arc<OutputNodeStats>,
+    abandon: Arc<AtomicBool>,
     streams: Vec<rbs_core::media::StreamDescriptor>,
 }
 
@@ -630,6 +631,7 @@ impl OutputNodePlan {
     ) -> Self {
         Self {
             stats: node.stats(),
+            abandon: node.abandon_switch(),
             streams: node.streams().to_vec(),
             node: Box::new(node),
         }
@@ -992,6 +994,8 @@ struct Attached {
     report: StartReport,
     output: Added,
     output_stats: Arc<OutputNodeStats>,
+    /// Set by [`Studio::abort_output`] before the node is removed.
+    abandon: Arc<AtomicBool>,
     /// The picture and sound of its streams, for the manifest at stop.
     formats: (Option<rbs_manifest::Picture>, Option<rbs_manifest::Sound>),
     /// Slots of the chains it takes packets from. `video` is `None` for audio only.
@@ -1145,8 +1149,8 @@ pub struct Studio {
     /// The encoder chains they use.
     chains: Chains,
     next_output: u64,
-    /// Nodes the last apply reported as failed to join.
-    failed_nodes: BTreeSet<NodeId>,
+    /// Nodes the last apply reported as failed to join, with their role and reason.
+    failed_nodes: BTreeMap<NodeId, StartFailure>,
     render_worker: Option<Arc<WorkerStats>>,
     audio_worker: Option<Arc<WorkerStats>>,
     /// Retired instances whose take failed (their partition's swap was still in
@@ -1492,7 +1496,7 @@ impl Studio {
             replay: None,
             chains: Chains::default(),
             next_output: 0,
-            failed_nodes: BTreeSet::new(),
+            failed_nodes: BTreeMap::new(),
             render_worker,
             audio_worker,
             pending_takes: Vec::new(),
@@ -2526,11 +2530,12 @@ impl Studio {
                     .copied()
                     .or_else(|| self.output_role(*node));
                 if let Some(role) = role {
-                    self.failed_nodes.insert(*node);
-                    failed.push(StartFailure {
+                    let failure = StartFailure {
                         node: role.to_owned(),
                         reason: why.to_string(),
-                    });
+                    };
+                    self.failed_nodes.insert(*node, failure.clone());
+                    failed.push(failure);
                 } else if let Some(p) = self.pictures.iter_mut().find(|p| p.node == *node) {
                     // Not essential (ADR-0125 decision 2): only that picture stops.
                     p.failure = Some(why.to_string());
@@ -3131,6 +3136,16 @@ impl Studio {
         adapters: &RecordAdapters,
         out: &OutputSettings,
     ) -> Result<OutputId, RecordError> {
+        let prepared = self.prepare(adapters, out)?;
+        self.attach(prepared, &adapters.sources, Strictness::Lenient)
+    }
+
+    /// Checks the limits and chooses `out`'s adapters, sharing running chains.
+    fn prepare(
+        &self,
+        adapters: &RecordAdapters,
+        out: &OutputSettings,
+    ) -> Result<Prepared, RecordError> {
         if self.outputs.len() >= MAX_OUTPUTS {
             return Err(RecordError::TooManyOutputs);
         }
@@ -3142,7 +3157,7 @@ impl Studio {
             return Err(RecordError::TooManyOutputs);
         }
         let size = self.canvas_size(canvas)?;
-        let prepared = Prepared::choose(
+        Prepared::choose(
             adapters,
             out,
             canvas,
@@ -3150,8 +3165,86 @@ impl Studio {
             self.fps,
             self.settings.audio_graph,
             &self.chains,
-        )?;
-        self.attach(prepared, &adapters.sources, Strictness::Lenient)
+        )
+    }
+
+    /// Starts several outputs in one graph apply (ADR-0127 decision 3), so outputs that
+    /// share an encoder start on its same first keyframe. Each is checked and prepared
+    /// as by [`Studio::start_output`], in order, so a later one shares a chain an
+    /// earlier one of the same call opens. Returns one result per entry of `outs`, in
+    /// order: an output that is refused, or whose nodes (or the chain it uses) do not
+    /// start, is removed and fails alone; every other output keeps running. Only an
+    /// engine or link failure of the apply fails every new output. Running outputs are
+    /// never touched.
+    pub fn start_outputs(
+        &mut self,
+        adapters: &RecordAdapters,
+        outs: &[OutputSettings],
+    ) -> Vec<Result<OutputId, RecordError>> {
+        let mut results: Vec<Result<OutputId, RecordError>> = Vec::with_capacity(outs.len());
+        let mut new: Vec<OutputId> = Vec::new();
+        for out in outs {
+            let added = self.prepare(adapters, out).and_then(|p| self.add_output(p));
+            results.push(added.map(|(id, _)| {
+                new.push(id);
+                id
+            }));
+        }
+        if new.is_empty() {
+            return results;
+        }
+        let failed = match self.reconcile(&adapters.sources, None, Strictness::Lenient) {
+            Ok((failed, _)) => failed,
+            Err(e) => {
+                let reason = e.to_string();
+                let _ = self.detach_all(&new, false);
+                return fail_new(results, &new, |_| {
+                    RecordError::Start(vec![StartFailure {
+                        node: "engine".to_owned(),
+                        reason: reason.clone(),
+                    }])
+                });
+            }
+        };
+        let fatal: Vec<StartFailure> = failed
+            .into_iter()
+            .filter(|f| f.node == "engine" || f.node.starts_with("link"))
+            .collect();
+        if !fatal.is_empty() {
+            let (_, errors) = self.detach_all(&new, false);
+            let mut all = fatal;
+            all.extend(errors.into_iter().map(|e| StartFailure {
+                node: "rollback".to_owned(),
+                reason: e,
+            }));
+            return fail_new(results, &new, |_| RecordError::Start(all.clone()));
+        }
+        // Each new output whose nodes, or the chain it takes packets from, failed.
+        let mut why: BTreeMap<OutputId, Vec<StartFailure>> = BTreeMap::new();
+        for (node, failure) in &self.failed_nodes {
+            for id in self.users(*node) {
+                if new.contains(&id) {
+                    why.entry(id).or_default().push(failure.clone());
+                }
+            }
+        }
+        if !why.is_empty() {
+            let gone: Vec<OutputId> = why.keys().copied().collect();
+            let (_, errors) = self.detach_all(&gone, false);
+            for f in why.values_mut() {
+                f.extend(errors.iter().map(|e| StartFailure {
+                    node: "rollback".to_owned(),
+                    reason: e.clone(),
+                }));
+            }
+            results = fail_new(results, &gone, |id| {
+                RecordError::Start(why.remove(&id).unwrap_or_default())
+            });
+        }
+        for id in new.iter().filter(|id| !why.contains_key(id)) {
+            self.finish_attach(*id);
+        }
+        results
     }
 
     /// The compositor node of a canvas the studio runs.
@@ -3225,6 +3318,7 @@ impl Studio {
         let mut nodes: Vec<Added> = Vec::new();
 
         let output_stats = p.output.stats();
+        let abandon = Arc::clone(&p.output.abandon);
         let formats = crate::media_span::formats(p.output.streams());
         let output_part = parts.output_of(slot);
         let output_id = add_active(&mut graph, p.output.descriptor(), output_part)?;
@@ -3443,6 +3537,18 @@ impl Studio {
         let audio_queue = audio.and_then(|c| c.queue.clone());
         let id = OutputId(self.next_output);
         self.next_output += 1;
+        // A shared chain on hold holds the new output too (ADR-0127 decision 13).
+        let held = video_slot
+            .and_then(|v| self.chains.video[v].as_ref())
+            .and_then(|c| c.hold.as_ref())
+            .and_then(|(h, _)| h.switch().held())
+            .or_else(|| {
+                audio_slot
+                    .and_then(|a| self.chains.audio[a].as_ref())
+                    .and_then(|c| c.hold.as_ref())
+                    .and_then(|h| h.held())
+            });
+        let now = self.engine.clock().now();
         self.outputs.push(Attached {
             id,
             canvas,
@@ -3459,6 +3565,7 @@ impl Studio {
             },
             output,
             output_stats,
+            abandon,
             formats,
             video: video_slot,
             audio: audio_slot,
@@ -3477,7 +3584,7 @@ impl Studio {
             pause: p.pause,
             cut: p.cut,
             paused_at: pause::Targets::default(),
-            hold: hold::Holds::new(p.holdable),
+            hold: hold::Holds::joined(p.holdable, held, now),
         });
         Ok((id, nodes))
     }
@@ -3500,7 +3607,9 @@ impl Studio {
                 return Err(e);
             }
         };
-        let new_failed = added.iter().any(|a| self.failed_nodes.contains(&a.node));
+        let new_failed = added
+            .iter()
+            .any(|a| self.failed_nodes.contains_key(&a.node));
         let engine_failed = failed
             .iter()
             .any(|f| f.node == "engine" || f.node.starts_with("link"));
@@ -3756,6 +3865,33 @@ impl Studio {
     pub fn stop_output(&mut self, id: OutputId) -> Option<FinishReport> {
         let (r, errors, drained_video) = self.detach(id, true)?;
         Some(self.finish_report(&r, errors, drained_video))
+    }
+
+    /// [`Studio::stop_output`] for several outputs in one draining apply (ADR-0127
+    /// decision 7: End stream stops every destination of a stream at once, and a shared
+    /// encoder that no output keeps is flushed once). Ids that do not run are skipped.
+    /// Each report carries the apply's errors.
+    pub fn stop_outputs(&mut self, ids: &[OutputId]) -> Vec<(OutputId, FinishReport)> {
+        let (removed, errors) = self.detach_all(ids, true);
+        removed
+            .into_iter()
+            .map(|(r, drained_video)| {
+                let report = self.finish_report(&r, errors.clone(), drained_video);
+                (r.id, report)
+            })
+            .collect()
+    }
+
+    /// Removes a running output without a drain (ADR-0127 decision 5): for an output
+    /// that failed or stalls, so the control thread is not held by a drain that times
+    /// out. Its queued packets are not delivered and its transport is dropped (the
+    /// output-ports spec bounds that wait). Encoder chains other outputs use keep
+    /// running and are not flushed; a chain only this output used is removed without a
+    /// flush. `None` when `id` does not run.
+    pub fn abort_output(&mut self, id: OutputId) -> Option<FinishReport> {
+        self.attached(id)?.abandon.store(true, Ordering::Release);
+        let (r, errors, _) = self.detach(id, false)?;
+        Some(self.finish_report(&r, errors, false))
     }
 
     /// The separate files closed by [`Studio::stop_iso_audio`] and
@@ -4177,6 +4313,21 @@ fn take_instance(
 /// Takes an idle instance back from its partition and drops it. False when the
 /// partition still runs it (its swap is in flight): try again later. An instance that
 /// is not there any more counts as taken.
+/// `results` with each entry that started as one of `ids` replaced by `error(id)`.
+fn fail_new(
+    results: Vec<Result<OutputId, RecordError>>,
+    ids: &[OutputId],
+    mut error: impl FnMut(OutputId) -> RecordError,
+) -> Vec<Result<OutputId, RecordError>> {
+    results
+        .into_iter()
+        .map(|r| match r {
+            Ok(id) if ids.contains(&id) => Err(error(id)),
+            other => other,
+        })
+        .collect()
+}
+
 /// The first free chain slot whose partition no pending take still uses.
 /// `NoEncoderSlot` when every slot holds a chain; `OutputFinishing` when a free one
 /// waits for a stopped output's swap or drain.

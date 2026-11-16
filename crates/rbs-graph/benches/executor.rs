@@ -259,5 +259,12 @@ fn packet_fan_out(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, tick, swap, param_update, queue_crossing, packet_fan_out);
+criterion_group!(
+    benches,
+    tick,
+    swap,
+    param_update,
+    queue_crossing,
+    packet_fan_out
+);
 criterion_main!(benches);

@@ -192,14 +192,15 @@ Keyframe at a time (ADR-0124 decision 7): `with_keyframe_requests()` returns the
 | --- | --- |
 | `prepare` | Refuses permanently once the node wrote media (a restart would truncate the destination). Creates the muxer (required exactly when the transport's input is `Container(c)`, and only for that `c`) and the transport, `start(streams)`, `begin`, and sends the header, waiting up to the finish timeout for queue room on the wait clock |
 | `process` | Sends the backlog first; then for each stream `i` in order, each packet of pin `s{i}`: muxed into chunks, or forwarded as a packet item (after the aligned start below). `QueueFull` appends to the backlog. Polls transport events |
-| `release` | Writes packets still held for the aligned start (no video packet ever came), then delivers the backlog and the muxer's `finish` chunks within the finish timeout, then `Transport::finish` with the time left |
+| `release` | Writes packets still held for the aligned start (no video packet ever came), then delivers the backlog and the muxer's `finish` chunks within the finish timeout, then `Transport::finish` with the time left. When the abandon switch is set (below) it delivers nothing: held and backlogged items count in `finish_lost`, and the muxer and transport are dropped without `finish` |
 
 Invariants:
 
 1. Items reach the transport in the order they were produced; the backlog keeps that order.
 2. The backlog is preallocated; a full backlog fails the node permanently (no holes in a recording).
 3. Any transport error other than `QueueFull`, any muxer error other than `NonMonotonic` (dropped, counted) and a `Disconnected` event fail permanently, so a file output is never restarted (which would truncate it).
-4. After `release` the transport has been finished; undelivered items are counted (`finish_lost`).
+4. After `release` the transport has been finished, or dropped when abandoned; undelivered items are counted (`finish_lost`).
+4b. Abandon (ADR-0127 decision 5): `abandon_switch()` gives an `Arc<AtomicBool>` the owner sets before it removes the node without a drain (`Studio::abort_output`, a destination that failed or stalls). It is read once, in `release`, never per tick, so `process` is unchanged. A transport's `Drop` is bounded (output ports spec), so `release` never waits for a stalled destination.
 4a. Connection state: `Connected` events are counted in `connects` and set `connected`, `Reconnecting` events are counted in `reconnect_attempts` and clear it, `Disconnected` clears it (and fails the node, invariant 3, with the cause `transport disconnected: <the transport's error>`); `release` clears it. The events are read where they already were (`process`, once per tick), so the counters cost nothing per packet. `connects` stays 0 for a transport that never reached its destination.
 5. Muxer and transport creation errors and `begin` errors are permanent; a `start` error is retried only when `TransportError::is_recoverable`.
 6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
@@ -279,7 +280,7 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 
 ## Conformance tests
 
-- `crates/rbs-nodes/tests/encode_output.rs`: frames submitted once; header, media and trailer in order; backlog on `QueueFull` delivered in order; backlog overflow is permanent; carry-over in order; carry overflow resumes at a keyframe and requests one; a changed stream after restart is permanent; no session while installed or in Standby; a refused frame loses no packet; an output that wrote media refuses to restart; a failure keeps its cause; `release` gives up on a full queue on the wait clock without sleeping; no allocation per tick.
+- `crates/rbs-nodes/tests/encode_output.rs`: frames submitted once; header, media and trailer in order; backlog on `QueueFull` delivered in order; backlog overflow is permanent; carry-over in order; carry overflow resumes at a keyframe and requests one; a changed stream after restart is permanent; no session while installed or in Standby; a refused frame loses no packet; an output that wrote media refuses to restart; a failure keeps its cause; `release` gives up on a full queue on the wait clock without sleeping; an abandoned output releases with no wait, no tail and no `finish`, counting what was backlogged; no allocation per tick.
 - `crates/rbs-nodes/tests/pipeline_gpu.rs` (any GPU adapter; CI uses lavapipe, WARP and Metal): a BGRA window and an NV12 camera from the synthetic adapter go through capture, compositor and export, and arrive as NV12 with the right format, times and luma; an ended export passes on every canvas up to the end and none after (ADR-0045).
 - `crates/rbs-nodes/tests/vcam_gpu.rs` (any GPU adapter, the `rbs-vcam-test` camera): a 60 fps canvas feeds a 30 fps camera on even ticks only, every due frame sent or counted, delivered in order; a stalled consumer fills the three slots and then skips before conversion without failing a tick, and on resume the newest frame wins; a frame the session refuses is counted and frees its slot.
 - `crates/rbs-gpu/tests/upload_download.rs`: download codes, busy ring, stale frames, buffer recycling, `frames_cpu_copied`; upload of padded BGRA rows and NV12.
