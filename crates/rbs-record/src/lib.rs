@@ -59,8 +59,8 @@ pub use studio::{
     IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_CHAINS, MAX_CHAINS_PER_CANVAS,
     MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings,
     PauseRefused, PauseState, PictureId, PlannedOutput, READY_WAIT, ReplaySettings, SharedPause,
-    StartPlanRequest, Studio, StudioSettings, TransitionState, Updated, VirtualCameraSettings,
-    VirtualCameraState, compensate_filter_latency,
+    SourceSettingsAdjusted, StartPlanRequest, Studio, StudioSettings, TEXT_WAIT_TICKS, TextDue,
+    TransitionState, Updated, VirtualCameraSettings, VirtualCameraState, compensate_filter_latency,
 };
 pub use studio::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,

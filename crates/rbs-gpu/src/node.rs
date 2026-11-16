@@ -42,6 +42,9 @@ pub struct RenderLocal {
     pub pool: TexturePool,
     /// Native surface import for source wrappers.
     pub importer: Importer,
+    /// Bytes source nodes may upload per tick (ADR-0129 decision 5). Rolled over by
+    /// the nodes that use it, never by `end_tick`.
+    pub upload_budget: crate::budget::UploadBudget,
 }
 
 impl Runtime for GpuRuntime {

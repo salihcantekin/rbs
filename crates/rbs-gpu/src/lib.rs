@@ -21,6 +21,7 @@
 //! [`interop`] (native surface import) `export` (native surface export) and [`share`] (cross-process preview), all marked
 //! low-level modules (P11).
 
+pub mod budget;
 pub mod compositor;
 pub mod context;
 pub mod download;

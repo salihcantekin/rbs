@@ -253,6 +253,30 @@ impl SourceUpload {
 - Not real-time on first use: a new size or format creates its plane textures and pool slots, and the first 4:2:0 frame creates the decoder (P13), like the importer's first sight of a surface. Later frames of that size allocate nothing in RBS code; wgpu stages the bytes internally.
 - Other system formats (YUY2, I420, ...) are `GpuError::Unsupported`.
 
+### Reserved upload textures and the upload budget (ADR-0129)
+
+A source whose picture changes now and then, but is always read in the tick that publishes it (the text source), keeps two textures of its box size acquired instead of taking one per frame:
+
+```rust
+impl ReservedUpload {
+    /// Two `InUse` textures of `width` x `height` (`Rgba8` or `Bgra8`). Not real time,
+    /// except after a size change (ADR-0062 decision 5).
+    pub fn reserve(ctx: &GpuContext, pool: &mut TexturePool, width: u32, height: u32,
+        format: PixelFormat) -> Result<ReservedUpload, GpuError>;
+    pub fn size(&self) -> (u32, u32);
+    /// Writes into the texture whose `lease_count` is 0; `Ok(None)` when both are read.
+    /// Hot path: no allocation in RBS code.
+    pub fn upload_into(&mut self, ctx: &GpuContext, pool: &mut TexturePool,
+        system: &SystemFrame, time: Timestamp) -> Result<Option<VideoFrame>, GpuError>;
+    /// Releases and forgets both, so their memory goes once no reader holds them.
+    pub fn give_back(self, pool: &mut TexturePool);
+}
+```
+
+The textures stay `InUse` from `reserve` to `give_back`, so `trim_idle` cannot drop them and no other source takes them. A failed second acquire releases and forgets the first.
+
+`RenderLocal::upload_budget` (`rbs_gpu::budget::UploadBudget`) limits what such sources upload per render partition per tick: `try_take(tick, bytes, waiting_since)` allows the first upload of a tick whatever its size and further ones up to `UPLOAD_BUDGET_BYTES` (16 MiB). The state is stamped with the tick index and rolled over by the first caller of a new tick; `end_tick` does not touch it, so a partition with no such source does no work for it. Fairness: a refused caller reports the tick it first waited on; at the roll-over the earliest such tick becomes the gate, and while a gate is set only callers that first waited on that tick may upload (the first upload of the tick included). A gate whose callers left the schedule lasts one tick. Tests: `crates/rbs-gpu/src/budget.rs` (first upload always allowed, budget, twenty 1080p pictures within 12 ticks, a late node is not starved, a stale gate clears).
+
 ### System-memory download
 
 `rbs_gpu::download::YuvDownload` is the CPU fallback of the encoder conversion, for encoders that take only system memory (NVENC and AMF on Windows today; ADR-0038). It is used by the video export node ([io-nodes.md](io-nodes.md)).

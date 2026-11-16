@@ -311,3 +311,92 @@ fn ring(ctx: &GpuContext, pool: &mut TexturePool, desc: &TextureDesc) -> Result<
     }
     result
 }
+
+/// Two textures of one size a source keeps acquired and writes in turn (ADR-0129
+/// decision 5, spec `gpu-compositor.md`, "Reserved upload textures").
+///
+/// Unlike [`SourceUpload::prepare_for`], which leaves a ring on the pool's shared free
+/// list, these stay `InUse`: `trim_idle` cannot drop them and no other source can take
+/// them. [`ReservedUpload::upload_into`] writes into the one no reader leases. Text
+/// textures are read only within the tick that publishes them and are never queued, so
+/// the one the node's own output slot shows is the only lease in the steady state.
+#[derive(Debug)]
+pub struct ReservedUpload {
+    ids: [TextureId; 2],
+    width: u32,
+    height: u32,
+    format: PixelFormat,
+}
+
+impl ReservedUpload {
+    /// Acquires two `width` x `height` textures of a single-plane `format` (`Rgba8` or
+    /// `Bgra8`). Not real-time except after a size change (ADR-0062 decision 5).
+    pub fn reserve(
+        ctx: &GpuContext,
+        pool: &mut TexturePool,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+    ) -> Result<Self, GpuError> {
+        let tex_format =
+            rgb_format(format).ok_or(GpuError::Unsupported("reserved upload pixel format"))?;
+        let desc = rgb_desc(width, height, tex_format);
+        let first = pool.acquire(ctx, &desc)?;
+        let second = match pool.acquire(ctx, &desc) {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = pool.release(first);
+                pool.forget_texture(first);
+                return Err(e);
+            }
+        };
+        Ok(Self {
+            ids: [first, second],
+            width,
+            height,
+            format,
+        })
+    }
+
+    /// Width and height of the textures.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Writes `system` (of this size and format) into a texture no reader leases and
+    /// returns a frame of it at `time`. `Ok(None)` when both are leased: the caller keeps
+    /// the picture for a later tick. Hot path: no allocation in RBS code (wgpu stages
+    /// the bytes).
+    pub fn upload_into(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &mut TexturePool,
+        system: &SystemFrame,
+        time: rbs_core::time::Timestamp,
+    ) -> Result<Option<VideoFrame>, GpuError> {
+        let format = *system.format();
+        if format.size.width != self.width
+            || format.size.height != self.height
+            || format.pixel_format != self.format
+        {
+            return Err(GpuError::InvalidSize {
+                width: format.size.width,
+                height: format.size.height,
+            });
+        }
+        let Some(&id) = self.ids.iter().find(|id| pool.lease_count(**id) == 0) else {
+            return Ok(None);
+        };
+        write_plane(ctx, pool, system, 0, id)?;
+        pool.frame(id, format, time).map(Some)
+    }
+
+    /// Gives both textures back to the pool and forgets them, so their memory goes as
+    /// soon as no reader holds them (as the filter node does on a size change).
+    pub fn give_back(self, pool: &mut TexturePool) {
+        for id in self.ids {
+            let _ = pool.release(id);
+            pool.forget_texture(id);
+        }
+    }
+}
