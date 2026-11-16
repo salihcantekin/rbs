@@ -2269,6 +2269,9 @@ impl Studio {
             }
             self.strips = staged;
         }
+        if let Some(report) = report.as_ref() {
+            self.send_hold_strips(report, false);
+        }
 
         // Program-shown pages take a helper slot before preview-only ones (ADR-0109).
         self.browser_budget.grant(&browser_claims(&self.collection));
@@ -2277,6 +2280,7 @@ impl Studio {
             && let Some(report) = report.as_mut()
         {
             report.assign_queue_readers(self.engine.crossings());
+            self.send_hold_strips(report, true);
             self.bound_mixer = report.mixers.get(&self.settings.canvas).cloned();
             if let (Some(mixer), Some(bound)) = (&self.mixer, self.bound_mixer.as_ref()) {
                 let new: Vec<MixStrip> = bound
@@ -2460,6 +2464,7 @@ impl Studio {
                 strip.audio = *audio;
             }
         }
+        self.set_hold_mix(collection);
         let Some(mixer) = &mut self.mixer else {
             return false;
         };
@@ -2664,11 +2669,13 @@ impl Studio {
         self.mixer.as_ref().map(|m| &m.master)
     }
 
-    /// Mixer inputs that had no strip or an invalid block (both should stay 0).
+    /// Mixer inputs that had no strip or an invalid block (both should stay 0), the
+    /// program mixer's and those of the hold mixers now running.
     pub fn mixer_anomalies(&self) -> u64 {
         self.mixer
             .as_ref()
             .map_or(0, |m| m.stats.invalid_inputs() + m.stats.unknown_inputs())
+            + self.hold_mixer_anomalies()
     }
 
     /// The name of a node: a source name or a role such as `"video encoder"`.

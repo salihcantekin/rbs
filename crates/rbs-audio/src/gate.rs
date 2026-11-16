@@ -29,9 +29,17 @@ pub trait AudioGate: Send + 'static {
     ) -> Result<(), E>;
 
     /// Whether the encoder node reads its host-only "hold" input and hands its blocks
-    /// to [`AudioGate::pass_hold`]. `false` (every gate but [`HoldGate`]) compiles the
-    /// read away.
+    /// to [`AudioGate::pass_hold`]. `false` ([`NoGate`]) compiles the read away;
+    /// [`HoldGate`] and [`PauseGate`] set it.
     const HOLDS: bool = false;
+
+    /// Whether this gate takes the "hold" input's blocks; read only when
+    /// [`AudioGate::HOLDS`] is true. A [`PauseGate`] built without a hold says no, so
+    /// a chain only recordings use reads nothing more.
+    #[inline(always)]
+    fn holds(&self) -> bool {
+        Self::HOLDS
+    }
 
     /// A block of the hold scene's mixer (ADR-0124 phase 2b), as it arrives: calls
     /// `submit` with the parts to encode in place of the program's. Never allocates.
@@ -68,6 +76,15 @@ impl AudioGate for NoGate {
 /// are split or copied.
 #[derive(Debug)]
 pub struct PauseGate {
+    cut: PauseCut,
+    /// The hold of a stream sharing the chain (ADR-0124 decision 14), with the hold
+    /// scene's sound (phase 2b); `None` for a chain only recordings use.
+    hold: Option<HoldGate>,
+}
+
+/// What [`PauseGate`] cuts by its window.
+#[derive(Debug)]
+struct PauseCut {
     pause: Arc<PauseWindow>,
     window: Window,
     /// Interleaved or planar copies of faded parts: [`MAX_CHANNELS`] channels of
@@ -76,9 +93,6 @@ pub struct PauseGate {
     frames: usize,
     /// Parts that were longer than the scratch buffer and passed without a fade.
     unfaded: u64,
-    /// The hold of a stream sharing the chain, with its silence (ADR-0124 decision
-    /// 14); `None` for a chain only recordings use.
-    hold: Option<Silence>,
 }
 
 /// A hold switch and the silence sent while it is on: `frames` zero samples, every
@@ -151,6 +165,13 @@ pub struct HoldGate {
 }
 
 impl HoldGate {
+    /// True while held or while a scene's sound is still to be closed: one relaxed
+    /// load and, not held, one compare.
+    #[inline(always)]
+    fn engaged(&self) -> bool {
+        self.silence.hold.is_held() || self.cursor.is_some()
+    }
+
     /// A gate for `hold` whose silence covers blocks of up to `frames` sample frames
     /// in one part (longer blocks go in several).
     pub fn new(hold: Arc<HoldSwitch>, frames: usize) -> Self {
@@ -283,29 +304,35 @@ impl PauseGate {
     /// A gate for `pause` that fades blocks of up to `frames` sample frames.
     pub fn new(pause: Arc<PauseWindow>, frames: usize) -> Self {
         Self {
-            pause,
-            window: Window::NONE,
-            scratch: vec![0.0; frames * MAX_CHANNELS],
-            frames,
-            unfaded: 0,
+            cut: PauseCut {
+                pause,
+                window: Window::NONE,
+                scratch: vec![0.0; frames * MAX_CHANNELS],
+                frames,
+                unfaded: 0,
+            },
             hold: None,
         }
     }
 
-    /// The same gate also sending silence while `hold` is on: for a chain a
-    /// recording shares with a stream (ADR-0124 decision 14). One more relaxed load
-    /// per block.
+    /// The same gate also following `hold`: for a chain a recording shares with a
+    /// stream (ADR-0124 decision 14). Held, it sends silence, or the hold scene's
+    /// blocks ([`AudioGate::pass_hold`]) as [`HoldGate`] does (phase 2b), each part
+    /// then cut by the window as the program's would be. One more relaxed load and
+    /// one compare per block.
     #[must_use]
     pub fn with_hold(mut self, hold: Arc<HoldSwitch>) -> Self {
-        self.hold = Some(Silence::new(hold, self.frames));
+        self.hold = Some(HoldGate::new(hold, self.cut.frames));
         self
     }
 
     /// Parts passed without a fade because they were longer than the gate's blocks.
     pub fn unfaded(&self) -> u64 {
-        self.unfaded
+        self.cut.unfaded
     }
+}
 
+impl PauseCut {
     fn window(&mut self) -> Window {
         if self.pause.version() != self.window.epoch.wrapping_mul(2)
             && let Some(w) = self.pause.read()
@@ -406,26 +433,43 @@ fn nanos(format: AudioFormat, frames: usize) -> u64 {
 }
 
 impl AudioGate for PauseGate {
+    const HOLDS: bool = true;
+
+    #[inline(always)]
+    fn holds(&self) -> bool {
+        self.hold.is_some()
+    }
+
     fn pass<E>(
         &mut self,
         block: &AudioBlock<'_>,
         mut submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
     ) -> Result<(), E> {
-        // Held: silence in place of the block, then cut and stamped as the block
-        // would have been.
-        if let Some(silence) = &self.hold
-            && silence.hold.is_held()
+        // Held: silence or the scene's sound in place of the block, then cut and
+        // stamped as the block would have been.
+        if let Some(hold) = &mut self.hold
+            && hold.engaged()
         {
-            let (zeros, frames) = (Arc::clone(&silence.zeros), silence.frames);
-            return Silence::pass(&zeros, frames, block, &mut |part| {
-                self.pass_unheld(part, &mut submit)
-            });
+            let cut = &mut self.cut;
+            return hold.pass(block, |part| cut.pass_unheld(part, &mut submit));
         }
-        self.pass_unheld(block, &mut submit)
+        self.cut.pass_unheld(block, &mut submit)
+    }
+
+    fn pass_hold<E>(
+        &mut self,
+        hold: &AudioBlock<'_>,
+        mut submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Some(gate) = &mut self.hold else {
+            return Ok(());
+        };
+        let cut = &mut self.cut;
+        gate.pass_hold(hold, |part| cut.pass_unheld(part, &mut submit))
     }
 }
 
-impl PauseGate {
+impl PauseCut {
     fn pass_unheld<E>(
         &mut self,
         block: &AudioBlock<'_>,
@@ -697,8 +741,8 @@ mod tests {
     /// Ticks `0..ticks` through a hold gate. On each tick the scene's block of
     /// `k - lag` (fives) arrives before the program's block `k` (ones), unless
     /// `scene(k)` says the scene sends nothing; `between(k)` runs first.
-    fn run_held(
-        gate: &mut HoldGate,
+    fn run_held<G: AudioGate>(
+        gate: &mut G,
         ticks: u64,
         lag: u64,
         scene: impl Fn(u64) -> bool,
@@ -866,6 +910,76 @@ mod tests {
                 match k {
                     2 => hold.hold(HoldPicture::Scene),
                     6 => hold.hold(HoldPicture::Freeze),
+                    7 => hold.hold(HoldPicture::Scene),
+                    10 => hold.release(),
+                    _ => {}
+                }
+                let sink = |part: &AudioBlock<'_>| {
+                    std::hint::black_box(part.frames());
+                    Ok::<(), ()>(())
+                };
+                if k > 0 && k != 5 {
+                    gate.pass_hold(&block_at(k - 1, &fives, &fives), sink)
+                        .unwrap();
+                }
+                gate.pass(&block_at(k, &ones, &ones), sink).unwrap();
+            }
+        });
+        assert_eq!(counted.count_total, 0);
+    }
+
+    #[test]
+    fn a_recordings_shared_chain_sends_the_scene_on_one_timeline_with_either_lag() {
+        for lag in [0, 1] {
+            let hold = Arc::new(HoldSwitch::default());
+            let mut gate = PauseGate::new(Arc::new(PauseWindow::default()), FRAMES)
+                .with_hold(Arc::clone(&hold));
+            assert!(gate.holds());
+            let parts = run_held(
+                &mut gate,
+                20,
+                lag,
+                |_| true,
+                |k| match k {
+                    3 => hold.hold(HoldPicture::Freeze),
+                    5 => hold.hold(HoldPicture::Scene),
+                    12 => hold.release(),
+                    _ => {}
+                },
+            );
+            assert_exact(&parts);
+            assert_eq!(kept(&parts), 20 * FRAMES, "lag {lag}");
+            assert_eq!(value_at(&parts, 2 * BLOCK), 1.0);
+            assert_eq!(value_at(&parts, 4 * BLOCK), 0.0);
+            assert_eq!(value_at(&parts, 7 * BLOCK), 5.0, "lag {lag}");
+            assert_eq!(value_at(&parts, 11 * BLOCK), 5.0, "lag {lag}");
+            assert_eq!(value_at(&parts, 13 * BLOCK), 1.0);
+            assert!(gate.hold.as_ref().is_some_and(|h| h.cursor.is_none()));
+        }
+    }
+
+    #[test]
+    fn a_pause_gate_without_a_hold_takes_no_scene_blocks() {
+        let mut gate = PauseGate::new(Arc::new(PauseWindow::default()), FRAMES);
+        assert!(!gate.holds());
+        let parts = run_held(&mut gate, 4, 0, |_| true, |_| {});
+        assert_exact(&parts);
+        assert_eq!(kept(&parts), 4 * FRAMES);
+        assert!(parts.iter().all(|p| p.left[0] == 1.0));
+    }
+
+    #[test]
+    fn a_shared_chains_scene_hold_does_not_allocate() {
+        let hold = Arc::new(HoldSwitch::default());
+        let mut gate =
+            PauseGate::new(Arc::new(PauseWindow::default()), FRAMES).with_hold(Arc::clone(&hold));
+        let ones = [1.0_f32; FRAMES];
+        let fives = [5.0_f32; FRAMES];
+        let counted = allocation_counter::measure(|| {
+            for k in 0..12 {
+                match k {
+                    2 => hold.hold(HoldPicture::Scene),
+                    6 => hold.hold(HoldPicture::Black),
                     7 => hold.hold(HoldPicture::Scene),
                     10 => hold.release(),
                     _ => {}
