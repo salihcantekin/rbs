@@ -66,6 +66,14 @@ pub trait AudioFilterType: Send + Sync + 'static {
     fn key_input(&self) -> bool {
         false
     }
+    /// The latency a DSP made by [`make`](AudioFilterType::make) for `setup` would
+    /// have, for display (control API, help text; ADR-0130 decision 2). It equals the
+    /// built DSP's [`AudioDsp::latency_frames`] and is 0 when `make` would refuse
+    /// `setup`. Default: 0.
+    fn latency_frames(&self, setup: DspSetup) -> u32 {
+        let _ = setup;
+        0
+    }
 }
 
 /// A catalogue entry's schema is its field list, so [`Values`] works on it directly.
@@ -102,6 +110,12 @@ pub trait AudioDsp: Send {
     /// so the studio keeps the `Arc` while the executor thread owns the DSP.
     fn meter(&self) -> Option<Arc<FilterMeter>> {
         None
+    }
+    /// How many frames later the output is than the input (ADR-0130 decision 2).
+    /// Fixed when the DSP is made: `set` never changes it. `reset` fills the delay with
+    /// silence. Default: 0.
+    fn latency_frames(&self) -> u32 {
+        0
     }
 }
 

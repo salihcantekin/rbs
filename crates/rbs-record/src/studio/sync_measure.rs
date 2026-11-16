@@ -242,11 +242,9 @@ impl Studio {
             .get(&source)
             .copied()
             .unwrap_or(0);
-        let effective = effective_offset_ns(
-            &self.settings.audio_graph,
-            Duration::from_millis(MAX_SYNC_OFFSET_MS.unsigned_abs().into()),
-            stored_offset_ns,
-        );
+        // What the program hears: the input's offset plus the latency of the source's
+        // filters (ADR-0126 decision 4 as amended by ADR-0130 decision 4).
+        let effective = self.heard_offset_ns(source);
         self.sync_measure_next_id += 1;
         let id = self.sync_measure_next_id;
         self.sync_measure = Some(SyncMeasureRun {
