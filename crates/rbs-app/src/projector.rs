@@ -227,6 +227,15 @@ pub fn sync(
             let Some(slot) = open_slot(content, placement.clone(), *canvas_size, make) else {
                 continue;
             };
+            // macOS draws a new window once inside `show`, before the slot is listed:
+            // a second draw applies its size and places its layer (`settle`).
+            let weak = slot.window.as_weak();
+            entry::single_shot(Duration::ZERO, move || {
+                if let Some(w) = weak.upgrade() {
+                    w.window().request_redraw();
+                }
+            });
+            log(&format!("projector: {} opened", param(content.canvas)));
             slots.push(slot);
         }
     });
@@ -381,6 +390,15 @@ pub fn picture(canvas: ProjectorCanvas, endpoint: Option<PreviewEndpoint>) {
         if s.endpoint == endpoint {
             return;
         }
+        log(&format!(
+            "projector: {} {}",
+            param(canvas),
+            if endpoint.is_some() {
+                "has a picture"
+            } else {
+                "has no picture"
+            }
+        ));
         s.generation.fetch_add(1, Ordering::Relaxed);
         s.layer = None;
         s.endpoint.clone_from(&endpoint);
@@ -501,6 +519,11 @@ fn apply_size(s: &mut Slot) {
         let _ = w.request_inner_size(winit::dpi::PhysicalSize::new(size[0], size[1]));
         k
     });
+    log(&format!(
+        "projector: {} exact pixels, a fraction of 1/{}",
+        param(s.canvas),
+        k.unwrap_or(0)
+    ));
     s.exact_k = k;
 }
 
@@ -849,8 +872,10 @@ fn setup(canvas: ProjectorCanvas, mut sub: PreviewSubscriber, generation: Arc<At
         });
         Some(s.window.as_weak())
     });
-    // The first frame needs the layer placed: ask the window for a redraw.
+    // Placed now, and again on every draw (the window may not draw on its own).
     if let Some(w) = window.and_then(|w| w.upgrade()) {
+        log(&format!("projector: {} picture connected", param(canvas)));
+        place_layer(canvas, &w);
         w.window().request_redraw();
     }
     let spawned = std::thread::Builder::new()
@@ -929,6 +954,7 @@ fn place_layer(canvas: ProjectorCanvas, window: &ProjectorWindow) {
                 return;
             }
             st.attached = true;
+            log(&format!("projector: {} layer attached", param(canvas)));
         }
         // Core Animation places in points; DirectComposition in physical pixels.
         let size = window.window().size();
