@@ -165,3 +165,55 @@ Network-capable, including a `file` URL. Settings: `url` (`http`, `https`, or `f
 
 The studio does not link or load CEF. A real CEF build replaces the helper executable and is a process tree. This tree's stand-in is the `rbs-browser-runner` binary (`rbs-browser-ipc` messages). `Studio` adopts `SourceInstance::Browser` into the render partition and shares one `BrowserBudget` (`InstanceContext::with_browser`). Before each apply it grants slots to shown pages: program before preview, lower source id inside a class, at most two. Headless crates pass `Studio::start_with_tree` from the composition root (`rbs-app` uses `rbs-browser-helper` via `browser_tree::HelperBrowserTree` when the executable is found). Without a tree, prepare reports that no helper was set. A source without a slot reports `browser_cap` and starts nothing. A helper exit is Unavailable, releases the slot, counts toward back-off, and must not panic the host. The studio allocates the frame buffer; the render path drops it without joining a dead child. Installed and Standby start no process. An agent without the network permission gets `not_permitted` / `network` for any `url`, including `file` (`agent_may_set_browser_url`). The control API kind is not in `rbs-api` yet; the reason string is the contract.
 
+
+## Text (`org.rbs.source.text`, ADR-0129)
+
+Implementation status: phase (b) in progress. The type, its settings and the node exist; the text worker, the binder's in-place updates and the host wiring follow. No composition root registers a renderer yet, so the type is not installed in the desktop app (phases (a) to (e) are not reachable from the desktop UI until phase (f)).
+
+```rust
+// rbs_sources::types
+pub const TEXT_SOURCE: &str = "org.rbs.source.text";   // in ALL (11 types)
+pub enum SourceClass { ..., Text }                     // video pin only; a picture-only source
+// rbs_sources
+pub fn is_still(type_id: &NodeTypeId, settings: &Settings) -> bool; // class, except text: its settings
+impl SourceTypes {
+    pub fn register_text(&mut self, renderer: Arc<dyn TextRenderer>); // installs the type
+    pub fn text_renderer(&self, block: &TextBlock) -> Option<Arc<dyn TextRenderer>>; // colour glyphs first when the text has emoji
+}
+pub enum SourceInstance { ..., Text(Box<TextSource { node: TextSourceNode, frames: ParamSender<Option<TextFrame>>, stats, settings: TextSettings }>) }
+// rbs_sources::text
+pub const DEFAULT_BOX: [u32; 2] = [640, 160];
+pub const TEXT_KEYS: &[&str];
+pub enum TextKind { Text, Clock, Countdown, Stopwatch, RecordingTime, StreamTime } // as_str, parse
+pub struct TextSettings { kind, block: TextBlock, file, file_lines, fields, format, target, duration_ms, end_text } // is_still()
+pub fn text_is_still(settings: &Settings) -> bool;
+pub fn validate_text(settings: &Settings) -> Result<TextSettings, SourceError>;      // edits: strict
+pub fn read_text_lenient(settings: &Settings) -> (TextSettings, Vec<&'static str>); // documents: clamp, report keys
+pub fn has_color_glyphs(text: &str) -> bool;
+```
+
+Settings (keys in `types::keys`; ranges are the `rbs_text` constants):
+
+| Key | Kind | Default | Range or values |
+| --- | --- | --- | --- |
+| `kind` | Text | `text` | `text`, `clock`, `countdown`, `stopwatch`, `recording_time`, `stream_time` |
+| `text` | Text | empty | at most 10 000 characters; `\n` breaks a line |
+| `file`, `file_lines` | Text, Int | none, 0 | a local file; 0 = whole file, N = last N lines |
+| `font` | Text | system UI font | a family name |
+| `size` | Float | 72 | 1 to 1024 px |
+| `weight` | Int | 400 | 100 to 900 |
+| `italic`, `wrap` | Bool | false, true | |
+| `color`, `color2`, `angle` | Text, Text, Int | `#ffffff`, none, 0 | `#rrggbb[aa]`; `color2` makes a gradient; -360 to 360 degrees |
+| `width`, `height` | Int | 640 x 160 (documents only) | 1 to 4096 each, at most 8 388 608 pixels; required for an edit |
+| `align`, `valign`, `overflow` | Text | `center`, `middle`, `fit` | `left`/`center`/`right`, `top`/`middle`/`bottom`, `fit`/`clip`/`ellipsis` |
+| `line_spacing`, `letter_spacing` | Float | 1, 0 | 0.5 to 3, -50 to 200 px |
+| `outline_width`, `outline_color` | Float, Text | 0 (none), `#000000` | 0 to 64 px |
+| `shadow_color`, `shadow_x`, `shadow_y`, `shadow_blur` | Text, Float | none (no shadow), 0 | ±256 px, 0 to 64 px |
+| `background`, `padding` | Text, Float | none, 0 | 0 to 1024 px |
+| `fields`, `format`, `target`, `duration_ms`, `end_text` | Bool, Text, Text, Int, Text | false, none | live kinds (ADR-0129 decision 11, phase (d)) |
+
+A number key accepts an integer. `validate_text` refuses any other key, a value of the wrong kind or out of range (`InvalidSetting` naming the key), an unknown `kind` and a missing box. `read_text_lenient` never fails: it gives a wrong kind its default, clamps a value out of range (a box over the pixel cap keeps its width and is shortened), reads an unknown `kind` as `text`, and returns every key it changed for `SourceSettingsAdjusted`. Tabular figures are on for every live kind and for `fields`.
+
+**Still or not.** `is_still` answers from the class for every type except text; a text source is still only when `kind` is `text` (or absent) and `fields` is off. `rbs-record`'s picture form (`video_as: auto` writes images only for a still source; `image` on a text that is not still is `ImageOnMovingSource`) and the host's `set_record_separately` `video_as` check ask `is_still`. Recording sound separately is refused for a text source like any picture-only source (`AudioOnPictureOnly`), whatever its settings. Tests: `rbs-sources` `text::tests`, `rbs-record` `iso::tests::a_text_source_is_still_only_as_plain_text`.
+
+**Instantiate.** With no renderer registered the type is not installed and `instantiate` is `NoAdapter`. Otherwise it reads the settings leniently and returns `Text` with a node that shows nothing until the worker sends a picture through `frames`.

@@ -5090,6 +5090,7 @@ dependencies = [
  "rbs-nodes",
  "rbs-params",
  "rbs-scene",
+ "rbs-text",
 ]
 
 [[package]]

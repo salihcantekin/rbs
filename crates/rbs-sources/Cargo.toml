@@ -12,6 +12,7 @@ publish.workspace = true
 # graph, the node crates and the ports, never on an adapter. The composition root
 # registers adapters as port factory trait objects.
 [dependencies]
+rbs-text = { path = "../rbs-text" }
 rbs-core = { path = "../rbs-core" }
 rbs-graph = { path = "../rbs-graph" }
 rbs-scene = { path = "../rbs-scene" }

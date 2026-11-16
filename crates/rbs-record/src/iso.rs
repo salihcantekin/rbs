@@ -195,7 +195,13 @@ pub fn plan(collection: &SceneCollection) -> Result<IsoPlan, IsoError> {
         }
         check_class(source.id, &source.name, &source.type_id, flag)?;
         let picture = if flag.video {
-            picture_role(source.id, &source.name, &source.type_id, flag.video_as)?
+            picture_role(
+                source.id,
+                &source.name,
+                &source.type_id,
+                &source.settings,
+                flag.video_as,
+            )?
         } else {
             IsoRole::Video
         };
@@ -254,15 +260,17 @@ fn track(source: SourceId, source_name: &str, role: IsoRole, file_name: &str) ->
 }
 
 /// The form of a source's picture track (ADR-0117 decisions 1 and 2): `auto` is
-/// images for a still source and a video file otherwise. Asked of the class, never of
-/// a type id.
+/// images for a still source and a video file otherwise. Asked of
+/// [`rbs_sources::is_still`] (a text source is still only as plain text, ADR-0129
+/// decision 1), never of a type id.
 fn picture_role(
     source: SourceId,
     name: &str,
     type_id: &rbs_graph::node::NodeTypeId,
+    settings: &rbs_scene::model::Settings,
     video_as: VideoAs,
 ) -> Result<IsoRole, IsoError> {
-    let still = class_of(type_id) == Some(SourceClass::Still);
+    let still = rbs_sources::is_still(type_id, settings);
     match video_as {
         VideoAs::Video => Ok(IsoRole::Video),
         VideoAs::Image if !still => Err(IsoError::ImageOnMovingSource {
@@ -286,12 +294,12 @@ fn check_class(
             source,
             name: name.to_owned(),
         }),
-        Some(SourceClass::Capture(_) | SourceClass::Still | SourceClass::Browser) if flag.audio => {
-            Err(IsoError::AudioOnPictureOnly {
-                source,
-                name: name.to_owned(),
-            })
-        }
+        Some(
+            SourceClass::Capture(_) | SourceClass::Still | SourceClass::Browser | SourceClass::Text,
+        ) if flag.audio => Err(IsoError::AudioOnPictureOnly {
+            source,
+            name: name.to_owned(),
+        }),
         _ => Ok(()),
     }
 }
@@ -525,6 +533,43 @@ mod tests {
         assert!(matches!(
             form(MEDIA_SOURCE, VideoAs::Image),
             Err(IsoError::ImageOnMovingSource { .. })
+        ));
+    }
+
+    /// A text source is still only as plain text (ADR-0129 decision 1): its picture
+    /// form follows its settings, and it is a picture-only source whatever they are.
+    #[test]
+    fn a_text_source_is_still_only_as_plain_text() {
+        use rbs_scene::model::SettingValue;
+        use rbs_sources::types::{TEXT_SOURCE, keys};
+        let form = |kind: &str, video_as: VideoAs| {
+            let mut col = SceneCollection::new();
+            let mut settings = Settings::new();
+            settings.insert(keys::KIND.into(), SettingValue::Text(kind.into()));
+            let id = col
+                .add_source("T", NodeTypeId::new(TEXT_SOURCE), settings)
+                .unwrap()
+                .0;
+            col.set_source_record_separately(
+                id,
+                RecordSeparately::new(true, false).with_video_as(video_as),
+            )
+            .unwrap();
+            plan(&col).map(|p| p.tracks[0].role)
+        };
+        assert_eq!(form("text", VideoAs::Auto), Ok(IsoRole::Image));
+        assert_eq!(form("text", VideoAs::Image), Ok(IsoRole::Image));
+        assert_eq!(form("clock", VideoAs::Auto), Ok(IsoRole::Video));
+        assert!(matches!(
+            form("clock", VideoAs::Image),
+            Err(IsoError::ImageOnMovingSource { .. })
+        ));
+        let mut col = SceneCollection::new();
+        let clock = source(&mut col, "Clock", TEXT_SOURCE);
+        mark(&mut col, clock, false, true);
+        assert!(matches!(
+            plan(&col),
+            Err(IsoError::AudioOnPictureOnly { .. })
         ));
     }
 

@@ -333,6 +333,19 @@ pub struct BrowserSource {
     pub node: crate::browser::BrowserSourceNode,
 }
 
+/// A text source node (ADR-0129). It shows nothing until the worker sends a picture.
+#[non_exhaustive]
+pub struct TextSource {
+    /// The node.
+    pub node: rbs_nodes::TextSourceNode,
+    /// The node's picture channel; the text worker keeps it.
+    pub frames: ParamSender<Option<rbs_nodes::TextFrame>>,
+    /// Its counters.
+    pub stats: Arc<rbs_nodes::TextNodeStats>,
+    /// Its settings, read leniently.
+    pub settings: crate::text::TextSettings,
+}
+
 /// A node instance for a bound source.
 #[non_exhaustive]
 pub enum SourceInstance {
@@ -345,6 +358,9 @@ pub enum SourceInstance {
     Media(Box<MediaSource>),
     /// Adopt into the render partition. No audio pin.
     Browser(BrowserSource),
+    /// Adopt into the render partition; hand `frames` to the text worker. Boxed: it
+    /// carries its settings.
+    Text(Box<TextSource>),
     /// Adopt into the audio partition.
     Audio(AudioSource),
 }
@@ -368,6 +384,11 @@ impl fmt::Debug for SourceInstance {
             SourceInstance::Browser(b) => f
                 .debug_struct("Browser")
                 .field("running", &b.node.helper_running())
+                .finish_non_exhaustive(),
+            SourceInstance::Text(t) => f
+                .debug_struct("Text")
+                .field("kind", &t.settings.kind)
+                .field("box", &t.settings.block.box_size)
                 .finish_non_exhaustive(),
             SourceInstance::Audio(a) => f
                 .debug_struct("Audio")
@@ -411,6 +432,8 @@ pub struct SourceTypes {
     capture: Registry<dyn CaptureFactory>,
     audio: Registry<dyn AudioBackend>,
     media: Registry<dyn rbs_media_decode::MediaDecoderFactory>,
+    /// Text renderers, in registration order (ADR-0129 decision 2).
+    text: Vec<Arc<dyn rbs_text::TextRenderer>>,
 }
 
 impl Default for SourceTypes {
@@ -482,6 +505,7 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::LOOP,
             keys::RESTART_WHEN_SHOWN,
         ],
+        SourceClass::Text => crate::text::TEXT_KEYS,
         SourceClass::Browser => &[
             keys::URL,
             keys::WIDTH,
@@ -499,6 +523,9 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
 pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<(), SourceError> {
     if class_of(type_id) == Some(SourceClass::Media) {
         return validate_media(settings);
+    }
+    if class_of(type_id) == Some(SourceClass::Text) {
+        return crate::text::validate_text(settings).map(|_| ());
     }
     if class_of(type_id) == Some(SourceClass::Browser) {
         return crate::browser::validate_browser(settings)
@@ -620,7 +647,35 @@ impl SourceTypes {
             capture: Registry::new(),
             audio: Registry::new(),
             media: Registry::new(),
+            text: Vec::new(),
         }
+    }
+
+    /// Registers a text renderer; the text source type is installed while one is
+    /// registered. A renderer holds no font memory until it first draws (P13).
+    pub fn register_text(&mut self, renderer: Arc<dyn rbs_text::TextRenderer>) {
+        self.text.push(renderer);
+    }
+
+    /// The renderer for `block` (ADR-0129 decision 2): the first registered one that
+    /// draws colour glyphs when the text has emoji, else the first registered.
+    pub fn text_renderer(
+        &self,
+        block: &rbs_text::TextBlock,
+    ) -> Option<Arc<dyn rbs_text::TextRenderer>> {
+        let wants_color = crate::text::has_color_glyphs(&block.text);
+        let with_color = || {
+            self.text.iter().find(|r| {
+                r.capabilities()
+                    .get(&rbs_text::caps::COLOR_GLYPHS)
+                    .is_some_and(|v| *v == rbs_core::capability::CapabilityValue::Flag(true))
+            })
+        };
+        wants_color
+            .then(with_color)
+            .flatten()
+            .or_else(|| self.text.first())
+            .cloned()
     }
 
     /// Registers a capture adapter. Call [`probe`](Self::probe) afterwards.
@@ -785,7 +840,8 @@ impl SourceTypes {
             SourceClass::Audio(_)
             | SourceClass::Still
             | SourceClass::Media
-            | SourceClass::Browser => Ok(Vec::new()),
+            | SourceClass::Browser
+            | SourceClass::Text => Ok(Vec::new()),
         }
     }
 
@@ -796,6 +852,7 @@ impl SourceTypes {
             Some(SourceClass::Audio(kind)) => !self.audio_candidates(kind).is_empty(),
             Some(SourceClass::Still) | Some(SourceClass::Browser) => true,
             Some(SourceClass::Media) => !self.media_candidates(None).is_empty(),
+            Some(SourceClass::Text) => !self.text.is_empty(),
             _ => false,
         }
     }
@@ -835,6 +892,7 @@ impl SourceTypes {
                 Some(SourceClass::Still) => rbs_nodes::still_descriptor(),
                 Some(SourceClass::Media) => rbs_nodes::media_descriptor(),
                 Some(SourceClass::Browser) => crate::browser::browser_descriptor(),
+                Some(SourceClass::Text) => rbs_nodes::text_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
             table.insert(t, descriptor);
@@ -886,7 +944,7 @@ impl SourceTypes {
                     }
                 }
             }
-            SourceClass::Still | SourceClass::Media | SourceClass::Browser => {}
+            SourceClass::Still | SourceClass::Media | SourceClass::Browser | SourceClass::Text => {}
         }
         Ok(out)
     }
@@ -978,6 +1036,22 @@ impl SourceTypes {
             }
             SourceClass::Media => self.instantiate_media(source, ctx),
             SourceClass::Browser => self.instantiate_browser(source, ctx),
+            SourceClass::Text => {
+                if self.text.is_empty() {
+                    return Err(SourceError::NoAdapter(type_id.clone()));
+                }
+                // A document's settings were adjusted when it was read; what is left
+                // to clamp here is reported there, not again.
+                let (settings, _) = crate::text::read_text_lenient(settings);
+                let (node, frames) = rbs_nodes::TextSourceNode::new(None);
+                let stats = node.stats();
+                Ok(SourceInstance::Text(Box::new(TextSource {
+                    node,
+                    frames,
+                    stats,
+                    settings,
+                })))
+            }
             SourceClass::Audio(kind) => {
                 let candidates = choose(&self.audio_candidates(kind), named, type_id)?;
                 let (backend, endpoint) = match target {

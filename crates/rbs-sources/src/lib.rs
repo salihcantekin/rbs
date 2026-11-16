@@ -24,6 +24,7 @@ mod filters;
 mod layers;
 mod registry;
 pub mod still;
+pub mod text;
 pub mod types;
 
 pub use browser::{
@@ -37,7 +38,22 @@ pub use filters::{filter_settings, filter_values, filter_values_lenient};
 pub use layers::{GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layers, resolve_slide};
 pub use registry::{
     AudioSource, InstanceContext, MonitorDevice, NodeTypeTable, SourceError, SourceInstance,
-    SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, VideoSource,
+    SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, TextSource, VideoSource,
     validate_settings,
 };
 pub use types::{SourceClass, class_of};
+
+/// Whether a source of `type_id` with `settings` shows a picture that changes only
+/// when its settings change (ADR-0129 decision 1, superseding ADR-0117 decision 2 in
+/// part). The class answers for every type except text, whose settings answer.
+/// Engine, record and host code ask this, never a type id.
+pub fn is_still(
+    type_id: &rbs_graph::node::NodeTypeId,
+    settings: &rbs_scene::model::Settings,
+) -> bool {
+    match class_of(type_id) {
+        Some(SourceClass::Still) => true,
+        Some(SourceClass::Text) => text::text_is_still(settings),
+        _ => false,
+    }
+}

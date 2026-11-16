@@ -9609,6 +9609,7 @@ impl Host {
                 types::SourceClass::Capture(_)
                     | types::SourceClass::Still
                     | types::SourceClass::Browser
+                    | types::SourceClass::Text
             )
         );
         let sound_only = matches!(class, Some(types::SourceClass::Audio(_)));
@@ -9652,7 +9653,7 @@ impl Host {
             flag.audio = on;
         }
         if let Some(form) = patch.video_as {
-            if form == VideoAs::Image && class != Some(types::SourceClass::Still) {
+            if form == VideoAs::Image && !rbs_sources::is_still(&source.type_id, &source.settings) {
                 return Err(Refusal::Invalid(format!(
                     "{} is not a still picture, so it cannot be recorded as images.",
                     source.name
