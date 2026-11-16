@@ -14,8 +14,9 @@ component ClapMark inherits Icon {
     ink: on ? Theme.accent : Theme.text-secondary;
 }
 
-// "Sound" or "Picture", with a dot that is green once something arrived. The words
-// say it too, so colour is not the only signal.
+// "Sound" or "Picture", with a dot that is filled once something arrived. The words
+// say it too, so colour is not the only signal. Accent, like the claps: the window
+// ground is surface.base, where only the accent has a contrast rule for a mark.
 component SignalMark inherits HorizontalLayout {
     in property <bool> on;
     in property <string> label;
@@ -24,7 +25,7 @@ component SignalMark inherits HorizontalLayout {
         alignment: center;
         Icon {
             name: on ? IconName.dot : IconName.circle;
-            ink: on ? Theme.state-healthy : Theme.text-secondary;
+            ink: on ? Theme.accent : Theme.text-secondary;
         }
     }
     Text {
