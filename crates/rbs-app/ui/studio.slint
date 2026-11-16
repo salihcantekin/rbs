@@ -434,6 +434,11 @@ export global Studio {
     callback add-marker();
     callback undo-marker();
     callback dismiss-marker();
+    // Pause (ADR-0124): a recording runs that Pause applies to, and every running
+    // recording is paused (Pause reads Resume).
+    in property <bool> rec-pausable;
+    in property <bool> rec-paused;
+    callback pause-recording();
     // What Undo and Redo would apply to the scene now: 0 nothing, 1 adding, 2 deleting,
     // 3 the layer order, 4 moving or resizing the source named `undo-name` /
     // `redo-name` (U4). Separate from the layout history (U21).
@@ -5996,8 +6001,13 @@ component OutputCard inherits Rectangle {
     // project runs, with its manual markers so far.
     in property <bool> markers-shown;
     in property <int> markers;
+    // Pause (ADR-0124): first in the row while the recording runs; Resume while it is
+    // paused.
+    in property <bool> pause-shown;
+    in property <bool> paused;
     callback open();
     callback add-marker();
+    callback pause();
     background: Theme.surface-sunken;
     border-width: Tokens.size-border;
     border-color: Theme.border-subtle;
@@ -6019,16 +6029,22 @@ component OutputCard inherits Rectangle {
         OutputFact { label: @tr("Audio"); value: audio; }
         if separate != "": OutputFact { label: @tr("Separate files"); value: separate; }
         OutputFact { label: where-label; value: where; }
-        if markers-shown: HorizontalLayout {
+        if markers-shown || pause-shown: HorizontalLayout {
             alignment: start;
             spacing: Tokens.space-2;
-            Button {
+            if pause-shown: Button {
+                lead: paused ? IconName.play : IconName.pause;
+                text: paused ? @tr("Resume") : @tr("Pause");
+                accessible-name: paused ? @tr("Resume recording") : @tr("Pause recording");
+                clicked => { root.pause(); }
+            }
+            if markers-shown: Button {
                 lead: IconName.flag;
                 text: @tr("Marker");
                 accessible-name: @tr("Add marker");
                 clicked => { root.add-marker(); }
             }
-            Text {
+            if markers-shown: Text {
                 text: markers == 1 ? @tr("1 marker") : @tr("{} markers", markers);
                 color: Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
@@ -6057,7 +6073,8 @@ export component OutputsPanel inherits Rectangle {
             spacing: Tokens.size-section-gap;
             alignment: start;
             OutputCard {
-                title: Studio.rec-state == 2 ? @tr("Recording now") : @tr("Recording");
+                title: Studio.rec-state == 2 && Studio.rec-paused ? @tr("Recording paused")
+                    : Studio.rec-state == 2 ? @tr("Recording now") : @tr("Recording");
                 kind: Studio.out-kind;
                 encoder: Studio.out-encoder-name;
                 video: Studio.out-video-line;
@@ -6067,9 +6084,12 @@ export component OutputsPanel inherits Rectangle {
                 separate: Studio.out-separate;
                 markers-shown: Studio.rec-markers-shown;
                 markers: Studio.rec-markers;
+                pause-shown: Studio.rec-state == 2;
+                paused: Studio.rec-paused;
                 action: @tr("Recording settings");
                 open => { Studio.open-settings(); }
                 add-marker => { Studio.add-marker(); }
+                pause => { Studio.pause-recording(); }
             }
             OutputCard {
                 title: Studio.st-connected ? @tr("Stream live")

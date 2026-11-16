@@ -1128,6 +1128,10 @@ pub enum Command {
     /// Remove these markers, each a recording's canvas and the marker's index (the
     /// marker notice's Undo); answered with [`Update::Markers`].
     RemoveMarkers(Vec<(OutputCanvas, u32)>),
+    /// Pause every running recording, or resume them all when none runs unpaused
+    /// (`record.pause_toggle`, ADR-0124); answered with [`Update::RecordPause`], or
+    /// [`Update::Error`] when refused.
+    PauseRecording,
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -2110,6 +2114,16 @@ impl PartialEq for LoudnessView {
     }
 }
 
+/// A running recording's pause state for the window (ADR-0124), as of the moment it
+/// was sent: the window moves its clocks on from there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordPause {
+    /// It is paused now.
+    pub paused: bool,
+    /// What the files hold: the time recorded, pauses left out.
+    pub recorded_ns: u64,
+}
+
 /// A marker just added, for the window's notice (ADR-0089 decision 10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerNote {
@@ -2296,6 +2310,10 @@ pub enum Update {
         /// The marker just added, if this update is for one.
         placed: Option<MarkerNote>,
     },
+    /// The running recordings' pause states (main, vertical; `None` while that canvas
+    /// does not record), after a pause or resume through the window or the control
+    /// API (ADR-0124).
+    RecordPause([Option<RecordPause>; 2]),
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -4229,6 +4247,23 @@ impl Host {
                     );
                 }
             }
+            Command::PauseRecording => {
+                let command = rbs_api::Command::RecordPauseToggle(rbs_api::request::OnCanvases {
+                    canvas: Some(api::OutputTarget::All),
+                });
+                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
+                    Ok(Ok(_)) => {}
+                    // The window's toast says it in a sentence of its own.
+                    Ok(Err(e)) => notify(Update::Error(format!(
+                        "The recording could not pause or resume: {}.",
+                        e.message
+                    ))),
+                    Err(_) => {
+                        self.caught = true;
+                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+                    }
+                }
+            }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {
                     notify(Update::ReplaySaved(Err(why)));
@@ -6058,6 +6093,20 @@ impl Host {
             }
         }
         next.map(|due| Duration::from_nanos(due.saturating_sub(now_ns)))
+    }
+
+    /// [`Update::RecordPause`]: each running recording's pause state now.
+    fn pause_update(&self) -> Update {
+        let state = |c: OutputCanvas| {
+            let o = &self.outs[slot(c)];
+            let id = o.recording.as_ref().filter(|_| !o.ending)?.1;
+            let progress = self.studio.output_counters(id)?;
+            Some(RecordPause {
+                paused: progress.paused,
+                recorded_ns: progress.recorded_ns,
+            })
+        };
+        Update::RecordPause([state(OutputCanvas::Main), state(OutputCanvas::Vertical)])
     }
 
     /// [`Update::Markers`]: each running recording's manual marker count and, after
@@ -12296,6 +12345,7 @@ impl ApiTarget<'_> {
         let host = &mut *self.host;
         let c = host.api_canvas_of(Some(one))?;
         host.pause_recording(c, pause)?;
+        notify(host.pause_update());
         host.publish(notify);
         Ok(Response::Done(Empty {}))
     }
@@ -12355,6 +12405,7 @@ impl ApiTarget<'_> {
                 .next()
                 .unwrap_or_else(|| ApiError::new(ErrorKind::Conflict, "nothing records")));
         }
+        notify(host.pause_update());
         host.publish(notify);
         Ok(Response::Outputs(api::OutputsResult { outputs }))
     }

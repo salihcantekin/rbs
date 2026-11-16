@@ -1478,6 +1478,21 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
         fixed: &[],
     },
+    // Pause and resume the running recordings (ADR-0124): the second half of the
+    // frame's Stop button while a recording runs. The shell titles it "Resume
+    // recording" while paused.
+    Entry {
+        id: "record.pause_toggle",
+        title: "Pause recording",
+        tooltip: "Pause the running recordings, or resume them; the files go on without a gap",
+        icon: Some("pause"),
+        shortcut: Some("Ctrl+Shift+P"),
+        menu: Menu::Output,
+        kind: action("record.pause_toggle"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
     // The vertical canvas's outputs (ADR-0093 decision 6): the ▾ menus beside the
     // frame's Go live and Record, shown while a vertical canvas exists.
     Entry {
@@ -2073,6 +2088,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         &[
             "stream.toggle",
             "record.toggle",
+            "record.pause_toggle",
             "{Vertical:canvas-vertical",
             "output.with_vertical?kind=record",
             "output.with_vertical?kind=stream",
