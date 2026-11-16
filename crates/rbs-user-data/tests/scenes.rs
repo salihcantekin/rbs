@@ -305,7 +305,8 @@ fn format_11_loads_as_default_glide_and_format_12_round_trips() {
     )
     .unwrap();
     let text = document::render(&show, Some("Show")).unwrap();
-    assert!(text.contains("format = 15"), "{text}");
+    // A 0 ms glide is written as format 19, so it is not read back as Cut (ADR-0128).
+    assert!(text.contains("format = 19"), "{text}");
     assert!(text.contains("duration_ms = 0"), "{text}");
     assert!(text.contains("easing = \"linear\""), "{text}");
     let back = document::parse::<SceneCollection>(&text).unwrap().document;
@@ -887,4 +888,70 @@ fn scene_levels_raise_the_format_round_trip_and_an_older_file_refuses_them() {
         document::parse::<SceneCollection>(&loud),
         Err(DataError::Invalid(_))
     ));
+}
+
+#[test]
+fn format_18_loads_as_move_or_cut_and_format_19_round_trips() {
+    use rbs_scene::{CollectionTransition, SwipeDirection, TransitionKind};
+    let moving = format!("format = 18\nkind = \"scene-collection\"\n{CANVAS}{SOURCE}");
+    let col = document::parse::<SceneCollection>(&moving)
+        .unwrap()
+        .document;
+    assert_eq!(col.transition(), CollectionTransition::default());
+    assert_eq!(col.transition().kind, TransitionKind::Move);
+
+    let still = format!(
+        "format = 18\nkind = \"scene-collection\"\nglide = {{ duration_ms = 0 }}\n{CANVAS}{SOURCE}"
+    );
+    let col = document::parse::<SceneCollection>(&still).unwrap().document;
+    assert_eq!(col.transition().kind, TransitionKind::Cut);
+    // Written again it stays Cut: the file goes to format 19.
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 19"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back, col);
+
+    // The default is not written and keeps the lowest format.
+    let plain = document::render(&show(), Some("Show")).unwrap();
+    assert!(!plain.contains("transition"), "{plain}");
+    assert!(!plain.contains("format = 19"), "{plain}");
+
+    let mut col = show();
+    let mut t = CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..Default::default()
+    };
+    t.fade.duration_ms = 750;
+    t.fade.via = Some([0x12, 0xab, 0xff]);
+    t.slide.direction = SwipeDirection::Up;
+    col.set_transition(t).unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 19"), "{text}");
+    assert!(text.contains("kind = \"fade\""), "{text}");
+    assert!(text.contains("#12abff"), "{text}");
+    assert!(!text.contains("swipe"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back.transition(), t);
+    assert_eq!(back, col);
+}
+
+#[test]
+fn a_transition_in_an_older_format_or_out_of_range_is_refused() {
+    let why = invalid("transition = { kind = \"fade\" }\n");
+    assert!(why.contains("transition"), "{why}");
+    for bad in [
+        "transition = { kind = \"wipe\" }\n",
+        "transition = { fade = { duration_ms = 9000, easing = \"linear\" } }\n",
+        "transition = { fade = { duration_ms = 300, easing = \"linear\", via = \"black\" } }\n",
+        "transition = { swipe = { duration_ms = 300, easing = \"linear\", direction = \"sideways\" } }\n",
+    ] {
+        let text = format!("format = 19\nkind = \"scene-collection\"\n{bad}");
+        assert!(
+            matches!(
+                document::parse::<SceneCollection>(&text),
+                Err(DataError::Invalid(_))
+            ),
+            "{bad}"
+        );
+    }
 }
