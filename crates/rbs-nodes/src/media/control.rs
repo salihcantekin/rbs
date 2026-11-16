@@ -30,6 +30,9 @@ pub enum PlayState {
     Playing,
     /// Stopped at the cursor: the picture holds, the sound is silence.
     Paused,
+    /// Only a preview scene draws the source: the picture holds, the sound is
+    /// silence, and it plays when a program or hold scene draws it.
+    Cued,
     /// The end of the file without `loop`: the last picture holds, no worker.
     Ended,
     /// Asleep with no stored pause or end.
@@ -273,26 +276,44 @@ impl MediaControl {
     pub fn play(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
-        match Self::state_of(&shared, &player) {
+        let state = Self::state_of(&shared, &player);
+        if Self::off_air(&player) {
+            // Never plays in a preview: cued, it plays on the take.
+            return match state {
+                PlayState::Ended => {
+                    player.cued = true;
+                    Self::start_at(&shared, &mut player, Duration::ZERO, true)
+                }
+                PlayState::Paused => {
+                    player.cued = true;
+                    Ok(())
+                }
+                _ => Ok(()),
+            };
+        }
+        match state {
             PlayState::Playing => Ok(()),
             PlayState::Ended => Self::start_at(&shared, &mut player, Duration::ZERO, false),
-            _ => {
-                Self::command(&shared, &player, false, None);
-                Ok(())
-            }
+            _ => Self::command(&shared, &mut player, false, None),
         }
     }
 
     /// Stops at the media time of the command's instant. Asleep, the source wakes
-    /// paused (with `restart_when_shown` false). Does nothing when paused or ended.
-    pub fn pause(&self) {
+    /// paused (with `restart_when_shown` false). A cued source stays where it is and
+    /// no longer plays on the take. Does nothing when paused or ended.
+    pub fn pause(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
-        let player = shared.player();
-        if matches!(
-            Self::state_of(&shared, &player),
-            PlayState::Playing | PlayState::Standby
-        ) {
-            Self::command(&shared, &player, true, None);
+        let mut player = shared.player();
+        match Self::state_of(&shared, &player) {
+            PlayState::Playing | PlayState::Standby => {
+                player.cued = false;
+                Self::command(&shared, &mut player, true, None)
+            }
+            PlayState::Cued => {
+                player.cued = false;
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -307,10 +328,9 @@ impl MediaControl {
         };
         match Self::state_of(&shared, &player) {
             PlayState::Ended => Self::start_at(&shared, &mut player, position, true),
-            state => {
-                let paused = state == PlayState::Paused || shared.controls.newest().paused;
-                Self::command(&shared, &player, paused, Some(position));
-                Ok(())
+            _ => {
+                let paused = shared.controls.newest().paused;
+                Self::command(&shared, &mut player, paused, Some(position))
             }
         }
     }
@@ -319,11 +339,87 @@ impl MediaControl {
     pub fn restart(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
-        if Self::state_of(&shared, &player) == PlayState::Ended {
-            return Self::start_at(&shared, &mut player, Duration::ZERO, false);
+        let off_air = Self::off_air(&player);
+        if off_air {
+            player.cued = true;
         }
-        Self::command(&shared, &player, false, Some(Duration::ZERO));
-        Ok(())
+        if Self::state_of(&shared, &player) == PlayState::Ended {
+            return Self::start_at(&shared, &mut player, Duration::ZERO, off_air);
+        }
+        // Off air, a restart is a seek to the start that stays cued.
+        Self::command(&shared, &mut player, off_air, Some(Duration::ZERO))
+    }
+
+    /// Whether a program or hold scene draws the source: the binder's on-air set,
+    /// written by the host in the same apply (ADR-0107 decision 6). A source that is
+    /// Active but not on air is cued: it shows its picture and does not advance
+    /// (ADR-0108 decision 10). True until the host writes it.
+    pub fn set_on_air(&self, on_air: bool) -> Result<(), MediaNodeError> {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        if player.on_air == on_air {
+            return Ok(());
+        }
+        player.on_air = on_air;
+        if player.phase == MediaPhase::Standby || !player.in_use() {
+            // Asleep: the next wake follows the table with the new membership.
+            return Ok(());
+        }
+        let state = Self::state_of(&shared, &player);
+        let restart = player.restart_when_shown;
+        if on_air {
+            match state {
+                PlayState::Cued => {
+                    player.cued = false;
+                    Self::command(&shared, &mut player, false, None)
+                }
+                PlayState::Ended if restart => {
+                    Self::start_at(&shared, &mut player, Duration::ZERO, false)
+                }
+                PlayState::Paused if restart => {
+                    Self::command(&shared, &mut player, false, Some(Duration::ZERO))
+                }
+                _ => Ok(()),
+            }
+        } else if state == PlayState::Playing {
+            // A take swapped it out: cued where it stopped, or at the start.
+            player.cued = true;
+            let position = restart.then_some(Duration::ZERO);
+            Self::command(&shared, &mut player, true, position)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// How long a paused or cued source keeps its worker and decoder (the
+    /// `pause_release_s` app setting, default 30 s).
+    pub fn set_pause_release(&self, after: Duration) {
+        self.shared.player().pause_release = after;
+    }
+
+    /// Control path, called by the host about once per frame. Releases the worker,
+    /// the decoder and the worker's buffers of a source that has been paused or cued
+    /// for the pause release time since its last command; the state, the cursor and
+    /// the shown picture stay (ADR-0108 decision 10).
+    pub fn service(&self) {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        if player.released || player.worker_joined() || player.phase != MediaPhase::Playing {
+            return;
+        }
+        let newest = shared.controls.newest();
+        if newest.paused && player.clock().now() >= newest.instant + player.pause_release {
+            player.release_worker(&shared);
+        }
+    }
+
+    /// True after the pause release let the worker and the decoder go.
+    pub fn is_released(&self) -> bool {
+        self.shared.player().released
+    }
+
+    fn off_air(player: &Player) -> bool {
+        !player.on_air && player.in_use() && player.phase != MediaPhase::Standby
     }
 
     /// The play state now.
@@ -339,6 +435,8 @@ impl MediaControl {
         }
         match player.phase {
             MediaPhase::Standby if player.ended_stored => PlayState::Ended,
+            // Asleep from cued: the next wake follows the table, as from Standby.
+            MediaPhase::Standby if player.cued => PlayState::Standby,
             MediaPhase::Standby if paused => PlayState::Paused,
             MediaPhase::Standby => PlayState::Standby,
             MediaPhase::Hold => PlayState::Ended,
@@ -346,6 +444,7 @@ impl MediaControl {
             // Woken from a stored end with `restart_when_shown` false: the last
             // picture, still ended.
             MediaPhase::Playing if player.ended_stored => PlayState::Ended,
+            MediaPhase::Playing if paused && player.cued => PlayState::Cued,
             MediaPhase::Playing if paused => PlayState::Paused,
             MediaPhase::Playing => PlayState::Playing,
         }
@@ -365,15 +464,21 @@ impl MediaControl {
     }
 
     /// Writes one record whose instant is now plus the render period, on the audio
-    /// block grid, and wakes the worker. Under the player lock: one writer.
-    fn command(shared: &Shared, player: &Player, paused: bool, position: Option<Duration>) {
+    /// block grid, and wakes the worker. After the pause release it starts a worker
+    /// that follows the record (one picture when paused). Under the player lock: one
+    /// writer.
+    fn command(
+        shared: &Arc<Shared>,
+        player: &mut Player,
+        paused: bool,
+        position: Option<Duration>,
+    ) -> Result<(), MediaNodeError> {
         let instant = Self::instant(shared, player.clock().now());
         let generation = shared.controls.newest().generation.wrapping_add(1);
-        if let Some(position) = position {
-            // Asleep, the next start begins here.
-            if player.phase == MediaPhase::Standby {
-                shared.set_cursor(position);
-            }
+        let no_worker = player.phase == MediaPhase::Standby || player.released;
+        if let (Some(position), true) = (position, no_worker) {
+            // No worker reads the record: the next start begins here.
+            shared.move_cursor(position);
         }
         shared.controls.write(Record {
             generation,
@@ -381,7 +486,11 @@ impl MediaControl {
             paused,
             position,
         });
+        if player.released && player.in_use() {
+            return player.start(shared);
+        }
         player.unpark();
+        Ok(())
     }
 
     /// Leaves the end hold at `position`, paused or playing: starts a worker when a
@@ -400,7 +509,7 @@ impl MediaControl {
             paused,
             position: None,
         });
-        shared.set_cursor(position);
+        shared.move_cursor(position);
         player.ended_stored = false;
         if player.in_use() {
             player.start(shared)

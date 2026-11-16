@@ -73,6 +73,8 @@ pub struct MediaPictureNode {
     held: Option<VideoFrame>,
     held_mark: u8,
     published: Option<u32>,
+    /// The last `dequeue` published a picture it had not published before.
+    changed: bool,
     upload: SourceUpload,
     /// Last picture already on the GPU, reused while the clock repeats a picture.
     shown_texture: Option<VideoFrame>,
@@ -94,6 +96,7 @@ impl MediaPictureNode {
             held: None,
             held_mark: 0,
             published: None,
+            changed: false,
             upload: SourceUpload::new(),
             shown_texture: None,
         }
@@ -104,7 +107,7 @@ impl MediaPictureNode {
     pub fn set_loop(&mut self, on: bool) {
         self.loop_flag.store(on, Ordering::Release);
         if on && self.phase == MediaPhase::Hold {
-            self.shared.set_cursor(Duration::ZERO);
+            self.shared.move_cursor(Duration::ZERO);
             let _ = self.restart();
         }
     }
@@ -367,6 +370,7 @@ impl MediaPictureNode {
     /// or the first one before its time (the cued picture is on air at once; motion
     /// starts one lead later). Does not allocate, free, block, or read the file.
     pub fn dequeue(&mut self, now: Timestamp) -> Option<VideoFrame> {
+        self.changed = false;
         // A run the control path started (a restart from the end hold) is taken first.
         self.adopt_handoff();
         if self.phase == MediaPhase::Hold {
@@ -385,6 +389,9 @@ impl MediaPictureNode {
                 .torn_controls
                 .fetch_add(1, Ordering::Relaxed);
         }
+        // A new run numbers its pictures from 0 again, so a picture taken this tick is
+        // new even when its index matches the one published.
+        let mut replaced = false;
         // Bounded by the ring: every pass takes or skips one picture, or stops.
         for _ in 0..=2 * super::PICTURE_SLOTS {
             if self.next.is_none() {
@@ -417,6 +424,7 @@ impl MediaPictureNode {
             let Some(next) = self.next.take() else {
                 break;
             };
+            replaced = true;
             if let Some(old) = self.current.replace(next) {
                 if Some(old.index) != self.published {
                     self.shared
@@ -431,7 +439,8 @@ impl MediaPictureNode {
             // A new run after the end hold shows the held picture until its first.
             return self.held.as_ref().and_then(VideoFrame::share);
         };
-        if self.published == Some(current.index) {
+        self.changed = !(self.published == Some(current.index) && !replaced);
+        if !self.changed {
             self.shared
                 .stats
                 .repeated_video
@@ -451,11 +460,10 @@ impl MediaPictureNode {
         ctx: &mut ProcessCtx<'_, GpuRuntime>,
         now: Timestamp,
     ) -> Result<Option<VideoFrame>, NodeError> {
-        let before = self.published;
         let Some(system) = self.dequeue(now) else {
             return Ok(None);
         };
-        if before == self.published && self.shown_texture.is_some() {
+        if !self.changed && self.shown_texture.is_some() {
             return Ok(self.shown_texture.as_ref().and_then(VideoFrame::share));
         }
         let texture = self

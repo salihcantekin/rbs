@@ -52,6 +52,11 @@ fn steps() -> ScriptClip {
 }
 
 fn rig(loop_playback: bool) -> Rig {
+    rig_with(loop_playback, true, true)
+}
+
+/// A rig whose source starts on air or only in a preview scene.
+fn rig_with(loop_playback: bool, restart_when_shown: bool, on_air: bool) -> Rig {
     let factory = Arc::new(ScriptFactory::new(steps()));
     let clock = Arc::new(TestClock::new());
     let config = AudioGraphConfig::new(AudioFormat::STEREO_48K, BLOCK as u32, LATENCY).unwrap();
@@ -59,10 +64,11 @@ fn rig(loop_playback: bool) -> Rig {
         factory,
         std::path::PathBuf::from(r"C:\clips\clip.mp4"),
         loop_playback,
-        true,
+        restart_when_shown,
         clock.clone(),
         config,
     );
+    pair.control.set_on_air(on_air).unwrap();
     let mut rig = Rig {
         pair,
         clock,
@@ -96,8 +102,11 @@ impl Rig {
         for t in (from..to).step_by(10) {
             self.clock.set(ms(t));
             let picture = &self.pair.picture;
+            let control = &self.pair.control;
             wait_until(|| {
-                picture.worker_ended() || picture.worker_settled_at().is_some_and(|s| s >= ms(t))
+                picture.worker_ended()
+                    || control.is_released()
+                    || picture.worker_settled_at().is_some_and(|s| s >= ms(t))
             });
             let _ = self.pair.picture.dequeue(ms(t));
             self.marks.insert(t, self.pair.picture.last_mark());
@@ -141,7 +150,7 @@ fn pause_stops_picture_and_sound_at_the_same_media_time() {
     assert_eq!(rig.pair.control.state(), PlayState::Playing);
     // At 200 ms: the instant is 200 plus the 50 ms render margin, 250 ms, which is
     // media 100 ms (the anchor is 150 ms).
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     rig.run(210, 600);
     assert_eq!(rig.pair.control.state(), PlayState::Paused);
     assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
@@ -157,7 +166,7 @@ fn pause_stops_picture_and_sound_at_the_same_media_time() {
 fn play_after_pause_skips_and_doubles_nothing() {
     let mut rig = rig(false);
     rig.run(0, 210);
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     rig.run(210, 410);
     // At 400 ms: the instant is 450 ms; the worker anchors one lead later, 600 ms.
     rig.pair.control.play().unwrap();
@@ -217,7 +226,7 @@ fn two_seeks_within_one_latency_play_only_the_second() {
 fn seek_while_paused_shows_the_new_picture_and_stays_silent() {
     let mut rig = rig(false);
     rig.run(0, 210);
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     rig.run(210, 310);
     // At 300 ms, to media 200 ms (the third picture): shown from 350 ms and held.
     rig.pair.control.seek(Duration::from_millis(200)).unwrap();
@@ -278,7 +287,7 @@ fn a_source_paused_while_asleep_wakes_paused_at_its_cursor() {
     );
     assert_eq!(pair.control.state(), PlayState::Standby);
     pair.control.seek(Duration::from_millis(100)).unwrap();
-    pair.control.pause();
+    pair.control.pause().unwrap();
     assert_eq!(pair.control.state(), PlayState::Paused);
     pair.picture.wake(Timestamp::ZERO).unwrap();
     clock.set(ms(10));
@@ -298,7 +307,7 @@ fn a_source_paused_while_asleep_wakes_paused_at_its_cursor() {
 fn a_command_does_not_allocate_in_either_node() {
     let mut rig = rig(true);
     rig.run(0, 200);
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     let mut l = vec![0.0f32; BLOCK];
     let mut r = vec![0.0f32; BLOCK];
     for t in (200..400).step_by(10) {
@@ -324,7 +333,7 @@ fn play_within_one_latency_of_pause_doubles_nothing() {
     rig.run(0, 210);
     // Both at 200 ms, instant 250 ms: the pause stops at media 100 ms, the play goes
     // on from there one lead after the instant (400 ms).
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     rig.pair.control.play().unwrap();
     rig.run(210, 700);
     assert!(all(rig.block(240), 0.25));
@@ -340,7 +349,7 @@ fn play_within_one_latency_of_pause_doubles_nothing() {
 fn seek_then_play_while_paused_plays_from_the_seek() {
     let mut rig = rig(false);
     rig.run(0, 210);
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     rig.run(210, 310);
     // Both at 300 ms, instant 350 ms: play from media 200 ms at 500 ms.
     rig.pair.control.seek(Duration::from_millis(200)).unwrap();
@@ -358,7 +367,7 @@ fn seek_then_play_while_paused_plays_from_the_seek() {
 fn pause_then_seek_within_one_latency_holds_the_new_picture() {
     let mut rig = rig(false);
     rig.run(0, 210);
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     rig.pair.control.seek(Duration::ZERO).unwrap();
     rig.run(210, 500);
     assert_eq!(rig.pair.control.state(), PlayState::Paused);
@@ -392,7 +401,7 @@ fn pause_in_the_second_loop_pass_stops_at_that_pass_media_time() {
     let mut rig = rig(true);
     rig.run(0, 430);
     // At 420 ms, instant 470 ms: the second pass began at 450 ms, so media 20 ms.
-    rig.pair.control.pause();
+    rig.pair.control.pause().unwrap();
     rig.run(430, 610);
     assert_eq!(rig.pair.control.cursor(), Duration::from_millis(20));
     // Play at 600 ms: media 20 ms at 800 ms.
@@ -403,4 +412,197 @@ fn pause_in_the_second_loop_pass_stops_at_that_pass_media_time() {
     assert!(all(rig.block(870), 0.25));
     assert!(all(rig.block(880), 0.5));
     assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn the_pause_release_frees_the_worker_and_play_resumes_at_the_cursor() {
+    let mut rig = rig(false);
+    rig.pair
+        .control
+        .set_pause_release(Duration::from_millis(200));
+    rig.run(0, 210);
+    // Paused from 250 ms at media 100 ms.
+    rig.pair.control.pause().unwrap();
+    rig.run(210, 450);
+    rig.pair.control.service();
+    assert!(
+        !rig.pair.control.is_released(),
+        "200 ms after 250 ms is 450 ms"
+    );
+    rig.run(450, 460);
+    rig.pair.control.service();
+    assert!(rig.pair.control.is_released());
+    assert!(rig.pair.picture.worker_joined());
+    assert!(!rig.pair.picture.decoder_held());
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+    rig.run(460, 600);
+    assert!(rig.marks.range(250..600).all(|(_, m)| *m == Some(1)));
+    // At 590 ms play opens the file again; the new worker anchors media 100 ms one
+    // lead after its start, at 740 ms.
+    rig.pair.control.play().unwrap();
+    assert!(!rig.pair.control.is_released());
+    assert!(rig.pair.picture.decoder_held());
+    rig.run(600, 1_000);
+    assert!(rig.blocks.range(250..740).next().is_none());
+    assert!(all(rig.block(740), 0.5));
+    assert!(all(rig.block(830), 0.5));
+    assert!(all(rig.block(840), 0.75));
+    assert!(all(rig.block(930), 0.75));
+    assert!(!rig.blocks.contains_key(&940));
+    assert_eq!(rig.marks[&730], Some(1));
+    assert_eq!(rig.marks[&740], Some(2));
+    assert_eq!(rig.marks[&840], Some(3));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_seek_after_the_pause_release_shows_its_picture_and_releases_again() {
+    let mut rig = rig(false);
+    rig.pair
+        .control
+        .set_pause_release(Duration::from_millis(100));
+    rig.run(0, 210);
+    rig.pair.control.pause().unwrap();
+    rig.run(210, 360);
+    rig.pair.control.service();
+    assert!(rig.pair.control.is_released());
+    // At 350 ms a worker starts for the one picture at 200 ms, shown from 400 ms.
+    rig.pair.control.seek(Duration::from_millis(200)).unwrap();
+    assert!(!rig.pair.control.is_released());
+    rig.run(360, 500);
+    assert_eq!(rig.marks[&390], Some(1));
+    assert_eq!(rig.marks[&400], Some(3));
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(200));
+    // The seek's instant is 400 ms: released again 100 ms later.
+    rig.pair.control.service();
+    assert!(!rig.pair.control.is_released());
+    rig.run(500, 510);
+    rig.pair.control.service();
+    assert!(rig.pair.control.is_released());
+    assert!(!rig.pair.picture.decoder_held());
+    rig.run(510, 600);
+    assert!(rig.marks.range(400..600).all(|(_, m)| *m == Some(3)));
+    assert!(rig.blocks.range(250..).next().is_none());
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_source_only_a_preview_draws_is_cued_and_plays_on_the_take() {
+    let mut rig = rig_with(false, true, false);
+    rig.run(0, 300);
+    // The picture at the start is shown from the first tick after the worker sees the
+    // picture node (the sound node started it) and held; no sound, no underrun.
+    // The picture at the start is shown and held; no sound, no underrun.
+    assert!(rig.marks.range(10..300).all(|(_, m)| *m == Some(1)));
+    assert!(rig.blocks.is_empty());
+    // Play in a preview does not play.
+    rig.pair.control.play().unwrap();
+    rig.run(300, 400);
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    assert!(rig.blocks.is_empty());
+    // The take at 390 ms: the instant is 440 ms, motion and sound one lead later.
+    rig.pair.control.set_on_air(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    rig.run(400, 1_000);
+    assert!(rig.blocks.range(..590).next().is_none());
+    assert!(all(rig.block(590), 0.25));
+    assert!(all(rig.block(690), 0.5));
+    assert!(all(rig.block(790), 0.75));
+    assert!(!rig.blocks.contains_key(&890));
+    assert_eq!(rig.marks[&580], Some(1));
+    assert_eq!(rig.marks[&690], Some(2));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_take_cues_a_playing_clip_at_the_start_and_a_take_back_plays_it() {
+    let mut rig = rig_with(false, true, true);
+    rig.run(0, 260);
+    assert_eq!(rig.marks[&250], Some(2));
+    // Taken off air at 250 ms: cued at the start (restart_when_shown) from 300 ms.
+    rig.pair.control.set_on_air(false).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    rig.run(260, 500);
+    assert!(rig.marks.range(300..500).all(|(_, m)| *m == Some(1)));
+    assert!(rig.blocks.range(300..).next().is_none());
+    assert_eq!(rig.pair.control.cursor(), Duration::ZERO);
+    // Taken back at 490 ms: from the start, anchored at 540 + 150 ms.
+    rig.pair.control.set_on_air(true).unwrap();
+    rig.run(500, 1_100);
+    assert!(rig.blocks.range(300..690).next().is_none());
+    assert!(all(rig.block(690), 0.25));
+    assert!(all(rig.block(890), 0.75));
+    assert!(!rig.blocks.contains_key(&990));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn without_restart_when_shown_a_take_cues_where_it_stopped() {
+    let mut rig = rig_with(false, false, true);
+    rig.run(0, 260);
+    // Off air at 250 ms: the instant is 300 ms, media 150 ms.
+    rig.pair.control.set_on_air(false).unwrap();
+    rig.run(260, 400);
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(150));
+    assert!(rig.marks.range(300..400).all(|(_, m)| *m == Some(2)));
+    // Back on air at 390 ms: media 150 ms plays from 440 + 150 ms.
+    rig.pair.control.set_on_air(true).unwrap();
+    rig.run(400, 900);
+    assert!(rig.blocks.range(300..590).next().is_none());
+    assert!(all(rig.block(590), 0.5));
+    assert!(all(rig.block(640), 0.75));
+    assert!(!rig.blocks.contains_key(&790));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_paused_clip_stays_paused_through_a_take_and_back_without_restart() {
+    let mut rig = rig_with(false, false, true);
+    rig.run(0, 210);
+    rig.pair.control.pause().unwrap();
+    rig.run(210, 300);
+    rig.pair.control.set_on_air(false).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+    rig.run(300, 400);
+    rig.pair.control.set_on_air(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+    rig.run(400, 600);
+    assert!(rig.marks.range(250..600).all(|(_, m)| *m == Some(1)));
+    assert!(rig.blocks.range(250..).next().is_none());
+}
+
+#[test]
+fn a_paused_clip_taken_back_with_restart_when_shown_plays_from_the_start() {
+    let mut rig = rig_with(false, true, true);
+    rig.run(0, 210);
+    rig.pair.control.pause().unwrap();
+    rig.run(210, 300);
+    rig.pair.control.set_on_air(false).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+    rig.run(300, 400);
+    // At 390 ms: from the start, anchored at 440 + 150 ms.
+    rig.pair.control.set_on_air(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    rig.run(400, 1_000);
+    assert!(rig.blocks.range(250..590).next().is_none());
+    assert!(all(rig.block(590), 0.25));
+    assert!(all(rig.block(790), 0.75));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_cued_source_that_sleeps_plays_when_a_program_scene_wakes_it() {
+    let mut rig = rig_with(false, false, false);
+    rig.run(0, 100);
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    rig.pair.picture.standby();
+    rig.pair.sound.detach();
+    assert_eq!(rig.pair.control.state(), PlayState::Standby);
+    rig.pair.control.set_on_air(true).unwrap();
+    rig.pair.sound.attach().unwrap();
+    rig.pair.picture.wake(ms(90)).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
 }
