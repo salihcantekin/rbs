@@ -52,8 +52,8 @@ Invariants:
 6. A side over 8192 or a system frame over 128 MiB is refused (`refuse_picture`) before the caller allocates any buffer.
 7. `duration` is the container's stated length, read once after open, or `None`.
 8. From this version on, new trait methods have defaults and the public enums are `#[non_exhaustive]`, so neither breaks an adapter. `next_sound` and `has_audio` are required, so an adapter cannot claim sound and forget to deliver it.
-10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). Until the node split lands, the probe refuses a native picture so a zero-copy adapter cannot win and then fail in the node.
 9. Capability `media.decode.pixel` is a set of `zero-copy` and `cpu-upload`. The host picks the adapter named in the source's `adapter` setting, or else `zero-copy` before `cpu-upload`, then registration order, among adapters that open the file.
+10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). Until the node split lands, the probe refuses a native picture so a zero-copy adapter cannot win and then fail in the node.
 
 ## Errors and failure behaviour
 
