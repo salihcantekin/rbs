@@ -376,10 +376,9 @@ impl Studio {
     }
 
     /// Sends each hold mixer its strips: the scene's sources at the scene's levels
-    /// (ADR-0091) under the canvas master. Before the apply (`report` without
-    /// readers) a picture-and-sound source keeps its strip only while its old reader
-    /// is known, and the strips leaving stay until after it; after the apply the
-    /// strips are exactly the bound inputs.
+    /// (ADR-0091) under the canvas master. Before the apply the strips leaving stay
+    /// until after it; after the apply the strips are exactly the bound inputs. A
+    /// picture-and-sound source's producer is its sound node (ADR-0106).
     pub(super) fn send_hold_strips(&mut self, report: &BindReport, applied: bool) {
         let collection = &self.collection;
         let master = self.master;
@@ -391,20 +390,8 @@ impl Studio {
             let levels = scene_mix_of(collection, run.scene);
             let mut staged = Vec::new();
             for input in &bound.inputs {
-                let late = !applied
-                    && report.picture_sound.iter().any(|p| {
-                        p.canvas == *canvas && p.role == Role::Hold && p.source == input.source
-                    });
-                let producer = if late {
-                    let Some(kept) = mix.strips.iter().find(|s| s.source == input.source) else {
-                        continue;
-                    };
-                    kept.producer
-                } else {
-                    input.producer
-                };
                 staged.push(MixStrip {
-                    producer,
+                    producer: input.producer,
                     source: input.source,
                     meter: None,
                     audio: levels.get(&input.source).copied().unwrap_or_default(),

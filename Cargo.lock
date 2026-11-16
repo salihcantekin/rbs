@@ -5061,6 +5061,7 @@ dependencies = [
  "allocation-counter",
  "bytes",
  "criterion 0.8.2",
+ "rbs-audio",
  "rbs-capture",
  "rbs-capture-mf",
  "rbs-capture-test",

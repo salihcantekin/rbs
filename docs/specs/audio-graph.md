@@ -94,6 +94,14 @@ Descriptor `org.rbs.audio.input`, kind `Source`, output `out` (Audio).
 
 Tests (`crates/rbs-audio/tests/input.rs`, scripted devices on `TestClock`): a perfect device aligned within 50 µs from the first blocks; drift of ±100 and ±1000 ppm corrected without resyncs, error within drift / gain after 4 s; 1 ms timestamp jitter without resyncs, gaps or overlaps; 44.1 kHz stereo converted at the right level and time; delay and advance offsets; an offset change slews; a 30 ms gap filled with alignment kept; a flagged 1.5 ms gap filled; a second of late delivery is silence, its audio dropped as overlaps, with no resync and alignment and no silence after it; lateness inside the look-ahead keeps sync; late audio in 1 ms packets is dropped, never mapped; a 2 s gap is bridged (the head moves with the position through the silence); a stray timestamp 3 s ahead or 2 s behind restarts the map and realigns. Removing the steering makes the drift tests fail.
 
+### Media sound node (`rbs_nodes::MediaSoundNode`, ADR-0106 decision 3, ADR-0108 decision 5)
+
+Descriptor `org.rbs.media.sound`, kind `Source`, one output `audio` (Audio). Generic over the runtime; adopted into the audio partition at the binder's sound node of a media source, and the mixer's producer for that source. It shares a decode worker with the source's picture node (`rbs_nodes::media_pair`).
+
+- `prepare` allocates the sound ring (`LEAD` 150 ms plus `latency` plus 2 blocks, rounded up, `MediaSoundNode::ring_slots`) and a return ring one larger, and hands their other ends to the worker; `release` frees them. Standby holds no ring.
+- The worker resamples (the input node's windowed-sinc kernel) and remaps channels to the graph format, stamps sound with master time from the anchor of its first picture, and cuts blocks of `block_frames` on the block grid: the first block it cuts is the one holding the first frame, padded with leading silence. It learns the grid from the first `block_time` the node sees. It never waits on the ring: a block that does not fit, finds no free buffer, or is already older than `now - latency - period` is dropped and counted (`worker_dropped_blocks`).
+- Every tick writes one block at `block_time(tick)`: it drops every block in the ring older than that by more than half a block (`late_blocks`) and every block of an older worker epoch, copies the block within half a block of it, or writes silence. Buffers go back on the return ring; `process` does not allocate, free, block, or resample. Silence counts as an underrun (`sound_underruns`) only while a worker plays a file that has sound, from its first block on; a file with no audio stream, the end hold and Standby are not underruns.
+
 ### Mixer (`rbs_audio::MixerNode`)
 
 ```rust

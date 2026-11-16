@@ -315,11 +315,17 @@ pub struct StillSource {
     pub stats: Arc<CaptureNodeStats>,
 }
 
-/// A media-file node (ADR-0108). Video and audio pins are both always present.
+/// A media-file source (ADR-0108 decision 1): a picture node and a sound node fed by
+/// one decode worker.
 #[non_exhaustive]
 pub struct MediaSource {
-    /// The node. Standby holds no decoder and no queues.
-    pub node: rbs_nodes::MediaSourceNode,
+    /// The picture node: adopt into the render partition. Standby holds no decoder
+    /// and no rings.
+    pub picture: rbs_nodes::MediaPictureNode,
+    /// The sound node: adopt into the audio partition at the binder's sound node
+    /// (`BindReport::picture_sound`). Drop it when the binder has no audio partition;
+    /// the worker then decodes no sound.
+    pub sound: rbs_nodes::MediaSoundNode,
     /// Upload, drop, repeat, and underrun counters.
     pub stats: Arc<rbs_nodes::MediaStats>,
     /// The decoder factory chosen for this node.
@@ -340,8 +346,8 @@ pub enum SourceInstance {
     Still(StillSource),
     /// Adopt into the render partition.
     Video(VideoSource),
-    /// Adopt into the render partition. Its audio pin is the ADR-0106 producer.
-    /// Boxed: the node with its queues is far larger than the other variants.
+    /// The picture node into the render partition, the sound node into the audio
+    /// partition (ADR-0106). Boxed: far larger than the other variants.
     Media(Box<MediaSource>),
     /// Adopt into the render partition. No audio pin.
     Browser(BrowserSource),
@@ -383,12 +389,20 @@ impl fmt::Debug for SourceInstance {
 #[derive(Debug, Clone, Default)]
 pub struct NodeTypeTable {
     types: BTreeMap<NodeTypeId, Arc<NodeDescriptor>>,
+    /// The sound node type of each picture-and-sound source type (ADR-0106).
+    sounds: BTreeMap<NodeTypeId, NodeTypeId>,
 }
 
 impl NodeTypeTable {
     /// Adds or replaces a type (for example a plugin's node type).
     pub fn insert(&mut self, type_id: NodeTypeId, descriptor: NodeDescriptor) {
         self.types.insert(type_id, Arc::new(descriptor));
+    }
+
+    /// Names `sound` as the sound node type of the source type `picture` (ADR-0106
+    /// decision 2). `sound` must be in the table too.
+    pub fn insert_sound(&mut self, picture: NodeTypeId, sound: NodeTypeId) {
+        self.sounds.insert(picture, sound);
     }
 
     /// The type ids in the table.
@@ -400,6 +414,10 @@ impl NodeTypeTable {
 impl NodeTypes for NodeTypeTable {
     fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
         self.types.get(type_id).cloned()
+    }
+
+    fn sound_type(&self, picture: &NodeTypeId) -> Option<NodeTypeId> {
+        self.sounds.get(picture).cloned()
     }
 }
 
@@ -850,7 +868,14 @@ impl SourceTypes {
             let descriptor = match class_of(&t) {
                 Some(SourceClass::Capture(_)) => rbs_nodes::capture_descriptor(),
                 Some(SourceClass::Still) => rbs_nodes::still_descriptor(),
-                Some(SourceClass::Media) => rbs_nodes::media_descriptor(),
+                Some(SourceClass::Media) => {
+                    // A media source is a picture node and a sound node (ADR-0108
+                    // decision 1).
+                    let sound = NodeTypeId::new_static(rbs_nodes::MEDIA_SOUND_NODE_TYPE);
+                    table.insert(sound.clone(), rbs_nodes::media_sound_descriptor());
+                    table.insert_sound(t.clone(), sound);
+                    rbs_nodes::media_descriptor()
+                }
                 Some(SourceClass::Browser) => crate::browser::browser_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
@@ -1100,19 +1125,18 @@ impl SourceTypes {
         };
         let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
         let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
-        let node = rbs_nodes::MediaSourceNode::new(
+        let pair = rbs_nodes::media_pair(
             factory.clone(),
             path,
             loop_playback,
             restart,
             Arc::clone(&ctx.clock),
-            ctx.audio.format.sample_rate.hz(),
-            u16::try_from(ctx.audio.format.channels.channels()).unwrap_or(2),
-            ctx.audio.block_frames,
+            ctx.audio,
         );
-        let stats = node.stats();
+        let stats = pair.picture.stats();
         Ok(SourceInstance::Media(Box::new(MediaSource {
-            node,
+            picture: pair.picture,
+            sound: pair.sound,
             stats,
             adapter: factory.id(),
         })))
