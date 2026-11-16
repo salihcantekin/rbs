@@ -49,9 +49,10 @@ pub use image_track::{
     MIN_IMAGE_INTERVAL, image_track_descriptor,
 };
 pub use media::{
-    MEDIA_NODE_TYPE, MEDIA_SOUND_NODE_TYPE, MediaNodeError, MediaPair, MediaPhase,
-    MediaPictureNode, MediaSoundNode, MediaStats, VIDEO_PIN as MEDIA_VIDEO_PIN, media_descriptor,
-    media_pair, media_sound_descriptor,
+    MEDIA_CONTROL_RECORDS, MEDIA_NODE_TYPE, MEDIA_SOUND_NODE_TYPE, MediaControl, MediaNodeError,
+    MediaPair, MediaPhase, MediaPictureNode, MediaSoundNode, MediaStats,
+    PlayState as MediaPlayState, VIDEO_PIN as MEDIA_VIDEO_PIN, media_descriptor, media_pair,
+    media_sound_descriptor,
 };
 pub use output::{OUTPUT_NODE_TYPE, OutputNode, output_descriptor};
 pub use preview::{PREVIEW_NODE_TYPE, PreviewNode, PreviewNodeStats, preview_descriptor};
