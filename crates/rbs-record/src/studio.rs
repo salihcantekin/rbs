@@ -37,8 +37,8 @@ use rbs_nodes::export::{ExportEnd, ExportHold, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::output_cut::OutputCut;
 use rbs_nodes::{
-    MediaStats, OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode,
-    VirtualCameraNode, VirtualCameraNodeStats,
+    MediaStats, OutputNode, PreviewNode, PreviewNodeStats, TextNodeStats, VideoEncoderNode,
+    VideoExportNode, VirtualCameraNode, VirtualCameraNodeStats,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{
@@ -47,6 +47,8 @@ use rbs_scene::binder::{
 use rbs_scene::model::{
     CanvasId, FilterId, ItemId, MasterAudio, SceneId, SourceAudio, SourceId, SourceMonitor,
 };
+use rbs_sources::text_file::{FileProbe, RealFileProbe};
+use rbs_sources::text_worker::{ProblemSlot, SystemTextClock, TextClock, TextProblem, TextWorker};
 use rbs_sources::{
     BrowserBudget, BrowserClaim, BrowserControlSidecar, BrowserTree, InstanceContext, ShowClass,
     SourceInstance, SourceTypes, filter_values_lenient, glide_layers, glide_max_duration,
@@ -346,6 +348,8 @@ pub(crate) enum Watch {
     Browser {
         size: (u32, u32),
     },
+    /// Text node counters (ADR-0129). Render partition.
+    Text(Arc<TextNodeStats>),
 }
 
 /// A source's running instance.
@@ -1167,6 +1171,21 @@ pub struct Studio {
     browser_tree: Option<Arc<dyn BrowserTree>>,
     /// Control-thread handles that poll helper processes (ADR-0109).
     browser_controls: Vec<Arc<BrowserControlSidecar>>,
+    /// Draws text sources (ADR-0129); made on the first text instance.
+    text: Option<TextWorker>,
+    /// File access and wall clock of the text worker (real unless a host or test
+    /// sets them before the first text source).
+    text_io: (Arc<dyn FileProbe>, Arc<dyn TextClock>),
+    /// Text problems by source and slot (ADR-0129 decision 7).
+    text_problems: BTreeMap<(SourceId, ProblemSlot), TextProblem>,
+    /// Text sources whose settings window is open: kept up to date off air.
+    text_watched: BTreeSet<SourceId>,
+    /// Text sources fed by the worker.
+    text_attached: BTreeSet<SourceId>,
+    /// The on-air set the worker was last given.
+    text_on_air: BTreeSet<SourceId>,
+    /// Requests of texts that entered the on-air set, not yet uploaded.
+    text_entering: Vec<(SourceId, u64)>,
 }
 
 impl fmt::Debug for Studio {
@@ -1485,6 +1504,13 @@ impl Studio {
             browser_budget: BrowserBudget::shared(),
             browser_tree,
             browser_controls: Vec::new(),
+            text: None,
+            text_io: (Arc::new(RealFileProbe), Arc::new(SystemTextClock)),
+            text_problems: BTreeMap::new(),
+            text_watched: BTreeSet::new(),
+            text_attached: BTreeSet::new(),
+            text_on_air: BTreeSet::new(),
+            text_entering: Vec::new(),
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)
@@ -2156,6 +2182,14 @@ impl Studio {
                     }
                 }
             }
+            if let Some(worker) = self.text.as_mut() {
+                for (source, _) in &report.changed_sources {
+                    if let Some(s) = collection.source(*source) {
+                        let settings = rbs_sources::text::read_text_lenient(&s.settings).0;
+                        worker.set_settings(*source, settings);
+                    }
+                }
+            }
             for (source_id, node) in &report.created_sources {
                 let Some(source) = collection.source(*source_id) else {
                     continue;
@@ -2303,6 +2337,29 @@ impl Studio {
                         offset: None,
                     });
                 }
+                SourceInstance::Text(t) => {
+                    // Render partition (ADR-0129). The worker owns the picture sender.
+                    let t = *t;
+                    self.engine
+                        .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(t.node))?;
+                    let (files, wall) = &self.text_io;
+                    let worker = self.text.get_or_insert_with(|| {
+                        TextWorker::new(
+                            sources.text_renderers(),
+                            Arc::clone(files),
+                            self.engine.clock(),
+                            Arc::clone(wall),
+                        )
+                    });
+                    worker.attach(entry.source, t.frames, t.settings);
+                    self.text_attached.insert(entry.source);
+                    entry.instance = Some(Instance {
+                        partition: RENDER,
+                        gpu: true,
+                        watch: Watch::Text(t.stats),
+                        offset: None,
+                    });
+                }
                 SourceInstance::Browser(b) => {
                     // Render partition (ADR-0109). Size is known from the page settings.
                     let size = b.node.picture_size();
@@ -2347,6 +2404,7 @@ impl Studio {
                         .find(|e| e.source == entry.source)
                         .and_then(|e| match &e.instance.as_ref()?.watch {
                             Watch::Video(stats) => stats.picture_size(),
+                            Watch::Text(stats) => stats.picture_size(),
                             Watch::Browser { size } => Some(*size),
                             Watch::Media(_) | Watch::Audio(_, _) => None,
                         })
@@ -2522,6 +2580,7 @@ impl Studio {
         for e in gone.iter_mut() {
             take_instance(&mut self.engine, e, &mut self.pending_takes);
         }
+        self.sync_text();
         for a in leaving {
             if !take(&mut self.engine, a) {
                 self.pending_takes.push((a, None));
@@ -2676,9 +2735,134 @@ impl Studio {
                     (Some(_), Some(Watch::Video(stats))) => stats.fault().or(state.fault),
                     (Some(_), _) => state.fault,
                 };
+                // A text source shows its worker's problem (ADR-0129 decision 7).
+                if state.failed.is_none()
+                    && let Some(p) = self.text_problem(e.source).filter(|p| p.fault().is_some())
+                {
+                    state.failed = Some(p.message());
+                    state.fault = p.fault();
+                }
+                if state.failed.is_none()
+                    && let Some(Watch::Text(stats)) = e.instance.as_ref().map(|i| &i.watch)
+                    && let Some(fault) = stats.fault()
+                {
+                    state.failed = Some("The text picture could not be kept on the GPU".into());
+                    state.fault = Some(fault);
+                }
                 state
             })
             .collect()
+    }
+
+    /// Sets the text worker's file access and wall clock (tests, hosts). Takes effect
+    /// for a worker made after this call.
+    pub fn set_text_io(&mut self, files: Arc<dyn FileProbe>, wall: Arc<dyn TextClock>) {
+        self.text_io = (files, wall);
+    }
+
+    /// The text sources whose settings window is open: they are kept up to date even
+    /// off air (ADR-0129 decision 7).
+    pub fn set_text_watched(&mut self, sources: BTreeSet<SourceId>) {
+        self.text_watched = sources;
+        self.sync_text_on_air();
+    }
+
+    /// The problem a text source has now, file problems first; a note
+    /// (`TextProblem::FontMissing`) when that is all.
+    pub fn text_problem(&self, source: SourceId) -> Option<TextProblem> {
+        self.text_problems
+            .get(&(source, ProblemSlot::File))
+            .or_else(|| self.text_problems.get(&(source, ProblemSlot::Render)))
+            .cloned()
+    }
+
+    /// The installed font families (ADR-0129 decision 7): `None` until the worker has
+    /// a list or while no text renderer is in use.
+    pub fn text_families(&mut self) -> Option<Arc<Vec<String>>> {
+        match self.text.as_mut()?.families() {
+            rbs_sources::text_worker::Families::Ready(list) => Some(list),
+            _ => None,
+        }
+    }
+
+    /// True when every text that entered the on-air set since the last update has its
+    /// new picture uploaded. A host switching scenes waits for this for at most two
+    /// render ticks (ADR-0129 decision 7).
+    pub fn text_ready(&mut self) -> bool {
+        let entries = &self.entries;
+        self.text_entering.retain(|(source, request)| {
+            let uploaded = entries.iter().find(|e| e.source == *source).and_then(|e| {
+                match &e.instance.as_ref()?.watch {
+                    Watch::Text(stats) => Some(stats.uploaded_request.load(Ordering::Acquire)),
+                    _ => None,
+                }
+            });
+            uploaded.is_some_and(|u| u < *request)
+        });
+        self.text_entering.is_empty()
+    }
+
+    /// Texts whose node runs no more are detached from the worker; the on-air set is
+    /// recomputed.
+    fn sync_text(&mut self) {
+        let Some(worker) = self.text.as_mut() else {
+            return;
+        };
+        let live: BTreeSet<SourceId> = self
+            .entries
+            .iter()
+            .filter(|e| matches!(e.instance.as_ref().map(|i| &i.watch), Some(Watch::Text(_))))
+            .map(|e| e.source)
+            .collect();
+        for gone in self.text_attached.difference(&live) {
+            worker.detach(*gone);
+            self.text_problems.retain(|(s, _), _| s != gone);
+        }
+        self.text_attached = live;
+        self.sync_text_on_air();
+    }
+
+    fn sync_text_on_air(&mut self) {
+        let Some(worker) = self.text.as_mut() else {
+            return;
+        };
+        let holds = self.hold_scenes.values().map(|h| h.scene());
+        // Separate picture tracks of a running take stay current too.
+        let tracks = self
+            .collection
+            .sources()
+            .filter(|s| !self.outputs.is_empty() && s.record_separately.video)
+            .map(|s| s.id);
+        let set = rbs_sources::text::text_on_air(
+            &self.collection,
+            holds,
+            tracks.chain(self.text_watched.iter().copied()),
+        );
+        for entering in set.difference(&self.text_on_air) {
+            if let Some(request) = worker.refresh(*entering) {
+                self.text_entering.push((*entering, request));
+            }
+        }
+        worker.set_on_air(set.clone());
+        self.text_on_air = set;
+    }
+
+    /// The text worker's control tick and its problems.
+    fn service_text(&mut self) {
+        let Some(worker) = self.text.as_mut() else {
+            return;
+        };
+        worker.tick();
+        for (source, slot, problem) in worker.take_problems() {
+            match problem {
+                Some(p) => {
+                    self.text_problems.insert((source, slot), p);
+                }
+                None => {
+                    self.text_problems.remove(&(source, slot));
+                }
+            }
+        }
     }
 
     /// True while a source waits for the instance it replaces to close (its partition's
@@ -2839,6 +3023,7 @@ impl Studio {
         let entry = self.entries.iter().find(|e| e.source == source)?;
         match &entry.instance.as_ref()?.watch {
             Watch::Video(stats) => stats.picture_size(),
+            Watch::Text(stats) => stats.picture_size(),
             Watch::Browser { size } => Some(*size),
             Watch::Media(_) | Watch::Audio(_, _) => None,
         }
@@ -2935,6 +3120,7 @@ impl Studio {
         for control in &self.browser_controls {
             control.control_tick();
         }
+        self.service_text();
         let serviced = self.engine.service();
         if !self.hold_scenes.is_empty() {
             let failed: BTreeSet<NodeId> = serviced
@@ -3786,6 +3972,13 @@ impl Studio {
                     resyncs: 0,
                     errors: stats.dropped_video.load(Ordering::Relaxed),
                 },
+                Watch::Text(stats) => SourceProgress {
+                    name: e.state.name.clone(),
+                    frames: stats.frames.load(Ordering::Relaxed),
+                    peak_db: None,
+                    resyncs: 0,
+                    errors: stats.gpu_errors.load(Ordering::Relaxed),
+                },
                 Watch::Browser { .. } => SourceProgress {
                     name: e.state.name.clone(),
                     frames: 0,
@@ -3994,6 +4187,9 @@ impl Studio {
     /// of them), then the engine. Returns each output's report, in start order, and the
     /// shutdown's errors.
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>) {
+        if let Some(mut worker) = self.text.take() {
+            worker.stop();
+        }
         self.stop_iso_audio();
         self.stop_virtual_camera();
         self.stop_monitor();

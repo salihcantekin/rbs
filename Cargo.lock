@@ -5042,6 +5042,7 @@ dependencies = [
  "rbs-nodes",
  "rbs-scene",
  "rbs-sources",
+ "rbs-text-test",
  "rbs-transport",
  "rbs-vcam",
  "rbs-vcam-test",

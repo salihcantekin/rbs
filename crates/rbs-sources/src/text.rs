@@ -142,6 +142,49 @@ pub fn text_is_still(settings: &Settings) -> bool {
     kind_is_text && !fields
 }
 
+/// The text sources of the on-air set (ADR-0129 decision 7): every item, visible or
+/// hidden, of each canvas's program, preview and globals scenes and of `scenes` (hold
+/// scenes), nested scenes included, plus `sources` (separate picture tracks of a
+/// running take, open settings windows) that are text sources.
+pub fn text_on_air(
+    collection: &rbs_scene::SceneCollection,
+    scenes: impl IntoIterator<Item = rbs_scene::model::SceneId>,
+    sources: impl IntoIterator<Item = rbs_scene::model::SourceId>,
+) -> std::collections::BTreeSet<rbs_scene::model::SourceId> {
+    use rbs_scene::model::ItemContent;
+    let mut todo: Vec<rbs_scene::model::SceneId> = collection
+        .canvases()
+        .flat_map(|c| [c.program, c.preview, c.globals])
+        .flatten()
+        .chain(scenes)
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out: std::collections::BTreeSet<_> = sources.into_iter().collect();
+    while let Some(id) = todo.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(scene) = collection.scene(id) else {
+            continue;
+        };
+        for item in &scene.items {
+            match item.content {
+                ItemContent::Source(s) => {
+                    out.insert(s);
+                }
+                ItemContent::Scene(inner) => todo.push(inner),
+                _ => {}
+            }
+        }
+    }
+    out.retain(|s| {
+        collection.source(*s).is_some_and(|src| {
+            crate::types::class_of(&src.type_id) == Some(crate::SourceClass::Text)
+        })
+    });
+    out
+}
+
 /// Whether `text` has a character usually drawn as a colour glyph (emoji and
 /// pictographs), so the host prefers a renderer with `text.color_glyphs`.
 pub fn has_color_glyphs(text: &str) -> bool {
@@ -613,6 +656,70 @@ mod tests {
         let (t, adjusted) = read_text_lenient(&Settings::new());
         assert_eq!(t.block.box_size, DEFAULT_BOX);
         assert_eq!(adjusted, vec![keys::WIDTH]);
+    }
+
+    #[test]
+    fn the_on_air_set_holds_every_item_of_shown_scenes_hidden_ones_too() {
+        use rbs_core::media::Size;
+        use rbs_core::timing::FrameRate;
+        use rbs_graph::node::NodeTypeId;
+        use rbs_scene::SceneCollection;
+        use rbs_scene::model::{ItemContent, Layout, SceneScope};
+        let mut col = SceneCollection::new();
+        let (canvas, _) = col
+            .add_canvas("Main", Size::new(1920, 1080), FrameRate::FPS_30)
+            .unwrap();
+        let text = |col: &mut SceneCollection, name: &str| {
+            col.add_source(
+                name,
+                NodeTypeId::new(crate::types::TEXT_SOURCE),
+                Settings::new(),
+            )
+            .unwrap()
+            .0
+        };
+        let (shown, hidden, nested, held, off, window) = (
+            text(&mut col, "a"),
+            text(&mut col, "b"),
+            text(&mut col, "c"),
+            text(&mut col, "d"),
+            text(&mut col, "e"),
+            text(&mut col, "f"),
+        );
+        let (color, _) = col
+            .add_source(
+                "bg",
+                NodeTypeId::new(crate::types::COLOR_SOURCE),
+                Settings::new(),
+            )
+            .unwrap();
+        let (live, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
+        let (inner, _) = col.add_scene("Inner", SceneScope::Shared).unwrap();
+        let (hold, _) = col.add_scene("Hold", SceneScope::Shared).unwrap();
+        let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
+        let full = Layout::new([0.0, 0.0], [100.0, 100.0]);
+        col.add_item(live, ItemContent::Source(shown), full, None)
+            .unwrap();
+        let (item, _) = col
+            .add_item(live, ItemContent::Source(hidden), full, None)
+            .unwrap();
+        col.set_item_visible(item, false).unwrap();
+        col.add_item(live, ItemContent::Source(color), full, None)
+            .unwrap();
+        col.add_item(live, ItemContent::Scene(inner), full, None)
+            .unwrap();
+        col.add_item(inner, ItemContent::Source(nested), full, None)
+            .unwrap();
+        col.add_item(hold, ItemContent::Source(held), full, None)
+            .unwrap();
+        col.add_item(other, ItemContent::Source(off), full, None)
+            .unwrap();
+        col.set_program(canvas, Some(live)).unwrap();
+        let set = text_on_air(&col, [hold], [window, color]);
+        assert_eq!(
+            set,
+            [shown, hidden, nested, held, window].into_iter().collect()
+        );
     }
 
     #[test]
