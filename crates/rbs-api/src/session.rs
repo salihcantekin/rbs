@@ -31,6 +31,8 @@ use crate::transport::{
 /// profile's `markers`, `while_paused` on `marker.add`'s answer, and marker times in
 /// file time.
 /// 1.62 adds the marker settings (ADR-0089): `markers` on a recording profile.
+/// 1.77 adds playback controls of a media-file source (ADR-0108 decision 10):
+/// `media.play`, `media.pause`, `media.seek`, `media.restart` and `media.state`.
 /// 1.75 adds text sources (ADR-0129 decision 8): `kind: "text"` with `text` on
 /// `source.add`, `source.set_text`, `text.fonts` and the error kinds `forbidden` (a
 /// text source's `file` cannot be written through the API) and `not_ready`.
@@ -94,7 +96,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.76";
+pub const PROTOCOL_VERSION: &str = "1.77";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

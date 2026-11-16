@@ -42,6 +42,7 @@ pub use png_writer::{ImageFiles, PNG_WRITER_NODE_TYPE, PngWriterNode};
 pub use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
 pub use rbs_nodes::replay_node::{ReplayStatus, RequestError as ReplayRequestError};
+pub use rbs_nodes::{MediaControl, MediaNodeError, MediaPlayState};
 pub use recording::{
     AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, AUDIO_ENCODER_POOL,
     AudioSettings, FinishReport, ISO_AUDIO_ENCODER, ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT,

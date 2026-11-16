@@ -413,3 +413,25 @@ fn a_source_row_names_the_other_sources_of_its_device() {
     });
     assert_eq!(peers, vec!["Mic B".to_owned()]);
 }
+
+/// The `media.*` methods (protocol 1.77, ADR-0108 decision 10) refuse an unknown source
+/// and a source of another type with typed errors.
+#[test]
+fn media_commands_refuse_an_unknown_source_and_another_type() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let mic = add_mic(&mut c, rbs_audio_io_test::MONO_INPUT, "Mic");
+    for method in ["media.play", "media.pause", "media.restart", "media.state"] {
+        assert_eq!(kind(&c.call(method, json!({"source": 9_999}))), "not_found");
+        assert_eq!(
+            kind(&c.call(method, json!({"source": mic}))),
+            "invalid_params",
+            "{method}"
+        );
+    }
+    assert_eq!(
+        kind(&c.call("media.seek", json!({"source": mic, "position_ms": 10}))),
+        "invalid_params"
+    );
+}

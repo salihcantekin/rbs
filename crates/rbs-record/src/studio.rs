@@ -3353,7 +3353,7 @@ impl Studio {
 
     /// The playback handle of a media source that has an instance: play, pause,
     /// seek and restart (ADR-0108 decision 10).
-    pub fn media_control(&self, source: SourceId) -> Option<&rbs_nodes::MediaControl> {
+    pub fn media_control(&self, source: SourceId) -> Option<&crate::MediaControl> {
         self.media_controls.get(&source)
     }
 
