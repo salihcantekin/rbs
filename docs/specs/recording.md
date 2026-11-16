@@ -349,6 +349,29 @@ A hold can show a scene of the collection instead of the last frame or black, wi
 - **Readout.** `loudness_readout()` gives the running meter's shared values (`Arc<LoudnessReadout>`, `None` while off) so the desktop app's Mixer reads them at its own rate; a new run is a new handle.
 - **Stop.** `stop_loudness` removes the node with a plain apply and takes it back like the monitor. `shutdown` stops it. While it is off the studio has no loudness node (ADR-0013).
 
+### Sync offset measurement (ADR-0126; estimator built, probes and studio calls planned)
+
+The pure estimator is `rbs_record::sync_measure` (no I/O, no clock). The probes, `Studio` calls, end reasons and the device memory are later steps of ADR-0126 and are specified with them.
+
+```rust
+pub struct AudioEnergy { pub time_ns: i64, pub energy: f32 }      // mean square of one 1 ms sub-block
+pub struct PictureMotion { pub time_ns: i64, pub motion: f32 }    // one per NEW frame, at its first tick
+pub struct Estimate { pub residual_ns: i64, pub pairs: usize, pub spread_ns: i64, pub frame_interval_ns: i64 }
+pub enum EstimateError { TooFewClaps, NoPictureMotion, Inconsistent }
+pub struct Suggestion { pub measured_ms: i32, pub offset_ms: i32, pub clamped: bool }
+pub fn audio_onsets(energy: &[AudioEnergy]) -> Vec<i64>;
+pub fn picture_events(frames: &[PictureMotion]) -> Option<(Vec<i64>, i64)>; // events, median interval
+pub fn estimate(energy: &[AudioEnergy], frames: &[PictureMotion]) -> Result<Estimate, EstimateError>;
+pub fn suggest(effective_offset_ms: i32, e: &Estimate, max_advance_ms: i32, max_delay_ms: i32) -> Suggestion;
+```
+
+- **Sound events.** A 1 ms sub-block at least `ONSET_FLOOR_DB` (-50 dBFS) and `ONSET_DB` (12 dB) above the mean energy of the previous `ONSET_HISTORY` (50 ms, at least half of it seen), then `REFRACTORY` (300 ms).
+- **Picture events.** Frame `k` is a peak: above frame `k-1`, at least frame `k+1`, at least `PEAK_OVER_MEDIAN` (4) times the window's median motion and `MIN_PEAK_MOTION` (0.004). Within two new frames it falls to at most half, or reaches a local minimum (hands that rebound). Event time `T_k - (T_k - T_(k-1)) / 2`. Within `REFRACTORY` the highest peak is kept.
+- **Pairs.** Each sound event goes with the nearest picture event within `SEARCH` (500 ms); a picture event keeps only its nearest sound event. Residual `sound - picture`, positive when the sound is late.
+- **Result.** At least `MIN_PAIRS` (3), else `TooFewClaps`; no picture event, `NoPictureMotion`; an interquartile range above the median measured frame interval, `Inconsistent`. Otherwise the mean of the inner half of the sorted residuals.
+- **Suggestion.** `effective_offset_ms - round(residual in ms)`, clamped to `-max_advance_ms..=max_delay_ms`; `clamped` when that changed it. A sound 60 ms early suggests about +60, 20 ms late about -20.
+- **Accuracy.** One pair is off by up to half a frame interval (the contact is somewhere inside it). Six claps at random phases: within half an interval always, within a quarter in about nine sessions of ten (tests in `sync_measure.rs`: sign both ways, effective offset, clamping, random phases at 24, 30 and 60 fps, rebound, 15 fps, jitter with a missed clap, each error, quiet and steady sound).
+
 ### Invariants
 
 1. Engine code names no adapter: `rbs-record` depends on ports, node crates, the scene and the engine only (P1), and selects by capability (P3).
