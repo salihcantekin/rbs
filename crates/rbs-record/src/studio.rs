@@ -92,7 +92,9 @@ pub use sync_measure::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
     SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
-pub use transition::{READY_WAIT, TransitionState};
+pub use transition::{
+    READY_WAIT, TransitionEvent, TransitionOnce, TransitionPhase, TransitionState,
+};
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
 const WAITING: &str = "waiting for the source it replaces to close";
@@ -1174,6 +1176,12 @@ pub struct Studio {
     /// A transition is done since the host last asked: it calls
     /// [`Studio::settle_transitions`].
     transition_done: bool,
+    /// The next program change's one-off kind and duration (ADR-0128 decision 13).
+    transition_once: Option<TransitionOnce>,
+    /// Starts and ends to report, oldest first ([`Studio::take_transition_events`]).
+    transition_events: Vec<TransitionEvent>,
+    /// Ends of transitions without an incoming picture (Move), due at their time.
+    transition_ends: Vec<TransitionEvent>,
     /// The scene each following canvas showed last (the `KeepLast` fallback).
     last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
@@ -1564,6 +1572,9 @@ impl Studio {
             glide: None,
             transitions: BTreeMap::new(),
             transition_done: false,
+            transition_once: None,
+            transition_events: Vec::new(),
+            transition_ends: Vec::new(),
             last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
@@ -1998,13 +2009,14 @@ impl Studio {
     fn note_scene_change(
         &mut self,
         collection: &SceneCollection,
+        effective: &transition::Effective,
         old_main: Option<SceneId>,
         old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
         old_layers: BTreeMap<CanvasId, Vec<BoundLayer>>,
     ) {
         // Only Move glides (ADR-0128 decision 2): Cut and the kinds that draw the
         // incoming picture whole change the boxes at once.
-        if collection.transition().kind != rbs_scene::TransitionKind::Move {
+        if !effective.glides() {
             self.glide = None;
             return;
         }
@@ -2027,11 +2039,16 @@ impl Studio {
         if from.is_empty() {
             return;
         }
-        let collection_glide = collection.glide();
-        let source_glide: BTreeMap<_, _> = collection
-            .sources()
-            .filter_map(|s| s.glide.map(|g| (s.id, g)))
-            .collect();
+        let collection_glide = effective.glide;
+        // A one-off duration replaces every per-source override for this change.
+        let source_glide: BTreeMap<_, _> = if effective.source_glides {
+            collection
+                .sources()
+                .filter_map(|s| s.glide.map(|g| (s.id, g)))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         let mut max_duration =
             std::time::Duration::from_millis(u64::from(collection_glide.duration_ms));
         // Current layers after the bind that triggered this note.
@@ -2140,7 +2157,8 @@ impl Studio {
             }
             None => None,
         };
-        self.note_transitions(collection, old_main, &old_extra, &old_layers);
+        let effective = self.effective_transition(collection);
+        self.note_transitions(collection, &effective, old_main, &old_extra, &old_layers);
         let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
         // already ran: the update goes on so the sources it created get their entries,
@@ -2180,7 +2198,7 @@ impl Studio {
             }
         }
         self.collection = collection.clone();
-        self.note_scene_change(collection, old_main, &old_extra, old_layers);
+        self.note_scene_change(collection, &effective, old_main, &old_extra, old_layers);
         self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
         // Separate tracks follow a source whose node the sync replaced.
