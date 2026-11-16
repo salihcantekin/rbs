@@ -19,18 +19,18 @@ A scene-change fade draws a source at opacity 0 while `visible` stays true. Tear
 2. **Media and browser sources are temporal.** A temporal source must be Active only while a program or preview scene that is actually shown draws it with `visible` true. A scene that merely contains the item, and is not the shown program or the shown preview, must not keep it Active. `visible` false means Standby, with one exception in decision 4.
 3. **Opacity 0 with `visible` true stays Active.** A scene-change fade must not stop the decoder or the browser process.
 4. **A timed-show cue that draws the item keeps it Active** for the cue, even when `visible` is false. That cue is the timed-show decision (reserved as ADR-0105) once that ADR is accepted. Until then, no cue exists and decision 2 is the whole rule.
-5. **Sleep means no thread and no decoder.** While a temporal source is not Active it must hold no decoder thread, no file reader, no browser process, and no timer (P13). Waking it is the Active transition, not a poll. A failed wake is the node's existing restart and back-off (ADR-0024) and the source's Unavailable state. The binder does not keep a last frame.
-6. **Which scenes count.** For each canvas, the shown scenes are its `program` scene and its `preview` scene when that field is set. A temporal source is Active when the union of those scenes, across every canvas in the collection, draws it with `visible` true (opacity does not matter). A hidden placement does not keep it Active. A follower's shown scene is the scene it is showing now, including a followed program. Temporal sources are left out of `warm_sources`. Capture and still text in the scene-model spec stays as it is; the temporal sentence is only: a hidden temporal source is Standby and is not linked.
+5. **Sleep means no thread and no decoder.** While a temporal source is not Active it must hold no decoder thread, no file reader, no browser process, and no timer (P13). Waking it is the Active transition, not a poll. The Active transition must start the open and return; it must not wait for the file to open, the page to load, or the first picture. Until the producer has queued a first picture the source publishes nothing, or keeps the texture it already held, and its sound is silence. A failed open is reported after the transition, through the node's service path, and follows ADR-0024. A failed wake is the node's existing restart and back-off (ADR-0024) and the source's Unavailable state. The binder does not keep a last frame.
+6. **Which scenes count.** For each canvas, the shown scenes are its `program` scene, its `preview` scene when that field is set, and its bound hold scene (ADR-0124, `sync_held`) while one is bound. A temporal source drawn only by a preview scene is Active but cued: it does not advance until a program or hold scene draws it (ADR-0108 decision 11). A temporal source is Active when the union of those scenes, across every canvas in the collection, draws it with `visible` true (opacity does not matter). A hidden placement does not keep it Active. A follower's shown scene is the scene it is showing now, including a followed program. Temporal sources are left out of `warm_sources`. Capture and still text in the scene-model spec stays as it is; the temporal sentence is only: a hidden temporal source is Standby and is not linked.
 7. **Classification is the type id**, `org.rbs.source.media` and `org.rbs.source.browser` only. No new node capability. Other types, including plugins, stay on today's wanted rule until a later decision.
 8. **No cue logic in this ADR, and no keep-warm override.** This ADR adds no cue. The binder takes the cue source set as an input (`running_sources_cued`, `sync_cued`); `sync` passes an empty set, an empty set adds nothing, and nothing scans items while it is empty. Only the timed-show implementation (ADR-0105) may fill that set; no other code may put a source id in it. There is no per-source "keep warm when hidden" override; a user who wants a clip ready keeps it visible in a shown scene. A later override needs its own decision and must keep Installed and Standby at zero cost.
 
 ## Consequences
 
 - A film or a page in a scene that is off air costs nothing until that scene is shown.
-- Showing it again pays the start cost (open the file, start the process). `restart_when_shown` on a media source (ADR-0108) decides whether playback starts over.
+- Showing it again pays the start cost (open the file, start the process) on the producer's thread; the scene switch itself does not wait for it. `restart_when_shown` on a media source (ADR-0108) decides whether playback starts over.
 - The implementation must update the scene-model spec (`wanted_sources` / scheduling for this class only) and the scene-sources spec. Capture and still tests must stay green without a new branch in their hot path.
 - Negative: a hidden temporal source is not warm. The first frame after show waits on open. That delay is accepted; keeping the process warm while hidden is the cost this ADR refuses.
-- ADR-0105, if accepted, is the only extra reason a hidden temporal item stays Active. This ADR does not define the cue.
+- A bound hold scene (ADR-0124) is a shown scene by decision 6. ADR-0105, if accepted, is the only reason a hidden temporal item stays Active. This ADR does not define the cue.
 - Idle proof (P13): `crates/rbs-scene/tests/binder.rs` `a_hidden_temporal_source_is_standby` and `crates/rbs-scene/tests/collection.rs` `temporal_sources_run_only_when_a_shown_scene_draws_them` are the deterministic checks that a hidden or off-air temporal source is Standby and unlinked. The media node's conformance (ADR-0108 decision 10) checks that Standby holds no worker, queue, or file handle.
 
 ## Alternatives considered
@@ -70,3 +70,11 @@ Resolutions (author, 2026-11-16), written into decisions 5–8 and Consequences.
 7. Idle proof is named in Consequences: the binder and collection tests, plus ADR-0108's Standby conformance.
 8. A failed wake is ADR-0024 restart with back-off and the source's Unavailable state; other sources keep running (decision 5).
 9. The ADR states the non-goal: no keep-warm override; a later override needs its own decision and the owner's approval (decision 8).
+
+Review round 2 (independent AI session, 2026-11-16, `/mnt/project-files/media-playback/review-round2.md`): changes requested, text only, concerns 1–3.
+
+Resolutions (author, 2026-11-16):
+
+1. A bound hold scene is a shown scene (decision 6, Consequences), matching `sync_held` and the scene-model spec.
+2. The Active transition starts the open and returns; the first picture arrives later and a failed open is reported through the service path (decision 5).
+3. A temporal source drawn only by a preview scene is Active but cued and does not advance until program or hold draws it (decision 6, rule in ADR-0108 decision 11).
