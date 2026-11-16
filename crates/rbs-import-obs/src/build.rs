@@ -27,7 +27,8 @@ use crate::obs::{GLOBAL_AUDIO_KEYS, ObsItem, ObsSource, flag, num, type_label, u
 use crate::report::{Area, ImportReport, Outcome, ReportEntry};
 use crate::transform::{Bounds, ObsTransform, Placed, compose, layout_from_corners, place};
 use crate::{
-    FALLBACK_CANVAS, FALLBACK_FPS, ImportError, ImportPlan, ObsProfileFacts, Options, SceneChoice,
+    FALLBACK_CANVAS, FALLBACK_FPS, ImportError, ImportPlan, ImportedSecrets, ObsProfileFacts,
+    Options, SceneChoice,
 };
 
 /// The name RBS gives a canvas's global scene (ADR-0065).
@@ -104,6 +105,9 @@ fn entry(
     ReportEntry::new(outcome, area, name, ty, reason)
 }
 
+/// An imported scene: its OBS source index, RBS id and name.
+pub(crate) type PlannedScene = (usize, SceneId, String);
+
 pub(crate) fn build(
     root: &Value,
     profile: Option<ObsProfileFacts>,
@@ -111,8 +115,8 @@ pub(crate) fn build(
     catalogue: &dyn Catalogue,
     lookup: &dyn Lookup,
     options: &Options,
-) -> Result<ImportPlan, ImportError> {
-    let mut report = ImportReport::default();
+    mut report: ImportReport,
+) -> Result<(ImportPlan, Vec<PlannedScene>), ImportError> {
     let name = root
         .get("name")
         .and_then(Value::as_str)
@@ -414,12 +418,17 @@ pub(crate) fn build(
         counters,
     )
     .map_err(|e| ImportError::Internal(e.to_string()))?;
-    Ok(ImportPlan {
-        name,
-        collection,
-        profile,
-        report: ctx.report,
-    })
+    Ok((
+        ImportPlan {
+            name,
+            collection,
+            profile,
+            secrets: ImportedSecrets::default(),
+            shortcuts: Vec::new(),
+            report: ctx.report,
+        },
+        scene_list,
+    ))
 }
 
 fn full_canvas(canvas: (u32, u32)) -> Layout {

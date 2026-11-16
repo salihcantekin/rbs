@@ -4633,6 +4633,7 @@ dependencies = [
  "rbs-transport-file",
  "rbs-transport-rtmp",
  "rbs-transport-srt",
+ "rbs-ui",
  "rbs-user-data",
  "rbs-vcam",
  "rbs-vcam-mf",
@@ -4854,6 +4855,7 @@ dependencies = [
  "rbs-graph",
  "rbs-params",
  "rbs-scene",
+ "rbs-ui",
  "serde_json",
 ]
 

@@ -16,6 +16,7 @@ rbs-core = { path = "../rbs-core" }
 rbs-graph = { path = "../rbs-graph" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-params = { path = "../rbs-params" }
+rbs-ui = { path = "../rbs-ui" }
 serde_json = "1"
 
 
