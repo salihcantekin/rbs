@@ -4,35 +4,33 @@
 // moving picture arrive, then the result to apply or why there is none. Nothing changes
 // until Apply; Cancel or closing the window ends a measurement that runs.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, Icon, IconName, Select, SettingRow, OverlayHost } from "components.slint";
+import { Checkbox, DialogActions, Select, SettingRow, OverlayHost } from "components.slint";
 import { Studio, SyncMeasureData } from "studio.slint";
 
-// One clap: filled once it is paired with a movement in the picture.
-component ClapMark inherits Icon {
+// One clap of five: a ring with its number under it, filled green once the clap is
+// paired with a movement in the picture. The marks sit on a raised card, where the
+// healthy colour has its contrast rule; the count beside them says it in words too.
+component ClapMark inherits VerticalLayout {
     in property <bool> on;
-    name: on ? IconName.dot : IconName.circle;
-    ink: on ? Theme.accent : Theme.text-secondary;
-}
-
-// "Sound" or "Picture", with a dot that is filled once something arrived. The words
-// say it too, so colour is not the only signal. Accent, like the claps: the window
-// ground is surface.base, where only the accent has a contrast rule for a mark.
-component SignalMark inherits HorizontalLayout {
-    in property <bool> on;
-    in property <string> label;
+    in property <int> number;
     spacing: Tokens.space-1;
-    VerticalLayout {
+    alignment: start;
+    HorizontalLayout {
         alignment: center;
-        Icon {
-            name: on ? IconName.dot : IconName.circle;
-            ink: on ? Theme.accent : Theme.text-secondary;
+        Rectangle {
+            width: Tokens.size-control-lg;
+            height: Tokens.size-control-lg;
+            border-radius: self.width / 2;
+            border-width: Tokens.size-icon-stroke;
+            border-color: root.on ? Theme.state-healthy : Theme.text-secondary;
+            background: root.on ? Theme.state-healthy : transparent;
         }
     }
     Text {
-        text: label;
-        color: Theme.text-secondary;
+        text: root.number;
+        color: root.on ? Theme.text-primary : Theme.text-secondary;
         font-size: Tokens.type-caption-size;
-        vertical-alignment: center;
+        horizontal-alignment: center;
     }
 }
 
@@ -128,28 +126,36 @@ export component SyncMeasureWindow inherits Window {
                     font-size: Tokens.type-body-size;
                     wrap: word-wrap;
                 }
-                HorizontalLayout {
-                    spacing: Tokens.space-2;
-                    alignment: start;
-                    accessible-role: text;
-                    accessible-label: @tr("{} of 5 claps", d.pairs);
-                    ClapMark { on: d.pairs >= 1; }
-                    ClapMark { on: d.pairs >= 2; }
-                    ClapMark { on: d.pairs >= 3; }
-                    ClapMark { on: d.pairs >= 4; }
-                    ClapMark { on: d.pairs >= 5; }
-                    Text {
-                        text: @tr("{} of 5 claps", min(d.pairs, 5));
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        vertical-alignment: center;
+                Rectangle {
+                    background: Theme.surface-raised;
+                    border-radius: Tokens.radius-lg;
+                    VerticalLayout {
+                        padding: Tokens.space-4;
+                        spacing: Tokens.space-4;
+                        HorizontalLayout {
+                            spacing: Tokens.space-4;
+                            alignment: center;
+                            accessible-role: text;
+                            accessible-label: @tr("{} of 5 claps", min(d.pairs, 5));
+                            ClapMark { on: d.pairs >= 1; number: 1; }
+                            ClapMark { on: d.pairs >= 2; number: 2; }
+                            ClapMark { on: d.pairs >= 3; number: 3; }
+                            ClapMark { on: d.pairs >= 4; number: 4; }
+                            ClapMark { on: d.pairs >= 5; number: 5; }
+                        }
+                        Text {
+                            text: @tr("{} of 5 claps", min(d.pairs, 5));
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: Tokens.space-6;
+                            alignment: center;
+                            Checkbox { text: @tr("Sound heard"); checked: d.sound; read-only: true; }
+                            Checkbox { text: @tr("Movement seen"); checked: d.picture; read-only: true; }
+                        }
                     }
-                }
-                HorizontalLayout {
-                    spacing: Tokens.space-4;
-                    alignment: start;
-                    SignalMark { on: d.sound; label: d.sound ? @tr("Sound heard") : @tr("No sound yet"); }
-                    SignalMark { on: d.picture; label: d.picture ? @tr("Movement seen") : @tr("No movement yet"); }
                 }
                 Text {
                     text: @tr("{} s of 10 s", min(10, floor(d.progress * 10)));

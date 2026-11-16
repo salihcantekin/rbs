@@ -323,8 +323,9 @@ impl Host {
         }
     }
 
-    /// Opens the Measure window for `source`: the picture sources to clap in view of,
-    /// with the default one chosen.
+    /// Opens the Measure window for `source`: the cameras to clap in view of (owner
+    /// decision 2026-11-16: only cameras are listed; the API still takes any picture
+    /// source), with the default one chosen.
     pub(super) fn open_sync_measure_window(&mut self, source: SourceId, notify: &dyn Fn(Update)) {
         // A measurement the window started for another source ends with it.
         if self
@@ -341,7 +342,7 @@ impl Host {
         let mut references: Vec<(SourceId, String)> = self
             .collection
             .sources()
-            .filter(|r| SourceKind::of(&r.type_id).is_some_and(|k| !k.is_audio()))
+            .filter(|r| SourceKind::of(&r.type_id) == Some(SourceKind::Camera))
             .map(|r| (r.id, r.name.clone()))
             .collect();
         references.sort_by_key(|r| r.1.to_lowercase());

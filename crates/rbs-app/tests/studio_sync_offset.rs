@@ -353,14 +353,15 @@ fn a_measurement_is_refused_with_a_reason() {
 }
 
 #[test]
-fn the_measure_window_lists_picture_sources_and_closes() {
+fn the_measure_window_lists_cameras_and_closes() {
     use rbs_app::studio_host::{Command, SyncMeasurePhase, SyncMeasureRefusal};
     use rbs_scene::model::SourceId;
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
     let mic = add_mic(&mut c, rbs_audio_io_test::MONO_INPUT, "Mic");
-    let screen = add(&mut c, "screen", "Screen");
+    let _screen = add(&mut c, "screen", "Screen");
+    let cam = add(&mut c, "camera", "Cam");
     let id = |n: u64| SourceId::from_raw(u32::try_from(n).unwrap());
 
     host.send(Command::OpenSyncMeasure(id(mic)));
@@ -371,8 +372,8 @@ fn the_measure_window_lists_picture_sources_and_closes() {
     assert_eq!(view.source, id(mic));
     assert_eq!(view.name, "Mic");
     assert_eq!(view.phase, SyncMeasurePhase::Ready);
-    // Only picture sources are offered.
-    assert_eq!(view.references, vec![(id(screen), "Screen".to_owned())]);
+    // Only cameras are offered, not the screen.
+    assert_eq!(view.references, vec![(id(cam), "Cam".to_owned())]);
 
     // A source without a picture is refused, and the window says why.
     host.send(Command::StartSyncMeasure(id(mic)));
