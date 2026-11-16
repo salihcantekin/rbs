@@ -87,6 +87,7 @@ export component SyncMeasureWindow inherits Window {
             if d.phase == 0 || d.phase == 4: VerticalLayout {
                 spacing: Tokens.space-3;
                 SettingRow {
+                    // find: none (a choice of the Measure window, not a setting).
                     label: @tr("Clap in view of");
                     divider: false;
                     Select {
