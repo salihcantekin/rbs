@@ -272,12 +272,16 @@ impl PauseWindow {
 }
 
 /// What a held stream sends in place of the program (ADR-0124 decision 13).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HoldPicture {
     /// The last picture sent, repeated with each tick's time.
     Freeze,
     /// A black picture.
     Black,
+    /// The canvas the export's `hold` input brings (a scene of the collection, phase
+    /// 2b); the frozen picture until one arrives. Which scene is the studio's choice.
+    Scene,
 }
 
 impl HoldPicture {
@@ -285,6 +289,7 @@ impl HoldPicture {
         match self {
             Self::Freeze => 1,
             Self::Black => 2,
+            Self::Scene => 3,
         }
     }
 
@@ -292,6 +297,7 @@ impl HoldPicture {
         match code {
             1 => Some(Self::Freeze),
             2 => Some(Self::Black),
+            3 => Some(Self::Scene),
             _ => None,
         }
     }
@@ -482,12 +488,18 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         let p = Arc::new(PauseWindow::default());
         let stop = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
         let reader = {
             let p = Arc::clone(&p);
             let stop = Arc::clone(&stop);
+            let started = Arc::clone(&started);
             std::thread::spawn(move || {
                 let mut seen = 0u64;
-                while !stop.load(Ordering::Relaxed) {
+                started.store(true, Ordering::Release);
+                // At least one read, however late the thread runs: the writes may all
+                // be done before it is scheduled.
+                loop {
+                    let last = stop.load(Ordering::Acquire);
                     if let Some(w) = p.read() {
                         // Every write keeps `before + length` a multiple of 1_000 and
                         // `pause_at` 1_000 past a multiple of 10_000.
@@ -500,15 +512,25 @@ mod tests {
                         }
                         seen += 1;
                     }
+                    if last {
+                        break;
+                    }
                 }
                 seen
             })
         };
+        // The writes start once the reader runs, so they overlap its reads. A hang
+        // guard only: the reader sets the flag as its first step.
+        let guard = std::time::Instant::now();
+        while !started.load(Ordering::Acquire) {
+            assert!(guard.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
         for i in 0..20_000u64 {
             p.pause(i * 10_000 + 1_000).unwrap();
             p.resume(i * 10_000 + 2_000).unwrap();
         }
-        stop.store(true, Ordering::Relaxed);
+        stop.store(true, Ordering::Release);
         assert!(reader.join().unwrap() > 0);
         assert_eq!(p.read().unwrap().total(), 20_000 * 1_000);
     }
