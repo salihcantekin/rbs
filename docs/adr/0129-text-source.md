@@ -1,6 +1,6 @@
 # ADR-0129: A text source drawn on the CPU once per change, through a text rendering port, updated in place
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 - Supersedes in part: [ADR-0117](0117-still-sources-as-images.md) decision 2 (stillness is asked of `rbs_sources::is_still(type_id, &Settings)`, not only of the class); extends [ADR-0062](0062-built-in-video-filters-and-properties-tabs.md) decision 5 (one render-thread texture allocation per size change) to the text source node
@@ -200,3 +200,5 @@ Date: 2026-11-16
 Verdict: approve
 Concerns: none. Round 6 checked against the code: `picture_only` and `check_class` mean "no sound of its own", `picture_role` and the `video_as` test mean "still", so decision 1's split is correct and a clock text with `enabled: true` plans a video track; the lazy tick-stamped budget state is implementable with `GpuRuntime::end_tick` unchanged (P13). No contradiction found in the header, decisions 1, 5, 7 and 11, or the Consequences.
 Minor notes (for the phase specs): (1) an older build resets an image mark on a kind it does not know, once saved: state it in `scene-sources.md`; (2) phase (f) drives the Recording dropdown and the separate-files count from `is_still`; (3) keep the `RenderLocal` budget state as fixed-size scalars so the roll-over does not allocate.
+
+Owner approval: Salih accepted the ADR on 2026-11-16 (decision card in the project thread), after round 7 approved.

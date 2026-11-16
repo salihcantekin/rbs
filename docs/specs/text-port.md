@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-text` (port, conformance), `rbs-text-parley` (adapter), `rbs-text-test` (fake)
-- Related ADRs: [0129](../adr/0129-text-source.md) (Proposed), [0013](../adr/0013-zero-cost-when-unused.md), [0032](../adr/0032-fast-deterministic-tests.md)
+- Related ADRs: [0129](../adr/0129-text-source.md), [0013](../adr/0013-zero-cost-when-unused.md), [0032](../adr/0032-fast-deterministic-tests.md)
 
 ## Purpose
 
