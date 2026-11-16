@@ -82,3 +82,5 @@ Resolutions (author, 2026-11-16):
 Review round 4 (independent AI session, 2026-11-16, `/mnt/project-files/media-playback/review-round4.md`): accept with minor fixes M1–M3, conditional on ADR-0108 B1 and B2.
 
 Resolutions (author, 2026-11-16): M1 the pair is fixed whenever there is an audio partition (decision 5); M2 every stale block is dropped in one tick, and the first block is padded to the anchor (decision 3, ADR-0108 decision 5); M3 two `replaced_sources` entries per source (decision 2). ADR-0108 B1 and B2 are resolved in that ADR's decision 5.
+
+Review round 5 (independent AI session, 2026-11-16, `review-round5.md`): accept. Round-4 M1–M3 closed; ADR-0108 B1 and B2 resolved.
