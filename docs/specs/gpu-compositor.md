@@ -24,7 +24,7 @@ Out of scope (later specs or PRs):
 
 - Export on D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF); same frame shape as the macOS exporter (ADR-0025). Cross-process preview on Linux and Windows (ADR-0028).
 - Scene tree evaluation (groups, nesting, animation): `rbs-scene` flattens a scene into the layer list below.
-- Filters, image masks, blend modes other than "normal", transitions and HDR output (PQ, HLG, BT.2020). Analytic shapes and borders of layers are in scope (ADR-0053).
+- Filters, image masks, blend modes other than "normal" and HDR output (PQ, HLG, BT.2020). Analytic shapes and borders of layers are in scope (ADR-0053). Scene transitions draw with what is here: another compositor's canvas as one layer with a fade (ADR-0128); no transition shader is in scope yet.
 
 ## Contract
 
@@ -645,8 +645,13 @@ impl CompositorNode {
     /// `capacity` is the most layers the node draws; it sizes the compositor in `prepare`.
     pub fn new(canvas: CanvasDesc, capacity: u32, layers: Vec<NodeLayer>) -> (CompositorNode, LayerSender);
     pub fn capacity(&self) -> u32;
+    /// ADR-0128 decision 7: after each tick on which every layer had a texture frame
+    /// from the pool, stores that tick's index (at least 1) with `Release`.
+    pub fn with_ready(self, ready: Arc<AtomicU64>) -> Self;
 }
 ```
+
+- **Ready counter (ADR-0128).** Only an incoming compositor of a scene transition has one. A tick on which any layer has no frame, a payload that is not a texture, or a texture not in the pool does not store. The control side reads it with `Acquire` and resets it to 0 when it reuses the node. Without `with_ready` the node does one `Option` test per tick and nothing else.
 
 - `GpuRuntime::end_tick` retires imported surfaces with the tick's time (`Importer::retire(ctx, pool, tick.time)`) and polls the device (`GpuContext::poll`). `begin_tick` does nothing.
 - `prepare` (control thread) builds the `Compositor` for the canvas and reserves room for the layer list. `release` drops it.

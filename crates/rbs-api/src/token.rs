@@ -120,9 +120,26 @@ impl<'de> Deserialize<'de> for TokenHash {
     }
 }
 
-/// One stored token: a user-given name, its scopes and its hash.
+/// The default of [`TokenEntry::irreversible`] for entries saved without it.
+fn permitted() -> bool {
+    true
+}
+
+/// Leaves the default out of saved files, so files stay as before for tokens that
+/// have it.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_permitted(irreversible: &bool) -> bool {
+    *irreversible
+}
+
+/// One stored token: a user-given name, its scopes, its permission and its hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenEntry {
+    /// "Allow actions that cannot be undone" (ADR-0052 decision 4): without it,
+    /// `live` and `destructive` methods are refused with `not_permitted`. An entry
+    /// saved before the field has it, so existing tokens keep their behaviour.
+    #[serde(default = "permitted", skip_serializing_if = "is_permitted")]
+    pub irreversible: bool,
     /// The name the user gave it ("Stream Deck"); logged with its sessions' calls.
     pub name: String,
     /// What its sessions may do (before channel limits).
