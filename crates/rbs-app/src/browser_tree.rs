@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rbs_browser_ipc::Configure;
-use rbs_browser_runner::{HelperChild, spawn_helper};
+use rbs_browser_runner::{Supervisor, spawn_helper};
+use rbs_browser_shm::SlotLayout;
 use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserTree};
 
 /// Locates `rbs-browser-helper` for this process.
@@ -57,39 +58,34 @@ impl BrowserTree for HelperBrowserTree {
     fn start(
         &self,
         config: &Configure,
-        _sink: Arc<BrowserFrameSink>,
+        sink: Arc<BrowserFrameSink>,
     ) -> Result<Box<dyn BrowserSession>, String> {
-        let child = spawn_helper(self.program.as_path(), &["--hold"], config)?;
-        Ok(Box::new(HelperSession { child }))
+        let child = spawn_helper(
+            self.program.as_path(),
+            &["--hold"],
+            config,
+            SlotLayout::Rgba8Straight,
+        )?;
+        // The supervisor thread exists only while the source is Active (P13).
+        let supervisor = Supervisor::start(child, config.fps, move |rgba, width, height| {
+            sink.publish(rgba, width, height);
+        })?;
+        Ok(Box::new(HelperSession { supervisor }))
     }
 }
 
 struct HelperSession {
-    child: HelperChild,
+    supervisor: Supervisor,
 }
 
 impl BrowserSession for HelperSession {
     fn poll(&mut self) -> Option<i32> {
-        if self.child.process_alive() {
-            None
-        } else {
-            Some(1)
-        }
+        // An exit or a lost heartbeat (ADR-0109 decision 8), seen by the supervisor.
+        self.supervisor.exited().then_some(1)
     }
 
     fn stop(&mut self) {
-        self.child.stop();
-    }
-
-    fn refresh_sink(&mut self, sink: &BrowserFrameSink) {
-        if self.child.width > 0 && !self.child.frame.is_empty() {
-            sink.publish(&self.child.frame, self.child.width, self.child.height);
-        }
-    }
-}
-
-impl Drop for HelperSession {
-    fn drop(&mut self) {
-        self.child.stop();
+        // Never waits: the supervisor thread closes the helper (ADR-0109 decision 8).
+        self.supervisor.stop_detached();
     }
 }

@@ -15,6 +15,7 @@
 //! `docs/specs/scene-model.md`.
 
 mod arrange;
+mod attributes;
 pub mod binder;
 mod collection;
 mod crop;
@@ -23,14 +24,16 @@ pub mod look;
 pub mod model;
 
 pub use arrange::{AutoItem, AutoLayout, CenterAxis, FitMode, FlipState, auto_layout};
+pub use attributes::AttributeGroup;
 pub use collection::{
-    IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
-    SceneError, Undo,
+    Duplicated, IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH,
+    SceneCollection, SceneError, SourceCopy, SourceFields, Undo,
 };
 pub use crop::{place_chrome, recrop_keeping, visible_size};
 pub use flatten::{Affine2, FlatLayer};
 pub use model::{
-    COMPANION_OF_HINT, ChromeFill, CollectionGlide, DISPLAY_SOURCE_TYPE, DisplayChrome,
-    GlideEasing, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, STANDBY_HINT, SceneAudio, SceneLevel, SourceGlide,
-    SourceRegion, show_for_is_valid,
+    COMPANION_OF_HINT, ChromeFill, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
+    DisplayChrome, FadeSettings, GlideEasing, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, STANDBY_HINT,
+    SceneAudio, SceneLevel, SourceGlide, SourceRegion, SwipeDirection, SwipeSettings,
+    TransitionKind, show_for_is_valid,
 };

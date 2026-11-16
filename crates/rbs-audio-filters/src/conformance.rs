@@ -1,4 +1,5 @@
-//! Conformance checks every audio filter type must pass (ADR-0082, Tests).
+//! Conformance checks every audio filter type must pass (ADR-0082, Tests; latency:
+//! ADR-0130 decision 2).
 
 use rbs_core::media::AudioFormat;
 use rbs_params::{FieldKind, Value, Values};
@@ -9,7 +10,9 @@ use crate::{AudioFilterType, DspSetup, MAX_FIELDS};
 const FRAMES: usize = 480;
 
 /// Checks a type's schema and its DSP on silence, full scale, NaN and infinity, at the
-/// default values and at every number field's extremes. Returns every problem.
+/// default values and at every number field's extremes, and that its latency does not
+/// depend on the values: the type's answer equals every built DSP's, before and after
+/// `set` with other values. Returns every problem.
 pub fn check_type(ty: &dyn AudioFilterType) -> Vec<String> {
     let mut problems = Vec::new();
     let id = ty.type_id();
@@ -33,15 +36,28 @@ pub fn check_type(ty: &dyn AudioFilterType) -> Vec<String> {
         }
         let _ = i;
     }
-    for values in cases {
-        let mut dsp = match ty.make(setup, &values) {
+    let latency = ty.latency_frames(setup);
+    for values in &cases {
+        let mut dsp = match ty.make(setup, values) {
             Ok(d) => d,
             Err(e) => {
                 problems.push(format!("make refused valid values: {e}"));
                 continue;
             }
         };
-        dsp.set(&values);
+        if dsp.latency_frames() != latency {
+            problems.push(format!(
+                "built DSP latency {} is not the type's {latency}",
+                dsp.latency_frames()
+            ));
+        }
+        for other in &cases {
+            dsp.set(other);
+            if dsp.latency_frames() != latency {
+                problems.push("latency changed on set".to_owned());
+            }
+        }
+        dsp.set(values);
         dsp.reset();
         let inputs: [(&str, f32); 5] = [
             ("silence", 0.0),

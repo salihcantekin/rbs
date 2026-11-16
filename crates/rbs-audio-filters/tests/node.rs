@@ -229,3 +229,110 @@ fn running_the_node_does_not_allocate() {
     let with_update = allocation_counter::measure(|| r.run(10));
     assert_eq!(with_update.count_total, baseline.count_total);
 }
+
+/// A test filter with latency: a plain delay line of `DELAY` frames (ADR-0130).
+struct Delay;
+
+const DELAY: usize = 100;
+
+struct DelayDsp {
+    lines: Vec<Vec<f32>>,
+    pos: usize,
+}
+
+impl rbs_audio_filters::AudioDsp for DelayDsp {
+    fn set(&mut self, _: &Values) {}
+    fn reset(&mut self) {
+        for l in &mut self.lines {
+            l.fill(0.0);
+        }
+        self.pos = 0;
+    }
+    fn process(&mut self, channels: &mut [&mut [f32]], frames: usize) {
+        for f in 0..frames {
+            for (ch, line) in channels.iter_mut().zip(&mut self.lines) {
+                let out = line[self.pos];
+                line[self.pos] = if ch[f].is_normal() { ch[f] } else { 0.0 };
+                ch[f] = out;
+            }
+            self.pos = (self.pos + 1) % DELAY;
+        }
+    }
+    fn latency_frames(&self) -> u32 {
+        DELAY as u32
+    }
+}
+
+impl AudioFilterType for Delay {
+    fn type_id(&self) -> NodeTypeId {
+        NodeTypeId::new("org.rbs.audio-filter.test-delay")
+    }
+    fn name(&self) -> &'static str {
+        "Delay"
+    }
+    fn fields(&self) -> &'static [rbs_params::Field] {
+        &[]
+    }
+    fn make(
+        &self,
+        setup: DspSetup,
+        _: &Values,
+    ) -> Result<Box<dyn rbs_audio_filters::AudioDsp>, rbs_params::ParamError> {
+        let n = setup.format.channels.channels();
+        Ok(Box::new(DelayDsp {
+            lines: vec![vec![0.0; DELAY]; n],
+            pos: 0,
+        }))
+    }
+    fn latency_frames(&self, _: DspSetup) -> u32 {
+        DELAY as u32
+    }
+}
+
+#[test]
+fn a_latent_filter_reports_its_latency_and_delays_the_audio() {
+    assert!(rbs_audio_filters::conformance::check_type(&Delay).is_empty());
+    let mut r = Rig::new(
+        &Delay,
+        Values::defaults(&Delay as &dyn AudioFilterType),
+        AudioFormat::STEREO_48K,
+    );
+    assert_eq!(r.stats.latency_frames(), DELAY as u32);
+    r.run(3);
+    let blocks = r.blocks.lock().expect("lock").clone();
+    let first = &blocks.first().expect("a block").1;
+    assert!(first[..DELAY].iter().all(|&x| x == 0.0));
+    assert!(first[DELAY..].iter().all(|&x| x == 0.25));
+}
+
+#[test]
+fn a_latent_filter_starts_clean_after_a_gap() {
+    let mut r = Rig::new(
+        &Delay,
+        Values::defaults(&Delay as &dyn AudioFilterType),
+        AudioFormat::STEREO_48K,
+    );
+    r.run(3);
+    r.quiet.store(true, Ordering::Relaxed);
+    r.run(2);
+    let n = r.blocks.lock().expect("lock").len();
+    r.quiet.store(false, Ordering::Relaxed);
+    r.run(1);
+    let blocks = r.blocks.lock().expect("lock").clone();
+    assert_eq!(blocks.len(), n + 1);
+    let resumed = &blocks.last().expect("a block").1;
+    // The stale 0.25 held in the delay line before the gap must not play.
+    assert!(resumed[..DELAY].iter().all(|&x| x == 0.0));
+    assert!(resumed[DELAY..].iter().all(|&x| x == 0.25));
+}
+
+#[test]
+fn a_pass_through_has_no_latency() {
+    let setup = DspSetup::new(AudioFormat::STEREO_48K, FRAMES as u32);
+    let (_, (_, _, stats)) = AudioFilterNode::pass_through(
+        &Delay,
+        setup,
+        Values::defaults(&Delay as &dyn AudioFilterType),
+    );
+    assert_eq!(stats.latency_frames(), 0);
+}

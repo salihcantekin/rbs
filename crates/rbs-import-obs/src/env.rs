@@ -70,6 +70,11 @@ pub trait Lookup {
     fn file_exists(&self, path: &Path) -> bool;
     /// The targets of a source type. Asked at most once per type per import.
     fn targets(&self, type_id: &NodeTypeId) -> Vec<LookupTarget>;
+    /// The platform RBS runs on: its reserved shortcuts apply to imported hotkeys, and
+    /// its modifier names when the OBS file does not tell where it was written.
+    fn platform(&self) -> rbs_ui::shortcut::Platform {
+        rbs_ui::shortcut::Platform::current()
+    }
 }
 
 /// A lookup that knows nothing: no files, no devices. Every target falls back to the

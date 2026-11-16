@@ -521,6 +521,27 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The option keys of a source type (ADR-0133 decision 2): the settings Reset source and
+/// Paste attributes may change. Every other key a type uses is an identity key (which
+/// device, window, file, URL or picture), never pasted or reset. Empty for a type without
+/// options and for any type that is not built in (plugin types, until their manifest
+/// declares option keys). The host never resets or pastes `exclude_own_process` on a
+/// companion source (decision 2, companion rule).
+pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
+    match class_of(type_id) {
+        Some(SourceClass::Capture(TargetKind::Camera)) => &[keys::WIDTH, keys::HEIGHT, keys::FPS],
+        Some(SourceClass::Capture(_)) => &[keys::CURSOR, keys::WIDTH, keys::HEIGHT, keys::FPS],
+        Some(SourceClass::Audio(EndpointKind::OutputLoopback)) => &[keys::EXCLUDE_OWN_PROCESS],
+        Some(SourceClass::Media) => &[keys::LOOP, keys::RESTART_WHEN_SHOWN],
+        Some(SourceClass::Browser) => &[keys::WIDTH, keys::HEIGHT, keys::FPS, keys::TRANSPARENT],
+        Some(SourceClass::Audio(_) | SourceClass::Still) | None => &[],
+        // Which text keys are options (font, colour, outline) and which are identity
+        // (the text, the file) is decided with the text UI (ADR-0129 phase (f)); until
+        // then Reset source and Paste attributes leave a text's settings alone.
+        Some(SourceClass::Text) => &[],
+    }
+}
+
 /// Checks `settings` for a source of `type_id` without touching any device: only keys the
 /// type uses, each of the right kind, a size given as both sides, a sane size and rate.
 /// What the OS offers (does the target exist, does the camera have this mode) is only
@@ -1130,31 +1151,29 @@ impl SourceTypes {
                 None => SourceError::NoAdapter(source.type_id.clone()),
             });
         }
-        let factory = Arc::clone(&candidates[0]);
-        // Probe without keeping the decoder (ADR-0108 decision 3).
-        {
-            let mut decoder = factory
-                .open(&path)
-                .map_err(|error| SourceError::Media(error.to_string()))?;
-            let sample = decoder
-                .pull()
-                .map_err(|error| SourceError::Media(error.to_string()))?;
-            let picture =
-                sample
-                    .and_then(|sample| sample.picture)
-                    .ok_or(SourceError::InvalidSetting {
-                        key: keys::PATH,
-                        expected: "a file with a picture stream",
-                    })?;
-            if let Some(why) =
-                rbs_media_decode::refuse_picture(picture.width, picture.height, picture.bytes.len())
-            {
-                return Err(SourceError::InvalidSetting {
-                    key: keys::WIDTH,
-                    expected: why.expected(),
-                });
+        // Probe without keeping the decoder (ADR-0108 decision 3): the first adapter
+        // that opens the file and yields a picture wins; when all refuse, report the
+        // most specific error.
+        let mut refusal: Option<(u8, SourceError)> = None;
+        let mut chosen = None;
+        for factory in &candidates {
+            match probe_media(factory.as_ref(), &path) {
+                Ok(()) => {
+                    chosen = Some(Arc::clone(factory));
+                    break;
+                }
+                Err((rank, error)) => {
+                    if refusal.as_ref().is_none_or(|(best, _)| rank < *best) {
+                        refusal = Some((rank, error));
+                    }
+                }
             }
         }
+        let Some(factory) = chosen else {
+            return Err(refusal
+                .map(|(_, error)| error)
+                .unwrap_or_else(|| SourceError::NoAdapter(source.type_id.clone())));
+        };
         let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
         let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
         let node = rbs_nodes::MediaSourceNode::new(
@@ -1364,6 +1383,54 @@ fn default_endpoint(
     })
 }
 
+/// Opens `path` with `factory`, reads one picture, and drops the decoder. On refusal
+/// returns a rank (lower is more specific: `InvalidSetting`, then a named missing
+/// codec, then any other failure) and the error.
+fn probe_media(
+    factory: &dyn rbs_media_decode::MediaDecoderFactory,
+    path: &std::path::Path,
+) -> Result<(), (u8, SourceError)> {
+    use rbs_media_decode::DecodeError;
+    let rank = |error: &DecodeError| match error {
+        DecodeError::Unsupported(_) => 1,
+        _ => 2,
+    };
+    let mut decoder = factory
+        .open(path)
+        .map_err(|error| (rank(&error), SourceError::Media(error.to_string())))?;
+    let sample = decoder
+        .next_picture()
+        .map_err(|error| (rank(&error), SourceError::Media(error.to_string())))?;
+    let picture = sample.map(|sample| sample.picture).ok_or((
+        0,
+        SourceError::InvalidSetting {
+            key: keys::PATH,
+            expected: "a file with a picture stream",
+        },
+    ))?;
+    // Native surfaces are consumed only once the node split lands (ADR-0108 decision
+    // 5). Until then a zero-copy adapter must not win the probe and then fail on
+    // every file in the node.
+    if picture.is_native() {
+        return Err((
+            1,
+            SourceError::Media("native surfaces are not played yet".to_owned()),
+        ));
+    }
+    if let Some(why) =
+        rbs_media_decode::refuse_picture(picture.width, picture.height, picture.system_bytes())
+    {
+        return Err((
+            0,
+            SourceError::InvalidSetting {
+                key: keys::WIDTH,
+                expected: why.expected(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod fill_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
@@ -1400,5 +1467,29 @@ mod fill_tests {
         bad.insert(keys::FILLED.into(), SettingValue::Text("no".into()));
         assert!(validate_settings(&id, &bad).is_err());
         assert!(validate_settings(&id, &colour_settings(Some(false))).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod option_key_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+    use super::*;
+
+    /// Option keys are known keys, and identity keys (the rest) are never empty for a
+    /// type that has a device, file, URL or picture (ADR-0133 decision 2).
+    #[test]
+    fn option_keys_are_known_and_leave_the_identity() {
+        for name in types::ALL {
+            let ty = NodeTypeId::new(name);
+            let known = known_keys(&ty).unwrap();
+            let options = option_keys(&ty);
+            assert!(options.iter().all(|k| known.contains(k)), "{name}");
+            assert!(
+                known.iter().any(|k| !options.contains(k)),
+                "{name} keeps an identity"
+            );
+        }
+        assert!(option_keys(&NodeTypeId::new("org.example.plugin")).is_empty());
+        assert!(option_keys(&NodeTypeId::new(types::IMAGE_SOURCE)).is_empty());
     }
 }

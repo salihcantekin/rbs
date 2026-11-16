@@ -157,6 +157,16 @@ impl Holds {
         }
     }
 
+    /// A holdable output that joins chains already on hold with `held` is held from
+    /// `now` (ADR-0127 decision 13: a destination started during a hold joins held).
+    pub(super) fn joined(holdable: bool, held: Option<HoldPicture>, now: Timestamp) -> Self {
+        let mut holds = Self::new(holdable);
+        if let (true, Some(picture)) = (holdable, held) {
+            holds.start(picture, now);
+        }
+        holds
+    }
+
     fn state(&self, now: Timestamp) -> HoldState {
         let open = self
             .on

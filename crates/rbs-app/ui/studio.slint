@@ -381,6 +381,8 @@ export global Studio {
     callback reset-filter(int /* filter */);
     // A key source picked in a source field: option 0 is none, then the other sound sources.
     callback set-filter-source(int /* filter */, int /* field */, int /* option */);
+    // A choice field's option, or a switch (0 off, 1 on), of a filter (ADR-0130).
+    callback set-filter-option(int /* filter */, int /* field */, int /* option */);
     // The live levels of a filter's meter as bar positions; read by the gate bar's timer.
     callback filter-levels(int /* filter */) -> FilterLevels;
     // The scenes the canvas may show, in panel order, and what Add source can place
@@ -4037,12 +4039,20 @@ component FilterFieldView inherits VerticalLayout {
     HorizontalLayout {
         spacing: Tokens.space-1;
         min-height: Tokens.size-control-sm;
-        Text {
+        if data.kind != 5: Text {
             text: data.label;
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             vertical-alignment: center;
             accessible-role: none;
+        }
+        // A switch is the label line itself (a setting is a Toggle, ui-review item 18).
+        if data.kind == 5: Toggle {
+            label: @tr("{} of {}", data.label, filter.name);
+            text: data.label;
+            checked: data.choice == 1;
+            enabled: filter.known;
+            toggled(on) => { Studio.set-filter-option(filter.id, index, on ? 1 : 0); }
         }
         if data.help != "": InfoHint { label: data.label; text: data.help; }
         Rectangle { horizontal-stretch: 1; }
@@ -4117,6 +4127,21 @@ component FilterFieldView inherits VerticalLayout {
             placeholder: @tr("Not in this scene");
             selected(i) => { Studio.set-filter-source(filter.id, index, i); }
         }
+    }
+    // One of a fixed list: side by side up to three options, else a dropdown.
+    if data.kind == 4 && data.options.length <= 3: SegmentedControl {
+        label: @tr("{} of {}", data.label, filter.name);
+        options: data.options;
+        index: data.choice;
+        enabled: filter.known;
+        selected(i) => { if i != data.choice { Studio.set-filter-option(filter.id, index, i); } }
+    }
+    if data.kind == 4 && data.options.length > 3: Select {
+        label: @tr("{} of {}", data.label, filter.name);
+        options: data.options;
+        index: data.choice;
+        enabled: filter.known;
+        selected(i) => { if i != data.choice { Studio.set-filter-option(filter.id, index, i); } }
     }
 }
 
@@ -5199,7 +5224,7 @@ export component StreamSettings inherits Rectangle {
                 divider: false;
                 label: @tr("Server");
                 summary: @tr("From your streaming service");
-                hint: @tr("The address your streaming service gives you, starting with rtmp:// or srt://.");
+                hint: @tr("The address your streaming service gives you, starting with rtmp://, rtmps:// or srt://.");
                 enabled: idle;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 server := TextField {

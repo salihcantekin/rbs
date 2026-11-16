@@ -2,8 +2,9 @@
 //!
 //! An [`AudioFilterType`] describes a filter (id, name, settings schema) and makes an
 //! [`AudioDsp`] from validated [`Values`]. [`AudioFilterNode`] runs one DSP inside the
-//! audio partition: one audio input, one audio output, no latency. The catalogue holds
-//! [`Gain`](gain::Gain) and [`NoiseGate`](gate::NoiseGate).
+//! audio partition: one audio input, one audio output. The catalogue holds
+//! [`Gain`](gain::Gain), [`NoiseGate`](gate::NoiseGate), [`Ducker`](ducker::Ducker) and
+//! [`NoiseSuppression`](noise::NoiseSuppression) (the only one with latency, ADR-0130).
 //!
 //! Real-time rules (P6): `process` never allocates, blocks, locks or does I/O; all state
 //! is sized in `make` from the [`DspSetup`]. Output is sanitised (no NaN, no infinity,
@@ -17,11 +18,15 @@ use rbs_graph::node::NodeTypeId;
 pub use rbs_params::{Field, FieldKind, ParamError, Schema, Value, Values};
 
 pub mod catalogue;
+pub mod compressor;
 pub mod conformance;
 pub mod ducker;
+pub mod equaliser;
 pub mod gain;
 pub mod gate;
+pub mod limiter;
 pub mod node;
+pub mod noise;
 
 pub use catalogue::{catalogue, find};
 pub use node::{AudioFilterNode, AudioFilterStats, descriptor};
@@ -66,6 +71,14 @@ pub trait AudioFilterType: Send + Sync + 'static {
     fn key_input(&self) -> bool {
         false
     }
+    /// The latency a DSP made by [`make`](AudioFilterType::make) for `setup` would
+    /// have, for display (control API, help text; ADR-0130 decision 2). It equals the
+    /// built DSP's [`AudioDsp::latency_frames`] and is 0 when `make` would refuse
+    /// `setup`. Default: 0.
+    fn latency_frames(&self, setup: DspSetup) -> u32 {
+        let _ = setup;
+        0
+    }
 }
 
 /// A catalogue entry's schema is its field list, so [`Values`] works on it directly.
@@ -103,6 +116,12 @@ pub trait AudioDsp: Send {
     fn meter(&self) -> Option<Arc<FilterMeter>> {
         None
     }
+    /// How many frames later the output is than the input (ADR-0130 decision 2).
+    /// Fixed when the DSP is made: `set` never changes it. `reset` fills the delay with
+    /// silence. Default: 0.
+    fn latency_frames(&self) -> u32 {
+        0
+    }
 }
 
 /// Two levels a filter publishes once per block for its editor: the input peak and the
@@ -111,6 +130,9 @@ pub trait AudioDsp: Send {
 pub struct FilterMeter {
     input_peak_db: AtomicU32,
     gain_reduction_db: AtomicU32,
+    /// Voice probability 0..1, published only by noise suppression (ADR-0130 decision
+    /// 5); 0 for every other filter.
+    voice: AtomicU32,
 }
 
 /// Level shown for silence.
@@ -121,6 +143,7 @@ impl Default for FilterMeter {
         Self {
             input_peak_db: AtomicU32::new(FLOOR_DB.to_bits()),
             gain_reduction_db: AtomicU32::new(0.0f32.to_bits()),
+            voice: AtomicU32::new(0.0f32.to_bits()),
         }
     }
 }
@@ -132,6 +155,17 @@ impl FilterMeter {
             .store(input_peak_db.to_bits(), Ordering::Relaxed);
         self.gain_reduction_db
             .store(gain_reduction_db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Stores the voice probability (0..1) of the last frame (noise suppression).
+    pub fn store_voice(&self, probability: f32) {
+        self.voice.store(probability.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The last voice probability, 0..1 (always 0 for filters other than noise
+    /// suppression).
+    pub fn voice(&self) -> f32 {
+        f32::from_bits(self.voice.load(Ordering::Relaxed))
     }
 
     /// The last input peak in dB (`FLOOR_DB` for silence).

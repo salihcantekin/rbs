@@ -81,6 +81,32 @@ pub const ISO_OUTPUT: PartitionId = PartitionId(18);
 /// while a file on it is open.
 pub const ISO_VIDEO_ENCODERS: [PartitionId; crate::iso::MAX_ISO_VIDEO] = iso_video_encoders();
 
+/// Output partitions of output slots 4 and up (ADR-0127 decision 2): partitions 35
+/// to 44. Slots 0 to 3 use [`OUTPUT`], [`OUTPUT_2`], [`OUTPUT_3`] and [`OUTPUT_4`]. A
+/// partition has a worker only while an output on it runs.
+pub const OUTPUT_POOL: [PartitionId; crate::MAX_OUTPUTS - 4] =
+    pool::<{ crate::MAX_OUTPUTS - 4 }>(35);
+/// Video encoder partitions of encoder chains 4 and up (ADR-0127 decision 2):
+/// partitions 45 to 48. Chains 0 to 3 use [`VIDEO_ENCODER`] to [`VIDEO_ENCODER_4`].
+pub const VIDEO_ENCODER_POOL: [PartitionId; crate::MAX_CHAINS - 4] =
+    pool::<{ crate::MAX_CHAINS - 4 }>(35 + (crate::MAX_OUTPUTS - 4) as u32);
+/// Audio encoder partitions of encoder chains 4 and up (ADR-0127 decision 2):
+/// partitions 49 to 52. Chains 0 to 3 use [`AUDIO_ENCODER`] to [`AUDIO_ENCODER_4`].
+pub const AUDIO_ENCODER_POOL: [PartitionId; crate::MAX_CHAINS - 4] =
+    pool::<{ crate::MAX_CHAINS - 4 }>(
+        35 + (crate::MAX_OUTPUTS - 4) as u32 + (crate::MAX_CHAINS - 4) as u32,
+    );
+
+const fn pool<const N: usize>(first: u32) -> [PartitionId; N] {
+    let mut parts = [PartitionId(0); N];
+    let mut i = 0;
+    while i < N {
+        parts[i] = PartitionId(first + i as u32);
+        i += 1;
+    }
+    parts
+}
+
 const fn iso_video_encoders() -> [PartitionId; crate::iso::MAX_ISO_VIDEO] {
     let mut parts = [PartitionId(0); crate::iso::MAX_ISO_VIDEO];
     let mut i = 0;
@@ -275,6 +301,34 @@ pub struct Partitions {
     /// The replay buffer (ADR-0088): its own encoders and its ring node. Workers start
     /// only while the buffer is armed (ADR-0013).
     pub replay: OutputPartitions,
+    /// Output and encoder partitions past the four slots above (ADR-0127 decision 2):
+    /// outputs and encoder chains are two pools, so several outputs that share one
+    /// encoder do not each hold encoder partitions.
+    pub pool: PartitionPool,
+}
+
+/// The partitions of outputs 4 and up and of encoder chains 4 and up (ADR-0127
+/// decision 2). Each gets a worker only while something is scheduled on it.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartitionPool {
+    /// Output partitions (muxer and transport) of output slots 4 and up.
+    pub outputs: [PartitionId; crate::MAX_OUTPUTS - 4],
+    /// Video encoder partitions of encoder chains 4 and up.
+    pub video_encoders: [PartitionId; crate::MAX_CHAINS - 4],
+    /// Audio encoder partitions of encoder chains 4 and up.
+    pub audio_encoders: [PartitionId; crate::MAX_CHAINS - 4],
+}
+
+impl Default for PartitionPool {
+    /// [`OUTPUT_POOL`], [`VIDEO_ENCODER_POOL`] and [`AUDIO_ENCODER_POOL`].
+    fn default() -> Self {
+        Self {
+            outputs: OUTPUT_POOL,
+            video_encoders: VIDEO_ENCODER_POOL,
+            audio_encoders: AUDIO_ENCODER_POOL,
+        }
+    }
 }
 
 impl Partitions {
@@ -289,6 +343,32 @@ impl Partitions {
             1 => self.second,
             2 => self.more[0],
             _ => self.more[1],
+        }
+    }
+
+    /// The output partition of output slot `slot` (0 to [`MAX_OUTPUTS`](crate::MAX_OUTPUTS)
+    /// - 1; the last for anything above).
+    pub(crate) fn output_of(&self, slot: usize) -> PartitionId {
+        match slot {
+            0..4 => self.slot(slot).output,
+            _ => self.pool.outputs[(slot - 4).min(self.pool.outputs.len() - 1)],
+        }
+    }
+
+    /// The video encoder partition of encoder chain `chain` (0 to
+    /// [`MAX_CHAINS`](crate::MAX_CHAINS) - 1; the last for anything above).
+    pub(crate) fn video_encoder_of(&self, chain: usize) -> PartitionId {
+        match chain {
+            0..4 => self.slot(chain).video_encoder,
+            _ => self.pool.video_encoders[(chain - 4).min(self.pool.video_encoders.len() - 1)],
+        }
+    }
+
+    /// The audio encoder partition of encoder chain `chain`, as for the video one.
+    pub(crate) fn audio_encoder_of(&self, chain: usize) -> PartitionId {
+        match chain {
+            0..4 => self.slot(chain).audio_encoder,
+            _ => self.pool.audio_encoders[(chain - 4).min(self.pool.audio_encoders.len() - 1)],
         }
     }
 }
@@ -318,6 +398,7 @@ impl Default for Partitions {
                 audio_encoder: REPLAY_AUDIO_ENCODER,
                 output: REPLAY_RING,
             },
+            pool: PartitionPool::default(),
         }
     }
 }
@@ -503,6 +584,11 @@ pub enum RecordError {
     /// already, or the studio runs [`MAX_OUTPUTS`](crate::MAX_OUTPUTS)
     /// ([`Studio::start_output`]).
     TooManyOutputs,
+    /// The output needs an encoder chain of its own and the canvas runs
+    /// [`MAX_CHAINS_PER_CANVAS`](crate::MAX_CHAINS_PER_CANVAS) video chains already, or
+    /// the studio runs [`MAX_CHAINS`](crate::MAX_CHAINS) chains of that kind (ADR-0127
+    /// decision 2). An output whose settings match a running chain shares it instead.
+    NoEncoderSlot,
     /// A partition the new output needs still finishes a stopped output (its swap or
     /// drain is in flight); [`Studio::service`] completes it, then a start works.
     OutputFinishing,
@@ -581,6 +667,13 @@ impl fmt::Display for RecordError {
                 "this canvas already feeds the most outputs at once ({}); a studio runs at most {}",
                 crate::MAX_OUTPUTS_PER_CANVAS,
                 crate::MAX_OUTPUTS
+            ),
+            RecordError::NoEncoderSlot => write!(
+                f,
+                "no encoder is free for an output with its own encoding: a canvas runs at most \
+                 {} encodings at once, a studio {}",
+                crate::MAX_CHAINS_PER_CANVAS,
+                crate::MAX_CHAINS
             ),
             RecordError::Start(nodes) => {
                 write!(f, "the recording did not start")?;

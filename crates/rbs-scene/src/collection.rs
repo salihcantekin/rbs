@@ -7,13 +7,17 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
+mod copies;
+
+pub use copies::{Duplicated, SourceCopy, SourceFields};
+
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
-    AudioFrom, Canvas, CanvasId, CollectionGlide, DISPLAY_SOURCE_TYPE, DisplayChrome, Fallback,
-    Filter, FilterId, ItemContent, ItemId, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS,
-    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem,
-    SceneLevel, SceneScope, SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId,
-    SourceMonitor, SourceRegion, show_for_is_valid,
+    AudioFrom, Canvas, CanvasId, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
+    DisplayChrome, Fallback, Filter, FilterId, ItemContent, ItemId, Layout, MAX_GLIDE_MS,
+    MAX_SHOW_FOR_MS, MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId,
+    SceneItem, SceneLevel, SceneScope, SettingValue, Settings, Source, SourceAudio, SourceGlide,
+    SourceId, SourceMonitor, SourceRegion, show_for_is_valid,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -85,6 +89,8 @@ pub enum SceneError {
     InvalidGlide,
     /// `show_for_ms` is set and is not in `1..=MAX_SHOW_FOR_MS` (ADR-0105).
     InvalidShowFor,
+    /// A transition duration is above [`MAX_GLIDE_MS`] (ADR-0128).
+    InvalidTransition,
     /// Chrome was set on a source that is not a display (ADR-0104).
     ChromeNotDisplay,
     /// A global scene (ADR-0065) would be shown as program or preview, nested, nest a
@@ -167,6 +173,9 @@ impl fmt::Display for SceneError {
             SceneError::InvalidGlide => {
                 write!(f, "glide duration must be from 0 to {MAX_GLIDE_MS} ms")
             }
+            SceneError::InvalidTransition => {
+                write!(f, "transition duration must be from 0 to {MAX_GLIDE_MS} ms")
+            }
             SceneError::InvalidShowFor => {
                 write!(f, "show duration must be from 1 to {MAX_SHOW_FOR_MS} ms")
             }
@@ -235,6 +244,11 @@ enum Op {
     SetGlide {
         expected: CollectionGlide,
         new: CollectionGlide,
+    },
+    /// Replaces the collection transition (ADR-0128).
+    SetTransition {
+        expected: CollectionTransition,
+        new: CollectionTransition,
     },
     /// Replaces a source's optional glide override (ADR-0100).
     SetSourceGlide {
@@ -361,6 +375,8 @@ pub struct SceneCollection {
     scenes: BTreeMap<SceneId, Scene>,
     /// Morph on a program-scene change (ADR-0100).
     glide: CollectionGlide,
+    /// The transition a program change uses (ADR-0128).
+    transition: CollectionTransition,
     next: NextIds,
 }
 
@@ -370,6 +386,7 @@ impl PartialEq for SceneCollection {
             && self.sources == other.sources
             && self.scenes == other.scenes
             && self.glide == other.glide
+            && self.transition == other.transition
     }
 }
 
@@ -446,6 +463,24 @@ impl SceneCollection {
             }
         }
         Self::from_parts_inner(canvases, sources, scenes, counters, glide)
+    }
+
+    /// A collection from its parts, its glide and its transition (ADR-0128): the
+    /// loader of format 19.
+    pub fn from_parts_with_transition(
+        canvases: Vec<Canvas>,
+        sources: Vec<Source>,
+        scenes: Vec<Scene>,
+        counters: IdCounters,
+        glide: CollectionGlide,
+        transition: CollectionTransition,
+    ) -> Result<Self, SceneError> {
+        if !transition.is_valid() {
+            return Err(SceneError::InvalidTransition);
+        }
+        let mut col = Self::from_parts_with_glide(canvases, sources, scenes, counters, glide)?;
+        col.transition = transition;
+        Ok(col)
     }
 
     fn from_parts_inner(
@@ -533,6 +568,11 @@ impl SceneCollection {
     /// Collection glide defaults (ADR-0100).
     pub fn glide(&self) -> CollectionGlide {
         self.glide
+    }
+
+    /// The transition a program change uses (ADR-0128).
+    pub fn transition(&self) -> CollectionTransition {
+        self.transition
     }
 
     /// Scenes by id.
@@ -1109,6 +1149,19 @@ impl SceneCollection {
         self.apply(Op::SetGlide {
             expected,
             new: glide,
+        })
+    }
+
+    /// Replaces the collection transition (ADR-0128; `InvalidTransition` when a duration
+    /// is out of range). One undo step.
+    pub fn set_transition(&mut self, transition: CollectionTransition) -> Result<Undo, SceneError> {
+        if !transition.is_valid() {
+            return Err(SceneError::InvalidTransition);
+        }
+        let expected = self.transition;
+        self.apply(Op::SetTransition {
+            expected,
+            new: transition,
         })
     }
 
@@ -1922,6 +1975,16 @@ impl SceneCollection {
                     new: expected,
                 })
             }
+            Op::SetTransition { expected, new } => {
+                if self.transition != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                self.transition = new;
+                Ok(Op::SetTransition {
+                    expected: new,
+                    new: expected,
+                })
+            }
             Op::SetSourceGlide {
                 source,
                 expected,
@@ -2229,6 +2292,9 @@ impl SceneCollection {
     fn validate(&self) -> Result<(), SceneError> {
         if !self.glide.is_valid() {
             return Err(SceneError::InvalidGlide);
+        }
+        if !self.transition.is_valid() {
+            return Err(SceneError::InvalidTransition);
         }
         let mut names = BTreeSet::new();
         for c in self.canvases.values() {

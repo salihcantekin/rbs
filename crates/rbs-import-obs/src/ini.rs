@@ -39,6 +39,14 @@ impl Ini {
         self.sections.get(section)?.get(key).map(String::as_str)
     }
 
+    /// The keys and values of a section, sorted by key.
+    pub fn section<'a>(&'a self, section: &str) -> impl Iterator<Item = (&'a str, &'a str)> + 'a {
+        self.sections
+            .get(section)
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+    }
+
     /// The value parsed as `T`.
     pub fn parse_as<T: std::str::FromStr>(&self, section: &str, key: &str) -> Option<T> {
         self.get(section, key)?.trim().parse().ok()

@@ -41,7 +41,7 @@ pub use layers::{GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layer
 pub use registry::{
     AudioSource, InstanceContext, MonitorDevice, NodeTypeTable, SourceError, SourceInstance,
     SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, TextSource, VideoSource,
-    validate_settings,
+    option_keys, validate_settings,
 };
 pub use types::{SourceClass, class_of};
 

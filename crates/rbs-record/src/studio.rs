@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_audio::{
@@ -71,6 +71,7 @@ pub use estimate_plan::{PlannedOutput, StartPlanRequest};
 mod hold;
 mod iso_audio;
 mod iso_video;
+mod latency;
 mod loudness;
 mod monitor;
 mod pause;
@@ -82,6 +83,7 @@ pub use iso_video::{
     DEFAULT_GIVE_WAY_SHARE, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart, IsoVideoStarted,
     IsoVideoTrack,
 };
+pub use latency::{AudioLatency, compensate as compensate_filter_latency};
 pub use monitor::MonitorState;
 pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
@@ -359,6 +361,8 @@ struct Instance {
     watch: Watch,
     // The audio input's sync offset channel.
     offset: Option<ParamSender<InputParams>>,
+    /// The offset last sent on `offset` (stored minus the filter latency, ADR-0130).
+    sent_offset_ns: i64,
 }
 
 /// One bound source.
@@ -377,6 +381,8 @@ struct FilterEntry {
     node: NodeId,
     /// Its running instance.
     instance: Option<FilterInstance>,
+    /// In the running plan (enabled and not Standby); only those count latency.
+    scheduled: bool,
 }
 
 /// A running filter: the value channel the studio keeps and what the node shares
@@ -452,13 +458,21 @@ struct Added {
     gpu: bool,
 }
 
-/// Outputs a studio runs at once: a recording and a live stream (ADR-0047) for each of
-/// two canvases (ADR-0093 decision 6).
-pub const MAX_OUTPUTS: usize = 4;
+/// Outputs a studio runs at once: for each of two canvases (ADR-0093 decision 6), a
+/// recording and up to six stream destinations (ADR-0047, ADR-0127 decision 2).
+pub const MAX_OUTPUTS: usize = MAX_CANVASES * MAX_OUTPUTS_PER_CANVAS;
 
-/// Outputs one canvas feeds at once (ADR-0047).
-pub const MAX_OUTPUTS_PER_CANVAS: usize = 2;
-const _: () = assert!(MAX_OUTPUTS == MAX_CANVASES * MAX_OUTPUTS_PER_CANVAS);
+/// Outputs one canvas feeds at once (ADR-0127 decision 2).
+pub const MAX_OUTPUTS_PER_CANVAS: usize = 7;
+
+/// Video encoder chains one canvas runs at once (ADR-0127 decision 2): the recording's,
+/// the stream's shared one and two own encodings. Outputs whose settings match share a
+/// chain (ADR-0047), so this is lower than [`MAX_OUTPUTS_PER_CANVAS`].
+pub const MAX_CHAINS_PER_CANVAS: usize = 4;
+
+/// Encoder chains a studio runs at once, of each kind (video and audio).
+pub const MAX_CHAINS: usize = MAX_CANVASES * MAX_CHAINS_PER_CANVAS;
+const _: () = assert!(MAX_OUTPUTS >= 4 && MAX_CHAINS >= 4);
 
 /// What the virtual camera announces and RBS sends (ADR-0066 decision 7): NV12 at this
 /// size (both even) and rate.
@@ -629,6 +643,7 @@ fn video_encoder_config(
 struct OutputNodePlan {
     node: Box<dyn Node<()>>,
     stats: Arc<OutputNodeStats>,
+    abandon: Arc<AtomicBool>,
     streams: Vec<rbs_core::media::StreamDescriptor>,
 }
 
@@ -638,6 +653,7 @@ impl OutputNodePlan {
     ) -> Self {
         Self {
             stats: node.stats(),
+            abandon: node.abandon_switch(),
             streams: node.streams().to_vec(),
             node: Box::new(node),
         }
@@ -746,6 +762,18 @@ impl Prepared {
                         VideoPlan::Shared(i)
                     }
                     None => {
+                        // Limits before an encoder session opens (ADR-0127 decision 2).
+                        let on_canvas = running
+                            .video
+                            .iter()
+                            .flatten()
+                            .filter(|c| c.canvas == canvas)
+                            .count();
+                        if on_canvas >= MAX_CHAINS_PER_CANVAS
+                            || running.video.iter().all(Option::is_some)
+                        {
+                            return Err(RecordError::NoEncoderSlot);
+                        }
                         let (encoder, chosen) =
                             select::video_encoder(&adapters.video_encoders, &video_config)?;
                         streams.push(encoder.stream().clone());
@@ -803,6 +831,9 @@ impl Prepared {
                         AudioPlan::Shared(i)
                     }
                     None => {
+                        if running.audio.iter().all(Option::is_some) {
+                            return Err(RecordError::NoEncoderSlot);
+                        }
                         let (session, chosen) =
                             select::audio_encoder(&adapters.audio_encoders, &config)?;
                         let stream = session.stream().clone();
@@ -936,8 +967,8 @@ struct AudioChain {
 /// The encoder chains running, by slot (the slot picks their partitions).
 #[derive(Default)]
 pub(crate) struct Chains {
-    video: [Option<VideoChain>; MAX_OUTPUTS],
-    audio: [Option<AudioChain>; MAX_OUTPUTS],
+    video: [Option<VideoChain>; MAX_CHAINS],
+    audio: [Option<AudioChain>; MAX_CHAINS],
 }
 
 /// Encoder counters when an output joined a running chain; its progress counts from
@@ -985,6 +1016,8 @@ struct Attached {
     report: StartReport,
     output: Added,
     output_stats: Arc<OutputNodeStats>,
+    /// Set by [`Studio::abort_output`] before the node is removed.
+    abandon: Arc<AtomicBool>,
     /// The picture and sound of its streams, for the manifest at stop.
     formats: (Option<rbs_manifest::Picture>, Option<rbs_manifest::Sound>),
     /// Slots of the chains it takes packets from. `video` is `None` for audio only.
@@ -1138,8 +1171,8 @@ pub struct Studio {
     /// The encoder chains they use.
     chains: Chains,
     next_output: u64,
-    /// Nodes the last apply reported as failed to join.
-    failed_nodes: BTreeSet<NodeId>,
+    /// Nodes the last apply reported as failed to join, with their role and reason.
+    failed_nodes: BTreeMap<NodeId, StartFailure>,
     render_worker: Option<Arc<WorkerStats>>,
     audio_worker: Option<Arc<WorkerStats>>,
     /// Retired instances whose take failed (their partition's swap was still in
@@ -1383,17 +1416,22 @@ impl Studio {
             RenderLocal::default(),
             Pacing::cadence(frames),
         )?;
-        for p in (0..MAX_OUTPUTS)
-            .map(|slot| parts.slot(slot))
-            .chain([parts.replay])
+        for p in (0..MAX_CHAINS)
+            .map(|chain| parts.video_encoder_of(chain))
+            .chain([parts.replay.video_encoder])
         {
             engine.add_partition::<()>(
-                p.video_encoder,
+                p,
                 Arc::new(()),
                 (),
                 Pacing::cadence_after(frames, fps.frame_duration() / 4),
             )?;
-            engine.add_partition::<()>(p.output, Arc::new(()), (), Pacing::output())?;
+        }
+        for p in (0..MAX_OUTPUTS)
+            .map(|slot| parts.output_of(slot))
+            .chain([parts.replay.output])
+        {
+            engine.add_partition::<()>(p, Arc::new(()), (), Pacing::output())?;
         }
         if settings.audio {
             engine.add_partition::<()>(
@@ -1402,12 +1440,12 @@ impl Studio {
                 (),
                 Pacing::stream(settings.audio_graph.cadence(clock.now()), AUDIO_CATCH_UP),
             )?;
-            for p in (0..MAX_OUTPUTS)
-                .map(|slot| parts.slot(slot))
-                .chain([parts.replay])
+            for p in (0..MAX_CHAINS)
+                .map(|chain| parts.audio_encoder_of(chain))
+                .chain([parts.replay.audio_encoder])
             {
                 engine.add_partition::<()>(
-                    p.audio_encoder,
+                    p,
                     Arc::new(()),
                     (),
                     Pacing::doorbell(DEFAULT_DOORBELL_TIMER),
@@ -1516,7 +1554,7 @@ impl Studio {
             replay: None,
             chains: Chains::default(),
             next_output: 0,
-            failed_nodes: BTreeSet::new(),
+            failed_nodes: BTreeMap::new(),
             render_worker,
             audio_worker,
             pending_takes: Vec::new(),
@@ -2204,6 +2242,7 @@ impl Studio {
                     source: source.id,
                     node: *node,
                     instance: None,
+                    scheduled: false,
                 });
             }
             for (filter, _) in &report.changed_filters {
@@ -2324,6 +2363,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Video(v.stats),
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 SourceInstance::Still(st) => {
@@ -2335,6 +2375,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Video(st.stats),
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 SourceInstance::Audio(a) => {
@@ -2347,9 +2388,13 @@ impl Studio {
                     }));
                     let partition = self.settings.partitions.audio;
                     let mut offset = a.offset;
-                    // Sent before the node runs, so its first block already has it.
+                    // Sent before the node runs, so its first block already has it. The
+                    // filter latency is compensated after the filters below are made
+                    // (ADR-0130 decision 4).
+                    let mut sent_offset_ns = 0;
                     if let Some(&ns) = self.settings.audio_offsets.get(&entry.source) {
                         offset.send(input_params(ns));
+                        sent_offset_ns = ns;
                     }
                     self.engine
                         .adopt::<()>(partition, entry.state.node, Box::new(a.node))?;
@@ -2358,6 +2403,7 @@ impl Studio {
                         gpu: false,
                         watch: Watch::Audio(a.stats, meter),
                         offset: Some(offset),
+                        sent_offset_ns,
                     });
                 }
                 SourceInstance::Media(m) => {
@@ -2371,6 +2417,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Media(m.stats),
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 SourceInstance::Text(t) => {
@@ -2394,6 +2441,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Text(t.stats),
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 SourceInstance::Browser(b) => {
@@ -2407,6 +2455,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Browser { size },
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 _ => {
@@ -2482,6 +2531,8 @@ impl Studio {
         }
         self.filter_problems = adjusted;
         self.source_adjusted = text_adjusted(&self.collection);
+        // Inputs compensate their filters' latency before the new plan runs.
+        self.apply_input_offsets(&scheduled);
 
         // Layers in link order of the final plan, strips per mixer input.
         self.send_program_layers(&plan);
@@ -2593,11 +2644,12 @@ impl Studio {
                     .copied()
                     .or_else(|| self.output_role(*node));
                 if let Some(role) = role {
-                    self.failed_nodes.insert(*node);
-                    failed.push(StartFailure {
+                    let failure = StartFailure {
                         node: role.to_owned(),
                         reason: why.to_string(),
-                    });
+                    };
+                    self.failed_nodes.insert(*node, failure.clone());
+                    failed.push(failure);
                 } else if let Some(p) = self.pictures.iter_mut().find(|p| p.node == *node) {
                     // Not essential (ADR-0125 decision 2): only that picture stops.
                     p.failure = Some(why.to_string());
@@ -3021,17 +3073,18 @@ impl Studio {
         } else {
             self.settings.audio_offsets.insert(source, offset_ns);
         }
-        let live = self
-            .entries
-            .iter_mut()
+        // The input gets the stored offset minus its filters' latency (ADR-0130).
+        let scheduled: BTreeSet<NodeId> = self
+            .filters
+            .iter()
+            .filter(|f| f.scheduled)
+            .map(|f| f.node)
+            .collect();
+        self.apply_input_offsets(&scheduled);
+        self.entries
+            .iter()
             .filter(|e| e.source == source)
-            .filter_map(|e| e.instance.as_mut()?.offset.as_mut());
-        let mut sent = false;
-        for offset in live {
-            offset.send(input_params(offset_ns));
-            sent = true;
-        }
-        sent
+            .any(|e| e.instance.as_ref().is_some_and(|i| i.offset.is_some()))
     }
 
     /// Sends `values` to a running filter without changing the collection (a slider
@@ -3390,6 +3443,16 @@ impl Studio {
         adapters: &RecordAdapters,
         out: &OutputSettings,
     ) -> Result<OutputId, RecordError> {
+        let prepared = self.prepare(adapters, out)?;
+        self.attach(prepared, &adapters.sources, Strictness::Lenient)
+    }
+
+    /// Checks the limits and chooses `out`'s adapters, sharing running chains.
+    fn prepare(
+        &self,
+        adapters: &RecordAdapters,
+        out: &OutputSettings,
+    ) -> Result<Prepared, RecordError> {
         if self.outputs.len() >= MAX_OUTPUTS {
             return Err(RecordError::TooManyOutputs);
         }
@@ -3401,7 +3464,7 @@ impl Studio {
             return Err(RecordError::TooManyOutputs);
         }
         let size = self.canvas_size(canvas)?;
-        let prepared = Prepared::choose(
+        Prepared::choose(
             adapters,
             out,
             canvas,
@@ -3409,8 +3472,86 @@ impl Studio {
             self.fps,
             self.settings.audio_graph,
             &self.chains,
-        )?;
-        self.attach(prepared, &adapters.sources, Strictness::Lenient)
+        )
+    }
+
+    /// Starts several outputs in one graph apply (ADR-0127 decision 3), so outputs that
+    /// share an encoder start on its same first keyframe. Each is checked and prepared
+    /// as by [`Studio::start_output`], in order, so a later one shares a chain an
+    /// earlier one of the same call opens. Returns one result per entry of `outs`, in
+    /// order: an output that is refused, or whose nodes (or the chain it uses) do not
+    /// start, is removed and fails alone; every other output keeps running. Only an
+    /// engine or link failure of the apply fails every new output. Running outputs are
+    /// never touched.
+    pub fn start_outputs(
+        &mut self,
+        adapters: &RecordAdapters,
+        outs: &[OutputSettings],
+    ) -> Vec<Result<OutputId, RecordError>> {
+        let mut results: Vec<Result<OutputId, RecordError>> = Vec::with_capacity(outs.len());
+        let mut new: Vec<OutputId> = Vec::new();
+        for out in outs {
+            let added = self.prepare(adapters, out).and_then(|p| self.add_output(p));
+            results.push(added.map(|(id, _)| {
+                new.push(id);
+                id
+            }));
+        }
+        if new.is_empty() {
+            return results;
+        }
+        let failed = match self.reconcile(&adapters.sources, None, Strictness::Lenient) {
+            Ok((failed, _)) => failed,
+            Err(e) => {
+                let reason = e.to_string();
+                let _ = self.detach_all(&new, false);
+                return fail_new(results, &new, |_| {
+                    RecordError::Start(vec![StartFailure {
+                        node: "engine".to_owned(),
+                        reason: reason.clone(),
+                    }])
+                });
+            }
+        };
+        let fatal: Vec<StartFailure> = failed
+            .into_iter()
+            .filter(|f| f.node == "engine" || f.node.starts_with("link"))
+            .collect();
+        if !fatal.is_empty() {
+            let (_, errors) = self.detach_all(&new, false);
+            let mut all = fatal;
+            all.extend(errors.into_iter().map(|e| StartFailure {
+                node: "rollback".to_owned(),
+                reason: e,
+            }));
+            return fail_new(results, &new, |_| RecordError::Start(all.clone()));
+        }
+        // Each new output whose nodes, or the chain it takes packets from, failed.
+        let mut why: BTreeMap<OutputId, Vec<StartFailure>> = BTreeMap::new();
+        for (node, failure) in &self.failed_nodes {
+            for id in self.users(*node) {
+                if new.contains(&id) {
+                    why.entry(id).or_default().push(failure.clone());
+                }
+            }
+        }
+        if !why.is_empty() {
+            let gone: Vec<OutputId> = why.keys().copied().collect();
+            let (_, errors) = self.detach_all(&gone, false);
+            for f in why.values_mut() {
+                f.extend(errors.iter().map(|e| StartFailure {
+                    node: "rollback".to_owned(),
+                    reason: e.clone(),
+                }));
+            }
+            results = fail_new(results, &gone, |id| {
+                RecordError::Start(why.remove(&id).unwrap_or_default())
+            });
+        }
+        for id in new.iter().filter(|id| !why.contains_key(id)) {
+            self.finish_attach(*id);
+        }
+        results
     }
 
     /// The compositor node of a canvas the studio runs.
@@ -3477,15 +3618,16 @@ impl Studio {
         let slot = (0..MAX_OUTPUTS)
             .find(|s| {
                 !self.outputs.iter().any(|r| r.slot == *s)
-                    && !pending.contains(&parts.slot(*s).output)
+                    && !pending.contains(&parts.output_of(*s))
             })
             .ok_or(RecordError::OutputFinishing)?;
         let mut graph = self.graph.clone();
         let mut nodes: Vec<Added> = Vec::new();
 
         let output_stats = p.output.stats();
+        let abandon = Arc::clone(&p.output.abandon);
         let formats = crate::media_span::formats(p.output.streams());
-        let output_part = parts.slot(slot).output;
+        let output_part = parts.output_of(slot);
         let output_id = add_active(&mut graph, p.output.descriptor(), output_part)?;
         let output = Added {
             node: output_id,
@@ -3508,13 +3650,10 @@ impl Studio {
             VideoPlan::New {
                 export, encoder, ..
             } => {
-                let i = (0..MAX_OUTPUTS)
-                    .find(|i| {
-                        self.chains.video[*i].is_none()
-                            && !pending.contains(&parts.slot(*i).video_encoder)
-                    })
-                    .ok_or(RecordError::OutputFinishing)?;
-                let part = parts.slot(i).video_encoder;
+                let i = free_chain(&self.chains.video, |i| {
+                    pending.contains(&parts.video_encoder_of(i))
+                })?;
+                let part = parts.video_encoder_of(i);
                 let export_id = add_active(
                     &mut graph,
                     Node::<GpuRuntime>::descriptor(&**export),
@@ -3558,13 +3697,10 @@ impl Studio {
                     .as_ref()
                     .map(|m| m.node)
                     .ok_or(RecordError::NotBound("mixer"))?;
-                let i = (0..MAX_OUTPUTS)
-                    .find(|i| {
-                        self.chains.audio[*i].is_none()
-                            && !pending.contains(&parts.slot(*i).audio_encoder)
-                    })
-                    .ok_or(RecordError::OutputFinishing)?;
-                let part = parts.slot(i).audio_encoder;
+                let i = free_chain(&self.chains.audio, |i| {
+                    pending.contains(&parts.audio_encoder_of(i))
+                })?;
+                let part = parts.audio_encoder_of(i);
                 let id = add_active(&mut graph, Node::<()>::descriptor(&**node), part)?;
                 graph.connect(mixer, "main", id, "in")?;
                 graph.connect(id, "packets", output_id, audio_pin)?;
@@ -3708,6 +3844,18 @@ impl Studio {
         let audio_queue = audio.and_then(|c| c.queue.clone());
         let id = OutputId(self.next_output);
         self.next_output += 1;
+        // A shared chain on hold holds the new output too (ADR-0127 decision 13).
+        let held = video_slot
+            .and_then(|v| self.chains.video[v].as_ref())
+            .and_then(|c| c.hold.as_ref())
+            .and_then(|(h, _)| h.switch().held())
+            .or_else(|| {
+                audio_slot
+                    .and_then(|a| self.chains.audio[a].as_ref())
+                    .and_then(|c| c.hold.as_ref())
+                    .and_then(|h| h.held())
+            });
+        let now = self.engine.clock().now();
         self.outputs.push(Attached {
             id,
             canvas,
@@ -3724,6 +3872,7 @@ impl Studio {
             },
             output,
             output_stats,
+            abandon,
             formats,
             video: video_slot,
             audio: audio_slot,
@@ -3742,7 +3891,7 @@ impl Studio {
             pause: p.pause,
             cut: p.cut,
             paused_at: pause::Targets::default(),
-            hold: hold::Holds::new(p.holdable),
+            hold: hold::Holds::joined(p.holdable, held, now),
         });
         Ok((id, nodes))
     }
@@ -3765,7 +3914,9 @@ impl Studio {
                 return Err(e);
             }
         };
-        let new_failed = added.iter().any(|a| self.failed_nodes.contains(&a.node));
+        let new_failed = added
+            .iter()
+            .any(|a| self.failed_nodes.contains_key(&a.node));
         let engine_failed = failed
             .iter()
             .any(|f| f.node == "engine" || f.node.starts_with("link"));
@@ -3899,6 +4050,7 @@ impl Studio {
         for e in &mut self.entries {
             e.scheduled = scheduled.contains(&e.state.node);
         }
+        self.apply_input_offsets(&scheduled);
         self.send_program_layers(&plan);
         (removed, errors)
     }
@@ -4021,6 +4173,33 @@ impl Studio {
     pub fn stop_output(&mut self, id: OutputId) -> Option<FinishReport> {
         let (r, errors, drained_video) = self.detach(id, true)?;
         Some(self.finish_report(&r, errors, drained_video))
+    }
+
+    /// [`Studio::stop_output`] for several outputs in one draining apply (ADR-0127
+    /// decision 7: End stream stops every destination of a stream at once, and a shared
+    /// encoder that no output keeps is flushed once). Ids that do not run are skipped.
+    /// Each report carries the apply's errors.
+    pub fn stop_outputs(&mut self, ids: &[OutputId]) -> Vec<(OutputId, FinishReport)> {
+        let (removed, errors) = self.detach_all(ids, true);
+        removed
+            .into_iter()
+            .map(|(r, drained_video)| {
+                let report = self.finish_report(&r, errors.clone(), drained_video);
+                (r.id, report)
+            })
+            .collect()
+    }
+
+    /// Removes a running output without a drain (ADR-0127 decision 5): for an output
+    /// that failed or stalls, so the control thread is not held by a drain that times
+    /// out. Its queued packets are not delivered and its transport is dropped (the
+    /// output-ports spec bounds that wait). Encoder chains other outputs use keep
+    /// running and are not flushed; a chain only this output used is removed without a
+    /// flush. `None` when `id` does not run.
+    pub fn abort_output(&mut self, id: OutputId) -> Option<FinishReport> {
+        self.attached(id)?.abandon.store(true, Ordering::Release);
+        let (r, errors, _) = self.detach(id, false)?;
+        Some(self.finish_report(&r, errors, false))
     }
 
     /// The separate files closed by [`Studio::stop_iso_audio`] and
@@ -4452,6 +4631,36 @@ fn take_instance(
 /// Takes an idle instance back from its partition and drops it. False when the
 /// partition still runs it (its swap is in flight): try again later. An instance that
 /// is not there any more counts as taken.
+/// `results` with each entry that started as one of `ids` replaced by `error(id)`.
+fn fail_new(
+    results: Vec<Result<OutputId, RecordError>>,
+    ids: &[OutputId],
+    mut error: impl FnMut(OutputId) -> RecordError,
+) -> Vec<Result<OutputId, RecordError>> {
+    results
+        .into_iter()
+        .map(|r| match r {
+            Ok(id) if ids.contains(&id) => Err(error(id)),
+            other => other,
+        })
+        .collect()
+}
+
+/// The first free chain slot whose partition no pending take still uses.
+/// `NoEncoderSlot` when every slot holds a chain; `OutputFinishing` when a free one
+/// waits for a stopped output's swap or drain.
+fn free_chain<T>(
+    chains: &[Option<T>; MAX_CHAINS],
+    pending: impl Fn(usize) -> bool,
+) -> Result<usize, RecordError> {
+    let mut free = (0..MAX_CHAINS).filter(|i| chains[*i].is_none()).peekable();
+    if free.peek().is_none() {
+        return Err(RecordError::NoEncoderSlot);
+    }
+    free.find(|i| !pending(*i))
+        .ok_or(RecordError::OutputFinishing)
+}
+
 fn take(engine: &mut Engine, a: Added) -> bool {
     let r = if a.gpu {
         engine.take::<GpuRuntime>(a.partition, a.node).map(drop)
