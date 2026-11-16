@@ -453,6 +453,50 @@ fn release_gives_up_on_a_full_queue_without_sleeping() {
     assert!(!tx.got().contains(&Got::Trailer));
 }
 
+#[test]
+fn an_abandoned_output_releases_without_waiting_delivering_or_finishing() {
+    let clock = Arc::new(StepClock::default());
+    let tx = TransportState::logging();
+    let mut rig = Rig::new();
+    let state = Arc::new(EncoderState::default());
+    let encoder = VideoEncoderNode::open(
+        Arc::new(FakeEncoderFactory(Arc::clone(&state))),
+        encoder_config(),
+    )
+    .unwrap();
+    let output = OutputNode::new(
+        vec![encoder.stream().clone()],
+        Arc::new(FakeTransportFactory(Arc::clone(&tx))),
+        file_config(),
+    )
+    .with_muxer(Arc::new(FakeMuxerFactory), ContainerId::Matroska, None)
+    .with_finish_timeout(Duration::from_secs(5))
+    .with_wait_clock(Arc::clone(&clock) as Arc<dyn WaitClock>);
+    let stats = output.stats();
+    let abandon = output.abandon_switch();
+    let source = rig.add(Box::new(FrameSource::new(1)));
+    let encoder = rig.add(Box::new(encoder));
+    let output = rig.add(Box::new(output));
+    rig.graph
+        .connect(source, "video", encoder, "video")
+        .unwrap();
+    rig.graph.connect(encoder, "packets", output, "s0").unwrap();
+    rig.apply();
+    rig.ticks(2);
+    // A stalled destination: the transport takes nothing more.
+    tx.full.store(true, Ordering::Relaxed);
+    rig.ticks(3);
+    abandon.store(true, Ordering::Release);
+    rig.drain();
+
+    // No wait, no tail, no `finish`: what was backlogged is counted as lost.
+    assert_eq!(clock.pauses.load(Ordering::Relaxed), 0);
+    assert!(stats.finish_lost.load(Ordering::Relaxed) >= 3);
+    assert_eq!(tx.finished.load(Ordering::Relaxed), 0);
+    assert!(!tx.got().contains(&Got::Trailer));
+    assert!(!stats.connected.load(Ordering::Relaxed));
+}
+
 /// A wait clock that moves forward by each pause instead of sleeping.
 #[derive(Default)]
 struct StepClock {
