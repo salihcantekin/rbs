@@ -644,6 +644,11 @@ impl App {
                 self.changed();
             }
             Run::LoudnessShown(on) => self.studio.set_loudness_shown(on),
+            // Discarding a scene's levels asks in its row first; a control surface
+            // (`confirm` false) does it at once, as the control API does.
+            Run::SceneOwnLevels(id, false) if confirm => self.ask_shared_levels(id),
+            Run::SceneOwnLevels(id, own) => self.studio.set_scene_own_levels(id, own),
+            Run::ResetSceneLevel(scene, source) => self.studio.reset_scene_level(scene, source),
             Run::ResetLoudness => self.studio.reset_loudness(),
             Run::MixerBulk(bulk) => match bulk {
                 menu_bar::MixerBulk::HideAll => self.studio.hide_in_mixer(true, false),
@@ -874,11 +879,22 @@ impl App {
     /// Shows the scene row's confirm before Remove scene from a menu or a shortcut.
     /// The Scenes panel opens so the row is there.
     fn ask_remove_scene(&mut self, id: i32) {
+        self.ask_scene(id, 0);
+    }
+
+    /// Asks in the scene's row before its own levels are discarded (ADR-0091).
+    fn ask_shared_levels(&mut self, id: i32) {
+        self.ask_scene(id, 1);
+    }
+
+    /// Shows the scene's row with its confirm: `kind` 0 remove, 1 discard own levels.
+    fn ask_scene(&mut self, id: i32, kind: i32) {
         if let Some(p) = panel("rbs.scenes") {
             self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
             self.raise_host_of(&p);
         }
         let ask = |g: Studio<'_>| {
+            g.set_confirm_scene_kind(kind);
             g.set_confirming_scene(id);
             g.set_confirm_scene_asked(g.get_confirm_scene_asked() + 1);
         };
@@ -3751,6 +3767,14 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_source_muted, |app, id: i32, muted: bool| {
         app.studio.set_source_muted(id, muted);
+    });
+    on!(on_reset_scene_level, |app, source: i32| {
+        if let Some(scene) = app.studio.levels_scene() {
+            app.studio.reset_scene_level(scene, source);
+        }
+    });
+    on!(on_use_shared_levels, |app, scene: i32| {
+        app.studio.set_scene_own_levels(scene, false);
     });
     on!(
         on_set_source_record_separately,
