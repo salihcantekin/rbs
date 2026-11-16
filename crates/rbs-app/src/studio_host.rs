@@ -3728,6 +3728,11 @@ fn round(
     }
     // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
     // the stream states say so.
+    // A transition ended (ADR-0128 decision 8): one update without the outgoing scene
+    // removes the incoming compositor and unlinks what only the outgoing scene used.
+    if host.studio.take_transition_done() {
+        host.studio.settle_transitions(&host.adapters.sources);
+    }
     if host.studio.take_hold_fallback() {
         host.studio.settle_hold_scenes(&host.adapters.sources);
         for c in OutputCanvas::ALL {
@@ -3797,6 +3802,10 @@ fn round(
         host.apply(notify);
     }
     if let Some(left) = host.studio.cue_wait(now) {
+        wait = wait.min(left);
+    }
+    // A running transition steps on the master clock; none arms nothing (P13).
+    if let Some(left) = host.studio.transition_wait(now) {
         wait = wait.min(left);
     }
     host.publish(notify);
@@ -11025,6 +11034,11 @@ impl Host {
         self.collection
             .set_preview(self.canvas, scene)
             .map_err(|e| Refusal::of(&e))?;
+        if !on {
+            // Leaving studio mode ends a running transition at once (ADR-0128
+            // decision 9); the next update binds without it.
+            self.studio.end_transitions();
+        }
         Ok(true)
     }
 
