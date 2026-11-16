@@ -134,4 +134,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0124](0124-pause-recording-and-hold-stream.md) | Pause a recording (one continuous file, cut before the encoder when owned, at the output when shared); hold a stream with a hold picture instead of pausing it | Accepted |
 | [0125](0125-projector-windows.md) | Projector windows: the program of a canvas in a chromeless window for sharing apps, its own canvas-size picture only while open, Exact pixels size, cannot be minimised | Accepted |
 | [0126](0126-measured-sync-offset-and-device-memory.md) | Measure a source's sync offset with a clap, and remember it with the device | Accepted |
-| [0133](0133-duplicate-reset-and-paste-source-attributes.md) | Duplicate a source (and a scene with new sources), reset a source to defaults, and copy chosen attribute groups onto other sources in one undo step | Proposed |
+| [0133](0133-duplicate-reset-and-paste-source-attributes.md) | Duplicate a source (and a scene with new sources), reset a source, and paste chosen attribute groups onto other sources in one undo step; sound stays live | Proposed |

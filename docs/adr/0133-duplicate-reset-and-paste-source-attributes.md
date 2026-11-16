@@ -1,119 +1,166 @@
-# ADR-0133: Duplicate sources, reset them to defaults, and paste chosen attributes onto other sources
+# ADR-0133: Duplicate sources, reset them, and paste chosen attributes onto other sources
 
 - Status: Proposed
 - Date: 2026-11-16
 - Deciders: Salih (owner)
-- Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0053](0053-item-style-and-video-filter-chains.md), [ADR-0059](0059-scenes-lock-and-source-audio-in-the-studio.md), [ADR-0062](0062-built-in-video-filters-and-properties-tabs.md), [ADR-0065](0065-global-sources-and-safe-source-removal.md), [ADR-0082](0082-audio-filter-chains-on-sources.md), [ADR-0096](0096-capture-audio-companions-and-camera-microphone.md), [ADR-0126](0126-measured-sync-offset-and-device-memory.md)
-- Spec: [scene-model](../specs/scene-model.md) (new "Copies, resets and attribute groups" section), [control-api](../specs/control-api.md) (`source.duplicate`, `scene.duplicate {sources}`, `source.reset`, `source.copy_attributes`, `source.paste_attributes`), [ui-design-system](../specs/ui-design-system.md) (context menus, Paste attributes and Reset dialogs), [glossary](../ui/glossary.md) ("Duplicate source", "Attributes", "Paste attributes", "Reset to defaults")
+- Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0053](0053-item-style-and-video-filter-chains.md), [ADR-0059](0059-scenes-lock-and-source-audio-in-the-studio.md), [ADR-0062](0062-built-in-video-filters-and-properties-tabs.md), [ADR-0065](0065-global-sources-and-safe-source-removal.md), [ADR-0077](0077-source-health-retarget-and-settings-window.md), [ADR-0082](0082-audio-filter-chains-on-sources.md), [ADR-0084](0084-source-transform-commands-and-source-context-menu.md), [ADR-0091](0091-per-scene-audio-levels.md), [ADR-0095](0095-audio-ducker-and-key-tap.md), [ADR-0096](0096-capture-audio-companions-and-camera-microphone.md), [ADR-0103](0103-source-region.md), [ADR-0104](0104-display-chrome-insets.md), [ADR-0126](0126-measured-sync-offset-and-device-memory.md)
+- Spec: [scene-model](../specs/scene-model.md) (new "Copies, resets and attribute groups" section), [scene-sources](../specs/scene-sources.md) (identity and option keys per source class), [control-api](../specs/control-api.md) (`source.duplicate`, `scene.duplicate {sources}`, `source.reset`, `source.copy_attributes`, `source.attributes_clipboard`, `source.paste_attributes`), [ui-design-system](../specs/ui-design-system.md) (Source context menu, Paste attributes and Reset source dialogs), [shortcuts](../specs/shortcuts.md), [glossary](../ui/glossary.md)
 
 ## Context
 
 The owner asked for three things (project thread, 2026-11-16):
 
 1. Duplicate a source and duplicate a scene, if RBS cannot do it yet.
-2. Put every setting of a source (for example a copy) back to its defaults.
+2. Put the settings of a source (for example a copy) back to their defaults.
 3. Copy chosen settings of one source onto others, as DaVinci Resolve's Paste Attributes does.
 
 What exists on main (7589237):
 
-- **Duplicate scene exists.** `SceneCollection::duplicate_scene` and the registry command `scene.duplicate` (control API `scene.duplicate`) copy a scene with new scene and item ids, the **same sources** (references, not copies), the same nested scenes and layouts, and the scene's own levels. It is one undo step and does not go on air. Editing a source in the copy (its filters, volume, settings) changes it in the original too, because sources are shared by every scene that places them (glossary: Source).
-- **Placing a source again exists** ("Existing source", `item.add {source}`): a second item of the same source. This is a reference too.
-- **Duplicate source does not exist.** There is no way to get an independent source with the same settings, filters and sound.
-- **Reset exists only per part:** `item.reset_transform` (flips, rotation, own size), a filter's "Reset to defaults" (its values), `source.reset_display_chrome`. There is no reset of a whole source.
-- **Copy and paste of settings does not exist.** The nearest is a Look (glossary): a built-in preset of shape, border and filters, copied onto the selected source in one undo step.
+- **Duplicate scene exists** (control API `scene.duplicate`, protocol 1.43; registry `scene.duplicate`). `SceneCollection::duplicate_scene` copies a scene with new scene and item ids, the **same sources** (references), the same nested scenes and layouts, and the scene's own levels. One undo step; it does not go on air. Editing a source in the copy changes it in the original too, because sources are shared by every scene that places them (glossary: Source).
+- **Placing a source again exists** ("Existing source", `item.add {source}`): a reference too.
+- **Duplicate source does not exist.**
+- **Reset exists only per part:** `item.reset_transform` (ADR-0084), a filter's "Reset to defaults" button, `source.reset_chrome` (sets the insets from the display's work area).
+- **Copy and paste of settings does not exist.** The nearest is `look.apply`: a built-in Look copied onto a source, composed by the host from ordinary edits (`scene-model.md`, Looks), checked first, one undo step.
 - The Sources panel has one selected source; there is no multi-selection.
-- Every edit of the collection returns an `Undo`; the host records one or several of them as one step of the shared undo stack (`History::record`). `Op::Batch` undoes several edits as one.
+- Volume, mute, monitor and sync offset are **live controls, not undo steps** (ADR-0059, ADR-0062 decision 10, `scene-model.md`): their record expects and replaces only `audio`, the host throws its `Undo` away, and every other record ignores `audio`.
+- Source types have no settings schema: `rbs-sources` has only `known_keys(type_id)` per class. `Values::defaults` exists for filters only. `rbs-scene` does not depend on `rbs-sources`.
 
-OBS for comparison: "Duplicate" of a scene asks for a name and copies items as references (sources are shared); a source can be pasted as a "Paste (Reference)" or "Paste (Duplicate)". Filters can be copied and pasted from one source to one other source; the transform can be copied and pasted to one item. There is no reset of a whole source, no choice of what to copy, and no paste onto several sources at once. A webcam duplicated in OBS on Windows opens the device twice and the second one usually stays black.
+OBS for comparison: duplicating a scene copies items as references; a source can be pasted as a reference or a duplicate; filters can be copied from one source to one other; a transform can be copied to one item. There is no reset of a whole source, no choice of what to copy, and no paste onto several sources at once. A webcam duplicated in OBS on Windows opens the device twice and the second one usually stays black.
 
 ## Decision
 
 ### 1. Attribute groups
 
-A source's state is split into named **attribute groups**. The groups are the only vocabulary for reset (decision 4) and paste (decision 5), in the engine, the control API and the UI. Each group says where it lives and what its default is:
+A source and its item are split into named **attribute groups**, the one vocabulary for reset (decision 5) and paste (decision 6) in the engine, the control API and the UI.
 
-| Group id | UI name | Lives on | Contents | Default (what a new source of the type gets) | Applies to |
-| --- | --- | --- | --- | --- | --- |
-| `transform` | Position and size | item | `layout.position`, `layout.size`, `layout.rotation`, and the item's per-canvas overrides of those three | the layout a new source of its kind gets (as `item.reset_transform`) | items of picture sources |
-| `crop` | Crop | item | `layout.crop` | no crop | items of picture sources |
-| `opacity` | Opacity | item | `layout.opacity` | 1.0 | items of picture sources |
-| `style` | Shape and border | item | `layout.style` (shape, border, shadow) | rectangle, no border, no shadow | items of picture sources |
-| `video_filters` | Picture filters | source | the picture filters, in order | none | picture sources |
-| `audio_filters` | Sound filters | source | the audio filters, in order | none | sources with sound |
-| `sound` | Volume and monitoring | source | `audio.volume`, `audio.muted`, `audio.monitor` | full volume, not muted, monitor off | sources with sound |
-| `sync_offset` | Sync offset | source | `audio.sync_offset_ms` | 0 ms | sources with sound |
-| `glide` | Slide | source | `glide` override (ADR-0100) | none (collection glide) | picture sources |
-| `options` | Source options | source | the type's settings **except its identity keys** (`adapter`, `target` and any key the type's schema marks as identity) | the type's schema defaults, identity keys kept | sources of the **same type** only |
-| `region` | Capture region | source | `region` (ADR-0103) | whole picture | same type only |
-| `chrome` | Display frame | source | `chrome` (ADR-0104) | off | display sources only |
-| `separate_recording` | Separate recording | source | `record_separately` (ADR-0086) | off | all sources |
+| Group id | UI name | Lives on | Contents | Default | Applies to | Undo |
+| --- | --- | --- | --- | --- | --- | --- |
+| `transform` | Position and size | item layout | `position`, `size`, `rotation` | as `item.reset_transform` (ADR-0084: rotation 0, no flips, the box at the picture's own size after crop, centre kept) | items of picture sources | step |
+| `crop` | Crop | item layout | `crop` | no crop | items of picture sources | step |
+| `opacity` | Opacity | item layout | `opacity` | 1.0 | items of picture sources | step |
+| `style` | Shape and border | item layout | `style` (shape, border, shadow) | rectangle, no border, no shadow | items of picture sources | step |
+| `video_filters` | Picture filters | source | filters of picture node types, in order, with `enabled` and settings | none | picture sources | step |
+| `audio_filters` | Sound filters | source | filters of audio node types, in order, with `enabled` and settings | none | sources with sound | step |
+| `options` | Source options | source | the class's **option keys** (decision 2) | the option values a new source of the type gets | sources of the **same type** that have option keys | step |
+| `region` | Capture region | source | `region`, and for a display source also `chrome` (written together, as `source.set_chrome`) | whole picture, no Display chrome | same type only | step |
+| `glide` | Glide | source | the `glide` override (ADR-0100) | none (the collection glide) | picture sources | step |
+| `record_separately` | Record separately | source | the `record_separately` feeds the target has (`video` for a picture, `audio` for sound, `video_as`) | off | all sources | step |
+| `sound` | Volume and monitoring | source | `audio.volume`, `audio.muted`, `audio.monitor` | full volume, not muted, monitor off | sources with sound | **live** |
+| `sync_offset` | Sync offset | source | `audio.sync_offset_ms` | 0 ms | sources with sound | **live** |
 
-Never part of a group, so never copied or reset: the name, the identity keys (which device, window, display, file or URL), the hints (`target_app`, `companion_of`, `standby`), `visible`, `locked`, `show_for_ms`, the scene's own levels (ADR-0091) and the source's place in scenes.
+**Never part of a group** (never pasted or reset; Duplicate copies them as decision 3 says): the name, the identity keys (decision 2), the hints (`target_app`, `target_title`, `companion_of`, `standby`), `audio.mixer_hidden` (a view choice, [ADR-0080](0080-hide-sources-in-the-mixer.md)), the item's `visible`, `locked` and `show_for_ms`, the scene's own levels (ADR-0091) and the source's places in scenes.
 
-A group that does not apply to a target is skipped for that target, never an error, and the answer says so (decision 6). Item groups apply to one item: a crop is cut in source pixels, so when both sources' picture sizes are known and differ, `crop` is scaled in proportion to the picture size; otherwise it is copied as pixels. `transform` keeps the target's aspect ratio when the target's picture size is known (the box takes the copied width and the height that keeps the target's aspect), so pasting a 16:9 camera's place onto a 4:3 camera does not stretch it; `item.fit` stays the way to stretch.
+**Live groups.** `sound` and `sync_offset` stay live controls, as their direct edits are. A reset or paste writes them through the live record outside the undo step, the way `scene.remove` switches the program outside its step. Undo of that step never restores them, so it can neither unmute a microphone on air nor be refused because a fader moved. The dialogs say so in their help, and the API answer lists them under `live` (decision 7).
 
-The table is `rbs_scene::AttributeGroup` (a closed enum with `ALL`, `id()`, `applies_to(&Source, Option<&SceneItem>)`), the single place a new group is added. A new source field that is user-set must be placed in a group or listed as "never part of a group" in the spec; a test fails when `Source` or `Layout` gains a field the table does not mention (an exhaustive destructuring in the test).
+**Item groups and canvases.** Item groups read the copied item's layout on the canvas given (`canvas?`, default the main canvas) and write the target item's layout on that canvas: its override when it has one for that canvas, else its default layout (the rule of every `item.*` edit, ADR-0084 decision 5). Other overrides are untouched.
 
-### 2. Duplicate source
+**Different picture sizes.** When `crop` and `transform` are both pasted, crop is applied first. `crop` is scaled in proportion when both pictures' sizes are known and differ, else copied as pixels. `transform` takes the copied width and the height that keeps the target's cropped aspect ratio when the target's size is known, keeps the sign of each size (a flip stays a flip), and takes position and rotation as they are; `item.fit` stays the way to stretch. When the target's picture size is unknown (it has not run in this session), `transform` and `crop` are skipped for it with the reason `no_picture_size`, and reset skips `transform` the same way.
 
-`SceneCollection::duplicate_source(item, name) -> (SourceId, ItemId, Undo)` and control API `source.duplicate {item}` (`control` scope):
+**Locked items** are skipped for item groups with the reason `locked`; their source groups still apply. A refused group never stops the other targets.
 
-- A **new, independent source**: new `SourceId`, a free name (`"<name> 2"`, `"<name> 3"`, the rule of `unique_scene_name`), the same type, settings, filters (each with a new `FilterId`), sound, glide, region, chrome and separate recording. Hints are copied except `standby`, so the copy starts active.
-- It is placed in the item's scene **directly above the original item**, with the same layout, overrides, visibility and lock. Other scenes that place the original do not get the copy.
+**Where the logic lives.** `rbs_scene::AttributeGroup` (closed enum, `ALL`, `id()`, the table above as data, and `applies_to(&Source, Option<&SceneItem>, kinds: SourceKinds)` where `SourceKinds { picture, sound }` and the filter kinds come from the host's node descriptors) is the single place a group is added. A test destructures `Source`, `SourceAudio`, `SceneItem`, `Layout`, `RecordSeparately` and `ItemStyle` exhaustively and fails when a field is in neither the table nor the "never" list. Reset and paste are **host compositions** of ordinary edits, as `look.apply` is: checked first for every target, then applied all or nothing as one `History::record`, plus the live writes.
+
+### 2. Identity and option keys per source class
+
+`rbs-sources` gets `identity_keys(type_id)` and `option_defaults(type_id)` next to `known_keys`, and `scene-sources.md` gets the table. Every known key is either identity or option:
+
+| Class | Identity keys (never pasted or reset) | Option keys |
+| --- | --- | --- |
+| Camera capture | `adapter`, `target` | `width`, `height`, `fps` |
+| Display and window capture | `adapter`, `target` | `cursor`, `width`, `height`, `fps` |
+| Output loopback audio | `adapter`, `target` | `exclude_own_process` |
+| Audio input | `adapter`, `target` | none (no `options` group) |
+| Still (image, sample, colour, gradient) | all its keys: the picture is what it shows | none |
+| Media file | `adapter`, `path` | `loop`, `restart_when_shown` |
+| Browser | `url` | `width`, `height`, `fps`, `transparent` |
+| Plugin source types | all keys, until the manifest declares option keys | none |
+
+An option default is the value the Add source path writes for a new source of that type, or the key left out where it writes none; the Add path and `option_defaults` use the same function. A pasted camera mode the target camera lacks is written anyway and fails only when it opens, shown as its `Unavailable` state (ADR-0077). A reset or paste of `options` is a settings change, so it replaces the source node, with break-before-make on air (`scene-model.md`).
+
+### 3. Duplicate source
+
+`SceneCollection::duplicate_source(item, name, kinds)` and control API `source.duplicate {source, scene?}` (`control` scope; `scene` is the scene being edited by default: the preview in studio mode, else the program; the source's first item in it is the one copied, `not_found` when it has none):
+
+- A **new source** with a new `SourceId` and a free name by `unique_name` (`"<name> 2"`, `"<name> 3"`). It copies the type, all settings, every filter (new `FilterId`s, `enabled` and settings kept), `audio` (all of it, `mixer_hidden` included), `glide`, `region`, `chrome` and `record_separately`. Hints: `target_app` and `target_title` are copied; `standby` is copied (a source the user deactivated stays deactivated); `companion_of` is decided below.
+- **One new item** in that scene, directly above the copied item, with the same layout, every per-canvas override, `visible`, `locked` and `show_for_ms`. Other scenes that place the original do not get the copy. If the scene is in Own levels, the copy gets the original's entry (through `InsertSource.levels`).
 - A **global source** (ADR-0065) gives a global copy: a new item in the canvas's global scene above the original.
-- **Companions** (ADR-0096: "Capture audio too"): each companion of the original is duplicated too, its `companion_of` hint pointing at the copy, placed above its own original item.
-- One undo step (`Op::Batch` of the inserts), named "Duplicate source <name>". The copy becomes the selected source in the UI.
-- **Devices.** A copy of a camera, microphone or capture card names the same device. Until decision 8 exists, opening it twice may fail on platforms that open such a device exclusively; the copy then shows the existing health state "busy" (ADR-0077) and nothing else breaks. The UI says so in the command's tooltip for device sources.
+- **Companions** (ADR-0096). Duplicating a picture source also duplicates its companion, whose copy gets `companion_of` set to the picture copy and one item only in the same scene: directly above the original companion's item there if it has one, else directly above the picture copy. Duplicating a companion on its own drops `companion_of`: the copy is an independent sound source.
+- **Key links** (ADR-0095). Within the set copied in one operation (a picture and its companion here; a whole scene in decision 4), every setting of kind `FieldKind::Source` (the ducker's `key_source` and any later one) that names a source of the set is rewritten to name its copy; one naming a source outside the set is kept.
+- **Exclusive devices.** A copy of a camera or capture-card source would open the device a second time at once, because every source placed on a showable scene is warm (`scene-model.md`). The copy of a source whose class is Camera capture therefore starts in **standby** (the `standby` hint) with the Properties note "Turn on to use it. The device is used by <original>." Turning it on is the user's choice; on a platform that opens the device exclusively it then shows `Unavailable` with fault `Busy`. The original never loses its device to a copy. Decision 9 removes the need.
+- One undo step (`Op::Batch`), `EditKind::Duplicate` with the original's name ("Undo duplicate Camera"). The answer is `{source, item, companions: [{source, item}]}`. In the window the copy becomes the selected source.
 
-### 3. Duplicate scene with copied sources
+### 4. Duplicate scene with new sources
 
-`scene.duplicate` gains an optional `sources: "shared" | "copied"` (default `"shared"`, today's behaviour, unchanged). With `"copied"`, every source placed directly in the scene (not those of nested scenes, not global sources) is duplicated as in decision 2 and the new scene's items point at the copies; a source placed twice in the scene gets one copy placed twice. Nested scenes stay references. One undo step. UI: the scene row's context menu and the Scene menu list "Duplicate scene" and "Duplicate scene with new sources".
+`scene.duplicate` gains `sources?: "shared" | "copied"` (default `"shared"`: unchanged). With `"copied"`:
 
-### 4. Reset to defaults
+- The set copied is the union of the sources placed directly in the scene and their companions, each copied once (decision 3's rules, including the standby rule for cameras). Global sources and sources inside nested scenes are not copied; nested scenes stay references.
+- Each item of the new scene points at the copy of its source; a source placed twice gets one copy placed twice.
+- The new scene's own levels (if any) are re-keyed from each original to its copy; key links are remapped within the set.
+- One undo step; the answer adds `sources: [{from, to}]`.
 
-`source.reset {item, groups?}` (`control` scope) sets each chosen group to the default of decision 1 (all applicable groups when `groups` is absent), for that item and its source. One undo step ("Reset <name> to defaults"). Groups already at their default are skipped and listed as `unchanged` in the answer, so a reset that changes nothing records no undo step and answers `changed: []`.
+UI: the scene row's context menu and the Scene menu list "Duplicate scene" and "Duplicate scene with new sources" (registry `scene.duplicate?sources=copied`).
 
-The `options` default comes from the type's settings schema (the same defaults a new source of the type gets, `Values::defaults`), keeping the identity keys, so a reset camera stays the same camera. `sync_offset` resets to 0 ms, not to the remembered device offset of ADR-0126; the UI leaves it unchecked by default (decision 7).
+### 5. Reset source
 
-### 5. Copy and paste attributes
+`source.reset {source, scene?, canvas?, groups?}` (`control` scope; the item is the source's first item in `scene`, as in decision 3) sets each chosen group to its default (all applicable groups when `groups` is absent; the window's dialog sends them explicitly). Groups at their default are skipped with the reason `unchanged`; a reset that changes nothing records no undo step. `sync_offset` resets to 0 ms, not to the offset remembered for the device (ADR-0126); the dialog leaves it unchecked by default. `region` on a display source turns Display chrome off and clears the region (not `source.reset_chrome`'s work-area insets). The undo step is `EditKind::Reset` with the source's name ("Undo reset Camera").
 
-- **The attribute clipboard is host state**, not the system clipboard: `StudioHost` keeps `Option<AttributeSnapshot>`, a copy of every group's value of one item and its source, taken at copy time (later edits of the original do not change it, and it survives the original's deletion). It is dropped when the collection changes. With nothing copied it is `None`: no timer, no thread, no per-frame work (P13).
-- `source.copy_attributes {item}` (`control` scope) takes the snapshot and answers `{source, type, groups}`: the groups the snapshot holds a non-default value for.
-- `source.paste_attributes {to: [item, ...], groups, filters?: "replace" | "append"}` (`control` scope) applies the chosen groups of the snapshot to every target in **one undo step** ("Paste attributes onto 3 sources"). `filters` (default `"replace"`, as Resolve) says whether pasted filters replace the target's filters of that kind or are added after them; pasted filters get new `FilterId`s. Targets may be in any scene. A source group pasted onto two items of the same source is applied once. Pasting onto the source the snapshot came from is allowed (it restores the snapshot).
-- Refused (`not_found`) when nothing was copied, a target does not exist, or `groups` is empty or names an unknown group.
+### 6. Copy and paste attributes
 
-### 6. Answers and events
+- **The attribute clipboard is shared host state.** `StudioHost` keeps `Option<AttributeSnapshot>`: every group's value of one item and its source, taken at copy time. Later edits of the original do not change it and it survives the original's deletion. It is one clipboard for the window and every API session: a Stream Deck that copies replaces what the window copied, and the other way round. It is cleared when the scene collection is switched (`collection.switch`, `ui.collection.*`), never by an edit. Empty, it costs nothing (P13).
+- `source.copy_attributes {source, scene?, canvas?}` (`control`) takes the snapshot and answers `{source, name, type, groups}`, `groups` being those whose copied value is not the default. It publishes `source.attributes_copied` with the same body.
+- `source.attributes_clipboard {}` (`read`) answers that body, or `null` while empty. The window's Paste command follows this state, not its own.
+- `source.paste_attributes {items: [item], groups: [group], filters?: "replace" | "append", canvas?}` (`control`) applies the chosen groups to every target in **one undo step**, plus the live writes. `items` follows ADR-0084's multi-target shape; targets may be in any scene. A source group named by two items of the same source is applied once.
+- **Filters.** `"replace"` (default, as Resolve) replaces the target's filters of that kind; `"append"` adds after them. When the target's chain of that kind has the same type sequence as the snapshot's, `"replace"` keeps the target's `FilterId`s and writes only `enabled` and settings, so a live source is updated through its parameter channel with no rebuild and no audio dip (ADR-0082 decision 6); otherwise the pasted filters get new ids. `unchanged` is decided ignoring ids, so pasting a source's own snapshot back onto it changes nothing.
+- `EditKind::PasteAttributes`, the name being the snapshot's source ("Undo paste attributes of Camera"); the dialog's button says how many sources, with plural forms (U8).
 
-`source.reset` and `source.paste_attributes` answer per target `{item, source, changed: [group], skipped: [{group, reason}]}` with the reasons `not_applicable` (for example `options` on another type) and `unchanged`. Each publishes `scene.changed` and `source.changed` as the edits it is made of already do. Control API version: the next free minor at merge (1.68 if nothing else lands first); `scene.duplicate` without `sources` keeps its 1.6 meaning.
+### 7. Answers, errors and version
 
-### 7. UI (proposal, needs the owner's visual approval before merge, rule 16)
+- `source.reset` and `source.paste_attributes` answer `{targets: [{source, item, changed: [group], live: [group], skipped: [{group, reason}]}]}`, reasons `not_applicable`, `unchanged`, `locked`, `no_picture_size`.
+- Errors follow the existing kinds: `not_found` for an unknown source, item or scene; `invalid_params` for an empty or unknown `groups` value, unknown keys, or `filters` other than the two values; `conflict` for a paste while the clipboard is empty.
+- Each publishes `scene.changed` and `source.changed` as its edits already do.
+- Control API: the next free minor at merge (1.68 if nothing else lands first). An older server answers `method_not_found` for the new methods; `scene.duplicate` on a server before that minor ignores `sources`, so a client checks the version first.
 
-- **Source row context menu** (and the Source menu): "Duplicate source", then "Copy attributes" and "Paste attributes...", then "Reset to defaults...". Paste is disabled with the reason "Copy a source's attributes first." while the clipboard is empty. Shortcuts: Ctrl+Shift+C copy attributes, Ctrl+Shift+V paste attributes (Cmd on macOS), Ctrl+D duplicate source, if the shortcuts spec has them free.
-- **Paste attributes dialog** (one modal, compact, library components only): a header "Paste attributes from <name>"; on the left the groups as `Checkbox` rows, grouped Picture / Sound / Source, each group the snapshot holds at its default shown dimmed with "(default)"; groups that apply to no target disabled with the reason in the help (i). On the right "Paste onto": the sources of the scene on air as `Checkbox` rows (the selected source pre-checked, the original marked "copied from"), and a "Same type only" `Toggle`. Under the filters groups a `SegmentedControl` Replace | Add after. `DialogActions`: Cancel, Paste. The groups chosen last time are remembered for the session.
-- **Reset to defaults dialog**: the same left column for one source, only the groups that differ from the default checked and enabled; groups at default listed dimmed; `sync_offset` unchecked by default. `DialogActions`: Cancel, Reset.
-- **Scene row menu and Scene menu**: "Duplicate scene" keeps its meaning; "Duplicate scene with new sources" is added under it.
-- All sizes and colours are theme tokens; any missing token is added in the same change (rule 15).
+### 8. UI (needs the owner's visual approval before merge, rule 16)
 
-### 8. Later: one device open for several sources (own ADR)
+- **Registry entries:** `source.duplicate` (Ctrl+D), `source.copy_attributes` (Ctrl+Shift+C), `ui.source.paste_attributes` (Ctrl+Shift+V, opens the dialog), `ui.source.reset` (opens the dialog), `scene.duplicate?sources=copied`. Ctrl is Command on macOS (`shortcuts.md`); none of the three shortcuts is reserved or used. They act on the selected source; with the Scenes panel focused Ctrl+D duplicates the selected scene (the registry target comes from the selection).
+- **Source context menu** (16 items at most, `MAX_CONTEXT_ITEMS`; 13 are used): "Duplicate source" goes into the existing Source submenu; one new submenu "Attributes" holds "Copy attributes", "Paste attributes..." and "Reset source...". Paste is disabled with the reason "Copy a source's attributes first." while the clipboard is empty.
+- **Paste attributes dialog** (one modal, library components only, compact): title "Paste attributes of <name>"; left, the groups as `Checkbox` rows under Picture / Sound / Source, a group the snapshot holds at its default dimmed with "(default)", a group no checked target accepts disabled with the reason in (i), the live groups with the note "Not undone by Undo" in (i); under the filter groups a `SegmentedControl` Replace | Add after. Right, "Paste onto": one `Checkbox` row per item of the **scene being edited** (a source placed twice shows twice, with its position), the selected one checked, the copied one marked "copied", and a "Same type only" `Toggle`. `DialogActions`: Cancel, "Paste onto 3 sources". The groups chosen last are remembered for the session.
+- **Reset source dialog:** the same left column for one source, only groups that differ from their default checked, the others dimmed, `sync_offset` unchecked. `DialogActions`: Cancel, Reset. The name avoids clashing with a filter's "Reset to defaults" button.
+- All sizes and colours are theme tokens; a missing token is added in the same change (rule 15).
 
-A beyond-OBS follow-up, not decided here: when two sources name the same device and the same mode, the binder could give them **one capture node** and fan its picture out to each source's own filter chain, so "same camera, two looks" (a wide shot and a cropped close-up with other filters) works on every platform with one open device and one upload. It touches the binder and the source node graph (hot path, P15), so it needs its own ADR, measurements and review.
+### 9. Later: one device open for several sources (own ADR)
+
+A beyond-OBS follow-up, not decided here: two sources naming the same device and mode could share **one capture node**, its picture fanned out to each source's own filter chain, so "same camera, two looks" (a wide shot and a cropped close-up with other filters) works on every platform with one open device and one upload, and the standby rule of decision 3 goes away. It touches the binder and the source graph (P15), so it needs its own ADR, measurements and review.
 
 ## Consequences
 
-- Duplicate, reset and paste are plain collection edits built from existing ops (`InsertSource`, `InsertItem`, `ReplaceSource`, `SetSourceAudio`, `ReplaceItem`, `Op::Batch`); undo and redo work as for any edit, and no new persisted field exists, so the **scene format does not change**.
-- The control API gets four methods and one parameter; a Stream Deck or script can duplicate, reset and paste exactly as the UI does (API parity).
-- The attribute table becomes a contract: every future user-set field of `Source` or `Layout` must be classified, enforced by a test.
-- The binder sees a duplicate as a new source: a duplicated device source opens the device again until decision 8 exists.
-- Tests: `rbs-scene` unit and property tests (duplicate then undo restores the collection exactly; paste then undo; reset of a default source changes nothing; every group round-trips; crop scaling), host tests for one undo step per command and the clipboard's lifetime, API conformance tests.
+- Duplicate, reset and paste are made of existing ops (`InsertSource` with `levels`, `InsertItem`, `ReplaceSource`, `ReplaceItem`, `SetSourceChrome`, `Op::Batch`) plus the live audio record; undo works as for any edit. No persisted field is added (standby is an existing hint), so the **scene format does not change**.
+- New: `rbs_scene::AttributeGroup` and `duplicate_source`; `rbs-sources` identity and option keys; host compositions; `EditKind::{Duplicate, Reset, PasteAttributes}`; six API surfaces; registry entries and two dialogs.
+- The attribute table is a contract: every future user-set field of the listed structs must be classified, enforced by a test.
+- Tests: `rbs-scene` unit and property tests (duplicate then undo restores the collection exactly; levels re-keyed; key links remapped inside the set only; companions copied once; guard test); host tests (one step per command; undo of a paste after a fader move succeeds and leaves the fader alone; locked and unknown-size skips; filter ids kept for the same chain; clipboard cleared on collection switch only; all-or-nothing on a refused target); API conformance tests; a context-menu slot test.
 
 ## Alternatives considered
 
-- **Duplicate as a reference only** (OBS's "Paste (Reference)"). RBS already has it ("Existing source"); the owner asked for a copy that can be changed on its own.
-- **System clipboard for attributes.** Would let users paste between collections or instances, but needs a text format for every group and exposes internal ids; a later "Save attributes as a look" (glossary: Look) covers sharing, and the host snapshot keeps the API stateless for callers.
-- **Paste from the live source instead of a snapshot.** Simpler, but surprising: an edit of the original after Copy would change what Paste does, and deleting it would disable Paste. Resolve and OBS both paste what was copied.
-- **One "copy everything" without groups.** Does not cover the main use (copy only the filters, or only the size) and is what Duplicate already does.
-- **Multi-selection in the Sources panel instead of a target list in the dialog.** A larger UI change across panels, the preview and every source command; the target list gives "paste onto several" now and keeps working when multi-selection comes.
+- **Duplicate as a reference only.** RBS already has it ("Existing source"); the owner asked for a copy that changes on its own.
+- **Sound on the undo stack.** Would undo volume with the paste, but contradicts ADR-0059 and ADR-0062 (undo must never unmute a microphone on air) and a fader move would block every older undo. A masked record could fix the second, not the first.
+- **System clipboard.** Would paste between collections or instances, but needs a text format for every group and exposes ids; a later "Save attributes as a look" covers sharing.
+- **Paste from the live source (`from: item`) instead of a snapshot.** No shared state, but an edit of the original after Copy would change what Paste does and deleting it would disable Paste. Resolve and OBS paste what was copied. A `from` parameter can be added later without breaking anything.
+- **Copy the device copy active.** Simple, but on Windows the original or the copy shows nothing, depending on open order after a restart.
+- **Multi-selection in the Sources panel instead of a target list.** A larger change across panels and every source command; the list gives "paste onto several" now and keeps working when multi-selection comes.
 
 ## Review
 
-Pending. Independent review per ADR-0014 is required (new control API methods, a new scene-model contract). The account's AI review quota is exhausted until 2026-11-20 14:00 (Turkey time); the owner was asked to review it himself or wait for an independent AI session.
+- Round 1, independent AI session, 2026-11-16, changes requested (`source-attributes/review-0133-round1.md` in the project files). Resolutions:
+  1. Sound and sync offset on the undo stack: now live groups outside the step (decision 1).
+  2. `options` had no schema: identity and option keys per class in `rbs-sources` and `scene-sources.md` (decision 2); host composition.
+  3. Own levels and key links: re-keyed and remapped within the copied set (decisions 3, 4).
+  4. Context menu slots: Duplicate in the Source submenu, one Attributes submenu (decision 8).
+  5. Transform default, canvas, overrides, locked, unknown size: defined (decision 1).
+  6. Companions: rules for picture, companion alone and scene copy (decisions 3, 4).
+  7. Region and chrome: one group, written together (decision 1, 5).
+  8. `mixer_hidden`, `enabled`, feed masking, wider guard test: done (decisions 1, 3).
+  9. API: `invalid_params`/`conflict`, `items`, `{source, scene?}`, answers, protocol 1.43, shared clipboard with read method and event, cleared on collection switch (decisions 3-7).
+  10. Logic location and `applies_to` inputs: `SourceKinds`, host compositions (decision 1).
+  11. Filter ids kept for the same chain (decision 6).
+  12. Camera copies start in standby; ADR-0077 terms (decision 3).
+  13-15. Glossary terms, `EditKind`s, plural labels, edited scene, shortcuts committed, crop-then-transform order, `unique_name`, `standby` kept.
