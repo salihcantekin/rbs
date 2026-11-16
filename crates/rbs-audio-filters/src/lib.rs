@@ -21,6 +21,7 @@ pub mod catalogue;
 pub mod compressor;
 pub mod conformance;
 pub mod ducker;
+pub mod equaliser;
 pub mod gain;
 pub mod gate;
 pub mod limiter;

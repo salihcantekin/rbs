@@ -3,6 +3,7 @@
 use crate::AudioFilterType;
 use crate::compressor::Compressor;
 use crate::ducker::Ducker;
+use crate::equaliser::Equaliser;
 use crate::gain::Gain;
 use crate::gate::NoiseGate;
 use crate::limiter::Limiter;
@@ -17,6 +18,7 @@ pub fn catalogue() -> &'static [&'static dyn AudioFilterType] {
         &NoiseSuppression,
         &Compressor,
         &Limiter,
+        &Equaliser,
     ]
 }
 

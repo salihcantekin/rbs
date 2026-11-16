@@ -178,8 +178,63 @@ fn limiter_benches(c: &mut Criterion) {
     );
 }
 
+/// The equaliser (ADR-0130 decision 11, budget 5 us per block): a typical voice setting
+/// (low cut and one band), every section on, and a sweep (coefficients every 32 frames).
+fn equaliser_benches(c: &mut Criterion) {
+    use rbs_audio_filters::equaliser::Equaliser;
+    let ty = &Equaliser as &dyn AudioFilterType;
+    let defaults = Values::defaults(ty);
+    let voice = defaults
+        .with(
+            ty,
+            [
+                ("low_cut", Value::Toggle(true)),
+                ("band2_gain", Value::Number(3.0)),
+            ],
+        )
+        .expect("valid");
+    let all = voice
+        .with(
+            ty,
+            [
+                ("low_shelf_gain", Value::Number(-2.0)),
+                ("band1_gain", Value::Number(-3.0)),
+                ("high_shelf_gain", Value::Number(2.0)),
+            ],
+        )
+        .expect("valid");
+    bench_one(
+        c,
+        "equaliser_voice",
+        &mut [ty.make(setup(), &voice).expect("valid")],
+    );
+    bench_one(
+        c,
+        "equaliser_all",
+        &mut [ty.make(setup(), &all).expect("valid")],
+    );
+    let other = all
+        .with(ty, [("band1_freq", Value::Number(2000.0))])
+        .expect("valid");
+    let mut sweeping = ty.make(setup(), &all).expect("valid");
+    let (l0, _) = signal();
+    let mut flip = false;
+    c.bench_function("equaliser_sweeping", |b| {
+        let (mut l, mut r) = (l0.clone(), l0.clone());
+        b.iter(|| {
+            flip = !flip;
+            sweeping.set(if flip { &other } else { &all });
+            l.copy_from_slice(&l0);
+            r.copy_from_slice(&l0);
+            sweeping.process(&mut [&mut l[..], &mut r[..]], FRAMES);
+            black_box((&l, &r));
+        });
+    });
+}
+
 criterion_group!(
     benches,
+    equaliser_benches,
     limiter_benches,
     dsp_benches,
     ducker_benches,
