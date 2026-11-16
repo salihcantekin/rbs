@@ -447,6 +447,18 @@ fn every_request() -> Vec<Request> {
             on: false,
         })),
         c(Command::StreamStatus(OnCanvas::default())),
+        c(Command::StreamDestinations(DestinationsOf::default())),
+        c(Command::StreamDestinations(DestinationsOf {
+            canvas: Some(OutputCanvas::Vertical),
+        })),
+        c(Command::StreamDestinationStart(DestinationRef { id: 2 })),
+        c(Command::StreamDestinationStop(DestinationRef { id: 0 })),
+        c(Command::StreamDestinationSetEnabled(
+            SetDestinationEnabled {
+                id: 3,
+                enabled: false,
+            },
+        )),
         c(Command::ReplayStatus),
         c(Command::ProtectionStatus),
         c(Command::SourceSetMonitor(SetSourceMonitor {
@@ -960,6 +972,30 @@ fn every_result_and_event_type_round_trips() {
             hold_fallback: false,
             hold_sound_fallback: false,
             hold_fallback_reason: None,
+            destinations: vec![
+                LiveDestination {
+                    id: 0,
+                    name: "Twitch".into(),
+                    service: "twitch".into(),
+                    state: DestinationState::Live,
+                    connects: 1,
+                    reconnect_attempts: 0,
+                    dropped: 0,
+                    on_air_ms: 9_000,
+                    error: None,
+                },
+                LiveDestination {
+                    id: 2,
+                    name: "YouTube".into(),
+                    service: "youtube".into(),
+                    state: DestinationState::Failed,
+                    connects: 0,
+                    reconnect_attempts: 3,
+                    dropped: 4,
+                    on_air_ms: 0,
+                    error: Some("the server closed the connection".into()),
+                },
+            ],
         }),
         EventPayload::VcamChanged(VcamStatus {
             frames: None,
@@ -1511,7 +1547,9 @@ fn stream_state_has_a_stable_wire_form() {
         hold_fallback: false,
         hold_sound_fallback: false,
         hold_fallback_reason: None,
+        destinations: Vec::new(),
     };
+    // Without destinations (a stream the host tracks as one) the 1.68 form.
     assert_eq!(
         serde_json::to_value(&live).unwrap(),
         json!({
@@ -2765,4 +2803,80 @@ fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
     }))
     .unwrap();
     assert_eq!(entry.origin, DeviceSyncOrigin::Other);
+}
+
+#[test]
+fn stream_destinations_have_a_stable_wire_form() {
+    let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
+        Ok(Request::Command(c)) => Ok(c),
+        Ok(other) => panic!("not a command: {other:?}"),
+        Err(e) => Err(e.error.kind),
+    };
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"stream.destination.set_enabled","params":{"id":2,"enabled":true}}"#
+        ),
+        Ok(Command::StreamDestinationSetEnabled(
+            SetDestinationEnabled {
+                id: 2,
+                enabled: true
+            }
+        ))
+    );
+    // No method takes a server or a key (protocol 1.1's rule).
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"stream.destination.start","params":{"id":2,"server":"rtmp://elsewhere"}}"#
+        ),
+        Err(ErrorKind::InvalidParams)
+    );
+    for (method, scope) in [
+        ("stream.destinations", Scope::Read),
+        ("stream.destination.start", Scope::Control),
+        ("stream.destination.stop", Scope::Control),
+        ("stream.destination.set_enabled", Scope::Control),
+    ] {
+        assert_eq!(
+            rbs_api::request::method_scope(method),
+            Some(Some(scope)),
+            "{method}"
+        );
+    }
+    let list = StreamDestinations {
+        destinations: vec![StreamDestination {
+            id: 2,
+            name: "YouTube".into(),
+            service: "youtube".into(),
+            canvas: OutputCanvas::Main,
+            enabled: true,
+            configured: true,
+            encoding: DestinationEncodingKind::Own,
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        json!({"destinations": [{
+            "id": 2, "name": "YouTube", "service": "youtube", "canvas": "main",
+            "enabled": true, "configured": true, "encoding": "own",
+        }]})
+    );
+    round_trip(&list);
+    let d = LiveDestination {
+        id: 2,
+        name: "YouTube".into(),
+        service: "youtube".into(),
+        state: DestinationState::Reconnecting,
+        connects: 1,
+        reconnect_attempts: 2,
+        dropped: 7,
+        on_air_ms: 60_000,
+        error: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&d).unwrap(),
+        json!({
+            "id": 2, "name": "YouTube", "service": "youtube", "state": "reconnecting",
+            "connects": 1, "reconnect_attempts": 2, "dropped": 7, "on_air_ms": 60000,
+        })
+    );
 }

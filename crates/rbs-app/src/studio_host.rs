@@ -83,7 +83,8 @@ use crate::record_profile::{
 };
 use crate::remote_control::ApiTokens;
 use crate::stream_destinations::{
-    Canvas as DestinationCanvas, DestinationEncoding, Destinations, Resolved,
+    Canvas as DestinationCanvas, DestinationEncoding, Destinations, MAIN_FIRST, Resolved,
+    VERTICAL_FIRST,
 };
 use crate::stream_key::{self, KeyStore, MemoryKeyStore};
 use crate::stream_profile::{Protocol, StreamProfile, parse_server};
@@ -1999,6 +2000,7 @@ impl Planned {
             live: LiveDestination {
                 id: d.destination.id,
                 name: d.destination.name.clone(),
+                service: d.destination.service.clone(),
                 url: request.url.clone(),
                 own: d.destination.encoding.is_own(),
                 output: None,
@@ -2087,6 +2089,8 @@ struct LiveDestination {
     id: u32,
     /// Its name, for notices.
     name: String,
+    /// Its service preset's id, or `custom` (control API only).
+    service: String,
     /// Its server URL (never with the key).
     url: String,
     /// It has its own encoder chain.
@@ -2104,6 +2108,29 @@ struct LiveDestination {
 }
 
 impl LiveDestination {
+    /// Its row in the stream's state (control API 1.74), as of `now`.
+    fn api(&self, now: Timestamp) -> api::LiveDestination {
+        api::LiveDestination {
+            id: self.id,
+            name: self.name.clone(),
+            service: self.service.clone(),
+            state: match self.state {
+                DestinationState::Connecting => api::DestinationState::Connecting,
+                DestinationState::Live => api::DestinationState::Live,
+                DestinationState::Reconnecting => api::DestinationState::Reconnecting,
+                DestinationState::Failed => api::DestinationState::Failed,
+                DestinationState::Stopped => api::DestinationState::Stopped,
+            },
+            connects: self.link.connects,
+            reconnect_attempts: self.link.reconnect_attempts,
+            dropped: self.link.transport_drops,
+            on_air_ms: self.on_air_since.map_or(0, |t| {
+                u64::try_from(now.saturating_since(t).as_millis()).unwrap_or(u64::MAX)
+            }),
+            error: self.error.clone(),
+        }
+    }
+
     /// The name to show: its own, or "Destination <id>".
     fn label(&self) -> String {
         if self.name.is_empty() {
@@ -2680,6 +2707,9 @@ pub enum Update {
     /// A control API client changed the stream settings (not the server or the key);
     /// the UI shows and saves them.
     StreamProfile(StreamProfile),
+    /// A control API client turned a stream destination on or off
+    /// (`stream.destination.set_enabled`, protocol 1.74); the UI saves the section.
+    StreamDestinations(Destinations),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
     TokensChanged,
@@ -7361,6 +7391,17 @@ impl Host {
     /// kept as failed with their reason. The connections are made in the background;
     /// [`Host::report_link`] tells the UI how they go.
     fn start_stream(&mut self, c: OutputCanvas, r: &StreamRequest) -> Result<StreamUpdate, String> {
+        self.start_stream_to(c, r, None)
+    }
+
+    /// [`Host::start_stream`] to destination `only` alone when it is `Some`
+    /// (`stream.destination.start` while nothing streams, ADR-0127 decision 16).
+    fn start_stream_to(
+        &mut self,
+        c: OutputCanvas,
+        r: &StreamRequest,
+        only: Option<u32>,
+    ) -> Result<StreamUpdate, String> {
         if let Some(why) = self.calibration_blocks() {
             return Err(format!("{why}."));
         }
@@ -7374,7 +7415,7 @@ impl Host {
                 os_name()
             ));
         }
-        let (plans, mut failed) = self.destination_plans(c, r);
+        let (plans, mut failed) = self.destination_plans(c, r, only);
         if plans.is_empty() {
             return Err(failed
                 .first()
@@ -7460,6 +7501,12 @@ impl Host {
         inject!(self, Fault::AfterStreamStart);
         self.outs[slot(c)].streaming = Some((anchor.url.clone(), Link::default(), id));
         self.outs[slot(c)].destinations = started.into_iter().chain(failed).collect();
+        let now = self.clock.now();
+        let destinations = self.outs[slot(c)]
+            .destinations
+            .iter()
+            .map(|d| d.api(now))
+            .collect();
         let protocol = match parse_server(&anchor.url).map(|s| s.protocol) {
             Ok(Protocol::Srt) => api::StreamProtocol::Srt,
             // Only RTMP and SRT servers pass the settings' check.
@@ -7482,6 +7529,7 @@ impl Host {
                 hold_fallback: false,
                 hold_sound_fallback: false,
                 hold_fallback_reason: None,
+                destinations,
             },
         );
         self.mark_stream(c, true);
@@ -7500,6 +7548,7 @@ impl Host {
         &self,
         c: OutputCanvas,
         r: &StreamRequest,
+        only: Option<u32>,
     ) -> (Vec<Planned>, Vec<LiveDestination>) {
         let role = match c {
             OutputCanvas::Main => DestinationCanvas::Main,
@@ -7509,7 +7558,7 @@ impl Host {
         let mut plans = Vec::new();
         let mut skipped = Vec::new();
         for d in self.destinations.of(role, &profile, &self.key_account) {
-            if !d.destination.enabled {
+            if !d.destination.enabled || only.is_some_and(|id| id != d.destination.id) {
                 continue;
             }
             let first = d.destination.is_first();
@@ -7548,6 +7597,197 @@ impl Host {
             plans.push(Planned::of(&d, request, first));
         }
         (plans, skipped)
+    }
+
+    /// The request `stream.start` of `c` sends with (from the saved stream settings),
+    /// and the server URLs no answer may repeat. With `only` naming a destination
+    /// other than the first, the first one's server may be empty: the request then
+    /// carries that destination's server, and only the stream's encoding is used.
+    fn api_stream_request(
+        &self,
+        c: OutputCanvas,
+        only: Option<u32>,
+    ) -> Result<(StreamRequest, Vec<String>), ApiError> {
+        // The vertical stream's texts name it, so a client sees which one is missing.
+        let which = match c {
+            OutputCanvas::Main => "",
+            OutputCanvas::Vertical => " for the vertical stream",
+        };
+        if self.stream_profile.is_none() {
+            return Err(failed("the studio is still starting; try again"));
+        }
+        let no_server = || {
+            failed(format!(
+                "no server is saved{which}: enter it in Settings, Stream"
+            ))
+        };
+        let other = only.filter(|id| *id != MAIN_FIRST && *id != VERTICAL_FIRST);
+        let mut profile = match (self.stream_profile_of(c), other) {
+            (Some(p), _) => p.clone(),
+            (None, Some(_)) => self.stream_profile.clone().unwrap_or_default(),
+            (None, None) => return Err(no_server()),
+        };
+        // The saved servers are settings (`admin`): a `control` caller never gets one
+        // back, also not inside an error text.
+        let mut hidden: Vec<String> = Vec::new();
+        if !profile.server.is_empty() {
+            hidden.push(profile.server.clone());
+        }
+        if let Some(id) = other {
+            let server = self
+                .resolved_destinations(c)
+                .into_iter()
+                .find(|d| d.destination.id == id)
+                .map(|d| d.destination.server)
+                .unwrap_or_default();
+            if !server.is_empty() {
+                hidden.push(server.clone());
+            }
+            if profile.server.is_empty() {
+                profile.server = server;
+            }
+        }
+        if profile.server.is_empty() {
+            return Err(no_server());
+        }
+        // A saved encoder this system does not have falls back to the best one, as the
+        // UI's automatic choice does.
+        let encoder = profile
+            .encoding
+            .encoder
+            .clone()
+            .filter(|id| self.encoders.iter().any(|e| e.id == *id));
+        let request = StreamRequest::from_profile(&profile, encoder).map_err(|_| {
+            failed(format!(
+                "the saved stream settings{which} cannot be used: see Settings, Stream"
+            ))
+        })?;
+        Ok((request, hidden))
+    }
+
+    /// The canvas destination `id` belongs to; `None` for an id the profile does not
+    /// have.
+    fn destination_canvas(&self, id: u32) -> Option<OutputCanvas> {
+        let canvas = match id {
+            MAIN_FIRST => DestinationCanvas::Main,
+            VERTICAL_FIRST => DestinationCanvas::Vertical,
+            _ => self.destinations.get(id)?.canvas,
+        };
+        Some(match canvas {
+            DestinationCanvas::Main => OutputCanvas::Main,
+            DestinationCanvas::Vertical => OutputCanvas::Vertical,
+        })
+    }
+
+    /// The destinations of `c` with their first one's settings filled in.
+    fn resolved_destinations(&self, c: OutputCanvas) -> Vec<Resolved> {
+        let role = match c {
+            OutputCanvas::Main => DestinationCanvas::Main,
+            OutputCanvas::Vertical => DestinationCanvas::Vertical,
+        };
+        let profile = self.stream_profile_of(c).cloned().unwrap_or_default();
+        self.destinations.of(role, &profile, &self.key_account)
+    }
+
+    /// `stream.destinations` rows of `c` (control API 1.74): never a server or a key.
+    fn api_destinations(&self, c: OutputCanvas) -> Vec<api::StreamDestination> {
+        self.resolved_destinations(c)
+            .into_iter()
+            .map(|d| api::StreamDestination {
+                id: d.destination.id,
+                configured: d.configured(),
+                name: d.destination.name,
+                service: d.destination.service,
+                canvas: c,
+                enabled: d.destination.enabled,
+                encoding: if d.destination.encoding.is_own() {
+                    api::DestinationEncodingKind::Own
+                } else {
+                    api::DestinationEncodingKind::Shared
+                },
+            })
+            .collect()
+    }
+
+    /// Starts destination `id` of `c`'s running stream (`stream.destination.start`,
+    /// ADR-0127 decision 16): it joins the shared encoder at its next keyframe, or
+    /// opens its own chain. `r` is the request the stream's first destination would
+    /// start with.
+    fn start_destination(
+        &mut self,
+        c: OutputCanvas,
+        r: &StreamRequest,
+        id: u32,
+    ) -> Result<(), String> {
+        let (plans, failed) = self.destination_plans(c, r, Some(id));
+        if let Some(why) = failed.into_iter().find_map(|d| d.error) {
+            return Err(why);
+        }
+        let p = plans
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("there is no destination {id}"))?;
+        let key = self.keys.read(&p.account).map_err(|e| {
+            format!(
+                "The stream key of {} could not be read from {}: {e}",
+                p.live.label(),
+                self.keys.place()
+            )
+        })?;
+        if p.request.needs_key && key.is_none() {
+            return Err(format!("No stream key is saved for {}.", p.live.label()));
+        }
+        let canvas = self.output_canvas(c)?;
+        let out = stream_output(&p.request, key, canvas, &self.adapters);
+        let output = if p.live.own {
+            self.start_output(&out, p.request.encoder.as_deref())?.0
+        } else {
+            self.start_outputs(std::slice::from_ref(&out), r.encoder.as_deref())
+                .pop()
+                .unwrap_or_else(|| Err("the destination did not start".into()))?
+        };
+        let live = p.started(output);
+        let dests = &mut self.outs[slot(c)].destinations;
+        match dests.iter_mut().find(|d| d.id == id) {
+            Some(d) => *d = live,
+            None => dests.push(live),
+        }
+        Ok(())
+    }
+
+    /// Stops destination `id` of `c`'s running stream while others run on
+    /// (`stream.destination.stop`): its output drains and its transport finishes; the
+    /// shared encoder runs on. When it was the anchor, the next running destination
+    /// becomes the anchor. False when it does not run.
+    fn stop_destination(&mut self, c: OutputCanvas, id: u32) -> bool {
+        let Some(anchor) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
+            return false;
+        };
+        let Some(d) = self.outs[slot(c)]
+            .destinations
+            .iter_mut()
+            .find(|d| d.id == id && d.output.is_some())
+        else {
+            return false;
+        };
+        let Some(output) = d.output.take() else {
+            return false;
+        };
+        d.state = DestinationState::Stopped;
+        d.link.connected = false;
+        let _ = self.studio.stop_output(output);
+        if output == anchor
+            && let Some(next) = self.outs[slot(c)]
+                .destinations
+                .iter()
+                .find(|d| d.output.is_some())
+                .cloned()
+            && let Some(next_id) = next.output
+        {
+            self.outs[slot(c)].streaming = Some((next.url, Link::default(), next_id));
+            self.refresh_stream_hold(c);
+        }
+        true
     }
 
     /// Attaches `out` to the studio with the picked encoder only, or the best one (a
@@ -7875,27 +8115,53 @@ impl Host {
                 s.transport_drops += d.link.transport_drops;
             }
         }
+        // Each destination's row (control API 1.74): a change of state, counters or
+        // error is published; the time on air alone is not (never per round).
+        let now = self.clock.now();
+        let rows: Vec<api::LiveDestination> = self.outs[slot(c)]
+            .destinations
+            .iter()
+            .map(|d| d.api(now))
+            .collect();
+        let without_time = |rows: &[api::LiveDestination]| -> Vec<api::LiveDestination> {
+            rows.iter()
+                .cloned()
+                .map(|r| api::LiveDestination { on_air_ms: 0, ..r })
+                .collect()
+        };
+        let rows_changed = match &self.outs[slot(c)].stream_state {
+            api::StreamState::Live { destinations, .. } => {
+                without_time(destinations) != without_time(&rows)
+            }
+            api::StreamState::Idle { .. } => false,
+        };
         let Some((_, last, _)) = &mut self.outs[slot(c)].streaming else {
             return;
         };
-        if let Some(link) = sum
-            && shown(&link) != shown(last)
-        {
+        let link = sum.filter(|l| shown(l) != shown(last));
+        if let Some(link) = link {
             *last = link;
             notify(stream_update(c, StreamUpdate::Link(link)));
-            let mut state = self.outs[slot(c)].stream_state.clone();
-            if let api::StreamState::Live {
-                connected,
-                connects,
-                reconnect_attempts,
-                ..
-            } = &mut state
-            {
+        }
+        if link.is_none() && !rows_changed {
+            return;
+        }
+        let mut state = self.outs[slot(c)].stream_state.clone();
+        if let api::StreamState::Live {
+            connected,
+            connects,
+            reconnect_attempts,
+            destinations,
+            ..
+        } = &mut state
+        {
+            if let Some(link) = link {
                 *connected = link.connected;
                 *connects = link.connects;
                 *reconnect_attempts = link.reconnect_attempts;
-                self.set_stream_state(c, state);
             }
+            *destinations = rows;
+            self.set_stream_state(c, state);
         }
     }
 
@@ -13070,6 +13336,35 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::StreamDestinations(p) => {
+                let canvases = match p.canvas {
+                    Some(c) => vec![host.api_canvas_of(Some(c))?],
+                    None if host.vertical.is_some() => {
+                        vec![OutputCanvas::Main, OutputCanvas::Vertical]
+                    }
+                    None => vec![OutputCanvas::Main],
+                };
+                Ok(Response::StreamDestinations(api::StreamDestinations {
+                    destinations: canvases
+                        .into_iter()
+                        .flat_map(|c| host.api_destinations(c))
+                        .collect(),
+                }))
+            }
+            C::StreamDestinationStart(p) => self.destination_start(p.id),
+            C::StreamDestinationStop(p) => self.destination_stop(p.id),
+            C::StreamDestinationSetEnabled(p) => {
+                if host.destination_canvas(p.id).is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("there is no destination {}", p.id),
+                    ));
+                }
+                if host.destinations.set_enabled(p.id, p.enabled) {
+                    notify(Update::StreamDestinations(host.destinations.clone()));
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::StreamStatus(p) => {
                 let c = host.api_canvas_of(p.canvas)?;
                 let data = host.outs[slot(c)].stream_state.clone();
@@ -14015,6 +14310,96 @@ impl ApiTarget<'_> {
     /// Goes live on canvas `c` with its saved stream settings and the key in the key
     /// store.
     fn stream(&mut self, c: OutputCanvas) -> Result<Response, ApiError> {
+        self.stream_to(c, None)
+    }
+
+    /// The running canvas of destination `id`, or `not_found`.
+    fn destination_of(&self, id: u32) -> Result<OutputCanvas, ApiError> {
+        let c = self.host.destination_canvas(id).ok_or_else(|| {
+            ApiError::new(ErrorKind::NotFound, format!("there is no destination {id}"))
+        })?;
+        self.host.api_canvas_of(Some(c))
+    }
+
+    /// `stream.destination.start` (protocol 1.74, ADR-0127 decision 16).
+    fn destination_start(&mut self, id: u32) -> Result<Response, ApiError> {
+        let c = self.destination_of(id)?;
+        let notify = self.notify;
+        let conflict = |why: &str| Err(ApiError::new(ErrorKind::Conflict, why));
+        let Some(d) = self
+            .host
+            .resolved_destinations(c)
+            .into_iter()
+            .find(|d| d.destination.id == id)
+        else {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("there is no destination {id}"),
+            ));
+        };
+        // Turning one on stays a separate, visible step.
+        if !d.destination.enabled {
+            return conflict("the destination is turned off: turn it on first");
+        }
+        if d.parsed().is_none() {
+            return conflict("the destination is not set up: enter its server in Settings, Stream");
+        }
+        if self.host.outs[slot(c)].streaming.is_none() {
+            return self.stream_to(c, Some(id));
+        }
+        if self.host.outs[slot(c)]
+            .destinations
+            .iter()
+            .any(|d| d.id == id && d.output.is_some())
+        {
+            return conflict("the destination is already on air");
+        }
+        let host = &mut *self.host;
+        let (request, hidden) = host.api_stream_request(c, Some(id))?;
+        let result = host.start_destination(c, &request, id);
+        host.report_link(c, notify);
+        host.publish(notify);
+        result.map_err(|why| {
+            failed(
+                hidden
+                    .iter()
+                    .fold(why, |w, url| w.replace(url.as_str(), "the saved server")),
+            )
+        })?;
+        Ok(Response::Done(Empty {}))
+    }
+
+    /// `stream.destination.stop` (protocol 1.74): the last running destination ends
+    /// the stream, as `stream.stop` does.
+    fn destination_stop(&mut self, id: u32) -> Result<Response, ApiError> {
+        let c = self.destination_of(id)?;
+        let notify = self.notify;
+        let host = &mut *self.host;
+        let o = &host.outs[slot(c)];
+        let running = o.destinations.iter().filter(|d| d.output.is_some()).count();
+        let this = o
+            .destinations
+            .iter()
+            .any(|d| d.id == id && d.output.is_some());
+        if o.streaming.is_none() || !this {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "the destination is not on air",
+            ));
+        }
+        if running == 1 {
+            host.end_stream_asked(c, notify);
+        } else {
+            host.stop_destination(c, id);
+            host.report_link(c, notify);
+        }
+        host.publish(notify);
+        Ok(Response::Done(Empty {}))
+    }
+
+    /// `stream.start` of `c`, or `stream.destination.start` of `only` while `c` does
+    /// not stream: that canvas's stream with this destination alone (protocol 1.74).
+    fn stream_to(&mut self, c: OutputCanvas, only: Option<u32>) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
         if host.outs[slot(c)].streaming.is_some() {
@@ -14023,41 +14408,21 @@ impl ApiTarget<'_> {
                 "a stream is already running",
             ));
         }
-        // The vertical stream's texts name it, so a client sees which one is missing.
-        let which = match c {
-            OutputCanvas::Main => "",
-            OutputCanvas::Vertical => " for the vertical stream",
+        let (request, hidden) = host.api_stream_request(c, only)?;
+        let hide = |why: String| {
+            failed(
+                hidden
+                    .iter()
+                    .fold(why, |w, url| w.replace(url.as_str(), "the saved server")),
+            )
         };
-        if host.stream_profile.is_none() {
-            return Err(failed("the studio is still starting; try again"));
-        }
-        let Some(profile) = host.stream_profile_of(c) else {
-            return Err(failed(format!(
-                "no server is saved{which}: enter it in Settings, Stream"
-            )));
+        let result = host.start_stream_to(c, &request, only);
+        // The texts name the stream, or the destination, whose key is missing.
+        let which = match (only, c) {
+            (Some(id), _) if id != MAIN_FIRST && id != VERTICAL_FIRST => " for this destination",
+            (_, OutputCanvas::Main) => "",
+            (_, OutputCanvas::Vertical) => " for the vertical stream",
         };
-        if profile.server.is_empty() {
-            return Err(failed(format!(
-                "no server is saved{which}: enter it in Settings, Stream"
-            )));
-        }
-        // The saved server is a setting (`admin`): a `control` caller never gets it back,
-        // also not inside an error text.
-        let url = profile.server.clone();
-        let hide = |why: String| failed(why.replace(&url, "the saved server"));
-        // A saved encoder this system does not have falls back to the best one, as the
-        // UI's automatic choice does.
-        let encoder = profile
-            .encoding
-            .encoder
-            .clone()
-            .filter(|id| host.encoders.iter().any(|e| e.id == *id));
-        let request = StreamRequest::from_profile(profile, encoder).map_err(|_| {
-            failed(format!(
-                "the saved stream settings{which} cannot be used: see Settings, Stream"
-            ))
-        })?;
-        let result = host.start_stream(c, &request);
         host.publish(notify);
         match result {
             Ok(StreamUpdate::Started {
