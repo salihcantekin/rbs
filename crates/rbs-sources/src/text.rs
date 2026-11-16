@@ -723,6 +723,25 @@ mod tests {
     }
 
     #[test]
+    fn a_text_marked_as_images_goes_back_to_auto_when_it_starts_to_move() {
+        use rbs_graph::node::NodeTypeId;
+        use rbs_scene::model::{RecordSeparately, VideoAs};
+        let text = NodeTypeId::new(crate::types::TEXT_SOURCE);
+        let color = NodeTypeId::new(crate::types::COLOR_SOURCE);
+        let images = RecordSeparately::new(true, false).with_video_as(VideoAs::Image);
+        let clock = settings(&[(keys::KIND, SettingValue::Text("clock".into()))]);
+        let fields = settings(&[(keys::FIELDS, SettingValue::Bool(true))]);
+        let plain = settings(&[(keys::TEXT, SettingValue::Text("x".into()))]);
+        let auto = Some(images.with_video_as(VideoAs::Auto));
+        assert_eq!(crate::mark_after_edit(&text, &clock, images), auto);
+        assert_eq!(crate::mark_after_edit(&text, &fields, images), auto);
+        assert_eq!(crate::mark_after_edit(&text, &plain, images), None);
+        assert_eq!(crate::mark_after_edit(&color, &clock, images), None);
+        let video = RecordSeparately::new(true, false).with_video_as(VideoAs::Video);
+        assert_eq!(crate::mark_after_edit(&text, &clock, video), None);
+    }
+
+    #[test]
     fn only_plain_text_without_fields_is_still() {
         assert!(text_is_still(&Settings::new()));
         assert!(text_is_still(&settings(&[(

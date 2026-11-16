@@ -9436,8 +9436,20 @@ impl Host {
             .collection
             .set_source_settings(id, settings)
             .map_err(|e| Refusal::of(&e))?;
+        let mut undos = vec![undo];
+        // Marks follow stillness (ADR-0129 decision 1): a text that starts to move
+        // loses its `video_as: image` in the same undo step.
+        if let Some(mark) = self.collection.source(id).and_then(|s| {
+            rbs_sources::mark_after_edit(&s.type_id, &s.settings, s.record_separately)
+        }) {
+            undos.push(
+                self.collection
+                    .set_source_record_separately(id, mark)
+                    .map_err(|e| Refusal::of(&e))?,
+            );
+        }
         self.history
-            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+            .record(EditKind::SourceSettings, &name, 0, undos);
         self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::SourceSettings);
         Ok(true)
     }

@@ -45,6 +45,20 @@ pub use registry::{
 };
 pub use types::{SourceClass, class_of};
 
+/// The separate-recording mark a source keeps after its settings become `settings`
+/// (ADR-0129 decision 1, "marks follow stillness"): a picture marked `video_as: image`
+/// that is no longer still goes back to `auto`, so a take is never refused for it.
+/// `None` when the mark stays as it is.
+pub fn mark_after_edit(
+    type_id: &rbs_graph::node::NodeTypeId,
+    settings: &rbs_scene::model::Settings,
+    mark: rbs_scene::model::RecordSeparately,
+) -> Option<rbs_scene::model::RecordSeparately> {
+    use rbs_scene::model::VideoAs;
+    (mark.video_as == VideoAs::Image && !is_still(type_id, settings))
+        .then(|| mark.with_video_as(VideoAs::Auto))
+}
+
 /// Whether a source of `type_id` with `settings` shows a picture that changes only
 /// when its settings change (ADR-0129 decision 1, superseding ADR-0117 decision 2 in
 /// part). The class answers for every type except text, whose settings answer.
