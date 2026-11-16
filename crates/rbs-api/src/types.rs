@@ -968,6 +968,14 @@ pub struct StreamSettings {
     /// ADR-0124); `freeze` from older servers.
     #[serde(default)]
     pub hold_picture: crate::request::HoldPicture,
+    /// The scene a hold with `picture: "scene"` shows when it names none (protocol
+    /// 1.67, ADR-0124 phase 2b); `null` when none is set.
+    #[serde(default)]
+    pub hold_scene: Option<u32>,
+    /// The sound such a hold sends when it names none (protocol 1.67); `silence` from
+    /// older servers.
+    #[serde(default)]
+    pub hold_sound: crate::request::HoldSound,
 }
 
 /// The stream settings an API client may change (`settings.set`; protocol 1.2): all of
@@ -993,6 +1001,26 @@ pub struct StreamSettingsPatch {
     /// What a hold sends when it names no picture (protocol 1.65); absent: unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_picture: Option<crate::request::HoldPicture>,
+    /// The hold scene (protocol 1.67): absent leaves it unchanged, `null` clears it.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hold_scene: Option<Option<u32>>,
+    /// The hold sound (protocol 1.67); absent: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_sound: Option<crate::request::HoldSound>,
+}
+
+/// A field that is present, `null` included: `Some(value)`. An absent field takes the
+/// `default` (`None`).
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// Settings the control thread owns.
@@ -1427,6 +1455,27 @@ pub enum StreamState {
         /// counted up to the change) (protocol 1.64).
         #[serde(default)]
         held_ms: u64,
+        /// What the hold sends while held (protocol 1.67); `null` while not held. A
+        /// scene hold that fell back says `freeze`.
+        #[serde(default)]
+        hold_picture: Option<crate::request::HoldPicture>,
+        /// The hold scene while held with one (protocol 1.67).
+        #[serde(default)]
+        hold_scene: Option<u32>,
+        /// The sound asked for while held with a scene (protocol 1.67).
+        #[serde(default)]
+        hold_sound: Option<crate::request::HoldSound>,
+        /// The scene hold fell back to the last frame and silence (protocol 1.67), with
+        /// why in `hold_fallback_reason`.
+        #[serde(default)]
+        hold_fallback: bool,
+        /// The hold scene's sound alone fell back to silence while its picture runs on
+        /// (protocol 1.67), with why in `hold_fallback_reason`.
+        #[serde(default)]
+        hold_sound_fallback: bool,
+        /// Why the hold fell back, while it does (protocol 1.67).
+        #[serde(default)]
+        hold_fallback_reason: Option<String>,
     },
 }
 

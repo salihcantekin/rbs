@@ -59,6 +59,8 @@ fn stream_settings() -> StreamSettings {
         auto_record: true,
         output_size: None,
         hold_picture: HoldPicture::Black,
+        hold_scene: Some(4),
+        hold_sound: HoldSound::Scene,
     }
 }
 
@@ -402,6 +404,8 @@ fn every_request() -> Vec<Request> {
         c(Command::StreamHold(StreamHold {
             canvas: None,
             picture: Some(HoldPicture::Black),
+            scene: None,
+            sound: None,
         })),
         c(Command::StreamResume(OnCanvases {
             canvas: Some(OutputTarget::All),
@@ -534,6 +538,8 @@ fn every_request() -> Vec<Request> {
                 auto_record: Some(true),
                 output_size: None,
                 hold_picture: Some(HoldPicture::Black),
+                hold_scene: None,
+                hold_sound: None,
             }),
             loudness: Some(LoudnessSettings {
                 target: -16.0,
@@ -918,6 +924,12 @@ fn every_result_and_event_type_round_trips() {
             audio_encoder: Some("MF AAC".into()),
             held: true,
             held_ms: 1500,
+            hold_picture: None,
+            hold_scene: None,
+            hold_sound: None,
+            hold_fallback: false,
+            hold_sound_fallback: false,
+            hold_fallback_reason: None,
         }),
         EventPayload::VcamChanged(VcamStatus {
             frames: None,
@@ -1213,10 +1225,28 @@ fn hold_methods_take_a_canvas_and_a_picture() {
         Ok(Command::StreamHoldToggle(StreamHold {
             canvas: Some(OutputTarget::All),
             picture: Some(HoldPicture::Black),
+            scene: None,
+            sound: None,
+        }))
+    );
+    // Protocol 1.67: a scene, with its sound; an unknown picture is still refused.
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"stream.hold","params":{"picture":"scene","scene":7,"sound":"scene"}}"#
+        ),
+        Ok(Command::StreamHold(StreamHold {
+            canvas: None,
+            picture: Some(HoldPicture::Scene),
+            scene: Some(7),
+            sound: Some(HoldSound::Scene),
         }))
     );
     assert_eq!(
-        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.hold","params":{"picture":"scene"}}"#),
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.hold","params":{"picture":"slate"}}"#),
+        Err(ErrorKind::InvalidParams)
+    );
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.hold","params":{"sound":"loud"}}"#),
         Err(ErrorKind::InvalidParams)
     );
     assert_eq!(
@@ -1445,6 +1475,12 @@ fn stream_state_has_a_stable_wire_form() {
         audio_encoder: None,
         held: false,
         held_ms: 0,
+        hold_picture: None,
+        hold_scene: None,
+        hold_sound: None,
+        hold_fallback: false,
+        hold_sound_fallback: false,
+        hold_fallback_reason: None,
     };
     assert_eq!(
         serde_json::to_value(&live).unwrap(),
@@ -1458,6 +1494,12 @@ fn stream_state_has_a_stable_wire_form() {
             "audio_encoder": null,
             "held": false,
             "held_ms": 0,
+            "hold_picture": null,
+            "hold_scene": null,
+            "hold_sound": null,
+            "hold_fallback": false,
+            "hold_sound_fallback": false,
+            "hold_fallback_reason": null,
         })
     );
     // A 1.63 server's live state, without the hold fields, reads as not held.
@@ -1471,6 +1513,8 @@ fn stream_state_has_a_stable_wire_form() {
         StreamState::Live {
             held: false,
             held_ms: 0,
+            hold_picture: None,
+            hold_fallback: false,
             ..
         }
     ));
@@ -1530,8 +1574,18 @@ fn stream_settings_are_a_minor_addition() {
             auto_record: Some(true),
             output_size: None,
             hold_picture: Some(HoldPicture::Black),
+            hold_scene: Some(Some(4)),
+            hold_sound: Some(HoldSound::Scene),
         }
     );
+    // Protocol 1.67: `null` clears the hold scene, absent leaves it.
+    let cleared: StreamSettingsPatch = serde_json::from_value({
+        let mut v = serde_json::to_value(stream_settings()).unwrap();
+        v["hold_scene"] = serde_json::Value::Null;
+        v
+    })
+    .unwrap();
+    assert_eq!(cleared.hold_scene, Some(None));
     // Protocol 1.65 added `hold_picture`: a 1.64 server's settings read as `freeze`,
     // and a 1.64 client's patch leaves it as it is.
     let mut older = serde_json::to_value(stream_settings()).unwrap();
@@ -1541,6 +1595,19 @@ fn stream_settings_are_a_minor_addition() {
     assert_eq!(read.hold_picture, HoldPicture::Freeze);
     let patch: StreamSettingsPatch = serde_json::from_value(older).unwrap();
     assert_eq!(patch.hold_picture, None);
+    // Protocol 1.67 added `hold_scene` and `hold_sound`: a 1.66 server's settings
+    // read as none and silence, and a 1.66 client's patch leaves them.
+    let mut older = serde_json::to_value(stream_settings()).unwrap();
+    for field in ["hold_scene", "hold_sound"] {
+        older.as_object_mut().unwrap().remove(field);
+    }
+    let read: StreamSettings = serde_json::from_value(older.clone()).unwrap();
+    assert_eq!(
+        (read.hold_scene, read.hold_sound),
+        (None, HoldSound::Silence)
+    );
+    let patch: StreamSettingsPatch = serde_json::from_value(older).unwrap();
+    assert_eq!((patch.hold_scene, patch.hold_sound), (None, None));
     // Protocol 1.11 added `auto_record`: a 1.2 server's settings read as off, and a
     // 1.2 client's patch leaves it as it is.
     let mut old = serde_json::to_value(stream_settings()).unwrap();
