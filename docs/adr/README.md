@@ -140,3 +140,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0130](0130-voice-filters-noise-suppression-compressor-limiter-eq.md) | Voice filters: noise suppression, compressor, limiter and equaliser, with filter latency | Accepted |
 | [0131](0131-import-obs-scene-collections-and-profiles.md) | Import OBS scene collections, profiles and hotkeys as a new collection and output profile, through a mapper registry, with a report of what did not come across | Accepted |
 | [0132](0132-browser-engine-css-interaction.md) | The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in | Accepted |
+| [0133](0133-duplicate-reset-and-paste-source-attributes.md) | Duplicate a source (and a scene with new sources), reset a source, and paste chosen attribute groups onto other sources in one undo step; sound stays live | Accepted |

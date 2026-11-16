@@ -562,7 +562,66 @@ pub struct AddScene {
     pub name: Option<String>,
 }
 
-/// `scene.remove` and `scene.switch` (protocol 1.6), `scene.duplicate` (protocol 1.43).
+/// `scene.duplicate` (protocol 1.43; `sources` from 1.68, ADR-0133 decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateScene {
+    /// The scene's id (`scene.list`).
+    pub scene: u32,
+    /// `shared` (default) or `copied`.
+    #[serde(default)]
+    pub sources: crate::types::DuplicateSources,
+}
+
+/// `source.duplicate` and `source.copy_attributes` (protocol 1.68, ADR-0133): a source,
+/// its item in `scene` (default: the scene being edited) or its global item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceInScene {
+    /// The source's id.
+    pub source: u32,
+    /// The scene; absent for the scene being edited. Not allowed for a global source.
+    #[serde(default)]
+    pub scene: Option<u32>,
+    /// The canvas whose layout is read (`source.copy_attributes` only).
+    #[serde(default)]
+    pub canvas: OutputCanvas,
+}
+
+/// `source.reset` (protocol 1.68, ADR-0133 decision 5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetSource {
+    /// The source's id.
+    pub source: u32,
+    /// The scene; absent for the scene being edited.
+    #[serde(default)]
+    pub scene: Option<u32>,
+    /// The canvas whose layout is written.
+    #[serde(default)]
+    pub canvas: OutputCanvas,
+    /// Group ids; absent means every non-live group.
+    #[serde(default)]
+    pub groups: Option<Vec<String>>,
+}
+
+/// `source.paste_attributes` (protocol 1.68, ADR-0133 decision 6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PasteAttributes {
+    /// The target items, in any scene.
+    pub items: Vec<u32>,
+    /// Group ids to paste; not empty.
+    pub groups: Vec<String>,
+    /// `replace` (default) or `append`.
+    #[serde(default)]
+    pub filters: crate::types::FilterPasteMode,
+    /// The canvas whose layouts are written.
+    #[serde(default)]
+    pub canvas: OutputCanvas,
+}
+
+/// `scene.remove` and `scene.switch` (protocol 1.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneRef {
@@ -1457,7 +1516,17 @@ pub enum Command {
     /// `scene.rename` (protocol 1.6).
     SceneRename(RenameScene),
     /// `scene.duplicate` (protocol 1.43): a copy of the scene, not on air.
-    SceneDuplicate(SceneRef),
+    SceneDuplicate(DuplicateScene),
+    /// `source.duplicate` (protocol 1.68).
+    SourceDuplicate(SourceInScene),
+    /// `source.reset` (protocol 1.68).
+    SourceReset(ResetSource),
+    /// `source.copy_attributes` (protocol 1.68).
+    SourceCopyAttributes(SourceInScene),
+    /// `source.attributes_clipboard` (protocol 1.68).
+    SourceAttributesClipboard,
+    /// `source.paste_attributes` (protocol 1.68).
+    SourcePasteAttributes(PasteAttributes),
     /// `scene.switch` (protocol 1.6).
     SceneSwitch(SceneRef),
     /// `source.rename` (protocol 1.6).
@@ -1711,6 +1780,11 @@ impl Command {
             Command::SceneRemove(_) => "scene.remove",
             Command::SceneRename(_) => "scene.rename",
             Command::SceneDuplicate(_) => "scene.duplicate",
+            Command::SourceDuplicate(_) => "source.duplicate",
+            Command::SourceReset(_) => "source.reset",
+            Command::SourceCopyAttributes(_) => "source.copy_attributes",
+            Command::SourceAttributesClipboard => "source.attributes_clipboard",
+            Command::SourcePasteAttributes(_) => "source.paste_attributes",
             Command::SceneSwitch(_) => "scene.switch",
             Command::SourceRename(_) => "source.rename",
             Command::SourceSetVolume(_) => "source.set_volume",
@@ -1893,6 +1967,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("scene.remove", Some(Scope::Control)),
     m("scene.rename", Some(Scope::Control)),
     m("scene.duplicate", Some(Scope::Control)),
+    m("source.duplicate", Some(Scope::Control)),
+    m("source.reset", Some(Scope::Control)),
+    m("source.copy_attributes", Some(Scope::Control)),
+    m("source.attributes_clipboard", Some(Scope::Read)),
+    m("source.paste_attributes", Some(Scope::Control)),
     m("scene.switch", Some(Scope::Control)),
     m("source.rename", Some(Scope::Control)),
     m("source.set_volume", Some(Scope::Control)),
@@ -2141,7 +2220,17 @@ enum WireRequest {
     #[serde(rename = "scene.rename")]
     SceneRename(RenameScene),
     #[serde(rename = "scene.duplicate")]
-    SceneDuplicate(SceneRef),
+    SceneDuplicate(DuplicateScene),
+    #[serde(rename = "source.duplicate")]
+    SourceDuplicate(SourceInScene),
+    #[serde(rename = "source.reset")]
+    SourceReset(ResetSource),
+    #[serde(rename = "source.copy_attributes")]
+    SourceCopyAttributes(SourceInScene),
+    #[serde(rename = "source.attributes_clipboard")]
+    SourceAttributesClipboard(Empty),
+    #[serde(rename = "source.paste_attributes")]
+    SourcePasteAttributes(PasteAttributes),
     #[serde(rename = "scene.switch")]
     SceneSwitch(SceneRef),
     #[serde(rename = "source.rename")]
@@ -2397,6 +2486,13 @@ impl From<WireRequest> for Request {
             WireRequest::SceneRemove(p) => Request::Command(C::SceneRemove(p)),
             WireRequest::SceneRename(p) => Request::Command(C::SceneRename(p)),
             WireRequest::SceneDuplicate(p) => Request::Command(C::SceneDuplicate(p)),
+            WireRequest::SourceDuplicate(p) => Request::Command(C::SourceDuplicate(p)),
+            WireRequest::SourceReset(p) => Request::Command(C::SourceReset(p)),
+            WireRequest::SourceCopyAttributes(p) => Request::Command(C::SourceCopyAttributes(p)),
+            WireRequest::SourceAttributesClipboard(_) => {
+                Request::Command(C::SourceAttributesClipboard)
+            }
+            WireRequest::SourcePasteAttributes(p) => Request::Command(C::SourcePasteAttributes(p)),
             WireRequest::SceneSwitch(p) => Request::Command(C::SceneSwitch(p)),
             WireRequest::SourceRename(p) => Request::Command(C::SourceRename(p)),
             WireRequest::SourceSetVolume(p) => Request::Command(C::SourceSetVolume(p)),
@@ -2550,6 +2646,11 @@ impl From<Request> for WireRequest {
                 C::SceneRemove(p) => WireRequest::SceneRemove(p),
                 C::SceneRename(p) => WireRequest::SceneRename(p),
                 C::SceneDuplicate(p) => WireRequest::SceneDuplicate(p),
+                C::SourceDuplicate(p) => WireRequest::SourceDuplicate(p),
+                C::SourceReset(p) => WireRequest::SourceReset(p),
+                C::SourceCopyAttributes(p) => WireRequest::SourceCopyAttributes(p),
+                C::SourceAttributesClipboard => WireRequest::SourceAttributesClipboard(Empty {}),
+                C::SourcePasteAttributes(p) => WireRequest::SourcePasteAttributes(p),
                 C::SceneSwitch(p) => WireRequest::SceneSwitch(p),
                 C::SourceRename(p) => WireRequest::SourceRename(p),
                 C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),
@@ -2895,6 +2996,15 @@ pub enum Response {
     SourceChrome(SourceChromeInfo),
     /// `look.list` (protocol 1.34).
     Looks(LookList),
+    /// `scene.duplicate` (protocol 1.43; `sources` from 1.68).
+    SceneDuplicated(crate::types::SceneDuplicated),
+    /// `source.duplicate` (protocol 1.68).
+    SourceDuplicated(crate::types::SourceDuplicated),
+    /// `source.reset`, `source.paste_attributes` (protocol 1.68).
+    AttributesApplied(crate::types::AttributesApplied),
+    /// `source.copy_attributes`, `source.attributes_clipboard` (protocol 1.68); `null`
+    /// while the clipboard is empty.
+    AttributesClipboard(Option<crate::types::AttributesClipboard>),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
     /// `canvas.auto_layout` (protocol 1.44).
