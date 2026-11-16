@@ -5305,6 +5305,8 @@ impl StudioUi {
                 out.vertical_preview = Some(endpoint);
             }
             Update::VerticalPictureFailed => self.vertical_picture_failed = true,
+            // No window opens projectors yet (ADR-0125, the window is the next step).
+            Update::Projector { .. } => {}
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 out.focus_shape = self.focus_shape.take();

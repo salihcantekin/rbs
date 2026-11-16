@@ -44,7 +44,7 @@ use rbs_gpu::GpuContext;
 use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_needed};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, Progress,
+    AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
     RecordAdapters, RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
@@ -1091,6 +1091,17 @@ pub enum Command {
     /// picture runs only while it shows, so a closed panel costs nothing. Kept while
     /// there is no vertical canvas, for the next one.
     SetVerticalPicture(bool),
+    /// Open projector `id` (chosen by the UI) of a canvas (ADR-0125 decision 2): a
+    /// picture of that canvas at its full size, only while it is open. Answered with
+    /// [`Update::Projector`]. An `id` already open is moved to `canvas`.
+    OpenProjector {
+        /// The UI's id for it.
+        id: u32,
+        /// Whose program it shows.
+        canvas: OutputCanvas,
+    },
+    /// Close projector `id`: its picture goes. Unknown ids change nothing.
+    CloseProjector(u32),
     /// Change the canvas's size and rate (Settings, Video). The studio restarts with
     /// it (ADR-0041: a running studio's canvas does not change); the program scene's
     /// items are placed again for the new size. Refused while recording. Always
@@ -2160,6 +2171,53 @@ pub struct VerticalState {
     pub follow: bool,
 }
 
+/// What became of a projector (ADR-0125 decisions 3 and 11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectorState {
+    /// Open: its picture runs or is being prepared.
+    Open,
+    /// Kept with no picture until its canvas comes back (the vertical canvas was
+    /// removed, or the collection has none).
+    Suspended,
+    /// Closed by the studio, with the reason to tell the user: a limit was reached or
+    /// its picture failed. The UI closes the window.
+    Closed(String),
+}
+
+/// At most this many projectors are open at a time (ADR-0125 decision 4).
+pub const MAX_PROJECTORS: usize = 4;
+/// Surface memory all open projector pictures may hold together, counted at
+/// [`MAX_PREVIEW_SURFACES`] surfaces of 4 bytes per pixel each (ADR-0125 decision 4).
+pub const MAX_PROJECTOR_SURFACE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The surface memory a projector of a `size` canvas counts toward
+/// [`MAX_PROJECTOR_SURFACE_BYTES`].
+pub fn projector_surface_bytes(size: Size) -> u64 {
+    u64::from(size.width) * u64::from(size.height) * 4 * MAX_PREVIEW_SURFACES as u64
+}
+
+/// Why a projector of `size` may not open next to projectors counting `open` bytes
+/// in `count` projectors; `None` when it may.
+pub fn projector_refusal(count: usize, open: u64, size: Size) -> Option<&'static str> {
+    if count >= MAX_PROJECTORS || open + projector_surface_bytes(size) > MAX_PROJECTOR_SURFACE_BYTES
+    {
+        return Some("Too many projectors are open. Close one first.");
+    }
+    None
+}
+
+/// One projector as the host keeps it (ADR-0125 decision 3).
+struct ProjectorRun {
+    id: u32,
+    canvas: OutputCanvas,
+    /// Its picture in the running studio; `None` while suspended or not yet added.
+    picture: Option<PictureId>,
+    /// Counted toward the limits (its canvas's size) while it has a picture.
+    size: Size,
+    /// What was last sent to the UI.
+    sent: Option<(Option<PreviewEndpoint>, ProjectorState)>,
+}
+
 /// The main display's framebuffer, for the Video settings row (ADR-0102 decision 8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MainDisplay {
@@ -2310,6 +2368,16 @@ pub enum Update {
     /// The vertical canvas's picture did not start; the UI asks again only after its
     /// panel was hidden and shown.
     VerticalPictureFailed,
+    /// A projector's picture (ADR-0125): where the UI connects, and whether the
+    /// projector is open, suspended or closed by the studio. Sent when either changes.
+    Projector {
+        /// The UI's id.
+        id: u32,
+        /// Where to connect, once the picture runs.
+        picture: Option<PreviewEndpoint>,
+        /// Its state.
+        state: ProjectorState,
+    },
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
     /// One target's picture ([`Command::GrabThumbnails`]); `None` when the adapter has
@@ -3017,6 +3085,8 @@ struct Host {
     /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
     vertical_picture: bool,
     vertical_preview_sent: Option<PreviewEndpoint>,
+    /// Open and suspended projectors (ADR-0125 decision 3). Empty: nothing of them.
+    projectors: Vec<ProjectorRun>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
@@ -3554,6 +3624,7 @@ fn start(
         scene_preview_sent: None,
         vertical_picture: false,
         vertical_preview_sent: None,
+        projectors: Vec::new(),
         scenes_shown: None,
         vertical: None,
         vertical_restore_error: None,
@@ -4315,6 +4386,14 @@ impl Host {
                     notify(Update::VerticalPictureFailed);
                     notify(Update::Error(why));
                 }
+                self.publish(notify);
+            }
+            Command::OpenProjector { id, canvas } => {
+                self.open_projector(id, canvas, notify);
+                self.publish(notify);
+            }
+            Command::CloseProjector(id) => {
+                self.close_projector(id);
                 self.publish(notify);
             }
             Command::SetCanvas { size, fps } => {
@@ -5342,6 +5421,11 @@ impl Host {
         self.studio = studio;
         self.clock = clock;
         self.waiting = self.studio.waiting();
+        // Pictures belonged to the old studio; the next publish adds them again with
+        // the canvas's size now (ADR-0125 decision 3).
+        for p in &mut self.projectors {
+            p.picture = None;
+        }
         // The camera keeps sending across a canvas change; when it cannot, the next
         // round says so.
         if let Some(settings) = self.camera.take()
@@ -8624,6 +8708,153 @@ impl Host {
         }
     }
 
+    /// The canvas a projector shows and its size, while that canvas runs.
+    fn projector_canvas(&self, canvas: OutputCanvas) -> Option<(CanvasId, Size, FrameRate)> {
+        let id = match canvas {
+            OutputCanvas::Main => self.canvas,
+            OutputCanvas::Vertical => self.vertical?.canvas,
+        };
+        let info = self.collection.canvas(id)?;
+        Some((id, info.size, info.frame_rate))
+    }
+
+    /// Opens projector `id` (ADR-0125): refused beyond the limits of decision 4 with
+    /// [`ProjectorState::Closed`]; its picture is added by [`Self::sync_projectors`].
+    fn open_projector(&mut self, id: u32, canvas: OutputCanvas, notify: &dyn Fn(Update)) {
+        self.close_projector(id);
+        if let Some((_, size, _)) = self.projector_canvas(canvas) {
+            let (count, open) = self.projectors_open();
+            if let Some(why) = projector_refusal(count, open, size) {
+                notify(Update::Projector {
+                    id,
+                    picture: None,
+                    state: ProjectorState::Closed(why.to_owned()),
+                });
+                return;
+            }
+        }
+        self.projectors.push(ProjectorRun {
+            id,
+            canvas,
+            picture: None,
+            size: Size::new(0, 0),
+            sent: None,
+        });
+    }
+
+    /// Closes projector `id`: its picture leaves the studio.
+    fn close_projector(&mut self, id: u32) {
+        let Some(at) = self.projectors.iter().position(|p| p.id == id) else {
+            return;
+        };
+        let p = self.projectors.remove(at);
+        if let Some(picture) = p.picture {
+            let run = self.run_collection();
+            let running = run.as_ref().unwrap_or(&self.collection);
+            // A picture that did not leave cleanly goes with the next update.
+            let _ = self
+                .studio
+                .remove_picture(running, &self.adapters.sources, picture);
+            self.waiting = self.studio.waiting();
+        }
+    }
+
+    /// How many projectors have a picture, and the surface memory they count.
+    fn projectors_open(&self) -> (usize, u64) {
+        self.projectors
+            .iter()
+            .filter(|p| p.picture.is_some())
+            .fold((0, 0), |(n, b), p| {
+                (n + 1, b + projector_surface_bytes(p.size))
+            })
+    }
+
+    /// Brings the projectors' pictures in line with the studio (ADR-0125 decision 3):
+    /// a picture that failed is removed and its projector closed; a projector whose
+    /// canvas runs and that has no picture gets one (after a restart, or when the
+    /// vertical canvas comes back); one whose canvas is gone is suspended. Tells the UI
+    /// what changed. Nothing runs while there is no projector (P13).
+    fn sync_projectors(&mut self, notify: &dyn Fn(Update)) {
+        if self.projectors.is_empty() {
+            return;
+        }
+        let present = self.studio.pictures();
+        let mut closed = Vec::new();
+        for at in 0..self.projectors.len() {
+            let (canvas, picture) = (self.projectors[at].canvas, self.projectors[at].picture);
+            // Gone with its canvas (the studio removed it).
+            if let Some(pid) = picture
+                && !present.contains(&pid)
+            {
+                self.projectors[at].picture = None;
+            }
+            if let Some(pid) = self.projectors[at].picture
+                && let Some(why) = self.studio.picture_failure(pid).map(str::to_owned)
+            {
+                closed.push((
+                    self.projectors[at].id,
+                    format!("The projector stopped: {why}"),
+                ));
+                continue;
+            }
+            if self.projectors[at].picture.is_some() {
+                continue;
+            }
+            let Some((canvas_id, size, fps)) = self.projector_canvas(canvas) else {
+                continue;
+            };
+            let (count, open) = self.projectors_open();
+            if let Some(why) = projector_refusal(count, open, size) {
+                closed.push((self.projectors[at].id, why.to_owned()));
+                continue;
+            }
+            let desc = PreviewDesc {
+                width: size.width,
+                height: size.height,
+                surfaces: preview_surfaces(fps),
+            };
+            let run = self.run_collection();
+            let running = run.as_ref().unwrap_or(&self.collection);
+            match self
+                .studio
+                .add_picture(running, &self.adapters.sources, canvas_id, desc)
+            {
+                Ok((pid, _)) => {
+                    self.projectors[at].picture = Some(pid);
+                    self.projectors[at].size = size;
+                }
+                Err(e) => closed.push((
+                    self.projectors[at].id,
+                    format!("The projector did not start: {e}"),
+                )),
+            }
+            self.waiting = self.studio.waiting();
+        }
+        for (id, why) in closed {
+            self.close_projector(id);
+            notify(Update::Projector {
+                id,
+                picture: None,
+                state: ProjectorState::Closed(why.clone()),
+            });
+            notify(Update::Error(why));
+        }
+        for p in &mut self.projectors {
+            let now = match p.picture {
+                Some(pid) => (self.studio.picture(pid), ProjectorState::Open),
+                None => (None, ProjectorState::Suspended),
+            };
+            if p.sent.as_ref() != Some(&now) {
+                p.sent = Some(now.clone());
+                notify(Update::Projector {
+                    id: p.id,
+                    picture: now.0,
+                    state: now.1,
+                });
+            }
+        }
+    }
+
     fn vertical_extra(&self, canvas: CanvasId) -> ExtraCanvas {
         let extra = ExtraCanvas::new(canvas);
         let picture = self.collection.canvas(canvas);
@@ -10524,6 +10755,7 @@ impl Host {
     /// here; the writer thread keeps only the latest snapshot, so a drag costs one
     /// write behind it, never a wait here).
     fn publish(&mut self, notify: &dyn Fn(Update)) {
+        self.sync_projectors(notify);
         self.publish_save();
         self.refresh_sizes();
         if self.vertical_sent != Some(self.vertical) {
