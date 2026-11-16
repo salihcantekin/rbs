@@ -1,6 +1,8 @@
 //! The render executor's runtime and the compositor node of the media graph
 //! (spec `docs/specs/gpu-compositor.md`, "Graph runtime and compositor node"; ADR-0020).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_core::media::{ColorSpace, FramePayload, PixelFormat, Size, TransferFunction, VideoFormat};
@@ -223,6 +225,10 @@ pub struct CompositorNode {
     compositor: Option<Compositor>,
     /// Reused every tick; room for `capacity` layers.
     scratch: Vec<Layer>,
+    /// An incoming compositor's ready counter (ADR-0128 decision 7): the last tick at
+    /// which every layer of its list whose link resolves had a texture frame. `None`
+    /// for every other compositor, which then does no more work.
+    ready: Option<Arc<AtomicU64>>,
 }
 
 impl CompositorNode {
@@ -237,8 +243,17 @@ impl CompositorNode {
             layers: receiver,
             compositor: None,
             scratch: Vec::new(),
+            ready: None,
         };
         (node, sender)
+    }
+
+    /// This compositor with a ready counter (ADR-0128 decision 7): `process` stores the
+    /// tick index (Release) on each tick at which every listed layer whose link resolves
+    /// had a texture frame; an empty list counts as ready. 0 means never.
+    pub fn with_ready(mut self, ready: Arc<AtomicU64>) -> Self {
+        self.ready = Some(ready);
+        self
     }
 
     /// The most layers this node draws.
@@ -306,17 +321,22 @@ impl Node<GpuRuntime> for CompositorNode {
 
         self.layers.update();
         self.scratch.clear();
+        // A linked layer without a picture this tick (ADR-0128 decision 7).
+        let mut missing = false;
         for spec in self.layers.get().iter().take(self.capacity as usize) {
             let Some(link) = link_of(&inputs, spec) else {
                 continue;
             };
             let Some(frame) = inputs.video(LAYERS_PIN, link) else {
+                missing = true;
                 continue;
             };
             let FramePayload::Texture(id) = *frame.payload() else {
+                missing = true;
                 continue;
             };
             let Some(tex) = local.pool.get(id) else {
+                missing = true;
                 continue;
             };
             let d = tex.desc();
@@ -359,6 +379,9 @@ impl Node<GpuRuntime> for CompositorNode {
         released.map_err(backend)?;
         // Dropping the previous frame only releases its lease.
         drop(outputs.set_video(CANVAS_PIN, Some(frame.with_sequence(tick.index)))?);
+        if let (Some(ready), false) = (&self.ready, missing) {
+            ready.store(tick.index.max(1), Ordering::Release);
+        }
         Ok(())
     }
 
