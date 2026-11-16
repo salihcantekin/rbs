@@ -69,6 +69,7 @@ rbs-manifest = { path = "../rbs-manifest" }
 rbs-project = { path = "../rbs-project" }
 rbs-browser-runner = { path = "../rbs-browser-runner" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+rbs-browser-shm = { path = "../rbs-browser-shm" }
 rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }

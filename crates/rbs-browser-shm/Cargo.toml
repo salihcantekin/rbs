@@ -1,0 +1,18 @@
+[package]
+name = "rbs-browser-shm"
+description = "Studio-allocated shared memory for browser helper frames (ADR-0109 decision 8). OS shared memory only; no CEF."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory"] }

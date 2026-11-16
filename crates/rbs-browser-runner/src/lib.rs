@@ -16,10 +16,11 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rbs_browser_ipc::shm::{FrameRing, RingReader, SlotLayout};
 use rbs_browser_ipc::{
     Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost, restart_delay,
+    startup_lost,
 };
+use rbs_browser_shm::{FrameRing, RingReader, SlotLayout};
 
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
@@ -77,7 +78,8 @@ impl HelperChild {
 
     /// Checks the heartbeat against `now` (the caller's clock). A helper whose counter
     /// has not moved for [`rbs_browser_ipc::HEARTBEAT_LIMIT`] is stopped and counted as
-    /// an exit. Returns false when the heartbeat was lost.
+    /// an exit; before its first beat the limit is [`rbs_browser_ipc::STARTUP_LIMIT`]
+    /// from spawn. Returns false when the heartbeat was lost.
     pub fn check_heartbeat(&mut self, now: Instant) -> bool {
         let beat = self.ring.heartbeat();
         if beat != self.last_beat {
@@ -85,7 +87,13 @@ impl HelperChild {
             self.last_beat_at = now;
             return true;
         }
-        if heartbeat_lost(now.saturating_duration_since(self.last_beat_at)) {
+        let silent = now.saturating_duration_since(self.last_beat_at);
+        let lost = if self.last_beat == 0 {
+            startup_lost(silent)
+        } else {
+            heartbeat_lost(silent)
+        };
+        if lost {
             self.stop();
             self.note_exit();
             return false;
@@ -96,6 +104,20 @@ impl HelperChild {
     /// Frames the helper has published so far.
     pub fn frames_written(&self) -> u64 {
         self.ring.frames_written()
+    }
+
+    /// Closes stdin, the helper's stop signal, and gives it `grace` to exit on its
+    /// own (an engine removes its temporary profile then); kills it after that. Not
+    /// for the render thread: it can wait up to `grace`.
+    pub fn close(&mut self, grace: Duration) {
+        self.stdin.take();
+        if let Some(child) = self.child.as_mut() {
+            let deadline = Instant::now() + grace;
+            while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        self.stop();
     }
 
     /// Kills and reaps the child on the control path. A dead child holds no slot.
@@ -178,6 +200,9 @@ pub fn spawn_helper(
     })
 }
 
+/// How long a stopped helper may take to exit on its own before it is killed.
+pub const STOP_GRACE: Duration = Duration::from_secs(1);
+
 /// Studio-side supervisor thread for one running helper (ADR-0109 decision 8). It
 /// exists only while the source is Active (P13). At the page's frame rate it copies the
 /// newest frame out of the section and hands it to `publish`, and it checks the
@@ -218,6 +243,11 @@ impl Supervisor {
                     }
                     std::thread::park_timeout(period);
                 }
+                // A stop, not an exit: let the helper shut down cleanly, here and not
+                // on the caller's thread.
+                if !exited_flag.load(Ordering::Acquire) {
+                    child.close(STOP_GRACE);
+                }
                 child
             })
             .map_err(|error| error.to_string())?;
@@ -233,7 +263,8 @@ impl Supervisor {
         self.exited.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Stops the thread and kills the helper. Control path only.
+    /// Stops the helper and waits for the thread, up to [`STOP_GRACE`] plus one
+    /// poll. Returns the stopped child. Tests and shutdown only.
     pub fn stop(&mut self) -> Option<HelperChild> {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
         let thread = self.thread.take()?;
@@ -242,11 +273,20 @@ impl Supervisor {
         child.stop();
         Some(child)
     }
+
+    /// Asks the helper to stop and returns at once. The thread closes the helper
+    /// (at most [`STOP_GRACE`], then a kill) and ends by itself. Control path.
+    pub fn stop_detached(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+        }
+    }
 }
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        let _ = self.stop();
+        self.stop_detached();
     }
 }
 
