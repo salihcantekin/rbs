@@ -34,7 +34,13 @@ pub trait Lookup {
 }
 pub struct LookupTarget { target: String, name: String, app: Option<String>, size: Option<(u32, u32)> }
 
-pub struct Options { stream_key: bool, shortcuts: bool }      // both default true
+pub struct Options {                                           // the wizard's choices; all default on
+    scenes: SceneChoice,               // All, or Only(names): a chosen scene brings what it nests
+    global_audio: bool, audio_filters: bool, video_filters: bool, hotkeys: bool,
+    canvas: bool, recording: bool, stream_server: bool, stream_key: bool,
+    replay: bool, audio_settings: bool,
+}
+// Left-out parts are not in the plan; each is one report entry, outcome NotChosen.
 
 pub fn plan(collection_json: &[u8], profile: Option<&ProfileFiles>, mappers: &Mappers,
             catalogue: &dyn Catalogue, lookup: &dyn Lookup, options: &Options) -> Result<ImportPlan, ImportError>;
@@ -66,7 +72,7 @@ pub trait TransitionMapper { /* same shape, TransitionOutcome */ }
 
 ```rust
 pub struct ImportReport { pub exact: Counts, pub entries: Vec<ReportEntry> }
-pub struct ReportEntry { outcome: Outcome /* Approximated | Skipped */, area: Area,
+pub struct ReportEntry { outcome: Outcome /* Approximated | Skipped | NotChosen */, area: Area,
                          obs_name: String, obs_type: String, scenes: Vec<String>,
                          reason: String, hint: Option<String> }
 ```

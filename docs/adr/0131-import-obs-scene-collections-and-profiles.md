@@ -113,3 +113,8 @@ Round 3: independent AI session, 2026-11-16, changes requested (small). Resoluti
 Round 4: independent AI session, 2026-11-16, approve with nits. Resolved: the spec's `Unknown*` row now says references are resolved in pass two and dangling ones are left out and reported; the spec says a refused server is reported by scheme only and the check's error text is never shown.
 
 Owner approval: Salih accepted on 2026-11-16 (decision card in the project thread).
+
+Owner direction after acceptance (Salih, 2026-11-16, project thread): the desktop import is a **wizard started from Settings**, and the user **chooses what is imported**. This refines decision 12's desktop entry and decision 2's `Options`, without changing any other decision:
+- The wizard opens from a Settings card (Settings › General, "Import from OBS"); the first-run page and the RBS menu may open the same wizard. Steps: choose the OBS install or a file; choose a collection and a profile; choose what to bring; read the report (a dry run of exactly that choice); import and see the result.
+- `Options` carries the choice: scenes (all, or a chosen subset; a chosen scene brings the scenes it nests), global audio devices, audio filters, video filters, hotkeys, and from the profile canvas and frame rate, recording, stream server, stream key, replay buffer and audio settings. Each is on by default. Anything left out is not in the plan and is listed in the report as "not chosen", so the report always matches what is written.
+- The wizard's layout is proposed to the owner with dark and light screenshots before it is built (rule 16).
