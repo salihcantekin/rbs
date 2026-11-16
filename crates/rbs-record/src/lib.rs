@@ -59,3 +59,7 @@ pub use studio::{
     PauseRefused, PauseState, PlannedOutput, ReplaySettings, SharedPause, StartPlanRequest, Studio,
     StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
 };
+pub use studio::{
+    MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
+    SyncMeasureState, SyncMeasureStatus,
+};

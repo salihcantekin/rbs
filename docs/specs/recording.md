@@ -349,9 +349,34 @@ A hold can show a scene of the collection instead of the last frame or black, wi
 - **Readout.** `loudness_readout()` gives the running meter's shared values (`Arc<LoudnessReadout>`, `None` while off) so the desktop app's Mixer reads them at its own rate; a new run is a new handle.
 - **Stop.** `stop_loudness` removes the node with a plain apply and takes it back like the monitor. `shutdown` stops it. While it is off the studio has no loudness node (ADR-0013).
 
-### Sync offset measurement (ADR-0126; estimator built, probes and studio calls planned)
+### Sync offset measurement (ADR-0126; studio calls and estimator built, device memory and control API planned)
 
-The pure estimator is `rbs_record::sync_measure` (no I/O, no clock). The probes, `Studio` calls, end reasons and the device memory are later steps of ADR-0126 and are specified with them.
+#### Studio calls
+
+```rust
+pub const MEASURE_WINDOW: Duration;   // 10 s
+pub const MEASURE_CLAPS: usize;       // 5
+impl Studio {
+    pub fn start_sync_measure(&mut self, source: SourceId, reference: SourceId) -> Result<u64, RecordError>;
+    pub fn sync_measure(&mut self) -> Option<SyncMeasureStatus>;        // call from the service loop
+    pub fn cancel_sync_measure(&mut self) -> Option<SyncMeasureStatus>; // Failed(Cancelled)
+    pub fn sync_measure_collected(&self) -> Option<(usize, usize)>;     // ms of sound, pictures logged
+}
+pub struct SyncMeasureStatus { pub id: u64, pub source: SourceId, pub reference: SourceId, pub state: SyncMeasureState }
+pub enum SyncMeasureState { Running { pairs: usize }, Done(SyncMeasureResult), Failed(SyncMeasureFailure) }
+pub struct SyncMeasureResult { pub suggestion: Suggestion, pub estimate: Estimate, pub effective_offset_ms: i32 }
+pub enum SyncMeasureFailure { TooFewClaps, NoPictureMotion, Inconsistent, OffsetChanged, ChainChanged, SourceClosed, Cancelled }
+pub enum SyncMeasureRefused { Busy, NotHeard, NoPicture, NoAudio }   // in RecordError::SyncMeasure
+```
+
+- **Start.** Refused with `Busy` while one runs, `NoAudio` without a mixer, `NotHeard` when the bound mixer has no input for `source` (a source the program mix does not hear, or one with no sound), `NoPicture` when `reference` has no chain tail with a video output. Otherwise it adds a `SyncProbeNode` (audio partition) linked from the source's mixer input producer, after its filters and offset and before the fader (the ADR-0095 tap), and a `SyncPictureProbeNode` (render partition) linked from the reference's chain tail, adopts both and applies; on a failure both are taken back and nothing stays. It records the producer and tail, the start time on the engine clock, the stored offset, the **effective** offset (`rbs_audio::effective_offset_ns` with the scene's 200 ms limit) and the input's `resyncs`. Ids count up from 1 per studio. The reference's picture is drawn only while something takes the canvas; in the app the preview does.
+- **Status.** `sync_measure` pulls both logs, then ends the measurement with `Failed` when the source left the mix or the reference its picture (`SourceClosed`), when the producer or tail changed or a probe is no longer linked (`ChainChanged`), when `set_audio_offset` changed that source's offset or its input resynchronised (`OffsetChanged`). Otherwise it estimates: a result with at least `MEASURE_CLAPS` pairs, or any result once `MEASURE_WINDOW` passed, ends with `Done` (the suggestion clamped to the input's advance limit and 200 ms); an estimator error after the window ends with that error. Else `Running` with the pairs so far. An ending removes both probes with a plain apply (taken back now or through the pending takes) and returns the final status once; then `None`.
+- **Shutdown** ends a running measurement. Nothing is applied by the studio: the caller applies the suggestion through the source's sync offset.
+- Tests (`crates/rbs-record/tests/sync_measure.rs`, reference adapters on a `TestClock`): both probes fill while it runs and cancelling removes them (node count back, a new id next); a source the mix does not hear and a reference with no picture are refused, adding nothing; another source's offset change does not end it, the source's own does (`OffsetChanged`) and removes the probes; `slow_` (ignored): ten seconds of steady tones and a test pattern end without a result.
+
+#### Estimator
+
+The pure estimator is `rbs_record::sync_measure` (no I/O, no clock).
 
 ```rust
 pub struct AudioEnergy { pub time_ns: i64, pub energy: f32 }      // mean square of one 1 ms sub-block
@@ -362,6 +387,7 @@ pub struct Suggestion { pub measured_ms: i32, pub offset_ms: i32, pub clamped: b
 pub fn audio_onsets(energy: &[AudioEnergy]) -> Vec<i64>;
 pub fn picture_events(frames: &[PictureMotion]) -> Option<(Vec<i64>, i64)>; // events, median interval
 pub fn estimate(energy: &[AudioEnergy], frames: &[PictureMotion]) -> Result<Estimate, EstimateError>;
+pub fn pair_count(energy: &[AudioEnergy], frames: &[PictureMotion]) -> usize;   // progress
 pub fn suggest(effective_offset_ms: i32, e: &Estimate, max_advance_ms: i32, max_delay_ms: i32) -> Suggestion;
 ```
 

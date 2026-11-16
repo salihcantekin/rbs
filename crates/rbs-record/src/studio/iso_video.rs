@@ -914,7 +914,7 @@ fn even((w, h): (u32, u32)) -> (u32, u32) {
     (w + (w & 1), h + (h & 1))
 }
 
-fn video_pin(graph: &GraphDescription, node: NodeId) -> Result<String, RecordError> {
+pub(super) fn video_pin(graph: &GraphDescription, node: NodeId) -> Result<String, RecordError> {
     let entry = graph
         .node(node)
         .ok_or(RecordError::NotBound("video source"))?;

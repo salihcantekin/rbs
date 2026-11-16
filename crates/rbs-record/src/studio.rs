@@ -73,6 +73,7 @@ mod loudness;
 mod monitor;
 mod pause;
 mod replay;
+mod sync_measure;
 pub use hold::{HoldRefused, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
@@ -82,6 +83,10 @@ pub use iso_video::{
 pub use monitor::MonitorState;
 pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
+pub use sync_measure::{
+    MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
+    SyncMeasureState, SyncMeasureStatus,
+};
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
 const WAITING: &str = "waiting for the source it replaces to close";
@@ -1121,6 +1126,9 @@ pub struct Studio {
     /// The loudness tap while loudness is measured (ADR-0092 stage 1); `None`
     /// otherwise, so nothing of the meter runs.
     loudness: Option<loudness::LoudnessRun>,
+    /// The sync offset measurement while it runs (ADR-0126).
+    sync_measure: Option<sync_measure::SyncMeasureRun>,
+    sync_measure_next_id: u64,
     /// Separate audio files while they are open (ADR-0086). `None` adds no node and
     /// no worker. Not one of [`MAX_OUTPUTS`].
     iso_audio: Option<iso_audio::IsoAudioRun>,
@@ -1441,6 +1449,8 @@ impl Studio {
             camera: None,
             monitor: None,
             loudness: None,
+            sync_measure: None,
+            sync_measure_next_id: 0,
             iso_audio: None,
             iso_video: None,
             iso_ended: Vec::new(),
@@ -2526,6 +2536,7 @@ impl Studio {
     /// input takes it on its next block: a change below 5 ms slews, a larger one
     /// resyncs once. Returns true if a running input of that source got it.
     pub fn set_audio_offset(&mut self, source: SourceId, offset_ns: i64) -> bool {
+        self.sync_measure_offset_set(source, offset_ns);
         if offset_ns == 0 {
             self.settings.audio_offsets.remove(&source);
         } else {
@@ -3766,6 +3777,7 @@ impl Studio {
         self.stop_virtual_camera();
         self.stop_monitor();
         self.stop_loudness();
+        self.end_sync_measure();
         let ids = self.outputs();
         let (removed, errors) = self.detach_all(&ids, true);
         let reports = removed
