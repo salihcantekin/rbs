@@ -815,7 +815,7 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.has_vertical()
             }
-            "ui.projector.shown" => {
+            "ui.projector.open" => {
                 if !cfg!(any(target_os = "macos", windows)) {
                     return Err("Projectors need macOS or Windows.".to_owned());
                 }
@@ -829,7 +829,10 @@ impl CommandState for Shown<'_> {
                     None => Err("Name a canvas.".to_owned()),
                 }
             }
-            "ui.projector.size" | "ui.projector.close" => self.projector_window(id).map(|_| ()),
+            "ui.projector.size" => self.projector_window(id).map(|_| ()),
+            // Also one waiting for its canvas.
+            "ui.projector.close" if self.projector_kept(id) => Ok(()),
+            "ui.projector.close" => Err("The projector is not open.".to_owned()),
             // A line that informs: never run.
             "ui.projector.shared" => {
                 self.projector_window(id)?;
@@ -914,7 +917,7 @@ impl CommandState for Shown<'_> {
             }
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
             "canvas.vertical_preview.toggle" => self.vertical_panel_open(),
-            "ui.projector.shown" => self.projector_kept(id),
+            "ui.projector.open" => self.projector_kept(id),
             "canvas.vertical_size" => match (self.studio.vertical, size_of(id)) {
                 (Some(v), Some((w, h))) => v.size.width == w && v.size.height == h,
                 _ => false,
@@ -1155,7 +1158,8 @@ impl CommandState for Shown<'_> {
                 ProjectorCanvas::Vertical => "Vertical",
             };
             match id.base() {
-                "ui.projector.shown" => return Some(format!("Projector: {name}")),
+                "ui.projector.open" => return Some(format!("Open projector: {name}")),
+                "ui.projector.close" => return Some(format!("Close projector: {name}")),
                 "ui.projector.size" if id.param("size").is_none() => {
                     return Some(format!("{name} projector size"));
                 }
@@ -1824,7 +1828,7 @@ pub enum Run {
     HoldStream,
     /// Break: hold every stream and pause every recording, or resume them all.
     Break,
-    /// Open (`true`) or close a canvas's projector (`ui.projector.shown`,
+    /// Open (`true`) or close a canvas's projector (`ui.projector.open`,
     /// `ui.projector.close`, ADR-0125).
     Projector(ProjectorCanvas, bool),
     /// A projector's size, or full screen on the display named (`ui.projector.size`).
@@ -2103,7 +2107,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "stream.hold_toggle" => Run::HoldStream,
         "output.break_toggle" => Run::Break,
         "canvas.add_vertical" => Run::AddVertical,
-        "ui.projector.shown" => Run::Projector(Shown::projector_canvas(&id)?, !on),
+        "ui.projector.open" => Run::Projector(Shown::projector_canvas(&id)?, true),
         "ui.projector.close" => Run::Projector(Shown::projector_canvas(&id)?, false),
         "canvas.vertical_size" => {
             let (w, h) = size_of(&id)?;

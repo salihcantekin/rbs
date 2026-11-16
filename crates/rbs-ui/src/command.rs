@@ -736,16 +736,15 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
-        id: "ui.projector.shown",
-        title: "Projector",
+        id: "ui.projector.open",
+        title: "Open projector",
         tooltip: "Show the program in a window of its own, to share in a video call or put on another display",
         icon: Some("monitor"),
         shortcut: None,
         menu: Menu::View,
-        kind: Kind::Toggle {
-            on: "ui.projector.open",
-            off: "ui.projector.close",
-        },
+        // Checked while open; an open projector comes to the front (ADR-0125
+        // decision 9), Close projector closes it.
+        kind: action("ui.projector.open"),
         params: &[PROJECTOR_CANVAS],
         checkable: true,
         fixed: &[],
@@ -2126,11 +2125,14 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.layout.studio_rail?at=below",
             "}",
             "{Projectors:monitor",
-            "ui.projector.shown?canvas=main",
-            "ui.projector.shown?canvas=vertical",
+            "ui.projector.open?canvas=main",
+            "ui.projector.open?canvas=vertical",
             "|",
             "ui.projector.size?canvas=main",
             "ui.projector.size?canvas=vertical",
+            "|",
+            "ui.projector.close?canvas=main",
+            "ui.projector.close?canvas=vertical",
             "}",
             "{Display:palette",
             "ui.theme.select",
@@ -2251,10 +2253,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
 /// Scene menu lists the scenes through `scene.select`).
 pub const NOT_IN_MENU: &[&str] = &[
     "scene.position",
-    // A projector's shared size and Close run from its own menu (ADR-0125 decision 6);
-    // View › Projectors has the toggle that closes it.
+    // A projector's shared size is the first line of its own menu (ADR-0125 decision 6).
     "ui.projector.shared",
-    "ui.projector.close",
     "ui.layout.rail_size",
     // The panel commands name a panel (`id`): they run from the panel menu and the
     // control API, not from a menu bar menu.
@@ -3186,9 +3186,9 @@ pub fn context_menu(
             .find(|(k, _)| k == "id")
             .map(|(_, v)| v.as_str())
         {
-            Some("rbs.program") => ids.extend_from_slice(&["|", "ui.projector.shown?canvas=main"]),
+            Some("rbs.program") => ids.extend_from_slice(&["|", "ui.projector.open?canvas=main"]),
             Some(VERTICAL_PANEL) => {
-                ids.extend_from_slice(&["|", "ui.projector.shown?canvas=vertical"]);
+                ids.extend_from_slice(&["|", "ui.projector.open?canvas=vertical"]);
             }
             _ => {}
         }
@@ -3872,7 +3872,7 @@ mod tests {
                 "canvas.studio_mode.toggle",
                 "ui.panel.maximize?id=rbs.program",
                 "|",
-                "ui.projector.shown?canvas=main"
+                "ui.projector.open?canvas=main"
             ]
         );
         // Without the panel, Maximize has no required `id` and is left out.

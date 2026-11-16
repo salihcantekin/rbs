@@ -30,7 +30,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Global source | A source shown and heard in every scene of a canvas, kept in Settings › Global sources | Global audio device, shared source | Item of the canvas's global scene (ADR-0065) |
 | Remove from scene / Delete source | Remove the source from this scene only / remove it from every scene | Delete (for removing from one scene) | Scene item removal / source removal |
 | Studio mode | Separate preview and program, with transitions between them | Two-pane mode | - |
-| Projector | A full-screen or window view of a canvas, scene or source on any display | External view | - |
+| Projector | A window of its own that shows the program of the main or the vertical canvas and nothing else, to share in a video call or put on another display; sized as Window, Exact pixels or Full screen (ADR-0125). Scene and source projectors are not built | External view, output window | `ui.projector.*` |
 | Track | One of the audio mixes written to a recording or sent to an output | Channel | Audio bus output |
 | Separate files / Record separately | Files a recording writes beside its main file, one per marked source, in a folder named like the recording; a source is marked with Record separately | ISO (in UI text), iso track | ISO recording (ADR-0086) |
 | Test this computer | The Settings action that measures how many encoder sessions this computer keeps up with and how fast the recording folder writes, so the estimate and the separate files use measured numbers; it takes up to about a minute and nothing can start while it runs | Benchmark, calibrate, speed test | `calibration.run` (ADR-0087 decision 4) |
