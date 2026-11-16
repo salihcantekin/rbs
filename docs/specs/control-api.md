@@ -537,7 +537,7 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 ### Planned with ADR-0124
 
 - **Markers.** `marker.add` while paused is accepted; the marker sits on that pause's join with `while_paused: true`.
-- **Registry.** Each 1.61 and 1.64 method is a command, so shortcuts, the RBS menu, Stream Deck and MCP get it (`record.pause_toggle` is built; the stream and Break commands come with their UI).
+- **Registry.** Each 1.61 and 1.64 method is a command, so shortcuts, the RBS menu, Stream Deck and MCP get it (`record.pause_toggle`, `stream.hold_toggle` and `output.break_toggle` are built; the window runs them with `canvas: all`).
 
 ### Protocol 1.60: FCP7 XML editor projects (ADR-0089 decision 9, format 2)
 

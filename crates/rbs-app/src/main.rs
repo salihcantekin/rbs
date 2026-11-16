@@ -702,6 +702,8 @@ impl App {
             Run::SaveReplay => replay_page::save(self),
             Run::AddMarker => self.studio.add_marker(),
             Run::PauseRecording => self.studio.pause_recording(),
+            Run::HoldStream => self.studio.hold_stream(),
+            Run::Break => self.studio.take_break(),
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
             Run::SelectTheme(id) => self.select_theme = Some(id),
@@ -1473,15 +1475,24 @@ impl Ctx {
             .map(|d| clock_text(d.as_secs()))
             .unwrap_or_default()
             .into();
+        // And the stream's hold.
+        let held: slint::SharedString = app
+            .studio
+            .held_for()
+            .map(|d| clock_text(d.as_secs()))
+            .unwrap_or_default()
+            .into();
         app.main.global::<Shell>().set_live_duration(text.clone());
         app.main
             .global::<Shell>()
             .set_rec_paused_for(paused.clone());
+        app.main.global::<Shell>().set_st_held_for(held.clone());
         for f in &app.floats {
             f.window.global::<Shell>().set_live_duration(text.clone());
             f.window
                 .global::<Shell>()
                 .set_rec_paused_for(paused.clone());
+            f.window.global::<Shell>().set_st_held_for(held.clone());
         }
     }
 
@@ -2516,10 +2527,17 @@ impl Ctx {
             .map(|d| clock_text(d.as_secs()))
             .unwrap_or_default()
             .into();
+        let held_for: slint::SharedString = app
+            .studio
+            .held_for()
+            .map(|d| clock_text(d.as_secs()))
+            .unwrap_or_default()
+            .into();
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
             g.set_rec_paused_for(paused_for.clone());
+            g.set_st_held_for(held_for.clone());
             g.set_live_outputs(live.outputs_text().into());
             g.set_audio_only(app.studio.record_button_audio());
             g.set_live_camera(live.camera);
@@ -4109,6 +4127,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_add_marker, |app| {
         app.studio.add_marker();
+    });
+    on!(on_hold_stream, |app| {
+        app.studio.hold_stream();
     });
     on!(on_pause_recording, |app| {
         app.studio.pause_recording();
