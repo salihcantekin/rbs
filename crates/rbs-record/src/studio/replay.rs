@@ -234,10 +234,11 @@ impl Studio {
                 return Err(e);
             }
         };
-        let new_failed = self
-            .replay
-            .as_ref()
-            .is_some_and(|r| r.nodes.iter().any(|a| self.failed_nodes.contains(&a.node)));
+        let new_failed = self.replay.as_ref().is_some_and(|r| {
+            r.nodes
+                .iter()
+                .any(|a| self.failed_nodes.contains_key(&a.node))
+        });
         let engine_failed = failed
             .iter()
             .any(|f| f.node == "engine" || f.node.starts_with("link"));

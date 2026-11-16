@@ -43,22 +43,24 @@ pub use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
 pub use rbs_nodes::replay_node::{ReplayStatus, RequestError as ReplayRequestError};
 pub use recording::{
-    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, AudioSettings,
-    FinishReport, ISO_AUDIO_ENCODER, ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT, OUTPUT_2, OUTPUT_3,
-    OUTPUT_4, OutputPartitions, Partitions, Port, Progress, RENDER, REPLAY_AUDIO_ENCODER,
-    REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters, RecordError, RecordSettings, Recording,
-    SourceProgress, SourceState, StartFailure, StartReport, VIDEO_ENCODER, VIDEO_ENCODER_2,
-    VIDEO_ENCODER_3, VIDEO_ENCODER_4, VideoSettings,
+    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, AUDIO_ENCODER_POOL,
+    AudioSettings, FinishReport, ISO_AUDIO_ENCODER, ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT,
+    OUTPUT_2, OUTPUT_3, OUTPUT_4, OUTPUT_POOL, OutputPartitions, PartitionPool, Partitions, Port,
+    Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters,
+    RecordError, RecordSettings, Recording, SourceProgress, SourceState, StartFailure, StartReport,
+    VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4, VIDEO_ENCODER_POOL,
+    VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
     AudioLatency, DEFAULT_GIVE_WAY_SHARE, END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE,
     FilterSettingsAdjusted, HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState,
     IsoAudioStart, IsoAudioStarted, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart,
-    IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_LAYERS, MAX_OUTPUTS,
-    MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings, PauseRefused, PauseState,
-    PictureId, PlannedOutput, ReplaySettings, SharedPause, StartPlanRequest, Studio,
-    StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState, compensate_filter_latency,
+    IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_CHAINS, MAX_CHAINS_PER_CANVAS,
+    MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings,
+    PauseRefused, PauseState, PictureId, PlannedOutput, ReplaySettings, SharedPause,
+    StartPlanRequest, Studio, StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
+    compensate_filter_latency,
 };
 pub use studio::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,

@@ -301,6 +301,9 @@ pub struct OutputNode<S: SpanPolicy = NoSpan, G: PacketGate = NoCut> {
     /// Which packets are written (ADR-0124: a recording that shares an encoder).
     gate: G,
     stats: Arc<OutputNodeStats>,
+    /// Set by the owner before it removes the node without a drain (ADR-0127
+    /// decision 5); read once, in `release`.
+    abandon: Arc<AtomicBool>,
 }
 
 impl OutputNode {
@@ -336,6 +339,7 @@ impl OutputNode {
             chunks: Vec::new(),
             events: Vec::new(),
             stats: Arc::default(),
+            abandon: Arc::default(),
         }
     }
 
@@ -386,6 +390,7 @@ impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
             span,
             gate,
             stats: self.stats,
+            abandon: self.abandon,
         }
     }
 }
@@ -434,6 +439,15 @@ impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
     /// The node's counters.
     pub fn stats(&self) -> Arc<OutputNodeStats> {
         Arc::clone(&self.stats)
+    }
+
+    /// A switch the owner sets before it removes the node without a drain (ADR-0127
+    /// decision 5: a destination that failed or stalls). `release` then delivers
+    /// nothing more: held and backlogged items count in `finish_lost`, the muxer gets
+    /// no `finish` and the transport is dropped without `finish` (its `Drop` is bounded,
+    /// output ports spec). Read only in `release`.
+    pub fn abandon_switch(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.abandon)
     }
 
     /// Records why the output stopped (first cause only) and returns the node error.
@@ -742,6 +756,20 @@ impl<S: SpanPolicy, G: PacketGate, X: Runtime> Node<X> for OutputNode<S, G> {
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, X>) {
+        if self.abandon.load(Ordering::Acquire) {
+            // Removed without a drain: nothing more is delivered or finished.
+            let lost = self.held.len() + self.backlog.len();
+            add(&self.stats.finish_lost, lost as u64);
+            self.start = Start::Open;
+            self.held = VecDeque::new();
+            self.backlog = VecDeque::new();
+            self.muxer = None;
+            self.transport = None;
+            self.stats.connected.store(false, Ordering::Relaxed);
+            self.chunks = Vec::new();
+            self.events = Vec::new();
+            return;
+        }
         // No video packet ever came: the held packets are all the output has.
         self.start = Start::Open;
         let held = std::mem::take(&mut self.held);

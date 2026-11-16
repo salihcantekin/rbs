@@ -13,8 +13,9 @@ use rbs_codec::RateControl;
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_record::{
-    AUDIO_ENCODER, AUDIO_ENCODER_2, END_TAIL_LIMIT, MAX_OUTPUTS_PER_CANVAS, OUTPUT, OUTPUT_2,
-    OutputSettings, RecordError, Studio, StudioSettings, VIDEO_ENCODER, VIDEO_ENCODER_2,
+    AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_POOL, END_TAIL_LIMIT, MAX_OUTPUTS_PER_CANVAS,
+    OUTPUT, OUTPUT_2, OUTPUT_POOL, OutputSettings, RecordError, Studio, StudioSettings,
+    VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_POOL,
 };
 use support::*;
 
@@ -42,6 +43,21 @@ fn more_slots(studio: &Studio) -> [bool; 6] {
         rbs_record::OUTPUT_4,
     ]
     .map(|p| studio.engine().has_worker(p))
+}
+
+/// Workers in the output, video encoder and audio encoder pools (ADR-0127 decision 2).
+fn pool_workers(studio: &Studio) -> (usize, usize, usize) {
+    let count = |parts: &[rbs_graph::description::PartitionId]| {
+        parts
+            .iter()
+            .filter(|p| studio.engine().has_worker(**p))
+            .count()
+    };
+    (
+        count(&OUTPUT_POOL),
+        count(&VIDEO_ENCODER_POOL),
+        count(&AUDIO_ENCODER_POOL),
+    )
 }
 
 fn start(r: &Rig) -> (Studio, TestClock) {
@@ -90,15 +106,6 @@ fn a_recording_and_a_stream_with_different_settings_run_on_their_own_encoders() 
     assert_eq!(r.video_sessions.load(Ordering::Relaxed), 2 * one);
     assert_eq!(studio.outputs(), [rec, live]);
     assert_eq!(slots(&studio), [true, true, true, true, false, true]);
-
-    // A third output is refused before anything is chosen.
-    let sessions = r.video_sessions.load(Ordering::Relaxed);
-    assert!(matches!(
-        studio.start_output(&r.adapters, &stream(3_000_000)),
-        Err(RecordError::TooManyOutputs)
-    ));
-    assert_eq!(studio.outputs().len(), MAX_OUTPUTS_PER_CANVAS);
-    assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
 
     let reached = run_until(&mut studio, &clock, |_| {
         r.log.count(0) >= 8 && r.log.count(1) >= 8 && r.stream_log.count(0) >= 8
@@ -321,7 +328,7 @@ fn an_output_of_a_further_canvas_has_its_own_export_and_encoder() {
 }
 
 #[test]
-fn each_canvas_runs_two_outputs_and_four_run_in_all() {
+fn each_canvas_runs_seven_outputs_on_four_encodings_and_fourteen_run_in_all() {
     use rbs_core::media::video::Size;
     use rbs_core::timing::FrameRate;
     use rbs_record::{ExtraCanvas, MAX_OUTPUTS};
@@ -364,21 +371,51 @@ fn each_canvas_runs_two_outputs_and_four_run_in_all() {
             .start_output(&r.adapters, &on(Some(tall), 4_000_000))
             .unwrap(),
     );
-    assert_eq!(ids.len(), MAX_OUTPUTS);
-    assert_eq!(studio.outputs().len(), MAX_OUTPUTS);
+    assert_eq!(studio.outputs().len(), 4);
     // Every slot has its own video encoder and output, the third and fourth included;
     // all four share the one AAC encoder (the same audio settings, one mix).
     assert_eq!(slots(&studio), [true, true, true, true, false, true]);
     assert_eq!(more_slots(&studio), [true, false, true, true, false, true]);
-    // A third output of either canvas is refused before anything is chosen.
-    let sessions = r.video_sessions.load(Ordering::Relaxed);
-    for canvas in [None, Some(tall)] {
+    // The pools past the fourth slot cost nothing until used (P13).
+    assert_eq!(pool_workers(&studio), (0, 0, 0));
+    // Each canvas then takes two more encodings (ADR-0127 decision 2: four chains per
+    // canvas); a fifth is refused before an encoder session opens. Outputs that share
+    // a running encoder still start, up to seven on the canvas, and an eighth is
+    // refused before anything is chosen.
+    for (canvas, shared) in [(None, 6_000_000), (Some(tall), 4_000_000)] {
+        for bitrate in [3_000_000, 2_000_000] {
+            ids.push(
+                studio
+                    .start_output(&r.adapters, &on(canvas, bitrate))
+                    .unwrap(),
+            );
+        }
+        let sessions = r.video_sessions.load(Ordering::Relaxed);
         assert!(matches!(
-            studio.start_output(&r.adapters, &on(canvas, 3_000_000)),
+            studio.start_output(&r.adapters, &on(canvas, 1_000_000)),
+            Err(RecordError::NoEncoderSlot)
+        ));
+        assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
+        for _ in 4..MAX_OUTPUTS_PER_CANVAS {
+            let id = studio
+                .start_output(&r.adapters, &on(canvas, shared))
+                .unwrap();
+            assert!(studio.output(id).unwrap().video_shared);
+            ids.push(id);
+        }
+        assert!(matches!(
+            studio.start_output(&r.adapters, &on(canvas, shared)),
             Err(RecordError::TooManyOutputs)
         ));
+        assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
     }
-    assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
+    assert_eq!(ids.len(), MAX_OUTPUTS);
+    assert_eq!(studio.outputs().len(), MAX_OUTPUTS);
+    // Ten more outputs and four more video encoders; still the one AAC encoder.
+    assert_eq!(
+        pool_workers(&studio),
+        (OUTPUT_POOL.len(), VIDEO_ENCODER_POOL.len(), 0)
+    );
 
     // Every output encodes frames, the vertical ones too.
     let reached = run_until(&mut studio, &clock, |s| {
@@ -406,6 +443,7 @@ fn each_canvas_runs_two_outputs_and_four_run_in_all() {
     }
     assert_eq!(slots(&studio), [false; 6]);
     assert_eq!(more_slots(&studio), [false; 6]);
+    assert_eq!(pool_workers(&studio), (0, 0, 0));
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
