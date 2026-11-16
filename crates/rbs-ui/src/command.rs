@@ -176,6 +176,13 @@ const PANEL_ID: Param = Param {
     required: true,
 };
 
+/// The canvas whose program a projector shows (ADR-0125 decision 1).
+const PROJECTOR_CANVAS: Param = Param {
+    name: "canvas",
+    ty: ParamType::OneOf(&["main", "vertical"]),
+    required: true,
+};
+
 const AREA: Param = Param {
     name: "area",
     ty: ParamType::OneOf(&["left", "right", "bottom"]),
@@ -726,6 +733,59 @@ pub const ENTRIES: &[Entry] = &[
             required: true,
         }],
         checkable: true,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.projector.open",
+        title: "Open projector",
+        tooltip: "Show the program in a window of its own, to share in a video call or put on another display",
+        icon: Some("monitor"),
+        shortcut: None,
+        menu: Menu::View,
+        // Checked while open; an open projector comes to the front (ADR-0125
+        // decision 9), Close projector closes it.
+        kind: action("ui.projector.open"),
+        params: &[PROJECTOR_CANVAS],
+        checkable: true,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.projector.size",
+        title: "Projector size",
+        tooltip: "Size the projector freely, to the canvas's exact pixels, or full screen on a display",
+        icon: Some("fit"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: Kind::Picker {
+            method: "ui.projector.set_size",
+            param: "size",
+        },
+        params: &[PROJECTOR_CANVAS, choice("size")],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.projector.shared",
+        title: "Shared size",
+        tooltip: "The size a video call or screen recorder receives from the projector",
+        icon: Some("info"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.projector.list"),
+        params: &[PROJECTOR_CANVAS],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.projector.close",
+        title: "Close projector",
+        tooltip: "Close the projector window",
+        icon: Some("close"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.projector.close"),
+        params: &[PROJECTOR_CANVAS],
+        checkable: false,
         fixed: &[],
     },
     Entry {
@@ -2064,6 +2124,16 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.layout.studio_rail?at=between",
             "ui.layout.studio_rail?at=below",
             "}",
+            "{Projectors:monitor",
+            "ui.projector.open?canvas=main",
+            "ui.projector.open?canvas=vertical",
+            "|",
+            "ui.projector.size?canvas=main",
+            "ui.projector.size?canvas=vertical",
+            "|",
+            "ui.projector.close?canvas=main",
+            "ui.projector.close?canvas=vertical",
+            "}",
             "{Display:palette",
             "ui.theme.select",
             "ui.density.select",
@@ -2183,6 +2253,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
 /// Scene menu lists the scenes through `scene.select`).
 pub const NOT_IN_MENU: &[&str] = &[
     "scene.position",
+    // A projector's shared size is the first line of its own menu (ADR-0125 decision 6).
+    "ui.projector.shared",
     "ui.layout.rail_size",
     // The panel commands name a panel (`id`): they run from the panel menu and the
     // control API, not from a menu bar menu.
@@ -2802,11 +2874,13 @@ pub enum Context {
     /// The ▾ beside the frame's Go live and Record while a vertical canvas exists:
     /// its outputs (no target, ADR-0093 decision 6).
     VerticalOutputs,
+    /// A projector window (target `canvas`, ADR-0125 decision 6).
+    Projector,
 }
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 17] = [
+    pub const ALL: [Context; 18] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -2824,6 +2898,7 @@ impl Context {
         Context::AddFilter,
         Context::AddSource,
         Context::VerticalOutputs,
+        Context::Projector,
     ];
 
     /// Its name, as the shell's menus ask for it.
@@ -2846,6 +2921,7 @@ impl Context {
             Context::AddFilter => "add-filter",
             Context::AddSource => "add-source",
             Context::VerticalOutputs => "vertical-outputs",
+            Context::Projector => "projector",
         }
     }
 
@@ -2938,6 +3014,18 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
         ],
     ),
     (Context::Sources, &["source.add"]),
+    // The shared size first (never enabled: it informs), then the sizes as items of
+    // the menu itself (ADR-0125 decision 6).
+    (
+        Context::Projector,
+        &[
+            "ui.projector.shared",
+            "|",
+            "*ui.projector.size",
+            "|",
+            "ui.projector.close",
+        ],
+    ),
     (
         Context::VerticalOutputs,
         &[
@@ -3091,6 +3179,38 @@ pub fn context_menu(
         ids.extend_from_slice(VERTICAL_EXTRAS);
     }
     ids.extend_from_slice(layout);
+    // A canvas's picture opens that canvas's projector (ADR-0125 decision 9).
+    if context == Context::Preview {
+        match target
+            .iter()
+            .find(|(k, _)| k == "id")
+            .map(|(_, v)| v.as_str())
+        {
+            // Outside studio mode the Preview panel shows the program.
+            Some("rbs.program" | "rbs.preview") => {
+                ids.extend_from_slice(&["|", "ui.projector.open?canvas=main"]);
+            }
+            Some(VERTICAL_PANEL) => {
+                ids.extend_from_slice(&["|", "ui.projector.open?canvas=vertical"]);
+            }
+            _ => {}
+        }
+    }
+    // A source right-clicked on a picture (`picture=main|vertical`) offers that
+    // canvas's projector too: sources often cover the whole picture.
+    if context == Context::Source {
+        match target
+            .iter()
+            .find(|(k, _)| k == "picture")
+            .map(|(_, v)| v.as_str())
+        {
+            Some("main") => ids.extend_from_slice(&["|", "ui.projector.open?canvas=main"]),
+            Some("vertical") => {
+                ids.extend_from_slice(&["|", "ui.projector.open?canvas=vertical"]);
+            }
+            _ => {}
+        }
+    }
     // Its Close reads "Hide vertical preview"; removing the output is said apart.
     if context == Context::Panel && target.iter().any(|(k, v)| k == "id" && v == VERTICAL_PANEL) {
         ids.push("canvas.remove_vertical");
@@ -3768,8 +3888,27 @@ mod tests {
                 "[Add source]",
                 "|",
                 "canvas.studio_mode.toggle",
-                "ui.panel.maximize?id=rbs.program"
+                "ui.panel.maximize?id=rbs.program",
+                "|",
+                "ui.projector.open?canvas=main"
             ]
+        );
+        // The Preview panel shows the program outside studio mode, so it opens
+        // the main canvas's projector too.
+        let main_preview = context_menu(Context::Preview, &t(&[("id", "rbs.preview")]), &Picky);
+        assert_eq!(
+            ids(&main_preview).last().map(String::as_str),
+            Some("ui.projector.open?canvas=main")
+        );
+        // A source on a picture offers the projector of that picture's canvas.
+        let on_picture = context_menu(
+            Context::Source,
+            &t(&[("item", "1"), ("source", "2"), ("picture", "main")]),
+            &Picky,
+        );
+        assert_eq!(
+            ids(&on_picture).last().map(String::as_str),
+            Some("ui.projector.open?canvas=main")
         );
         // Without the panel, Maximize has no required `id` and is left out.
         let bare = context_menu(Context::Preview, &[], &Picky);

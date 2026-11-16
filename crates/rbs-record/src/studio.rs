@@ -498,6 +498,21 @@ struct CameraRun {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(u64);
 
+/// A picture added to a running canvas with [`Studio::add_picture`], for example a
+/// projector's (ADR-0125 decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PictureId(u64);
+
+/// A picture of [`Studio::add_picture`]: its canvas, node and counters, and why it
+/// stopped for good, if it did. Not essential: the studio runs on without it.
+struct AddedPicture {
+    id: PictureId,
+    canvas: CanvasId,
+    node: NodeId,
+    stats: Arc<PreviewNodeStats>,
+    failure: Option<String>,
+}
+
 #[cfg(test)]
 impl OutputId {
     /// An id for unit tests of code that only compares ids.
@@ -1086,6 +1101,10 @@ pub struct Studio {
     hold_fell_back: bool,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
+    /// Pictures added while the studio runs (ADR-0125), in the order they were added.
+    /// Empty while no projector is open, so nothing of them exists (P13).
+    pictures: Vec<AddedPicture>,
+    next_picture: u64,
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
@@ -1433,6 +1452,8 @@ impl Studio {
             hold_scenes: BTreeMap::new(),
             hold_fell_back: false,
             extras,
+            pictures: Vec::new(),
+            next_picture: 0,
             glide: None,
             last_follow,
             entries: Vec::new(),
@@ -1574,6 +1595,26 @@ impl Studio {
             gpu: true,
         }];
         self.essential.remove(&run.view.compositor);
+        // Pictures added on the canvas leave with it (ADR-0125 decision 3: the owner
+        // suspends what showed them).
+        let added: Vec<NodeId> = self
+            .pictures
+            .iter()
+            .filter(|p| p.canvas == canvas)
+            .map(|p| p.node)
+            .collect();
+        self.pictures.retain(|p| p.canvas != canvas);
+        for node in added {
+            if self.graph.node(node).is_some() {
+                let _ = self.graph.set_state(node, Lifecycle::Standby);
+                let _ = self.graph.remove_node(node);
+            }
+            leaving.push(Added {
+                node,
+                partition: RENDER,
+                gpu: true,
+            });
+        }
         if let Some((picture, _)) = run.view.picture {
             if self.graph.node(picture).is_some() {
                 let _ = self.graph.set_state(picture, Lifecycle::Standby);
@@ -1657,6 +1698,144 @@ impl Studio {
             self.pending_takes.push((a, None));
         }
         updated
+    }
+
+    /// Adds a picture of a running canvas for a UI (ADR-0125 decision 2): a preview node
+    /// fed by `canvas`'s program compositor, at `desc`'s size, the main canvas included.
+    /// Any number of pictures may show one canvas; a further canvas composes while it has
+    /// a picture or an output. The picture is not essential: when it does not start,
+    /// this fails and nothing is kept (unlike [`Studio::set_canvas_picture`]); a later
+    /// fault shows in [`Studio::picture_failure`] and the studio runs on.
+    /// Fails with `UnknownCanvas` when the canvas does not run.
+    pub fn add_picture(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        canvas: CanvasId,
+        desc: PreviewDesc,
+    ) -> Result<(PictureId, Updated), RecordError> {
+        let compositor = self.program_compositor(canvas)?;
+        let followed = with_followers(collection, &mut self.last_follow.clone());
+        self.check_collection(&followed)?;
+        let (node, stats) = add_picture(&mut self.engine, &mut self.graph, compositor, desc)?;
+        let id = PictureId(self.next_picture);
+        self.next_picture += 1;
+        self.pictures.push(AddedPicture {
+            id,
+            canvas,
+            node,
+            stats,
+            failure: None,
+        });
+        let updated = self.update_with(collection, sources, None);
+        let failure = self
+            .pictures
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.failure.clone());
+        match (updated, failure) {
+            (Ok(updated), None) => Ok((id, updated)),
+            (Ok(_), Some(why)) => {
+                self.drop_picture(id);
+                Err(RecordError::Start(vec![StartFailure {
+                    node: "picture".to_owned(),
+                    reason: why,
+                }]))
+            }
+            (Err(e), _) => {
+                self.drop_picture(id);
+                Err(e)
+            }
+        }
+    }
+
+    /// Removes a picture of [`Studio::add_picture`]: its node and link leave the engine
+    /// after the update. A picture that is not there (already removed, or gone with its
+    /// canvas) changes nothing.
+    pub fn remove_picture(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        id: PictureId,
+    ) -> Result<Updated, RecordError> {
+        let Some(at) = self.pictures.iter().position(|p| p.id == id) else {
+            return Ok(Updated::default());
+        };
+        let picture = self.pictures.remove(at);
+        if self.graph.node(picture.node).is_some() {
+            let _ = self.graph.set_state(picture.node, Lifecycle::Standby);
+            let _ = self.graph.remove_node(picture.node);
+        }
+        let updated = self.update_with(collection, sources, None);
+        let leaving = Added {
+            node: picture.node,
+            partition: RENDER,
+            gpu: true,
+        };
+        if !take(&mut self.engine, leaving) {
+            self.pending_takes.push((leaving, None));
+        }
+        updated
+    }
+
+    /// Takes a picture out of the graph and the engine without an update (it never
+    /// joined a plan, or the update that added it failed).
+    fn drop_picture(&mut self, id: PictureId) {
+        let Some(at) = self.pictures.iter().position(|p| p.id == id) else {
+            return;
+        };
+        let picture = self.pictures.remove(at);
+        if self.graph.node(picture.node).is_some() {
+            let _ = self.graph.set_state(picture.node, Lifecycle::Standby);
+            let _ = self.graph.remove_node(picture.node);
+        }
+        let leaving = Added {
+            node: picture.node,
+            partition: RENDER,
+            gpu: true,
+        };
+        if !take(&mut self.engine, leaving) {
+            self.pending_takes.push((leaving, None));
+        }
+    }
+
+    /// Where a UI connects to a picture of [`Studio::add_picture`], once it runs.
+    pub fn picture(&self, id: PictureId) -> Option<PreviewEndpoint> {
+        self.pictures
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.stats.endpoint())
+    }
+
+    /// The counters of a picture of [`Studio::add_picture`].
+    pub fn picture_stats(&self, id: PictureId) -> Option<&Arc<PreviewNodeStats>> {
+        self.pictures.iter().find(|p| p.id == id).map(|p| &p.stats)
+    }
+
+    /// Why a picture of [`Studio::add_picture`] stopped for good, if it did; the owner
+    /// removes it with [`Studio::remove_picture`].
+    pub fn picture_failure(&self, id: PictureId) -> Option<&str> {
+        self.pictures
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.failure.as_deref())
+    }
+
+    /// The pictures of [`Studio::add_picture`] that exist, in the order they were added.
+    pub fn pictures(&self) -> Vec<PictureId> {
+        self.pictures.iter().map(|p| p.id).collect()
+    }
+
+    /// The program compositor of a running canvas.
+    fn program_compositor(&self, canvas: CanvasId) -> Result<NodeId, RecordError> {
+        if canvas == self.settings.canvas {
+            return Ok(self.compositor);
+        }
+        self.extras
+            .iter()
+            .find(|e| e.canvas == canvas)
+            .map(|e| e.view.compositor)
+            .ok_or(RecordError::UnknownCanvas(canvas))
     }
 
     /// What an update needs of `collection` before anything changes: the main canvas and
@@ -2324,6 +2503,9 @@ impl Studio {
                         node: role.to_owned(),
                         reason: why.to_string(),
                     });
+                } else if let Some(p) = self.pictures.iter_mut().find(|p| p.node == *node) {
+                    // Not essential (ADR-0125 decision 2): only that picture stops.
+                    p.failure = Some(why.to_string());
                 } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
                     // The first reason stays: a source without an instance is reported
                     // again on every apply as having none.
@@ -2793,6 +2975,11 @@ impl Studio {
                                     r.failure = Some(format!("{role}: {cause:?}"));
                                 }
                             }
+                        }
+                    } else if let Some(p) = self.pictures.iter_mut().find(|p| p.node == *node) {
+                        // Not essential (ADR-0125 decision 2): the owner removes it.
+                        if retry_at.is_none() && p.failure.is_none() {
+                            p.failure = Some(format!("{cause:?}"));
                         }
                     } else if let Some(c) = self.camera.as_mut().filter(|c| c.node.node == *node) {
                         // Not essential: the studio and its outputs run on (ADR-0066).

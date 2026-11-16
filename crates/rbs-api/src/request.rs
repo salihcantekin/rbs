@@ -2068,6 +2068,11 @@ pub const UI_METHODS: &[&str] = &[
     "ui.app_menu.open",
     "ui.command.list",
     "ui.command.run",
+    "ui.projector.open",
+    "ui.projector.set_size",
+    "ui.projector.close",
+    "ui.projector.displays",
+    "ui.projector.list",
 ];
 
 const fn m(name: &'static str, scope: Option<Scope>) -> MethodInfo {

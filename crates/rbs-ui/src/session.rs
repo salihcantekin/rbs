@@ -410,6 +410,23 @@ impl LayoutSession {
         Ok(())
     }
 
+    /// Opens or changes a projector (ADR-0125 decisions 9 and 10). Saved with the
+    /// workspace, not in the layout undo history (undo never closes a share), and
+    /// allowed on a locked workspace.
+    pub fn set_projector(
+        &mut self,
+        content: &crate::projector::ProjectorContent,
+        placement: Option<crate::workspace::Placement>,
+    ) {
+        self.workspace.set_projector(content, placement);
+    }
+
+    /// Closes the projector of a canvas (`ProjectorContent::key`); `false` when none
+    /// is open. Not in the layout undo history.
+    pub fn close_projector(&mut self, key: &str) -> bool {
+        self.workspace.close_projector(key)
+    }
+
     /// Set the Mixer's orientation (ADR-0083). Saved with the workspace, not in the
     /// layout undo history, and allowed on a locked workspace.
     pub fn set_mixer_orientation(&mut self, orientation: crate::MixerOrientation) {

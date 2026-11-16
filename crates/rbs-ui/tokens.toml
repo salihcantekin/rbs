@@ -11,6 +11,9 @@ format = 4
 # The Windows close button's hover, as the OS draws it (ADR-0071): fixed as well.
 "color.caption.close-hover" = "#c42b1c"
 "color.caption.close-text" = "#ffffff"
+# Around a projector's picture (ADR-0125): part of what a video call receives, so the
+# same black in every theme, like the canvas's own background.
+"color.projector.backdrop" = "#000000"
 
 [themes.dark]
 "color.surface.base" = "#0b0b0d"
@@ -221,6 +224,9 @@ format = 4
 # The first-run card (ADR-0113 decision 5): wide enough for the three choices with
 # their one-line descriptions. Not themeable.
 "size.first-run.w" = 480
+# How far from a projector's edge a press resizes it on Windows, where it has no frame
+# (ADR-0125 decision 5).
+"size.projector.resize-edge" = 8
 
 # Milliseconds. Every animation is off under "reduce motion".
 [duration]
@@ -240,6 +246,8 @@ format = 4
 # found stays marked.
 "delay.find-fallback" = 120
 "delay.find-mark" = 2000
+# Not motion: how long the pointer rests on a projector before it hides (ADR-0125).
+"delay.projector-cursor" = 2000
 
 # Size and line height in logical pixels, weight 100-900.
 [type]
