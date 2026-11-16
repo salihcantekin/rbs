@@ -20,7 +20,7 @@ fn manifest(crate_dir: &str) -> String {
 
 #[test]
 fn audio_filters_and_params_do_not_depend_on_the_gpu() {
-    for dir in ["rbs-audio-filters", "rbs-params"] {
+    for dir in ["rbs-audio-filters", "rbs-params", "rbs-denoise"] {
         let text = manifest(dir);
         for forbidden in ["rbs-gpu", "wgpu", "rbs-audio ", "rbs-audio=", "rbs-filters"] {
             assert!(
