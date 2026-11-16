@@ -825,6 +825,7 @@ fn every_result_and_event_type_round_trips() {
     });
     round_trip(&AuthResult {
         scopes: ScopeSet::PANEL,
+        irreversible: false,
         server: ClientInfo::new("rbs", "0.0.1"),
     });
     round_trip(&Description {
@@ -832,6 +833,7 @@ fn every_result_and_event_type_round_trips() {
         methods: vec![MethodInfoOwned {
             name: "studio.get".into(),
             scope: Some(rbs_api::Scope::Read),
+            effect: Some(rbs_api::request::Effect::Read),
         }],
         topics: Topic::ALL.to_vec(),
     });
