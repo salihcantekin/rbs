@@ -132,3 +132,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Accepted; its high-contrast lines superseded by ADR-0123 |
 | [0123](0123-remove-the-high-contrast-theme.md) | Remove the built-in high-contrast theme; Dark and Light are the built-in themes | Accepted |
 | [0124](0124-pause-recording-and-hold-stream.md) | Pause a recording (one continuous file, cut before the encoder when owned, at the output when shared); hold a stream with a hold picture instead of pausing it | Accepted |
+| [0126](0126-measured-sync-offset-and-device-memory.md) | Measure a source's sync offset with a clap, and remember it with the device | Proposed |
