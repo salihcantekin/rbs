@@ -179,6 +179,8 @@ format = 4
 "size.meter.readout" = 56
 # Thickness of the master's loudness bar (ADR-0092 decision 7), beside or under its level bar.
 "size.meter.loudness" = 6
+# Thickness of a slider's track (its short side), horizontal and vertical alike.
+"size.slider.track" = 4
 # Thickness of the target mark across the loudness bar.
 "size.meter.target" = 2
 # Width of one Mixer column strip (columns): padding + meter + VSlider + control column.

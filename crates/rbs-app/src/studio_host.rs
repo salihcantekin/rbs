@@ -633,7 +633,9 @@ pub enum Command {
         locked: bool,
     },
     /// A source's volume, a linear factor from 0 to 1 (ADR-0059). A live control: not
-    /// on the undo stack, and it reaches the mixer without rebinding the scene.
+    /// on the undo stack, and it reaches the mixer without rebinding the scene. The
+    /// window's fader: while the program scene keeps its own levels and places the
+    /// source, that scene's level changes instead (ADR-0091 decision 5).
     SetSourceVolume {
         /// The source.
         id: SourceId,
@@ -641,12 +643,28 @@ pub enum Command {
         volume: f32,
     },
     /// Mute or unmute a source's sound (ADR-0059). A live control: not on the undo
-    /// stack.
+    /// stack. In Own levels, as [`Command::SetSourceVolume`], the scene's mute.
     SetSourceMuted {
         /// The source.
         id: SourceId,
         /// Muted.
         muted: bool,
+    },
+    /// Turns a scene's Own levels on (`own` true, copying what is heard) or puts it
+    /// back in Shared levels (ADR-0091, `scene.audio.own` / `scene.audio.shared`). One
+    /// undo step; a refusal comes back as [`Update::Error`].
+    SetSceneOwnLevels {
+        /// The scene.
+        scene: SceneId,
+        /// Own levels on.
+        own: bool,
+    },
+    /// Removes a scene's own level for one source (`scene.audio.reset_source`).
+    ResetSceneLevel {
+        /// The scene.
+        scene: SceneId,
+        /// The source.
+        source: SourceId,
     },
     /// Adds a vertical second canvas and runs it beside the main one (ADR-0093 decision
     /// 8): the canvas is made, follows the main canvas's program scene when asked, gets
@@ -3777,19 +3795,53 @@ impl Host {
                 self.answer(done, notify);
             }
             Command::SetSourceVolume { id, volume } => {
-                self.run_ui_api(
+                let call = if self.levels_take(id) {
+                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
+                        scene: self.scene.get(),
+                        source: id.get(),
+                        volume: Some(volume),
+                        muted: None,
+                    })
+                } else {
                     rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
                         source: id.get(),
                         volume,
-                    }),
-                    notify,
-                );
+                    })
+                };
+                self.run_ui_api(call, notify);
             }
             Command::SetSourceMuted { id, muted } => {
-                self.run_ui_api(
+                let call = if self.levels_take(id) {
+                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
+                        scene: self.scene.get(),
+                        source: id.get(),
+                        volume: None,
+                        muted: Some(muted),
+                    })
+                } else {
                     rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
                         source: id.get(),
                         muted,
+                    })
+                };
+                self.run_ui_api(call, notify);
+            }
+            Command::SetSceneOwnLevels { scene, own } => {
+                let scene = rbs_api::request::SceneRef { scene: scene.get() };
+                self.run_ui_api(
+                    if own {
+                        rbs_api::Command::SceneAudioOwn(scene)
+                    } else {
+                        rbs_api::Command::SceneAudioShared(scene)
+                    },
+                    notify,
+                );
+            }
+            Command::ResetSceneLevel { scene, source } => {
+                self.run_ui_api(
+                    rbs_api::Command::SceneAudioResetSource(rbs_api::request::SceneSourceRef {
+                        scene: scene.get(),
+                        source: source.get(),
                     }),
                     notify,
                 );
@@ -9630,6 +9682,19 @@ impl Host {
             self.studio.set_mix(&self.collection);
         }
         Ok((turned_own, changed || turned_own))
+    }
+
+    /// Whether the window's fader and mute for `source` edit the program scene's level
+    /// (ADR-0091 decision 5): that scene keeps its own levels and places the source
+    /// (directly, nested, or as a global source of the canvas).
+    fn levels_take(&self, source: SourceId) -> bool {
+        self.collection
+            .scene(self.scene)
+            .is_some_and(Scene::own_levels)
+            && self
+                .collection
+                .placed_sources(self.canvas, self.scene)
+                .contains(&source)
     }
 
     /// True while `id` is the studio canvas's program scene, whose levels are heard.

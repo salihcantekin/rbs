@@ -958,6 +958,12 @@ impl StudioUi {
         let globals = self.meters.iter().filter(|m| m.global).count();
         g.set_meter_globals(globals as i32);
         g.set_meter_scenes((self.meters.row_count() - globals) as i32);
+        g.set_program_scene(
+            self.scene_list
+                .as_ref()
+                .map_or(-1, |l| l.program.get() as i32),
+        );
+        g.set_scene_levels(self.scene_levels().unwrap_or_default().into());
         let (kind, name) = step_view(self.next_undo.as_ref());
         g.set_undo_kind(kind);
         g.set_undo_name(name.into());
@@ -2016,6 +2022,47 @@ impl StudioUi {
             id: SourceId::from_raw(id as u32),
             hidden,
         });
+    }
+
+    /// Turns a scene's Own levels on or puts it back in Shared levels (ADR-0091).
+    pub fn set_scene_own_levels(&mut self, scene: i32, own: bool) {
+        self.send(Command::SetSceneOwnLevels {
+            scene: SceneId::from_raw(scene as u32),
+            own,
+        });
+    }
+
+    /// Removes the scene's own level for `source`: its own level is heard there again.
+    pub fn reset_scene_level(&mut self, scene: i32, source: i32) {
+        self.send(Command::ResetSceneLevel {
+            scene: SceneId::from_raw(scene as u32),
+            source: SourceId::from_raw(source as u32),
+        });
+    }
+
+    /// The program scene's id while it keeps its own levels (ADR-0091), else `None`.
+    pub fn levels_scene(&self) -> Option<i32> {
+        self.scene_levels()?;
+        self.scene_list.as_ref().map(|l| l.program.get() as i32)
+    }
+
+    /// Whether the scene keeps its own levels (`scene.audio.own_levels.toggle`).
+    pub fn scene_own_levels(&self, scene: i32) -> bool {
+        self.scene_list.as_ref().is_some_and(|l| {
+            l.scenes
+                .iter()
+                .any(|s| s.id.get() as i32 == scene && s.own_audio)
+        })
+    }
+
+    /// Whether `scene` is the program scene and has its own level for `source`
+    /// (`scene.audio.reset_source` has something to remove).
+    pub fn has_scene_level(&self, scene: i32, source: i32) -> bool {
+        self.levels_scene() == Some(scene)
+            && self
+                .heard
+                .iter()
+                .any(|h| h.id as i32 == source && h.scene_level)
     }
 
     /// A source's volume from the fader position (0 to 1, ADR-0059 fader law). Each
@@ -4659,7 +4706,7 @@ impl StudioUi {
             visible: row.visible,
             active: row.active,
             locked: row.locked,
-            muted: row.audio.muted,
+            muted: row.heard.unwrap_or(row.audio).muted,
             mixer_hidden: row.audio.mixer_hidden,
             monitor: row.audio.monitor,
             soloed: self.is_soloed(row.id.get()),
@@ -5288,6 +5335,7 @@ impl StudioUi {
                         live: s.id == list.program,
                         preview: Some(s.id) == list.preview,
                         number: i as i32 + 1,
+                        own_levels: s.own_audio,
                     })
                     .collect();
                 set_rows(&self.scenes, data);
@@ -5331,7 +5379,11 @@ impl StudioUi {
                     .map(|(n, what)| format!("{n} {what}"))
                     .collect::<Vec<_>>()
                     .join(" · ");
+                let was_own = self.scene_levels().is_some();
                 self.scene_list = Some(list);
+                if self.scene_levels().is_some() != was_own {
+                    self.mark_scene_levels();
+                }
                 self.refresh_existing();
                 self.refresh_global_existing();
             }
@@ -5634,6 +5686,48 @@ impl StudioUi {
         self.set_rows(rows);
     }
 
+    /// The program scene's name while it keeps its own levels (ADR-0091): the Mixer's
+    /// faders and Properties › Sound edit its levels then.
+    fn scene_levels(&self) -> Option<String> {
+        let l = self.scene_list.as_ref()?;
+        l.scenes
+            .iter()
+            .find(|s| s.id == l.program && s.own_audio)
+            .map(|s| s.name.clone())
+    }
+
+    /// Whether Properties › Sound edits the program scene's level for `r` (ADR-0091):
+    /// that scene keeps its own levels and makes the source heard.
+    fn levels_edit(&self, r: &SourceRow) -> bool {
+        self.scene_levels().is_some()
+            && (!self.studio_mode
+                || r.heard.is_some()
+                || self.heard.iter().any(|h| h.id == r.id.get()))
+    }
+
+    /// The scene marks after the program scene went to or from Own levels: the Mixer
+    /// strips and Properties › Sound follow without waiting for their own updates.
+    fn mark_scene_levels(&mut self) {
+        let own = self.scene_levels().is_some();
+        for i in 0..self.meters.row_count() {
+            if let Some(mut m) = self.meters.row_data(i)
+                && m.scene_level != own
+            {
+                m.scene_level = own;
+                self.meters.set_row_data(i, m);
+            }
+        }
+        let marks: Vec<bool> = self.rows.iter().map(|r| self.levels_edit(r)).collect();
+        for (i, mark) in marks.into_iter().enumerate() {
+            if let Some(mut d) = self.sources.row_data(i)
+                && d.scene_level != mark
+            {
+                d.scene_level = mark;
+                self.sources.set_row_data(i, d);
+            }
+        }
+    }
+
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
         // Layers move within their group: the global sources, then the scene's.
         let pictures = |global: bool| -> Vec<usize> {
@@ -5719,9 +5813,9 @@ impl StudioUi {
                     flip_v: shown.is_some_and(|l| l.flip_state().vertical),
                     rotation: shown.map_or(0.0, |l| l.rotation),
                     audio: r.kind.is_some_and(SourceKind::is_audio),
-                    muted: r.audio.muted,
-                    volume: fader::position_of(r.audio.volume),
-                    volume_text: fader::volume_text(r.audio.volume).into(),
+                    muted: r.heard.unwrap_or(r.audio).muted,
+                    volume: fader::position_of(r.heard.unwrap_or(r.audio).volume),
+                    volume_text: fader::volume_text(r.heard.unwrap_or(r.audio).volume).into(),
                     filters,
                     selected_filter,
                     sync_offset: r.audio.sync_offset_ms,
@@ -5732,6 +5826,11 @@ impl StudioUi {
                         _ => 0,
                     },
                     record_form: record_form(r),
+                    // Properties › Sound edits what the Mixer does (ADR-0091): the
+                    // program scene's own level while it keeps its own.
+                    scene_level: self.levels_edit(r),
+                    scene_entry: r.heard.is_some(),
+                    own_volume_text: fader::volume_text(r.audio.volume).into(),
                     global: r.global,
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
@@ -5814,7 +5913,8 @@ impl StudioUi {
             .filter(|r| r.meter.is_some())
             .map(|r| HeardFact {
                 id: r.id.get(),
-                muted: r.audio.muted,
+                muted: r.heard.unwrap_or(r.audio).muted,
+                scene_level: r.heard.is_some(),
                 hidden: r.audio.mixer_hidden,
                 monitor: r.audio.monitor,
             })
@@ -5837,17 +5937,21 @@ impl StudioUi {
             };
             self.slots.push(slot);
         }
+        let own = self.scene_levels().is_some();
         let meters: Vec<MeterRow> = rows
             .iter()
             .filter(|r| !r.audio.mixer_hidden && mixer_source(r))
             .map(|r| {
                 let live = r.meter.is_some();
+                // What is heard: the program scene's own level over the source's
+                // (ADR-0091 decision 3); the fader edits that.
+                let heard = r.heard.unwrap_or(r.audio);
                 MeterRow {
                     id: r.id.get() as i32,
-                    muted: r.audio.muted,
-                    volume: fader::position_of(r.audio.volume),
+                    muted: heard.muted,
+                    volume: fader::position_of(heard.volume),
                     volume_text: if live {
-                        fader::volume_text(r.audio.volume).into()
+                        fader::volume_text(heard.volume).into()
                     } else {
                         "Not running".into()
                     },
@@ -5858,6 +5962,7 @@ impl StudioUi {
                     monitor: monitor::mode_code(r.audio.monitor),
                     solo: self.is_soloed(r.id.get()),
                     live,
+                    scene_level: own,
                     ..MeterRow::default()
                 }
             })
@@ -5869,7 +5974,7 @@ impl StudioUi {
             .filter(|r| r.audio.mixer_hidden && mixer_source(r))
             .map(|r| MeterRow {
                 id: r.id.get() as i32,
-                muted: r.audio.muted,
+                muted: r.heard.unwrap_or(r.audio).muted,
                 name: r.name.as_str().into(),
                 icon: source_icon(r.kind).into(),
                 global: r.global,
@@ -6338,6 +6443,8 @@ pub struct SourceFacts {
 struct HeardFact {
     id: u32,
     muted: bool,
+    /// The program scene has its own level for it (ADR-0091).
+    scene_level: bool,
     hidden: bool,
     monitor: rbs_scene::model::SourceMonitor,
 }
@@ -7959,6 +8066,7 @@ mod tests {
             live: true,
             preview: false,
             number: 1,
+            own_levels: false,
         }]);
         ui.selected = 1;
         ui.clear_collection_view();

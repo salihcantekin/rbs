@@ -1301,6 +1301,86 @@ fn row(c: &mut Client, id: u64) -> Value {
         .expect("a row for the source")
 }
 
+/// The window's fader and mute (ADR-0091 decision 5): while the program scene keeps
+/// its own levels they edit that scene's level, else the source's own, as before.
+#[test]
+fn the_window_fader_edits_the_scene_level_in_own_levels() {
+    use rbs_app::studio_host::Command;
+    use rbs_scene::model::SourceId;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let mic = add(&mut c, "audio_input", "Mic");
+    let id = SourceId::from_raw(mic as u32);
+    // What the Mixer is told it hears for the mic, after the next change to it.
+    let heard_after = |want: f32| {
+        next(&updates, |u| match u {
+            Update::Heard(rows) => rows
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.heard.unwrap_or(r.audio))
+                .filter(|a| (a.volume - want).abs() < 1e-6),
+            _ => None,
+        })
+    };
+
+    // Shared levels: the fader is the source's own volume.
+    host.send(Command::SetSourceVolume { id, volume: 0.5 });
+    heard_after(0.5);
+    assert_eq!(row(&mut c, mic)["volume"], 0.5);
+    assert!(row(&mut c, mic).get("heard").is_none());
+
+    // Own levels: the fader and mute edit the scene's entry; the source keeps 0.5.
+    ok(&c.call("scene.audio.own", json!({"scene": one})));
+    host.send(Command::SetSourceVolume { id, volume: 0.25 });
+    let heard = heard_after(0.25);
+    assert!(!heard.muted);
+    host.send(Command::SetSourceMuted { id, muted: true });
+    next(&updates, |u| match u {
+        Update::Heard(rows) => rows
+            .iter()
+            .find(|r| r.id == id && r.heard.is_some_and(|h| h.muted))
+            .map(|_| ()),
+        _ => None,
+    });
+    let r = row(&mut c, mic);
+    assert_eq!(r["volume"], 0.5, "the source's own volume is kept");
+    assert_eq!(r["muted"], false, "the source's own mute is kept");
+    assert_eq!(r["heard"], json!({"volume": 0.25, "muted": true}));
+    let got = ok(&c.call("scene.audio.get", json!({"scene": one}))).clone();
+    assert_eq!(
+        got["levels"],
+        json!([{"source": mic, "volume": 0.25, "muted": true}])
+    );
+
+    // The window's reset removes the entry: the source's own level is heard again.
+    host.send(Command::ResetSceneLevel {
+        scene: rbs_scene::model::SceneId::from_raw(one as u32),
+        source: id,
+    });
+    heard_after(0.5);
+    assert!(row(&mut c, mic).get("heard").is_none());
+
+    // Back to Shared levels from the window: the fader is the source's own again.
+    host.send(Command::SetSceneOwnLevels {
+        scene: rbs_scene::model::SceneId::from_raw(one as u32),
+        own: false,
+    });
+    next(&updates, |u| match u {
+        Update::Scenes(list) => list
+            .scenes
+            .iter()
+            .any(|s| s.id.get() as u64 == one && !s.own_audio)
+            .then_some(()),
+        _ => None,
+    });
+    host.send(Command::SetSourceVolume { id, volume: 0.75 });
+    heard_after(0.75);
+    assert_eq!(row(&mut c, mic)["volume"], 0.75);
+    drop(host);
+}
+
 #[test]
 fn a_scene_keeps_its_own_levels_and_they_are_heard_while_it_is_on_air() {
     let Some((host, _updates, _api, mut c)) = start() else {

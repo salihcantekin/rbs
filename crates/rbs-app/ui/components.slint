@@ -2537,7 +2537,7 @@ export component Slider inherits Rectangle {
     track := Rectangle {
         x: knob / 2;
         width: span;
-        height: Tokens.space-1;
+        height: Tokens.size-slider-track;
         border-radius: self.height / 2;
         background: Theme.surface-sunken;
         Rectangle {
@@ -2639,7 +2639,7 @@ export component VSlider inherits Rectangle {
     track := Rectangle {
         y: knob / 2;
         height: span;
-        width: Tokens.size-meter-bar;
+        width: Tokens.size-slider-track;
         x: (root.width - self.width) / 2;
         border-radius: self.width / 2;
         background: Theme.surface-sunken;

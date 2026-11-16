@@ -23,12 +23,13 @@ export struct FilterFieldData { label: string, help: string, log: bool, options:
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterLevels { input: float, reduction: float }
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool, record-choice: int, record-form: int }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool, record-choice: int, record-form: int, scene-level: bool, scene-entry: bool, own-volume-text: string }
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
 // by name; `in-globals`: it is a global source too; `places`: how many items place it.
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
 // `live`: the scene on air; `preview`: the preview scene in studio mode (ADR-0061).
-export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int }
+// `own-levels`: the scene keeps its own volumes and mutes (Own levels, ADR-0091).
+export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int, own-levels: bool }
 // A source of the collection for Add source's "Existing source" list.
 // A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
 // picture: `frame` is true for a frame (transparent in the middle), `thumb` its picture.
@@ -68,6 +69,9 @@ export struct MeterRow {
     solo: bool,
     // False while an audio source is not running: the strip stays, the fader does not move.
     live: bool,
+    // The program scene is in Own levels (ADR-0091): the fader and mute show and edit
+    // that scene's level for the source, and the strip shows the scene mark.
+    scene-level: bool,
 }
 export struct ScaleMark { label: string, at: float }
 // The master's loudness (ADR-0092 decision 7), shown while `on`. Bar positions follow the
@@ -143,6 +147,11 @@ export global Studio {
     // How many of `meters` are the scene's own and how many are global (Mixer groups).
     in property <int> meter-scenes;
     in property <int> meter-globals;
+    // The program scene (the scene the Mixer hears), and its name while it is in Own
+    // levels (ADR-0091): empty in Shared levels. The Mixer's "This scene" header and
+    // Properties › Sound say whose level a fader edits.
+    in property <int> program-scene: -1;
+    in property <string> scene-levels;
     // The Stats panel's lines; empty while nothing records or streams.
     in property <[StatRow]> stats;
     in property <[ScaleMark]> scale;
@@ -264,6 +273,11 @@ export global Studio {
     in property <string> out-separate;
     callback set-source-muted(int /* id */, bool /* muted */);
     callback set-source-mixer-hidden(int /* id */, bool /* hidden */);
+    // Removes the program scene's own level for a source (ADR-0091 reset_source): the
+    // source's own level is heard again in that scene.
+    callback reset-scene-level(int /* source */);
+    // Puts a scene back in Shared levels after the row's confirm (ADR-0091).
+    callback use-shared-levels(int /* scene */);
     // The monitor output (ADR-0097): a source's mode (0 off, 1 monitor and output,
     // 2 monitor only) and solo, and the Mixer row's and Settings › Audio's controls.
     callback set-source-monitor(int /* id */, int /* mode */);
@@ -370,6 +384,8 @@ export global Studio {
     // from this scene; 2 deletes it from every scene.
     in-out property <int> confirming-scene: -1;
     in-out property <int> confirm-scene-asked;
+    // What the scene row asks: 0 remove the scene, 1 discard its own levels (ADR-0091).
+    in-out property <int> confirm-scene-kind: 0;
     in-out property <int> confirming-source: -1;
     in-out property <int> confirm-source-kind: 0;
     in-out property <int> confirm-source-asked;
@@ -1105,8 +1121,11 @@ component SceneRowView inherits Rectangle {
     property <bool> marked: studio ? data.preview : data.live;
     property <int> confirm-asked: Studio.confirm-scene-asked;
     changed confirm-asked => { root.take-scene-confirm(); }
+    // What the row's confirm asks: 0 remove the scene, 1 discard its own levels.
+    property <int> confirm-kind;
     function take-scene-confirm() {
         if Studio.confirming-scene == data.id {
+            root.confirm-kind = Studio.confirm-scene-kind;
             row.confirm = true;
             Studio.confirming-scene = -1;
         }
@@ -1127,7 +1146,8 @@ component SceneRowView inherits Rectangle {
         lead: data.number;
         name: data.name;
         selected: root.marked;
-        accessible-name: @tr("{}{}{}", data.name,
+        accessible-name: @tr("{}{}{}{}", data.name,
+            data.own-levels ? @tr(", own levels") : "",
             root.studio && data.preview ? @tr(", in preview") : "",
             !data.live ? ""
             : root.live-state == 0 ? (root.studio ? @tr(", program") : @tr(", shown"))
@@ -1137,8 +1157,8 @@ component SceneRowView inherits Rectangle {
             ? @tr("Return puts it in preview, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu")
             : @tr("Return puts it on air, F2 renames it, Delete asks before removing it, the Menu key or Shift+F10 opens its menu");
         edit-label: @tr("Name of the scene {}", data.name);
-        confirm-question: @tr("Remove {}?", data.name);
-        confirm-name: @tr("Remove scene {}", data.name);
+        confirm-question: root.confirm-kind == 1 ? @tr("Discard own levels of {}?", data.name) : @tr("Remove {}?", data.name);
+        confirm-name: root.confirm-kind == 1 ? @tr("Use shared levels in {}", data.name) : @tr("Remove scene {}", data.name);
         allow-drag: true;
         drag-data: Studio.scene-data(data.id);
         drop-enabled: Studio.dragging-scene >= 0;
@@ -1146,14 +1166,27 @@ component SceneRowView inherits Rectangle {
         double-clicked => { self.editing = true; }
         menu-asked(at) => { menu.open(at); }
         renamed(t) => { Studio.rename-scene(data.id, t); }
-        delete-asked => { if root.can-remove { self.confirm = true; } }
-        confirmed => { root.leaving(); Studio.remove-scene(data.id); }
+        delete-asked => { if root.can-remove { root.confirm-kind = 0; self.confirm = true; } }
+        confirmed => {
+            if root.confirm-kind == 1 {
+                self.confirm = false;
+                Studio.use-shared-levels(data.id);
+            } else {
+                root.leaving();
+                Studio.remove-scene(data.id);
+            }
+        }
         dragging(on) => { Studio.dragging-scene = on ? data.id : -1; }
         can-take(d) => { return !Studio.is-panel(d) && Studio.dragging-scene >= 0 && Studio.dragging-scene != data.id; }
         took(d) => {
             Studio.move-scene-to(Studio.dragging-scene, data.id);
             Studio.dragging-scene = -1;
         }
+            // Own levels (ADR-0091): the scene mark; the row's name says it in words.
+            if data.own-levels && !row.editing: VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.sliders; ink: Theme.text-secondary; }
+            }
             if studio && data.live && root.live-state == 0 && !row.editing: VerticalLayout {
                 alignment: center;
                 Rectangle {
@@ -1209,7 +1242,7 @@ component SceneRowView inherits Rectangle {
                     visible: (row.hovered || row.editing) && root.can-remove;
                     icon: IconName.close;
                     name: @tr("Remove scene {}", data.name);
-                    clicked => { row.focus-pointer(); row.confirm = true; }
+                    clicked => { row.focus-pointer(); root.confirm-kind = 0; row.confirm = true; }
                 }
             }
     }
@@ -1796,7 +1829,11 @@ component StripControls inherits HorizontalLayout {
     if root.show-name: VerticalLayout {
         alignment: center;
         horizontal-stretch: 0;
-        Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: data.muted ? Theme.text-disabled : Theme.text-secondary; }
+        // The scene mark (ADR-0091) takes the source icon's place: no extra width.
+        Icon {
+            name: data.scene-level ? IconName.sliders : data.muted ? IconName.speaker-off : Icons.named(data.icon);
+            ink: data.muted ? Theme.text-disabled : data.scene-level ? Theme.accent : Theme.text-secondary;
+        }
     }
     if root.show-name: VerticalLayout {
         alignment: center;
@@ -1888,13 +1925,14 @@ component MeterView inherits Rectangle {
         if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
     accessible-role: progress-indicator;
-    accessible-label: root.title;
+    accessible-label: data.scene-level ? @tr("{}, level of this scene", root.title) : root.title;
     accessible-value: data.value;
     // The source's menu (ADR-0080): the "more" button, a right-click or the Menu key.
     // A source's menu, or the master's (ADR-0092: Show loudness and more).
     menu := CommandMenu {
         context: root.master ? "mixer-master" : "mixer-source";
-        target: root.master ? "" : "source=" + data.id;
+        // In Own levels the scene too, for "Use the source's level" (ADR-0091).
+        target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
     TouchArea {
         pointer-event(e) => {
@@ -1929,26 +1967,36 @@ component MeterView inherits Rectangle {
         VerticalLayout {
             width: 100%;
             spacing: 0px;
-            bar := Rectangle {
-                height: Tokens.size-meter-bar;
-                background: Theme.surface-sunken;
-                border-width: Tokens.size-border;
-                border-color: Theme.border-subtle;
-                border-radius: Tokens.radius-sm;
-                clip: true;
-                Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-                Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-                Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-                if data.peak > 0: Rectangle {
-                    x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
-                    width: Tokens.size-meter-peak;
-                    background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+            // The level bar spans the fader's track, not its knob room: Slider insets
+            // its track by half the knob (`space.3`), so both ends line up with it.
+            HorizontalLayout {
+                padding-left: Tokens.space-3 / 2;
+                padding-right: Tokens.space-3 / 2;
+                bar := Rectangle {
+                    height: Tokens.size-meter-bar;
+                    background: Theme.surface-sunken;
+                    border-width: Tokens.size-border;
+                    border-color: Theme.border-subtle;
+                    border-radius: Tokens.radius-sm;
+                    clip: true;
+                    Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+                    Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+                    Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+                    if data.peak > 0: Rectangle {
+                        x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
+                        width: Tokens.size-meter-peak;
+                        background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+                    }
                 }
             }
             // The loudness bar (ADR-0092) under the level bar, on the same scale.
-            if root.master && Studio.loudness.on: LoudnessBar {
-                height: Tokens.size-meter-loudness;
-                vertical: false;
+            if root.master && Studio.loudness.on: HorizontalLayout {
+                padding-left: Tokens.space-3 / 2;
+                padding-right: Tokens.space-3 / 2;
+                LoudnessBar {
+                    height: Tokens.size-meter-loudness;
+                    vertical: false;
+                }
             }
             // The fader under the bar, the same width (ADR-0059 fader law, -60 to 0 dB).
             Slider {
@@ -2089,12 +2137,13 @@ component MeterStrip inherits Rectangle {
     property <length> controls-x: root.width - root.pad - root.controls-w;
     property <length> step: root.slot + root.gap;
     accessible-role: progress-indicator;
-    accessible-label: root.title;
+    accessible-label: data.scene-level ? @tr("{}, level of this scene", root.title) : root.title;
     accessible-value: data.live ? data.value : data.volume-text;
     // A source's menu, or the master's (ADR-0092: Show loudness and more).
     menu := CommandMenu {
         context: root.master ? "mixer-master" : "mixer-source";
-        target: root.master ? "" : "source=" + data.id;
+        // In Own levels the scene too, for "Use the source's level" (ADR-0091).
+        target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
     TouchArea {
         pointer-event(e) => {
@@ -2113,9 +2162,10 @@ component MeterStrip inherits Rectangle {
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 0;
+            // The scene mark (ADR-0091) takes the source icon's place: no extra width.
             Icon {
-                name: data.muted ? IconName.speaker-off : Icons.named(data.icon);
-                ink: root.quiet ? Theme.text-disabled : Theme.text-secondary;
+                name: data.scene-level ? IconName.sliders : data.muted ? IconName.speaker-off : Icons.named(data.icon);
+                ink: root.quiet ? Theme.text-disabled : data.scene-level ? Theme.accent : Theme.text-secondary;
             }
         }
         Text {
@@ -2129,11 +2179,14 @@ component MeterStrip inherits Rectangle {
             overflow: elide;
         }
     }
+    // The level bar spans the fader's track, not its knob room: VSlider insets its
+    // track by half the knob (`space.3`), so 0 dB and the bottom line up with it.
+    property <length> track-inset: Tokens.space-3 / 2;
     bar := Rectangle {
         x: root.pad;
-        y: root.body-y;
+        y: root.body-y + root.track-inset;
         width: Tokens.size-meter-bar;
-        height: root.body-h;
+        height: max(0px, root.body-h - 2 * root.track-inset);
         background: Theme.surface-sunken;
         border-width: Tokens.size-border;
         border-color: Theme.border-subtle;
@@ -2150,9 +2203,9 @@ component MeterStrip inherits Rectangle {
     }
     if root.loud: LoudnessBar {
         x: root.pad + Tokens.size-meter-bar + root.gap;
-        y: root.body-y;
+        y: root.body-y + root.track-inset;
         width: Tokens.size-meter-loudness;
-        height: root.body-h;
+        height: max(0px, root.body-h - 2 * root.track-inset);
         vertical: true;
     }
     VSlider {
@@ -2234,10 +2287,32 @@ component MeterStrip inherits Rectangle {
 // the pane's preferred width (This scene / Global stay open in columns).
 component MixerCaption inherits Rectangle {
     in property <string> title;
+    // The scene mark before the title (Own levels, ADR-0091).
+    in property <bool> mark;
+    // A "more" button at the end, for the group's menu: its lower left, window coordinates.
+    in property <bool> more;
+    in property <string> more-name;
+    callback open-menu(length, length);
     height: Tokens.size-control-sm;
     min-width: 0px;
+    property <length> lead: root.mark ? Tokens.size-icon-box + Tokens.space-1 : 0px;
+    property <length> tail: root.more ? Tokens.size-control-sm + Tokens.space-1 : 0px;
+    if root.mark: Icon {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        name: IconName.sliders;
+        ink: Theme.accent;
+    }
+    if root.more: IconButton {
+        x: parent.width - self.width;
+        y: (parent.height - self.height) / 2;
+        icon: IconName.more;
+        name: root.more-name;
+        clicked => { root.open-menu(self.absolute-position.x, self.absolute-position.y + self.height); }
+    }
     Text {
-        width: parent.width;
+        x: root.lead;
+        width: max(0px, parent.width - root.lead - root.tail);
         height: parent.height;
         text: root.title.to-uppercase();
         color: Theme.text-secondary;
@@ -2265,10 +2340,27 @@ component MixerGroupCluster inherits Rectangle {
     height: root.col-h;
     horizontal-stretch: 0;
     clip: true;
+    // This scene's group: Shared or Own levels and its menu (ADR-0091).
+    property <bool> own: root.kind == 0 && Studio.scene-levels != "";
+    scene-menu := CommandMenu {
+        context: "mixer-scene";
+        target: "scene=" + Studio.program-scene;
+    }
     MixerCaption {
         y: 0;
         width: parent.width;
-        title: root.title;
+        title: root.own ? @tr("Scene levels") : root.title;
+        mark: root.own;
+        more: root.kind == 0;
+        more-name: @tr("Levels of this scene");
+        accessible-role: text;
+        accessible-label: root.own ? @tr("Scene levels of {}", Studio.scene-levels) : root.title;
+        open-menu(x, y) => {
+            scene-menu.open({
+                x: x - scene-menu.absolute-position.x,
+                y: y - scene-menu.absolute-position.y,
+            });
+        }
     }
     if root.kind == 2 && Studio.master-meter.length > 0: MeterStrip {
         x: 0;
@@ -2570,11 +2662,26 @@ export component MixerPanel inherits Rectangle {
             // upward to its title row.
             spacing: 0px;
             alignment: start;
-            if Studio.meter-scenes > 0: SectionHeader {
-                title: @tr("This scene");
-                collapsible: true;
-                open: !root.scene-closed;
-                toggled(o) => { Sections.set-closed("mixer.scene", !o); }
+            // This scene's group: Shared or Own levels and its menu (ADR-0091).
+            if Studio.meter-scenes > 0: HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                SectionHeader {
+                    horizontal-stretch: 1;
+                    title: Studio.scene-levels != "" ? @tr("Scene levels · {}", Studio.scene-levels) : @tr("This scene");
+                    collapsible: true;
+                    open: !root.scene-closed;
+                    toggled(o) => { Sections.set-closed("mixer.scene", !o); }
+                }
+                IconButton {
+                    icon: IconName.more;
+                    name: @tr("Levels of this scene");
+                    clicked => {
+                        scene-menu.open({
+                            x: self.absolute-position.x - scene-menu.absolute-position.x,
+                            y: self.absolute-position.y + self.height - scene-menu.absolute-position.y,
+                        });
+                    }
+                }
             }
             for m in Studio.meters: VerticalLayout {
                 padding-bottom: m.global || root.scene-closed ? 0px : Tokens.space-1;
@@ -2621,7 +2728,8 @@ export component MixerPanel inherits Rectangle {
                 property <int> step: self.width >= Tokens.size-menu-sm ? 1 : self.width >= Tokens.size-menu-sm / 2 ? 2 : 3;
                 for mark[i] in Studio.scale: Text {
                     visible: Math.mod(i, scale-row.step) == 0;
-                    x: parent.width * mark.at - self.width / 2;
+                    // On the faders' track, which is inset by half the knob.
+                    x: Tokens.space-3 / 2 + (parent.width - Tokens.space-3) * mark.at - self.width / 2;
                     height: parent.height;
                     text: mark.label;
                     color: Theme.text-secondary;
@@ -2662,6 +2770,11 @@ export component MixerPanel inherits Rectangle {
     }
     // The Mixer's own menu (ADR-0080): a right-click outside any strip or row.
     mixer-menu := CommandMenu { context: "mixer"; }
+    // This scene's levels (ADR-0091): Own levels and back, from the group's "more".
+    scene-menu := CommandMenu {
+        context: "mixer-scene";
+        target: "scene=" + Studio.program-scene;
+    }
     // The empty state's Add source: the source types as a menu (ADR-0094 B1).
     add-menu := CommandMenu { context: "add-source"; }
 }
@@ -4123,10 +4236,31 @@ component AudioFields inherits VerticalLayout {
     Section {
         title: @tr("Sound");
         id: "properties.sound";
-        // Position 1 is 0 dB, the top of the fader and the default.
-        changed: data.volume < 1;
-        default-text: @tr("0 dB");
-        reset => { Studio.set-source-volume(data.id, 1); }
+        // Position 1 is 0 dB, the top of the fader and the default. In Own levels
+        // (ADR-0091) the scene's level is edited: reset gives the source's own back.
+        changed: data.scene-level ? data.scene-entry : data.volume < 1;
+        default-text: data.scene-level ? @tr("the source's level, {}", data.own-volume-text) : @tr("0 dB");
+        reset => {
+            if data.scene-level { Studio.reset-scene-level(data.id); } else { Studio.set-source-volume(data.id, 1); }
+        }
+        hint: data.scene-level ? @tr("{} keeps its own levels. This volume and mute apply only to that scene.", Studio.scene-levels) : "";
+        // Whose level this is, while the scene on air keeps its own (ADR-0091).
+        if data.scene-level: HorizontalLayout {
+            spacing: Tokens.space-1;
+            VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.sliders; ink: Theme.accent; }
+            }
+            Text {
+                text: @tr("Level of the scene {}", Studio.scene-levels);
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                overflow: elide;
+            }
+        }
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             alignment: stretch;
