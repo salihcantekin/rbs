@@ -7,6 +7,10 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
+mod copies;
+
+pub use copies::{Duplicated, SourceCopy, SourceFields};
+
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,

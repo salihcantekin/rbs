@@ -236,7 +236,15 @@ fn instances_match_the_descriptors_the_binder_uses() {
             SourceInstance::Video(v) => Node::<GpuRuntime>::descriptor(&v.node),
             SourceInstance::Audio(a) => Node::<()>::descriptor(&a.node),
             SourceInstance::Still(s) => Node::<GpuRuntime>::descriptor(&s.node),
-            SourceInstance::Media(m) => Node::<GpuRuntime>::descriptor(&m.node),
+            SourceInstance::Media(m) => {
+                // The sound node matches the sound type the table names (ADR-0106).
+                let sound = table.sound_type(&t).expect("media names its sound node");
+                assert_eq!(
+                    Some(Node::<()>::descriptor(&m.sound)),
+                    table.descriptor(&sound).as_deref()
+                );
+                Node::<GpuRuntime>::descriptor(&m.picture)
+            }
             SourceInstance::Browser(b) => Node::<GpuRuntime>::descriptor(&b.node),
             other => panic!("unexpected {other:?}"),
         };

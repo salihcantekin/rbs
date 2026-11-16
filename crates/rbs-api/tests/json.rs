@@ -270,7 +270,37 @@ fn every_request() -> Vec<Request> {
             scene: 2,
             name: "Game".into(),
         })),
-        c(Command::SceneDuplicate(SceneRef { scene: 2 })),
+        c(Command::SceneDuplicate(DuplicateScene {
+            scene: 2,
+            sources: Default::default(),
+        })),
+        c(Command::SceneDuplicate(DuplicateScene {
+            scene: 2,
+            sources: DuplicateSources::Copied,
+        })),
+        c(Command::SourceDuplicate(SourceInScene {
+            source: 3,
+            scene: Some(2),
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::SourceReset(ResetSource {
+            source: 3,
+            scene: None,
+            canvas: OutputCanvas::Vertical,
+            groups: Some(vec!["crop".into(), "sound".into()]),
+        })),
+        c(Command::SourceCopyAttributes(SourceInScene {
+            source: 3,
+            scene: None,
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::SourceAttributesClipboard),
+        c(Command::SourcePasteAttributes(PasteAttributes {
+            items: vec![4, 5],
+            groups: vec!["video_filters".into()],
+            filters: FilterPasteMode::Append,
+            canvas: OutputCanvas::Main,
+        })),
         c(Command::SceneSwitch(SceneRef { scene: 0 })),
         c(Command::SourceRename(RenameSource {
             source: 3,

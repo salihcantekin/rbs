@@ -8,6 +8,10 @@
 //! JavaScript dialogs or device permissions, a `file` page reads only its own
 //! directory, and the profile lives in a temporary directory removed on exit.
 //!
+//! The macOS and Windows code compiles from any host without the CEF binaries:
+//! `cargo clippy --target aarch64-apple-darwin --features cef/dox` (or
+//! `x86_64-pc-windows-msvc`), after `rustup target add` for that target.
+//!
 //! Not yet: the GPU texture path, page audio into the sound node (audio is taken
 //! from the OS and dropped), CSS, reload, input and the sandbox (ADR-0132 steps).
 
@@ -431,7 +435,7 @@ mod mac {
     use objc2::runtime::Bool;
     use objc2::{ClassType, DefinedClass, define_class, extern_methods, msg_send, rc::Retained};
     use objc2_app_kit::{NSApp, NSApplication, NSEvent};
-    use objc2_foundation::MainThreadMarker;
+    use objc2_foundation::{MainThreadMarker, NSObjectProtocol};
 
     #[derive(Default)]
     pub struct Ivars {
@@ -571,14 +575,36 @@ fn run_browser(args: &args::Args, app: &mut App) -> i32 {
         std::ptr::null_mut(),
     ) != 1
     {
-        let _ = std::fs::remove_dir_all(&profile);
+        remove_profile(&profile);
         return exit::INIT_FAILED;
     }
 
     let code = browse(page, &config, &stop);
     shutdown();
-    let _ = std::fs::remove_dir_all(&profile);
+    remove_profile(&profile);
     code
+}
+
+/// How long [`remove_profile`] keeps trying. Below the studio's stop grace together
+/// with a normal close, so the studio does not kill the tree in the middle of it.
+const PROFILE_REMOVE_LIMIT: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// Removes the tree's profile (ADR-0109 decision 10). CEF's GPU and renderer processes
+/// can still hold files in it for a moment after `shutdown`, and Windows does not
+/// delete an open file, so a failed removal is tried again until
+/// [`PROFILE_REMOVE_LIMIT`].
+fn remove_profile(profile: &std::path::Path) {
+    let deadline = std::time::Instant::now() + PROFILE_REMOVE_LIMIT;
+    loop {
+        match std::fs::remove_dir_all(profile) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => return,
+        }
+    }
 }
 
 /// A new private directory for this tree's profile. Created here, never reused, so
@@ -592,9 +618,14 @@ fn new_profile_dir() -> Option<std::path::PathBuf> {
             "rbs-browser-{}-{nanos:x}-{attempt}",
             std::process::id()
         ));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        let builder = {
+            let mut builder = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         if builder.create(&path).is_ok() {
             return Some(path);
         }

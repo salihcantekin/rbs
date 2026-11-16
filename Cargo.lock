@@ -5062,6 +5062,7 @@ dependencies = [
  "allocation-counter",
  "bytes",
  "criterion 0.8.2",
+ "rbs-audio",
  "rbs-capture",
  "rbs-capture-mf",
  "rbs-capture-test",
@@ -5077,6 +5078,7 @@ dependencies = [
  "rbs-media-decode-test",
  "rbs-mux",
  "rbs-mux-matroska",
+ "rbs-text",
  "rbs-transport",
  "rbs-transport-file",
  "rbs-vcam",
@@ -5136,6 +5138,7 @@ dependencies = [
  "rbs-nodes",
  "rbs-scene",
  "rbs-sources",
+ "rbs-text-test",
  "rbs-transport",
  "rbs-vcam",
  "rbs-vcam-test",
@@ -5184,6 +5187,8 @@ dependencies = [
  "rbs-nodes",
  "rbs-params",
  "rbs-scene",
+ "rbs-text",
+ "rbs-text-test",
 ]
 
 [[package]]

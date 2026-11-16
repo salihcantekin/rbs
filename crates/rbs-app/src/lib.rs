@@ -48,6 +48,7 @@ pub mod recent_targets;
 pub mod record_profile;
 pub mod remote_control;
 pub mod replay_settings;
+pub mod stream_destinations;
 pub mod stream_key;
 pub mod stream_profile;
 pub mod studio_host;

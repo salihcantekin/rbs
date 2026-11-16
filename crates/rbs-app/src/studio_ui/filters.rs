@@ -60,9 +60,10 @@ fn decimals(step: f32) -> i32 {
     }
 }
 
-/// The unit as shown after a value: "°" directly, others after a space.
+/// The unit as shown after a value: "°" and a ratio's ":1" directly, others after a
+/// space.
 fn suffix(unit: &str) -> String {
-    if unit.is_empty() || unit == "°" {
+    if unit.is_empty() || unit == "°" || unit.starts_with(':') {
         unit.to_owned()
     } else {
         format!(" {unit}")
@@ -77,6 +78,12 @@ pub fn number_text(v: f32, step: f32, unit: &str) -> String {
     } else {
         v
     };
+    // From 1 kHz up, in kHz, so "20.0 kHz" fits the fixed-width readout beside the
+    // slider (`ValueReadout`); the editor's `text-at` does the same during a drag.
+    if unit == "Hz" && v.abs() >= 1000.0 {
+        let prec = if v.abs() < 10_000.0 { 2 } else { 1 };
+        return format!("{:.prec$} kHz", v / 1000.0);
+    }
     format!("{v:.prec$}{}", suffix(unit), prec = d as usize)
 }
 
@@ -619,6 +626,10 @@ mod tests {
         assert_eq!(number_text(-45.0, 1.0, "°"), "-45°");
         assert_eq!(number_text(0.3, 0.01, ""), "0.30");
         assert_eq!(number_text(-0.001, 0.01, ""), "0.00");
+        assert_eq!(number_text(4.0, 0.1, ":1"), "4.0:1");
+        assert_eq!(number_text(400.0, 1.0, "Hz"), "400 Hz");
+        assert_eq!(number_text(3000.0, 1.0, "Hz"), "3.00 kHz");
+        assert_eq!(number_text(20000.0, 1.0, "Hz"), "20.0 kHz");
     }
 
     #[test]
