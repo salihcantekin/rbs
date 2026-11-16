@@ -197,5 +197,102 @@ fn bench_send(c: &mut Criterion) {
     drop(server);
 }
 
-criterion_group!(benches, bench_send);
+/// Packets per timed burst of the delivery benchmark: a second of 30 fps video.
+const DELIVER_BURST: u64 = 30;
+
+/// The I/O thread's side (ADR-0127 decision 10): a burst of 20 KiB inter frames timed
+/// from the first `send` until the I/O thread has written all of it to the socket, over
+/// plain RTMP and over RTMPS. The server discards what it reads.
+fn bench_deliver(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rtmp_deliver");
+    group.throughput(Throughput::Bytes(20_000 * DELIVER_BURST));
+    for tls in [false, true] {
+        let identity = support::tls::Identity::new();
+        let behaviour = Behaviour {
+            sink: true,
+            ..Behaviour::default()
+        };
+        let server = if tls {
+            TestServer::start_tls(behaviour, &identity)
+        } else {
+            TestServer::start(behaviour)
+        };
+        let mut config = TransportConfig::new(server.url(), TransportInput::Packets)
+            .with_secret(Secret::new("bench"))
+            .with_queue(QueueLimits::new(
+                256 * 1024 * 1024,
+                Duration::from_secs(3600),
+            ));
+        if tls {
+            config = config.with_adapter_option("tls_extra_roots", identity.ca_pem.clone());
+        }
+        let mut t = RtmpTransportFactory.create(&config).unwrap();
+        t.start(&streams()).unwrap();
+        let mut events = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !events.contains(&TransportEvent::Connected) {
+            assert!(Instant::now() < deadline, "not connected");
+            t.poll_events(&mut events);
+            std::thread::yield_now();
+        }
+        let t0 = Timestamp::from_nanos(1_000_000_000);
+        let key = EncodedPacket::new(
+            CodecId::H264,
+            BitstreamFormat::AnnexB,
+            t0,
+            t0,
+            true,
+            slice(true, 150_000),
+        )
+        .unwrap();
+        t.send(TransportItem::Packet {
+            stream: StreamIndex(0),
+            packet: &key,
+        })
+        .unwrap();
+        let inter = EncodedPacket::new(
+            CodecId::H264,
+            BitstreamFormat::AnnexB,
+            t0,
+            t0,
+            false,
+            slice(false, 20_000),
+        )
+        .unwrap();
+        let name = if tls {
+            "rtmps_inter_20k"
+        } else {
+            "rtmp_inter_20k"
+        };
+        group.bench_function(name, |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    let started = Instant::now();
+                    for _ in 0..DELIVER_BURST {
+                        black_box(
+                            t.send(TransportItem::Packet {
+                                stream: StreamIndex(0),
+                                packet: black_box(&inter),
+                            })
+                            .unwrap(),
+                        );
+                    }
+                    while t.stats().queued_bytes > 0 {
+                        t.poll_events(&mut events);
+                        std::hint::spin_loop();
+                    }
+                    total += started.elapsed();
+                }
+                total
+            });
+        });
+        t.finish(Duration::from_secs(30)).unwrap();
+        assert_eq!(t.stats().items_dropped, 0, "the I/O thread kept up");
+        drop(server);
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_send, bench_deliver);
 criterion_main!(benches);

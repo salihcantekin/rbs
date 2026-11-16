@@ -17,8 +17,17 @@ rbs-media-format = { path = "../rbs-media-format" }
 # (output-ports spec, "Threading"; P6). MIT or Apache-2.0, no dependencies. Already
 # used by rbs-transport-file.
 rtrb = "0.4"
+# TLS for `rtmps://` (ADR-0127 decision 10), on the I/O thread only. The ring provider,
+# as rbs-api-ws uses (no aws-lc-rs). MIT, Apache-2.0 or ISC.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+# Verifies server certificates with the operating system's trust store, so roots a
+# company or user installs are honoured and no bundled list ages (ADR-0127 decision
+# 10). MIT or Apache-2.0.
+rustls-platform-verifier = "0.7"
 
 [dev-dependencies]
+# A test certificate authority and server certificate for the RTMPS tests.
+rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
 rbs-transport = { path = "../rbs-transport", features = ["conformance"] }
 # Micro-benchmarks for the send path (measure-performance skill, ADR-0009).
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

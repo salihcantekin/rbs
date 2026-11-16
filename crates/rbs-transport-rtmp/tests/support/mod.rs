@@ -5,6 +5,8 @@
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)] // Test support.
 
+pub mod tls;
+
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
@@ -106,10 +108,22 @@ pub struct TestServer {
     pub port: u16,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Vec<Session>>>,
+    /// `rtmps`: connections are TLS with this server identity.
+    tls: bool,
 }
 
 impl TestServer {
     pub fn start(behaviour: Behaviour) -> Self {
+        Self::start_with(behaviour, None)
+    }
+
+    /// A server that speaks RTMP over TLS with `identity`'s certificate.
+    pub fn start_tls(behaviour: Behaviour, identity: &tls::Identity) -> Self {
+        Self::start_with(behaviour, Some(identity.server_config()))
+    }
+
+    fn start_with(behaviour: Behaviour, tls: Option<Arc<rustls::ServerConfig>>) -> Self {
+        let is_tls = tls.is_some();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let stop = Arc::new(AtomicBool::new(false));
@@ -124,7 +138,21 @@ impl TestServer {
                     break;
                 }
                 let Ok(conn) = conn else { continue };
-                sessions.push(serve(conn, &behaviour, n == 0));
+                conn.set_read_timeout(Some(Duration::from_secs(20)))
+                    .unwrap();
+                let closer = conn.try_clone().unwrap();
+                let close = move || {
+                    let _ = closer.shutdown(Shutdown::Both);
+                };
+                let session = match &tls {
+                    None => serve(conn, close, &behaviour, n == 0),
+                    Some(config) => {
+                        let server = rustls::ServerConnection::new(Arc::clone(config)).unwrap();
+                        let stream = rustls::StreamOwned::new(server, conn);
+                        serve(stream, close, &behaviour, n == 0)
+                    }
+                };
+                sessions.push(session);
             }
             sessions
         });
@@ -132,11 +160,13 @@ impl TestServer {
             port,
             stop,
             thread: Some(thread),
+            tls: is_tls,
         }
     }
 
     pub fn url(&self) -> String {
-        format!("rtmp://127.0.0.1:{}/live", self.port)
+        let scheme = if self.tls { "rtmps" } else { "rtmp" };
+        format!("{scheme}://127.0.0.1:{}/live", self.port)
     }
 
     /// Stops accepting and returns every connection's messages. Call after the
@@ -169,13 +199,13 @@ struct Prev {
     partial: Vec<u8>,
 }
 
-struct Reader {
-    conn: TcpStream,
+struct Reader<S> {
+    conn: S,
     chunk_size: usize,
     prev: std::collections::HashMap<u32, Prev>,
 }
 
-impl Reader {
+impl<S: Read> Reader<S> {
     fn exact(&mut self, n: usize) -> Option<Vec<u8>> {
         let mut buf = vec![0; n];
         self.conn.read_exact(&mut buf).ok()?;
@@ -288,10 +318,8 @@ fn command(name: &str, txn: f64, info: &[(&str, Value<'_>)], extra: Option<f64>)
     body
 }
 
-fn serve(mut conn: TcpStream, b: &Behaviour, first: bool) -> Session {
+fn serve<S: Read + Write>(mut conn: S, close: impl Fn(), b: &Behaviour, first: bool) -> Session {
     let mut session = Session::default();
-    conn.set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
     // Handshake: C0 C1 in, S0 S1 S2 out, C2 in.
     let mut c0c1 = vec![0; 1537];
     if conn.read_exact(&mut c0c1).is_err() {
@@ -306,7 +334,7 @@ fn serve(mut conn: TcpStream, b: &Behaviour, first: bool) -> Session {
     conn.read_exact(&mut c2).unwrap();
     assert_eq!(&c2[..], &s[1..1537], "C2 echoes S1");
     let mut reader = Reader {
-        conn: conn.try_clone().unwrap(),
+        conn,
         chunk_size: 128,
         prev: Default::default(),
     };
@@ -316,7 +344,7 @@ fn serve(mut conn: TcpStream, b: &Behaviour, first: bool) -> Session {
         if published && b.sink {
             let mut buf = [0_u8; 64 * 1024];
             loop {
-                match conn.read(&mut buf) {
+                match reader.conn.read(&mut buf) {
                     Ok(0) | Err(_) => {
                         session.clean_eof = true;
                         return session;
@@ -410,7 +438,7 @@ fn serve(mut conn: TcpStream, b: &Behaviour, first: bool) -> Session {
             }
             _ => {}
         }
-        if !out.is_empty() && conn.write_all(&out).is_err() {
+        if !out.is_empty() && reader.conn.write_all(&out).is_err() {
             return session;
         }
         if name.as_deref() == Some("publish") {
@@ -421,7 +449,7 @@ fn serve(mut conn: TcpStream, b: &Behaviour, first: bool) -> Session {
         if is_media {
             media += 1;
             if first && b.drop_after_media == Some(media) {
-                let _ = conn.shutdown(Shutdown::Both);
+                close();
                 return session;
             }
         }

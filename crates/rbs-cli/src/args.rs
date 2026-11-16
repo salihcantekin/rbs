@@ -127,7 +127,7 @@ pub enum StreamControl {
 /// line (which other users and the shell history can see).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamTarget {
-    /// `rtmp://host[:port]/app` or `srt://host:port`.
+    /// `rtmp://host[:port]/app`, `rtmps://host[:port]/app` or `srt://host:port`.
     pub url: String,
     /// Packets for RTMP, MPEG-TS chunks for SRT.
     pub input: TransportInput,
@@ -146,17 +146,18 @@ pub const DEFAULT_KEY_ENV: &str = "RBS_STREAM_KEY";
 /// 1080p60 H.264 (`record` defaults to 12000).
 pub const DEFAULT_STREAM_KBPS: u64 = 6000;
 
-/// The transport input a stream URL needs: packets for `rtmp://`, MPEG-TS for `srt://`.
+/// The transport input a stream URL needs: packets for `rtmp://` and `rtmps://`, MPEG-TS
+/// for `srt://`.
 pub fn stream_input(url: &str) -> Result<TransportInput, String> {
     let scheme = url
         .split_once("://")
         .map(|(s, _)| s.to_ascii_lowercase())
         .unwrap_or_default();
     match scheme.as_str() {
-        "rtmp" => Ok(TransportInput::Packets),
+        "rtmp" | "rtmps" => Ok(TransportInput::Packets),
         "srt" => Ok(TransportInput::Container(ContainerId::MpegTs)),
         _ => Err(format!(
-            "{url}: a stream URL starts with rtmp:// or srt:// (rtmps is not supported yet)"
+            "{url}: a stream URL starts with rtmp://, rtmps:// or srt://"
         )),
     }
 }
@@ -217,7 +218,7 @@ pub struct RecordArgs {
 pub const USAGE: &str = "\
 usage:
   rbs-cli record <file.mkv|file.mp4|file.mov> [options]
-  rbs-cli stream <rtmp://host/app|srt://host:port> [stream options] [options]
+  rbs-cli stream <rtmp[s]://host/app|srt://host:port> [stream options] [options]
   rbs-cli devices
   rbs-cli token list
   rbs-cli token create <name> [--access view|control|full]
@@ -755,7 +756,8 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>, stream: bool) -> Result<Rec
     }
     a.vcam = vcam.then_some(vcam_format);
     if stream {
-        let url = out.ok_or("stream: the URL is missing (rtmp://host/app or srt://host:port)")?;
+        let url =
+            out.ok_or("stream: the URL is missing (rtmp[s]://host/app or srt://host:port)")?;
         let input = stream_input(url)?;
         if srt_latency_ms.is_some() && input == TransportInput::Packets {
             return Err("--srt-latency applies to srt:// URLs only".into());
@@ -1065,8 +1067,8 @@ mod tests {
     fn bad_stream_arguments_are_refused_with_a_reason() {
         for (args, want) in [
             (&[][..], "URL is missing"),
-            (&["a.mkv"][..], "rtmp:// or srt://"),
-            (&["rtmps://x/app"][..], "rtmp:// or srt://"),
+            (&["a.mkv"][..], "rtmp://, rtmps:// or srt://"),
+            (&["rtmpt://x/app"][..], "rtmp://, rtmps:// or srt://"),
             (&["rtmp://x/app", "--overwrite"][..], "unknown option"),
             (
                 &["rtmp://x/app", "--srt-latency", "100"][..],
