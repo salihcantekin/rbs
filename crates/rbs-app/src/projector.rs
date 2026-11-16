@@ -230,6 +230,12 @@ pub fn sync(
             // macOS draws a new window once inside `show`, before the slot is listed,
             // and maybe never again: its size is applied apart from any draw.
             settle(content.canvas, 0);
+            let weak = slot.window.as_weak();
+            entry::single_shot(Duration::ZERO, move || {
+                if let Some(w) = weak.upgrade() {
+                    w.window().request_redraw();
+                }
+            });
             log(&format!("projector: {} opened", param(content.canvas)));
             slots.push(slot);
         }
@@ -774,9 +780,14 @@ fn resized_by_hand(canvas: ProjectorCanvas) {
         let Some(s) = slots.iter_mut().find(|s| s.canvas == canvas) else {
             return false;
         };
-        if s.content.size != ProjectorSize::Exact || s.fullscreen.is_some() {
+        // The OS sizes a new window itself before its own size is applied.
+        if s.content.size != ProjectorSize::Exact || s.fullscreen.is_some() || s.pending.is_some() {
             return false;
         }
+        log(&format!(
+            "projector: {} resized by hand, now Window size",
+            param(canvas)
+        ));
         s.content = s.content.clone().with_size(ProjectorSize::Window);
         s.exact_k = None;
         true
