@@ -59,3 +59,4 @@ Round 3 (2026-11-13, independent AI session; this text: changes requested with o
 Follow-up check by the same reviewer (2026-11-13, texts at `26c3d03`): approve, with one non-blocking concern, that many existing users have no `app.toml` and would have read as new installs. Fixed here: an existing install is recognised by any user file in the user data folder.
 
 - 2026-11-13: Owner (Salih) accepts this ADR after the independent review recorded above (rounds 1 to 3 and the follow-up check; reviewer verdict: approve). Status: Accepted.
+- 2026-11-16: Owner (Salih) keeps the level names Simple, Standard and Pro (the names of decision 5); no rename.

@@ -1,7 +1,7 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, SplitButton, InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, Experience } from "components.slint";
+import { Button, SplitButton, InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, Experience, SegmentedControl } from "components.slint";
 import { SettingsCard } from "settings.slint";
 
 export component OverlayProbe inherits Window {
@@ -284,4 +284,33 @@ export component EffectsProbe inherits Window {
     public function focus-dense() { small.take-focus(); }
     public function focus-beside() { beside.take-focus(); }
     public function focus-halo() { halo.take-focus(); }
+}
+
+// SegmentedControl's chosen plate in a theme setting (ADR-0120 decision 14): a three
+// and a four option control, a disabled one, and a Button row beside them for
+// comparison. The rendered tests and the screenshots read it.
+export component SegmentProbe inherits Window {
+    // literal-begin: a test window; its size and padding are test data
+    width: 420px;
+    height: 200px;
+    background: Theme.surface-raised;
+    VerticalLayout {
+        padding: 16px;
+        // literal-end
+        spacing: Tokens.space-2;
+        alignment: start;
+        three := SegmentedControl { label: "Spacing"; options: ["Roomy", "Regular", "Compact"]; index: 1; }
+        four := SegmentedControl { label: "Effects"; options: ["Calm", "Glow", "Glass", "Tactile"]; index: 2; }
+        off := SegmentedControl { label: "Off"; options: ["One", "Two", "Three"]; index: 0; enabled: false; }
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            alignment: start;
+            Button { text: "Secondary"; }
+            Button { text: "Checked"; checked: true; }
+            Button { text: "Primary"; kind: "primary"; }
+        }
+    }
+    out property <string> boxes: "Spacing|\{three.absolute-position.x / 1px}|\{three.absolute-position.y / 1px}|\{three.width / 1px}|\{three.height / 1px};"
+        + "Effects|\{four.absolute-position.x / 1px}|\{four.absolute-position.y / 1px}|\{four.width / 1px}|\{four.height / 1px};"
+        + "Off|\{off.absolute-position.x / 1px}|\{off.absolute-position.y / 1px}|\{off.width / 1px}|\{off.height / 1px};";
 }
