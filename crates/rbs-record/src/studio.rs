@@ -2203,7 +2203,7 @@ impl Studio {
             .map(|r| {
                 r.picture_sound
                     .iter()
-                    .filter(|p| p.canvas == self.settings.canvas)
+                    .filter(|p| p.canvas == self.settings.canvas && p.role == Role::Program)
                     .map(|p| p.source)
                     .collect()
             })
