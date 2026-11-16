@@ -163,6 +163,15 @@ fn scenes() -> SceneList {
             muted: true,
         },
         glide: Glide::default(),
+        transition: Transition {
+            kind: TransitionKind::Fade,
+            fade: FadeTransition {
+                duration_ms: 500,
+                easing: GlideEasing::Linear,
+                via: Some("#000000".into()),
+            },
+            ..Transition::default()
+        },
         sources: vec![SourceEntry {
             id: 3,
             name: "Camera".into(),
@@ -301,7 +310,20 @@ fn every_request() -> Vec<Request> {
             filters: FilterPasteMode::Append,
             canvas: OutputCanvas::Main,
         })),
-        c(Command::SceneSwitch(SceneRef { scene: 0 })),
+        c(Command::SceneSwitch(SwitchScene {
+            scene: 0,
+            kind: Some(TransitionKind::Fade),
+            duration_ms: Some(1000),
+        })),
+        c(Command::CollectionSetTransition(SetCollectionTransition {
+            kind: Some(TransitionKind::Cut),
+            swipe: Some(SwipeTransition {
+                duration_ms: 250,
+                easing: GlideEasing::Linear,
+                direction: SwipeDirection::Up,
+            }),
+            ..SetCollectionTransition::default()
+        })),
         c(Command::SourceRename(RenameSource {
             source: 3,
             name: "Webcam".into(),
@@ -337,7 +359,7 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::SceneSources(SceneRef { scene: 2 })),
         c(Command::CanvasSetPreview(SetPreview { scene: Some(2) })),
-        c(Command::CanvasTransition),
+        c(Command::CanvasTransition(TransitionOnce::default())),
         c(Command::ItemRemove(ItemRef { item: 7 })),
         c(Command::ItemMove(MoveItem {
             item: 7,
@@ -1005,6 +1027,15 @@ fn every_result_and_event_type_round_trips() {
             state: SyncMeasureState::Failed {
                 reason: SyncMeasureFailure::TooFewClaps,
             },
+        }),
+        EventPayload::TransitionState(TransitionStateChanged {
+            canvas: OutputCanvas::Main,
+            state: TransitionPhase::Started,
+            kind: TransitionKind::Fade,
+            duration_ms: 300,
+            from: 1,
+            to: 2,
+            at: 5_000_000_000,
         }),
     ] {
         round_trip(&Event {
@@ -1777,7 +1808,55 @@ fn studio_mode_is_a_minor_addition() {
     assert_eq!(off.scope(), Some(Scope::Control));
     let cut: Request =
         serde_json::from_value(json!({"method": "canvas.transition", "params": {}})).unwrap();
-    assert_eq!(cut, Request::Command(Command::CanvasTransition));
+    assert_eq!(
+        cut,
+        Request::Command(Command::CanvasTransition(TransitionOnce::default()))
+    );
+    // Protocol 1.74 (ADR-0128): a one-off kind and duration; old requests still parse.
+    let fade: Request = serde_json::from_value(json!({
+        "method": "canvas.transition",
+        "params": {"kind": "fade", "duration_ms": 1000}
+    }))
+    .unwrap();
+    assert_eq!(
+        fade,
+        Request::Command(Command::CanvasTransition(TransitionOnce {
+            kind: Some(TransitionKind::Fade),
+            duration_ms: Some(1000),
+        }))
+    );
+    let switch: Request =
+        serde_json::from_value(json!({"method": "scene.switch", "params": {"scene": 4}})).unwrap();
+    assert_eq!(
+        switch,
+        Request::Command(Command::SceneSwitch(SwitchScene {
+            scene: 4,
+            kind: None,
+            duration_ms: None,
+        }))
+    );
+    let set: Request = serde_json::from_value(json!({
+        "method": "collection.set_transition",
+        "params": {"kind": "fade"}
+    }))
+    .unwrap();
+    assert_eq!(set.scope(), Some(Scope::Control));
+    assert!(
+        serde_json::from_value::<Request>(json!({
+            "method": "canvas.transition",
+            "params": {"kind": "wipe"}
+        }))
+        .is_err()
+    );
+    // A default transition is left out of the scene list.
+    let mut plain = scenes();
+    plain.transition = Transition::default();
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("transition")
+            .is_none()
+    );
     let sources: Request =
         serde_json::from_value(json!({"method": "scene.sources", "params": {"scene": 1}})).unwrap();
     assert_eq!(sources.scope(), Some(Scope::Read));

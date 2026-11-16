@@ -490,6 +490,135 @@ impl Glide {
     }
 }
 
+/// What a program-scene change looks like (protocol 1.74, ADR-0128).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionKind {
+    /// The new scene at once.
+    Cut,
+    /// The new scene fades in over the old one.
+    Fade,
+    /// Shared sources slide to their new boxes, new ones fade in (the collection
+    /// glide, ADR-0100).
+    #[default]
+    Move,
+    /// The new scene pushes the old one out (not yet drawn: runs as Move).
+    Swipe,
+    /// The new scene slides in over the old one (not yet drawn: runs as Move).
+    Slide,
+}
+
+/// Which way a Swipe or Slide moves (protocol 1.74, ADR-0128).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SwipeDirection {
+    /// Towards the left edge.
+    #[default]
+    Left,
+    /// Towards the right edge.
+    Right,
+    /// Towards the top edge.
+    Up,
+    /// Towards the bottom edge.
+    Down,
+}
+
+/// Fade settings (protocol 1.74, ADR-0128).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FadeTransition {
+    /// Milliseconds in `0..=5000`; `0` cuts.
+    pub duration_ms: u32,
+    /// How the blend maps unit time.
+    pub easing: GlideEasing,
+    /// An opaque colour (`"#rrggbb"`) to fade through; absent for a crossfade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+}
+
+impl Default for FadeTransition {
+    fn default() -> Self {
+        Self {
+            duration_ms: 300,
+            easing: GlideEasing::Linear,
+            via: None,
+        }
+    }
+}
+
+/// Swipe or Slide settings (protocol 1.74, ADR-0128).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwipeTransition {
+    /// Milliseconds in `0..=5000`; `0` cuts.
+    pub duration_ms: u32,
+    /// How the motion maps unit time.
+    pub easing: GlideEasing,
+    /// Which way it moves.
+    pub direction: SwipeDirection,
+}
+
+impl Default for SwipeTransition {
+    fn default() -> Self {
+        Self {
+            duration_ms: 500,
+            easing: GlideEasing::EaseInOut,
+            direction: SwipeDirection::Left,
+        }
+    }
+}
+
+/// The collection's transition (protocol 1.74, ADR-0128): the kind and each kind's
+/// settings. Move's settings are the collection `glide`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Transition {
+    /// The kind a program change uses.
+    pub kind: TransitionKind,
+    /// Fade settings.
+    pub fade: FadeTransition,
+    /// Swipe settings.
+    pub swipe: SwipeTransition,
+    /// Slide settings.
+    pub slide: SwipeTransition,
+}
+
+impl Transition {
+    /// True for the shipped default (Move with the default settings of every kind).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// `transition.state` (protocol 1.74, ADR-0128 decision 13): published when a
+/// program change's transition starts and when it ends, never per frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitionStateChanged {
+    /// The canvas.
+    pub canvas: OutputCanvas,
+    /// `started` or `ended`.
+    pub state: TransitionPhase,
+    /// The kind that ran.
+    pub kind: TransitionKind,
+    /// Its length in milliseconds.
+    pub duration_ms: u32,
+    /// The scene that was on air.
+    pub from: u32,
+    /// The scene going on air.
+    pub to: u32,
+    /// Engine time of this state, in nanoseconds.
+    pub at: u64,
+}
+
+/// Where a transition is (protocol 1.74).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionPhase {
+    /// The picture began to change.
+    Started,
+    /// The new scene is fully on air.
+    Ended,
+}
+
 /// A source of the collection, wherever it is placed (protocol 1.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceEntry {
@@ -555,6 +684,10 @@ pub struct SceneList {
     /// ease-in-out.
     #[serde(default, skip_serializing_if = "Glide::is_default")]
     pub glide: Glide,
+    /// The collection's transition (protocol 1.74, ADR-0128); absent when Move with
+    /// the default settings.
+    #[serde(default, skip_serializing_if = "Transition::is_default")]
+    pub transition: Transition,
     /// Every source of the collection.
     pub sources: Vec<SourceEntry>,
 }
