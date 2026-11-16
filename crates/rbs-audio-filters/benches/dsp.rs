@@ -97,5 +97,148 @@ fn ducker_benches(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, dsp_benches, ducker_benches);
+/// Noise suppression (ADR-0130 decision 11): one 480-frame stereo block, one RNNoise
+/// frame per block in `mono` mode, two in `separate` mode.
+fn noise_benches(c: &mut Criterion) {
+    use rbs_audio_filters::noise::NoiseSuppression;
+    let ty = &NoiseSuppression as &dyn AudioFilterType;
+    let mono = Values::defaults(ty);
+    let separate = mono.with(ty, [("mode", Value::Choice(1))]).expect("valid");
+    bench_one(
+        c,
+        "noise_suppression_mono",
+        &mut [ty.make(setup(), &mono).expect("48 kHz")],
+    );
+    bench_one(
+        c,
+        "noise_suppression_separate",
+        &mut [ty.make(setup(), &separate).expect("48 kHz")],
+    );
+}
+
+/// The compressor (ADR-0130 decision 11, budget 5 us per block) while compressing, with
+/// each detector, and while idle below the knee.
+fn compressor_benches(c: &mut Criterion) {
+    use rbs_audio_filters::compressor::Compressor;
+    let ty = &Compressor as &dyn AudioFilterType;
+    let defaults = Values::defaults(ty);
+    let rms = defaults
+        .with(
+            ty,
+            [
+                ("threshold", Value::Number(-30.0)),
+                ("makeup", Value::Number(6.0)),
+            ],
+        )
+        .expect("valid");
+    let peak = rms
+        .with(ty, [("detector", Value::Choice(1))])
+        .expect("valid");
+    let idle = defaults
+        .with(ty, [("threshold", Value::Number(0.0))])
+        .expect("valid");
+    for (name, v) in [
+        ("compressor_rms", &rms),
+        ("compressor_peak", &peak),
+        ("compressor_idle", &idle),
+    ] {
+        bench_one(c, name, &mut [ty.make(setup(), v).expect("valid")]);
+    }
+}
+
+/// The limiter (ADR-0130 decision 11, budget 5 us per block) on full-scale noise
+/// (limiting all the time) and on a quiet tone (an exact delay).
+fn limiter_benches(c: &mut Criterion) {
+    use rbs_audio_filters::limiter::Limiter;
+    let ty = &Limiter as &dyn AudioFilterType;
+    let values = Values::defaults(ty);
+    let mut loud = ty.make(setup(), &values).expect("valid");
+    let mut s = 1u32;
+    let noise: Vec<f32> = (0..FRAMES)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            (s as f32 / u32::MAX as f32) * 4.0 - 2.0
+        })
+        .collect();
+    c.bench_function("limiter_limiting", |b| {
+        let (mut l, mut r) = (noise.clone(), noise.clone());
+        b.iter(|| {
+            l.copy_from_slice(&noise);
+            r.copy_from_slice(&noise);
+            loud.process(&mut [&mut l[..], &mut r[..]], FRAMES);
+            black_box((&l, &r));
+        });
+    });
+    bench_one(
+        c,
+        "limiter_idle",
+        &mut [ty.make(setup(), &values).expect("valid")],
+    );
+}
+
+/// The equaliser (ADR-0130 decision 11, budget 5 us per block): a typical voice setting
+/// (low cut and one band), every section on, and a sweep (coefficients every 32 frames).
+fn equaliser_benches(c: &mut Criterion) {
+    use rbs_audio_filters::equaliser::Equaliser;
+    let ty = &Equaliser as &dyn AudioFilterType;
+    let defaults = Values::defaults(ty);
+    let voice = defaults
+        .with(
+            ty,
+            [
+                ("low_cut", Value::Toggle(true)),
+                ("band2_gain", Value::Number(3.0)),
+            ],
+        )
+        .expect("valid");
+    let all = voice
+        .with(
+            ty,
+            [
+                ("low_shelf_gain", Value::Number(-2.0)),
+                ("band1_gain", Value::Number(-3.0)),
+                ("high_shelf_gain", Value::Number(2.0)),
+            ],
+        )
+        .expect("valid");
+    bench_one(
+        c,
+        "equaliser_voice",
+        &mut [ty.make(setup(), &voice).expect("valid")],
+    );
+    bench_one(
+        c,
+        "equaliser_all",
+        &mut [ty.make(setup(), &all).expect("valid")],
+    );
+    let other = all
+        .with(ty, [("band1_freq", Value::Number(2000.0))])
+        .expect("valid");
+    let mut sweeping = ty.make(setup(), &all).expect("valid");
+    let (l0, _) = signal();
+    let mut flip = false;
+    c.bench_function("equaliser_sweeping", |b| {
+        let (mut l, mut r) = (l0.clone(), l0.clone());
+        b.iter(|| {
+            flip = !flip;
+            sweeping.set(if flip { &other } else { &all });
+            l.copy_from_slice(&l0);
+            r.copy_from_slice(&l0);
+            sweeping.process(&mut [&mut l[..], &mut r[..]], FRAMES);
+            black_box((&l, &r));
+        });
+    });
+}
+
+criterion_group!(
+    benches,
+    equaliser_benches,
+    limiter_benches,
+    dsp_benches,
+    ducker_benches,
+    noise_benches,
+    compressor_benches
+);
 criterion_main!(benches);
