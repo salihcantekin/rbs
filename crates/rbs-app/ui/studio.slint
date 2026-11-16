@@ -1957,26 +1957,36 @@ component MeterView inherits Rectangle {
         VerticalLayout {
             width: 100%;
             spacing: 0px;
-            bar := Rectangle {
-                height: Tokens.size-meter-bar;
-                background: Theme.surface-sunken;
-                border-width: Tokens.size-border;
-                border-color: Theme.border-subtle;
-                border-radius: Tokens.radius-sm;
-                clip: true;
-                Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-                Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-                Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-                if data.peak > 0: Rectangle {
-                    x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
-                    width: Tokens.size-meter-peak;
-                    background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+            // The level bar spans the fader's track, not its knob room: Slider insets
+            // its track by half the knob (`space.3`), so both ends line up with it.
+            HorizontalLayout {
+                padding-left: Tokens.space-3 / 2;
+                padding-right: Tokens.space-3 / 2;
+                bar := Rectangle {
+                    height: Tokens.size-meter-bar;
+                    background: Theme.surface-sunken;
+                    border-width: Tokens.size-border;
+                    border-color: Theme.border-subtle;
+                    border-radius: Tokens.radius-sm;
+                    clip: true;
+                    Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+                    Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+                    Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+                    if data.peak > 0: Rectangle {
+                        x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
+                        width: Tokens.size-meter-peak;
+                        background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+                    }
                 }
             }
             // The loudness bar (ADR-0092) under the level bar, on the same scale.
-            if root.master && Studio.loudness.on: LoudnessBar {
-                height: Tokens.size-meter-loudness;
-                vertical: false;
+            if root.master && Studio.loudness.on: HorizontalLayout {
+                padding-left: Tokens.space-3 / 2;
+                padding-right: Tokens.space-3 / 2;
+                LoudnessBar {
+                    height: Tokens.size-meter-loudness;
+                    vertical: false;
+                }
             }
             // The fader under the bar, the same width (ADR-0059 fader law, -60 to 0 dB).
             Slider {
@@ -2159,11 +2169,14 @@ component MeterStrip inherits Rectangle {
             overflow: elide;
         }
     }
+    // The level bar spans the fader's track, not its knob room: VSlider insets its
+    // track by half the knob (`space.3`), so 0 dB and the bottom line up with it.
+    property <length> track-inset: Tokens.space-3 / 2;
     bar := Rectangle {
         x: root.pad;
-        y: root.body-y;
+        y: root.body-y + root.track-inset;
         width: Tokens.size-meter-bar;
-        height: root.body-h;
+        height: max(0px, root.body-h - 2 * root.track-inset);
         background: Theme.surface-sunken;
         border-width: Tokens.size-border;
         border-color: Theme.border-subtle;
@@ -2180,9 +2193,9 @@ component MeterStrip inherits Rectangle {
     }
     if root.loud: LoudnessBar {
         x: root.pad + Tokens.size-meter-bar + root.gap;
-        y: root.body-y;
+        y: root.body-y + root.track-inset;
         width: Tokens.size-meter-loudness;
-        height: root.body-h;
+        height: max(0px, root.body-h - 2 * root.track-inset);
         vertical: true;
     }
     VSlider {
@@ -2705,7 +2718,8 @@ export component MixerPanel inherits Rectangle {
                 property <int> step: self.width >= Tokens.size-menu-sm ? 1 : self.width >= Tokens.size-menu-sm / 2 ? 2 : 3;
                 for mark[i] in Studio.scale: Text {
                     visible: Math.mod(i, scale-row.step) == 0;
-                    x: parent.width * mark.at - self.width / 2;
+                    // On the faders' track, which is inset by half the knob.
+                    x: Tokens.space-3 / 2 + (parent.width - Tokens.space-3) * mark.at - self.width / 2;
                     height: parent.height;
                     text: mark.label;
                     color: Theme.text-secondary;
