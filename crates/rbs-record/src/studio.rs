@@ -1268,6 +1268,34 @@ pub enum TextDue {
     Wait,
 }
 
+/// The text worker, made on first use with the registered renderers.
+fn text_worker<'a>(
+    text: &'a mut Option<TextWorker>,
+    io: &(Arc<dyn FileProbe>, Arc<dyn TextClock>),
+    clock: Arc<dyn rbs_core::time::Clock>,
+    sources: &SourceTypes,
+) -> &'a mut TextWorker {
+    text.get_or_insert_with(|| {
+        TextWorker::new(
+            sources.text_renderers(),
+            Arc::clone(&io.0),
+            clock,
+            Arc::clone(&io.1),
+        )
+    })
+}
+
+/// The answer of [`Studio::text_fonts`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextFonts {
+    /// The installed families, sorted.
+    Ready(Arc<Vec<String>>),
+    /// The first list is being read; ask again shortly.
+    NotReady,
+    /// No text renderer is registered.
+    Unavailable,
+}
+
 /// Render ticks a scene change waits for its texts at most.
 pub const TEXT_WAIT_TICKS: u64 = 2;
 
@@ -2491,15 +2519,8 @@ impl Studio {
                     let t = *t;
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(t.node))?;
-                    let (files, wall) = &self.text_io;
-                    let worker = self.text.get_or_insert_with(|| {
-                        TextWorker::new(
-                            sources.text_renderers(),
-                            Arc::clone(files),
-                            self.engine.clock(),
-                            Arc::clone(wall),
-                        )
-                    });
+                    let worker =
+                        text_worker(&mut self.text, &self.text_io, self.engine.clock(), sources);
                     worker.attach(entry.source, t.frames, t.settings);
                     self.text_attached.insert(entry.source);
                     entry.instance = Some(Instance {
@@ -2928,12 +2949,17 @@ impl Studio {
             .cloned()
     }
 
-    /// The installed font families (ADR-0129 decision 7): `None` until the worker has
-    /// a list or while no text renderer is in use.
-    pub fn text_families(&mut self) -> Option<Arc<Vec<String>>> {
-        match self.text.as_mut()?.families() {
-            rbs_sources::text_worker::Families::Ready(list) => Some(list),
-            _ => None,
+    /// The installed font families (ADR-0129 decision 7), from the worker's cache. The
+    /// first call starts the worker (it stops again when idle), so it never blocks:
+    /// `NotReady` until the first list exists, `Unavailable` with no text renderer.
+    pub fn text_fonts(&mut self, sources: &SourceTypes) -> TextFonts {
+        if sources.text_renderers().is_empty() {
+            return TextFonts::Unavailable;
+        }
+        let clock = self.engine.clock();
+        match text_worker(&mut self.text, &self.text_io, clock, sources).families() {
+            rbs_sources::text_worker::Families::Ready(list) => TextFonts::Ready(list),
+            _ => TextFonts::NotReady,
         }
     }
 

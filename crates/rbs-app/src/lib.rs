@@ -41,6 +41,7 @@ pub mod monitor_settings;
 #[cfg(target_os = "macos")]
 pub mod native;
 pub mod network_access;
+pub mod obs_import;
 pub mod platform;
 pub mod popups;
 pub mod recent_targets;

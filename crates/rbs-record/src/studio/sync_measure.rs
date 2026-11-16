@@ -437,11 +437,17 @@ impl Studio {
 
     /// The resync count of `source`'s audio input, when it has one running.
     fn input_resyncs(&self, source: SourceId) -> Option<u64> {
+        self.input_counters(source).map(|c| c.resyncs)
+    }
+
+    /// The counters of `source`'s audio input, when it has one running (late frames
+    /// and resyncs show how much jitter headroom is spent; ADR-0130 decision 9).
+    pub fn input_counters(&self, source: SourceId) -> Option<rbs_audio::InputCounters> {
         self.entries
             .iter()
             .filter(|e| e.source == source)
             .find_map(|e| match e.instance.as_ref().map(|i| &i.watch) {
-                Some(Watch::Audio(stats, _)) => Some(stats.read().resyncs),
+                Some(Watch::Audio(stats, _)) => Some(stats.read()),
                 _ => None,
             })
     }

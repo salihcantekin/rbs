@@ -70,6 +70,37 @@ fn suffix(unit: &str) -> String {
     }
 }
 
+/// Milliseconds from ns: whole when they are, else one decimal ("10 ms", "19.3 ms").
+fn ms_text(ns: i64) -> String {
+    let tenths = (ns + 50_000) / 100_000;
+    if tenths % 10 == 0 {
+        format!("{} ms", tenths / 10)
+    } else {
+        format!("{:.1} ms", tenths as f64 / 10.0)
+    }
+}
+
+/// The editor's line for a filter that adds `latency_ns` on a source whose input left
+/// `uncompensated_ns` of its chain's latency (ADR-0130 decision 10): empty when the
+/// filter adds none; a warning when part of it was not taken back.
+pub fn latency_line(latency_ns: i64, uncompensated_ns: i64) -> (String, bool) {
+    if latency_ns <= 0 {
+        return (String::new(), false);
+    }
+    if uncompensated_ns >= 50_000 {
+        (
+            format!(
+                "Adds {}; {} could not be compensated.",
+                ms_text(latency_ns),
+                ms_text(uncompensated_ns)
+            ),
+            true,
+        )
+    } else {
+        (format!("Adds {}, compensated.", ms_text(latency_ns)), false)
+    }
+}
+
 /// A number with as many decimals as its step needs, and its unit.
 pub fn number_text(v: f32, step: f32, unit: &str) -> String {
     let d = decimals(step);
@@ -276,7 +307,11 @@ impl FilterUi {
                     ),
                     _ => (0.0, 0.0, ""),
                 };
+                let (latency_text, latency_warn) =
+                    latency_line(f.latency_ns, row.latency.map_or(0, |l| l.uncompensated_ns));
                 FilterData {
+                    latency_text: latency_text.into(),
+                    latency_warn,
                     gate: f.meter.is_some(),
                     bar_label: bar_label.into(),
                     open_pos,
@@ -617,6 +652,26 @@ mod tests {
             filter_types(true)
                 .iter()
                 .all(|(_, a)| filter_types(false).iter().all(|(_, b)| a != b))
+        );
+    }
+
+    #[test]
+    fn a_latent_filter_says_what_it_adds() {
+        assert_eq!(latency_line(0, 0), (String::new(), false));
+        assert_eq!(
+            latency_line(10_000_000, 0),
+            ("Adds 10 ms, compensated.".to_owned(), false)
+        );
+        assert_eq!(
+            latency_line(19_333_333, 0),
+            ("Adds 19.3 ms, compensated.".to_owned(), false)
+        );
+        assert_eq!(
+            latency_line(12_000_000, 4_000_000),
+            (
+                "Adds 12 ms; 4 ms could not be compensated.".to_owned(),
+                true
+            )
         );
     }
 

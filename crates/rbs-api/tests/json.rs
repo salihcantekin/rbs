@@ -139,6 +139,11 @@ fn source() -> SourceInfo {
             volume: 1.0,
             muted: false,
         }),
+        filter_latency_ms: 10.0,
+        effective_offset_ms: -30.0,
+        uncompensated_ms: 0.0,
+        input_late_frames: Some(96),
+        input_resyncs: Some(1),
     }
 }
 
@@ -213,7 +218,23 @@ fn every_request() -> Vec<Request> {
             scene: None,
             global: true,
             with_audio: true,
+            text: None,
         })),
+        c(Command::SourceAdd(AddSource {
+            kind: SourceKind::Text,
+            adapter: String::new(),
+            target: String::new(),
+            name: Some("Title".into()),
+            scene: Some(2),
+            global: false,
+            with_audio: false,
+            text: Some("Hello".into()),
+        })),
+        c(Command::SourceSetText(SetText {
+            source: 4,
+            text: "Bye".into(),
+        })),
+        c(Command::TextFonts),
         c(Command::SourceSetCompanionAudio(SetCompanionAudio {
             source: 4,
             enabled: true,
@@ -447,6 +468,18 @@ fn every_request() -> Vec<Request> {
             on: false,
         })),
         c(Command::StreamStatus(OnCanvas::default())),
+        c(Command::StreamDestinations(DestinationsOf::default())),
+        c(Command::StreamDestinations(DestinationsOf {
+            canvas: Some(OutputCanvas::Vertical),
+        })),
+        c(Command::StreamDestinationStart(DestinationRef { id: 2 })),
+        c(Command::StreamDestinationStop(DestinationRef { id: 0 })),
+        c(Command::StreamDestinationSetEnabled(
+            SetDestinationEnabled {
+                id: 3,
+                enabled: false,
+            },
+        )),
         c(Command::ReplayStatus),
         c(Command::ProtectionStatus),
         c(Command::SourceSetMonitor(SetSourceMonitor {
@@ -734,6 +767,7 @@ fn every_result_and_event_type_round_trips() {
                     unit: Some("px".into()),
                     default: json!(8.0),
                 }],
+                latency_ms: None,
             },
             FilterTypeInfo {
                 type_id: "org.example.audio-filter.test".into(),
@@ -770,6 +804,7 @@ fn every_result_and_event_type_round_trips() {
                         default: json!("soft"),
                     },
                 ],
+                latency_ms: Some(10.0),
             },
         ],
     });
@@ -797,6 +832,7 @@ fn every_result_and_event_type_round_trips() {
     });
     round_trip(&AuthResult {
         scopes: ScopeSet::PANEL,
+        irreversible: false,
         server: ClientInfo::new("rbs", "0.0.1"),
     });
     round_trip(&Description {
@@ -804,6 +840,7 @@ fn every_result_and_event_type_round_trips() {
         methods: vec![MethodInfoOwned {
             name: "studio.get".into(),
             scope: Some(rbs_api::Scope::Read),
+            effect: Some(rbs_api::request::Effect::Read),
         }],
         topics: Topic::ALL.to_vec(),
     });
@@ -960,6 +997,30 @@ fn every_result_and_event_type_round_trips() {
             hold_fallback: false,
             hold_sound_fallback: false,
             hold_fallback_reason: None,
+            destinations: vec![
+                LiveDestination {
+                    id: 0,
+                    name: "Twitch".into(),
+                    service: "twitch".into(),
+                    state: DestinationState::Live,
+                    connects: 1,
+                    reconnect_attempts: 0,
+                    dropped: 0,
+                    on_air_ms: 9_000,
+                    error: None,
+                },
+                LiveDestination {
+                    id: 2,
+                    name: "YouTube".into(),
+                    service: "youtube".into(),
+                    state: DestinationState::Failed,
+                    connects: 0,
+                    reconnect_attempts: 3,
+                    dropped: 4,
+                    on_air_ms: 0,
+                    error: Some("the server closed the connection".into()),
+                },
+            ],
         }),
         EventPayload::VcamChanged(VcamStatus {
             frames: None,
@@ -1511,7 +1572,9 @@ fn stream_state_has_a_stable_wire_form() {
         hold_fallback: false,
         hold_sound_fallback: false,
         hold_fallback_reason: None,
+        destinations: Vec::new(),
     };
+    // Without destinations (a stream the host tracks as one) the 1.68 form.
     assert_eq!(
         serde_json::to_value(&live).unwrap(),
         json!({
@@ -2765,4 +2828,149 @@ fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
     }))
     .unwrap();
     assert_eq!(entry.origin, DeviceSyncOrigin::Other);
+}
+
+#[test]
+fn filter_latency_fields_are_optional_and_round_trip() {
+    // Protocol 1.77 (ADR-0130 decision 9): a source without latent filters, offset or
+    // running input looks as it did before.
+    let plain = serde_json::to_value(SourceInfo {
+        filter_latency_ms: 0.0,
+        effective_offset_ms: 0.0,
+        uncompensated_ms: 0.0,
+        input_late_frames: None,
+        input_resyncs: None,
+        ..source()
+    })
+    .unwrap();
+    for key in [
+        "filter_latency_ms",
+        "effective_offset_ms",
+        "uncompensated_ms",
+        "input_late_frames",
+        "input_resyncs",
+    ] {
+        assert!(plain.get(key).is_none(), "{key}");
+    }
+    let row = serde_json::to_value(SourceInfo {
+        uncompensated_ms: 4.0,
+        ..source()
+    })
+    .unwrap();
+    assert_eq!(row["filter_latency_ms"], json!(10.0));
+    assert_eq!(row["effective_offset_ms"], json!(-30.0));
+    assert_eq!(row["uncompensated_ms"], json!(4.0));
+    assert_eq!(row["input_late_frames"], json!(96));
+    assert_eq!(row["input_resyncs"], json!(1));
+    let back: SourceInfo = serde_json::from_value(row).unwrap();
+    assert_eq!(back.uncompensated_ms, 4.0);
+    // An older server's row reads with zero latency and no counters.
+    let older: SourceInfo = serde_json::from_value(json!({
+        "id": 1, "name": "Mic", "kind": "audio_input", "status": {"state": "running"}, "volume": 1.0
+    }))
+    .unwrap();
+    assert_eq!(older.filter_latency_ms, 0.0);
+    assert_eq!(older.input_resyncs, None);
+    // An older server's filter type has no latency.
+    let ty: FilterTypeInfo = serde_json::from_value(
+        json!({"type": "org.rbs.filter.blur", "name": "Blur", "fields": []}),
+    )
+    .unwrap();
+    assert_eq!(ty.latency_ms, None);
+}
+
+#[test]
+fn text_sources_decode_as_protocol_1_75() {
+    let add: AddSource = serde_json::from_value(json!({"kind": "text", "text": "Live"})).unwrap();
+    assert_eq!(add.kind, SourceKind::Text);
+    assert_eq!(add.text.as_deref(), Some("Live"));
+    assert!(add.adapter.is_empty() && add.target.is_empty());
+    assert!(
+        serde_json::from_value::<SetText>(json!({"source": 1, "text": "x", "file": "y"})).is_err()
+    );
+    round_trip(&TextFonts {
+        families: vec!["Inter".into(), "Noto Sans".into()],
+    });
+    assert_eq!(ErrorKind::Forbidden.name(), "forbidden");
+    assert_eq!(ErrorKind::NotReady.name(), "not_ready");
+    assert_eq!(
+        serde_json::to_value(ErrorKind::NotReady).unwrap(),
+        json!("not_ready")
+    );
+}
+
+#[test]
+fn stream_destinations_have_a_stable_wire_form() {
+    let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
+        Ok(Request::Command(c)) => Ok(c),
+        Ok(other) => panic!("not a command: {other:?}"),
+        Err(e) => Err(e.error.kind),
+    };
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"stream.destination.set_enabled","params":{"id":2,"enabled":true}}"#
+        ),
+        Ok(Command::StreamDestinationSetEnabled(
+            SetDestinationEnabled {
+                id: 2,
+                enabled: true
+            }
+        ))
+    );
+    // No method takes a server or a key (protocol 1.1's rule).
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"stream.destination.start","params":{"id":2,"server":"rtmp://elsewhere"}}"#
+        ),
+        Err(ErrorKind::InvalidParams)
+    );
+    for (method, scope) in [
+        ("stream.destinations", Scope::Read),
+        ("stream.destination.start", Scope::Control),
+        ("stream.destination.stop", Scope::Control),
+        ("stream.destination.set_enabled", Scope::Control),
+    ] {
+        assert_eq!(
+            rbs_api::request::method_scope(method),
+            Some(Some(scope)),
+            "{method}"
+        );
+    }
+    let list = StreamDestinations {
+        destinations: vec![StreamDestination {
+            id: 2,
+            name: "YouTube".into(),
+            service: "youtube".into(),
+            canvas: OutputCanvas::Main,
+            enabled: true,
+            configured: true,
+            encoding: DestinationEncodingKind::Own,
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        json!({"destinations": [{
+            "id": 2, "name": "YouTube", "service": "youtube", "canvas": "main",
+            "enabled": true, "configured": true, "encoding": "own",
+        }]})
+    );
+    round_trip(&list);
+    let d = LiveDestination {
+        id: 2,
+        name: "YouTube".into(),
+        service: "youtube".into(),
+        state: DestinationState::Reconnecting,
+        connects: 1,
+        reconnect_attempts: 2,
+        dropped: 7,
+        on_air_ms: 60_000,
+        error: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&d).unwrap(),
+        json!({
+            "id": 2, "name": "YouTube", "service": "youtube", "state": "reconnecting",
+            "connects": 1, "reconnect_attempts": 2, "dropped": 7, "on_air_ms": 60000,
+        })
+    );
 }
