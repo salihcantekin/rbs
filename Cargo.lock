@@ -5091,6 +5091,7 @@ dependencies = [
  "rbs-params",
  "rbs-scene",
  "rbs-text",
+ "rbs-text-test",
 ]
 
 [[package]]

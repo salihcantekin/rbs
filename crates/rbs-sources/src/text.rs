@@ -151,6 +151,27 @@ pub fn has_color_glyphs(text: &str) -> bool {
     })
 }
 
+/// The renderer for `block` (ADR-0129 decision 2): the first of `renderers` that
+/// draws colour glyphs when the text has emoji, else the first.
+pub fn pick_renderer(
+    renderers: &[std::sync::Arc<dyn rbs_text::TextRenderer>],
+    block: &TextBlock,
+) -> Option<std::sync::Arc<dyn rbs_text::TextRenderer>> {
+    let color = rbs_core::capability::CapabilityValue::Flag(true);
+    let with_color = || {
+        renderers.iter().find(|r| {
+            r.capabilities()
+                .get(&rbs_text::caps::COLOR_GLYPHS)
+                .is_some_and(|v| *v == color)
+        })
+    };
+    has_color_glyphs(&block.text)
+        .then(with_color)
+        .flatten()
+        .or_else(|| renderers.first())
+        .cloned()
+}
+
 /// Checks `settings` strictly, as an edit from the app or the API is checked: only
 /// text keys, each of the right kind and in range, and the box given.
 pub fn validate_text(settings: &Settings) -> Result<TextSettings, SourceError> {

@@ -25,6 +25,8 @@ mod layers;
 mod registry;
 pub mod still;
 pub mod text;
+pub mod text_file;
+pub mod text_worker;
 pub mod types;
 
 pub use browser::{

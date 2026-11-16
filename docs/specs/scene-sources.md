@@ -217,3 +217,40 @@ A number key accepts an integer. `validate_text` refuses any other key, a value 
 **Still or not.** `is_still` answers from the class for every type except text; a text source is still only when `kind` is `text` (or absent) and `fields` is off. `rbs-record`'s picture form (`video_as: auto` writes images only for a still source; `image` on a text that is not still is `ImageOnMovingSource`) and the host's `set_record_separately` `video_as` check ask `is_still`. Recording sound separately is refused for a text source like any picture-only source (`AudioOnPictureOnly`), whatever its settings. Tests: `rbs-sources` `text::tests`, `rbs-record` `iso::tests::a_text_source_is_still_only_as_plain_text`.
 
 **Instantiate.** With no renderer registered the type is not installed and `instantiate` is `NoAdapter`. Otherwise it reads the settings leniently and returns `Text` with a node that shows nothing until the worker sends a picture through `frames`.
+
+### Text worker (ADR-0129 decisions 6 and 7)
+
+`rbs_sources::text_worker::TextWorker` draws every text source on one render thread and reads files on one probe thread. Control thread only; no call blocks it.
+
+```rust
+impl TextWorker {
+    pub fn new(renderers: Vec<Arc<dyn TextRenderer>>, files: Arc<dyn FileProbe>,
+        clock: Arc<dyn Clock>, wall: Arc<dyn TextClock>) -> Self;   // starts no thread
+    pub fn attach(&mut self, source, frames: ParamSender<Option<TextFrame>>, settings: TextSettings) -> u64;
+    pub fn set_settings(&mut self, source, settings: TextSettings) -> Option<u64>; // None: unchanged
+    pub fn refresh(&mut self, source) -> Option<u64>;   // entering the on-air set: front of the queue, file read now
+    pub fn detach(&mut self, source);                   // the node was retired; its last picture stays cached
+    pub fn set_on_air(&mut self, sources: BTreeSet<SourceId>);
+    pub fn families(&mut self) -> Families;             // Ready(cache) or NotReady; refreshed at most once a minute
+    pub fn take_problems(&mut self) -> Vec<(SourceId, ProblemSlot, Option<TextProblem>)>;
+    pub fn tick(&mut self);                             // control tick: polls, hang checks, idle stop
+    pub fn stop(&mut self);                             // never waits on a hung call
+    pub fn is_running(&self) -> bool;
+    pub fn detached_probes(&self) -> usize;
+}
+pub trait TextClock: Send + Sync { fn now(&self) -> SystemTime; }   // SystemTextClock
+// rbs_sources::text_file
+pub trait FileProbe: Send + Sync { canonicalize, metadata -> Option<FileMeta> (None: not a regular file), read(path, head, tail) }
+pub struct RealFileProbe;
+pub fn decode(head, tail, whole) -> Result<String, FileTextError>;  // UTF-8 with or without BOM, UTF-16 LE/BE with BOM
+pub fn last_lines(text, n) -> String;
+```
+
+- **Threads.** None until the first `attach` or `families`. Both stop on `tick` when no source is attached and nothing was asked for `IDLE_STOP_AFTER` (30 s, master clock); the renderers are trimmed when the render thread was joined. `tick` while stopped does nothing.
+- **Order and numbers.** Each `attach`, `set_settings`, `refresh` and accepted file change carries a request number (one counter); the node stores the one it uploaded (`TextNodeStats::uploaded_request`). Settings get a new generation only when they differ from the last sent ones, so a preview equal to the later commit draws once. A file result for an older generation is dropped. Commands that arrive together are coalesced to the newest request per source, `refresh`es first.
+- **Cache.** The render thread keeps each source's last `TextFrame`; an `attach` whose settings match the cached generation sends it at once without drawing (a re-created node, undo of a delete).
+- **Files.** Only attached sources in the on-air set are polled, every `POLL_INTERVAL` (500 ms, master clock), and at once on `attach`, a `file` or `file_lines` change and `refresh`. The probe canonicalises the path before every read and refuses anything but a regular file. It reads at most `MAX_FILE_BYTES` (1 MiB) from the end plus the first bytes for the byte order mark. A file whose size and modification time are unchanged and older than `RECENT_WINDOW` (2 s, `TextClock`) is not read. Otherwise the content hash decides: a new hash is accepted when the next poll agrees, except the first content of a file older than the window, which is accepted at once; an empty file always needs the agreeing poll. A missing file shows an empty picture with `FileNotFound` and is watched until it appears; bytes that are not text keep the last picture with `NotText`.
+- **Hangs.** A probe call longer than `HANG_AFTER` (5 s) gives its source `FileNotAnswering`; the path is not polled until the call returns (then the problem clears), and while fewer than `MAX_DETACHED_PROBES` (2) are left behind, the probe is detached and a new one serves the others. At the cap no thread is made. `stop` detaches a busy probe under the cap and keeps it for the next start at the cap. A render longer than 5 s gives `CouldNotDraw`; `stop` does not join a busy render thread.
+- **Problems.** `ProblemSlot::File` and `ProblemSlot::Render` are set and cleared separately. Renderer errors and panics (caught; the renderers are trimmed before the next draw) are `RenderFailed` with the renderer's message; `font_missing` is the note `FontMissing`. `TextProblem::message` never contains a path or file content; `fault()` maps `FileNotFound` to `TargetGone`, notes to none, the rest to `Other`.
+
+Tests: `crates/rbs-sources/tests/text_worker.rs` (nothing runs before an attach; edits redraw, equal settings do not; a re-created node gets the cached picture without a render; last N lines of a file; a change needs two agreeing polls; an unchanged old file is not read again; off-air files are not polled; a missing file shows nothing until it appears; bytes that are not text keep the last picture; a hung call stops only its own source and clears when it returns; stuck probes never pass the cap and `stop` does not block; idle stop trims; a renderer panic is a problem and the next draw works; the font list is cached), `text_file::tests` (encodings, tails, lines, the real probe).

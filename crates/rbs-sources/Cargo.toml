@@ -35,6 +35,8 @@ png = "0.18"
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
 rbs-media-decode-test = { path = "../rbs-media-decode-test" }
+# Deterministic text renderer (ADR-0129) for the text worker tests.
+rbs-text-test = { path = "../rbs-text-test" }
 
 [lints]
 workspace = true

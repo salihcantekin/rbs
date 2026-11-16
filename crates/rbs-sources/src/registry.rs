@@ -668,19 +668,12 @@ impl SourceTypes {
         &self,
         block: &rbs_text::TextBlock,
     ) -> Option<Arc<dyn rbs_text::TextRenderer>> {
-        let wants_color = crate::text::has_color_glyphs(&block.text);
-        let with_color = || {
-            self.text.iter().find(|r| {
-                r.capabilities()
-                    .get(&rbs_text::caps::COLOR_GLYPHS)
-                    .is_some_and(|v| *v == rbs_core::capability::CapabilityValue::Flag(true))
-            })
-        };
-        wants_color
-            .then(with_color)
-            .flatten()
-            .or_else(|| self.text.first())
-            .cloned()
+        crate::text::pick_renderer(&self.text, block)
+    }
+
+    /// The registered text renderers, for the text worker.
+    pub fn text_renderers(&self) -> Vec<Arc<dyn rbs_text::TextRenderer>> {
+        self.text.clone()
     }
 
     /// Registers a capture adapter. Call [`probe`](Self::probe) afterwards.
