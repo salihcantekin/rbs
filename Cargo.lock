@@ -4479,12 +4479,17 @@ dependencies = [
 [[package]]
 name = "rbs-browser-ipc"
 version = "0.0.1"
+dependencies = [
+ "libc",
+ "windows",
+]
 
 [[package]]
 name = "rbs-browser-runner"
 version = "0.0.1"
 dependencies = [
  "rbs-browser-ipc",
+ "rbs-crash",
 ]
 
 [[package]]
