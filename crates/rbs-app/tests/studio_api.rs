@@ -669,7 +669,7 @@ fn a_control_api_client_drives_the_studio() {
     drop(api);
 }
 
-/// Text sources through the control API (protocol 1.74, ADR-0129 decision 8): added
+/// Text sources through the control API (protocol 1.75, ADR-0129 decision 8): added
 /// with their text, edited with `source.set_text` and `source.set_settings`, their
 /// `file` refused, the font list read from the worker.
 #[test]

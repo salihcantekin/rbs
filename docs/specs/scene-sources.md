@@ -185,7 +185,7 @@ The studio does not link or load CEF. A real CEF build replaces the helper execu
 
 ## Text (`org.rbs.source.text`, ADR-0129)
 
-Implementation status: phases (a) to (c). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, and the control API adds and edits text sources (control-api.md, "Protocol 1.74"). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; no menu adds a text source until phase (f), and a text row in the Sources list uses the `pencil` icon until then. Live kinds (phase (d)) and crisp resizing (phase (e)) follow.
+Implementation status: phases (a) to (c). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, and the control API adds and edits text sources (control-api.md, "Protocol 1.75"). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; no menu adds a text source until phase (f), and a text row in the Sources list uses the `pencil` icon until then. Live kinds (phase (d)) and crisp resizing (phase (e)) follow.
 
 ```rust
 // rbs_sources::types

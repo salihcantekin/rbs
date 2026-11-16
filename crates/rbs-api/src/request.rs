@@ -72,7 +72,7 @@ pub struct TargetsParams {
 }
 
 /// `source.add`: a source of `kind` capturing one target, on top of the program scene.
-/// A `text` source (protocol 1.74, ADR-0129 decision 8) has no target: `adapter` and
+/// A `text` source (protocol 1.75, ADR-0129 decision 8) has no target: `adapter` and
 /// `target` may be left out and are ignored, and `text` is what it shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddSource {
@@ -99,13 +99,13 @@ pub struct AddSource {
     /// Default false; the picture and its sound are one undo step.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub with_audio: bool,
-    /// The text a `text` source shows (protocol 1.74); absent: "Text". Not allowed for
+    /// The text a `text` source shows (protocol 1.75); absent: "Text". Not allowed for
     /// other kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
 }
 
-/// `source.set_text` (protocol 1.74, ADR-0129 decision 8): replaces a text source's
+/// `source.set_text` (protocol 1.75, ADR-0129 decision 8): replaces a text source's
 /// `text` only. One undo step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1334,6 +1334,34 @@ impl OnCanvases {
     }
 }
 
+/// `stream.destinations` (protocol 1.74, ADR-0127 decision 16): one canvas's
+/// destinations, or both canvases' when `canvas` is absent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationsOf {
+    /// The canvas; both when absent or `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputCanvas>,
+}
+
+/// `stream.destination.start` and `stream.destination.stop` (protocol 1.74).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationRef {
+    /// The destination's id (`stream.destinations`).
+    pub id: u32,
+}
+
+/// `stream.destination.set_enabled` (protocol 1.74).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetDestinationEnabled {
+    /// The destination's id.
+    pub id: u32,
+    /// Go live sends to it.
+    pub enabled: bool,
+}
+
 /// `output.set_with_vertical` (protocol 1.42, ADR-0111 decision 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1546,9 +1574,9 @@ pub enum Command {
     SourceAttributesClipboard,
     /// `source.paste_attributes` (protocol 1.68).
     SourcePasteAttributes(PasteAttributes),
-    /// `source.set_text` (protocol 1.74).
+    /// `source.set_text` (protocol 1.75).
     SourceSetText(SetText),
-    /// `text.fonts` (protocol 1.74).
+    /// `text.fonts` (protocol 1.75).
     TextFonts,
     /// `scene.switch` (protocol 1.6).
     SceneSwitch(SceneRef),
@@ -1680,6 +1708,14 @@ pub enum Command {
     OutputBreakToggle,
     /// `stream.status`.
     StreamStatus(OnCanvas),
+    /// `stream.destinations` (protocol 1.74).
+    StreamDestinations(DestinationsOf),
+    /// `stream.destination.start` (protocol 1.74).
+    StreamDestinationStart(DestinationRef),
+    /// `stream.destination.stop` (protocol 1.74).
+    StreamDestinationStop(DestinationRef),
+    /// `stream.destination.set_enabled` (protocol 1.74).
+    StreamDestinationSetEnabled(SetDestinationEnabled),
     /// `output.set_with_vertical` (protocol 1.42).
     OutputSetWithVertical(SetWithVertical),
     /// `replay.status` (protocol 1.27).
@@ -1876,6 +1912,10 @@ impl Command {
             Command::OutputBreakToggle => "output.break_toggle",
             Command::OutputSetWithVertical(_) => "output.set_with_vertical",
             Command::StreamStatus(_) => "stream.status",
+            Command::StreamDestinations(_) => "stream.destinations",
+            Command::StreamDestinationStart(_) => "stream.destination.start",
+            Command::StreamDestinationStop(_) => "stream.destination.stop",
+            Command::StreamDestinationSetEnabled(_) => "stream.destination.set_enabled",
             Command::ReplayStatus => "replay.status",
             Command::ProtectionStatus => "protection.status",
             Command::CalibrationRun(_) => "calibration.run",
@@ -2066,6 +2106,10 @@ pub const METHODS: &[MethodInfo] = &[
     m("stream.hold_toggle", Some(Scope::Control)),
     m("output.break_toggle", Some(Scope::Control)),
     m("stream.status", Some(Scope::Read)),
+    m("stream.destinations", Some(Scope::Read)),
+    m("stream.destination.start", Some(Scope::Control)),
+    m("stream.destination.stop", Some(Scope::Control)),
+    m("stream.destination.set_enabled", Some(Scope::Control)),
     m("output.set_with_vertical", Some(Scope::Control)),
     m("replay.status", Some(Scope::Read)),
     m("protection.status", Some(Scope::Read)),
@@ -2392,6 +2436,14 @@ enum WireRequest {
     OutputBreakToggle(Empty),
     #[serde(rename = "stream.status")]
     StreamStatus(OnCanvas),
+    #[serde(rename = "stream.destinations")]
+    StreamDestinations(DestinationsOf),
+    #[serde(rename = "stream.destination.start")]
+    StreamDestinationStart(DestinationRef),
+    #[serde(rename = "stream.destination.stop")]
+    StreamDestinationStop(DestinationRef),
+    #[serde(rename = "stream.destination.set_enabled")]
+    StreamDestinationSetEnabled(SetDestinationEnabled),
     #[serde(rename = "output.set_with_vertical")]
     OutputSetWithVertical(SetWithVertical),
     #[serde(rename = "replay.status")]
@@ -2599,6 +2651,14 @@ impl From<WireRequest> for Request {
             WireRequest::StreamHoldToggle(p) => Request::Command(C::StreamHoldToggle(p)),
             WireRequest::OutputBreakToggle(_) => Request::Command(C::OutputBreakToggle),
             WireRequest::StreamStatus(p) => Request::Command(C::StreamStatus(p)),
+            WireRequest::StreamDestinations(p) => Request::Command(C::StreamDestinations(p)),
+            WireRequest::StreamDestinationStart(p) => {
+                Request::Command(C::StreamDestinationStart(p))
+            }
+            WireRequest::StreamDestinationStop(p) => Request::Command(C::StreamDestinationStop(p)),
+            WireRequest::StreamDestinationSetEnabled(p) => {
+                Request::Command(C::StreamDestinationSetEnabled(p))
+            }
             WireRequest::OutputSetWithVertical(p) => Request::Command(C::OutputSetWithVertical(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
             WireRequest::ProtectionStatus(_) => Request::Command(C::ProtectionStatus),
@@ -2753,6 +2813,10 @@ impl From<Request> for WireRequest {
                 C::StreamHoldToggle(p) => WireRequest::StreamHoldToggle(p),
                 C::OutputBreakToggle => WireRequest::OutputBreakToggle(Empty {}),
                 C::StreamStatus(p) => WireRequest::StreamStatus(p),
+                C::StreamDestinations(p) => WireRequest::StreamDestinations(p),
+                C::StreamDestinationStart(p) => WireRequest::StreamDestinationStart(p),
+                C::StreamDestinationStop(p) => WireRequest::StreamDestinationStop(p),
+                C::StreamDestinationSetEnabled(p) => WireRequest::StreamDestinationSetEnabled(p),
                 C::OutputSetWithVertical(p) => WireRequest::OutputSetWithVertical(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
                 C::ProtectionStatus => WireRequest::ProtectionStatus(Empty {}),
@@ -3040,7 +3104,7 @@ pub enum Response {
     /// `source.copy_attributes`, `source.attributes_clipboard` (protocol 1.68); `null`
     /// while the clipboard is empty.
     AttributesClipboard(Option<crate::types::AttributesClipboard>),
-    /// `text.fonts` (protocol 1.74).
+    /// `text.fonts` (protocol 1.75).
     TextFonts(crate::types::TextFonts),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
@@ -3072,6 +3136,8 @@ pub enum Response {
     StreamCanvasStatus(Snapshot<CanvasStreamState>),
     /// `stream.status`.
     StreamStatus(Snapshot<StreamState>),
+    /// `stream.destinations` (protocol 1.74).
+    StreamDestinations(crate::types::StreamDestinations),
     /// `vcam.status` (protocol 1.12).
     VcamStatus(Snapshot<VcamStatus>),
     /// `replay.status` (protocol 1.27).
