@@ -23,6 +23,10 @@ pub fn scan(config_dir: &Path) -> Result<ObsInstall, ImportError>; // collection
 pub struct ObsInstall { collections: Vec<Found>, profiles: Vec<Found> }
 pub struct Found { name: String, path: PathBuf }
 
+pub trait Catalogue {                                          // implemented by rbs-app
+    fn has(&self, type_id: &NodeTypeId) -> bool;               // sources, filters, transitions
+    fn fields(&self, type_id: &NodeTypeId) -> Option<&[rbs_params::Field]>; // ranges used to clamp
+}
 pub trait Lookup {
     fn picture_size(&self, path: &Path) -> Option<(u32, u32)>;
     fn file_exists(&self, path: &Path) -> bool;
@@ -33,26 +37,28 @@ pub struct LookupTarget { target: String, name: String, app: Option<String>, siz
 pub struct Options { stream_key: bool, shortcuts: bool }      // both default true
 
 pub fn plan(collection_json: &[u8], profile: Option<&ProfileFiles>, mappers: &Mappers,
-            lookup: &dyn Lookup, options: &Options) -> Result<ImportPlan, ImportError>;
+            catalogue: &dyn Catalogue, lookup: &dyn Lookup, options: &Options) -> Result<ImportPlan, ImportError>;
 pub struct ProfileFiles { basic_ini: Vec<u8>, service_json: Option<Vec<u8>>,
                           stream_encoder: Option<Vec<u8>>, record_encoder: Option<Vec<u8>> }
 
 pub struct ImportPlan {
     pub name: String,                          // the OBS collection name
     pub collection: SceneCollection,           // passed SceneCollection::from_parts
-    pub profile: Option<ObsProfileFacts>,
+    pub profile: Option<ObsProfileFacts>,     // neutral facts; rbs-app maps them
+    pub secrets: ImportedSecrets,              // Debug prints <redacted>; no Serialize, no Display
     pub shortcuts: Vec<ImportedShortcut>,      // { command, chord: Chord, scope }
     pub report: ImportReport,
 }
 
 pub struct Mappers;                            // builtin(), register_source/filter/transition
-pub trait SourceMapper { fn obs_ids(&self) -> &'static [&'static str];
+pub trait SourceMapper { fn obs_id(&self) -> &'static str;          // one mapper per OBS id
+                         fn rbs_types(&self) -> &'static [&'static str]; // all must be in the Catalogue
                          fn map(&self, src: &ObsSource, ctx: &mut MapContext) -> SourceOutcome; }
 pub trait FilterMapper { /* same shape, FilterOutcome */ }
 pub trait TransitionMapper { /* same shape, TransitionOutcome */ }
 ```
 
-`ImportError`: `TooLarge`, `NotJson`, `NotACollection` (no `sources` array), `Invalid(String)` (the built collection failed `from_parts`; a bug in a mapper, reported with the mapper's OBS id). A single bad source, filter or item is never an error: it is a report entry.
+`ImportError`: `TooLarge`, `NotJson`, `NotACollection` (no `sources` array), `Internal(String)` (the built collection failed `from_parts` although the importer enforces its invariants first: a bug). A single bad source, filter or item, a name clash or a scene past `MAX_LAYERS` is never an error: it is a report entry.
 
 ### Report
 
@@ -65,11 +71,11 @@ pub struct ReportEntry { outcome: Outcome /* Approximated | Skipped */, area: Ar
 
 Reasons are one sentence of plain English ("Only PNG pictures can be shown for now."). No stream key, file content or full path appears in a report; a path is shown by its file name.
 
-`rbs-app` saves the report as `imports/<collection id>.report.toml` (`kind = "obs-import-report"`, format 1) with the skipped objects' OBS JSON under `[[skipped]]`.
+`rbs-app` saves the report as `imports/<collection id>.report.toml` (`kind = "obs-import-report"`, format 1), deleted with its collection and not exported with it. Skipped objects keep only allow-listed keys under `[[skipped]]` (ADR-0131 decision 11): URLs without query or fragment, no key containing `token`, `key`, `password`, `secret`, `auth` or `cookie`, paths cut to the file name, no opaque plugin state. The allow-list per OBS type is added here with the mapper that will use it.
 
 ### Transform conversion
 
-OBS places an item at `pos` with the anchor `align` (bits: left 1, right 2, top 4, bottom 8; none is centre), size `native × scale` or, with a bounds type, the bounds box (stretch, scale inner, scale outer, to width, to height, max only) aligned by `bounds_align`, rotated by `rot` degrees about `pos`, after `crop_*`. RBS stores the box (`Layout.position`, `Layout.size`, negative for a flip) rotated about its centre. The converter computes the four corners of the OBS item and returns the RBS box with the same corners (within 0.01 px). The native size comes from `Lookup` or settings; when unknown, the canvas size is used and the item is marked approximate.
+ADR-0131 decision 8 is normative (OBS 31 relative keys win, `bounds_crop`, crop filter as region plus item crop). OBS places an item at `pos` with the anchor `align` (bits: left 1, right 2, top 4, bottom 8; none is centre), size `native × scale` or, with a bounds type, the bounds box (stretch, scale inner, scale outer, to width, to height, max only) aligned by `bounds_align`, rotated by `rot` degrees about `pos`, after `crop_*`. RBS stores the box (`Layout.position`, `Layout.size`, negative for a flip) rotated about its centre. The converter computes the four corners of the OBS item and returns the RBS box with the same corners (within 0.01 px). The native size comes from `Lookup` or settings; when unknown, the canvas size is used and the item is marked approximate.
 
 ### Mapping table
 
@@ -77,7 +83,7 @@ ADR-0131 decision 5 is the first mapping table. Each mapper keeps its own row in
 
 ## Errors and failure behaviour
 
-A failed plan writes nothing. A plan that succeeds is written as a new collection and a new output profile under the writer lock; a write error leaves no half-written entry (`Library::create` is atomic). Unknown keys are ignored; a missing key takes OBS's default.
+A failed plan writes nothing. A plan is written in order: collection, profile, credentials, shortcuts (ADR-0131 decision 9), each atomic; a failed later step leaves the earlier ones and is named in the report. Names clash-free by the free-name helper ("Name 2"). Unknown keys are ignored; a missing key takes OBS's default.
 
 ## Performance requirements
 
