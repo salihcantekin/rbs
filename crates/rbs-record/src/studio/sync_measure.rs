@@ -16,7 +16,8 @@ use rbs_scene::model::MAX_SYNC_OFFSET_MS;
 
 use super::*;
 use crate::sync_measure::{
-    AudioEnergy, Estimate, EstimateError, PictureMotion, Suggestion, estimate, pair_count, suggest,
+    AudioEnergy, Estimate, EstimateError, MIN_PEAK_MOTION, ONSET_FLOOR_DB, PictureMotion,
+    Suggestion, estimate, pair_count, suggest,
 };
 
 /// Longest measurement (ADR-0126 decision 1).
@@ -120,6 +121,18 @@ pub struct SyncMeasureStatus {
     pub state: SyncMeasureState,
 }
 
+/// What a running measurement has collected ([`Studio::sync_measure_signals`]).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncMeasureSignals {
+    /// Time since the start.
+    pub elapsed: Duration,
+    /// Some sound was loud enough to be a clap.
+    pub sound: bool,
+    /// Some picture moved enough to be a clap.
+    pub picture: bool,
+}
+
 /// The probes and what they collected while a measurement runs.
 pub(super) struct SyncMeasureRun {
     id: u64,
@@ -137,6 +150,10 @@ pub(super) struct SyncMeasureRun {
     producer: NodeId,
     reference_tail: NodeId,
     started: Timestamp,
+    /// Some sound reached the onset floor.
+    heard: bool,
+    /// Some picture moved enough to count as a clap.
+    seen: bool,
     effective_offset_ms: i32,
     stored_offset_ns: i64,
     resyncs: Option<u64>,
@@ -247,6 +264,8 @@ impl Studio {
             producer,
             reference_tail,
             started: self.engine.clock().now(),
+            heard: false,
+            seen: false,
             effective_offset_ms: i32::try_from(effective / 1_000_000).unwrap_or(0),
             stored_offset_ns,
             resyncs: self.input_resyncs(source),
@@ -287,12 +306,15 @@ impl Studio {
             buf.iter()
                 .map(|&(time_ns, energy)| AudioEnergy { time_ns, energy }),
         );
+        let floor = 10f32.powf(ONSET_FLOOR_DB / 10.0);
+        run.heard |= buf.iter().any(|&(_, energy)| energy >= floor);
         buf.clear();
         run.picture_from = run.picture_log.read_from(run.picture_from, &mut buf);
         run.frames.extend(
             buf.iter()
                 .map(|&(time_ns, motion)| PictureMotion { time_ns, motion }),
         );
+        run.seen |= buf.iter().any(|&(_, motion)| motion >= MIN_PEAK_MOTION);
 
         let resynced = run.resyncs.is_some() && resyncs != run.resyncs;
         let failure = failure
@@ -339,6 +361,18 @@ impl Studio {
         self.sync_measure
             .as_ref()
             .map(|r| (r.energy.len(), r.frames.len()))
+    }
+
+    /// What the running measurement has heard and seen so far, read by the last
+    /// [`Self::sync_measure`]: `None` when none runs. A UI shows it so a muted
+    /// microphone or a covered camera is plain before the window ends.
+    pub fn sync_measure_signals(&self) -> Option<SyncMeasureSignals> {
+        let now = self.engine.clock().now();
+        self.sync_measure.as_ref().map(|r| SyncMeasureSignals {
+            elapsed: Duration::from_nanos(now.as_nanos().saturating_sub(r.started.as_nanos())),
+            sound: r.heard,
+            picture: r.seen,
+        })
     }
 
     /// Nodes in the studio's graph. For tests that check nothing stays behind.

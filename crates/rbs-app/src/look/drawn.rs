@@ -59,6 +59,10 @@ const FILES: [(&str, &str); 13] = [
         include_str!("../../ui/source_settings.slint"),
     ),
     ("studio.slint", include_str!("../../ui/studio.slint")),
+    (
+        "sync_measure.slint",
+        include_str!("../../ui/sync_measure.slint"),
+    ),
     ("vcam.slint", include_str!("../../ui/vcam.slint")),
 ];
 

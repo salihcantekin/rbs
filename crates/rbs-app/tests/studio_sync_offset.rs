@@ -351,3 +351,64 @@ fn a_measurement_is_refused_with_a_reason() {
     let bad = c.call("sync.apply_to_device_sources", json!({"source": screen}));
     assert_eq!(kind(&bad), "invalid_params", "{bad}");
 }
+
+#[test]
+fn the_measure_window_lists_picture_sources_and_closes() {
+    use rbs_app::studio_host::{Command, SyncMeasurePhase, SyncMeasureRefusal};
+    use rbs_scene::model::SourceId;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let mic = add_mic(&mut c, rbs_audio_io_test::MONO_INPUT, "Mic");
+    let screen = add(&mut c, "screen", "Screen");
+    let id = |n: u64| SourceId::from_raw(u32::try_from(n).unwrap());
+
+    host.send(Command::OpenSyncMeasure(id(mic)));
+    let view = next(&updates, |u| match u {
+        Update::SyncMeasure(Some(v)) => Some(v),
+        _ => None,
+    });
+    assert_eq!(view.source, id(mic));
+    assert_eq!(view.name, "Mic");
+    assert_eq!(view.phase, SyncMeasurePhase::Ready);
+    // Only picture sources are offered.
+    assert_eq!(view.references, vec![(id(screen), "Screen".to_owned())]);
+
+    // A source without a picture is refused, and the window says why.
+    host.send(Command::StartSyncMeasure(id(mic)));
+    let view = next(&updates, |u| match u {
+        Update::SyncMeasure(Some(v)) if v.phase != SyncMeasurePhase::Ready => Some(v),
+        _ => None,
+    });
+    assert_eq!(
+        view.phase,
+        SyncMeasurePhase::Refused(SyncMeasureRefusal::NotPicture)
+    );
+
+    host.send(Command::CloseSyncMeasure);
+    next(&updates, |u| {
+        matches!(u, Update::SyncMeasure(None)).then_some(())
+    });
+}
+
+#[test]
+fn a_source_row_names_the_other_sources_of_its_device() {
+    let Some((_host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let a = add_mic(&mut c, rbs_audio_io_test::MONO_INPUT, "Mic A");
+    let b = add_mic(&mut c, rbs_audio_io_test::MONO_INPUT, "Mic B");
+    // B takes the device's value; a value of its own makes them differ.
+    ok(&c.call(
+        "source.set_sync_offset",
+        json!({"source": b, "offset_ms": 40}),
+    ));
+    let peers = next(&updates, |u| match u {
+        Update::Sources(rows) => rows
+            .iter()
+            .find(|r| u64::from(r.id.get()) == a && !r.device_peers.is_empty())
+            .map(|r| r.device_peers.clone()),
+        _ => None,
+    });
+    assert_eq!(peers, vec!["Mic B".to_owned()]);
+}

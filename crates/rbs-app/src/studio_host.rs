@@ -70,7 +70,7 @@ mod loudness;
 mod monitor;
 pub mod protection;
 pub mod replay;
-mod sync_measure;
+pub mod sync_measure;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -404,6 +404,9 @@ pub struct SourceRow {
     /// Which feeds are marked to record separately, and the picture's form
     /// (ADR-0086, ADR-0117).
     pub record_separately: RecordSeparately,
+    /// The other sources of its audio device whose sync offset differs, by name
+    /// (ADR-0126 decision 9); empty for every other source.
+    pub device_peers: Vec<String>,
 }
 
 impl PartialEq for SourceRow {
@@ -417,6 +420,7 @@ impl PartialEq for SourceRow {
             && self.item == other.item
             && self.companion_of == other.companion_of
             && self.record_separately == other.record_separately
+            && self.device_peers == other.device_peers
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -824,6 +828,16 @@ pub enum Command {
     },
     /// Put the collection's values back on the running filter (a cancelled drag).
     RestoreFilter(FilterId),
+    /// Open the Measure sync offset window for a source (ADR-0126); answered with
+    /// [`Update::SyncMeasure`].
+    OpenSyncMeasure(SourceId),
+    /// Start measuring in that window against a picture source.
+    StartSyncMeasure(SourceId),
+    /// The Measure window closed: a measurement it started is cancelled.
+    CloseSyncMeasure,
+    /// Give the other sources of a source's audio device its offset (ADR-0126
+    /// decision 9).
+    ApplySyncToDeviceSources(SourceId),
     /// The sync offset of a source's sound in milliseconds (ADR-0062 decision 10): a
     /// live control, not on the undo stack.
     SetSourceSyncOffset {
@@ -1776,6 +1790,7 @@ fn marker_color(c: Option<rbs_api::request::MarkerColor>) -> Option<rbs_manifest
 /// The canvas an output records or streams (ADR-0093 decision 6).
 pub use calibration::{CalibrationSetup, ExportRigMaker};
 pub use rbs_api::types::OutputCanvas;
+pub use sync_measure::{SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView};
 
 /// `c`'s place in the host's per-canvas state.
 /// A refused pause or resume in words, for its `conflict` (control API 1.61).
@@ -2326,6 +2341,8 @@ pub enum Update {
     },
     /// What the Source settings window of a source shows ([`Command::OpenSourceSettings`]).
     SourceSettings(SourceSettingsView),
+    /// What the Measure sync offset window shows; `None` closes it (ADR-0126).
+    SyncMeasure(Option<SyncMeasureView>),
     /// Region-section preview grab (ADR-0103); `None` when the adapter cannot grab.
     RegionPreview {
         /// The source.
@@ -3414,7 +3431,7 @@ fn round(
     if let Some(left) = host.drive_calibration() {
         wait = wait.min(left);
     }
-    if let Some(left) = host.drive_sync_measure() {
+    if let Some(left) = host.drive_sync_measure(notify) {
         wait = wait.min(left);
     }
     if let Some(left) = host.drive_marker_flush(now, notify) {
@@ -4041,6 +4058,15 @@ impl Host {
             }
             Command::RestoreFilter(filter) => {
                 self.studio.restore_filter(filter);
+            }
+            Command::OpenSyncMeasure(id) => self.open_sync_measure_window(id, notify),
+            Command::StartSyncMeasure(reference) => {
+                self.start_sync_measure_window(reference, notify);
+            }
+            Command::CloseSyncMeasure => self.close_sync_measure_window(notify),
+            Command::ApplySyncToDeviceSources(id) => {
+                let done = self.apply_to_device_sources(id).map(|n| n > 0);
+                self.answer_live(done, notify);
             }
             Command::SetSourceSyncOffset { id, offset_ms } => {
                 let done = self.set_source_sync_offset(id, offset_ms);
@@ -10712,6 +10738,11 @@ impl Host {
                     cue_remaining_ms,
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
+                    device_peers: self
+                        .device_peers(s.id)
+                        .into_iter()
+                        .map(|(_, name)| name)
+                        .collect(),
                     id: s.id,
                     item: item.id,
                     companion_of: s.companion_of(),

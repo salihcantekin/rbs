@@ -1,0 +1,253 @@
+// The Measure sync offset window (ADR-0126 step 6): a small, non-modal window over the
+// studio for one source with sound. The user picks the picture source to clap in view
+// of, presses Start and claps; the window shows the claps found, whether sound and a
+// moving picture arrive, then the result to apply or why there is none. Nothing changes
+// until Apply; Cancel or closing the window ends a measurement that runs.
+import { Theme, Tokens } from "tokens.slint";
+import { DialogActions, Icon, IconName, Select, SettingRow, OverlayHost } from "components.slint";
+import { Studio, SyncMeasureData } from "studio.slint";
+
+// One clap: filled once it is paired with a movement in the picture.
+component ClapMark inherits Icon {
+    in property <bool> on;
+    name: on ? IconName.dot : IconName.circle;
+    ink: on ? Theme.accent : Theme.text-secondary;
+}
+
+// "Sound" or "Picture", with a dot that is green once something arrived. The words
+// say it too, so colour is not the only signal.
+component SignalMark inherits HorizontalLayout {
+    in property <bool> on;
+    in property <string> label;
+    spacing: Tokens.space-1;
+    VerticalLayout {
+        alignment: center;
+        Icon {
+            name: on ? IconName.dot : IconName.circle;
+            ink: on ? Theme.state-healthy : Theme.text-secondary;
+        }
+    }
+    Text {
+        text: label;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        vertical-alignment: center;
+    }
+}
+
+export component SyncMeasureWindow inherits Window {
+    default-font-family: Theme.font-family;
+    default-font-size: Tokens.type-body-size;
+    title: @tr("{}: Measure sync offset", d.name);
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    preferred-width: Tokens.size-menu-md + Tokens.space-8 * 3;
+    min-width: Tokens.size-menu-md;
+    background: Theme.surface-base;
+    // Cancel, Apply or Escape: the window closes (a running measurement is cancelled).
+    callback dismiss();
+    forward-focus: keys;
+    property <SyncMeasureData> d: Studio.sync-measure.length > 0 ? Studio.sync-measure[0] : {
+        source: -1, name: "", current: 0, refs: [], ref-ids: [], ref-index: -1, phase: 0, pairs: 0,
+        sound: false, picture: false, progress: 0, suggested: 0, measured: 0, clamped: false,
+        spread: 0, reason: 0, onset-filter: false, refusal: 0
+    };
+    // The picture source chosen in the list (an index into `d.refs`).
+    in-out property <int> ref-index: -1;
+    property <int> chosen: root.ref-index >= 0 ? root.ref-index : d.ref-index;
+    property <bool> can-start: root.chosen >= 0 && root.chosen < d.ref-ids.length;
+    property <string> reference-name: root.can-start ? d.refs[root.chosen] : "";
+
+    function begin() {
+        if root.can-start {
+            Studio.start-sync-measure(d.ref-ids[root.chosen]);
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            padding: Tokens.space-4;
+            spacing: Tokens.space-3;
+            Text {
+                text: d.name;
+                color: Theme.text-primary;
+                font-size: Tokens.type-title-size;
+                font-weight: Tokens.type-title-weight;
+                overflow: elide;
+            }
+
+            // Ready, or Start refused: choose the picture and start.
+            if d.phase == 0 || d.phase == 4: VerticalLayout {
+                spacing: Tokens.space-3;
+                SettingRow {
+                    label: @tr("Clap in view of");
+                    divider: false;
+                    Select {
+                        label: @tr("Clap in view of");
+                        options: d.refs;
+                        index: root.chosen;
+                        placeholder: @tr("Choose a camera");
+                        selected(i) => { root.ref-index = i; }
+                    }
+                }
+                Text {
+                    text: root.can-start
+                        ? @tr("Press Start, then clap 5 times where {} sees your hands, about one second apart.", root.reference-name)
+                        : @tr("Choose the camera or other picture source that sees you clap.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                if d.phase == 4: Text {
+                    text: d.refusal == 0 ? @tr("Another measurement is running. Try again when it ends.")
+                        : d.refusal == 1 ? @tr("The program does not hear this source. Unmute it and show it in the program scene, then try again.")
+                        : d.refusal == 2 ? @tr("{} shows no picture now. Start a recording, the stream or the virtual camera, or show it in the program scene, then try again.", root.reference-name)
+                        : d.refusal == 3 ? @tr("Choose the camera or other picture source that sees you clap.")
+                        : d.refusal == 4 ? @tr("{} has no picture. Choose a camera.", root.reference-name)
+                        : @tr("The measurement could not start.");
+                    color: Theme.state-warning;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Measuring.
+            if d.phase == 1: VerticalLayout {
+                spacing: Tokens.space-3;
+                Text {
+                    text: @tr("Clap 5 times where {} sees your hands, about one second apart.", root.reference-name);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    accessible-role: text;
+                    accessible-label: @tr("{} of 5 claps", d.pairs);
+                    ClapMark { on: d.pairs >= 1; }
+                    ClapMark { on: d.pairs >= 2; }
+                    ClapMark { on: d.pairs >= 3; }
+                    ClapMark { on: d.pairs >= 4; }
+                    ClapMark { on: d.pairs >= 5; }
+                    Text {
+                        text: @tr("{} of 5 claps", min(d.pairs, 5));
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-4;
+                    alignment: start;
+                    SignalMark { on: d.sound; label: d.sound ? @tr("Sound heard") : @tr("No sound yet"); }
+                    SignalMark { on: d.picture; label: d.picture ? @tr("Movement seen") : @tr("No movement yet"); }
+                }
+                Text {
+                    text: @tr("{} s of 10 s", min(10, floor(d.progress * 10)));
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                }
+            }
+
+            // A result.
+            if d.phase == 2: VerticalLayout {
+                spacing: Tokens.space-2;
+                Text {
+                    text: d.suggested > 0 ? @tr("+{} ms", d.suggested) : @tr("{} ms", d.suggested);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-heading-size;
+                    font-weight: Tokens.type-heading-weight;
+                }
+                Text {
+                    text: (d.measured >= 0
+                        ? @tr("The sound arrives {} ms before the picture.", d.measured)
+                        : @tr("The sound arrives {} ms after the picture.", -d.measured))
+                        + " " + (d.clamped
+                            ? @tr("This input can play its sound at most {} ms earlier, so {} ms is the closest it gets.", -d.suggested, d.suggested)
+                            : d.suggested == d.current ? @tr("The offset is right already.")
+                            : @tr("Apply sets the offset to {} ms. Now: {} ms.", d.suggested, d.current));
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                if d.clamped: Text {
+                    text: @tr("The rest of the delay stays. A lower audio latency in Settings › Audio allows more.");
+                    color: Theme.state-warning;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: @tr("{} claps, within {} ms of each other.", d.pairs, d.spread);
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+            }
+
+            // No result.
+            if d.phase == 3: VerticalLayout {
+                spacing: Tokens.space-2;
+                Text {
+                    text: d.reason == 0 ? @tr("Fewer than 3 claps were heard while the camera saw a movement. Clap louder, and keep your hands in view of {}.", root.reference-name)
+                        : d.reason == 1 ? @tr("{} saw no clap. Clap closer to it, in good light.", root.reference-name)
+                        : d.reason == 2 ? @tr("The claps disagree by more than one frame. Clap more slowly, about one second apart, with nothing else moving.")
+                        : d.reason == 3 ? @tr("The program stopped hearing this source. Unmute it, then try again.")
+                        : d.reason == 4 ? @tr("This source or {} closed while measuring.", root.reference-name)
+                        : d.reason == 5 ? @tr("The sync offset of this source changed while measuring.")
+                        : d.reason == 6 ? @tr("A filter of this source or of {} changed while measuring.", root.reference-name)
+                        : d.reason == 7 ? @tr("The studio restarted while measuring.")
+                        : d.reason == 8 ? @tr("The measurement was cancelled.")
+                        : @tr("The measurement ended without a result.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                if d.onset-filter && d.reason == 0: Text {
+                    text: @tr("This source has a noise gate or ducker, which can remove claps. Turn it off while measuring.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            if d.phase == 0 || d.phase == 4: DialogActions {
+                confirm-text: @tr("Start");
+                confirm-enabled: root.can-start;
+                cancelled => { root.dismiss(); }
+                confirmed => { root.begin(); }
+            }
+            if d.phase == 1: DialogActions {
+                confirm-text: "";
+                cancelled => { root.dismiss(); }
+            }
+            if d.phase == 2: DialogActions {
+                confirm-text: @tr("Apply");
+                confirm-enabled: d.suggested != d.current;
+                extra-text: @tr("Measure again");
+                cancelled => { root.dismiss(); }
+                extra-clicked => { root.begin(); }
+                confirmed => {
+                    Studio.set-source-sync-offset(d.source, d.suggested);
+                    root.dismiss();
+                }
+            }
+            if d.phase == 3: DialogActions {
+                confirm-text: @tr("Try again");
+                confirm-enabled: root.can-start;
+                cancelled => { root.dismiss(); }
+                confirmed => { root.begin(); }
+            }
+        }
+    }
+    // The info hint and tooltip layer, drawn last (ADR-0094).
+    OverlayHost { width: parent.width; height: parent.height; }
+}
