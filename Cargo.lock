@@ -4638,6 +4638,7 @@ dependencies = [
  "rbs-transport-file",
  "rbs-transport-rtmp",
  "rbs-transport-srt",
+ "rbs-ui",
  "rbs-user-data",
  "rbs-vcam",
  "rbs-vcam-mf",
@@ -4859,6 +4860,7 @@ dependencies = [
  "rbs-graph",
  "rbs-params",
  "rbs-scene",
+ "rbs-ui",
  "serde_json",
 ]
 
@@ -5102,6 +5104,32 @@ version = "0.0.1"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rbs-text"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-text-parley"
+version = "0.0.1"
+dependencies = [
+ "parley",
+ "png",
+ "rbs-core",
+ "rbs-text",
+ "swash",
+]
+
+[[package]]
+name = "rbs-text-test"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-text",
 ]
 
 [[package]]

@@ -31,6 +31,8 @@ pub trait Lookup {
     fn picture_size(&self, path: &Path) -> Option<(u32, u32)>;
     fn file_exists(&self, path: &Path) -> bool;
     fn targets(&self, type_id: &NodeTypeId) -> Vec<LookupTarget>; // asked at most once per type per import
+    fn platform(&self) -> Platform { Platform::current() }   // reserved shortcuts; modifier names
+                                                            // when no path in the files tells
 }
 pub struct LookupTarget { target: String, name: String, app: Option<String>, size: Option<(u32, u32)> }
 
@@ -50,13 +52,30 @@ pub struct ProfileFiles { basic_ini: Vec<u8>, service_json: Option<Vec<u8>>,
 pub struct ImportPlan {
     pub name: String,                          // the OBS collection name
     pub collection: SceneCollection,           // passed SceneCollection::from_parts
-    pub profile: Option<ObsProfileFacts>,     // neutral facts; rbs-app maps them
-    pub secrets: ImportedSecrets,              // Debug prints <redacted>; no Serialize, no Display
-    pub shortcuts: Vec<ImportedShortcut>,      // { command, args, chord: Chord }; app scope
-                                               // args may hold CollectionArg::ThisImport, which rbs-app
-                                               // replaces with the new collection's id before writing
+    pub profile: Option<ObsProfileFacts>,     // { name, video: VideoFacts, output: OutputFacts }
+    pub secrets: ImportedSecrets,              // { stream_key: Option<StreamKey> }; StreamKey's Debug
+                                               // prints <redacted>; no Serialize, no Display
+    pub shortcuts: Vec<ImportedShortcut>,      // { command, scene: Option<SceneId>, chord, obs_action }
+                                               // command_for(collection_id) gives the id with its
+                                               // parameters once the collection has its id
     pub report: ImportReport,
 }
+
+pub struct OutputFacts {                       // neutral; the composition root maps them
+    mode: OutputMode,                          // Simple | Advanced
+    output_size: Option<(u32, u32)>,           // [Video] OutputCX/CY when it differs from the canvas
+    recording: Option<RecordingFacts>,         // { folder, format: Mkv|Mp4|Mov, encoder: EncoderFacts }
+    stream: Option<StreamFacts>,               // { server, service, encoder: EncoderFacts }
+    replay: Option<ReplayFacts>,               // { enabled, seconds }
+    audio: Option<AudioFacts>,                 // { sample_rate, monitoring_device }
+}                                              // each None when not chosen (NotChosen entry)
+pub struct EncoderFacts { encoder: Option<(Codec, EncoderKind)>, rate_control, video_kbps,
+                          max_video_kbps, quality, keyframe_seconds, preset, b_frames, audio_kbps }
+
+pub fn merge_shortcuts(doc: &mut ShortcutsDoc, shortcuts: &[ImportedShortcut],
+                       collection_id: &str, platform: Platform) -> Vec<ReportEntry>;
+// Adds each binding in app scope unless Keymap::check says Taken or Refused, or a limit
+// (MAX_ENTRIES, MAX_PER_COMMAND) is reached; returns an entry for each one left out.
 
 pub struct Mappers;                            // builtin(), register_source/filter/transition
 pub trait SourceMapper { fn obs_id(&self) -> &'static str;          // one mapper per OBS id
@@ -124,7 +143,7 @@ Runs on the control thread on demand only. A 200-source collection plans in unde
 
 ## Conformance tests
 
-`crates/rbs-import-obs/tests`: golden fixtures (hand-written for this repository) for each mapper, groups, nested scenes, global audio devices, cross-platform ids, unsupported types; the property test of the transform conversion; a report contains no stream key; `from_parts` accepts every fixture's collection.
+`crates/rbs-import-obs/tests`: golden fixtures (hand-written for this repository) for each mapper, groups, nested scenes, global audio devices, cross-platform ids, unsupported types; the property test of the transform conversion; a report and every `Debug` contain no stream key, password or user name; simple- and advanced-mode profile goldens (`tests/profile.rs`); `from_parts` accepts every fixture's collection.
 
 ## Open questions
 
@@ -135,4 +154,20 @@ Runs on the control thread on demand only. A 200-source collection plans in unde
 ## Implementation status
 
 - Step 1 (done on this branch): `rbs-import-obs` with the collection planner, the source and filter mappers in the mapping table, the report and its golden fixtures; `rbs-cli obs-import scan|check|run` (`check` prints the report and writes nothing; `run` writes a new scene collection under the writer lock with a free name). The CLI's `Lookup` reads files only (PNG sizes, file presence) and enumerates no devices, so device targets keep their OBS ids and are reported. The catalogue test (every mapper type and field key exists in this build) lives in `rbs-cli`, a composition root that links the source and filter registries; `rbs-app` gets the same test with step 2.
-- Not yet: profile facts beyond `[Video]`, credentials, hotkeys, the saved `imports/<id>.report.toml`, the desktop wizard, the control API methods.
+- Step 2a (done on this branch): the profile's output facts for both output modes (encoder table, rate control, bitrates, quality, keyframes, preset, B-frames, recording folder and format, replay buffer, audio), the stream server (kept only as `rtmp://` or `srt://` without `?`, `#`, `@` or spaces; the composition root still runs `parse_server` before writing it), the stream key in `ImportedSecrets`, and hotkeys as shortcuts. `rbs-cli obs-import run` adds the hotkeys to `shortcuts.toml` with `merge_shortcuts` after writing the collection; it does not write an output profile or a credential, and says the app imports those.
+- Step 2b (next): `rbs-app` maps `OutputFacts` onto `RecordProfile`, `StreamProfile` (server checked by `parse_server`), the replay and audio settings, writes the new output profile with a free name and the key as `stream-key/<profile id>`, and saves the report as `imports/<id>.report.toml`; the catalogue test also in `rbs-app`.
+- Not yet: the desktop wizard, the control API methods.
+
+### Hotkey actions
+
+| OBS | RBS command | Notes |
+| --- | --- | --- |
+| `OBSBasic.StartStreaming` | `stream.toggle` | `OBSBasic.StopStreaming` reported: RBS has one start-and-stop command |
+| `OBSBasic.StartRecording` | `record.toggle` | `OBSBasic.StopRecording` reported |
+| `OBSBasic.PauseRecording` | `record.pause_toggle` | `OBSBasic.UnpauseRecording` reported |
+| `OBSBasic.StartReplayBuffer` | `replay.toggle` | `OBSBasic.StopReplayBuffer` reported |
+| `ReplayBuffer.Save` (inside `ReplayBuffer`) | `replay.save` | |
+| scene `OBSBasic.SelectScene` | `scene.select?collection=<id>&scene=<id>` | |
+| any other frontend action, source hotkeys | none | reported when it has a binding |
+
+ADR-0131's table names `stream.start` and `record.start`; the shortcut registry binds the toggles `stream.toggle` and `record.toggle` (whose halves those are), so the pair rule of decision 10 maps the start action to the toggle. Keys: `OBS_KEY_A`..`Z`, `0`..`9`, `F1`..`F24` and the named keys of `rbs_ui::shortcut::Named`; number pad keys and mouse buttons are reported. The platform whose modifier names apply is read from the paths in the profile's output sections, then the collection's, then `Lookup::platform`.

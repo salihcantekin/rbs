@@ -1,0 +1,112 @@
+profile Some("Advanced")
+OutputFacts {
+    mode: Advanced,
+    output_size: Some(
+        (
+            1920,
+            1080,
+        ),
+    ),
+    recording: Some(
+        RecordingFacts {
+            folder: Some(
+                "C:/Users/someone/Videos",
+            ),
+            format: Some(
+                Mp4,
+            ),
+            encoder: EncoderFacts {
+                encoder: Some(
+                    (
+                        H264,
+                        Software,
+                    ),
+                ),
+                rate_control: Some(
+                    ConstantQuality,
+                ),
+                video_kbps: None,
+                max_video_kbps: None,
+                quality: Some(
+                    18,
+                ),
+                keyframe_seconds: None,
+                preset: Some(
+                    Speed,
+                ),
+                b_frames: None,
+                audio_kbps: Some(
+                    160,
+                ),
+            },
+        },
+    ),
+    stream: Some(
+        StreamFacts {
+            server: Some(
+                "rtmp://live.example.com/app",
+            ),
+            service: None,
+            encoder: EncoderFacts {
+                encoder: Some(
+                    (
+                        Hevc,
+                        Hardware,
+                    ),
+                ),
+                rate_control: Some(
+                    Vbr,
+                ),
+                video_kbps: Some(
+                    8000,
+                ),
+                max_video_kbps: Some(
+                    12000,
+                ),
+                quality: None,
+                keyframe_seconds: Some(
+                    2,
+                ),
+                preset: Some(
+                    Balanced,
+                ),
+                b_frames: Some(
+                    2,
+                ),
+                audio_kbps: Some(
+                    160,
+                ),
+            },
+        },
+    ),
+    replay: Some(
+        ReplayFacts {
+            enabled: true,
+            seconds: 45,
+        },
+    ),
+    audio: Some(
+        AudioFacts {
+            sample_rate: Some(
+                48000,
+            ),
+            monitoring_device: Some(
+                "Headphones (USB)",
+            ),
+        },
+    ),
+}
+stream key true
+shortcut record.pause_toggle Alt+P from OBSBasic.PauseRecording
+shortcut record.toggle Ctrl+Alt+R from OBSBasic.StartRecording
+shortcut stream.toggle Ctrl+Shift+F9 from OBSBasic.StartStreaming
+shortcut replay.save Ctrl+F8 from ReplayBuffer.Save
+profile and hotkey report
+- approximated profile "Recording audio tracks": OBS recorded several audio tracks; RBS records the mix on one track.
+- approximated profile "Recording format": OBS's fragmented or hybrid file became a plain file of that container.
+- skipped profile "Stream sign-in": The server's user name is not in RBS and was not read.
+- skipped profile "Stream sign-in": The server's password is not in RBS and was not read.
+- approximated setting "Audio channels": RBS mixes in stereo.
+- skipped hotkey "OBSBasic.StopStreaming": RBS has one shortcut that starts and stops, so only the OBSBasic.StartStreaming hotkey was used.
+- skipped hotkey "OBSBasic.Transition": RBS has no command for this hotkey yet.
+- skipped hotkey "ReplayBuffer.Save": The key is a mouse button.

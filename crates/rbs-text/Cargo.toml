@@ -1,0 +1,17 @@
+[package]
+name = "rbs-text"
+description = "Text rendering port: lay out and draw a text block into a fixed-size straight-alpha picture (ADR-0129). No font library is linked in this crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Port (docs/architecture/overview.md#layers): foundation only. Adapters implement
+# [`TextRenderer`]; the text worker in `rbs-sources` calls it off the render thread.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+
+[lints]
+workspace = true
