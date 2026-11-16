@@ -236,8 +236,11 @@ impl Held {
     /// The picture to send now, shared (no copy).
     fn picture(&self, hold: Option<&ExportHold>) -> Option<VideoFrame> {
         match self.picture {
-            HoldPicture::Freeze => self.frozen.as_ref()?.share(),
             HoldPicture::Black => hold?.black(),
+            // The scene's canvases are not read on the hold path yet (phase 2b, next
+            // step): until then a scene hold sends the frozen picture, which is also
+            // what it sends before the scene's first canvas.
+            _ => self.frozen.as_ref()?.share(),
         }
     }
 }

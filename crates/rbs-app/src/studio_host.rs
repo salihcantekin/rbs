@@ -1664,10 +1664,12 @@ impl RecordingMarkers {
     }
 
     /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
-    /// markers and the manifest are in file time. A pause changes the manifest.
-    fn paused(&mut self, pause: bool, at_ns: u64) {
+    /// markers and the manifest are in file time. A pause changes the manifest. A
+    /// pause cut at a shared output records how far its join may be off.
+    fn paused(&mut self, pause: bool, at_ns: u64, join_error: Option<Duration>) {
         if pause {
-            self.log.pause(at_ns);
+            self.log
+                .pause_cut(at_ns, join_error.map(|e| e.as_nanos() as u64));
         } else {
             self.log.resume(at_ns);
         }
@@ -4925,8 +4927,9 @@ impl Host {
             .map_err(|e| ApiError::new(ErrorKind::Conflict, pause_refusal(e)))?
             .as_nanos();
         // Markers and the manifest are in file time (ADR-0124 decision 10).
+        let join_error = self.studio.output_pause(id).and_then(|p| p.join_error);
         if let Some(markers) = self.outs[slot(c)].markers.as_mut() {
-            markers.paused(pause, at);
+            markers.paused(pause, at, join_error);
         }
         self.refresh_record_pause(c);
         Ok(pause)

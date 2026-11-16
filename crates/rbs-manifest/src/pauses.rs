@@ -32,7 +32,8 @@ impl Pause {
 /// one may be open (no end yet).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PauseSpans {
-    spans: Vec<(u64, Option<u64>)>,
+    /// Beginning, end (none while open) and join error of each pause.
+    spans: Vec<(u64, Option<u64>, Option<u64>)>,
 }
 
 impl PauseSpans {
@@ -44,17 +45,24 @@ impl PauseSpans {
     /// A pause beginning at `from_ns` (from `t0`). Ignored while one is open or when
     /// it begins before the end of the last one.
     pub fn pause(&mut self, from_ns: u64) {
+        self.pause_cut(from_ns, None);
+    }
+
+    /// A pause beginning at `from_ns` whose join may be off by up to
+    /// `join_error_ns` (a cut at a shared output, ADR-0124 decision 5); `None` as
+    /// [`PauseSpans::pause`].
+    pub fn pause_cut(&mut self, from_ns: u64, join_error_ns: Option<u64>) {
         match self.spans.last() {
-            Some((_, None)) => {}
-            Some((_, Some(end))) if from_ns < *end => {}
-            _ => self.spans.push((from_ns, None)),
+            Some((_, None, _)) => {}
+            Some((_, Some(end), _)) if from_ns < *end => {}
+            _ => self.spans.push((from_ns, None, join_error_ns)),
         }
     }
 
     /// Ends the open pause at `to_ns` (from `t0`). At or before its beginning the
     /// pause is cancelled and leaves no trace. Ignored when none is open.
     pub fn resume(&mut self, to_ns: u64) {
-        let Some((from, end @ None)) = self.spans.last_mut() else {
+        let Some((from, end @ None, _)) = self.spans.last_mut() else {
             return;
         };
         if to_ns <= *from {
@@ -66,14 +74,14 @@ impl PauseSpans {
 
     /// Whether a pause is open.
     pub fn is_paused(&self) -> bool {
-        matches!(self.spans.last(), Some((_, None)))
+        matches!(self.spans.last(), Some((_, None, _)))
     }
 
     /// `t_ns` (master time from `t0`) in file time, and whether it lies inside a
     /// pause, in which case it is that pause's join.
     pub fn to_file(&self, t_ns: u64) -> (u64, bool) {
         let mut left_out = 0u64;
-        for &(from, end) in &self.spans {
+        for &(from, end, _) in &self.spans {
             if t_ns < from {
                 break;
             }
@@ -90,7 +98,7 @@ impl PauseSpans {
     pub fn last_join_before(&self, t_ns: u64) -> u64 {
         let mut left_out = 0u64;
         let mut join = 0u64;
-        for &(from, end) in &self.spans {
+        for &(from, end, _) in &self.spans {
             match end {
                 Some(to) if to <= t_ns => {
                     join = from.saturating_sub(left_out);
@@ -102,18 +110,17 @@ impl PauseSpans {
         join
     }
 
-    /// The `[[pauses]]` rows, an open pause ending at `end_ns` (from `t0`), every
-    /// row without a join error.
+    /// The `[[pauses]]` rows, an open pause ending at `end_ns` (from `t0`).
     pub fn rows(&self, end_ns: u64) -> Vec<Pause> {
         let mut left_out = 0u64;
         let mut rows = Vec::with_capacity(self.spans.len());
-        for &(from, end) in &self.spans {
+        for &(from, end, join_error_ns) in &self.spans {
             let to = end.unwrap_or(end_ns).max(from);
             rows.push(Pause {
                 at_file_ns: from.saturating_sub(left_out),
                 from_ns: from,
                 to_ns: to,
-                join_error_ns: None,
+                join_error_ns,
             });
             left_out = left_out.saturating_add(to - from);
         }
@@ -124,6 +131,18 @@ impl PauseSpans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shared_cut_keeps_its_join_error_in_its_row() {
+        let mut p = PauseSpans::new();
+        p.pause_cut(10, Some(21_333_333));
+        p.resume(20);
+        p.pause(30);
+        let rows = p.rows(40);
+        assert_eq!(rows[0].join_error_ns, Some(21_333_333));
+        assert_eq!(rows[1].join_error_ns, None);
+        assert_eq!(rows[1].at_file_ns, 20);
+    }
 
     #[test]
     fn master_time_maps_to_file_time_around_two_pauses() {

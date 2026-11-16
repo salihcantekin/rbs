@@ -64,6 +64,26 @@ pub enum Role {
     Program,
     /// The preview scene in studio mode.
     Preview,
+    /// The scene a held stream shows (ADR-0124 phase 2b), bound only while asked
+    /// for with [`SceneBinder::sync_held`].
+    Hold,
+}
+
+/// A hold scene asked for on one canvas (ADR-0124 phase 2b).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HoldScene {
+    /// The scene drawn while held.
+    pub scene: SceneId,
+    /// Also bind a hold mixer that hears the scene's sources.
+    pub sound: bool,
+}
+
+impl HoldScene {
+    /// `scene`, with its sound when `sound`.
+    pub fn new(scene: SceneId, sound: bool) -> Self {
+        Self { scene, sound }
+    }
 }
 
 /// One layer for a compositor node, naming the graph node that feeds it.
@@ -130,6 +150,8 @@ pub struct BoundAudio {
 pub struct PictureSound {
     /// The canvas whose mixer hears the source.
     pub canvas: CanvasId,
+    /// Which of its mixers: [`Role::Program`], or [`Role::Hold`] for its hold mixer.
+    pub role: Role,
     /// The source.
     pub source: SourceId,
     /// The logical link, from the source node's own audio pin to the mixer.
@@ -213,9 +235,12 @@ pub struct BindReport {
     pub changed_filters: Vec<(FilterId, NodeId)>,
     /// The mixer of each canvas, when audio is enabled.
     pub mixers: BTreeMap<CanvasId, BoundMixer>,
-    /// Mixer nodes this sync removed (their canvas is gone), with every link into
-    /// and out of them.
+    /// Mixer nodes this sync removed (their canvas is gone, or a hold mixer no
+    /// longer asked for), with every link into and out of them.
     pub retired_mixers: Vec<NodeId>,
+    /// The hold mixer of each canvas whose hold scene asked for its sound
+    /// ([`SceneBinder::sync_held`]). It has no monitor output and no meters.
+    pub hold_mixers: BTreeMap<CanvasId, BoundMixer>,
     /// Logical audio links from picture-and-sound sources into canvas mixers, in
     /// canvas id then source id order. The host passes lowered crossings to
     /// [`Self::assign_queue_readers`] so each matching mixer input's producer
@@ -384,6 +409,7 @@ struct State {
     sources: BTreeMap<SourceId, BoundSource>,
     compositors: BTreeMap<(CanvasId, Role), BoundComp>,
     mixers: BTreeMap<CanvasId, BoundMix>,
+    hold_mixers: BTreeMap<CanvasId, BoundMix>,
 }
 
 impl fmt::Debug for SceneBinder {
@@ -462,6 +488,11 @@ impl SceneBinder {
         self.state.mixers.get(&canvas).map(|m| m.node.node)
     }
 
+    /// The hold mixer of `canvas` while its hold scene is bound with its sound.
+    pub fn hold_mixer(&self, canvas: CanvasId) -> Option<NodeId> {
+        self.state.hold_mixers.get(&canvas).map(|m| m.node.node)
+    }
+
     /// The node of a bound source.
     pub fn source_node(&self, id: SourceId) -> Option<NodeId> {
         self.state.sources.get(&id).map(|b| b.source.node)
@@ -520,6 +551,28 @@ impl SceneBinder {
         cued_items: &BTreeSet<ItemId>,
         cued_sources: &BTreeSet<SourceId>,
     ) -> Result<BindReport, BindError> {
+        self.sync_held(
+            collection,
+            graph,
+            cued_items,
+            cued_sources,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// Like [`Self::sync_cued`], also binding a hold scene per canvas in `hold`
+    /// (ADR-0124 phase 2b): a compositor for `(canvas, Role::Hold)` drawing the
+    /// scene's visible sources, the scene's temporal sources Active, and with
+    /// `sound` a hold mixer. A canvas or scene not in the collection is skipped. An
+    /// empty map binds nothing of it and retires what an earlier call bound.
+    pub fn sync_held(
+        &mut self,
+        collection: &SceneCollection,
+        graph: &mut GraphDescription,
+        cued_items: &BTreeSet<ItemId>,
+        cued_sources: &BTreeSet<SourceId>,
+        hold: &BTreeMap<CanvasId, HoldScene>,
+    ) -> Result<BindReport, BindError> {
         let mut draft_graph = graph.clone();
         let mut draft = self.state.clone();
         let report = draft.sync(
@@ -527,8 +580,8 @@ impl SceneBinder {
             self.audio,
             collection,
             &mut draft_graph,
-            cued_items,
-            cued_sources,
+            (cued_items, cued_sources),
+            hold,
         )?;
         *graph = draft_graph;
         self.state = draft;
@@ -585,7 +638,13 @@ impl State {
             c.links.retain(|l| graph.links().contains(l));
         }
         self.mixers.retain(|_, m| graph.node(m.node.node).is_some());
-        for m in self.mixers.values_mut() {
+        self.hold_mixers
+            .retain(|_, m| graph.node(m.node.node).is_some());
+        for m in self
+            .mixers
+            .values_mut()
+            .chain(self.hold_mixers.values_mut())
+        {
             m.links.retain(|l| graph.links().contains(l));
         }
         Ok(())
@@ -684,10 +743,18 @@ impl State {
         audio: Option<PartitionId>,
         collection: &SceneCollection,
         graph: &mut GraphDescription,
-        cued_items: &BTreeSet<ItemId>,
-        cued_sources: &BTreeSet<SourceId>,
+        (cued_items, cued_sources): (&BTreeSet<ItemId>, &BTreeSet<SourceId>),
+        hold: &BTreeMap<CanvasId, HoldScene>,
     ) -> Result<BindReport, BindError> {
         let mut report = BindReport::default();
+        // Hold scenes the collection can draw: their canvas and scene exist.
+        let hold: BTreeMap<CanvasId, HoldScene> = hold
+            .iter()
+            .filter(|(c, h)| {
+                collection.canvases().any(|k| k.id == **c) && collection.scene(h.scene).is_some()
+            })
+            .map(|(c, h)| (*c, *h))
+            .collect();
         self.heal(graph, &mut report)?;
         let compositor_desc = types
             .descriptor(&NodeTypeId::new(COMPOSITOR_TYPE))
@@ -907,6 +974,9 @@ impl State {
             if let Some(scene) = canvas.preview {
                 needed.insert((canvas.id, Role::Preview), scene);
             }
+            if let Some(h) = hold.get(&canvas.id) {
+                needed.insert((canvas.id, Role::Hold), h.scene);
+            }
         }
         let unneeded: Vec<(CanvasId, Role)> = self
             .compositors
@@ -977,7 +1047,7 @@ impl State {
                     );
                     warm
                 }
-                Role::Preview => collection
+                Role::Preview | Role::Hold => collection
                     .visible_sources_cued(canvas, scene, cued_items)
                     .map_err(BindError::Scene)?,
             };
@@ -1065,67 +1135,72 @@ impl State {
                         .collect(),
                     None => BTreeSet::new(),
                 };
-                let mut inputs = Vec::new();
-                let mut outs: BTreeMap<NodeId, String> = BTreeMap::new();
-                // Picture-and-sound sources whose logical link this canvas hears.
-                // The producer stored below is the source node until the host names
-                // the reader; it is not a filter tail (ADR-0106 decision 7).
-                let mut picture_sound: Vec<(SourceId, NodeId)> = Vec::new();
-                for id in &heard {
-                    let Some(bound) = self.sources.get(id) else {
-                        continue;
-                    };
-                    if bound.source.pins.output.is_none() {
-                        // The mixer hears the tail of the audio chain (ADR-0082).
-                        let tail = bound.tail();
-                        if let Some(out) = &tail.pins.audio {
-                            inputs.push(BoundAudio {
-                                source: *id,
-                                producer: tail.node,
-                            });
-                            outs.insert(tail.node, out.clone());
-                        }
-                    } else if let Some(out) = bound.source.pins.audio.clone() {
-                        let node = bound.source.node;
-                        inputs.push(BoundAudio {
-                            source: *id,
-                            producer: node,
-                        });
-                        outs.insert(node, out);
-                        picture_sound.push((*id, node));
-                    }
-                }
-                mix.links.retain(|link| {
-                    let keep = outs.contains_key(&link.from.node);
-                    if !keep {
-                        graph.disconnect(*link);
-                    }
-                    keep
-                });
-                let linked: BTreeSet<NodeId> = mix.links.iter().map(|l| l.from.node).collect();
-                if let Some((_, input)) = &mix.node.pins.input {
-                    for (producer, out) in outs.iter().filter(|(p, _)| !linked.contains(p)) {
-                        let link = graph.connect(*producer, out, mix.node.node, input)?;
-                        mix.links.push(link);
-                    }
-                }
-                let mixer_node = mix.node.node;
-                for (source, node) in picture_sound {
-                    if let Some(link) = mix
-                        .links
-                        .iter()
-                        .copied()
-                        .find(|l| l.from.node == node && l.to.node == mixer_node)
-                    {
-                        report.picture_sound.push(PictureSound {
-                            canvas: canvas.id,
-                            source,
-                            link,
-                        });
-                    }
+                let (inputs, sound) = link_mixer(&self.sources, graph, mix, &heard)?;
+                for (source, link) in sound {
+                    report.picture_sound.push(PictureSound {
+                        canvas: canvas.id,
+                        role: Role::Program,
+                        source,
+                        link,
+                    });
                 }
                 report.mixers.insert(
                     canvas.id,
+                    BoundMixer {
+                        node: mix.node.node,
+                        inputs,
+                        created,
+                    },
+                );
+            }
+            // Hold mixers (ADR-0124 phase 2b): one per canvas whose hold scene asked
+            // for its sound, hearing that scene's visible sources as a program mixer
+            // hears its scene's.
+            let unneeded: Vec<CanvasId> = self
+                .hold_mixers
+                .keys()
+                .copied()
+                .filter(|c| !hold.get(c).is_some_and(|h| h.sound))
+                .collect();
+            for c in unneeded {
+                if let Some(m) = self.hold_mixers.remove(&c) {
+                    retire(graph, m.node.node)?;
+                    report.retired_mixers.push(m.node.node);
+                }
+            }
+            for (&canvas, h) in hold.iter().filter(|(_, h)| h.sound) {
+                let mut created = false;
+                let mix = match self.hold_mixers.entry(canvas) {
+                    std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        created = true;
+                        let node = add_node(graph, Arc::clone(&desc))?;
+                        graph.set_partition(node, partition)?;
+                        e.insert(BoundMix {
+                            node: BoundNode {
+                                node,
+                                pins: pins.clone(),
+                            },
+                            links: Vec::new(),
+                        })
+                    }
+                };
+                let heard: BTreeSet<SourceId> = collection
+                    .visible_sources_cued(canvas, h.scene, cued_items)
+                    .map_err(BindError::Scene)?
+                    .into_iter()
+                    .collect();
+                let (inputs, sound) = link_mixer(&self.sources, graph, mix, &heard)?;
+                for (source, link) in sound {
+                    report.picture_sound.push(PictureSound {
+                        canvas,
+                        role: Role::Hold,
+                        source,
+                        link,
+                    });
+                }
+                report.hold_mixers.insert(
+                    canvas,
                     BoundMixer {
                         node: mix.node.node,
                         inputs,
@@ -1139,7 +1214,15 @@ impl State {
         // Media and browser sources follow `running_sources` (ADR-0107): Active
         // only while a shown program or preview scene draws them, or the host's
         // cue set names them (ADR-0105).
-        let running = collection.running_sources_cued(cued_sources);
+        let mut running = collection.running_sources_cued(cued_sources);
+        // A hold scene's media and browser sources play while it is bound.
+        for (&canvas, h) in &hold {
+            running.extend(
+                collection
+                    .visible_sources_cued(canvas, h.scene, cued_items)
+                    .map_err(BindError::Scene)?,
+            );
+        }
         for (id, bound) in &self.sources {
             let state = if running.contains(id) {
                 Lifecycle::Active
@@ -1159,11 +1242,81 @@ impl State {
         for b in self.compositors.values() {
             set_state(graph, b.node.node, Lifecycle::Active)?;
         }
-        for m in self.mixers.values() {
+        for m in self.mixers.values().chain(self.hold_mixers.values()) {
             set_state(graph, m.node.node, Lifecycle::Active)?;
         }
         Ok(report)
     }
+}
+
+/// A mixer's inputs and its picture-and-sound links, from [`link_mixer`].
+type MixerLinks = (Vec<BoundAudio>, Vec<(SourceId, Link)>);
+
+/// Links `mix` to the sources in `heard` that have sound (ADR-0039, ADR-0106):
+/// audio-only sources from their chain tail, picture-and-sound sources from their own
+/// audio pin. Unlinks what it no longer hears. Returns its inputs, in source id order,
+/// and the picture-and-sound links made or kept.
+fn link_mixer(
+    sources: &BTreeMap<SourceId, BoundSource>,
+    graph: &mut GraphDescription,
+    mix: &mut BoundMix,
+    heard: &BTreeSet<SourceId>,
+) -> Result<MixerLinks, GraphError> {
+    let mut inputs = Vec::new();
+    let mut outs: BTreeMap<NodeId, String> = BTreeMap::new();
+    // The producer stored below is the source node until the host names the reader;
+    // it is not a filter tail (ADR-0106 decision 7).
+    let mut picture_sound: Vec<(SourceId, NodeId)> = Vec::new();
+    for id in heard {
+        let Some(bound) = sources.get(id) else {
+            continue;
+        };
+        if bound.source.pins.output.is_none() {
+            // The mixer hears the tail of the audio chain (ADR-0082).
+            let tail = bound.tail();
+            if let Some(out) = &tail.pins.audio {
+                inputs.push(BoundAudio {
+                    source: *id,
+                    producer: tail.node,
+                });
+                outs.insert(tail.node, out.clone());
+            }
+        } else if let Some(out) = bound.source.pins.audio.clone() {
+            let node = bound.source.node;
+            inputs.push(BoundAudio {
+                source: *id,
+                producer: node,
+            });
+            outs.insert(node, out);
+            picture_sound.push((*id, node));
+        }
+    }
+    mix.links.retain(|link| {
+        let keep = outs.contains_key(&link.from.node);
+        if !keep {
+            graph.disconnect(*link);
+        }
+        keep
+    });
+    let linked: BTreeSet<NodeId> = mix.links.iter().map(|l| l.from.node).collect();
+    if let Some((_, input)) = &mix.node.pins.input {
+        for (producer, out) in outs.iter().filter(|(p, _)| !linked.contains(p)) {
+            let link = graph.connect(*producer, out, mix.node.node, input)?;
+            mix.links.push(link);
+        }
+    }
+    let mixer_node = mix.node.node;
+    let sound = picture_sound
+        .into_iter()
+        .filter_map(|(source, node)| {
+            mix.links
+                .iter()
+                .copied()
+                .find(|l| l.from.node == node && l.to.node == mixer_node)
+                .map(|link| (source, link))
+        })
+        .collect();
+    Ok((inputs, sound))
 }
 
 impl BindReport {
@@ -1190,7 +1343,11 @@ impl BindReport {
             else {
                 continue;
             };
-            let Some(mixer) = self.mixers.get_mut(&listed.canvas) else {
+            let mixers = match listed.role {
+                Role::Hold => &mut self.hold_mixers,
+                _ => &mut self.mixers,
+            };
+            let Some(mixer) = mixers.get_mut(&listed.canvas) else {
                 continue;
             };
             for input in mixer.inputs.iter_mut() {
