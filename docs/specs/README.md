@@ -9,6 +9,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | --- | --- | --- |
 | [backend-ports.md](backend-ports.md) | Draft | `rbs-core` (capabilities, registry), port crates |
 | [capture-port.md](capture-port.md) | Draft | `rbs-capture`, `rbs-capture-*` adapters |
+| [media-decode-port.md](media-decode-port.md) | Draft | `rbs-media-decode`, `rbs-media-decode-test`, media decode adapters |
 | [audio-io-port.md](audio-io-port.md) | Draft | `rbs-audio-io`, `rbs-audio-io-*` adapters |
 | [output-ports.md](output-ports.md) | Draft | `rbs-codec`, `rbs-mux`, `rbs-transport` |
 | [obs-import.md](obs-import.md) | Draft (ADR-0131 Accepted) | `rbs-import-obs` (planned), `rbs-app`, `rbs-cli` |

@@ -27,7 +27,7 @@ use rbs_gpu::yuv_decode::check_color;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, RestartPolicy, WarmCtx};
 use rbs_media_decode::{
-    AUDIO_LOOKAHEAD, DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory, MediaSample,
+    AUDIO_LOOKAHEAD, DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory,
     PictureLayout, SampleColor, VIDEO_LOOKAHEAD, refuse_picture,
 };
 
@@ -667,8 +667,9 @@ fn worker(
         let _ = tx.send(Err(MediaNodeError::Failed(error.to_string())));
         return;
     }
-    let has_audio = decoder.audio_stream();
-    let sample = match first_picture(&mut *decoder) {
+    let has_audio = decoder.has_audio();
+    let mut interleave = Interleave::default();
+    let sample = match first_picture(&mut *decoder, &mut interleave) {
         Ok(sample) => sample,
         Err(error) => {
             let _ = tx.send(Err(error));
@@ -676,7 +677,7 @@ fn worker(
         }
     };
     if let Some(picture) = sample.picture.as_ref() {
-        if let Some(why) = refuse_picture(picture.width, picture.height, picture.bytes.len()) {
+        if let Some(why) = refuse_picture(picture.width, picture.height, picture.system_bytes()) {
             let _ = tx.send(Err(MediaNodeError::Invalid(why.expected())));
             return;
         }
@@ -704,12 +705,13 @@ fn worker(
         let sample = if let Some(sample) = primed.take() {
             sample
         } else {
-            match decoder.pull() {
+            match interleave.pull(&mut *decoder) {
                 Ok(Some(sample)) => sample,
                 Ok(None) => {
                     if !loop_flag.load(Ordering::Acquire) {
                         break;
                     }
+                    interleave = Interleave::default();
                     if decoder.seek(Duration::ZERO).is_err() {
                         break;
                     }
@@ -730,11 +732,16 @@ fn worker(
         known_duration = sample.frame_duration.or(known_duration);
         next_pts = end;
         if let Some(picture) = sample.picture {
-            if refuse_picture(picture.width, picture.height, picture.bytes.len()).is_some() {
+            if refuse_picture(picture.width, picture.height, picture.system_bytes()).is_some() {
                 break;
             }
-            let mark = picture.bytes.first().copied().unwrap_or(0);
-            let bytes = picture.bytes.len();
+            let Some(parts) = picture_parts(&picture) else {
+                // Native surfaces land with the node split (ADR-0108 decision 5).
+                failed.store(true, Ordering::Release);
+                break;
+            };
+            let mark = parts.bytes.first().copied().unwrap_or(0);
+            let bytes = parts.bytes.len();
             while !admit(
                 queued_frames.load(Ordering::Relaxed) as usize,
                 queued_bytes.load(Ordering::Relaxed) as usize,
@@ -745,7 +752,7 @@ fn worker(
                 }
                 thread::yield_now();
             }
-            if let Ok(frame) = system_frame(&picture_parts(&picture), origin + start) {
+            if let Ok(frame) = system_frame(&parts, origin + start) {
                 let item = Pending {
                     frame,
                     start,
@@ -778,13 +785,84 @@ fn worker(
     }
 }
 
-fn picture_parts(picture: &rbs_media_decode::Picture) -> PictureBits<'_> {
-    PictureBits {
-        width: picture.width,
-        height: picture.height,
-        layout: picture.layout,
-        color: picture.color,
-        bytes: &picture.bytes,
+fn picture_parts(picture: &rbs_media_decode::Picture) -> Option<PictureBits<'_>> {
+    match &picture.data {
+        rbs_media_decode::PictureData::System {
+            layout,
+            color,
+            bytes,
+        } => Some(PictureBits {
+            width: picture.width,
+            height: picture.height,
+            layout: *layout,
+            color: *color,
+            bytes,
+        }),
+        _ => None,
+    }
+}
+
+/// One picture with the sound that plays during it. The port reads streams
+/// separately (ADR-0108 decision 4); until the worker paces each stream on its own
+/// ring (decision 5), this pairs them.
+struct MediaSample {
+    pts: Option<Duration>,
+    frame_duration: Option<Duration>,
+    picture: Option<rbs_media_decode::Picture>,
+    pcm: Option<rbs_media_decode::InterleavedPcm>,
+}
+
+/// Pairs each picture with the sound stamped before its end.
+#[derive(Default)]
+struct Interleave {
+    pending: Option<rbs_media_decode::SoundSample>,
+    sound_done: bool,
+    sound_end: Duration,
+}
+
+impl Interleave {
+    fn pull(&mut self, decoder: &mut dyn MediaDecoder) -> Result<Option<MediaSample>, DecodeError> {
+        let Some(picture) = decoder.next_picture()? else {
+            return Ok(None);
+        };
+        let until = picture
+            .pts
+            .zip(picture.frame_duration)
+            .map(|(pts, duration)| pts.saturating_add(duration));
+        let mut pcm: Option<rbs_media_decode::InterleavedPcm> = None;
+        while !self.sound_done {
+            let sound = match self.pending.take() {
+                Some(sound) => sound,
+                None => match decoder.next_sound()? {
+                    Some(sound) => sound,
+                    None => {
+                        self.sound_done = true;
+                        break;
+                    }
+                },
+            };
+            let start = sound.pts.unwrap_or(self.sound_end);
+            if until.is_some_and(|until| start >= until) {
+                self.pending = Some(sound);
+                break;
+            }
+            let rate = u64::from(sound.pcm.sample_rate.max(1));
+            let frames = sound.pcm.samples.len() as u64 / u64::from(sound.pcm.channels.max(1));
+            self.sound_end =
+                start.saturating_add(Duration::from_nanos(frames * 1_000_000_000 / rate));
+            match pcm.as_mut() {
+                Some(acc) if acc.channels == sound.pcm.channels => {
+                    acc.samples.extend_from_slice(&sound.pcm.samples);
+                }
+                _ => pcm = Some(sound.pcm),
+            }
+        }
+        Ok(Some(MediaSample {
+            pts: picture.pts,
+            frame_duration: picture.frame_duration,
+            picture: Some(picture.picture),
+            pcm,
+        }))
     }
 }
 
@@ -796,16 +874,14 @@ struct PictureBits<'a> {
     bytes: &'a [u8],
 }
 
-fn first_picture(decoder: &mut dyn MediaDecoder) -> Result<MediaSample, MediaNodeError> {
-    loop {
-        match decoder.pull() {
-            Ok(None) => {
-                return Err(MediaNodeError::Invalid("a file with a picture stream"));
-            }
-            Ok(Some(sample)) if sample.picture.is_some() => return Ok(sample),
-            Ok(Some(_)) => {}
-            Err(error) => return Err(MediaNodeError::Failed(error.to_string())),
-        }
+fn first_picture(
+    decoder: &mut dyn MediaDecoder,
+    interleave: &mut Interleave,
+) -> Result<MediaSample, MediaNodeError> {
+    match interleave.pull(decoder) {
+        Ok(None) => Err(MediaNodeError::Invalid("a file with a picture stream")),
+        Ok(Some(sample)) => Ok(sample),
+        Err(error) => Err(MediaNodeError::Failed(error.to_string())),
     }
 }
 

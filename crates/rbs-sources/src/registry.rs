@@ -1058,31 +1058,29 @@ impl SourceTypes {
                 None => SourceError::NoAdapter(source.type_id.clone()),
             });
         }
-        let factory = Arc::clone(&candidates[0]);
-        // Probe without keeping the decoder (ADR-0108 decision 3).
-        {
-            let mut decoder = factory
-                .open(&path)
-                .map_err(|error| SourceError::Media(error.to_string()))?;
-            let sample = decoder
-                .pull()
-                .map_err(|error| SourceError::Media(error.to_string()))?;
-            let picture =
-                sample
-                    .and_then(|sample| sample.picture)
-                    .ok_or(SourceError::InvalidSetting {
-                        key: keys::PATH,
-                        expected: "a file with a picture stream",
-                    })?;
-            if let Some(why) =
-                rbs_media_decode::refuse_picture(picture.width, picture.height, picture.bytes.len())
-            {
-                return Err(SourceError::InvalidSetting {
-                    key: keys::WIDTH,
-                    expected: why.expected(),
-                });
+        // Probe without keeping the decoder (ADR-0108 decision 3): the first adapter
+        // that opens the file and yields a picture wins; when all refuse, report the
+        // most specific error.
+        let mut refusal: Option<(u8, SourceError)> = None;
+        let mut chosen = None;
+        for factory in &candidates {
+            match probe_media(factory.as_ref(), &path) {
+                Ok(()) => {
+                    chosen = Some(Arc::clone(factory));
+                    break;
+                }
+                Err((rank, error)) => {
+                    if refusal.as_ref().is_none_or(|(best, _)| rank < *best) {
+                        refusal = Some((rank, error));
+                    }
+                }
             }
         }
+        let Some(factory) = chosen else {
+            return Err(refusal
+                .map(|(_, error)| error)
+                .unwrap_or_else(|| SourceError::NoAdapter(source.type_id.clone())));
+        };
         let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
         let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
         let node = rbs_nodes::MediaSourceNode::new(
@@ -1290,6 +1288,45 @@ fn default_endpoint(
             .or_else(|| endpoints.first())?;
         Some((Arc::clone(b), chosen.id.clone()))
     })
+}
+
+/// Opens `path` with `factory`, reads one picture, and drops the decoder. On refusal
+/// returns a rank (lower is more specific: `InvalidSetting`, then a named missing
+/// codec, then any other failure) and the error.
+fn probe_media(
+    factory: &dyn rbs_media_decode::MediaDecoderFactory,
+    path: &std::path::Path,
+) -> Result<(), (u8, SourceError)> {
+    use rbs_media_decode::DecodeError;
+    let rank = |error: &DecodeError| match error {
+        DecodeError::Unsupported(_) => 1,
+        _ => 2,
+    };
+    let mut decoder = factory
+        .open(path)
+        .map_err(|error| (rank(&error), SourceError::Media(error.to_string())))?;
+    let sample = decoder
+        .next_picture()
+        .map_err(|error| (rank(&error), SourceError::Media(error.to_string())))?;
+    let picture = sample.map(|sample| sample.picture).ok_or((
+        0,
+        SourceError::InvalidSetting {
+            key: keys::PATH,
+            expected: "a file with a picture stream",
+        },
+    ))?;
+    if let Some(why) =
+        rbs_media_decode::refuse_picture(picture.width, picture.height, picture.system_bytes())
+    {
+        return Err((
+            0,
+            SourceError::InvalidSetting {
+                key: keys::WIDTH,
+                expected: why.expected(),
+            },
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
