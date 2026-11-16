@@ -22,6 +22,8 @@ The runtime model of the engine: nodes, typed links, scheduling and live editing
 | Muxer | packets | packets or bytes | via mux port |
 | Output | any media | no media | stream and recording (packets or bytes, via transport port); virtual camera, NDI or SDI out, monitoring device, preview (video or audio) |
 
+**Host-only inputs (ADR-0124 phase 2b).** A `Pin` may be `host_only` (`Pin::host_only`): an input outside the kind's shape that only the host links. At most one per node, only on node types under `org.rbs.`, and only a video filter's video input or an encoder's audio input; the kind's shape is checked without it (`DescriptorError::HostOnlyPin` otherwise). The stream export and audio encoder use it for `hold`. Scene binders and plugins never link one.
+
 The built-in nodes that wrap the ports (capture sources, video export, encoders, outputs) are specified in [io-nodes.md](io-nodes.md).
 
 ## Links

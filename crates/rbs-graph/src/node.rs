@@ -75,6 +75,11 @@ pub struct Pin {
     /// For inputs: whether more than one link may connect (compositor layers, mixer
     /// inputs). Outputs may always feed any number of links.
     pub many: bool,
+    /// An input only the host links, outside the kind's shape: the stream export's and
+    /// audio encoder's `hold` (ADR-0124 phase 2b). Allowed only on `org.rbs.*` node
+    /// types, one per node, on a video filter (video) or an encoder (audio), and
+    /// never linked by a scene binder or plugin.
+    pub host_only: bool,
 }
 
 impl Pin {
@@ -84,6 +89,7 @@ impl Pin {
             name: Cow::Borrowed(name),
             kind,
             many: false,
+            host_only: false,
         }
     }
 
@@ -93,6 +99,17 @@ impl Pin {
             name: Cow::Borrowed(name),
             kind,
             many: true,
+            host_only: false,
+        }
+    }
+
+    /// A host-only input that takes at most one link (see [`Pin::host_only`]).
+    pub const fn host_only(name: &'static str, kind: LinkKind) -> Self {
+        Self {
+            name: Cow::Borrowed(name),
+            kind,
+            many: false,
+            host_only: true,
         }
     }
 
@@ -102,6 +119,7 @@ impl Pin {
             name: Cow::Owned(name.into()),
             kind,
             many,
+            host_only: false,
         }
     }
 }
@@ -180,6 +198,10 @@ pub enum DescriptorError {
         /// What the kind requires.
         requires: &'static str,
     },
+    /// A host-only pin where none may be: an output, a second one, a node type outside
+    /// `org.rbs.`, or a kind or link kind other than a video filter's video or an
+    /// encoder's audio.
+    HostOnlyPin(Cow<'static, str>),
 }
 
 impl fmt::Display for DescriptorError {
@@ -187,6 +209,9 @@ impl fmt::Display for DescriptorError {
         match self {
             DescriptorError::BadTypeId(id) => write!(f, "node type id {id:?} is not reverse-DNS"),
             DescriptorError::DuplicatePin(name) => write!(f, "duplicate pin name {name:?}"),
+            DescriptorError::HostOnlyPin(name) => {
+                write!(f, "pin {name:?} cannot be host-only on this node")
+            }
             DescriptorError::ShapeMismatch { kind, requires } => {
                 write!(f, "{kind:?} requires {requires}")
             }
@@ -221,11 +246,33 @@ impl NodeDescriptor {
                 }
             }
         }
+        if let Some(p) = self.outputs.iter().find(|p| p.host_only) {
+            return Err(DescriptorError::HostOnlyPin(p.name.clone()));
+        }
+        let mut host = self.inputs.iter().filter(|p| p.host_only);
+        if let Some(p) = host.next() {
+            let fits = match self.kind {
+                NodeKind::VideoFilter => p.kind == LinkKind::Video,
+                NodeKind::Encoder => p.kind == LinkKind::Audio,
+                _ => false,
+            };
+            if !fits || host.next().is_some() || !self.type_id.as_str().starts_with("org.rbs.") {
+                return Err(DescriptorError::HostOnlyPin(p.name.clone()));
+            }
+        }
+        // The kind's shape is checked without host-only inputs.
+        let shaped: Vec<Pin> = self
+            .inputs
+            .iter()
+            .filter(|p| !p.host_only)
+            .cloned()
+            .collect();
+        let inputs = &shaped;
         let count = |pins: &[Pin], k: LinkKind| pins.iter().filter(|p| p.kind == k).count();
         let media = |pins: &[Pin]| pins.iter().filter(|p| p.kind.is_media()).count();
-        let ins = |k| count(&self.inputs, k);
+        let ins = |k| count(inputs, k);
         let outs = |k| count(&self.outputs, k);
-        let (media_in, media_out) = (media(&self.inputs), media(&self.outputs));
+        let (media_in, media_out) = (media(inputs), media(&self.outputs));
         use LinkKind::{Audio, Bytes, Packets, Video};
 
         let (ok, requires) = match self.kind {
@@ -242,10 +289,7 @@ impl NodeDescriptor {
                 media_in == ins(Audio)
                     && match ins(Audio) {
                         1 => true,
-                        2 => self
-                            .inputs
-                            .iter()
-                            .any(|p| p.kind == Audio && p.name == "key"),
+                        2 => inputs.iter().any(|p| p.kind == Audio && p.name == "key"),
                         _ => false,
                     }
                     && media_out == 1
@@ -254,7 +298,7 @@ impl NodeDescriptor {
             ),
             NodeKind::Compositor => (
                 media_in == ins(Video)
-                    && self.inputs.iter().any(|p| p.kind == Video && p.many)
+                    && inputs.iter().any(|p| p.kind == Video && p.many)
                     && media_out == 1
                     && outs(Video) == 1,
                 "a many-link video input and one video output",
@@ -308,6 +352,78 @@ mod tests {
 
     fn desc(kind: NodeKind, inputs: Vec<Pin>, outputs: Vec<Pin>) -> NodeDescriptor {
         NodeDescriptor::new(NodeTypeId::new_static("test.node"), kind, inputs, outputs)
+    }
+
+    #[test]
+    fn a_host_only_hold_input_fits_only_an_rbs_export_or_encoder() {
+        let rbs = |kind, inputs: Vec<Pin>, out: Pin| {
+            NodeDescriptor::new(
+                NodeTypeId::new_static("org.rbs.test"),
+                kind,
+                inputs,
+                vec![out],
+            )
+        };
+        let export = rbs(
+            NodeKind::VideoFilter,
+            vec![Pin::one("canvas", Video), Pin::host_only("hold", Video)],
+            Pin::one("video", Video),
+        );
+        assert_eq!(export.validate(), Ok(()));
+        let encoder = rbs(
+            NodeKind::Encoder,
+            vec![Pin::one("in", Audio), Pin::host_only("hold", Audio)],
+            Pin::one("out", Packets),
+        );
+        assert_eq!(encoder.validate(), Ok(()));
+        let host = |name| Err(DescriptorError::HostOnlyPin(Cow::Borrowed(name)));
+        // Not under org.rbs.: a plugin cannot declare one.
+        let plugin = desc(
+            NodeKind::VideoFilter,
+            vec![Pin::one("in", Video), Pin::host_only("hold", Video)],
+            vec![Pin::one("out", Video)],
+        );
+        assert_eq!(plugin.validate(), host("hold"));
+        // A video hold on an encoder, an audio filter, two of them, an output.
+        let wrong = [
+            rbs(
+                NodeKind::Encoder,
+                vec![Pin::one("in", Video), Pin::host_only("hold", Video)],
+                Pin::one("out", Packets),
+            ),
+            rbs(
+                NodeKind::AudioFilter,
+                vec![Pin::one("in", Audio), Pin::host_only("hold", Audio)],
+                Pin::one("out", Audio),
+            ),
+            rbs(
+                NodeKind::VideoFilter,
+                vec![
+                    Pin::one("in", Video),
+                    Pin::host_only("hold", Video),
+                    Pin::host_only("hold2", Video),
+                ],
+                Pin::one("out", Video),
+            ),
+            rbs(
+                NodeKind::VideoFilter,
+                vec![Pin::one("in", Video)],
+                Pin::host_only("hold", Video),
+            ),
+        ];
+        for d in wrong {
+            assert_eq!(d.validate(), host("hold"), "{d:?}");
+        }
+        // A host-only pin is not the kind's input.
+        let alone = rbs(
+            NodeKind::VideoFilter,
+            vec![Pin::host_only("hold", Video)],
+            Pin::one("out", Video),
+        );
+        assert!(matches!(
+            alone.validate(),
+            Err(DescriptorError::ShapeMismatch { .. })
+        ));
     }
 
     #[test]

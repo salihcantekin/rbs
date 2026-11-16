@@ -330,9 +330,18 @@ export global SettingsScroll {
     in-out property <int> serial: 0;
     in-out property <length> y: 0px;
     in-out property <length> h: 0px;
+    // The place goes to the top of the view, not only into it (a long panel such as the
+    // theme editor, whose start is what matters).
+    in-out property <bool> top: false;
     public function reveal(ay: length, ah: length) {
         self.y = ay;
         self.h = ah;
+        self.top = false;
+        self.serial += 1;
+    }
+    public function reveal-top(ay: length) {
+        self.y = ay;
+        self.top = true;
         self.serial += 1;
     }
 }

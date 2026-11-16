@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rbs_core::lifecycle::Lifecycle;
@@ -12,7 +12,7 @@ use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::partition::Lowering;
 use rbs_scene::SceneCollection;
-use rbs_scene::binder::{BindError, BindProblem, Role, SceneBinder, resolve};
+use rbs_scene::binder::{BindError, BindProblem, HoldScene, Role, SceneBinder, resolve};
 use rbs_scene::model::{
     CanvasId, Crop, DisplayChrome, ItemContent, Layout, SceneId, SceneScope, SettingValue,
     Settings, SourceId, SourceRegion,
@@ -1889,4 +1889,186 @@ fn a_region_and_chrome_do_not_replace_the_source_node() {
         Some(SourceRegion::new(0, 8, 0, 40))
     );
     assert_eq!(s.col.source(display).unwrap().settings, Settings::new());
+}
+
+fn hold(canvas: CanvasId, scene: SceneId, sound: bool) -> BTreeMap<CanvasId, HoldScene> {
+    BTreeMap::from([(canvas, HoldScene::new(scene, sound))])
+}
+
+#[test]
+fn a_hold_scene_binds_its_own_compositor_and_plays_its_media() {
+    let mut s = setup();
+    let (media, _) = s
+        .col
+        .add_source("Loop", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    let (brb, _) = s
+        .col
+        .add_scene("Be right back", SceneScope::Shared)
+        .unwrap();
+    s.col
+        .add_item(brb, ItemContent::Source(media), full(), None)
+        .unwrap();
+    let (none, quiet) = (BTreeSet::new(), BTreeSet::new());
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let media_node = s.binder.source_node(media).unwrap();
+    assert_eq!(state(&s, media_node), Lifecycle::Standby);
+    assert!(s.binder.compositor(s.wide, Role::Hold).is_none());
+
+    let report = s
+        .binder
+        .sync_held(
+            &s.col,
+            &mut s.graph,
+            &none,
+            &quiet,
+            &hold(s.wide, brb, false),
+        )
+        .unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    let comp = s.binder.compositor(s.wide, Role::Hold).unwrap();
+    assert_ne!(Some(comp), s.binder.compositor(s.wide, Role::Program));
+    assert_eq!(links_into(&s, comp), [media_node]);
+    assert!(report.compositors.contains_key(&(s.wide, Role::Hold)));
+    assert!(!report.compositors.contains_key(&(s.tall, Role::Hold)));
+    assert_eq!(state(&s, media_node), Lifecycle::Active);
+    // Not on the program compositor.
+    let program = s.binder.compositor(s.wide, Role::Program).unwrap();
+    assert!(!links_into(&s, program).contains(&media_node));
+
+    // Released: the compositor goes and the film rests again.
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(s.binder.compositor(s.wide, Role::Hold).is_none());
+    assert!(s.graph.node(comp).is_none());
+    assert_eq!(state(&s, media_node), Lifecycle::Standby);
+}
+
+#[test]
+fn a_hold_scene_with_sound_gets_its_own_mixer() {
+    let (mut s, mic) = audio_setup();
+    let (film, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.camera-mic"), Settings::new())
+        .unwrap();
+    let (brb, _) = s
+        .col
+        .add_scene("Be right back", SceneScope::Shared)
+        .unwrap();
+    s.col
+        .add_item(brb, ItemContent::Source(film), full(), None)
+        .unwrap();
+    let (none, quiet) = (BTreeSet::new(), BTreeSet::new());
+    // Without its sound: no hold mixer.
+    let report = s
+        .binder
+        .sync_held(
+            &s.col,
+            &mut s.graph,
+            &none,
+            &quiet,
+            &hold(s.wide, brb, false),
+        )
+        .unwrap();
+    assert!(s.binder.hold_mixer(s.wide).is_none());
+    assert!(report.hold_mixers.is_empty());
+
+    let mut report = s
+        .binder
+        .sync_held(
+            &s.col,
+            &mut s.graph,
+            &none,
+            &quiet,
+            &hold(s.wide, brb, true),
+        )
+        .unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    let held = s.binder.hold_mixer(s.wide).unwrap();
+    let program = s.binder.mixer(s.wide).unwrap();
+    assert_ne!(held, program);
+    let film_node = s.binder.source_node(film).unwrap();
+    let mic_node = s.binder.source_node(mic).unwrap();
+    assert_eq!(links_into(&s, held), [film_node]);
+    assert_eq!(links_into(&s, program), [mic_node]);
+    assert_eq!(s.graph.node(held).unwrap().partition, AUDIO);
+    assert_eq!(state(&s, held), Lifecycle::Active);
+    let bound = report.hold_mixers[&s.wide].clone();
+    assert!(bound.created);
+    assert_eq!(bound.node, held);
+    assert_eq!(bound.inputs.len(), 1);
+    assert_eq!(bound.inputs[0].source, film);
+    // The hold link is listed for its queue reader, under the hold role.
+    assert_eq!(report.picture_sound.len(), 1);
+    let listed = report.picture_sound[0];
+    assert_eq!(listed.role, Role::Hold);
+    assert_eq!(listed.canvas, s.wide);
+    assert_eq!(listed.source, film);
+    assert_eq!(listed.link.to.node, held);
+
+    let mut lowering = Lowering::new();
+    let lowered = lowering.lower(&s.graph);
+    let crossing = lowered
+        .crossings
+        .iter()
+        .find(|c| c.link == listed.link)
+        .unwrap();
+    report.assign_queue_readers(&lowered.crossings);
+    assert_eq!(
+        report.hold_mixers[&s.wide].inputs[0].producer,
+        crossing.reader
+    );
+    // The program mixer's inputs are untouched.
+    assert_eq!(report.mixers[&s.wide].inputs[0].producer, mic_node);
+
+    // A second sync keeps the same mixer.
+    let again = s
+        .binder
+        .sync_held(
+            &s.col,
+            &mut s.graph,
+            &none,
+            &quiet,
+            &hold(s.wide, brb, true),
+        )
+        .unwrap();
+    assert!(!again.hold_mixers[&s.wide].created);
+    assert_eq!(again.picture_sound, report.picture_sound);
+
+    // Released: the hold mixer is retired, the program mixer stays.
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.retired_mixers, [held]);
+    assert!(s.graph.node(held).is_none());
+    assert!(s.binder.hold_mixer(s.wide).is_none());
+    assert_eq!(s.binder.mixer(s.wide), Some(program));
+    assert!(report.picture_sound.is_empty());
+}
+
+#[test]
+fn a_hold_scene_that_is_gone_binds_nothing() {
+    let mut s = setup();
+    let (brb, _) = s
+        .col
+        .add_scene("Be right back", SceneScope::Shared)
+        .unwrap();
+    s.col.remove_scene(brb).unwrap();
+    let (none, quiet) = (BTreeSet::new(), BTreeSet::new());
+    let before = s
+        .binder
+        .sync(&s.col, &mut s.graph)
+        .unwrap()
+        .compositors
+        .len();
+    let report = s
+        .binder
+        .sync_held(
+            &s.col,
+            &mut s.graph,
+            &none,
+            &quiet,
+            &hold(s.wide, brb, true),
+        )
+        .unwrap();
+    assert!(s.binder.compositor(s.wide, Role::Hold).is_none());
+    assert!(report.hold_mixers.is_empty());
+    assert_eq!(report.compositors.len(), before);
 }

@@ -1788,7 +1788,9 @@ component NestBand inherits Rectangle {
     FocusRing { show: focus.ring; }
 }
 
-component NestExtra inherits Rectangle {
+// A layout, not a Rectangle: a Rectangle takes no size from its child, so its row had
+// no room for the button and the button was drawn over the size line and the fields.
+component NestExtra inherits HorizontalLayout {
     in property <string> title;
     in property <string> detail;
     in property <bool> checked;
@@ -1818,20 +1820,34 @@ export component SizeNest inherits Rectangle {
     in property <string> label;
     // The chosen size in words, shown when nothing is hovered.
     in property <string> value;
+    // An extra (a size that is not one of the frames, such as "This display") is asked
+    // about first: a press calls `extra-asked` instead of `selected`, and the caller
+    // shows its question.
+    in property <bool> ask-extras: false;
     callback selected(int, int, int);
+    callback extra-asked(int, int, int, string, string);
     property <string> hot-line;
     horizontal-stretch: 1;
     property <bool> has-frame: root.bands.length > 0;
+    property <bool> has-extras: root.extras.length > 0;
     property <length> frame-w: !root.has-frame ? 0px : root.portrait ? Tokens.size-menu-sm * 9 / 16 : Tokens.size-menu-sm;
     property <length> frame-h: !root.has-frame ? 0px : root.portrait ? Tokens.size-menu-sm : Tokens.size-menu-sm * 9 / 16;
     property <length> gap: root.has-frame ? Tokens.space-4 : 0px;
+    // The extras sit under the frames ("or This display"): the frames and the extras
+    // are the two ways to pick, the column beside them shows and types the size.
+    property <length> extras-gap: root.has-extras && root.has-frame ? Tokens.space-2 : 0px;
+    // Without frames the extras row stands above the column.
+    property <bool> under: root.stacked || (!root.has-frame && root.has-extras);
+    property <length> under-gap: root.has-frame ? root.gap : Tokens.space-2;
+    property <length> pick-w: max(root.frame-w, root.has-extras ? more.preferred-width : 0px);
+    property <length> pick-h: root.frame-h + root.extras-gap + (root.has-extras ? more.preferred-height : 0px);
     // The picture and the column beside it do not fit: the column goes under the
     // picture, so nothing leaves a narrow card. Placed by geometry because
     // `@children` cannot sit under an `if`.
-    out property <bool> stacked: root.has-frame && root.width < root.frame-w + root.gap + side.min-width;
-    min-width: max(root.frame-w, side.min-width);
-    preferred-width: root.frame-w + root.gap + side.preferred-width;
-    min-height: root.stacked ? root.frame-h + root.gap + side.preferred-height : max(root.frame-h, side.preferred-height);
+    out property <bool> stacked: root.has-frame && root.width < root.pick-w + root.gap + side.min-width;
+    min-width: max(root.pick-w, side.min-width);
+    preferred-width: root.pick-w + root.gap + side.preferred-width;
+    min-height: root.under ? root.pick-h + root.under-gap + side.preferred-height : max(root.pick-h, side.preferred-height);
     preferred-height: self.min-height;
     if root.has-frame: frame := Rectangle {
         x: 0px;
@@ -1858,9 +1874,44 @@ export component SizeNest inherits Rectangle {
             }
         }
     }
+    // Always present (an empty row when there are no extras) so its size can be read
+    // above; `visible` keeps an empty one out of sight.
+    more := HorizontalLayout {
+        x: 0px;
+        y: root.frame-h + root.extras-gap;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        visible: root.has-extras;
+        alignment: start;
+        spacing: Tokens.space-2;
+        if root.has-extras && root.has-frame: Text {
+            text: @tr("or");
+            color: root.enabled ? Theme.text-secondary : Theme.text-disabled;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        for extra in root.extras: NestExtra {
+            title: extra.title;
+            detail: extra.detail;
+            checked: extra.index == root.index;
+            enabled: root.enabled;
+            clicked => {
+                if root.ask-extras && extra.index != root.index {
+                    root.extra-asked(extra.index, extra.picture-w, extra.picture-h, extra.title, extra.detail);
+                } else {
+                    root.selected(extra.index, extra.picture-w, extra.picture-h);
+                }
+            }
+            pointed(on) => {
+                if on { root.hot-line = @tr("{} · {}", extra.title, extra.detail); }
+                else if root.hot-line == @tr("{} · {}", extra.title, extra.detail) { root.hot-line = ""; }
+            }
+        }
+    }
     side := VerticalLayout {
-        x: root.stacked ? 0px : root.frame-w + root.gap;
-        y: root.stacked ? root.frame-h + root.gap : 0px;
+        x: root.under ? 0px : root.pick-w + root.gap;
+        y: root.under ? root.pick-h + root.under-gap : 0px;
         width: root.width - self.x;
         height: self.preferred-height;
         alignment: start;
@@ -1868,24 +1919,9 @@ export component SizeNest inherits Rectangle {
         Text {
             text: root.hot-line != "" ? root.hot-line : root.value;
             color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-            font-size: Tokens.type-caption-size;
+            font-size: Tokens.type-body-size;
             wrap: word-wrap;
             accessible-role: none;
-        }
-        if root.extras.length > 0: HorizontalLayout {
-            alignment: start;
-            spacing: Tokens.space-2;
-            for extra in root.extras: NestExtra {
-                title: extra.title;
-                detail: extra.detail;
-                checked: extra.index == root.index;
-                enabled: root.enabled;
-                clicked => { root.selected(extra.index, extra.picture-w, extra.picture-h); }
-                pointed(on) => {
-                    if on { root.hot-line = @tr("{} · {}", extra.title, extra.detail); }
-                    else if root.hot-line == @tr("{} · {}", extra.title, extra.detail) { root.hot-line = ""; }
-                }
-            }
         }
         @children
     }
