@@ -1465,3 +1465,170 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// Adds a scene "Camera only" with the camera source and returns it.
+fn camera_scene(col: &mut rbs_scene::SceneCollection) -> rbs_scene::model::SceneId {
+    let camera = col.sources().find(|s| s.name == "Camera").unwrap().id;
+    let (scene, _) = col
+        .add_scene("Camera only", rbs_scene::model::SceneScope::Shared)
+        .unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(camera),
+        Layout::new([0.0, 0.0], [W as f32, H as f32]),
+        None,
+    )
+    .unwrap();
+    scene
+}
+
+#[test]
+fn a_fade_waits_for_the_incoming_picture_blends_and_settles() {
+    use rbs_record::{READY_WAIT, TransitionState};
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    let mut fade = CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    };
+    fade.fade.duration_ms = 100;
+    col.set_transition(fade).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    // An output, so the program canvas is drawn.
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition", ContainerId::Matroska),
+        )
+        .unwrap();
+    let ticks = |s: &Studio| s.engine().worker_stats(RENDER).unwrap().ticks();
+    let t0 = ticks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| ticks(s) >= t0 + 3));
+    assert_eq!(
+        studio.transition_state(canvas),
+        None,
+        "nothing before a change"
+    );
+    assert_eq!(
+        studio.transition_wait(clock.now()),
+        None,
+        "no timer armed (P13)"
+    );
+
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let changed = clock.now();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Waiting)
+    );
+    assert!(studio.transition_wait(clock.now()).is_some());
+
+    // The incoming compositor draws within a few frames, well before READY_WAIT; then
+    // the blend runs, then ends.
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    assert!(
+        clock.now().saturating_since(changed) < READY_WAIT,
+        "started on the ready counter, not the timeout"
+    );
+    let started = clock.now();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+    }));
+    assert!(clock.now().saturating_since(started) >= Duration::from_millis(100));
+    assert!(run_until(&mut studio, &clock, |s| {
+        // `service` reports the end once; the host settles.
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+            && s.transition_wait(clock.now()) == Some(Duration::ZERO)
+    }));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert_eq!(studio.transition_state(canvas), None, "settled");
+    assert_eq!(studio.transition_wait(clock.now()), None);
+
+    // Back with a Cut: no transition at all.
+    let mut t = col.transition();
+    t.kind = TransitionKind::Cut;
+    col.set_transition(t).unwrap();
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.transition_state(canvas), None);
+    let t1 = ticks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| ticks(s) >= t1 + 3));
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_change_during_a_fade_starts_a_new_one_and_ending_drops_it() {
+    use rbs_record::TransitionState;
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    let mut fade = CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    };
+    fade.fade.duration_ms = 1000;
+    col.set_transition(fade).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    // An output, so the program canvas is drawn.
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition", ContainerId::Matroska),
+        )
+        .unwrap();
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+
+    // Decision 9: a change while one runs starts a new one from what is on air.
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Waiting)
+    );
+
+    // Leaving studio mode or switching the collection ends it at once.
+    studio.end_transitions();
+    studio.settle_transitions(&r.adapters.sources);
+    assert_eq!(studio.transition_state(canvas), None);
+    let ticks = |s: &Studio| s.engine().worker_stats(RENDER).unwrap().ticks();
+    let t1 = ticks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| ticks(s) >= t1 + 3));
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

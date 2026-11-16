@@ -30,6 +30,19 @@ use super::*;
 /// the program compositor to take the plain layers at the end (decision 8).
 pub const READY_WAIT: Duration = Duration::from_millis(250);
 
+/// What a transition of one canvas is doing, as the host and the control API report
+/// it (ADR-0128 decision 11, topic `transition.state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TransitionState {
+    /// Waiting for the incoming picture (at most [`READY_WAIT`]).
+    Waiting,
+    /// Drawing the blend.
+    Running,
+    /// The blend is over; the outgoing scene is unbound at the next settle.
+    Ending,
+}
+
 /// Where a transition of one canvas is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -334,6 +347,15 @@ impl Studio {
     /// True while a transition runs on `canvas`.
     pub fn transition_running(&self, canvas: CanvasId) -> bool {
         self.transitions.contains_key(&canvas)
+    }
+
+    /// What the transition of `canvas` is doing, `None` when none runs.
+    pub fn transition_state(&self, canvas: CanvasId) -> Option<TransitionState> {
+        self.transitions.get(&canvas).map(|t| match t.phase {
+            Phase::Waiting(_) => TransitionState::Waiting,
+            Phase::Running(_) => TransitionState::Running,
+            Phase::Ending(_) | Phase::Done => TransitionState::Ending,
+        })
     }
 
     /// Unbinds the outgoing scene of every transition that is done (decision 8 step
