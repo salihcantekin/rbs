@@ -12,7 +12,7 @@ Turn an OBS Studio scene collection, profile and hotkeys into a new RBS scene co
 
 In scope: reading OBS files, the import plan, the mapper registry, the transform conversion, the report, the entry points (`rbs-cli`, desktop, control API).
 
-Out of scope: writing OBS files; importing from other apps (Streamlabs, XSplit); loading OBS plugins; adding skipped objects later (ADR-0131 decision 7 keeps the data for it).
+Out of scope: writing OBS files; importing from other apps (Streamlabs, XSplit); loading OBS plugins; adding skipped objects later (ADR-0131 decision 11 keeps allow-listed data for it).
 
 ## Contract
 
@@ -46,7 +46,9 @@ pub struct ImportPlan {
     pub collection: SceneCollection,           // passed SceneCollection::from_parts
     pub profile: Option<ObsProfileFacts>,     // neutral facts; rbs-app maps them
     pub secrets: ImportedSecrets,              // Debug prints <redacted>; no Serialize, no Display
-    pub shortcuts: Vec<ImportedShortcut>,      // { command, chord: Chord, scope }
+    pub shortcuts: Vec<ImportedShortcut>,      // { command, args, chord: Chord }; app scope
+                                               // args may hold CollectionArg::ThisImport, which rbs-app
+                                               // replaces with the new collection's id before writing
     pub report: ImportReport,
 }
 
@@ -75,11 +77,24 @@ Reasons are one sentence of plain English ("Only PNG pictures can be shown for n
 
 ### Transform conversion
 
-ADR-0131 decision 8 is normative (OBS 31 relative keys win, `bounds_crop`, crop filter as region plus item crop). OBS places an item at `pos` with the anchor `align` (bits: left 1, right 2, top 4, bottom 8; none is centre), size `native × scale` or, with a bounds type, the bounds box (stretch, scale inner, scale outer, to width, to height, max only) aligned by `bounds_align`, rotated by `rot` degrees about `pos`, after `crop_*`. RBS stores the box (`Layout.position`, `Layout.size`, negative for a flip) rotated about its centre. The converter computes the four corners of the OBS item and returns the RBS box with the same corners (within 0.01 px). The native size comes from `Lookup` or settings; when unknown, the canvas size is used and the item is marked approximate.
+ADR-0131 decision 8 is normative (OBS 31 relative keys win, `bounds_crop`, crop filter as region plus item crop). OBS places an item at `pos` with the anchor `align` (bits: left 1, right 2, top 4, bottom 8; none is centre), size `native × scale` or, with a bounds type, the bounds box (stretch, scale inner, scale outer, to width, to height, max only) aligned by `bounds_align`, rotated by `rot` degrees about `pos`, after `crop_*`. RBS stores the box (`Layout.position`, `Layout.size`, negative for a flip) rotated about its centre. The converter computes the four corners of the OBS item and returns the RBS box with the same corners in texture order (within 0.01 px). The native size comes from `Lookup` or settings; when unknown, the canvas size is used and the item is marked approximate.
 
 ### Mapping table
 
-ADR-0131 decision 5 is the first mapping table. Each mapper keeps its own row in this section when it is implemented.
+ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in this section when it is implemented.
+
+### Degrading on scene validation (ADR-0131 decision 4)
+
+| `SceneError` | Action |
+| --- | --- |
+| name clash | "Name 2", "Name 3", ... |
+| `TooManyLayers` (`MAX_LAYERS`), `NestingTooDeep` (`MAX_NESTING_DEPTH`), nesting cycle | item left out, Skipped |
+| `CropOnScene`, `StyleOnScene` | crop or style dropped, item kept, Approximated |
+| `InvalidLayout`, `InvalidVolume`, `InvalidSyncOffset` | value clamped, Approximated |
+| `CanvasTooLarge`, zero canvas side, `FrameRateTooHigh`, zero frame rate or `FPSDen` 0 | 1920×1080 at 30, Profile entry |
+| `ScopeViolation`, `GlobalScene` | cannot arise (shared scopes; the importer makes the global scene) |
+
+A unit test matches every `SceneError` variant against this table, so a new variant fails until it has an action. Exact variant names are taken from `rbs_scene::SceneError` in step 1.
 
 ## Errors and failure behaviour
 
