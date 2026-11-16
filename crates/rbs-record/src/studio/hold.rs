@@ -128,6 +128,10 @@ pub struct HoldState {
     pub scene: Option<SceneId>,
     /// Why a scene hold fell back to the frozen frame, while it does.
     pub fallback: Option<HoldFallback>,
+    /// The hold scene's sound as asked for, while held with a scene.
+    pub sound: Option<HoldSound>,
+    /// Why the hold scene's sound fell back to silence while its picture runs on.
+    pub sound_fallback: Option<HoldFallback>,
     /// When the open hold began.
     pub held_at: Option<Timestamp>,
     /// Time on hold so far, an open hold counted up to now.
@@ -161,6 +165,8 @@ impl Holds {
             picture: self.on.map(|(p, _)| p),
             scene: None,
             fallback: None,
+            sound: None,
+            sound_fallback: None,
             held_at: self.on.map(|(_, at)| at),
             held_ns: self.before_ns.saturating_add(open),
         }
@@ -192,8 +198,13 @@ pub(super) struct HoldRun {
     frames_at: u64,
     /// Its compositor once bound and adopted.
     view: Option<HoldView>,
+    /// Its hold mixer once bound and adopted ([`HoldSound::Scene`] with audio on).
+    mixer: Option<HoldMix>,
     /// Set when it fell back: the binder no longer binds it.
     fallback: Option<HoldFallback>,
+    /// Set when its sound alone fell back to silence (the hold mixer failed); the
+    /// picture runs on.
+    sound_fallback: Option<HoldFallback>,
     /// Released: its parts leave at the next sync.
     released: bool,
 }
@@ -202,6 +213,16 @@ impl HoldRun {
     pub(super) fn view_mut(&mut self) -> Option<&mut HoldView> {
         self.view.as_mut()
     }
+}
+
+/// A hold scene's mixer: its strips are the scene's sources at the scene's levels.
+/// No monitor output, no meters, no solo (ADR-0124 phase 2b).
+pub(super) struct HoldMix {
+    node: NodeId,
+    partition: PartitionId,
+    params: ParamSender<MixerParams>,
+    stats: Arc<MixerStats>,
+    strips: Vec<MixStrip>,
 }
 
 /// A hold scene's compositor and what draws its layers.
@@ -218,8 +239,12 @@ impl Studio {
         self.hold_scenes
             .iter()
             .filter(|(_, r)| r.fallback.is_none() && !r.released)
-            // Sound comes with the hold mixer's wiring (next step): silence for now.
-            .map(|(c, r)| (*c, HoldScene::new(r.scene, false)))
+            .map(|(c, r)| {
+                let sound = self.mixer.is_some()
+                    && r.sound == HoldSound::Scene
+                    && r.sound_fallback.is_none();
+                (*c, HoldScene::new(r.scene, sound))
+            })
             .collect()
     }
 
@@ -271,12 +296,150 @@ impl Studio {
                 }
                 _ => {}
             }
+            self.sync_hold_mixer(canvas, report.hold_mixers.get(&canvas), leaving)?;
         }
         // Released and fallen-back runs whose parts are gone are forgotten (a fallen
         // back one stays, without parts, for its state while the hold lasts).
         self.hold_scenes
-            .retain(|_, r| !(r.released && r.view.is_none()));
+            .retain(|_, r| !(r.released && r.view.is_none() && r.mixer.is_none()));
         Ok(())
+    }
+
+    /// Adopts a newly bound hold mixer of `canvas` and links its output to the "hold"
+    /// input of every audio encoder of the canvas's streams that has one; a retired
+    /// one goes to `leaving`. Its strips are sent around the apply
+    /// ([`Studio::send_hold_strips`]).
+    fn sync_hold_mixer(
+        &mut self,
+        canvas: CanvasId,
+        bound: Option<&BoundMixer>,
+        leaving: &mut Vec<Added>,
+    ) -> Result<(), RecordError> {
+        let slots = self.audio_chains_of(canvas);
+        let Some(run) = self.hold_scenes.get_mut(&canvas) else {
+            return Ok(());
+        };
+        match (run.mixer.as_ref(), bound) {
+            (None, Some(bound)) => {
+                let partition = self
+                    .graph
+                    .node(bound.node)
+                    .map(|n| n.partition)
+                    .ok_or(RecordError::NotBound("hold mixer"))?;
+                let (node, params, stats) = MixerNode::new(
+                    self.settings.audio_graph,
+                    MAX_LAYERS,
+                    MixerParams::new(Vec::new()).with_master(self.master.gain()),
+                );
+                self.engine
+                    .adopt::<()>(partition, bound.node, Box::new(node))?;
+                for slot in slots {
+                    // Only a stream's own chain (`HoldGate`) has the "hold" input; a
+                    // chain a recording shares stays silent while held.
+                    if let Some(chain) = self.chains.audio[slot].as_ref()
+                        && chain.hold.is_some()
+                        && chain.pause.is_none()
+                    {
+                        self.graph
+                            .connect(bound.node, "main", chain.encoder.node, "hold")?;
+                    }
+                }
+                run.mixer = Some(HoldMix {
+                    node: bound.node,
+                    partition,
+                    params,
+                    stats,
+                    strips: Vec::new(),
+                });
+            }
+            (Some(_), None) => {
+                if let Some(mix) = run.mixer.take() {
+                    leaving.push(Added {
+                        node: mix.node,
+                        partition: mix.partition,
+                        gpu: false,
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Sends each hold mixer its strips: the scene's sources at the scene's levels
+    /// (ADR-0091) under the canvas master. Before the apply (`report` without
+    /// readers) a picture-and-sound source keeps its strip only while its old reader
+    /// is known, and the strips leaving stay until after it; after the apply the
+    /// strips are exactly the bound inputs.
+    pub(super) fn send_hold_strips(&mut self, report: &BindReport, applied: bool) {
+        let collection = &self.collection;
+        let master = self.master;
+        for (canvas, run) in &mut self.hold_scenes {
+            let (Some(mix), Some(bound)) = (run.mixer.as_mut(), report.hold_mixers.get(canvas))
+            else {
+                continue;
+            };
+            let levels = scene_mix_of(collection, run.scene);
+            let mut staged = Vec::new();
+            for input in &bound.inputs {
+                let late = !applied
+                    && report.picture_sound.iter().any(|p| {
+                        p.canvas == *canvas && p.role == Role::Hold && p.source == input.source
+                    });
+                let producer = if late {
+                    let Some(kept) = mix.strips.iter().find(|s| s.source == input.source) else {
+                        continue;
+                    };
+                    kept.producer
+                } else {
+                    input.producer
+                };
+                staged.push(MixStrip {
+                    producer,
+                    source: input.source,
+                    meter: None,
+                    audio: levels.get(&input.source).copied().unwrap_or_default(),
+                });
+            }
+            let mut sent = staged.clone();
+            if !applied {
+                sent.extend(
+                    mix.strips
+                        .iter()
+                        .filter(|old| !staged.iter().any(|n| n.producer == old.producer))
+                        .cloned(),
+                );
+            }
+            let _ = mix.params.send(hold_mixer_params(&sent, master));
+            mix.strips = staged;
+        }
+    }
+
+    /// Hold mixer inputs that had no strip or an invalid block.
+    pub(super) fn hold_mixer_anomalies(&self) -> u64 {
+        self.hold_scenes
+            .values()
+            .filter_map(|r| r.mixer.as_ref())
+            .map(|m| m.stats.invalid_inputs() + m.stats.unknown_inputs())
+            .sum()
+    }
+
+    /// Sends every hold mixer its sources' new volume and mute and the master's
+    /// (from [`Studio::set_mix`]).
+    pub(super) fn set_hold_mix(&mut self, collection: &SceneCollection) {
+        let master = self.master;
+        for run in self.hold_scenes.values_mut() {
+            let Some(mix) = run.mixer.as_mut() else {
+                continue;
+            };
+            let levels = scene_mix_of(collection, run.scene);
+            for strip in &mut mix.strips {
+                if let Some(audio) = levels.get(&strip.source) {
+                    strip.audio = *audio;
+                }
+            }
+            let _ = mix.params.send(hold_mixer_params(&mix.strips, master));
+        }
     }
 
     /// The scene frames the holdable exports of `canvas` read back so far.
@@ -345,6 +508,7 @@ impl Studio {
         }
         let now = self.engine.clock().now();
         let mut fell = Vec::new();
+        let mut silenced = Vec::new();
         for (canvas, run) in &self.hold_scenes {
             if run.fallback.is_some() || run.released {
                 continue;
@@ -357,6 +521,11 @@ impl Studio {
                 fell.push((*canvas, HoldFallback::Failed));
                 continue;
             }
+            if run.sound_fallback.is_none()
+                && run.mixer.as_ref().is_some_and(|m| failed.contains(&m.node))
+            {
+                silenced.push(*canvas);
+            }
             let waited = now.as_nanos().saturating_sub(run.since.as_nanos());
             if waited >= HOLD_SCENE_TIMEOUT.as_nanos() as u64
                 && self.scene_frames(*canvas) == run.frames_at
@@ -364,7 +533,13 @@ impl Studio {
                 fell.push((*canvas, HoldFallback::NoPicture));
             }
         }
-        let any = !fell.is_empty();
+        let any = !fell.is_empty() || !silenced.is_empty();
+        for canvas in silenced {
+            // The encoder's gate fills silence where no scene block comes.
+            if let Some(run) = self.hold_scenes.get_mut(&canvas) {
+                run.sound_fallback = Some(HoldFallback::Failed);
+            }
+        }
         for (canvas, why) in fell {
             self.fall_back(canvas, why);
         }
@@ -447,7 +622,9 @@ impl Studio {
                     since: now,
                     frames_at,
                     view: None,
+                    mixer: None,
                     fallback: None,
+                    sound_fallback: None,
                     released: false,
                 },
             );
@@ -660,7 +837,9 @@ impl Studio {
                 .and_then(|c| self.hold_scenes.get(&c.canvas))
         {
             state.scene = Some(run.scene);
+            state.sound = Some(run.sound);
             state.fallback = run.fallback;
+            state.sound_fallback = run.sound_fallback;
             if run.fallback.is_some() {
                 state.picture = Some(HoldPicture::Freeze);
             }
@@ -697,4 +876,30 @@ impl Studio {
 /// chain in slot `audio`.
 fn shares(o: &Attached, video: Option<usize>, audio: Option<usize>) -> bool {
     (video.is_some() && o.video == video) || (audio.is_some() && o.audio == audio)
+}
+
+/// The volume and mute the hold mixer gives each source of `collection`: its own,
+/// with `scene`'s entries over them while that scene is in Own levels (ADR-0091).
+fn scene_mix_of(collection: &SceneCollection, scene: SceneId) -> BTreeMap<SourceId, SourceAudio> {
+    let levels = collection.scene(scene).and_then(|s| s.audio.as_ref());
+    collection
+        .sources()
+        .map(|s| {
+            let audio = match levels {
+                Some(l) => l.heard(s.id, s.audio),
+                None => s.audio,
+            };
+            (s.id, audio)
+        })
+        .collect()
+}
+
+/// The hold mixer's parameters: `strips` at their volume and mute, no monitor, meter
+/// or solo, under the canvas master.
+fn hold_mixer_params(strips: &[MixStrip], master: MasterAudio) -> MixerParams {
+    let strips = strips
+        .iter()
+        .map(|s| Strip::new(s.producer, s.audio.volume).with_muted(s.audio.muted))
+        .collect();
+    MixerParams::new(strips).with_master(master.gain())
 }
