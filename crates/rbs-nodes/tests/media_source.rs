@@ -67,7 +67,7 @@ impl Rig {
     /// Attaches the sound node and tells it the block grid (block times at multiples
     /// of 10 ms), as its first `process` would.
     fn attach_sound(&mut self) {
-        self.pair.sound.attach();
+        self.pair.sound.attach().unwrap();
         let mut l = [0.0f32; BLOCK];
         let mut r = [0.0f32; BLOCK];
         self.pair
@@ -247,32 +247,100 @@ fn a_44_1_khz_file_plays_at_the_right_speed() {
     let mut rig = rig(clip_with_constant(44_100, 0.5), false, true);
     rig.attach_sound();
     rig.pair.picture.wake(Timestamp::ZERO).unwrap();
-    let mut heard = 0usize;
-    let mut last = 0u64;
+    let mut blocks = BTreeMap::new();
     for t in (0..700).step_by(10) {
         rig.settle(ms(t));
         if t >= 50 {
             let (written, block) = rig.block_at(ms(t));
             if written {
-                last = t - 50;
-                heard += block.iter().filter(|s| (**s - 0.5).abs() < 0.01).count();
+                blocks.insert(t - 50, block);
             }
         }
     }
-    // 0.3 s at 48 kHz, minus the resampler's edges.
-    assert!((14_400 - 100..=14_400).contains(&heard), "{heard} frames");
-    assert_eq!(last, 440, "the sound ends 0.3 s after the anchor");
+    // 0.3 s at 44.1 kHz is exactly 14 400 frames at 48 kHz: 30 blocks from the anchor.
+    let first = *blocks.keys().next().unwrap();
+    let last = *blocks.keys().last().unwrap();
+    assert_eq!((first, last), (150, 440));
+    let sounding: usize = blocks
+        .values()
+        .map(|block| block.iter().filter(|s| **s != 0.0).count())
+        .sum();
+    assert_eq!(sounding, 14_400);
+    // The last frame is still the file's sound, not padding.
+    assert!(blocks[&440][BLOCK - 1] > 0.1, "{}", blocks[&440][BLOCK - 1]);
+    // A constant stays constant away from the edges.
+    for block in blocks.range(160..=430).map(|(_, b)| b) {
+        assert!(block.iter().all(|s| (s - 0.5).abs() < 1e-3));
+    }
     rig.pair.picture.standby();
 }
 
+/// The level of `clip_with_steps` at media time `media_ms` (within one pass).
+fn step_level(media_ms: u64) -> f32 {
+    [0.25, 0.5, 0.75][(media_ms / 100) as usize]
+}
+
 #[test]
-fn a_loop_boundary_leaves_no_gap_in_the_sound() {
-    let mut rig = rig(clip_with_constant(48_000, 0.5), true, true);
+fn a_loop_boundary_leaves_no_gap_or_shift_in_sound_and_pictures() {
+    let mut rig = rig(clip_with_steps(48_000), true, true);
     rig.attach_sound();
     rig.pair.picture.wake(Timestamp::ZERO).unwrap();
     for t in (0..1_100).step_by(10) {
         rig.settle(ms(t));
         let _ = rig.pair.picture.dequeue(ms(t));
+        if t >= 150 {
+            // Pass length 300 ms from the anchor at 150 ms.
+            let media = (t - 150) % 300;
+            assert_eq!(
+                rig.pair.picture.last_mark(),
+                Some((media / 100) as u8 + 1),
+                "picture at {t} ms"
+            );
+        }
+        if t >= 200 {
+            let stamp = t - 50;
+            let (written, block) = rig.block_at(ms(t));
+            assert!(written, "block at {stamp} ms");
+            let want = step_level((stamp - 150) % 300);
+            assert!(
+                block.iter().all(|s| *s == want),
+                "the block at {stamp} ms is not all {want}"
+            );
+        }
+    }
+    let stats = rig.pair.picture.stats();
+    assert_eq!(stats.sound_underruns.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.worker_dropped_blocks.load(Ordering::Relaxed), 0);
+    rig.pair.picture.standby();
+}
+
+#[test]
+fn a_loop_with_sound_longer_than_the_pictures_waits_for_the_sound() {
+    // Pictures end at 300 ms, sound at 400 ms: a pass is 400 ms long.
+    let mut rig = rig(
+        ScriptClip {
+            audio: Some(InterleavedPcm {
+                sample_rate: 48_000,
+                channels: 2,
+                samples: vec![0.5; 48_000 * 4 / 10 * 2],
+            }),
+            ..ScriptClip::silent_frames()
+        },
+        true,
+        true,
+    );
+    rig.attach_sound();
+    rig.pair.picture.wake(Timestamp::ZERO).unwrap();
+    let mut back_to_one = None;
+    let mut seen_three = false;
+    for t in (0..1_300).step_by(10) {
+        rig.settle(ms(t));
+        let _ = rig.pair.picture.dequeue(ms(t));
+        let mark = rig.pair.picture.last_mark();
+        seen_three |= mark == Some(3);
+        if seen_three && back_to_one.is_none() && mark == Some(1) {
+            back_to_one = Some(t);
+        }
         if t >= 200 {
             let (written, block) = rig.block_at(ms(t));
             assert!(written, "block at {} ms", t - 50);
@@ -283,10 +351,130 @@ fn a_loop_boundary_leaves_no_gap_in_the_sound() {
             );
         }
     }
+    // The last picture holds under the rest of the sound; the next pass starts with it.
+    assert_eq!(back_to_one, Some(550));
+    rig.pair.picture.standby();
+}
+
+#[test]
+fn a_loop_with_sound_shorter_than_the_pictures_pads_with_silence() {
+    // Sound ends at 200 ms, pictures at 300 ms.
+    let mut rig = rig(
+        ScriptClip {
+            audio: Some(InterleavedPcm {
+                sample_rate: 48_000,
+                channels: 2,
+                samples: vec![0.5; 48_000 * 2 / 10 * 2],
+            }),
+            ..ScriptClip::silent_frames()
+        },
+        true,
+        true,
+    );
+    rig.attach_sound();
+    rig.pair.picture.wake(Timestamp::ZERO).unwrap();
+    for t in (0..1_000).step_by(10) {
+        rig.settle(ms(t));
+        let _ = rig.pair.picture.dequeue(ms(t));
+        if t >= 200 {
+            let stamp = t - 50;
+            let (written, block) = rig.block_at(ms(t));
+            assert!(written, "block at {stamp} ms");
+            let want = if (stamp - 150) % 300 < 200 { 0.5 } else { 0.0 };
+            assert!(
+                block.iter().all(|s| *s == want),
+                "the block at {stamp} ms is not all {want}"
+            );
+        }
+    }
+    rig.pair.picture.standby();
+}
+
+#[test]
+fn the_sound_plays_while_the_picture_node_is_not_prepared() {
+    let mut rig = rig(clip_with_steps(48_000), false, true);
+    rig.attach_sound();
+    assert!(rig.pair.picture.decoder_held());
+    assert!(!rig.pair.picture.queues_live());
+    let mut blocks = BTreeMap::new();
+    for t in (0..600).step_by(10) {
+        rig.settle(ms(t));
+        if t >= 50 {
+            let (written, block) = rig.block_at(ms(t));
+            if written {
+                blocks.insert(t - 50, block);
+            }
+        }
+    }
+    assert_eq!(blocks[&150][0], 0.25);
+    assert_eq!(blocks[&250][0], 0.5);
+    assert_eq!(blocks[&440][BLOCK - 1], 0.75);
+    assert_eq!(blocks.len(), 30);
     let stats = rig.pair.picture.stats();
     assert_eq!(stats.sound_underruns.load(Ordering::Relaxed), 0);
-    // The pictures loop too: mark 1 again at 450 ms.
-    rig.settle(ms(1_100));
+    rig.pair.sound.detach();
+    assert!(!rig.pair.picture.decoder_held());
+    assert!(rig.pair.picture.worker_joined());
+    assert_eq!(rig.factory.counts.alive.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn the_picture_node_joins_a_worker_the_sound_node_started() {
+    let mut rig = rig(clip_with_steps(48_000), false, true);
+    rig.attach_sound();
+    rig.settle(ms(200));
+    rig.pair.picture.wake(ms(200)).unwrap();
+    assert!(rig.pair.picture.queues_live());
+    assert_eq!(
+        rig.pair.picture.queue_allocations(),
+        1,
+        "one worker, not two"
+    );
+    rig.settle(ms(260));
+    let _ = rig.pair.picture.dequeue(ms(260));
+    assert_eq!(rig.pair.picture.last_mark(), Some(2));
+    // The picture node leaves; the sound plays on.
+    rig.pair.picture.standby();
+    assert!(rig.pair.picture.decoder_held());
+    rig.settle(ms(310));
+    // Block time 260 ms is media 110 ms.
+    let (written, block) = rig.block_at(ms(310));
+    assert!(written);
+    assert!(block.iter().all(|s| *s == 0.5));
+    rig.pair.sound.detach();
+    assert!(!rig.pair.picture.decoder_held());
+}
+
+#[test]
+fn detaching_the_sound_node_while_playing_keeps_the_pictures_and_can_attach_again() {
+    let mut rig = rig(clip_with_steps(48_000), false, true);
+    rig.attach_sound();
+    rig.pair.picture.wake(Timestamp::ZERO).unwrap();
+    for t in (0..200).step_by(10) {
+        rig.settle(ms(t));
+        let _ = rig.pair.picture.dequeue(ms(t));
+    }
+    rig.pair.sound.detach();
+    assert!(!rig.pair.sound.ring_live());
+    assert!(
+        rig.pair.picture.decoder_held(),
+        "the picture node still plays"
+    );
+    for t in (200..300).step_by(10) {
+        rig.settle(ms(t));
+        let _ = rig.pair.picture.dequeue(ms(t));
+    }
+    assert_eq!(rig.pair.picture.last_mark(), Some(2));
+    rig.attach_sound();
+    for t in (300..400).step_by(10) {
+        rig.settle(ms(t));
+        let _ = rig.pair.picture.dequeue(ms(t));
+    }
+    assert_eq!(rig.pair.picture.last_mark(), Some(3));
+    // The sound comes back where the file is now.
+    let (written, block) = rig.block_at(ms(400));
+    assert!(written);
+    assert!(block.iter().all(|s| *s == 0.75));
     rig.pair.picture.standby();
 }
 
@@ -350,7 +538,7 @@ fn neither_node_allocates_or_frees_while_it_plays() {
         let sound = &mut rig.pair.sound;
         let info = allocation_counter::measure(|| {
             let frame = picture.dequeue(ms(t));
-            std::mem::forget(frame);
+            drop(frame);
             if t >= 50 {
                 sound.fill(ms(t) - LATENCY, &mut [&mut l, &mut r], BLOCK);
             }

@@ -74,7 +74,7 @@ fn bench(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let clock = Arc::new(TestClock::new());
             let mut pair = pair(&clock);
-            pair.sound.attach();
+            pair.sound.attach().unwrap();
             let mut l = vec![0.0f32; BLOCK];
             let mut r = vec![0.0f32; BLOCK];
             pair.sound

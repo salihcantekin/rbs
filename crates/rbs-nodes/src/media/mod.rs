@@ -3,9 +3,12 @@
 //! One media source is two nodes fed by one decode worker:
 //!
 //! - the picture node [`MediaPictureNode`] (`org.rbs.media`, render partition, one
-//!   video output). It owns the worker's lifecycle on the control path;
+//!   video output). It holds the picture rings while it is prepared;
 //! - the sound node [`MediaSoundNode`] (`org.rbs.media.sound`, audio partition, one
 //!   audio output). It owns the sound ring while it is prepared.
+//!
+//! Playback (the worker and its decoder) runs while either node is prepared, so a
+//! source that is heard but not seen still plays.
 //!
 //! The worker stamps every picture and every sound block with master time (ADR-0106
 //! decision 4). It paces each stream by master time, never waits on a ring, drops and
@@ -20,11 +23,12 @@
 
 mod pcm;
 mod picture;
+mod player;
 mod sound;
 mod worker;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
@@ -68,12 +72,13 @@ pub fn media_sound_descriptor() -> NodeDescriptor {
     )
 }
 
-/// The picture node and sound node of one media source, sharing one worker.
+/// The picture node and sound node of one media source, sharing one player.
 pub struct MediaPair {
     /// Adopt into the render partition.
     pub picture: MediaPictureNode,
     /// Adopt into the audio partition at the binder's sound node, when there is one.
-    /// Dropped otherwise: the worker then decodes no sound.
+    /// Dropped otherwise: the worker then decodes no sound. Preparing it alone plays
+    /// the file too.
     pub sound: MediaSoundNode,
 }
 
@@ -130,10 +135,14 @@ pub(crate) struct Shared {
     pub(crate) sound_from: AtomicU64,
     /// The file has an audio stream (known after the first open).
     pub(crate) has_audio: AtomicBool,
+    /// Media cursor in nanoseconds: the picture last shown, kept across Standby.
+    cursor: AtomicU64,
+    /// Playback. Locked on the control path only.
+    player: Mutex<player::Player>,
 }
 
 impl Shared {
-    fn new() -> Arc<Self> {
+    fn new(player: player::Player) -> Arc<Self> {
         Arc::new(Self {
             stats: Arc::new(MediaStats::default()),
             inlet: Mutex::new(None),
@@ -142,7 +151,28 @@ impl Shared {
             epoch: AtomicU32::new(0),
             sound_from: AtomicU64::new(0),
             has_audio: AtomicBool::new(false),
+            cursor: AtomicU64::new(0),
+            player: Mutex::new(player),
         })
+    }
+
+    /// The player. Control path only; a poisoned lock is taken over, since every
+    /// field stays valid between statements.
+    pub(crate) fn player(&self) -> MutexGuard<'_, player::Player> {
+        self.player
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn cursor(&self) -> Duration {
+        Duration::from_nanos(self.cursor.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn set_cursor(&self, cursor: Duration) {
+        self.cursor.store(
+            u64::try_from(cursor.as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
     }
 
     /// Takes the inlet. The lock is held only to move an `Option`.
@@ -185,17 +215,16 @@ pub fn media_pair(
     clock: Arc<dyn rbs_core::time::Clock>,
     audio: rbs_audio::AudioGraphConfig,
 ) -> MediaPair {
-    let shared = Shared::new();
+    let shared = Shared::new(player::Player::new(
+        factory,
+        path,
+        loop_playback,
+        restart_when_shown,
+        clock,
+        audio,
+    ));
     MediaPair {
-        picture: MediaPictureNode::new(
-            factory,
-            path,
-            loop_playback,
-            restart_when_shown,
-            clock,
-            audio,
-            Arc::clone(&shared),
-        ),
+        picture: MediaPictureNode::new(Arc::clone(&shared)),
         sound: MediaSoundNode::new(audio, shared),
     }
 }

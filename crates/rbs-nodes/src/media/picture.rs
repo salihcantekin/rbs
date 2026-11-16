@@ -1,22 +1,18 @@
 //! The media picture node `org.rbs.media` (ADR-0108 decisions 1, 5, 7, and 9).
 
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rbs_audio::AudioGraphConfig;
 use rbs_core::media::VideoFrame;
-use rbs_core::time::{Clock, Timestamp};
+use rbs_core::time::Timestamp;
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::upload::SourceUpload;
 use rbs_graph::node::NodeDescriptor;
-use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, RestartPolicy, WarmCtx};
-use rbs_media_decode::MediaDecoderFactory;
+use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 
-use super::worker::{self, Job, Pending, Progress};
+use super::player::{Player, Rings, User};
+use super::worker::{Pending, Progress};
 use super::{MediaStats, Shared, VIDEO_PIN, media_descriptor};
 
 /// Why wake failed.
@@ -51,35 +47,19 @@ pub enum MediaPhase {
     Hold,
 }
 
-struct Rings {
-    pictures: rtrb::Consumer<Pending>,
-    returns: rtrb::Producer<Pending>,
-}
-
-struct Worker {
-    join: JoinHandle<()>,
-    shutdown: Arc<AtomicBool>,
-}
-
-/// Shows one local file's pictures on the master clock and drives its decode worker.
+/// Shows one local file's pictures on the master clock.
 ///
 /// `process` only dequeues, uploads a new picture, and hands the replaced one back on
-/// the return ring. The worker is started and joined on the control path
-/// ([`Self::wake`], [`Self::service`], [`Self::standby`]), never from `process`.
+/// the return ring. Playback is started and stopped on the control path
+/// ([`Self::wake`], [`Self::service`], [`Self::standby`]) through the player the sound
+/// node shares, never from `process`.
 pub struct MediaPictureNode {
     descriptor: NodeDescriptor,
-    factory: Arc<dyn MediaDecoderFactory>,
-    path: std::path::PathBuf,
-    clock: Arc<dyn Clock>,
-    config: AudioGraphConfig,
     shared: Arc<Shared>,
     loop_flag: Arc<AtomicBool>,
-    restart_when_shown: bool,
-    cursor: Duration,
+    /// The player's phase as this node last saw it on the control path.
     phase: MediaPhase,
     rings: Option<Rings>,
-    worker: Option<Worker>,
-    ended: Arc<AtomicBool>,
     progress: Arc<Progress>,
     /// The picture shown now, or the first one before its time.
     current: Option<Pending>,
@@ -88,49 +68,29 @@ pub struct MediaPictureNode {
     held: Option<VideoFrame>,
     held_mark: u8,
     published: Option<u32>,
-    queue_allocations: u32,
-    attempts: u32,
-    retry_after: Option<Duration>,
     upload: SourceUpload,
     /// Last picture already on the GPU, reused while the clock repeats a picture.
     shown_texture: Option<VideoFrame>,
 }
 
 impl MediaPictureNode {
-    // Each argument is a distinct source setting; a builder would only move them.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        factory: Arc<dyn MediaDecoderFactory>,
-        path: std::path::PathBuf,
-        loop_playback: bool,
-        restart_when_shown: bool,
-        clock: Arc<dyn Clock>,
-        config: AudioGraphConfig,
-        shared: Arc<Shared>,
-    ) -> Self {
+    pub(crate) fn new(shared: Arc<Shared>) -> Self {
+        let (loop_flag, progress) = {
+            let player = shared.player();
+            (Arc::clone(&player.loop_flag), Arc::clone(&player.progress))
+        };
         Self {
             descriptor: media_descriptor(),
-            factory,
-            path,
-            clock,
-            config,
             shared,
-            loop_flag: Arc::new(AtomicBool::new(loop_playback)),
-            restart_when_shown,
-            cursor: Duration::ZERO,
+            loop_flag,
             phase: MediaPhase::Standby,
             rings: None,
-            worker: None,
-            ended: Arc::new(AtomicBool::new(false)),
-            progress: Arc::new(Progress::default()),
+            progress,
             current: None,
             next: None,
             held: None,
             held_mark: 0,
             published: None,
-            queue_allocations: 0,
-            attempts: 0,
-            retry_after: None,
             upload: SourceUpload::new(),
             shown_texture: None,
         }
@@ -141,15 +101,14 @@ impl MediaPictureNode {
     pub fn set_loop(&mut self, on: bool) {
         self.loop_flag.store(on, Ordering::Release);
         if on && self.phase == MediaPhase::Hold {
-            self.cursor = Duration::ZERO;
-            let now = self.clock.now();
-            let _ = self.wake(now);
+            self.shared.set_cursor(Duration::ZERO);
+            let _ = self.restart();
         }
     }
 
-    /// Stored until the next wake. Not applied to a worker that is already playing.
+    /// Stored until the next start. Not applied to a worker that is already playing.
     pub fn set_restart_when_shown(&mut self, on: bool) {
-        self.restart_when_shown = on;
+        self.shared.player().restart_when_shown = on;
     }
 
     /// `loop` as stored now.
@@ -159,45 +118,59 @@ impl MediaPictureNode {
 
     /// Media cursor kept with no decoder while Standby.
     pub fn cursor(&self) -> Duration {
-        self.cursor
+        self.shared.cursor()
     }
 
     /// Playback phase.
     pub fn phase(&self) -> MediaPhase {
-        self.phase
+        self.shared.player().phase
     }
 
     /// Times a picture ring was allocated. Stays 0 while Standby and when a picture
     /// is refused.
     pub fn queue_allocations(&self) -> u32 {
-        self.queue_allocations
+        self.shared.player().queue_allocations
     }
 
     /// True while the worker holds an open decoder.
     pub fn decoder_held(&self) -> bool {
-        self.progress.decoder_held.load(Ordering::Acquire)
+        self.shared
+            .player()
+            .progress
+            .decoder_held
+            .load(Ordering::Acquire)
     }
 
-    /// True while the picture rings exist.
+    /// True while this node holds the picture rings.
     pub fn queues_live(&self) -> bool {
         self.rings.is_some()
     }
 
     /// Pictures the worker has enqueued in this run.
     pub fn enqueued(&self) -> u32 {
-        self.progress.enqueued.load(Ordering::Acquire)
+        self.shared
+            .player()
+            .progress
+            .enqueued
+            .load(Ordering::Acquire)
     }
 
     /// The worker has returned (it may not be joined yet).
     pub fn worker_ended(&self) -> bool {
-        self.ended.load(Ordering::Acquire)
+        self.shared.player().ended.load(Ordering::Acquire)
     }
 
     /// The latest master time at which the worker found nothing due: every picture
     /// and sound block up to that time plus [`super::LEAD`] is queued or dropped.
     /// For tests and diagnostics.
     pub fn worker_settled_at(&self) -> Option<Timestamp> {
-        match self.progress.settled_at.load(Ordering::Acquire) {
+        match self
+            .shared
+            .player()
+            .progress
+            .settled_at
+            .load(Ordering::Acquire)
+        {
             0 => None,
             n => Some(Timestamp::from_nanos(n - 1)),
         }
@@ -205,7 +178,7 @@ impl MediaPictureNode {
 
     /// True after [`Self::service`] or [`Self::standby`] has joined the thread.
     pub fn worker_joined(&self) -> bool {
-        self.worker.is_none()
+        self.shared.player().worker_joined()
     }
 
     /// First byte of the picture last chosen, when there is one.
@@ -215,12 +188,12 @@ impl MediaPictureNode {
 
     /// Failures in a row after a mid-play fault. Back-off uses ADR-0024's default curve.
     pub fn attempts(&self) -> u32 {
-        self.attempts
+        self.shared.player().attempts
     }
 
     /// Wait before the next wake after a fault, when the node is holding.
     pub fn retry_after(&self) -> Option<Duration> {
-        self.retry_after
+        self.shared.player().retry_after
     }
 
     /// Counters, shared with the sound node.
@@ -228,91 +201,69 @@ impl MediaPictureNode {
         Arc::clone(&self.shared.stats)
     }
 
-    /// Opens the file, seeks, and starts the worker. Control thread only. The worker
-    /// anchors the cursor's picture at its first picture's master time plus the lead.
+    /// Joins playback: starts it from Standby or Hold (opening the file, seeking, and
+    /// starting the worker), or takes the picture rings of a worker the sound node
+    /// started. Control thread only. The worker anchors the cursor's picture at its
+    /// first picture's master time plus the lead.
     pub fn wake(&mut self, _now: Timestamp) -> Result<(), MediaNodeError> {
-        if self.phase == MediaPhase::Playing {
-            return Ok(());
-        }
-        self.standby();
-        let cursor = if self.restart_when_shown {
-            Duration::ZERO
-        } else {
-            self.cursor
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        let joined = player.acquire(User::Picture, &shared);
+        let result = match joined {
+            Ok(()) if player.phase == MediaPhase::Playing => Ok(()),
+            Ok(()) => {
+                self.forget();
+                player.start(&shared)
+            }
+            Err(error) => Err(error),
         };
-        self.cursor = cursor;
-        self.ended.store(false, Ordering::Release);
-        self.progress = Arc::new(Progress::default());
-        self.published = None;
+        self.take_rings(&mut player);
+        result
+    }
+
+    /// Starts playback again from the stored cursor (or 0 with `restart_when_shown`).
+    fn restart(&mut self) -> Result<(), MediaNodeError> {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        self.forget();
+        let result = player.start(&shared);
+        self.take_rings(&mut player);
+        result
+    }
+
+    /// Takes the rings of a run this node does not hold yet.
+    fn take_rings(&mut self, player: &mut Player) {
+        if let Some(rings) = player.rings.take() {
+            self.forget();
+            self.rings = Some(rings);
+            self.progress = Arc::clone(&player.progress);
+        }
+        self.phase = player.phase;
+    }
+
+    /// Drops this node's pictures and rings.
+    fn forget(&mut self) {
+        self.rings = None;
         self.current = None;
         self.next = None;
         self.held = None;
-        // A new epoch: sound blocks a previous worker left in the ring are skipped.
-        let epoch = self
-            .shared
-            .epoch
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
-
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel();
-        let job = Job {
-            factory: Arc::clone(&self.factory),
-            path: self.path.clone(),
-            cursor,
-            clock: Arc::clone(&self.clock),
-            config: self.config,
-            loop_flag: Arc::clone(&self.loop_flag),
-            shutdown: Arc::clone(&shutdown),
-            shared: Arc::clone(&self.shared),
-            epoch,
-            progress: Arc::clone(&self.progress),
-            ready: tx,
-        };
-        let ended = Arc::clone(&self.ended);
-        let progress = Arc::clone(&self.progress);
-        let join = thread::Builder::new()
-            .name("rbs-media".into())
-            .spawn(move || {
-                if std::panic::catch_unwind(AssertUnwindSafe(|| worker::run(job))).is_err() {
-                    progress.failed.store(true, Ordering::Release);
-                }
-                ended.store(true, Ordering::Release);
-            })
-            .map_err(|error| MediaNodeError::Failed(error.to_string()))?;
-
-        let ready = rx.recv().unwrap_or(Err(MediaNodeError::Failed(
-            "media worker stopped before it queued a picture".into(),
-        )));
-        match ready {
-            Ok(ready) => {
-                self.rings = Some(Rings {
-                    pictures: ready.pictures,
-                    returns: ready.returns,
-                });
-                self.queue_allocations = self.queue_allocations.saturating_add(1);
-                self.worker = Some(Worker { join, shutdown });
-                self.phase = MediaPhase::Playing;
-                Ok(())
-            }
-            Err(error) => {
-                shutdown.store(true, Ordering::Release);
-                join.thread().unpark();
-                let _ = join.join();
-                self.phase = MediaPhase::Standby;
-                Err(error)
-            }
-        }
+        self.published = None;
+        self.shown_texture = None;
     }
 
     /// Control thread. After a fault, or once a worker that reached the end of the
     /// file has returned and every picture it queued was shown, joins it, frees the
     /// rings, and holds the last picture.
     pub fn service(&mut self) {
-        if !self.ended.load(Ordering::Acquire) {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        if self.rings.is_none() {
+            self.take_rings(&mut player);
+        }
+        if self.phase != MediaPhase::Playing || !player.ended.load(Ordering::Acquire) {
             return;
         }
-        let failed = self.progress.failed.load(Ordering::Acquire);
+        let failed = player.progress.failed.load(Ordering::Acquire);
         let drained = self.next.is_none()
             && self
                 .rings
@@ -321,7 +272,7 @@ impl MediaPictureNode {
         if !failed && !drained {
             return;
         }
-        self.join_worker();
+        player.hold();
         if let Some(rings) = self.rings.as_mut() {
             while let Ok(item) = rings.pictures.pop() {
                 self.current = Some(item);
@@ -332,29 +283,34 @@ impl MediaPictureNode {
         }
         if let Some(current) = self.current.take() {
             self.held_mark = current.mark;
-            self.cursor = current.media;
+            self.shared.set_cursor(current.media);
             self.published = Some(current.index);
             self.held = Some(current.frame);
         }
         self.rings = None;
-        if failed {
-            self.attempts = self.attempts.saturating_add(1);
-            self.retry_after = Some(RestartPolicy::default().delay(self.attempts));
-        }
-        if self.phase == MediaPhase::Playing {
-            self.phase = MediaPhase::Hold;
-        }
+        self.phase = player.phase;
     }
 
-    /// Releases the worker, the decoder, and the rings. Keeps the cursor, `loop`, and
+    /// Leaves playback: frees this node's rings and, unless the sound node is still
+    /// prepared, the worker and the decoder. Keeps the cursor, `loop`, and
     /// `restart_when_shown`.
     pub fn standby(&mut self) {
-        self.join_worker();
-        self.rings = None;
-        self.current = None;
-        self.next = None;
-        self.held = None;
-        self.shown_texture = None;
+        // Pictures go back to the worker, which frees them on its own thread.
+        if let Some(item) = self.current.take() {
+            self.give_back(item);
+        }
+        if let Some(item) = self.next.take() {
+            self.give_back(item);
+        }
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        // A worker that plays on for the sound node keeps its picture rings for a later
+        // wake; one that holds no rings of its own takes them back.
+        if player.phase == MediaPhase::Playing && player.rings.is_none() {
+            player.rings = self.rings.take();
+        }
+        self.forget();
+        player.release(User::Picture);
         self.phase = MediaPhase::Standby;
     }
 
@@ -406,7 +362,7 @@ impl MediaPictureNode {
                 .fetch_add(1, Ordering::Relaxed);
         } else {
             self.published = Some(current.index);
-            self.cursor = current.media;
+            self.shared.set_cursor(current.media);
             self.held_mark = current.mark;
         }
         current.frame.share()
@@ -450,14 +406,6 @@ impl MediaPictureNode {
             let _ = rings.returns.push(item);
         }
     }
-
-    fn join_worker(&mut self) {
-        if let Some(worker) = self.worker.take() {
-            worker.shutdown.store(true, Ordering::Release);
-            worker.join.thread().unpark();
-            let _ = worker.join.join();
-        }
-    }
 }
 
 impl Drop for MediaPictureNode {
@@ -472,7 +420,8 @@ impl Node<GpuRuntime> for MediaPictureNode {
     }
 
     fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        self.wake(self.clock.now())
+        let now = self.shared.player().clock().now();
+        self.wake(now)
             .map_err(|error| NodeError::Failed(error.to_string()))
     }
 

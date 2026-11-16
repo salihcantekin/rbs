@@ -894,7 +894,9 @@ impl State {
                     continue;
                 }
                 // The sound node of a picture-and-sound type (ADR-0106 decision 2):
-                // only with audio bound, and only for a type that names one.
+                // only with audio bound, and only for a type that names one. A named
+                // sound type that is not installed refuses the whole source, so it is
+                // never shown without its sound.
                 let sound_desc = match (audio, pins.output.is_some()) {
                     (Some(_), true) => match types.sound_type(&source.type_id) {
                         Some(t) => {
@@ -910,6 +912,7 @@ impl State {
                                 report
                                     .problems
                                     .push(BindProblem::UnknownSourceType(source.id, t));
+                                continue;
                             }
                             found
                         }

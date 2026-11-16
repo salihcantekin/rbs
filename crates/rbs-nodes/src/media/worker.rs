@@ -4,7 +4,8 @@
 //! while that stream's next stamp is at most [`LEAD`] ahead of now, and parks
 //! otherwise. It never waits on a ring: a picture or block that does not fit is dropped
 //! and counted. It stamps pictures and sound with master time from one anchor, set once
-//! it holds the first picture, at now plus the lead, and keeps mapping forward across a
+//! it holds the first picture (and the first sound chunk while the sound node is
+//! prepared), at now plus the lead, and keeps mapping forward across a
 //! loop boundary so a loop leaves no timestamp gap.
 
 use std::sync::Arc;
@@ -118,6 +119,21 @@ pub(crate) fn run(job: Job) {
             return;
         }
     };
+    // With the sound node prepared, the first sound chunk is decoded before the anchor
+    // too, so its decode time does not make the first blocks late.
+    let primed_sound = if has_audio && job.shared.sound_attached.load(Ordering::Acquire) {
+        match decoder.next_sound() {
+            Ok(sample) => sample,
+            Err(error) => {
+                let _ = job
+                    .ready
+                    .send(Err(MediaNodeError::Failed(error.to_string())));
+                return;
+            }
+        }
+    } else {
+        None
+    };
     // The anchor is set before the picture node learns the worker is ready, so a
     // clock that moves after `wake` returns cannot move it.
     let anchor = job.clock.now() + LEAD;
@@ -142,6 +158,7 @@ pub(crate) fn run(job: Job) {
         returns_rx,
         index: 0,
         sound: SoundStream::new(&job.config, job.cursor),
+        primed_sound,
         job: &job,
         decoder: &mut *decoder,
     };
@@ -165,6 +182,8 @@ struct Run<'a> {
     returns_rx: rtrb::Consumer<Pending>,
     index: u32,
     sound: SoundStream,
+    /// The first sound chunk, decoded before the anchor was set.
+    primed_sound: Option<rbs_media_decode::SoundSample>,
 }
 
 impl Run<'_> {
@@ -206,6 +225,10 @@ impl Run<'_> {
             // Sound.
             let attached = job.shared.sound_attached.load(Ordering::Acquire);
             let has_audio = job.shared.has_audio.load(Ordering::Acquire);
+            if !attached {
+                // The sound node let go of its ring: decode no sound until it is back.
+                self.sound.inlet = None;
+            }
             if attached && has_audio {
                 if self
                     .sound
@@ -216,12 +239,12 @@ impl Run<'_> {
                     self.sound.inlet = job.shared.take_inlet();
                     self.sound.fill_spares(&job.config);
                 }
-                if !self.sound.done
-                    && self.sound_next_master() <= horizon
-                    && self.next_sound(now).is_err()
-                {
-                    job.progress.failed.store(true, Ordering::Release);
-                    return;
+                if !self.sound.done && self.sound_next_master() <= horizon {
+                    busy = true;
+                    if self.next_sound(now).is_err() {
+                        job.progress.failed.store(true, Ordering::Release);
+                        return;
+                    }
                 }
                 busy |= self.cut_blocks(now, false);
             }
@@ -235,7 +258,7 @@ impl Run<'_> {
                 if !job.loop_flag.load(Ordering::Acquire) {
                     return;
                 }
-                let pass = self.pictures.pass_end;
+                let pass = self.pass_length(attached && has_audio);
                 if self.decoder.seek(Duration::ZERO).is_err() {
                     job.progress.failed.store(true, Ordering::Release);
                     return;
@@ -266,11 +289,30 @@ impl Run<'_> {
         if !self.pictures.done {
             due = Some(self.master(self.pictures.next));
         }
-        if !self.sound.done && self.sound.inlet.is_some() {
+        if !self.sound.done && self.sound.inlet.is_some() && self.sound_playing() {
             let s = self.sound_next_master();
             due = Some(due.map_or(s, |d: i128| d.min(s)));
         }
         due
+    }
+
+    /// The worker decodes sound now.
+    fn sound_playing(&self) -> bool {
+        self.job.shared.sound_attached.load(Ordering::Acquire)
+            && self.job.shared.has_audio.load(Ordering::Acquire)
+    }
+
+    /// Media length of the pass that just ended: the later end of its pictures and its
+    /// sound, so the next pass starts after both. Without sound decoded in this pass,
+    /// the file's stated duration stands in for the sound's end.
+    fn pass_length(&self, sound: bool) -> Duration {
+        let mut length = self.pictures.pass_end.max(self.sound.pass_end);
+        if !sound && self.job.shared.has_audio.load(Ordering::Acquire) {
+            if let Some(duration) = self.decoder.duration() {
+                length = length.max(duration);
+            }
+        }
+        length
     }
 
     fn next_picture(&mut self) -> Result<(), ()> {
@@ -352,7 +394,11 @@ impl Run<'_> {
         let rate = i128::from(job.config.format.sample_rate.hz());
         let too_old = now.as_nanos() as i128 - job.config.latency.as_nanos() as i128;
         for _ in 0..CATCH_UP_CHUNKS {
-            let Some(sample) = self.decoder.next_sound()? else {
+            let next = match self.primed_sound.take() {
+                Some(sample) => Some(sample),
+                None => self.decoder.next_sound()?,
+            };
+            let Some(sample) = next else {
                 self.sound.done = true;
                 return Ok(());
             };
@@ -364,6 +410,7 @@ impl Run<'_> {
             );
             let media = sample.pts.unwrap_or(self.sound.next_media);
             self.sound.next_media = media.saturating_add(length);
+            self.sound.pass_end = self.sound.pass_end.max(self.sound.next_media);
             // A sound node attached late skips what the graph can no longer play.
             if self.master(media.saturating_add(length)) < too_old {
                 self.sound
@@ -388,7 +435,7 @@ impl Run<'_> {
         let rate = i128::from(self.job.config.format.sample_rate.hz());
         let end = self
             .sound
-            .frame_of(self.offset + self.pictures.pass_end, rate);
+            .frame_of(self.offset + self.pass_length(true), rate);
         self.sound.flush(end);
         self.cut_blocks(now, !self.job.loop_flag.load(Ordering::Acquire));
     }
@@ -559,6 +606,8 @@ struct SoundStream {
     skip: u64,
     resync: bool,
     done: bool,
+    /// Media end of the sound decoded in this pass.
+    pass_end: Duration,
     inlet: Option<SoundInlet>,
     spares: Vec<Box<[f32]>>,
     scratch: Vec<f32>,
@@ -579,6 +628,7 @@ impl SoundStream {
             skip: 0,
             resync: true,
             done: false,
+            pass_end: Duration::ZERO,
             inlet: None,
             spares: Vec::new(),
             scratch: Vec::new(),
@@ -593,6 +643,7 @@ impl SoundStream {
         self.skip = 0;
         self.resync = true;
         self.done = false;
+        self.pass_end = Duration::ZERO;
     }
 
     /// Buffers for the blocks in flight: one per ring slot plus one.

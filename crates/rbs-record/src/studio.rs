@@ -2255,24 +2255,25 @@ impl Studio {
         let audio_partition = self.settings.partitions.audio;
         for entry in &mut self.entries {
             // The sound half of a media source joins once its sound node is scheduled.
+            // It is marked adopted only after the engine took it; a failed adopt drops
+            // it (the source then plays without sound) and reports the error.
             if let (Some(instance), Some(node)) = (
                 entry.instance.as_mut(),
                 self.binder.sound_node(entry.source),
             ) && scheduled.contains(&node)
                 && matches!(instance.sound, SoundHalf::Held(_))
-                && let SoundHalf::Held(sound) = std::mem::replace(
-                    &mut instance.sound,
-                    SoundHalf::Adopted(node, audio_partition),
-                )
+                && let SoundHalf::Held(sound) =
+                    std::mem::replace(&mut instance.sound, SoundHalf::None)
             {
                 self.engine.adopt::<()>(audio_partition, node, sound)?;
+                instance.sound = SoundHalf::Adopted(node, audio_partition);
             }
             // A rename updates the collection without rebuilding the node: keep the
             // name the UI and diagnostics show in step with it.
             if let Some(source) = collection.source(entry.source) {
                 entry.state.name = source.name.clone();
             }
-            entry.scheduled = scheduled.contains(&entry.state.node);
+            entry.scheduled = in_plan(&self.binder, entry, &scheduled);
             if !entry.scheduled || entry.instance.is_some() {
                 continue;
             }
@@ -2367,6 +2368,9 @@ impl Studio {
                     // The picture node in the render partition, the same way as a
                     // still; the sound node in the audio partition at the binder's
                     // sound node, the mixer's producer (ADR-0106, ADR-0108).
+                    // The instance is recorded right after the picture node is adopted,
+                    // so a failed sound adopt leaves no picture node the studio does
+                    // not know about.
                     let m = *m;
                     entry.state.adapter = m.adapter;
                     self.engine.adopt::<GpuRuntime>(
@@ -2374,25 +2378,25 @@ impl Studio {
                         entry.state.node,
                         Box::new(m.picture),
                     )?;
-                    let sound = match self.binder.sound_node(entry.source) {
-                        Some(node) if scheduled.contains(&node) => {
-                            self.engine
-                                .adopt::<()>(audio_partition, node, Box::new(m.sound))?;
-                            SoundHalf::Adopted(node, audio_partition)
-                        }
-                        Some(_) => SoundHalf::Held(Box::new(m.sound)),
-                        // No audio partition: no sound node, and the worker decodes
-                        // no sound.
-                        None => SoundHalf::None,
-                    };
-                    entry.instance = Some(Instance {
+                    let instance = entry.instance.insert(Instance {
                         partition: RENDER,
                         gpu: true,
                         watch: Watch::Media(m.stats),
                         offset: None,
                         sent_offset_ns: 0,
-                        sound,
+                        sound: SoundHalf::None,
                     });
+                    match self.binder.sound_node(entry.source) {
+                        Some(node) if scheduled.contains(&node) => {
+                            self.engine
+                                .adopt::<()>(audio_partition, node, Box::new(m.sound))?;
+                            instance.sound = SoundHalf::Adopted(node, audio_partition);
+                        }
+                        Some(_) => instance.sound = SoundHalf::Held(Box::new(m.sound)),
+                        // No audio partition: no sound node, and the worker decodes
+                        // no sound.
+                        None => {}
+                    }
                 }
                 SourceInstance::Browser(b) => {
                     // Render partition (ADR-0109). Size is known from the page settings.
@@ -3781,7 +3785,7 @@ impl Studio {
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
         for e in &mut self.entries {
-            e.scheduled = scheduled.contains(&e.state.node);
+            e.scheduled = in_plan(&self.binder, e, &scheduled);
         }
         self.apply_input_offsets(&scheduled);
         self.send_program_layers(&plan);
@@ -4328,6 +4332,15 @@ fn filter_of(
         None => FilterKind::Audio(rbs_audio_filters::find(f.type_id.as_str())?),
     };
     Some((kind, &f.settings))
+}
+
+/// True when the plan schedules the source's node, or, for a picture-and-sound
+/// source, either of its nodes: a source that is heard but not seen still plays.
+fn in_plan(binder: &SceneBinder, entry: &Entry, scheduled: &BTreeSet<NodeId>) -> bool {
+    scheduled.contains(&entry.state.node)
+        || binder
+            .sound_node(entry.source)
+            .is_some_and(|node| scheduled.contains(&node))
 }
 
 fn take_instance(

@@ -10,12 +10,14 @@ use rbs_core::time::Timestamp;
 use rbs_graph::node::NodeDescriptor;
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 
+use super::player::User;
 use super::{LEAD, SOUND_PIN, Shared, SoundBlock, SoundInlet, media_sound_descriptor};
 
 /// Writes one block of the media file's sound per audio tick.
 ///
 /// While prepared it owns the sound ring and its return ring; the worker holds the
-/// other ends. `process` drops blocks older than the tick's block (returning their
+/// other ends. Preparing it plays the file even while the picture node is not
+/// prepared (a source that is heard but not seen). `process` drops blocks older than the tick's block (returning their
 /// buffers), copies the due block into the pin or writes silence, and never waits.
 pub struct MediaSoundNode {
     descriptor: NodeDescriptor,
@@ -58,10 +60,12 @@ impl MediaSoundNode {
         Arc::clone(&self.shared.stats)
     }
 
-    /// Allocates the rings and offers the producer side to the worker. Control path.
-    pub fn attach(&mut self) {
+    /// Allocates the rings, offers the producer side to the worker, and joins
+    /// playback: with the picture node not prepared, this starts the worker. Control
+    /// path. On an error the rings are freed again.
+    pub fn attach(&mut self) -> Result<(), super::MediaNodeError> {
         if self.ring.is_some() {
-            return;
+            return Ok(());
         }
         let slots = Self::ring_slots(&self.config);
         let (blocks_tx, blocks) = rtrb::RingBuffer::new(slots);
@@ -78,14 +82,22 @@ impl MediaSoundNode {
             slots,
         });
         self.shared.sound_attached.store(true, Ordering::Release);
+        let shared = Arc::clone(&self.shared);
+        let joined = shared.player().acquire(User::Sound, &shared);
+        if joined.is_err() {
+            self.detach();
+        }
+        joined
     }
 
-    /// Frees the rings. Control path. A worker that still holds the other ends sees
-    /// them abandoned and stops writing sound.
+    /// Frees the rings and leaves playback; with the picture node not prepared either,
+    /// this stops the worker. Control path. A worker that still holds the other ends
+    /// sees them abandoned and stops writing sound.
     pub fn detach(&mut self) {
         self.shared.sound_attached.store(false, Ordering::Release);
         drop(self.shared.take_inlet());
         self.ring = None;
+        self.shared.player().release(User::Sound);
     }
 
     /// Writes the block for `block_time` into `channels` (`frames` each). Returns
@@ -173,8 +185,8 @@ impl<X: Runtime> Node<X> for MediaSoundNode {
     }
 
     fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
-        self.attach();
-        Ok(())
+        self.attach()
+            .map_err(|error| NodeError::Failed(error.to_string()))
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, X>) {

@@ -922,7 +922,7 @@ fn a_video_node_with_sound_and_no_sound_type_is_not_mixed() {
 }
 
 #[test]
-fn a_sound_type_that_is_not_installed_binds_the_picture_alone() {
+fn a_sound_type_that_is_not_installed_refuses_the_source() {
     fn unsounded(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
         if id.as_str() == "org.example.unsounded" {
             return types(&ty("org.rbs.source.media"));
@@ -952,7 +952,7 @@ fn a_sound_type_that_is_not_installed_binds_the_picture_alone() {
         odd,
         ty("org.example.missing-sound")
     )));
-    assert!(s.binder.source_node(odd).is_some());
+    assert!(s.binder.source_node(odd).is_none());
     assert!(s.binder.sound_node(odd).is_none());
 }
 
