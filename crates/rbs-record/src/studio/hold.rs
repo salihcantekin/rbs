@@ -220,6 +220,11 @@ pub(super) struct HoldRun {
 }
 
 impl HoldRun {
+    /// The scene the hold shows.
+    pub(super) fn scene(&self) -> SceneId {
+        self.scene
+    }
+
     pub(super) fn view_mut(&mut self) -> Option<&mut HoldView> {
         self.view.as_mut()
     }

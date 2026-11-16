@@ -35,6 +35,7 @@ pub mod replay;
 pub mod replay_node;
 pub mod still;
 pub mod sync_probe;
+pub mod text;
 pub mod vcam;
 
 pub use capture::{CAPTURE_NODE_TYPE, CaptureSourceNode, capture_descriptor, capture_fault};
@@ -59,6 +60,7 @@ pub use sync_probe::{
     SYNC_PICTURE_MAX_FPS, SYNC_PICTURE_PROBE_NODE_TYPE, SyncPictureLog, SyncPictureProbeNode,
     sync_picture_probe_descriptor,
 };
+pub use text::{TEXT_NODE_TYPE, TextFrame, TextNodeStats, TextSourceNode, text_descriptor};
 pub use vcam::{
     VIRTUAL_CAMERA_NODE_TYPE, VirtualCameraNode, VirtualCameraNodeStats, virtual_camera_descriptor,
 };

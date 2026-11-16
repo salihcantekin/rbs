@@ -1309,6 +1309,48 @@ fn changed_settings_give_the_source_a_new_node_and_keep_its_filters() {
     assert!(report.created_sources.is_empty() && report.retired_sources.is_empty());
 }
 
+/// Node types where the camera takes its settings in place (ADR-0129 decision 5).
+struct LiveCamera;
+
+impl rbs_scene::binder::NodeTypes for LiveCamera {
+    fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
+        types(type_id)
+    }
+    fn live_settings(&self, type_id: &NodeTypeId) -> bool {
+        type_id.as_str() == "org.rbs.source.camera"
+    }
+}
+
+#[test]
+fn a_type_with_live_settings_keeps_its_node_and_reports_the_change() {
+    let mut s = setup();
+    s.binder = SceneBinder::new(LiveCamera);
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(s.cam).unwrap();
+    let screen = s.binder.source_node(s.screen).unwrap();
+
+    let mut settings = Settings::new();
+    settings.insert("width".into(), SettingValue::Int(800));
+    s.col.set_source_settings(s.cam, settings.clone()).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(s.binder.source_node(s.cam), Some(node));
+    assert_eq!(report.changed_sources, [(s.cam, node)]);
+    assert!(report.created_sources.is_empty());
+    assert!(report.retired_sources.is_empty());
+    assert!(report.replaced_sources.is_empty());
+    assert_eq!(state(&s, node), Lifecycle::Active);
+
+    // Same settings again: nothing to report.
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.changed_sources.is_empty());
+
+    // Other types are still replaced.
+    s.col.set_source_settings(s.screen, settings).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.changed_sources.is_empty());
+    assert_eq!(report.retired_sources, [screen]);
+}
+
 #[test]
 fn deleted_sources_and_filters_are_reported_retired() {
     let (mut s, mic) = audio_setup();

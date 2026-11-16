@@ -182,3 +182,92 @@ Network-capable, including a `file` URL. Settings: `url` (`http`, `https`, or `f
 
 The studio does not link or load CEF. A real CEF build replaces the helper executable and is a process tree. This tree's stand-in is the `rbs-browser-runner` binary (`rbs-browser-ipc` messages). The CEF tree root is `rbs-browser-cef` (ADR-0132 decision 1), built outside the workspace with `cargo build --release --manifest-path crates/rbs-browser-cef/Cargo.toml`; until the runtime download and the sandbox land it is used only when `RBS_BROWSER_HELPER` points at it. It paints in software into the section (converting CEF's premultiplied `Bgra8` to straight `Rgba8` while it copies, so the studio adds no pass), runs headless on Linux (no X11 or Wayland), takes page audio away from the OS output and drops it until the sound node lands, cancels popups, downloads, file pickers and JavaScript dialogs, denies device permissions, limits a `file` page to its own directory (`rbs_browser_ipc::page`), and keeps its profile in a new private temporary directory removed on exit. Frames cross a studio-allocated shared memory section (`rbs_browser_shm::FrameRing`, ADR-0109 decision 8): a named POSIX shared memory object on macOS and Linux, a pagefile-backed section on Windows, created before the helper starts and named in `configure`. Layout: a 128-byte header (magic `RBSB`, layout version 1, width, height, pixel layout 1 = `Rgba8` straight or 2 = `Bgra8` premultiplied, slot count 3, the triple-buffer exchange word, frames written, heartbeat) and three slots of width × height × 4 bytes. The helper and the studio each own one slot and swap the third through the exchange word, so neither waits and a slot is never written while read. The helper adds one to the heartbeat at least every 500 ms; two seconds without a change is a hang. Before its first beat a helper gets 15 seconds from spawn (`STARTUP_LIMIT`), because a cold engine start blocks before it can beat. A stop closes the helper's stdin and gives it one second (`STOP_GRACE`) to exit on its own, on the supervisor thread, then kills it; the session's `stop` never waits. A studio supervisor thread, which exists only while the source is Active, copies the newest frame into the source's sink at twice the page rate and checks the process and the heartbeat; an exit or a hang marks the source Unavailable and releases its slot. The studio never forms a reference to section bytes the helper may write (raw copy). The test double paints opaque; `transparent` false is applied by the helper, not by a studio pass. `Studio` adopts `SourceInstance::Browser` into the render partition and shares one `BrowserBudget` (`InstanceContext::with_browser`). Before each apply it grants slots to shown pages: program before preview, lower source id inside a class, at most two. Headless crates pass `Studio::start_with_tree` from the composition root (`rbs-app` uses `rbs-browser-helper` via `browser_tree::HelperBrowserTree` when the executable is found). Without a tree, prepare reports that no helper was set. A source without a slot reports `browser_cap` and starts nothing. A helper exit is Unavailable, releases the slot, counts toward back-off, and must not panic the host. The studio allocates the frame buffer; the render path drops it without joining a dead child. Installed and Standby start no process. An agent without the network permission gets `not_permitted` / `network` for any `url`, including `file` (`agent_may_set_browser_url`). The control API kind is not in `rbs-api` yet; the reason string is the contract.
 
+
+## Text (`org.rbs.source.text`, ADR-0129)
+
+Implementation status: phase (b) in progress. The type, its settings and the node exist; the text worker, the binder's in-place updates and the host wiring follow. No composition root registers a renderer yet, so the type is not installed in the desktop app (phases (a) to (e) are not reachable from the desktop UI until phase (f)).
+
+```rust
+// rbs_sources::types
+pub const TEXT_SOURCE: &str = "org.rbs.source.text";   // in ALL (11 types)
+pub enum SourceClass { ..., Text }                     // video pin only; a picture-only source
+// rbs_sources
+pub fn is_still(type_id: &NodeTypeId, settings: &Settings) -> bool; // class, except text: its settings
+impl SourceTypes {
+    pub fn register_text(&mut self, renderer: Arc<dyn TextRenderer>); // installs the type
+    pub fn text_renderer(&self, block: &TextBlock) -> Option<Arc<dyn TextRenderer>>; // colour glyphs first when the text has emoji
+}
+pub enum SourceInstance { ..., Text(Box<TextSource { node: TextSourceNode, frames: ParamSender<Option<TextFrame>>, stats, settings: TextSettings }>) }
+// rbs_sources::text
+pub const DEFAULT_BOX: [u32; 2] = [640, 160];
+pub const TEXT_KEYS: &[&str];
+pub enum TextKind { Text, Clock, Countdown, Stopwatch, RecordingTime, StreamTime } // as_str, parse
+pub struct TextSettings { kind, block: TextBlock, file, file_lines, fields, format, target, duration_ms, end_text } // is_still()
+pub fn text_is_still(settings: &Settings) -> bool;
+pub fn validate_text(settings: &Settings) -> Result<TextSettings, SourceError>;      // edits: strict
+pub fn read_text_lenient(settings: &Settings) -> (TextSettings, Vec<&'static str>); // documents: clamp, report keys
+pub fn has_color_glyphs(text: &str) -> bool;
+```
+
+Settings (keys in `types::keys`; ranges are the `rbs_text` constants):
+
+| Key | Kind | Default | Range or values |
+| --- | --- | --- | --- |
+| `kind` | Text | `text` | `text`, `clock`, `countdown`, `stopwatch`, `recording_time`, `stream_time` |
+| `text` | Text | empty | at most 10 000 characters; `\n` breaks a line |
+| `file`, `file_lines` | Text, Int | none, 0 | a local file; 0 = whole file, N = last N lines |
+| `font` | Text | system UI font | a family name |
+| `size` | Float | 72 | 1 to 1024 px |
+| `weight` | Int | 400 | 100 to 900 |
+| `italic`, `wrap` | Bool | false, true | |
+| `color`, `color2`, `angle` | Text, Text, Int | `#ffffff`, none, 0 | `#rrggbb[aa]`; `color2` makes a gradient; -360 to 360 degrees |
+| `width`, `height` | Int | 640 x 160 (documents only) | 1 to 4096 each, at most 8 388 608 pixels; required for an edit |
+| `align`, `valign`, `overflow` | Text | `center`, `middle`, `fit` | `left`/`center`/`right`, `top`/`middle`/`bottom`, `fit`/`clip`/`ellipsis` |
+| `line_spacing`, `letter_spacing` | Float | 1, 0 | 0.5 to 3, -50 to 200 px |
+| `outline_width`, `outline_color` | Float, Text | 0 (none), `#000000` | 0 to 64 px |
+| `shadow_color`, `shadow_x`, `shadow_y`, `shadow_blur` | Text, Float | none (no shadow), 0 | ±256 px, 0 to 64 px |
+| `background`, `padding` | Text, Float | none, 0 | 0 to 1024 px |
+| `fields`, `format`, `target`, `duration_ms`, `end_text` | Bool, Text, Text, Int, Text | false, none | live kinds (ADR-0129 decision 11, phase (d)) |
+
+A number key accepts an integer. `validate_text` refuses any other key, a value of the wrong kind or out of range (`InvalidSetting` naming the key), an unknown `kind` and a missing box. `read_text_lenient` never fails: it gives a wrong kind its default, clamps a value out of range (a box over the pixel cap keeps its width and is shortened), reads an unknown `kind` as `text`, and returns every key it changed for `SourceSettingsAdjusted`. Tabular figures are on for every live kind and for `fields`.
+
+**Still or not.** `is_still` answers from the class for every type except text; a text source is still only when `kind` is `text` (or absent) and `fields` is off. `rbs-record`'s picture form (`video_as: auto` writes images only for a still source; `image` on a text that is not still is `ImageOnMovingSource`) and the host's `set_record_separately` `video_as` check ask `is_still`. Recording sound separately is refused for a text source like any picture-only source (`AudioOnPictureOnly`), whatever its settings. Tests: `rbs-sources` `text::tests`, `rbs-record` `iso::tests::a_text_source_is_still_only_as_plain_text`.
+
+**Instantiate.** With no renderer registered the type is not installed and `instantiate` is `NoAdapter`. Otherwise it reads the settings leniently and returns `Text` with a node that shows nothing until the worker sends a picture through `frames`.
+
+### Text worker (ADR-0129 decisions 6 and 7)
+
+`rbs_sources::text_worker::TextWorker` draws every text source on one render thread and reads files on one probe thread. Control thread only; no call blocks it.
+
+```rust
+impl TextWorker {
+    pub fn new(renderers: Vec<Arc<dyn TextRenderer>>, files: Arc<dyn FileProbe>,
+        clock: Arc<dyn Clock>, wall: Arc<dyn TextClock>) -> Self;   // starts no thread
+    pub fn attach(&mut self, source, frames: ParamSender<Option<TextFrame>>, settings: TextSettings) -> u64;
+    pub fn set_settings(&mut self, source, settings: TextSettings) -> Option<u64>; // None: unchanged
+    pub fn refresh(&mut self, source) -> Option<u64>;   // entering the on-air set: front of the queue, file read now
+    pub fn detach(&mut self, source);                   // the node was retired; its last picture stays cached
+    pub fn set_on_air(&mut self, sources: BTreeSet<SourceId>);
+    pub fn families(&mut self) -> Families;             // Ready(cache) or NotReady; refreshed at most once a minute
+    pub fn take_problems(&mut self) -> Vec<(SourceId, ProblemSlot, Option<TextProblem>)>;
+    pub fn tick(&mut self);                             // control tick: polls, hang checks, idle stop
+    pub fn stop(&mut self);                             // never waits on a hung call
+    pub fn is_running(&self) -> bool;
+    pub fn detached_probes(&self) -> usize;
+}
+pub trait TextClock: Send + Sync { fn now(&self) -> SystemTime; }   // SystemTextClock
+// rbs_sources::text_file
+pub trait FileProbe: Send + Sync { canonicalize, metadata -> Option<FileMeta> (None: not a regular file), read(path, head, tail) }
+pub struct RealFileProbe;
+pub fn decode(head, tail, whole) -> Result<String, FileTextError>;  // UTF-8 with or without BOM, UTF-16 LE/BE with BOM
+pub fn last_lines(text, n) -> String;
+```
+
+- **Threads.** None until the first `attach` or `families`. Both stop on `tick` when no source is attached and nothing was asked for `IDLE_STOP_AFTER` (30 s, master clock); the renderers are trimmed when the render thread was joined. `tick` while stopped does nothing.
+- **Order and numbers.** Each `attach`, `set_settings`, `refresh` and accepted file change carries a request number (one counter); the node stores the one it uploaded (`TextNodeStats::uploaded_request`). Settings get a new generation only when they differ from the last sent ones, so a preview equal to the later commit draws once. A file result for an older generation is dropped. Commands that arrive together are coalesced to the newest request per source, `refresh`es first.
+- **Cache.** The render thread keeps each source's last `TextFrame`; an `attach` whose settings match the cached generation sends it at once without drawing (a re-created node, undo of a delete).
+- **Files.** Only attached sources in the on-air set are polled, every `POLL_INTERVAL` (500 ms, master clock), and at once on `attach`, a `file` or `file_lines` change and `refresh`. The probe canonicalises the path before every read and refuses anything but a regular file. It reads at most `MAX_FILE_BYTES` (1 MiB) from the end plus the first bytes for the byte order mark. A file whose size and modification time are unchanged and older than `RECENT_WINDOW` (2 s, `TextClock`) is not read. Otherwise the content hash decides: a new hash is accepted when the next poll agrees, except the first content of a file older than the window, which is accepted at once; an empty file always needs the agreeing poll. A missing file shows an empty picture with `FileNotFound` and is watched until it appears; bytes that are not text keep the last picture with `NotText`.
+- **Hangs.** A probe call longer than `HANG_AFTER` (5 s) gives its source `FileNotAnswering`; the path is not polled until the call returns (then the problem clears), and while fewer than `MAX_DETACHED_PROBES` (2) are left behind, the probe is detached and a new one serves the others. At the cap no thread is made. `stop` detaches a busy probe under the cap and keeps it for the next start at the cap. A render longer than 5 s gives `CouldNotDraw`; `stop` does not join a busy render thread.
+- **Problems.** `ProblemSlot::File` and `ProblemSlot::Render` are set and cleared separately. Renderer errors and panics (caught; the renderers are trimmed before the next draw) are `RenderFailed` with the renderer's message; `font_missing` is the note `FontMissing`. `TextProblem::message` never contains a path or file content; `fault()` maps `FileNotFound` to `TargetGone`, notes to none, the rest to `Other`.
+
+Tests: `crates/rbs-sources/tests/text_worker.rs` (nothing runs before an attach; edits redraw, equal settings do not; a re-created node gets the cached picture without a render; last N lines of a file; a change needs two agreeing polls; an unchanged old file is not read again; off-air files are not polled; a missing file shows nothing until it appears; bytes that are not text keep the last picture; a hung call stops only its own source and clears when it returns; stuck probes never pass the cap and `stop` does not block; idle stop trims; a renderer panic is a problem and the next draw works; the font list is cached), `text_file::tests` (encodings, tails, lines, the real probe).
