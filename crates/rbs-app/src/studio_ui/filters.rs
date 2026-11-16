@@ -174,6 +174,36 @@ fn field_data(
                     ..FilterFieldData::default()
                 }
             }
+            // One of a fixed list (ADR-0130): a segmented control or a dropdown.
+            (FieldKind::Choice { options, .. }, Value::Choice(i)) => {
+                let default = f.kind.default_value();
+                let labels: Vec<slint::SharedString> =
+                    options.iter().map(|(_, label)| (*label).into()).collect();
+                let default_text = match default {
+                    Value::Choice(d) => options.get(usize::from(d)).map_or("", |o| o.1),
+                    _ => "",
+                };
+                FilterFieldData {
+                    changed: Value::Choice(i) != default,
+                    default_text: default_text.into(),
+                    label: f.label.into(),
+                    help: f.help.into(),
+                    kind: 4,
+                    options: ModelRc::new(VecModel::from(labels)),
+                    choice: i32::from(i),
+                    ..FilterFieldData::default()
+                }
+            }
+            // An on/off switch (ADR-0130).
+            (FieldKind::Toggle { default }, Value::Toggle(on)) => FilterFieldData {
+                changed: on != default,
+                default_text: if default { "on" } else { "off" }.into(),
+                label: f.label.into(),
+                help: f.help.into(),
+                kind: 5,
+                choice: i32::from(on),
+                ..FilterFieldData::default()
+            },
             _ => FilterFieldData {
                 label: f.label.into(),
                 help: f.help.into(),
@@ -443,6 +473,33 @@ impl StudioUi {
             }
         };
         let Ok(values) = values.with(&ty, [(f.key, Value::Source(id))]) else {
+            return;
+        };
+        self.deleted.clear();
+        self.send(Command::SetFilterValues {
+            filter: FilterId::from_raw(filter as u32),
+            values,
+        });
+    }
+
+    /// An option picked in a choice field, or a switch flipped (`option` 0 or 1): one
+    /// undo step.
+    pub fn set_filter_option(&mut self, filter: i32, field: i32, option: i32) {
+        let Some((ty, values)) = self.filter_values(filter) else {
+            return;
+        };
+        let Some(f) = ty.fields().get(field as usize) else {
+            return;
+        };
+        let value = match f.kind {
+            FieldKind::Choice { options, .. } => match u8::try_from(option) {
+                Ok(i) if usize::from(i) < options.len() => Value::Choice(i),
+                _ => return,
+            },
+            FieldKind::Toggle { .. } => Value::Toggle(option != 0),
+            _ => return,
+        };
+        let Ok(values) = values.with(&ty, [(f.key, value)]) else {
             return;
         };
         self.deleted.clear();

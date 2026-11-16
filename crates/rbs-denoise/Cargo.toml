@@ -1,0 +1,29 @@
+[package]
+name = "rbs-denoise"
+description = "RNNoise speech denoiser for RBS: a vendored, patched copy of nnnoiseless 0.5.2 that never allocates or panics on its frame path (ADR-0130 decision 5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "GPL-3.0-or-later AND BSD-3-Clause"
+publish.workspace = true
+
+[dependencies]
+# Pure Rust FFT; plans and scratch are made in `Denoiser::new` (ADR-0130 decision 5).
+realfft = "3.5"
+
+[dev-dependencies]
+# The upstream this crate was copied from: the agreement test compares the two.
+nnnoiseless = { version = "=0.5.2", default-features = false }
+allocation-counter = "0.8"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "denoise"
+harness = false
+
+[lib]
+bench = false
+
+[lints]
+workspace = true
