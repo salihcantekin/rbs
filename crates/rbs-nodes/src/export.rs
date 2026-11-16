@@ -1,11 +1,14 @@
 //! The video export node: canvas frames to encoder-ready frames, on the render partition
 //! (spec `docs/specs/io-nodes.md`, "Video export node").
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use rbs_core::media::{ColorSpace, Size, VideoFormat};
-use rbs_core::pause::{PauseWindow, Place, Window};
+use rbs_core::media::{
+    ColorRange, ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
+    next_generation,
+};
+use rbs_core::pause::{HoldPicture, HoldSwitch, PauseWindow, Place, Window};
 use rbs_core::time::Timestamp;
 use rbs_gpu::download::{DownloadStats, YuvDownload};
 use rbs_gpu::node::GpuRuntime;
@@ -124,6 +127,121 @@ impl ExportEnd {
     }
 }
 
+/// A stream's hold as its export sees it (ADR-0124 decisions 12 and 13), shared with
+/// the control thread.
+///
+/// While the switch is on, the export reads nothing back and sends a pinned picture
+/// on each tick, stamped with the tick's time and a new sequence: the last frame it
+/// sent ([`HoldPicture::Freeze`]) or the black frame the control thread put here
+/// ([`HoldPicture::Black`]). The control thread turns the switch, then calls
+/// [`ExportEnd::wake_at`] with [`Timestamp::ZERO`] so the export looks at it on its
+/// next tick; the export goes back to its run path once the hold is over.
+#[derive(Debug, Default)]
+pub struct ExportHold {
+    switch: Arc<HoldSwitch>,
+    black: Mutex<Option<VideoFrame>>,
+}
+
+impl ExportHold {
+    /// A hold following `switch` (the same switch the stream's audio encoder follows).
+    pub fn new(switch: Arc<HoldSwitch>) -> Self {
+        Self {
+            switch,
+            black: Mutex::new(None),
+        }
+    }
+
+    /// The switch.
+    pub fn switch(&self) -> &Arc<HoldSwitch> {
+        &self.switch
+    }
+
+    /// Whether a black picture is ready for [`HoldPicture::Black`].
+    pub fn has_black(&self) -> bool {
+        self.black.lock().is_ok_and(|b| b.is_some())
+    }
+
+    /// Keeps `frame` as the black picture (made once by the control thread with
+    /// [`black_frame`], never on the render thread).
+    pub fn set_black(&self, frame: VideoFrame) {
+        if let Ok(mut black) = self.black.lock() {
+            *black = Some(frame);
+        }
+    }
+
+    /// The black picture, without waiting: `None` when it is not there or the control
+    /// thread holds the lock this instant.
+    fn black(&self) -> Option<VideoFrame> {
+        self.black.try_lock().ok()?.as_ref()?.share()
+    }
+}
+
+/// A black picture in `format` (NV12 or P010, either range), in system memory as the
+/// export's frames are. Allocates: for the control thread, before a black hold.
+pub fn black_frame(format: VideoFormat) -> Option<VideoFrame> {
+    let (w, h) = (format.size.width as usize, format.size.height as usize);
+    let full = format.color.range == ColorRange::Full;
+    let (luma, chroma): (u16, u16) = if full { (0, 512) } else { (64, 512) };
+    let data = match format.pixel_format {
+        PixelFormat::Nv12 => {
+            let y = (luma >> 2) as u8;
+            let c = (chroma >> 2) as u8;
+            let mut d = vec![y; w * h];
+            d.resize(w * h + w * h.div_ceil(2), c);
+            d
+        }
+        PixelFormat::P010 => {
+            let mut d = Vec::with_capacity((w * h + w * h.div_ceil(2)) * 2);
+            for _ in 0..w * h {
+                d.extend_from_slice(&(luma << 6).to_le_bytes());
+            }
+            for _ in 0..w * h.div_ceil(2) {
+                d.extend_from_slice(&(chroma << 6).to_le_bytes());
+            }
+            d
+        }
+        _ => return None,
+    };
+    let sample = if format.pixel_format == PixelFormat::P010 {
+        2
+    } else {
+        1
+    };
+    let stride = w * sample;
+    let planes = [
+        PlaneLayout { offset: 0, stride },
+        PlaneLayout {
+            offset: w * h * sample,
+            stride,
+        },
+    ];
+    let frame = SystemFrame::new(format, data.into(), &planes).ok()?;
+    Some(VideoFrame::system(Timestamp::ZERO, frame, None))
+}
+
+/// A hold under way, as the export keeps it.
+struct Held {
+    picture: HoldPicture,
+    /// The program's last frame, pinned when the hold began (taken out of the ring,
+    /// no copy): what `freeze` sends, kept while `black` is sent so a change back to
+    /// `freeze` has it.
+    frozen: Option<VideoFrame>,
+    /// The previous tick's time. On the run path a canvas leaves the export one tick
+    /// after it was drawn, so a held frame carries the previous tick's time and the
+    /// timestamps run on without a gap or a repeat on both edges of the hold.
+    last_tick: Timestamp,
+}
+
+impl Held {
+    /// The picture to send now, shared (no copy).
+    fn picture(&self, hold: Option<&ExportHold>) -> Option<VideoFrame> {
+        match self.picture {
+            HoldPicture::Freeze => self.frozen.as_ref()?.share(),
+            HoldPicture::Black => hold?.black(),
+        }
+    }
+}
+
 /// Converts the canvas on its input to NV12 or P010 for an encoder and puts the result
 /// on "video", one or two ticks later.
 ///
@@ -160,6 +278,10 @@ pub struct VideoExportNode {
     /// Nanoseconds every frame is stamped earlier by: the time left out by the pauses
     /// already behind the export. 0 for an export never paused.
     shift: u64,
+    /// A stream's hold (ADR-0124 decision 13); `None` for an export never held.
+    hold: Option<Arc<ExportHold>>,
+    /// The hold under way, from its first held tick to the first tick after it.
+    held: Option<Held>,
 }
 
 /// How an ISO track's export differs from the master's (ADR-0086 decisions 3 and 9).
@@ -288,7 +410,18 @@ impl VideoExportNode {
             pause: None,
             window: Window::NONE,
             shift: 0,
+            hold: None,
+            held: None,
         }
+    }
+
+    /// An export that a stream's hold can take over (ADR-0124 decision 13). Nothing
+    /// on the run path: the export looks at the hold only after
+    /// [`ExportEnd::wake_at`].
+    #[must_use]
+    pub fn with_hold(mut self, hold: Arc<ExportHold>) -> Self {
+        self.hold = Some(hold);
+        self
     }
 
     /// An export that follows `pause` (ADR-0124 decision 4): it takes no canvas inside
@@ -420,6 +553,81 @@ impl VideoExportNode {
     }
 }
 
+impl VideoExportNode {
+    /// One tick while held: nothing is converted; readbacks still in flight finish.
+    /// On the hold's first tick the newest frame goes out as on the run path and is
+    /// pinned as the frozen picture; from then on the hold picture goes out each
+    /// tick with the previous tick's time and a new sequence (ADR-0124 decision 13).
+    fn hold_tick(
+        &mut self,
+        ctx: &mut ProcessCtx<'_, GpuRuntime>,
+        picture: HoldPicture,
+        end: u64,
+    ) -> Result<(), NodeError> {
+        let tick = ctx.tick();
+        let gpu = ctx.shared();
+        let (_, outputs, _) = ctx.parts();
+        let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
+        let mut result = Ok(());
+        let ready = match download.take_ready(gpu) {
+            Ok(frame) => frame,
+            Err(_) => {
+                result = Err(NodeError::Backend("video export readback failed"));
+                None
+            }
+        };
+        let send = match self.held.as_mut() {
+            Some(held) => {
+                held.picture = picture;
+                let frame = held.picture(self.hold.as_deref());
+                let at = held.last_tick;
+                held.last_tick = tick.time;
+                // A late readback finishing now is not sent: the hold is on.
+                drop(ready);
+                frame.map(|f| f.with_timestamp(at).with_sequence(next_generation()))
+            }
+            None => {
+                // The newest frame of the program, else the one sent last.
+                let frozen = match ready.as_ref() {
+                    Some(f) => f.share(),
+                    None => outputs.set_video(VIDEO_PIN, None)?,
+                };
+                self.held = Some(Held {
+                    picture,
+                    frozen,
+                    last_tick: tick.time,
+                });
+                ready
+            }
+        };
+        if let Some(frame) = send {
+            send_frame(outputs, frame, &self.stats)?;
+        }
+        if end != u64::MAX
+            && tick.time.as_nanos() > end
+            && download.in_flight() == 0
+            && !self.end.ended()
+        {
+            self.end.ended.store(true, Ordering::Release);
+        }
+        result
+    }
+}
+
+/// Puts `frame` on the export's output and counts it.
+fn send_frame(
+    outputs: &mut rbs_graph::runtime::Outputs<'_>,
+    frame: VideoFrame,
+    stats: &ExportNodeStats,
+) -> Result<(), NodeError> {
+    let at = frame.timestamp().as_nanos().saturating_add(1);
+    // Dropping the previous frame hands its buffer back for reuse.
+    drop(outputs.set_video(VIDEO_PIN, Some(frame))?);
+    stats.frames.fetch_add(1, Ordering::Relaxed);
+    stats.last_frame.store(at, Ordering::Relaxed);
+    Ok(())
+}
+
 impl Node<GpuRuntime> for VideoExportNode {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
@@ -473,10 +681,26 @@ impl Node<GpuRuntime> for VideoExportNode {
         // `u64::MAX` (the run path) takes every canvas: one load and one compare. Set,
         // the end and the pause window are read (ADR-0124 decision 3).
         let next = self.end.next.load(Ordering::Acquire);
+        let mut released = None;
         let (end, window) = if next == u64::MAX {
             (u64::MAX, None)
         } else {
             let end = self.end.at.load(Ordering::SeqCst);
+            // A stream's hold (ADR-0124 decision 13) comes before everything else.
+            if let Some(picture) = self.hold.as_ref().and_then(|h| h.switch.held()) {
+                return self.hold_tick(ctx, picture, end);
+            }
+            released = self.held.take();
+            if released.is_some() && self.pause.is_none() {
+                // The hold is over: back to the run path (a pause window settles in
+                // `read_window` once it is over).
+                self.end.settle(next);
+                // A hold taken again between the read above and the swap keeps the
+                // slow path (its `wake_at` found `next` already lowered).
+                if self.hold.as_ref().is_some_and(|h| h.switch.is_held()) {
+                    self.end.wake_at(Timestamp::ZERO);
+                }
+            }
             (end, self.read_window(ctx_time, next))
         };
         let gpu = ctx.shared();
@@ -492,14 +716,18 @@ impl Node<GpuRuntime> for VideoExportNode {
         };
         let mut result = Ok(());
         match ready {
-            Ok(Some(frame)) => {
-                // Dropping the previous frame hands its buffer back for reuse.
-                let at = frame.timestamp().as_nanos().saturating_add(1);
-                drop(outputs.set_video(VIDEO_PIN, Some(frame))?);
-                self.stats.frames.fetch_add(1, Ordering::Relaxed);
-                self.stats.last_frame.store(at, Ordering::Relaxed);
+            Ok(Some(frame)) => send_frame(outputs, frame, &self.stats)?,
+            Ok(None) => {
+                // The first tick after a hold: nothing is read back yet, so the hold
+                // picture goes out once more, with the previous tick's time.
+                if let Some(frame) = released.and_then(|h| {
+                    let at = h.last_tick;
+                    h.picture(self.hold.as_deref())
+                        .map(|f| f.with_timestamp(at))
+                }) {
+                    send_frame(outputs, frame.with_sequence(next_generation()), &self.stats)?;
+                }
             }
-            Ok(None) => {}
             Err(_) => result = Err(NodeError::Backend("video export readback failed")),
         }
 
@@ -548,6 +776,7 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
+        self.held = None;
         // Readbacks still in flight never reach the encoder (a stop without
         // `ExportEnd`, or past the studio's tail limit): counted, never silent.
         if let Some(download) = self.download.take() {
@@ -561,8 +790,44 @@ impl Node<GpuRuntime> for VideoExportNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rbs_core::media::FramePayload;
     use rbs_graph::runtime::Tick;
     use std::time::Duration;
+
+    #[test]
+    #[allow(clippy::expect_used)] // Tests fail by panicking.
+    fn the_black_hold_picture_is_black_in_either_range_and_depth() {
+        let system = |f: &VideoFrame| match f.payload() {
+            FramePayload::System(s) => s.data().to_vec(),
+            _ => panic!("a system frame"),
+        };
+        for (yuv, range, luma, chroma) in [
+            (YuvFormat::Nv12, ColorRange::Limited, 16u16, 128u16),
+            (YuvFormat::Nv12, ColorRange::Full, 0, 128),
+            (YuvFormat::P010, ColorRange::Limited, 64 << 6, 512 << 6),
+            (YuvFormat::P010, ColorRange::Full, 0, 512 << 6),
+        ] {
+            let mut format = VideoExportNode::new(yuv, 6, 4, 6, 4).frame_format();
+            format.color.range = range;
+            let frame = black_frame(format).expect("a black frame");
+            let data = system(&frame);
+            let wide = yuv == YuvFormat::P010;
+            let at = |i: usize| {
+                if wide {
+                    u16::from_le_bytes([data[2 * i], data[2 * i + 1]])
+                } else {
+                    u16::from(data[i])
+                }
+            };
+            let (y, c) = (6 * 4, 6 * 2);
+            assert_eq!(data.len(), (y + c) * if wide { 2 } else { 1 });
+            assert!((0..y).all(|i| at(i) == luma), "{yuv:?} {range:?}");
+            assert!((y..y + c).all(|i| at(i) == chroma), "{yuv:?} {range:?}");
+        }
+        let mut rgba = VideoExportNode::new(YuvFormat::Nv12, 6, 4, 6, 4).frame_format();
+        rgba.pixel_format = PixelFormat::Rgba8;
+        assert!(black_frame(rgba).is_none());
+    }
 
     #[test]
     #[allow(clippy::expect_used)] // Tests fail by panicking.

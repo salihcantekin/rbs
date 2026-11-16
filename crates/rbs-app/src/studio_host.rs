@@ -35,6 +35,7 @@ use rbs_codec::caps as codec_caps;
 use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
 use rbs_core::fault::SourceFault;
 use rbs_core::media::{CodecId, ContainerId, Size};
+use rbs_core::pause::HoldPicture;
 use rbs_core::registry::{AdapterFactory, Registry};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::FrameRate;
@@ -1768,6 +1769,45 @@ fn pause_refusal(e: rbs_record::PauseRefused) -> String {
 /// decision 5).
 const MARKER_FLUSH_NS: u64 = 5_000_000_000;
 
+/// `Ok` when an entry changed; else the first refusal, or `conflict` with `none`.
+fn changed_or_first_refusal(
+    outputs: &[api::OutputEntry],
+    refusals: Vec<ApiError>,
+    none: &str,
+) -> Result<(), ApiError> {
+    if outputs.iter().any(|o| {
+        matches!(
+            o.outcome,
+            api::OutputOutcome::Paused | api::OutputOutcome::Resumed | api::OutputOutcome::Held
+        )
+    }) {
+        return Ok(());
+    }
+    Err(refusals
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| ApiError::new(ErrorKind::Conflict, none)))
+}
+
+fn hold_refusal(e: rbs_record::HoldRefused) -> String {
+    use rbs_record::HoldRefused as R;
+    match e {
+        R::NotHoldable => "this stream cannot be held".to_owned(),
+        R::PictureUnsupported => {
+            "the hold picture cannot be made for this stream's video format".to_owned()
+        }
+        e => e.to_string(),
+    }
+}
+
+/// The engine's hold picture for the control API's.
+fn hold_picture(p: Option<rbs_api::request::HoldPicture>) -> HoldPicture {
+    match p.unwrap_or_default() {
+        rbs_api::request::HoldPicture::Freeze => HoldPicture::Freeze,
+        rbs_api::request::HoldPicture::Black => HoldPicture::Black,
+    }
+}
+
 fn slot(c: OutputCanvas) -> usize {
     match c {
         OutputCanvas::Main => 0,
@@ -1823,6 +1863,20 @@ struct CanvasOutputs {
     stream_state: api::StreamState,
     /// The running recording's markers (ADR-0089); `None` while nothing records.
     markers: Option<RecordingMarkers>,
+    /// The stream's hold as the host keeps it (ADR-0124 decision 14).
+    hold: HoldPlan,
+}
+
+/// What the host remembers about a stream's hold (ADR-0124 decision 14).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct HoldPlan {
+    /// A hold asked for that waits until the recording sharing the stream's encoder
+    /// is paused: the studio holds a shared chain only then, so the hold picture
+    /// never reaches the file.
+    pending: Option<HoldPicture>,
+    /// The hold paused the recording: Resume stream resumes it, and never a
+    /// recording the user paused.
+    paused_recording: bool,
 }
 
 impl Default for CanvasOutputs {
@@ -1836,6 +1890,7 @@ impl Default for CanvasOutputs {
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
             markers: None,
+            hold: HoldPlan::default(),
         }
     }
 }
@@ -3290,6 +3345,9 @@ fn round(
                 host.end_stream(c, Some(why), notify);
             } else {
                 host.report_link(c, notify);
+                if let Some(left) = host.drive_hold(c) {
+                    wait = wait.min(left);
+                }
             }
         }
     }
@@ -4757,6 +4815,14 @@ impl Host {
         };
         let pause =
             pause.unwrap_or_else(|| !self.studio.output_pause(id).is_some_and(|p| p.paused));
+        if !pause && self.outs[slot(c)].hold.pending.is_some() {
+            // The stream's hold waits for this pause (ADR-0124 decision 14), as the
+            // studio refuses while the hold is on.
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                pause_refusal(rbs_record::PauseRefused::Held),
+            ));
+        }
         let done = if pause {
             self.studio.pause_output(id)
         } else {
@@ -4794,6 +4860,111 @@ impl Host {
             *paused_ms = progress.paused_ns / 1_000_000;
             *recorded_ms = progress.recorded_ns / 1_000_000;
             self.set_record_state(c, state);
+        }
+    }
+
+    /// Puts canvas `c`'s stream on hold (`Some(true)`) with `picture`, takes it back
+    /// to the program (`Some(false)`), or toggles (`None`) (ADR-0124 decisions 12 to
+    /// 14). A stream sharing its encoder with the recording pauses that recording
+    /// first and holds once the pause has begun; Resume stream resumes only a
+    /// recording its hold paused. Returns whether the stream is on hold now.
+    fn hold_stream(
+        &mut self,
+        c: OutputCanvas,
+        hold: Option<bool>,
+        picture: HoldPicture,
+    ) -> Result<bool, ApiError> {
+        let conflict = |m: String| ApiError::new(ErrorKind::Conflict, m);
+        let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
+            return Err(conflict("nothing streams".into()));
+        };
+        let hold = hold.unwrap_or_else(|| !self.stream_held(c));
+        if hold {
+            match self.studio.hold_output(id, picture) {
+                Ok(_) => self.outs[slot(c)].hold.pending = None,
+                Err(rbs_record::HoldRefused::SharedWithRecording) => {
+                    if self.outs[slot(c)].hold.pending == Some(picture) {
+                        return Err(conflict("the stream is already on hold".into()));
+                    }
+                    let paused = self.outs[slot(c)]
+                        .recording
+                        .as_ref()
+                        .and_then(|r| self.studio.output_pause(r.1))
+                        .is_some_and(|p| p.paused);
+                    if !paused {
+                        self.pause_recording(c, Some(true))?;
+                        self.outs[slot(c)].hold.paused_recording = true;
+                    }
+                    self.outs[slot(c)].hold.pending = Some(picture);
+                }
+                Err(e) => return Err(conflict(hold_refusal(e))),
+            }
+        } else {
+            if !self.stream_held(c) {
+                return Err(conflict("the stream is not on hold".into()));
+            }
+            if self.outs[slot(c)].hold.pending.take().is_none() {
+                self.studio
+                    .release_hold(id)
+                    .map_err(|e| conflict(hold_refusal(e)))?;
+            }
+            if std::mem::take(&mut self.outs[slot(c)].hold.paused_recording) {
+                // Ended meanwhile, or already resumed: nothing to resume.
+                let _ = self.pause_recording(c, Some(false));
+            }
+        }
+        self.refresh_stream_hold(c);
+        Ok(hold)
+    }
+
+    /// Canvas `c`'s stream is on hold, or a hold waits for its recording's pause.
+    fn stream_held(&self, c: OutputCanvas) -> bool {
+        let o = &self.outs[slot(c)];
+        o.hold.pending.is_some()
+            || o.streaming
+                .as_ref()
+                .and_then(|s| self.studio.output_hold(s.2))
+                .is_some_and(|h| h.picture.is_some())
+    }
+
+    /// Holds a stream whose hold waits for its recording's pause, once that pause
+    /// has begun. Returns how soon to look again while it still waits.
+    fn drive_hold(&mut self, c: OutputCanvas) -> Option<Duration> {
+        let picture = self.outs[slot(c)].hold.pending?;
+        let id = self.outs[slot(c)].streaming.as_ref()?.2;
+        match self.studio.hold_output(id, picture) {
+            Err(rbs_record::HoldRefused::SharedWithRecording) => {
+                let paused = self.outs[slot(c)]
+                    .recording
+                    .as_ref()
+                    .and_then(|r| self.studio.output_pause(r.1))
+                    .is_some_and(|p| p.paused);
+                if paused {
+                    // The pause begins within two render periods.
+                    return Some(ENDING_WAIT);
+                }
+                // The recording was resumed meanwhile: the hold is given up.
+                self.outs[slot(c)].hold = HoldPlan::default();
+            }
+            Ok(_) | Err(_) => self.outs[slot(c)].hold.pending = None,
+        }
+        self.refresh_stream_hold(c);
+        None
+    }
+
+    /// Puts the hold fields of `c`'s live stream into its stream state, as of now
+    /// (published as a change, never per frame).
+    fn refresh_stream_hold(&mut self, c: OutputCanvas) {
+        let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
+            return;
+        };
+        let pending = self.outs[slot(c)].hold.pending.is_some();
+        let hold = self.studio.output_hold(id).unwrap_or_default();
+        let mut state = self.outs[slot(c)].stream_state.clone();
+        if let api::StreamState::Live { held, held_ms, .. } = &mut state {
+            *held = pending || hold.picture.is_some();
+            *held_ms = hold.held_ns / 1_000_000;
+            self.set_stream_state(c, state);
         }
     }
 
@@ -6343,6 +6514,7 @@ impl Host {
         let o = &mut self.outs[slot(c)];
         o.ending = false;
         o.auto_recording = false;
+        o.hold.paused_recording = false;
         let protected = o.protection_stop.take();
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
         // recording still tracked and ends it again (ADR-0055 decision 3).
@@ -6578,6 +6750,8 @@ impl Host {
         // The size this stream starts with. A later settings change waits for the
         // next start (ADR-0102). `None` stays the canvas.
         out.size = r.size;
+        // Every stream can be held (ADR-0124 decision 12).
+        out.holdable = true;
         let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
         // Before the host tracks it: recovery stops an output a panicked start left
         // running (ADR-0055 decision 3).
@@ -6597,6 +6771,8 @@ impl Host {
                 reconnect_attempts: 0,
                 video_encoder: video_encoder.clone(),
                 audio_encoder: audio_encoder.clone(),
+                held: false,
+                held_ms: 0,
             },
         );
         self.mark_stream(c, true);
@@ -6835,6 +7011,8 @@ impl Host {
                 protocol,
                 video_encoder,
                 audio_encoder,
+                held,
+                held_ms,
                 ..
             } = &self.outs[slot(c)].stream_state
             {
@@ -6845,6 +7023,8 @@ impl Host {
                     reconnect_attempts: link.reconnect_attempts,
                     video_encoder: video_encoder.clone(),
                     audio_encoder: audio_encoder.clone(),
+                    held: *held,
+                    held_ms: *held_ms,
                 };
                 self.set_stream_state(c, state);
             }
@@ -6874,6 +7054,7 @@ impl Host {
         });
         let failure = failure.or(failed);
         self.outs[slot(c)].streaming = None;
+        self.outs[slot(c)].hold = HoldPlan::default();
         self.mark_stream(c, false);
         // A recording started with the stream outlives a stream that failed: it is the
         // copy of what the viewers missed. From now on it is the user's to stop.
@@ -11635,6 +11816,10 @@ impl ApiTarget<'_> {
             C::RecordPause(p) => self.pause_asked(p, Some(true)),
             C::RecordResume(p) => self.pause_asked(p, Some(false)),
             C::RecordPauseToggle(p) => self.pause_asked(p, None),
+            C::StreamHold(p) => self.hold_asked(p.target(), Some(true), p.picture),
+            C::StreamResume(p) => self.hold_asked(p.target(), Some(false), None),
+            C::StreamHoldToggle(p) => self.hold_asked(p.target(), None, p.picture),
+            C::OutputBreakToggle => self.break_toggle(),
             C::MarkerAdd(p) => {
                 let added = host.add_marker(&p)?;
                 notify(host.markers_update(Some(&added)));
@@ -12253,6 +12438,7 @@ impl ApiTarget<'_> {
                 api::OutputKind::Stream => (out.streaming.is_some(), false),
             };
             let entry = |outcome| api::OutputEntry {
+                kind: None,
                 canvas: c,
                 outcome,
                 video_encoder: None,
@@ -12267,6 +12453,7 @@ impl ApiTarget<'_> {
                     return Err(e);
                 }
                 outputs.push(api::OutputEntry {
+                    kind: None,
                     error: Some(api::OutputError::from(&e)),
                     ..entry(api::OutputOutcome::Refused)
                 });
@@ -12295,6 +12482,7 @@ impl ApiTarget<'_> {
             };
             match started {
                 Ok(Response::RecordStarted(r)) => outputs.push(api::OutputEntry {
+                    kind: None,
                     video_encoder: Some(r.video_encoder),
                     audio_encoder: r.audio_encoder,
                     estimate: r.estimate,
@@ -12302,6 +12490,7 @@ impl ApiTarget<'_> {
                     ..entry(api::OutputOutcome::Started)
                 }),
                 Ok(Response::StreamStarted(r)) => outputs.push(api::OutputEntry {
+                    kind: None,
                     video_encoder: Some(r.video_encoder),
                     audio_encoder: r.audio_encoder,
                     ..entry(api::OutputOutcome::Started)
@@ -12309,6 +12498,7 @@ impl ApiTarget<'_> {
                 Ok(_) => outputs.push(entry(api::OutputOutcome::Started)),
                 Err(e) if c == OutputCanvas::Main => return Err(e),
                 Err(e) => outputs.push(api::OutputEntry {
+                    kind: None,
                     error: Some(api::OutputError::from(&e)),
                     ..entry(api::OutputOutcome::Refused)
                 }),
@@ -12350,6 +12540,168 @@ impl ApiTarget<'_> {
         Ok(Response::Done(Empty {}))
     }
 
+    /// `stream.hold` (`Some(true)`), `stream.resume` (`Some(false)`) or
+    /// `stream.hold_toggle` (`None`) on the canvases `target` names (control API
+    /// 1.64). With `all`: every live stream, main first; a toggle holds them all when
+    /// any is not held, else resumes them all.
+    fn hold_asked(
+        &mut self,
+        target: api::OutputTarget,
+        hold: Option<bool>,
+        picture: Option<rbs_api::request::HoldPicture>,
+    ) -> Result<Response, ApiError> {
+        let picture = hold_picture(picture);
+        let notify = self.notify;
+        let host = &mut *self.host;
+        if let Some(one) = target.single() {
+            let c = host.api_canvas_of(Some(one))?;
+            host.hold_stream(c, hold, picture)?;
+            notify(host.pause_update());
+            host.publish(notify);
+            return Ok(Response::Done(Empty {}));
+        }
+        let canvases = host.output_canvases();
+        let live = |host: &Host, c: OutputCanvas| host.outs[slot(c)].streaming.is_some();
+        let hold = hold.unwrap_or_else(|| {
+            canvases
+                .iter()
+                .any(|&c| live(host, c) && !host.stream_held(c))
+        });
+        let mut outputs = Vec::new();
+        let mut refusals = Vec::new();
+        for c in canvases {
+            let (outcome, error) = if !live(host, c) {
+                (api::OutputOutcome::NotRunning, None)
+            } else {
+                match host.hold_stream(c, Some(hold), picture) {
+                    Ok(true) => (api::OutputOutcome::Held, None),
+                    Ok(false) => (api::OutputOutcome::Resumed, None),
+                    Err(e) => {
+                        let error = api::OutputError::from(&e);
+                        refusals.push(e);
+                        (api::OutputOutcome::Refused, Some(error))
+                    }
+                }
+            };
+            outputs.push(api::OutputEntry {
+                canvas: c,
+                kind: None,
+                outcome,
+                video_encoder: None,
+                audio_encoder: None,
+                error,
+                estimate: None,
+                skipped: Vec::new(),
+            });
+        }
+        changed_or_first_refusal(&outputs, refusals, "nothing streams")?;
+        notify(host.pause_update());
+        host.publish(notify);
+        Ok(Response::Outputs(api::OutputsResult { outputs }))
+    }
+
+    /// `output.break_toggle` (control API 1.64, ADR-0124 decision 15): when every
+    /// live stream is on hold and every running recording is paused, resumes them
+    /// all (streams first, so a recording a hold paused resumes with its stream);
+    /// otherwise holds the streams that are not held (freeze) and pauses the
+    /// recordings that are not paused. The answer lists the outputs it changed or
+    /// that refused, main first, each with its `kind`.
+    fn break_toggle(&mut self) -> Result<Response, ApiError> {
+        let notify = self.notify;
+        let host = &mut *self.host;
+        let canvases = host.output_canvases();
+        let streams: Vec<_> = canvases
+            .iter()
+            .copied()
+            .filter(|&c| host.outs[slot(c)].streaming.is_some())
+            .collect();
+        let recording = |host: &Host, c: OutputCanvas| {
+            let o = &host.outs[slot(c)];
+            o.recording.as_ref().filter(|_| !o.ending).map(|r| r.1)
+        };
+        let paused = |host: &Host, c: OutputCanvas| {
+            recording(host, c)
+                .and_then(|id| host.studio.output_pause(id))
+                .is_some_and(|p| p.paused)
+        };
+        let records: Vec<_> = canvases
+            .iter()
+            .copied()
+            .filter(|&c| recording(host, c).is_some())
+            .collect();
+        if streams.is_empty() && records.is_empty() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "nothing records or streams",
+            ));
+        }
+        let resume = streams.iter().all(|&c| host.stream_held(c))
+            && records.iter().all(|&c| paused(host, c));
+        let mut outputs = Vec::new();
+        let mut refusals = Vec::new();
+        let mut entry = |c, kind, done: Result<api::OutputOutcome, ApiError>| {
+            let (outcome, error) = match done {
+                Ok(o) => (o, None),
+                Err(e) => {
+                    let error = api::OutputError::from(&e);
+                    refusals.push(e);
+                    (api::OutputOutcome::Refused, Some(error))
+                }
+            };
+            outputs.push(api::OutputEntry {
+                canvas: c,
+                kind: Some(kind),
+                outcome,
+                video_encoder: None,
+                audio_encoder: None,
+                error,
+                estimate: None,
+                skipped: Vec::new(),
+            });
+        };
+        let before: Vec<bool> = records.iter().map(|&c| paused(host, c)).collect();
+        for &c in &streams {
+            if resume || !host.stream_held(c) {
+                let done = host
+                    .hold_stream(c, Some(!resume), HoldPicture::Freeze)
+                    .map(|held| {
+                        if held {
+                            api::OutputOutcome::Held
+                        } else {
+                            api::OutputOutcome::Resumed
+                        }
+                    });
+                entry(c, api::OutputKind::Stream, done);
+            }
+        }
+        // After the streams: a hold may have paused, or its end resumed, a recording
+        // sharing its encoder (decision 14); that recording is listed as changed.
+        for (&c, was) in records.iter().zip(before) {
+            let now = paused(host, c);
+            if was != now {
+                let outcome = if now {
+                    api::OutputOutcome::Paused
+                } else {
+                    api::OutputOutcome::Resumed
+                };
+                entry(c, api::OutputKind::Record, Ok(outcome));
+            } else if now == resume {
+                let done = host.pause_recording(c, Some(!resume)).map(|p| {
+                    if p {
+                        api::OutputOutcome::Paused
+                    } else {
+                        api::OutputOutcome::Resumed
+                    }
+                });
+                entry(c, api::OutputKind::Record, done);
+            }
+        }
+        changed_or_first_refusal(&outputs, refusals, "nothing changed")?;
+        notify(host.pause_update());
+        host.publish(notify);
+        Ok(Response::Outputs(api::OutputsResult { outputs }))
+    }
+
     /// `record.pause`, `record.resume` or `record.pause_toggle` with `canvas: "all"`
     /// (control API 1.61): every running recording, main first. A toggle pauses them
     /// all when any runs unpaused, else resumes them all. `conflict` when none
@@ -12385,6 +12737,7 @@ impl ApiTarget<'_> {
                 }
             };
             outputs.push(api::OutputEntry {
+                kind: None,
                 canvas: c,
                 outcome,
                 video_encoder: None,
@@ -12430,6 +12783,7 @@ impl ApiTarget<'_> {
                 api::OutputOutcome::NotRunning
             };
             outputs.push(api::OutputEntry {
+                kind: None,
                 canvas: c,
                 outcome,
                 video_encoder: None,

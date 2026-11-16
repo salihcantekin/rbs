@@ -260,6 +260,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `marker.add {label?, color?, canvas?}`, `marker.remove {canvas, index}` | `control` | A marker in the running recordings, and taking one back (protocol 1.50, ADR-0089); see "Protocol 1.50" |
 | `project.export {recording, format}` | `control` | An editor project from a finished recording's manifest (protocol 1.58, ADR-0089; `xmeml` 1.60); see "Protocol 1.58" and "Protocol 1.60" |
 | `stream.start {canvas?}`, `stream.stop {canvas?}` | `control` | Go live with the saved stream settings and the key in the system's credential store, and end the stream (protocol 1.1); `canvas: "all"` from protocol 1.42 |
+| `stream.hold {canvas?, picture?}`, `stream.resume {canvas?}`, `stream.hold_toggle {canvas?, picture?}`, `output.break_toggle` | `control` | Hold a live stream (hold picture with silence, connection kept) and resume it; Break holds every stream and pauses every recording (ADR-0124); see "Protocol 1.64" |
 | `output.set_with_vertical {kind, on}` | `control` | Whether Record (`kind: "record"`) or Go live (`"stream"`) also starts and stops the vertical canvas's output; saved in the output profile; not undoable; allowed while outputs run (protocol 1.42, ADR-0111) |
 | `stream.status {canvas?}` | `read` | Stream state (protocol 1.1) |
 | `settings.get`, `settings.set` | `admin` | Recording profiles, canvas size and rate, stream settings (protocol 1.2; output size, protocol 1.39, ADR-0102; never the server or the key) |
@@ -523,12 +524,20 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
-### Hold a stream, Break, markers while paused (planned, ADR-0124; the protocol number is final at merge)
+### Protocol 1.64: hold a stream, Break (ADR-0124 decisions 12 to 15)
 
-- **Methods** (`control`, live class): `stream.hold {canvas?, picture?}` (`freeze` by default, `black`; `scene` with phase 2b), `stream.resume {canvas?}`, `stream.hold_toggle {canvas?}`; `output.break_toggle` (holds every live stream and pauses every recording; when all of them already are, resumes them all). Holding a stream that shares an encoder with a recording pauses that recording, and `stream.resume` resumes it, unless the user had paused it before the hold. The stream methods change what is on air and take the on-air permission check. `invalid_params` for an unknown `picture`.
-- **State.** `stream.state` and `stream.canvas_state` add `held` and `held_ms`. Published on each change, never per frame.
+- **Methods** (`control`, live class): `stream.hold {canvas?, picture?}` (`freeze` by default, `black`; `scene` with phase 2b), `stream.resume {canvas?}`, `stream.hold_toggle {canvas?, picture?}` (`canvas` as in 1.29, `all` as in 1.42). One canvas answers `{}`; `conflict` when nothing streams there, the stream is already on hold with that picture (a hold with the other picture changes it), a resume finds it not on hold, or the hold is refused (the message says why); `invalid_params` for an unknown `picture`. With `all` the answer is `{outputs: [{canvas, outcome, error?}]}` as in 1.42, main first, with the outcomes `held`, `resumed`, `not_running` and `refused`; a toggle with `all` holds every live stream when any is not on hold, else resumes them all.
+- **A recording sharing the stream's encoder** (decision 14). Holding pauses that recording first (as `record.pause` does, published on `record.state`) and the stream holds once the pause has begun, within two render periods, so the hold picture never reaches the file; `held` is `true` from the call on. `stream.resume` resumes the recording only when the hold paused it, never a recording paused before the hold. While the hold is on or waits, `record.resume` of that recording is `conflict` ("a stream sharing the recording's encoder is on hold"): resume the stream first.
+- **`output.break_toggle {}`** (decision 15). When every live stream is on hold and every running recording is paused, it resumes them all, streams first; otherwise it holds the streams that are not held (`freeze`) and pauses the recordings that are not paused. The answer is `{outputs: [...]}` listing only the outputs it changed or that refused, main first, each entry with `kind` (`stream` or `record`); a recording a hold paused or resumed is listed as `paused` or `resumed`. `conflict` when nothing records or streams, or when nothing changed (the first refusal then).
+- **State.** `stream.state` and `stream.canvas_state` add `held` (bool) and `held_ms` (time on hold so far, as of the change) to a live stream; published on each hold and resume, never per frame.
+- **What a held stream sends.** The connection stays up; the picture (the program's last frame, or black) goes out once per frame with silence, and timestamps keep running (`recording.md`, "Pause and hold"). The program, the preview and the scenes stay free to edit.
+- **Permissions.** As `stream.start` and `stream.stop`: any `control` token, until the irreversible-actions permission ships (see `vcam.start`).
+- **Older clients and servers.** A 1.63 client ignores the new fields and outcome; a 1.63 server answers the methods `method_not_found` and omits the fields, which read as not held.
+
+### Planned with ADR-0124
+
 - **Markers.** `marker.add` while paused is accepted; the marker sits on that pause's join with `while_paused: true`.
-- **Registry.** Each method, and the 1.61 record methods, is a command, so shortcuts, the RBS menu, Stream Deck and MCP get it.
+- **Registry.** Each 1.61 and 1.64 method is a command, so shortcuts, the RBS menu, Stream Deck and MCP get it (`record.pause_toggle` is built; the stream and Break commands come with their UI).
 
 ### Protocol 1.60: FCP7 XML editor projects (ADR-0089 decision 9, format 2)
 

@@ -15,7 +15,7 @@ use rbs_core::media::{
     AudioBlock, AudioFormat, BitstreamFormat, Bytes, CodecId, EncodedPacket, StreamDescriptor,
     StreamParams,
 };
-use rbs_core::pause::PauseWindow;
+use rbs_core::pause::{HoldSwitch, PauseWindow};
 use rbs_core::time::Timestamp;
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
@@ -122,6 +122,22 @@ fn encoder_side(c: &mut Criterion) {
         c,
         "audio_encoder_block/queue_reader_and_pausable_encoder_node",
         Box::new(null_encoder().with_pause(Arc::new(PauseWindow::default()), frames)),
+    );
+    // A stream never held (decision 12), and a recording a stream may share
+    // (decision 14): what the hold switch adds.
+    run(
+        c,
+        "audio_encoder_block/queue_reader_and_holdable_encoder_node",
+        Box::new(null_encoder().with_hold(Arc::new(HoldSwitch::default()), frames)),
+    );
+    run(
+        c,
+        "audio_encoder_block/queue_reader_and_pausable_holdable_encoder_node",
+        Box::new(
+            null_encoder()
+                .with_pause(Arc::new(PauseWindow::default()), frames)
+                .and_hold(Arc::new(HoldSwitch::default())),
+        ),
     );
 }
 
