@@ -1677,6 +1677,58 @@ impl Workspace {
         Ok(())
     }
 
+    /// The projectors this build opens (ADR-0125): each one's window index and parsed
+    /// content, in window order. Projectors of other content stay in the file unopened.
+    pub fn projectors(&self) -> Vec<(usize, crate::projector::ProjectorContent)> {
+        self.windows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| match &w.content {
+                WindowContent::Projector(c) => {
+                    crate::projector::ProjectorContent::parse(c).map(|p| (i, p))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Opens the projector of `content`'s canvas, or replaces its content and placement
+    /// when one of that canvas is open (one projector per canvas, ADR-0125 decision 9).
+    /// A projector is not a layout step: it is saved with the workspace, not undone.
+    pub fn set_projector(
+        &mut self,
+        content: &crate::projector::ProjectorContent,
+        placement: Option<Placement>,
+    ) {
+        let text = content.to_string();
+        match self
+            .projectors()
+            .into_iter()
+            .find(|(_, p)| p.key() == content.key())
+        {
+            Some((i, _)) => {
+                self.windows[i].content = WindowContent::Projector(text);
+                self.windows[i].placement = placement;
+            }
+            None => self.windows.push(Window {
+                content: WindowContent::Projector(text),
+                placement,
+            }),
+        }
+    }
+
+    /// Closes the projector of the canvas `key` names ([`ProjectorContent::key`]);
+    /// `false` when none is open.
+    ///
+    /// [`ProjectorContent::key`]: crate::projector::ProjectorContent::key
+    pub fn close_projector(&mut self, key: &str) -> bool {
+        let Some((i, _)) = self.projectors().into_iter().find(|(_, p)| p.key() == key) else {
+            return false;
+        };
+        self.windows.remove(i);
+        true
+    }
+
     /// Is the section `id` closed (ADR-0078)?
     pub fn section_closed(&self, id: &str) -> bool {
         self.closed_sections

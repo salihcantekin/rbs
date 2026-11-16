@@ -64,12 +64,14 @@ pub const THEME_COLORS: &[&str] = &[
 
 /// Colour tokens that are the same in every theme, with their only allowed
 /// values. A custom token file must repeat them unchanged: the live colours (rule
-/// U12) and the Windows close button's hover, as the OS draws it (ADR-0071).
+/// U12), the Windows close button's hover, as the OS draws it (ADR-0071), and the
+/// black around a projector's picture, which a video call receives (ADR-0125).
 pub const FIXED: &[(&str, &str)] = &[
     ("color.state.live", "#c4262e"),
     ("color.text.on-live", "#ffffff"),
     ("color.caption.close-hover", "#c42b1c"),
     ("color.caption.close-text", "#ffffff"),
+    ("color.projector.backdrop", "#000000"),
 ];
 
 /// Lengths a token file may not set below these values: the focus ring must stay
@@ -174,6 +176,7 @@ pub const LENGTHS: &[&str] = &[
     "size.toast.rail",
     "size.toast.max",
     "size.first-run.w",
+    "size.projector.resize-edge",
 ];
 
 /// Duration tokens every file defines (milliseconds).
@@ -187,6 +190,7 @@ pub const DURATIONS: &[&str] = &[
     "delay.toast-tick",
     "delay.find-fallback",
     "delay.find-mark",
+    "delay.projector-cursor",
 ];
 
 /// Text styles every file defines.

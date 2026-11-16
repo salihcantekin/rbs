@@ -44,7 +44,7 @@ use rbs_gpu::GpuContext;
 use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_needed};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, Progress,
+    AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
     RecordAdapters, RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
@@ -1107,6 +1107,17 @@ pub enum Command {
     /// picture runs only while it shows, so a closed panel costs nothing. Kept while
     /// there is no vertical canvas, for the next one.
     SetVerticalPicture(bool),
+    /// Open projector `id` (chosen by the UI) of a canvas (ADR-0125 decision 2): a
+    /// picture of that canvas at its full size, only while it is open. Answered with
+    /// [`Update::Projector`]. An `id` already open is moved to `canvas`.
+    OpenProjector {
+        /// The UI's id for it.
+        id: u32,
+        /// Whose program it shows.
+        canvas: OutputCanvas,
+    },
+    /// Close projector `id`: its picture goes. Unknown ids change nothing.
+    CloseProjector(u32),
     /// Change the canvas's size and rate (Settings, Video). The studio restarts with
     /// it (ADR-0041: a running studio's canvas does not change); the program scene's
     /// items are placed again for the new size. Refused while recording. Always
@@ -1849,7 +1860,53 @@ fn hold_picture(p: rbs_api::request::HoldPicture) -> HoldPicture {
     match p {
         rbs_api::request::HoldPicture::Freeze => HoldPicture::Freeze,
         rbs_api::request::HoldPicture::Black => HoldPicture::Black,
+        rbs_api::request::HoldPicture::Scene => HoldPicture::Scene,
     }
+}
+
+/// The control API's hold picture for the engine's (`freeze` for one it does not
+/// know).
+fn api_hold_picture(p: HoldPicture) -> rbs_api::request::HoldPicture {
+    match p {
+        HoldPicture::Black => rbs_api::request::HoldPicture::Black,
+        HoldPicture::Scene => rbs_api::request::HoldPicture::Scene,
+        _ => rbs_api::request::HoldPicture::Freeze,
+    }
+}
+
+/// The studio's hold sound for the control API's.
+fn hold_sound(s: rbs_api::request::HoldSound) -> rbs_record::HoldSound {
+    match s {
+        rbs_api::request::HoldSound::Silence => rbs_record::HoldSound::Silence,
+        rbs_api::request::HoldSound::Scene => rbs_record::HoldSound::Scene,
+    }
+}
+
+/// The control API's hold sound for the studio's.
+fn api_hold_sound(s: rbs_record::HoldSound) -> rbs_api::request::HoldSound {
+    match s {
+        rbs_record::HoldSound::Scene => rbs_api::request::HoldSound::Scene,
+        _ => rbs_api::request::HoldSound::Silence,
+    }
+}
+
+/// A refused hold as a control API error (protocol 1.67): a scene not in the
+/// collection is `not_found`, one the canvas cannot show `invalid_params`, the rest
+/// `conflict`.
+fn hold_error(e: rbs_record::HoldRefused) -> ApiError {
+    use rbs_record::HoldRefused as R;
+    let kind = match e {
+        R::UnknownScene => ErrorKind::NotFound,
+        R::SceneNotShowable => ErrorKind::InvalidParams,
+        _ => ErrorKind::Conflict,
+    };
+    let message = match e {
+        R::OtherSceneHeld => {
+            "the stream is already on hold with another scene or sound: resume it first".to_owned()
+        }
+        e => hold_refusal(e),
+    };
+    ApiError::new(kind, message)
 }
 
 fn slot(c: OutputCanvas) -> usize {
@@ -1917,10 +1974,19 @@ struct HoldPlan {
     /// A hold asked for that waits until the recording sharing the stream's encoder
     /// is paused: the studio holds a shared chain only then, so the hold picture
     /// never reaches the file.
-    pending: Option<HoldPicture>,
+    pending: Option<HoldAsk>,
     /// The hold paused the recording: Resume stream resumes it, and never a
     /// recording the user paused.
     paused_recording: bool,
+}
+
+/// A hold as asked for, with the stream settings' defaults filled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HoldAsk {
+    picture: HoldPicture,
+    /// The scene, with [`HoldPicture::Scene`] only (phase 2b).
+    scene: Option<SceneId>,
+    sound: rbs_record::HoldSound,
 }
 
 impl Default for CanvasOutputs {
@@ -2177,6 +2243,53 @@ pub struct VerticalState {
     pub follow: bool,
 }
 
+/// What became of a projector (ADR-0125 decisions 3 and 11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectorState {
+    /// Open: its picture runs or is being prepared.
+    Open,
+    /// Kept with no picture until its canvas comes back (the vertical canvas was
+    /// removed, or the collection has none).
+    Suspended,
+    /// Closed by the studio, with the reason to tell the user: a limit was reached or
+    /// its picture failed. The UI closes the window.
+    Closed(String),
+}
+
+/// At most this many projectors are open at a time (ADR-0125 decision 4).
+pub const MAX_PROJECTORS: usize = 4;
+/// Surface memory all open projector pictures may hold together, counted at
+/// [`MAX_PREVIEW_SURFACES`] surfaces of 4 bytes per pixel each (ADR-0125 decision 4).
+pub const MAX_PROJECTOR_SURFACE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The surface memory a projector of a `size` canvas counts toward
+/// [`MAX_PROJECTOR_SURFACE_BYTES`].
+pub fn projector_surface_bytes(size: Size) -> u64 {
+    u64::from(size.width) * u64::from(size.height) * 4 * MAX_PREVIEW_SURFACES as u64
+}
+
+/// Why a projector of `size` may not open next to projectors counting `open` bytes
+/// in `count` projectors; `None` when it may.
+pub fn projector_refusal(count: usize, open: u64, size: Size) -> Option<&'static str> {
+    if count >= MAX_PROJECTORS || open + projector_surface_bytes(size) > MAX_PROJECTOR_SURFACE_BYTES
+    {
+        return Some("Too many projectors are open. Close one first.");
+    }
+    None
+}
+
+/// One projector as the host keeps it (ADR-0125 decision 3).
+struct ProjectorRun {
+    id: u32,
+    canvas: OutputCanvas,
+    /// Its picture in the running studio; `None` while suspended or not yet added.
+    picture: Option<PictureId>,
+    /// Counted toward the limits (its canvas's size) while it has a picture.
+    size: Size,
+    /// What was last sent to the UI.
+    sent: Option<(Option<PreviewEndpoint>, ProjectorState)>,
+}
+
 /// The main display's framebuffer, for the Video settings row (ADR-0102 decision 8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MainDisplay {
@@ -2327,6 +2440,16 @@ pub enum Update {
     /// The vertical canvas's picture did not start; the UI asks again only after its
     /// panel was hidden and shown.
     VerticalPictureFailed,
+    /// A projector's picture (ADR-0125): where the UI connects, and whether the
+    /// projector is open, suspended or closed by the studio. Sent when either changes.
+    Projector {
+        /// The UI's id.
+        id: u32,
+        /// Where to connect, once the picture runs.
+        picture: Option<PreviewEndpoint>,
+        /// Its state.
+        state: ProjectorState,
+    },
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
     /// One target's picture ([`Command::GrabThumbnails`]); `None` when the adapter has
@@ -3043,6 +3166,8 @@ struct Host {
     /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
     vertical_picture: bool,
     vertical_preview_sent: Option<PreviewEndpoint>,
+    /// Open and suspended projectors (ADR-0125 decision 3). Empty: nothing of them.
+    projectors: Vec<ProjectorRun>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
@@ -3386,6 +3511,16 @@ fn round(
         host.apply(notify);
     }
     host.waiting = waiting;
+    // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
+    // the stream states say so.
+    if host.studio.take_hold_fallback() {
+        host.studio.settle_hold_scenes(&host.adapters.sources);
+        for c in OutputCanvas::ALL {
+            host.refresh_stream_hold(c);
+        }
+        notify(host.hold_update());
+        host.publish(notify);
+    }
     for c in OutputCanvas::ALL {
         let o = &host.outs[slot(c)];
         if let Some((_, id)) = &o.recording
@@ -3583,6 +3718,7 @@ fn start(
         scene_preview_sent: None,
         vertical_picture: false,
         vertical_preview_sent: None,
+        projectors: Vec::new(),
         scenes_shown: None,
         vertical: None,
         vertical_restore_error: None,
@@ -4362,6 +4498,14 @@ impl Host {
                 }
                 self.publish(notify);
             }
+            Command::OpenProjector { id, canvas } => {
+                self.open_projector(id, canvas, notify);
+                self.publish(notify);
+            }
+            Command::CloseProjector(id) => {
+                self.close_projector(id);
+                self.publish(notify);
+            }
             Command::SetCanvas { size, fps } => {
                 if let Err(why) = self.change_canvas(size, fps, notify) {
                     notify(Update::Error(why));
@@ -4444,7 +4588,7 @@ impl Host {
                     Command::HoldStream => (
                         rbs_api::Command::StreamHoldToggle(rbs_api::request::StreamHold {
                             canvas: Some(api::OutputTarget::All),
-                            picture: None,
+                            ..rbs_api::request::StreamHold::default()
                         }),
                         "The stream could not hold or resume",
                     ),
@@ -5013,26 +5157,19 @@ impl Host {
         &mut self,
         c: OutputCanvas,
         hold: Option<bool>,
-        picture: Option<HoldPicture>,
+        asked: rbs_api::request::StreamHold,
     ) -> Result<bool, ApiError> {
         let conflict = |m: String| ApiError::new(ErrorKind::Conflict, m);
-        // No picture named: the stream settings' "While on hold" (protocol 1.65).
-        let picture = picture.unwrap_or_else(|| {
-            hold_picture(
-                self.stream_profile_of(c)
-                    .map(|p| p.hold_picture)
-                    .unwrap_or_default(),
-            )
-        });
         let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
             return Err(conflict("nothing streams".into()));
         };
         let hold = hold.unwrap_or_else(|| !self.stream_held(c));
         if hold {
-            match self.studio.hold_output(id, picture) {
+            let ask = self.hold_ask(c, asked)?;
+            match self.hold_engine(id, ask) {
                 Ok(_) => self.outs[slot(c)].hold.pending = None,
                 Err(rbs_record::HoldRefused::SharedWithRecording) => {
-                    if self.outs[slot(c)].hold.pending == Some(picture) {
+                    if self.outs[slot(c)].hold.pending == Some(ask) {
                         return Err(conflict("the stream is already on hold".into()));
                     }
                     let paused = self.outs[slot(c)]
@@ -5044,9 +5181,9 @@ impl Host {
                         self.pause_recording(c, Some(true))?;
                         self.outs[slot(c)].hold.paused_recording = true;
                     }
-                    self.outs[slot(c)].hold.pending = Some(picture);
+                    self.outs[slot(c)].hold.pending = Some(ask);
                 }
-                Err(e) => return Err(conflict(hold_refusal(e))),
+                Err(e) => return Err(hold_error(e)),
             }
         } else {
             if !self.stream_held(c) {
@@ -5054,7 +5191,7 @@ impl Host {
             }
             if self.outs[slot(c)].hold.pending.take().is_none() {
                 self.studio
-                    .release_hold(id)
+                    .release_hold_scene(id, &self.adapters.sources)
                     .map_err(|e| conflict(hold_refusal(e)))?;
             }
             if std::mem::take(&mut self.outs[slot(c)].hold.paused_recording) {
@@ -5064,6 +5201,73 @@ impl Host {
         }
         self.refresh_stream_hold(c);
         Ok(hold)
+    }
+
+    /// The hold `asked` names, with the stream settings' "While on hold" for what it
+    /// leaves out (protocols 1.65 and 1.67). A scene or a sound with a picture that
+    /// is not a scene is `invalid_params`; a scene hold with no scene named or set is
+    /// `conflict`.
+    fn hold_ask(
+        &self,
+        c: OutputCanvas,
+        asked: rbs_api::request::StreamHold,
+    ) -> Result<HoldAsk, ApiError> {
+        use rbs_api::request::HoldPicture as P;
+        let profile = self.stream_profile_of(c);
+        let picture = asked
+            .picture
+            .unwrap_or_else(|| profile.map(|p| p.hold_picture).unwrap_or_default());
+        if picture != P::Scene {
+            if asked.scene.is_some() || asked.sound.is_some() {
+                return Err(ApiError::new(
+                    ErrorKind::InvalidParams,
+                    "scene and sound go only with picture \"scene\"",
+                ));
+            }
+            return Ok(HoldAsk {
+                picture: hold_picture(picture),
+                scene: None,
+                sound: rbs_record::HoldSound::Silence,
+            });
+        }
+        let scene = asked
+            .scene
+            .or_else(|| profile.and_then(|p| p.hold_scene))
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorKind::Conflict,
+                    "no hold scene is set: choose one in Settings, Stream",
+                )
+            })?;
+        let sound = asked
+            .sound
+            .or_else(|| profile.map(|p| p.hold_sound))
+            .unwrap_or_default();
+        Ok(HoldAsk {
+            picture: HoldPicture::Scene,
+            scene: Some(SceneId::from_raw(scene)),
+            sound: hold_sound(sound),
+        })
+    }
+
+    /// Asks the studio for the hold `ask`: a scene's (bound and opened first) or a
+    /// picture's. A scene left by a change to another picture leaves at once.
+    fn hold_engine(
+        &mut self,
+        id: OutputId,
+        ask: HoldAsk,
+    ) -> Result<Timestamp, rbs_record::HoldRefused> {
+        match ask.scene {
+            Some(scene) => {
+                self.studio
+                    .hold_output_scene(id, scene, ask.sound, &self.adapters.sources)
+            }
+            None => {
+                let at = self.studio.hold_output(id, ask.picture)?;
+                self.studio.settle_hold_scenes(&self.adapters.sources);
+                Ok(at)
+            }
+        }
     }
 
     /// Canvas `c`'s stream is on hold, or a hold waits for its recording's pause.
@@ -5079,9 +5283,9 @@ impl Host {
     /// Holds a stream whose hold waits for its recording's pause, once that pause
     /// has begun. Returns how soon to look again while it still waits.
     fn drive_hold(&mut self, c: OutputCanvas) -> Option<Duration> {
-        let picture = self.outs[slot(c)].hold.pending?;
+        let ask = self.outs[slot(c)].hold.pending?;
         let id = self.outs[slot(c)].streaming.as_ref()?.2;
-        match self.studio.hold_output(id, picture) {
+        match self.hold_engine(id, ask) {
             Err(rbs_record::HoldRefused::SharedWithRecording) => {
                 let paused = self.outs[slot(c)]
                     .recording
@@ -5107,12 +5311,41 @@ impl Host {
         let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
             return;
         };
-        let pending = self.outs[slot(c)].hold.pending.is_some();
+        let pending = self.outs[slot(c)].hold.pending;
         let hold = self.studio.output_hold(id).unwrap_or_default();
         let mut state = self.outs[slot(c)].stream_state.clone();
-        if let api::StreamState::Live { held, held_ms, .. } = &mut state {
-            *held = pending || hold.picture.is_some();
+        if let api::StreamState::Live {
+            held,
+            held_ms,
+            hold_picture,
+            hold_scene,
+            hold_sound,
+            hold_fallback,
+            hold_sound_fallback,
+            hold_fallback_reason,
+            ..
+        } = &mut state
+        {
+            *held = pending.is_some() || hold.picture.is_some();
             *held_ms = hold.held_ns / 1_000_000;
+            // A hold waiting for the recording's pause says what it will send.
+            let (picture, scene, sound) = match (hold.picture, pending) {
+                (Some(p), _) => (Some(p), hold.scene, hold.sound),
+                (None, Some(ask)) => (Some(ask.picture), ask.scene, ask.scene.map(|_| ask.sound)),
+                (None, None) => (None, None, None),
+            };
+            *hold_picture = picture.map(api_hold_picture);
+            *hold_scene = scene.map(SceneId::get);
+            *hold_sound = sound.map(api_hold_sound);
+            *hold_fallback = hold.fallback.is_some();
+            *hold_sound_fallback = hold.sound_fallback.is_some();
+            *hold_fallback_reason = hold
+                .fallback
+                .map(|f| format!("{f}: showing the last frame"))
+                .or_else(|| {
+                    hold.sound_fallback
+                        .map(|f| format!("{f}: its sound is silent"))
+                });
             self.set_stream_state(c, state);
         }
     }
@@ -5387,6 +5620,11 @@ impl Host {
         self.studio = studio;
         self.clock = clock;
         self.waiting = self.studio.waiting();
+        // Pictures belonged to the old studio; the next publish adds them again with
+        // the canvas's size now (ADR-0125 decision 3).
+        for p in &mut self.projectors {
+            p.picture = None;
+        }
         // The camera keeps sending across a canvas change; when it cannot, the next
         // round says so.
         if let Some(settings) = self.camera.take()
@@ -6933,6 +7171,12 @@ impl Host {
                 audio_encoder: audio_encoder.clone(),
                 held: false,
                 held_ms: 0,
+                hold_picture: None,
+                hold_scene: None,
+                hold_sound: None,
+                hold_fallback: false,
+                hold_sound_fallback: false,
+                hold_fallback_reason: None,
             },
         );
         self.mark_stream(c, true);
@@ -7167,25 +7411,17 @@ impl Host {
         {
             *last = link;
             notify(stream_update(c, StreamUpdate::Link(link)));
+            let mut state = self.outs[slot(c)].stream_state.clone();
             if let api::StreamState::Live {
-                protocol,
-                video_encoder,
-                audio_encoder,
-                held,
-                held_ms,
+                connected,
+                connects,
+                reconnect_attempts,
                 ..
-            } = &self.outs[slot(c)].stream_state
+            } = &mut state
             {
-                let state = api::StreamState::Live {
-                    protocol: *protocol,
-                    connected: link.connected,
-                    connects: link.connects,
-                    reconnect_attempts: link.reconnect_attempts,
-                    video_encoder: video_encoder.clone(),
-                    audio_encoder: audio_encoder.clone(),
-                    held: *held,
-                    held_ms: *held_ms,
-                };
+                *connected = link.connected;
+                *connects = link.connects;
+                *reconnect_attempts = link.reconnect_attempts;
                 self.set_stream_state(c, state);
             }
         }
@@ -8670,6 +8906,153 @@ impl Host {
             Err(e) => {
                 self.vertical_restore_error =
                     Some(format!("The vertical canvas did not start: {e}"));
+            }
+        }
+    }
+
+    /// The canvas a projector shows and its size, while that canvas runs.
+    fn projector_canvas(&self, canvas: OutputCanvas) -> Option<(CanvasId, Size, FrameRate)> {
+        let id = match canvas {
+            OutputCanvas::Main => self.canvas,
+            OutputCanvas::Vertical => self.vertical?.canvas,
+        };
+        let info = self.collection.canvas(id)?;
+        Some((id, info.size, info.frame_rate))
+    }
+
+    /// Opens projector `id` (ADR-0125): refused beyond the limits of decision 4 with
+    /// [`ProjectorState::Closed`]; its picture is added by [`Self::sync_projectors`].
+    fn open_projector(&mut self, id: u32, canvas: OutputCanvas, notify: &dyn Fn(Update)) {
+        self.close_projector(id);
+        if let Some((_, size, _)) = self.projector_canvas(canvas) {
+            let (count, open) = self.projectors_open();
+            if let Some(why) = projector_refusal(count, open, size) {
+                notify(Update::Projector {
+                    id,
+                    picture: None,
+                    state: ProjectorState::Closed(why.to_owned()),
+                });
+                return;
+            }
+        }
+        self.projectors.push(ProjectorRun {
+            id,
+            canvas,
+            picture: None,
+            size: Size::new(0, 0),
+            sent: None,
+        });
+    }
+
+    /// Closes projector `id`: its picture leaves the studio.
+    fn close_projector(&mut self, id: u32) {
+        let Some(at) = self.projectors.iter().position(|p| p.id == id) else {
+            return;
+        };
+        let p = self.projectors.remove(at);
+        if let Some(picture) = p.picture {
+            let run = self.run_collection();
+            let running = run.as_ref().unwrap_or(&self.collection);
+            // A picture that did not leave cleanly goes with the next update.
+            let _ = self
+                .studio
+                .remove_picture(running, &self.adapters.sources, picture);
+            self.waiting = self.studio.waiting();
+        }
+    }
+
+    /// How many projectors have a picture, and the surface memory they count.
+    fn projectors_open(&self) -> (usize, u64) {
+        self.projectors
+            .iter()
+            .filter(|p| p.picture.is_some())
+            .fold((0, 0), |(n, b), p| {
+                (n + 1, b + projector_surface_bytes(p.size))
+            })
+    }
+
+    /// Brings the projectors' pictures in line with the studio (ADR-0125 decision 3):
+    /// a picture that failed is removed and its projector closed; a projector whose
+    /// canvas runs and that has no picture gets one (after a restart, or when the
+    /// vertical canvas comes back); one whose canvas is gone is suspended. Tells the UI
+    /// what changed. Nothing runs while there is no projector (P13).
+    fn sync_projectors(&mut self, notify: &dyn Fn(Update)) {
+        if self.projectors.is_empty() {
+            return;
+        }
+        let present = self.studio.pictures();
+        let mut closed = Vec::new();
+        for at in 0..self.projectors.len() {
+            let (canvas, picture) = (self.projectors[at].canvas, self.projectors[at].picture);
+            // Gone with its canvas (the studio removed it).
+            if let Some(pid) = picture
+                && !present.contains(&pid)
+            {
+                self.projectors[at].picture = None;
+            }
+            if let Some(pid) = self.projectors[at].picture
+                && let Some(why) = self.studio.picture_failure(pid).map(str::to_owned)
+            {
+                closed.push((
+                    self.projectors[at].id,
+                    format!("The projector stopped: {why}"),
+                ));
+                continue;
+            }
+            if self.projectors[at].picture.is_some() {
+                continue;
+            }
+            let Some((canvas_id, size, fps)) = self.projector_canvas(canvas) else {
+                continue;
+            };
+            let (count, open) = self.projectors_open();
+            if let Some(why) = projector_refusal(count, open, size) {
+                closed.push((self.projectors[at].id, why.to_owned()));
+                continue;
+            }
+            let desc = PreviewDesc {
+                width: size.width,
+                height: size.height,
+                surfaces: preview_surfaces(fps),
+            };
+            let run = self.run_collection();
+            let running = run.as_ref().unwrap_or(&self.collection);
+            match self
+                .studio
+                .add_picture(running, &self.adapters.sources, canvas_id, desc)
+            {
+                Ok((pid, _)) => {
+                    self.projectors[at].picture = Some(pid);
+                    self.projectors[at].size = size;
+                }
+                Err(e) => closed.push((
+                    self.projectors[at].id,
+                    format!("The projector did not start: {e}"),
+                )),
+            }
+            self.waiting = self.studio.waiting();
+        }
+        for (id, why) in closed {
+            self.close_projector(id);
+            notify(Update::Projector {
+                id,
+                picture: None,
+                state: ProjectorState::Closed(why.clone()),
+            });
+            notify(Update::Error(why));
+        }
+        for p in &mut self.projectors {
+            let now = match p.picture {
+                Some(pid) => (self.studio.picture(pid), ProjectorState::Open),
+                None => (None, ProjectorState::Suspended),
+            };
+            if p.sent.as_ref() != Some(&now) {
+                p.sent = Some(now.clone());
+                notify(Update::Projector {
+                    id: p.id,
+                    picture: now.0,
+                    state: now.1,
+                });
             }
         }
     }
@@ -10578,6 +10961,7 @@ impl Host {
     /// here; the writer thread keeps only the latest snapshot, so a drag costs one
     /// write behind it, never a wait here).
     fn publish(&mut self, notify: &dyn Fn(Update)) {
+        self.sync_projectors(notify);
         self.publish_save();
         self.refresh_sizes();
         if self.vertical_sent != Some(self.vertical) {
@@ -12046,9 +12430,13 @@ impl ApiTarget<'_> {
             C::RecordPause(p) => self.pause_asked(p, Some(true)),
             C::RecordResume(p) => self.pause_asked(p, Some(false)),
             C::RecordPauseToggle(p) => self.pause_asked(p, None),
-            C::StreamHold(p) => self.hold_asked(p.target(), Some(true), p.picture),
-            C::StreamResume(p) => self.hold_asked(p.target(), Some(false), None),
-            C::StreamHoldToggle(p) => self.hold_asked(p.target(), None, p.picture),
+            C::StreamHold(p) => self.hold_asked(p.target(), Some(true), p),
+            C::StreamResume(p) => self.hold_asked(
+                p.target(),
+                Some(false),
+                rbs_api::request::StreamHold::default(),
+            ),
+            C::StreamHoldToggle(p) => self.hold_asked(p.target(), None, p),
             C::OutputBreakToggle => self.break_toggle(),
             C::MarkerAdd(p) => {
                 let added = host.add_marker(&p)?;
@@ -12778,14 +13166,13 @@ impl ApiTarget<'_> {
         &mut self,
         target: api::OutputTarget,
         hold: Option<bool>,
-        picture: Option<rbs_api::request::HoldPicture>,
+        asked: rbs_api::request::StreamHold,
     ) -> Result<Response, ApiError> {
-        let picture = picture.map(hold_picture);
         let notify = self.notify;
         let host = &mut *self.host;
         if let Some(one) = target.single() {
             let c = host.api_canvas_of(Some(one))?;
-            host.hold_stream(c, hold, picture)?;
+            host.hold_stream(c, hold, asked)?;
             notify(host.pause_update());
             notify(host.hold_update());
             host.publish(notify);
@@ -12804,7 +13191,7 @@ impl ApiTarget<'_> {
             let (outcome, error) = if !live(host, c) {
                 (api::OutputOutcome::NotRunning, None)
             } else {
-                match host.hold_stream(c, Some(hold), picture) {
+                match host.hold_stream(c, Some(hold), asked) {
                     Ok(true) => (api::OutputOutcome::Held, None),
                     Ok(false) => (api::OutputOutcome::Resumed, None),
                     Err(e) => {
@@ -12894,13 +13281,15 @@ impl ApiTarget<'_> {
         let before: Vec<bool> = records.iter().map(|&c| paused(host, c)).collect();
         for &c in &streams {
             if resume || !host.stream_held(c) {
-                let done = host.hold_stream(c, Some(!resume), None).map(|held| {
-                    if held {
-                        api::OutputOutcome::Held
-                    } else {
-                        api::OutputOutcome::Resumed
-                    }
-                });
+                let done = host
+                    .hold_stream(c, Some(!resume), rbs_api::request::StreamHold::default())
+                    .map(|held| {
+                        if held {
+                            api::OutputOutcome::Held
+                        } else {
+                            api::OutputOutcome::Resumed
+                        }
+                    });
                 entry(c, api::OutputKind::Stream, done);
             }
         }

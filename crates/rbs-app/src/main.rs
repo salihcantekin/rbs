@@ -28,6 +28,7 @@ mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
+mod projector;
 mod replay_page;
 mod shortcuts_page;
 mod studio_ui;
@@ -198,6 +199,9 @@ struct App {
     /// The float the Add source picker is open in (`None`: the main window).
     picker_host: Option<slint::Weak<FloatWindow>>,
     save_due: bool,
+    /// The projectors the studio host was told to make pictures for (ADR-0125): the
+    /// windows can open before the host exists, so this catches up once it does.
+    host_projectors: Vec<rbs_ui::projector::ProjectorCanvas>,
     /// The closed sections the windows were told about, and the number that tells them
     /// the answers changed (ADR-0078).
     sections_shown: Vec<String>,
@@ -507,11 +511,83 @@ impl App {
             },
             can_undo: self.session.can_undo(),
             can_redo: self.session.can_redo(),
+            projectors: projector::shown(),
+            displays: projector::displays(),
             panels: view::panel_entries(self.session.workspace())
                 .into_iter()
                 .map(|p| (p.title.into(), p.id.into(), p.open))
                 .collect(),
         }
+    }
+
+    /// Opens a canvas's projector (ADR-0125 decision 9); an open one comes to the front.
+    /// The window opens at the next sync.
+    fn open_projector(&mut self, canvas: rbs_ui::projector::ProjectorCanvas) {
+        use rbs_ui::projector::ProjectorContent;
+        let open = self
+            .session
+            .workspace()
+            .projectors()
+            .into_iter()
+            .any(|(_, p)| p.canvas == canvas);
+        if open {
+            projector::raise(canvas);
+            return;
+        }
+        self.session
+            .set_projector(&ProjectorContent::program(canvas), None);
+        self.changed();
+    }
+
+    /// Closes a canvas's projector; the window closes at the next sync.
+    fn close_projector(&mut self, canvas: rbs_ui::projector::ProjectorCanvas) {
+        let key = rbs_ui::projector::ProjectorContent::program(canvas).key();
+        if self.session.close_projector(key) {
+            self.changed();
+        }
+    }
+
+    /// What a projector window reports: Esc or the OS closed it, or its size changed.
+    fn projector_event(&mut self, event: projector::Event) {
+        match event {
+            projector::Event::Close(canvas) => self.close_projector(canvas),
+            projector::Event::Changed(canvas) => {
+                if let Some((content, placement)) = projector::saved(canvas) {
+                    self.session.set_projector(&content, placement);
+                    self.changed();
+                }
+            }
+        }
+    }
+
+    /// The projectors that should have a window now: those in the workspace whose
+    /// canvas exists (a missing one waits, ADR-0125 decision 3), with the canvas size.
+    fn wanted_projectors(
+        &self,
+    ) -> Vec<(
+        rbs_ui::projector::ProjectorContent,
+        Option<rbs_ui::workspace::Placement>,
+        [u32; 2],
+    )> {
+        use rbs_ui::projector::ProjectorCanvas;
+        if !cfg!(any(target_os = "macos", windows)) {
+            return Vec::new();
+        }
+        let ws = self.session.workspace();
+        ws.projectors()
+            .into_iter()
+            .filter_map(|(i, content)| {
+                let size = match content.canvas {
+                    ProjectorCanvas::Main => [self.studio.canvas.width, self.studio.canvas.height],
+                    ProjectorCanvas::Vertical => {
+                        let v = self.studio.vertical.as_ref()?;
+                        [v.size.width, v.size.height]
+                    }
+                };
+                let placement = ws.windows.get(i).and_then(|w| w.placement.clone());
+                Some((content, placement, size))
+            })
+            .collect()
     }
 
     /// The main output of `kind` was asked to stop; `all`: its vertical one too. When
@@ -724,6 +800,11 @@ impl App {
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section, setting) => self.open_settings = Some((section, setting)),
             Run::OpenAppMenu => self.open_app_menu = true,
+            Run::Projector(canvas, true) => self.open_projector(canvas),
+            Run::Projector(canvas, false) => self.close_projector(canvas),
+            Run::ProjectorSize(canvas, size, display) => {
+                projector::set_size(canvas, size, display);
+            }
         }
     }
 
@@ -985,6 +1066,8 @@ impl App {
         let param = |t: &[(String, String)], k: &str| {
             t.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone())
         };
+        // The picture's panel, when a source on it was right-clicked.
+        let mut panel: Option<(String, String)> = None;
         let context = match context {
             // The picture: the source under the pointer, else the panel's own menu.
             "preview" => {
@@ -995,8 +1078,15 @@ impl App {
                 };
                 // On the vertical picture the source's Transform entries carry
                 // `canvas=vertical` (protocol 1.44): they change its layout there only.
-                let vertical = param(&target, "id").as_deref() == Some(studio_ui::VERTICAL_PANEL);
-                let hit = if vertical {
+                let panel_id = param(&target, "id");
+                let vertical = panel_id.as_deref() == Some(studio_ui::VERTICAL_PANEL);
+                // In studio mode Program and Vertical show the scene on air, which is
+                // not edited: their sources are not picked, the panel's menu opens.
+                let on_air = self.studio.studio_mode
+                    && (vertical || panel_id.as_deref() == Some("rbs.program"));
+                let hit = if on_air {
+                    None
+                } else if vertical {
                     self.studio.vertical_source_at([x, y], [w, h])
                 } else {
                     self.studio.preview_source_at([x, y], [w, h])
@@ -1004,14 +1094,24 @@ impl App {
                 match hit {
                     Some(id) => {
                         let Some(f) = self.studio.source_facts(Some(&id.to_string()), None) else {
-                            return Vec::new();
+                            // The picture's own menu rather than none at all.
+                            target.retain(|(k, _)| k == "id");
+                            return context_menu::items(Context::Preview, &target, &self.shown());
                         };
+                        panel = panel_id.clone().map(|p| ("id".to_owned(), p));
                         target = vec![
                             ("item".to_owned(), f.item.to_string()),
                             ("source".to_owned(), f.id.to_string()),
                         ];
                         if vertical {
                             target.push(("canvas".to_owned(), "vertical".to_owned()));
+                        }
+                        // The source menu then offers this picture's projector.
+                        if vertical
+                            || matches!(panel_id.as_deref(), Some("rbs.program" | "rbs.preview"))
+                        {
+                            let canvas = if vertical { "vertical" } else { "main" };
+                            target.push(("picture".to_owned(), canvas.to_owned()));
                         }
                         Context::Source
                     }
@@ -1041,7 +1141,14 @@ impl App {
                 None => return Vec::new(),
             },
         };
-        context_menu::items(context, &target, &self.shown())
+        let shown = self.shown();
+        let items = context_menu::items(context, &target, &shown);
+        // A source on a picture whose menu has nothing to offer: the picture's own
+        // menu, so a right-click on a picture never opens nothing.
+        if let Some(panel) = panel.filter(|_| items.is_empty()) {
+            return context_menu::items(Context::Preview, &[panel], &shown);
+        }
+        items
     }
 
     /// Opens the Sources panel's Add source menu, at the list of `kind`'s targets when
@@ -1586,6 +1693,24 @@ impl Ctx {
             }
             for u in applied.replay {
                 replay_page::update(app, &u);
+            }
+            for (id, picture, state) in applied.projectors {
+                studio_ui::log(&format!(
+                    "projector: host says {id} is {state:?}, picture {}",
+                    picture.is_some()
+                ));
+                let Some(canvas) = projector::canvas_of(id) else {
+                    continue;
+                };
+                match state {
+                    studio_host::ProjectorState::Closed(why) => {
+                        // Refused (the limits) or failed: the workspace drops it, so
+                        // the next sync closes the window (ADR-0125 decision 4).
+                        app.close_projector(canvas);
+                        app.show_error(UiError::Other(why));
+                    }
+                    _ => projector::picture(canvas, picture),
+                }
             }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
@@ -2458,6 +2583,7 @@ impl Ctx {
         }
 
         self.sync_floats(&mut app);
+        self.sync_projectors(&mut app);
         // After Settings, Source settings and floats exist for this turn (they may have
         // been opened earlier in this sync): every RBS window gets the capture flag.
         self.refresh_capture_exclusion(&mut app);
@@ -2649,6 +2775,42 @@ impl Ctx {
     /// the workspace window that shares a panel with it, so its position, size
     /// and focus survive docks, moves and undo; leftover OS windows are reused
     /// in order before a new one is created.
+    /// Opens and closes projector windows to match the workspace and the canvases, and
+    /// tells the host which pictures to make (ADR-0125 decisions 2 and 3).
+    fn sync_projectors(&self, app: &mut App) {
+        use rbs_api::types::OutputCanvas;
+        use rbs_ui::projector::ProjectorCanvas;
+        let wanted = app.wanted_projectors();
+        let look = self.look.borrow();
+        let make = |pw: &ProjectorWindow| {
+            look::apply(&pw.global::<Theme>(), &pw.global::<Tokens>(), look.as_ref());
+            install_context_menus(&pw.global::<ContextMenus>(), self, None);
+        };
+        projector::sync(&wanted, &make);
+        drop(look);
+        // The host makes a picture for every open window; told once it exists.
+        if app.studio.host.is_none() {
+            return;
+        }
+        let open = projector::open_canvases();
+        let host_canvas = |c: ProjectorCanvas| match c {
+            ProjectorCanvas::Main => OutputCanvas::Main,
+            ProjectorCanvas::Vertical => OutputCanvas::Vertical,
+        };
+        for &c in app.host_projectors.iter().filter(|c| !open.contains(c)) {
+            app.studio
+                .send(studio_host::Command::CloseProjector(projector::host_id(c)));
+        }
+        for &c in open.iter().filter(|c| !app.host_projectors.contains(c)) {
+            studio_ui::log(&format!("projector: asking the host for {c:?}"));
+            app.studio.send(studio_host::Command::OpenProjector {
+                id: projector::host_id(c),
+                canvas: host_canvas(c),
+            });
+        }
+        app.host_projectors = open;
+    }
+
     fn sync_floats(&self, app: &mut App) {
         let ws = app.session.workspace();
         let wanted: Vec<(usize, Vec<PanelId>)> = ws
@@ -3469,6 +3631,7 @@ mod file_dialog {
 fn close_preview() {
     #[cfg(any(target_os = "macos", windows))]
     preview::close();
+    projector::drop_pictures();
 }
 
 /// Sections that start closed (ADR-0078): the workspace lists them when the user
@@ -4629,7 +4792,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     forget_deleted_themes(&config);
     let selector = slint::BackendSelector::new()
         .backend_name("winit".into())
-        .renderer_name("skia".into());
+        .renderer_name("skia".into())
+        .with_winit_window_attributes_hook(projector::attributes);
     // Skia on Direct3D 12 (ADR-0022 decision 1). Left to choose, wgpu takes the Vulkan
     // adapter it lists first, which Skia is not built for on Windows, and Slint falls
     // back to its CPU surface: the whole window drawn on the CPU and no rendering
@@ -4742,6 +4906,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             run_origin: None,
             picker_host: None,
             save_due: false,
+            host_projectors: Vec::new(),
             sections_shown: Vec::new(),
             sections_rev: 0,
             sections_windows: 0,
@@ -4784,6 +4949,10 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     replay_page::install(&main.global::<ReplayBuffer>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
     install_context_menus(&main.global::<ContextMenus>(), &ctx, None);
+    {
+        let c = ctx.clone();
+        projector::install(move |e| c.update(move |app| app.projector_event(e)));
+    }
     install_picker(&main.global::<Overlays>(), &ctx);
     install_name_prompt(&main.global::<Overlays>(), &ctx);
     install_vertical_prompt(&main.global::<Overlays>(), &ctx);
@@ -5011,6 +5180,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // The layer's frames go back before the studio and its publisher stop.
     #[cfg(any(target_os = "macos", windows))]
     preview::close();
+    projector::close_all();
     if let Ok(mut app) = ctx.app.try_borrow_mut() {
         if app.save_due {
             app.persist_now();

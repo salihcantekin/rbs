@@ -5336,6 +5336,9 @@ impl StudioUi {
                 out.vertical_preview = Some(endpoint);
             }
             Update::VerticalPictureFailed => self.vertical_picture_failed = true,
+            Update::Projector { id, picture, state } => {
+                out.projectors.push((id, picture, state));
+            }
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 out.focus_shape = self.focus_shape.take();
@@ -6200,6 +6203,13 @@ pub struct Applied {
     pub camera: Option<Option<rbs_app::studio_host::CameraStatus>>,
     /// Replay buffer updates (ADR-0088), for the shell's replay page.
     pub replay: Vec<Update>,
+    /// Projector news (ADR-0125): a host id, its picture and its state, for the
+    /// shell's projector windows.
+    pub projectors: Vec<(
+        u32,
+        Option<rbs_gpu::share::PreviewEndpoint>,
+        rbs_app::studio_host::ProjectorState,
+    )>,
 }
 
 /// What the Measure sync offset window shows, as `SyncMeasureData` codes (see
@@ -7849,6 +7859,8 @@ mod tests {
             replay: Default::default(),
             can_undo: true,
             can_redo: false,
+            projectors: Vec::new(),
+            displays: Vec::new(),
         };
         let (row, _) = toolbar(&shown);
         let data = |items: &[crate::menu_bar::ToolItem]| -> Vec<ToolbarData> {
@@ -7928,6 +7940,8 @@ mod tests {
             replay: Default::default(),
             can_undo: true,
             can_redo: false,
+            projectors: Vec::new(),
+            displays: Vec::new(),
         };
         let mixer = PanelId::parse("rbs.mixer").unwrap();
         let cmd = |t: &str| CommandId::parse(t).unwrap();
@@ -8057,6 +8071,8 @@ mod tests {
                     replay: Default::default(),
                     can_undo: false,
                     can_redo: false,
+                    projectors: Vec::new(),
+                    displays: Vec::new(),
                 };
                 (
                     s.applies(&toggle),
@@ -8132,6 +8148,8 @@ mod tests {
                 replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
             };
             run(text, &s)
         };
@@ -8164,6 +8182,8 @@ mod tests {
                 replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
             };
             context_menu(Context::AddSource, &[], &s)
                 .into_iter()
@@ -8237,6 +8257,8 @@ mod tests {
             replay: Default::default(),
             can_undo: false,
             can_redo: false,
+            projectors: Vec::new(),
+            displays: Vec::new(),
         };
         let cmd = |t: &str| CommandId::parse(t).unwrap();
         assert_eq!(
@@ -8302,6 +8324,8 @@ mod tests {
                 replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
             };
             crate::context_menu::items(Context::VerticalOutputs, &[], &s)
                 .into_iter()
@@ -8346,6 +8370,8 @@ mod tests {
                 replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
             };
             assert_eq!(run("record.toggle", &s), Some(Run::Record(true)));
             assert_eq!(run("stream.toggle", &s), Some(Run::GoLive(true)));
@@ -8426,6 +8452,8 @@ mod tests {
                 replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
             };
             assert!(s.enabled(&cmd("canvas.remove_vertical")).is_err());
         }
@@ -8443,6 +8471,8 @@ mod tests {
                 replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
             };
             assert_eq!(
                 run("stream.vertical.toggle", &s),
@@ -8515,6 +8545,8 @@ mod tests {
                 replay: Default::default(),
                 can_undo,
                 can_redo,
+                projectors: Vec::new(),
+                displays: Vec::new(),
             }
         }
         let cmd = |t: &str| CommandId::parse(t).unwrap();

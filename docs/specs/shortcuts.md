@@ -127,7 +127,7 @@ keys = "Ctrl+Y"
 - Main and floating windows forward key presses that no control took to `Shortcuts.press(text, ctrl, alt, shift, meta, repeat) -> bool` from their root `FocusScope`, which has the focus when the window opens (`forward-focus`) and whenever no control has it. The root scope has no `KeyBinding`s. The main window handles Cmd+W itself on macOS (close, ADR-0056).
 - `rbs_app::hotkeys::read_key(text, mods) -> Read` maps the toolkit's text: its special key codes to named keys and F-keys (Backtab is Shift+Tab), modifier keys alone to `Read::Modifier`, everything else through `Chord::from_typed`. The shell runs `app.run_command(id)` when `Keymap::app` holds the chord. Repeats are accepted but run nothing. Keys that map to no bound chord are rejected so the window handles them as before.
 - The keymap's app table is rebuilt only when the keymap changes; a key press is one hash lookup.
-- The Settings window, dialogs and projectors do not run shortcuts.
+- The Settings window, dialogs and projectors do not run shortcuts. In a projector Esc closes it and the Menu key opens its menu (ADR-0125).
 
 ### Global scope (`rbs-app`)
 
