@@ -75,6 +75,9 @@ pub struct MediaPictureNode {
     published: Option<u32>,
     /// The last `dequeue` published a picture it had not published before.
     changed: bool,
+    /// `current` has been published. A new run numbers its pictures from 0 again, so
+    /// the index alone cannot tell.
+    shown: bool,
     upload: SourceUpload,
     /// Last picture already on the GPU, reused while the clock repeats a picture.
     shown_texture: Option<VideoFrame>,
@@ -97,6 +100,7 @@ impl MediaPictureNode {
             held_mark: 0,
             published: None,
             changed: false,
+            shown: false,
             upload: SourceUpload::new(),
             shown_texture: None,
         }
@@ -287,6 +291,7 @@ impl MediaPictureNode {
         self.next = None;
         self.held = None;
         self.published = None;
+        self.shown = false;
         self.shown_texture = None;
     }
 
@@ -326,6 +331,7 @@ impl MediaPictureNode {
             self.published = Some(current.index);
             self.held = Some(current.frame);
         }
+        self.shown = false;
         self.rings = None;
         self.phase = player.phase;
     }
@@ -389,9 +395,6 @@ impl MediaPictureNode {
                 .torn_controls
                 .fetch_add(1, Ordering::Relaxed);
         }
-        // A new run numbers its pictures from 0 again, so a picture taken this tick is
-        // new even when its index matches the one published.
-        let mut replaced = false;
         // Bounded by the ring: every pass takes or skips one picture, or stops.
         for _ in 0..=2 * super::PICTURE_SLOTS {
             if self.next.is_none() {
@@ -424,9 +427,9 @@ impl MediaPictureNode {
             let Some(next) = self.next.take() else {
                 break;
             };
-            replaced = true;
+            let was_shown = std::mem::replace(&mut self.shown, false);
             if let Some(old) = self.current.replace(next) {
-                if Some(old.index) != self.published {
+                if !was_shown {
                     self.shared
                         .stats
                         .dropped_video
@@ -439,13 +442,14 @@ impl MediaPictureNode {
             // A new run after the end hold shows the held picture until its first.
             return self.held.as_ref().and_then(VideoFrame::share);
         };
-        self.changed = !(self.published == Some(current.index) && !replaced);
-        if !self.changed {
+        self.changed = !self.shown;
+        if self.shown {
             self.shared
                 .stats
                 .repeated_video
                 .fetch_add(1, Ordering::Relaxed);
         } else {
+            self.shown = true;
             self.published = Some(current.index);
             self.shared.set_cursor(current.media);
             self.held_mark = current.mark;

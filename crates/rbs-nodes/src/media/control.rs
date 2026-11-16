@@ -370,8 +370,11 @@ impl MediaControl {
         if on_air {
             match state {
                 PlayState::Cued => {
+                    // `restart_when_shown` starts at the range start (the table),
+                    // also after a seek while cued.
                     player.cued = false;
-                    Self::command(&shared, &mut player, false, None)
+                    let position = restart.then_some(Duration::ZERO);
+                    Self::command(&shared, &mut player, false, position)
                 }
                 PlayState::Ended if restart => {
                     Self::start_at(&shared, &mut player, Duration::ZERO, false)
@@ -407,8 +410,14 @@ impl MediaControl {
         if player.released || player.worker_joined() || player.phase != MediaPhase::Playing {
             return;
         }
+        // A run whose rings the picture node has not taken yet still has a picture
+        // to show.
+        if shared.handoff_ready.load(Ordering::Acquire) {
+            return;
+        }
         let newest = shared.controls.newest();
-        if newest.paused && player.clock().now() >= newest.instant + player.pause_release {
+        let since = newest.instant.max(player.started_at);
+        if newest.paused && player.clock().now() >= since + player.pause_release {
             player.release_worker(&shared);
         }
     }

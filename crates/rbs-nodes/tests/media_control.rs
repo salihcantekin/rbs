@@ -10,9 +10,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rbs_audio::AudioGraphConfig;
+use rbs_core::capability::CapabilitySet;
 use rbs_core::media::AudioFormat;
+use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::{TestClock, Timestamp};
-use rbs_media_decode::InterleavedPcm;
+use rbs_media_decode::{DecodeError, InterleavedPcm, MediaDecoder, MediaDecoderFactory};
 use rbs_media_decode_test::{ScriptClip, ScriptFactory};
 use rbs_nodes::{MediaPair, MediaPlayState as PlayState, media_pair};
 
@@ -58,6 +60,15 @@ fn rig(loop_playback: bool) -> Rig {
 /// A rig whose source starts on air or only in a preview scene.
 fn rig_with(loop_playback: bool, restart_when_shown: bool, on_air: bool) -> Rig {
     let factory = Arc::new(ScriptFactory::new(steps()));
+    rig_from(factory, loop_playback, restart_when_shown, on_air)
+}
+
+fn rig_from(
+    factory: Arc<dyn MediaDecoderFactory>,
+    loop_playback: bool,
+    restart_when_shown: bool,
+    on_air: bool,
+) -> Rig {
     let clock = Arc::new(TestClock::new());
     let config = AudioGraphConfig::new(AudioFormat::STEREO_48K, BLOCK as u32, LATENCY).unwrap();
     let pair = media_pair(
@@ -494,7 +505,6 @@ fn a_source_only_a_preview_draws_is_cued_and_plays_on_the_take() {
     rig.run(0, 300);
     // The picture at the start is shown from the first tick after the worker sees the
     // picture node (the sound node started it) and held; no sound, no underrun.
-    // The picture at the start is shown and held; no sound, no underrun.
     assert!(rig.marks.range(10..300).all(|(_, m)| *m == Some(1)));
     assert!(rig.blocks.is_empty());
     // Play in a preview does not play.
@@ -602,7 +612,146 @@ fn a_cued_source_that_sleeps_plays_when_a_program_scene_wakes_it() {
     rig.pair.sound.detach();
     assert_eq!(rig.pair.control.state(), PlayState::Standby);
     rig.pair.control.set_on_air(true).unwrap();
+    rig.clock.set(ms(100));
     rig.pair.sound.attach().unwrap();
-    rig.pair.picture.wake(ms(90)).unwrap();
+    rig.pair.picture.wake(ms(100)).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    // The new worker anchors the cursor (0) at 100 + 150 ms.
+    rig.run(110, 700);
+    assert!(rig.blocks.range(..250).next().is_none());
+    assert!(all(rig.block(250), 0.25));
+    assert!(all(rig.block(450), 0.75));
+    assert!(!rig.blocks.contains_key(&550));
+    assert_eq!(rig.marks[&350], Some(2));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_source_woken_cued_long_after_its_pause_keeps_its_worker_for_the_release_time() {
+    let mut rig = rig_with(false, true, false);
+    rig.pair
+        .control
+        .set_pause_release(Duration::from_millis(200));
+    rig.run(0, 100);
+    rig.pair.picture.standby();
+    rig.pair.sound.detach();
+    // Asleep far longer than the release time; the cue record is from 0 ms.
+    rig.clock.set(ms(5_000));
+    rig.pair.sound.attach().unwrap();
+    rig.pair.picture.wake(ms(5_000)).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    rig.run(5_000, 5_190);
+    rig.pair.control.service();
+    assert!(!rig.pair.control.is_released(), "counted from the wake");
+    rig.run(5_190, 5_210);
+    rig.pair.control.service();
+    assert!(rig.pair.control.is_released());
+}
+
+#[test]
+fn a_take_after_a_seek_while_cued_starts_at_the_range_start() {
+    let mut rig = rig_with(false, true, false);
+    rig.run(0, 100);
+    rig.pair.control.seek(Duration::from_millis(200)).unwrap();
+    rig.run(100, 200);
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    assert_eq!(rig.marks[&190], Some(3));
+    // The take at 190 ms: from 0, anchored at 240 + 150 ms.
+    rig.pair.control.set_on_air(true).unwrap();
+    rig.run(200, 800);
+    assert!(rig.blocks.range(..390).next().is_none());
+    assert!(all(rig.block(390), 0.25));
+    assert!(all(rig.block(590), 0.75));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn pause_of_a_cued_source_holds_and_restart_off_air_cues_at_the_start() {
+    let mut rig = rig_with(false, true, false);
+    rig.run(0, 100);
+    // Pause makes it paused: it no longer plays on the take.
+    rig.pair.control.pause().unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+    // Restart off air does not play: it cues at the start.
+    rig.pair.control.restart().unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    rig.run(100, 300);
+    assert!(rig.blocks.is_empty());
+    assert!(rig.marks.range(160..300).all(|(_, m)| *m == Some(1)));
+}
+
+#[test]
+fn an_ended_clip_stays_ended_in_a_preview_and_plays_from_the_start_on_air() {
+    let mut rig = rig_with(false, true, true);
+    rig.run(0, 710);
+    wait_until(|| rig.pair.picture.worker_ended());
+    rig.pair.picture.service();
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.pair.control.set_on_air(false).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.run(710, 800);
+    assert!(rig.marks.range(710..800).all(|(_, m)| *m == Some(3)));
+    // On air again with `restart_when_shown`: from the start at 790 + 150 ms.
+    rig.pair.control.set_on_air(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    rig.run(800, 1_300);
+    assert!(all(rig.block(940), 0.25));
+    assert_eq!(rig.marks[&940], Some(1));
+}
+
+/// Opens the steps clip until `fail` is set.
+struct Flaky {
+    inner: ScriptFactory,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl AdapterFactory for Flaky {
+    fn id(&self) -> AdapterId {
+        self.inner.id()
+    }
+
+    fn display_name(&self) -> &str {
+        "Flaky scripted media"
+    }
+
+    fn probe(&self) -> Result<CapabilitySet, ProbeError> {
+        self.inner.probe()
+    }
+}
+
+impl MediaDecoderFactory for Flaky {
+    fn open(&self, path: &std::path::Path) -> Result<Box<dyn MediaDecoder>, DecodeError> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(DecodeError::Failed("the file is gone".into()));
+        }
+        self.inner.open(path)
+    }
+}
+
+#[test]
+fn a_file_gone_after_the_pause_release_is_unavailable_and_keeps_its_picture() {
+    let factory = Arc::new(Flaky {
+        inner: ScriptFactory::new(steps()),
+        fail: std::sync::atomic::AtomicBool::new(false),
+    });
+    let mut rig = rig_from(factory.clone(), false, true, true);
+    rig.pair
+        .control
+        .set_pause_release(Duration::from_millis(100));
+    rig.run(0, 160);
+    rig.pair.control.pause().unwrap();
+    rig.run(160, 320);
+    rig.pair.control.service();
+    assert!(rig.pair.control.is_released());
+    factory.fail.store(true, Ordering::Relaxed);
+    assert!(rig.pair.control.play().is_err());
+    assert_eq!(rig.pair.control.state(), PlayState::Unavailable);
+    rig.pair.picture.service();
+    rig.run(320, 400);
+    assert!(rig.marks.range(320..400).all(|(_, m)| *m == Some(1)));
+    assert!(rig.pair.picture.attempts() >= 1);
+    // The file is back: the next play opens it again.
+    factory.fail.store(false, Ordering::Relaxed);
+    rig.pair.control.play().unwrap();
     assert_eq!(rig.pair.control.state(), PlayState::Playing);
 }

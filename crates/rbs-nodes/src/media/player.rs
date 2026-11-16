@@ -73,6 +73,10 @@ pub(crate) struct Player {
     /// How long a source stays paused or cued before the pause release
     /// (`pause_release_s`).
     pub(crate) pause_release: Duration,
+    /// When the current worker started: the release timer counts from the later of
+    /// this and the newest record's instant, so a source that wakes paused or cued
+    /// keeps its worker for the full time.
+    pub(crate) started_at: rbs_core::time::Timestamp,
 }
 
 /// The default of the `pause_release_s` app setting (ADR-0108 decision 10).
@@ -108,6 +112,7 @@ impl Player {
             cued: false,
             released: false,
             pause_release: PAUSE_RELEASE,
+            started_at: rbs_core::time::Timestamp::ZERO,
         }
     }
 
@@ -216,7 +221,7 @@ impl Player {
     /// the worker holds its first picture.
     pub(crate) fn start(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
         self.join_worker();
-        self.released = false;
+        let was_released = std::mem::replace(&mut self.released, false);
         shared.offer_rings(None);
         self.phase = MediaPhase::Standby;
         let cursor = shared.cursor();
@@ -267,13 +272,25 @@ impl Player {
                 self.queue_allocations = self.queue_allocations.saturating_add(1);
                 self.worker = Some(Worker { join, shutdown });
                 self.phase = MediaPhase::Playing;
+                self.started_at = self.clock.now();
                 Ok(())
             }
             Err(error) => {
                 shutdown.store(true, Ordering::Release);
                 join.thread().unpark();
                 let _ = join.join();
-                self.phase = MediaPhase::Standby;
+                if was_released {
+                    // The file could not be opened again after the pause release (it
+                    // moved, its drive left): the nodes stay prepared and keep the last
+                    // picture, the source reports `Unavailable`, and the next command
+                    // tries again. The picture node's `service` holds the picture and
+                    // counts the attempt.
+                    self.progress.failed.store(true, Ordering::Release);
+                    self.released = true;
+                    self.phase = MediaPhase::Playing;
+                } else {
+                    self.phase = MediaPhase::Standby;
+                }
                 Err(error)
             }
         }
@@ -299,7 +316,8 @@ impl Player {
         let failed = self.progress.failed.load(Ordering::Acquire);
         let ended = self.phase == MediaPhase::Hold
             || (self.phase == MediaPhase::Playing && self.ended.load(Ordering::Acquire));
-        self.ended_stored = ended && !failed;
+        // A source woken from a stored end that never left it keeps it.
+        self.ended_stored = (ended || self.ended_stored) && !failed;
         self.released = false;
         self.join_worker();
         shared.offer_rings(None);
@@ -310,7 +328,11 @@ impl Player {
     /// decoder, the file handle and the worker's buffers, while the state, the cursor
     /// and the picture node's last picture stay. Control path.
     pub(crate) fn release_worker(&mut self, shared: &Shared) {
-        if self.phase != MediaPhase::Playing || self.worker.is_none() {
+        // A worker that reached the end of the file goes to the end hold instead.
+        if self.phase != MediaPhase::Playing
+            || self.worker.is_none()
+            || self.ended.load(Ordering::Acquire)
+        {
             return;
         }
         self.join_worker();
