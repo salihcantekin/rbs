@@ -1,0 +1,23 @@
+[package]
+name = "rbs-text-parley"
+description = "Text renderer adapter on parley (layout, shaping, system fonts through fontique) and swash (glyph outlines and colour glyphs) (ADR-0129)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Adapter (docs/architecture/overview.md#layers). parley and swash are the versions
+# Slint 1.18 already brings into Cargo.lock (ADR-0129 Consequences).
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-text = { path = "../rbs-text" }
+parley = "0.11.1"
+swash = "0.2.10"
+
+[dev-dependencies]
+png = "0.18"
+
+[lints]
+workspace = true
