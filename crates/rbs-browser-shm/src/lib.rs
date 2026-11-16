@@ -314,7 +314,9 @@ mod os {
                 libc::shm_open(
                     c.as_ptr(),
                     libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
-                    0o600 as libc::mode_t,
+                    // `shm_open` is variadic on macOS, where `mode_t` is u16: pass a full
+                    // `c_uint` (equal to `mode_t` on Linux).
+                    0o600 as libc::c_uint,
                 )
             };
             if fd < 0 {
