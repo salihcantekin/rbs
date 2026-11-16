@@ -36,3 +36,7 @@ harness = false
 [[bench]]
 name = "loudness"
 harness = false
+
+[[bench]]
+name = "sync_probe"
+harness = false

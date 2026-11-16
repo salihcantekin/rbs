@@ -193,6 +193,33 @@ ITU-R BS.1770-4 and EBU R 128 (EBU Tech 3341 "EBU Mode", Tech 3342 loudness rang
 - **Reset.** `reset` restarts the measurement: windows, histograms, maxima and the true-peak interpolator's history; the K-weighting states continue. It allocates nothing.
 - **Tap node.** A sink in the partition of the node it reads (no queue). `process` takes a pending reset, measures the block (a block whose format is not the graph's, or longer than `block_frames`, is ignored and counted in `invalid_inputs`; no block, no measurement) and stores the values in the readout, one atomic per value: a reader may see two neighbouring blocks' values together, never a torn one. It changes nothing in the graph it reads, so adding or removing it does not affect any other consumer.
 
+### Sync probe (`rbs_audio::SyncProbeNode`, ADR-0126 decision 3)
+
+```rust
+pub const SYNC_PROBE_NODE_TYPE: &str = "org.rbs.audio.sync-probe";
+pub const SYNC_PROBE_STEP: Duration;                      // 1 ms
+pub fn sync_probe_descriptor() -> NodeDescriptor;         // Output, one audio input "in"
+impl SyncProbeNode {
+    pub fn new(config: AudioGraphConfig, window: Duration) -> (Self, Arc<SyncProbeLog>); // allocates
+}
+impl SyncProbeLog {
+    pub fn capacity(&self) -> usize; pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool;
+    pub fn dropped(&self) -> u64; pub fn invalid_inputs(&self) -> u64;
+    pub fn read_from(&self, from: usize, out: &mut Vec<(i64, f32)>) -> usize; // returns the next `from`
+}
+pub struct SubBlockEnergy;                                // pure arithmetic, no graph types
+impl SubBlockEnergy {
+    pub fn new(format: AudioFormat) -> Self;
+    pub fn add(&mut self, channels: &[&[f32]], frames: usize, time_ns: u64, emit: impl FnMut(u64, f32));
+}
+```
+
+- **What it logs.** For every `round_down(rate / 1000)` frames (1 ms at 48 kHz; at least 1 frame) the mean square over all channels and frames, with the master time of the sub-block's first frame. Sub-blocks span block boundaries. A block continues the previous one when its time is within one frame of where that one ended; the sub-block times then follow from frame counts, not from each block's time. Otherwise (a gap, or the first block) the partial sub-block is dropped and counting restarts at the block's time.
+- **Time.** A block's time is `AudioGraphConfig::block_time(tick)`, the time the program uses for it, so on the tap of a source it includes that source's sync offset.
+- **Log.** A fixed array of atomics sized at `new` for `window + one block period + 1 ms` entries and a published length (release/acquire). One writer (`process`), any number of readers. A full log counts later sub-blocks in `dropped`; it never wraps.
+- **Node.** A sink in the partition of the node it reads (no queue). A block whose format is not the graph's, or longer than `block_frames`, is ignored and counted in `invalid_inputs`; no block, nothing logged. It changes nothing in the graph it reads. It exists only while a measurement runs.
+- **Hot path.** `process` and `add` do not allocate (allocation-guard test). `cargo bench -p rbs-audio --bench sync_probe`: at most 10 µs per 10 ms block at 48 kHz stereo; measured 1.04 µs (48 kHz stereo), 1.94 µs (5.1) and 2.10 µs (96 kHz stereo) on the cloud development container, 2026-11-16.
+
 ### Output node (`rbs_audio::OutputNode`, ADR-0097 decision 3)
 
 ```rust
