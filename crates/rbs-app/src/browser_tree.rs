@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rbs_browser_ipc::Configure;
-use rbs_browser_runner::{Supervisor, spawn_helper};
+use rbs_browser_runner::{PageSound, Supervisor, spawn_helper};
 use rbs_browser_shm::SlotLayout;
-use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserTree};
+use rbs_browser_shm::SoundPacket;
+use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserSound, BrowserSoundFeed, BrowserTree};
 
 /// Locates `rbs-browser-helper` for this process.
 pub fn resolve_browser_helper() -> Option<PathBuf> {
@@ -59,6 +60,7 @@ impl BrowserTree for HelperBrowserTree {
         &self,
         config: &Configure,
         sink: Arc<BrowserFrameSink>,
+        sound: Option<Arc<BrowserSound>>,
     ) -> Result<Box<dyn BrowserSession>, String> {
         let child = spawn_helper(
             self.program.as_path(),
@@ -67,10 +69,43 @@ impl BrowserTree for HelperBrowserTree {
             SlotLayout::Rgba8Straight,
         )?;
         // The supervisor thread exists only while the source is Active (P13).
-        let supervisor = Supervisor::start(child, config.fps, move |rgba, width, height| {
+        let publish = move |rgba: &[u8], width, height| {
             sink.publish(rgba, width, height);
-        })?;
+        };
+        let supervisor = match sound {
+            // The page's sound reaches the sound node through the feed, on the
+            // supervisor thread (ADR-0109 decision 6).
+            Some(sound) => Supervisor::start_with_sound(
+                child,
+                config.fps,
+                publish,
+                Box::new(FeedSound(BrowserSoundFeed::new(sound))),
+            )?,
+            None => Supervisor::start(child, config.fps, publish)?,
+        };
         Ok(Box::new(HelperSession { supervisor }))
+    }
+}
+
+/// Hands the supervisor's packets to the studio's feed.
+struct FeedSound(BrowserSoundFeed);
+
+impl PageSound for FeedSound {
+    fn observe(&mut self, os_now: u64) {
+        self.0.observe(os_now);
+    }
+
+    fn packet(&mut self, packet: SoundPacket<'_>) {
+        self.0.packet(
+            packet.os_nanos,
+            packet.rate,
+            packet.channels,
+            packet.samples,
+        );
+    }
+
+    fn pump(&mut self) {
+        self.0.pump();
     }
 }
 

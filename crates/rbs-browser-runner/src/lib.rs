@@ -20,7 +20,7 @@ use rbs_browser_ipc::{
     Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost, restart_delay,
     startup_lost,
 };
-use rbs_browser_shm::{FrameRing, RingReader, SlotLayout};
+use rbs_browser_shm::{FrameRing, RingReader, SlotLayout, SoundPacket, SoundRing};
 
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
@@ -30,6 +30,9 @@ pub struct HelperChild {
     stdin: Option<ChildStdin>,
     ring: FrameRing,
     reader: RingReader,
+    /// The page's sound section, when the studio asked for sound.
+    sound: Option<SoundRing>,
+    sound_scratch: Vec<f32>,
     last_beat: u64,
     last_beat_at: Instant,
     /// Studio-owned pixels: the newest frame copied out of the section. Empty until
@@ -69,6 +72,19 @@ impl HelperChild {
         self.width = self.ring.width();
         self.height = self.ring.height();
         true
+    }
+
+    /// Calls `each` for every sound packet the helper wrote since the last call, in
+    /// order. Control thread only; never waits.
+    pub fn read_sound(&mut self, each: impl FnMut(SoundPacket<'_>)) {
+        if let Some(sound) = self.sound.as_ref() {
+            sound.read(&mut self.sound_scratch, each);
+        }
+    }
+
+    /// True when the helper has a sound section.
+    pub fn has_sound(&self) -> bool {
+        self.sound.is_some()
     }
 
     /// Pixel layout of [`HelperChild::frame`].
@@ -157,9 +173,10 @@ impl Drop for HelperChild {
     }
 }
 
-/// Allocates the frame section, then spawns `program` with `configure` on its stdin.
-/// Returns at once: frames and exits are seen by later polls. Never panics when the
-/// child exits.
+/// Allocates the frame section, and the sound section when `config.sample_rate` is not
+/// 0 (the studio takes page sound), then spawns `program` with `configure` on its
+/// stdin. Returns at once: frames and exits are seen by later polls. Never panics when
+/// the child exits.
 pub fn spawn_helper(
     program: &Path,
     args: &[&str],
@@ -168,8 +185,16 @@ pub fn spawn_helper(
 ) -> Result<HelperChild, String> {
     // The studio owns this section before the process exists (ADR-0109 decision 8).
     let ring = FrameRing::create(config.width, config.height, layout).map_err(|e| e.to_string())?;
+    let sound = if config.sample_rate > 0 {
+        Some(SoundRing::create().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
     let mut configure = config.clone();
     configure.frames = ring.name().to_owned();
+    configure.sound = sound
+        .as_ref()
+        .map_or_else(String::new, |sound| sound.name().to_owned());
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::piped())
@@ -189,6 +214,8 @@ pub fn spawn_helper(
         stdin: Some(stdin),
         ring,
         reader,
+        sound,
+        sound_scratch: Vec::new(),
         last_beat: 0,
         last_beat_at: Instant::now(),
         frame: Vec::new(),
@@ -214,12 +241,48 @@ pub struct Supervisor {
     thread: Option<std::thread::JoinHandle<HelperChild>>,
 }
 
+/// Where the supervisor hands page sound (ADR-0109 decision 6). Runs on the supervisor
+/// thread, never on the render or audio thread.
+pub trait PageSound: Send + 'static {
+    /// First in each poll: the OS monotonic time just read
+    /// ([`rbs_browser_shm::os_monotonic_nanos`]), for the edge mapping.
+    fn observe(&mut self, os_now: u64);
+    /// One packet the helper wrote, in order.
+    fn packet(&mut self, packet: SoundPacket<'_>);
+    /// Last in each poll, after its packets.
+    fn pump(&mut self);
+}
+
+/// How often the supervisor reads page sound: often enough that a block is pushed
+/// well inside the audio graph's latency.
+pub const SOUND_POLL: Duration = Duration::from_millis(5);
+
 impl Supervisor {
     /// Moves `child` onto a new supervisor thread.
     pub fn start(
+        child: HelperChild,
+        fps: u32,
+        publish: impl FnMut(&[u8], u32, u32) + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::start_inner(child, fps, publish, None)
+    }
+
+    /// As [`Supervisor::start`], and hands the page's sound to `sound`. Polls at
+    /// least every [`SOUND_POLL`] while the child has a sound section.
+    pub fn start_with_sound(
+        child: HelperChild,
+        fps: u32,
+        publish: impl FnMut(&[u8], u32, u32) + Send + 'static,
+        sound: Box<dyn PageSound>,
+    ) -> Result<Self, String> {
+        Self::start_inner(child, fps, publish, Some(sound))
+    }
+
+    fn start_inner(
         mut child: HelperChild,
         fps: u32,
         mut publish: impl FnMut(&[u8], u32, u32) + Send + 'static,
+        mut sound: Option<Box<dyn PageSound>>,
     ) -> Result<Self, String> {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -227,13 +290,23 @@ impl Supervisor {
         let exited = Arc::new(AtomicBool::new(false));
         let (stop_flag, exited_flag) = (Arc::clone(&stop), Arc::clone(&exited));
         // Poll twice per page frame so a new frame waits at most half a period.
-        let period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
+        let mut period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
+        if sound.is_some() && child.has_sound() {
+            period = period.min(SOUND_POLL);
+        } else {
+            sound = None;
+        }
         let thread = std::thread::Builder::new()
             .name("rbs-browser-supervisor".into())
             .spawn(move || {
                 // A control thread, not a real-time one (ADR-0055).
                 rbs_crash::report_panics_on_this_thread();
                 while !stop_flag.load(Ordering::Acquire) {
+                    if let Some(sound) = sound.as_mut() {
+                        sound.observe(rbs_browser_shm::os_monotonic_nanos());
+                        child.read_sound(|packet| sound.packet(packet));
+                        sound.pump();
+                    }
                     if child.refresh() {
                         publish(&child.frame, child.width, child.height);
                     }
@@ -325,6 +398,12 @@ pub enum HelperMode {
 /// is obvious on Program. Opaque (the helper applies `transparent` = false itself;
 /// the studio does no per-frame pass).
 pub fn helper_main(mode: HelperMode) -> Result<(), String> {
+    helper_main_with(mode, false)
+}
+
+/// As [`helper_main`]; with `tone` and a sound section, `Run` also writes a 440 Hz
+/// stereo tone at the asked rate (tests only: the app never passes it).
+pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
     let mut stdin = std::io::stdin();
     let raw = read_message(&mut stdin)?;
     let config = rbs_browser_ipc::decode_configure(&raw).ok_or_else(|| "configure".to_owned())?;
@@ -354,10 +433,17 @@ pub fn helper_main(mode: HelperMode) -> Result<(), String> {
             });
             let period = Duration::from_secs(1) / config.fps.clamp(1, 60);
             let mut since_beat = Duration::ZERO;
+            let mut tone = (tone && !config.sound.is_empty())
+                .then(|| SoundRing::open(&config.sound).ok())
+                .flatten()
+                .map(|ring| Tone::new(ring, config.sample_rate.max(8_000)));
             loop {
                 match closed_rx.recv_timeout(period) {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     _ => return Ok(()),
+                }
+                if let Some(tone) = tone.as_mut() {
+                    tone.write(rbs_browser_shm::os_monotonic_nanos());
                 }
                 shift = shift.wrapping_add(4);
                 paint(shift);
@@ -368,6 +454,50 @@ pub fn helper_main(mode: HelperMode) -> Result<(), String> {
                 }
             }
         }
+    }
+}
+
+/// The test double's page sound: a continuous 440 Hz sine, written in packets that
+/// cover the OS time since the last one.
+struct Tone {
+    ring: SoundRing,
+    rate: u32,
+    /// OS time of the next frame to write; 0 before the first packet.
+    next_os: u64,
+    frame: u64,
+    left: Vec<f32>,
+}
+
+impl Tone {
+    fn new(ring: SoundRing, rate: u32) -> Self {
+        Self {
+            ring,
+            rate,
+            next_os: 0,
+            frame: 0,
+            left: Vec::new(),
+        }
+    }
+
+    fn write(&mut self, os_now: u64) {
+        if self.next_os == 0 {
+            // Start 10 ms back, so the first packet has sound in it.
+            self.next_os = os_now.saturating_sub(10_000_000);
+        }
+        let due = os_now.saturating_sub(self.next_os);
+        let frames = (u128::from(due) * u128::from(self.rate) / 1_000_000_000) as usize;
+        if frames == 0 {
+            return;
+        }
+        self.left.clear();
+        let step = std::f64::consts::TAU * 440.0 / f64::from(self.rate);
+        self.left.extend(
+            (0..frames as u64).map(|i| (0.25 * ((self.frame + i) as f64 * step).sin()) as f32),
+        );
+        self.ring
+            .write_planar(self.next_os, self.rate, &[&self.left, &self.left], frames);
+        self.frame += frames as u64;
+        self.next_os += (frames as u128 * 1_000_000_000 / u128::from(self.rate)) as u64;
     }
 }
 

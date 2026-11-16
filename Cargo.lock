@@ -5164,7 +5164,9 @@ dependencies = [
 name = "rbs-sources"
 version = "0.0.1"
 dependencies = [
+ "allocation-counter",
  "bytes",
+ "criterion 0.8.2",
  "png",
  "rbs-audio",
  "rbs-audio-filters",
@@ -5188,6 +5190,7 @@ dependencies = [
  "rbs-scene",
  "rbs-text",
  "rbs-text-test",
+ "rtrb",
 ]
 
 [[package]]
