@@ -13,6 +13,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu`, `crates/rbs-filters` (`FilterNode::process` and the pass recording it calls; `FilterType::uniforms` of every built-in type) |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
 | Parameter reads by running nodes: `ParamReceiver::update` | Every frame or block per node with parameters | `crates/rbs-graph/src/runtime/param.rs` |
+| Media source hand-off: picture and sound rings, `MediaPictureNode::dequeue`, `MediaSoundNode::fill` and the return rings ([ADR-0106](../adr/0106-picture-and-sound-on-one-source.md), [ADR-0108](../adr/0108-media-file-source.md) decision 5) | Every frame and every block per playing media source | `crates/rbs-nodes/src/media/` (`picture.rs`, `sound.rs`; the decode worker in `worker.rs` and `pcm.rs` runs on its own thread) |
 | Queue endpoints between partitions | Every frame, block or packet per crossing link | `crates/rbs-graph/src/runtime/queue.rs` (video, packet and audio queues) |
 | Audio values on links: audio slots, `AudioOut`, `Inputs::audio` | Every block per audio pin | `crates/rbs-graph/src/runtime/schedule.rs` |
 | Engine worker loop: pacing, doorbell wait, the call into `Executor::run_tick` and `swap_pending` | Every tick per partition | `crates/rbs-engine/src/worker.rs` |
