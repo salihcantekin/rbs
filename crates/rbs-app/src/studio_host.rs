@@ -1133,6 +1133,13 @@ pub enum Command {
     /// (`record.pause_toggle`, ADR-0124); answered with [`Update::RecordPause`], or
     /// [`Update::Error`] when refused.
     PauseRecording,
+    /// Hold every live stream, or resume them all when every one is held
+    /// (`stream.hold_toggle`, ADR-0124); answered with [`Update::StreamHold`], or
+    /// [`Update::Error`] when refused.
+    HoldStream,
+    /// Break (`output.break_toggle`, ADR-0124 decision 15): hold every live stream and
+    /// pause every recording, or resume them all.
+    Break,
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -2169,6 +2176,13 @@ impl PartialEq for LoudnessView {
     }
 }
 
+/// A live stream's hold state for the window (ADR-0124), as of the moment it was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamHold {
+    /// It is on hold now (or the hold waits for a sharing recording's pause).
+    pub held: bool,
+}
+
 /// A running recording's pause state for the window (ADR-0124), as of the moment it
 /// was sent: the window moves its clocks on from there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2369,6 +2383,10 @@ pub enum Update {
     /// does not record), after a pause or resume through the window or the control
     /// API (ADR-0124).
     RecordPause([Option<RecordPause>; 2]),
+    /// The live streams' hold states (main, vertical; `None` while that canvas does
+    /// not stream), after a hold or resume through the window or the control API
+    /// (ADR-0124).
+    StreamHold([Option<StreamHold>; 2]),
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -4322,6 +4340,29 @@ impl Host {
                     }
                 }
             }
+            Command::HoldStream | Command::Break => {
+                let (command, what) = match c {
+                    Command::HoldStream => (
+                        rbs_api::Command::StreamHoldToggle(rbs_api::request::StreamHold {
+                            canvas: Some(api::OutputTarget::All),
+                            picture: None,
+                        }),
+                        "The stream could not hold or resume",
+                    ),
+                    _ => (
+                        rbs_api::Command::OutputBreakToggle,
+                        "The break could not start or end",
+                    ),
+                };
+                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => notify(Update::Error(format!("{what}: {}.", e.message))),
+                    Err(_) => {
+                        self.caught = true;
+                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+                    }
+                }
+            }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {
                     notify(Update::ReplaySaved(Err(why)));
@@ -6264,6 +6305,17 @@ impl Host {
             }
         }
         next.map(|due| Duration::from_nanos(due.saturating_sub(now_ns)))
+    }
+
+    /// [`Update::StreamHold`]: each live stream's hold state now.
+    fn hold_update(&self) -> Update {
+        let state = |c: OutputCanvas| {
+            self.outs[slot(c)].streaming.as_ref()?;
+            Some(StreamHold {
+                held: self.stream_held(c),
+            })
+        };
+        Update::StreamHold([state(OutputCanvas::Main), state(OutputCanvas::Vertical)])
     }
 
     /// [`Update::RecordPause`]: each running recording's pause state now.
@@ -12557,6 +12609,7 @@ impl ApiTarget<'_> {
             let c = host.api_canvas_of(Some(one))?;
             host.hold_stream(c, hold, picture)?;
             notify(host.pause_update());
+            notify(host.hold_update());
             host.publish(notify);
             return Ok(Response::Done(Empty {}));
         }
@@ -12596,6 +12649,7 @@ impl ApiTarget<'_> {
         }
         changed_or_first_refusal(&outputs, refusals, "nothing streams")?;
         notify(host.pause_update());
+        notify(host.hold_update());
         host.publish(notify);
         Ok(Response::Outputs(api::OutputsResult { outputs }))
     }
@@ -12698,6 +12752,7 @@ impl ApiTarget<'_> {
         }
         changed_or_first_refusal(&outputs, refusals, "nothing changed")?;
         notify(host.pause_update());
+        notify(host.hold_update());
         host.publish(notify);
         Ok(Response::Outputs(api::OutputsResult { outputs }))
     }

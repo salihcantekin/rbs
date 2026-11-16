@@ -1493,6 +1493,35 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
         fixed: &[],
     },
+    // Hold the live streams, or resume them (ADR-0124 decisions 12 and 13): the second
+    // half of the frame's End stream button while a stream runs. The shell titles it
+    // "Resume stream" while held.
+    Entry {
+        id: "stream.hold_toggle",
+        title: "Hold stream",
+        tooltip: "Keep the stream connected while viewers see the last frame with no sound, or resume it",
+        icon: Some("hold"),
+        shortcut: Some("Ctrl+Shift+H"),
+        menu: Menu::Output,
+        kind: action("stream.hold_toggle"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    // Break (ADR-0124 decision 15): every live stream holds and every recording
+    // pauses; again, they all resume.
+    Entry {
+        id: "output.break_toggle",
+        title: "Break",
+        tooltip: "Hold every live stream and pause every recording, or resume them all",
+        icon: Some("coffee"),
+        shortcut: Some("Ctrl+Shift+B"),
+        menu: Menu::Output,
+        kind: action("output.break_toggle"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
     // The vertical canvas's outputs (ADR-0093 decision 6): the ▾ menus beside the
     // frame's Go live and Record, shown while a vertical canvas exists.
     Entry {
@@ -2089,6 +2118,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "stream.toggle",
             "record.toggle",
             "record.pause_toggle",
+            "stream.hold_toggle",
+            "output.break_toggle",
             "{Vertical:canvas-vertical",
             "output.with_vertical?kind=record",
             "output.with_vertical?kind=stream",

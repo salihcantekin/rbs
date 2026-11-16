@@ -439,6 +439,11 @@ export global Studio {
     in property <bool> rec-pausable;
     in property <bool> rec-paused;
     callback pause-recording();
+    // Hold (ADR-0124): a stream is live that Hold applies to, and every live stream
+    // is on hold (Hold reads Resume stream).
+    in property <bool> st-holdable;
+    in property <bool> st-held;
+    callback hold-stream();
     // What Undo and Redo would apply to the scene now: 0 nothing, 1 adding, 2 deleting,
     // 3 the layer order, 4 moving or resizing the source named `undo-name` /
     // `redo-name` (U4). Separate from the layout history (U21).
@@ -6005,9 +6010,14 @@ component OutputCard inherits Rectangle {
     // paused.
     in property <bool> pause-shown;
     in property <bool> paused;
+    // Hold (ADR-0124): first in the stream card's row while it is live; Resume stream
+    // while it is on hold.
+    in property <bool> hold-shown;
+    in property <bool> held;
     callback open();
     callback add-marker();
     callback pause();
+    callback hold();
     background: Theme.surface-sunken;
     border-width: Tokens.size-border;
     border-color: Theme.border-subtle;
@@ -6029,9 +6039,14 @@ component OutputCard inherits Rectangle {
         OutputFact { label: @tr("Audio"); value: audio; }
         if separate != "": OutputFact { label: @tr("Separate files"); value: separate; }
         OutputFact { label: where-label; value: where; }
-        if markers-shown || pause-shown: HorizontalLayout {
+        if markers-shown || pause-shown || hold-shown: HorizontalLayout {
             alignment: start;
             spacing: Tokens.space-2;
+            if hold-shown: Button {
+                lead: held ? IconName.play : IconName.hold;
+                text: held ? @tr("Resume stream") : @tr("Hold stream");
+                clicked => { root.hold(); }
+            }
             if pause-shown: Button {
                 lead: paused ? IconName.play : IconName.pause;
                 text: paused ? @tr("Resume") : @tr("Pause");
@@ -6092,7 +6107,8 @@ export component OutputsPanel inherits Rectangle {
                 pause => { Studio.pause-recording(); }
             }
             OutputCard {
-                title: Studio.st-connected ? @tr("Stream live")
+                title: Studio.st-held ? @tr("Stream on hold")
+                    : Studio.st-connected ? @tr("Stream live")
                     : Studio.st-state != 0 ? @tr("Stream connecting") : @tr("Stream");
                 kind: Studio.st-kind;
                 encoder: Studio.st-encoder-name;
@@ -6100,8 +6116,11 @@ export component OutputsPanel inherits Rectangle {
                 audio: Studio.st-audio-line;
                 where: Studio.st-where;
                 where-label: @tr("Server");
+                hold-shown: Studio.st-holdable;
+                held: Studio.st-held;
                 action: @tr("Stream settings");
                 open => { Studio.open-stream-settings(); }
+                hold => { Studio.hold-stream(); }
             }
         }
     }
