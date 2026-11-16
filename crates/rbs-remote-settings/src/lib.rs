@@ -250,6 +250,7 @@ impl RemoteProfile {
         let token = Token::generate()
             .map_err(|e| format!("The system could not make a random token ({e}). Try again."))?;
         self.tokens.push(TokenEntry {
+            irreversible: true,
             name: name.to_owned(),
             scopes: access.scopes(),
             hash: token.hash(),
