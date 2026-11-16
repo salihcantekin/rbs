@@ -436,13 +436,21 @@ struct Added {
     gpu: bool,
 }
 
-/// Outputs a studio runs at once: a recording and a live stream (ADR-0047) for each of
-/// two canvases (ADR-0093 decision 6).
-pub const MAX_OUTPUTS: usize = 4;
+/// Outputs a studio runs at once: for each of two canvases (ADR-0093 decision 6), a
+/// recording and up to six stream destinations (ADR-0047, ADR-0127 decision 2).
+pub const MAX_OUTPUTS: usize = MAX_CANVASES * MAX_OUTPUTS_PER_CANVAS;
 
-/// Outputs one canvas feeds at once (ADR-0047).
-pub const MAX_OUTPUTS_PER_CANVAS: usize = 2;
-const _: () = assert!(MAX_OUTPUTS == MAX_CANVASES * MAX_OUTPUTS_PER_CANVAS);
+/// Outputs one canvas feeds at once (ADR-0127 decision 2).
+pub const MAX_OUTPUTS_PER_CANVAS: usize = 7;
+
+/// Video encoder chains one canvas runs at once (ADR-0127 decision 2): the recording's,
+/// the stream's shared one and two own encodings. Outputs whose settings match share a
+/// chain (ADR-0047), so this is lower than [`MAX_OUTPUTS_PER_CANVAS`].
+pub const MAX_CHAINS_PER_CANVAS: usize = 4;
+
+/// Encoder chains a studio runs at once, of each kind (video and audio).
+pub const MAX_CHAINS: usize = MAX_CANVASES * MAX_CHAINS_PER_CANVAS;
+const _: () = assert!(MAX_OUTPUTS >= 4 && MAX_CHAINS >= 4);
 
 /// What the virtual camera announces and RBS sends (ADR-0066 decision 7): NV12 at this
 /// size (both even) and rate.
@@ -730,6 +738,18 @@ impl Prepared {
                         VideoPlan::Shared(i)
                     }
                     None => {
+                        // Limits before an encoder session opens (ADR-0127 decision 2).
+                        let on_canvas = running
+                            .video
+                            .iter()
+                            .flatten()
+                            .filter(|c| c.canvas == canvas)
+                            .count();
+                        if on_canvas >= MAX_CHAINS_PER_CANVAS
+                            || running.video.iter().all(Option::is_some)
+                        {
+                            return Err(RecordError::NoEncoderSlot);
+                        }
                         let (encoder, chosen) =
                             select::video_encoder(&adapters.video_encoders, &video_config)?;
                         streams.push(encoder.stream().clone());
@@ -787,6 +807,9 @@ impl Prepared {
                         AudioPlan::Shared(i)
                     }
                     None => {
+                        if running.audio.iter().all(Option::is_some) {
+                            return Err(RecordError::NoEncoderSlot);
+                        }
                         let (session, chosen) =
                             select::audio_encoder(&adapters.audio_encoders, &config)?;
                         let stream = session.stream().clone();
@@ -920,8 +943,8 @@ struct AudioChain {
 /// The encoder chains running, by slot (the slot picks their partitions).
 #[derive(Default)]
 pub(crate) struct Chains {
-    video: [Option<VideoChain>; MAX_OUTPUTS],
-    audio: [Option<AudioChain>; MAX_OUTPUTS],
+    video: [Option<VideoChain>; MAX_CHAINS],
+    audio: [Option<AudioChain>; MAX_CHAINS],
 }
 
 /// Encoder counters when an output joined a running chain; its progress counts from
@@ -1331,17 +1354,22 @@ impl Studio {
             RenderLocal::default(),
             Pacing::cadence(frames),
         )?;
-        for p in (0..MAX_OUTPUTS)
-            .map(|slot| parts.slot(slot))
-            .chain([parts.replay])
+        for p in (0..MAX_CHAINS)
+            .map(|chain| parts.video_encoder_of(chain))
+            .chain([parts.replay.video_encoder])
         {
             engine.add_partition::<()>(
-                p.video_encoder,
+                p,
                 Arc::new(()),
                 (),
                 Pacing::cadence_after(frames, fps.frame_duration() / 4),
             )?;
-            engine.add_partition::<()>(p.output, Arc::new(()), (), Pacing::output())?;
+        }
+        for p in (0..MAX_OUTPUTS)
+            .map(|slot| parts.output_of(slot))
+            .chain([parts.replay.output])
+        {
+            engine.add_partition::<()>(p, Arc::new(()), (), Pacing::output())?;
         }
         if settings.audio {
             engine.add_partition::<()>(
@@ -1350,12 +1378,12 @@ impl Studio {
                 (),
                 Pacing::stream(settings.audio_graph.cadence(clock.now()), AUDIO_CATCH_UP),
             )?;
-            for p in (0..MAX_OUTPUTS)
-                .map(|slot| parts.slot(slot))
-                .chain([parts.replay])
+            for p in (0..MAX_CHAINS)
+                .map(|chain| parts.audio_encoder_of(chain))
+                .chain([parts.replay.audio_encoder])
             {
                 engine.add_partition::<()>(
-                    p.audio_encoder,
+                    p,
                     Arc::new(()),
                     (),
                     Pacing::doorbell(DEFAULT_DOORBELL_TIMER),
@@ -3190,7 +3218,7 @@ impl Studio {
         let slot = (0..MAX_OUTPUTS)
             .find(|s| {
                 !self.outputs.iter().any(|r| r.slot == *s)
-                    && !pending.contains(&parts.slot(*s).output)
+                    && !pending.contains(&parts.output_of(*s))
             })
             .ok_or(RecordError::OutputFinishing)?;
         let mut graph = self.graph.clone();
@@ -3198,7 +3226,7 @@ impl Studio {
 
         let output_stats = p.output.stats();
         let formats = crate::media_span::formats(p.output.streams());
-        let output_part = parts.slot(slot).output;
+        let output_part = parts.output_of(slot);
         let output_id = add_active(&mut graph, p.output.descriptor(), output_part)?;
         let output = Added {
             node: output_id,
@@ -3221,13 +3249,10 @@ impl Studio {
             VideoPlan::New {
                 export, encoder, ..
             } => {
-                let i = (0..MAX_OUTPUTS)
-                    .find(|i| {
-                        self.chains.video[*i].is_none()
-                            && !pending.contains(&parts.slot(*i).video_encoder)
-                    })
-                    .ok_or(RecordError::OutputFinishing)?;
-                let part = parts.slot(i).video_encoder;
+                let i = free_chain(&self.chains.video, |i| {
+                    pending.contains(&parts.video_encoder_of(i))
+                })?;
+                let part = parts.video_encoder_of(i);
                 let export_id = add_active(
                     &mut graph,
                     Node::<GpuRuntime>::descriptor(&**export),
@@ -3271,13 +3296,10 @@ impl Studio {
                     .as_ref()
                     .map(|m| m.node)
                     .ok_or(RecordError::NotBound("mixer"))?;
-                let i = (0..MAX_OUTPUTS)
-                    .find(|i| {
-                        self.chains.audio[*i].is_none()
-                            && !pending.contains(&parts.slot(*i).audio_encoder)
-                    })
-                    .ok_or(RecordError::OutputFinishing)?;
-                let part = parts.slot(i).audio_encoder;
+                let i = free_chain(&self.chains.audio, |i| {
+                    pending.contains(&parts.audio_encoder_of(i))
+                })?;
+                let part = parts.audio_encoder_of(i);
                 let id = add_active(&mut graph, Node::<()>::descriptor(&**node), part)?;
                 graph.connect(mixer, "main", id, "in")?;
                 graph.connect(id, "packets", output_id, audio_pin)?;
@@ -4155,6 +4177,21 @@ fn take_instance(
 /// Takes an idle instance back from its partition and drops it. False when the
 /// partition still runs it (its swap is in flight): try again later. An instance that
 /// is not there any more counts as taken.
+/// The first free chain slot whose partition no pending take still uses.
+/// `NoEncoderSlot` when every slot holds a chain; `OutputFinishing` when a free one
+/// waits for a stopped output's swap or drain.
+fn free_chain<T>(
+    chains: &[Option<T>; MAX_CHAINS],
+    pending: impl Fn(usize) -> bool,
+) -> Result<usize, RecordError> {
+    let mut free = (0..MAX_CHAINS).filter(|i| chains[*i].is_none()).peekable();
+    if free.peek().is_none() {
+        return Err(RecordError::NoEncoderSlot);
+    }
+    free.find(|i| !pending(*i))
+        .ok_or(RecordError::OutputFinishing)
+}
+
 fn take(engine: &mut Engine, a: Added) -> bool {
     let r = if a.gpu {
         engine.take::<GpuRuntime>(a.partition, a.node).map(drop)
