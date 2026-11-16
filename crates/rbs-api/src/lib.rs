@@ -35,7 +35,9 @@ pub mod types;
 pub mod wake;
 
 pub use codec::{Codec, JsonCodec, RequestId};
-pub use control::{ControlEndpoint, ControlTarget, EventLink, EventPublisher, Forwarded, Reply};
+pub use control::{
+    Caller, ControlEndpoint, ControlTarget, EventLink, EventPublisher, Forwarded, Reply,
+};
 pub use error::{ApiError, ErrorKind};
 pub use event::{Event, EventPayload, StateKey, Topic, TopicSet};
 pub use exposure::{UpgradePolicy, UpgradeRefusal};

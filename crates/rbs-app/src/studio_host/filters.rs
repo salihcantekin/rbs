@@ -358,7 +358,7 @@ fn invalid(e: &rbs_filters::ParamError) -> Refusal {
 
 impl Host {
     /// The source that holds `filter`, and the filter.
-    fn filter_owner(&self, filter: FilterId) -> Result<(SourceId, &Filter), Refusal> {
+    pub(super) fn filter_owner(&self, filter: FilterId) -> Result<(SourceId, &Filter), Refusal> {
         self.collection
             .sources()
             .find_map(|s| s.filters.iter().find(|f| f.id == filter).map(|f| (s.id, f)))

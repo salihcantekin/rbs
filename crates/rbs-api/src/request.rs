@@ -2014,6 +2014,19 @@ impl Command {
     }
 }
 
+impl Command {
+    /// The call's parameters as on the wire (`params`), for checks that look at
+    /// which scene, item, source or filter a call names (ADR-0052 decision 4).
+    /// `null` for a method without parameters.
+    pub fn params_json(&self) -> serde_json::Value {
+        let wire = WireRequest::from(Request::Command(self.clone()));
+        serde_json::to_value(wire)
+            .ok()
+            .and_then(|mut v| v.get_mut("params").map(serde_json::Value::take))
+            .unwrap_or(serde_json::Value::Null)
+    }
+}
+
 /// A method and the scope it needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MethodInfo {

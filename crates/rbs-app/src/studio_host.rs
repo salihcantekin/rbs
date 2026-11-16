@@ -70,6 +70,7 @@ mod device_sync;
 pub mod filters;
 mod loudness;
 mod monitor;
+mod on_air;
 pub mod protection;
 pub mod replay;
 pub mod sync_measure;
@@ -3214,6 +3215,22 @@ struct WithTokens<'a> {
 }
 
 impl ControlTarget for WithTokens<'_> {
+    fn handle_as(
+        &mut self,
+        caller: &rbs_api::Caller,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        if let Some(answer) = self.tokens.and_then(|t| t.answer(&command)) {
+            let (response, changed) = answer?;
+            if changed {
+                (self.notify)(Update::TokensChanged);
+            }
+            return Ok(response);
+        }
+        self.inner.handle_as(caller, command, events)
+    }
+
     fn handle(
         &mut self,
         command: rbs_api::Command,
@@ -12258,6 +12275,16 @@ struct ApiTarget<'a> {
 }
 
 impl ControlTarget for ApiTarget<'_> {
+    fn handle_as(
+        &mut self,
+        caller: &rbs_api::Caller,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        self.host.check_on_air(caller.irreversible, &command)?;
+        self.handle(command, events)
+    }
+
     fn handle(
         &mut self,
         command: rbs_api::Command,
