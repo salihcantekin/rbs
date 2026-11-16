@@ -1695,3 +1695,83 @@ fn noise_suppression_latency_is_compensated_without_touching_the_stored_offset()
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn during_a_fade_the_sound_follows_the_picture() {
+    // ADR-0128 decision 10: a source only in the outgoing scene ramps to silence over
+    // the transition, not in the mixer's default 10 ms.
+    use rbs_record::TransitionState;
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let other = camera_scene(&mut col);
+    let mut fade = CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    };
+    fade.fade.duration_ms = 1000;
+    col.set_transition(fade).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition-sound", ContainerId::Matroska),
+        )
+        .unwrap();
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let peak = |s: &Studio| s.meter(mic).unwrap().take().peak(0);
+    let window = |studio: &mut Studio| {
+        let _ = peak(studio);
+        let t = blocks(studio);
+        assert!(run_until(studio, &clock, |s| blocks(s) >= t + 5));
+        peak(studio)
+    };
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    let full = window(&mut studio);
+    assert!(full > 0.0);
+
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    // Waiting: the outgoing level holds.
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    let start = clock.now();
+    // A quarter of the way in, the microphone is between full and silent.
+    assert!(run_until(&mut studio, &clock, |_| {
+        clock.now().saturating_since(start) >= Duration::from_millis(250)
+    }));
+    let middle = window(&mut studio);
+    assert!(middle > 0.0 && middle < full * 0.9, "{middle} of {full}");
+    // After the transition it is silent and leaves at the settle.
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+    }));
+    // Audio blocks trail the clock by the audio latency; look past it.
+    assert!(run_until(&mut studio, &clock, |_| {
+        clock.now().saturating_since(start) >= Duration::from_millis(1100)
+    }));
+    assert_eq!(window(&mut studio), 0.0);
+    assert!(run_until(&mut studio, &clock, |s| s
+        .transition_wait(clock.now())
+        == Some(Duration::ZERO)));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert_eq!(studio.transition_state(canvas), None);
+    assert_eq!(studio.mixer_anomalies(), 0);
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

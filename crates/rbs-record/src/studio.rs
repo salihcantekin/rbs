@@ -2610,6 +2610,7 @@ impl Studio {
         // A picture-and-sound source's producer is its sound node, known at bind time
         // like any other (ADR-0106).
         let mut trimmed = None;
+        let shape = self.transition_mix();
         if let (Some(mixer), Some(bound)) = (&mut self.mixer, &self.bound_mixer) {
             let live: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
             self.meters.retain(|s, _| live.contains(s));
@@ -2620,7 +2621,11 @@ impl Studio {
                     source: input.source,
                     meter: self.meters.get(&input.source).cloned(),
                     audio: self.mix.get(&input.source).copied().unwrap_or_default(),
+                    ramp: None,
                 });
+            }
+            if let Some(shape) = &shape {
+                shape.apply(&mut staged);
             }
             let mut union = staged.clone();
             union.extend(
@@ -2655,7 +2660,7 @@ impl Studio {
             self.send_hold_strips(report, true);
             self.bound_mixer = report.mixers.get(&self.settings.canvas).cloned();
             if let (Some(mixer), Some(bound)) = (&self.mixer, self.bound_mixer.as_ref()) {
-                let new: Vec<MixStrip> = bound
+                let mut new: Vec<MixStrip> = bound
                     .inputs
                     .iter()
                     .map(|input| MixStrip {
@@ -2663,8 +2668,12 @@ impl Studio {
                         source: input.source,
                         meter: self.meters.get(&input.source).cloned(),
                         audio: self.mix.get(&input.source).copied().unwrap_or_default(),
+                        ramp: None,
                     })
                     .collect();
+                if let Some(shape) = &shape {
+                    shape.apply(&mut new);
+                }
                 let same = new.len() == self.strips.len()
                     && new.iter().zip(&self.strips).all(|(left, right)| {
                         left.producer == right.producer && left.source == right.source
@@ -2836,12 +2845,22 @@ impl Studio {
     pub fn set_mix(&mut self, collection: &SceneCollection) -> bool {
         self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
+        self.set_hold_mix(collection);
+        self.send_mix()
+    }
+
+    /// Sends the mixer the strips it has at the levels of `self.mix`, shaped by a
+    /// running transition (ADR-0128 decision 10). False without a mixer.
+    fn send_mix(&mut self) -> bool {
         for strip in &mut self.strips {
             if let Some(audio) = self.mix.get(&strip.source) {
                 strip.audio = *audio;
             }
+            strip.ramp = None;
         }
-        self.set_hold_mix(collection);
+        if let Some(shape) = self.transition_mix() {
+            shape.apply(&mut self.strips);
+        }
         let Some(mixer) = &mut self.mixer else {
             return false;
         };
@@ -4884,6 +4903,8 @@ struct MixStrip {
     source: SourceId,
     meter: Option<Arc<LevelMeter>>,
     audio: SourceAudio,
+    /// The fader's own ramp while a transition runs (ADR-0128 decision 10).
+    ramp: Option<(Timestamp, Duration)>,
 }
 
 /// The mixer's monitor mode for a source's saved one (ADR-0097 decision 5).
@@ -4917,7 +4938,8 @@ fn mixer_params(
             let strip = Strip::new(s.producer, s.audio.volume)
                 .with_muted(s.audio.muted)
                 .with_monitor(monitor_mode(s.audio.monitor))
-                .with_solo(solo.contains(&s.source));
+                .with_solo(solo.contains(&s.source))
+                .with_ramp_override(s.ramp);
             match &s.meter {
                 Some(m) => strip.with_meter(Arc::clone(m)),
                 None => strip,

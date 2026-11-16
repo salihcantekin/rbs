@@ -112,8 +112,9 @@ impl MixerNode {
 #[non_exhaustive] pub struct MixerParams { pub strips: Vec<Strip>, pub master: f32,
     pub master_meter: Option<Arc<LevelMeter>>, pub ramp: Duration }       // ramp default DEFAULT_RAMP (10 ms)
 #[non_exhaustive] pub struct Strip { pub producer: NodeId, pub gain: f32, pub muted: bool,
-    pub meter: Option<Arc<LevelMeter>>, pub monitor: MonitorMode, pub solo: bool }
-    // with_muted, with_meter, with_monitor, with_solo
+    pub meter: Option<Arc<LevelMeter>>, pub monitor: MonitorMode, pub solo: bool,
+    pub ramp_override: Option<(Timestamp, Duration)> }                     // ADR-0128
+    // with_muted, with_meter, with_monitor, with_solo, with_ramp_override
 #[non_exhaustive] pub enum MonitorMode { Off /* default */, Only, Also }
 impl MixerStats { pub fn invalid_inputs(&self) -> u64; pub fn unknown_inputs(&self) -> u64; }
 ```
@@ -123,6 +124,7 @@ Descriptor `org.rbs.audio.mixer`, kind `AudioMixer`, input `in` (Audio, many), o
 - Every tick writes one block at `block_time(tick)`: the sum over inputs of `strip gain x input`, times the master gain. Inputs are named by producer `NodeId`, so they must come from the same partition (a queue reader has a reserved id).
 - An input whose producer has no strip is not heard (`unknown_inputs`). An input block whose format or length is not the graph's is skipped (`invalid_inputs`); the rest of the mix continues. With no inputs the block is silence.
 - Gains are linear amplitude; negative and non-finite values are 0; a muted strip has gain 0. The first parameters apply at once. Later changes of a strip's or the master's gain ramp linearly from the current value to the new one over `ramp`, evaluated at block time (one gain per frame). An input that joins, or returns after a tick without a block, fades in from 0 over `ramp`. Inputs that leave stop at once.
+- **Ramp override** (ADR-0128 decision 10). A strip with `ramp_override: Some((start, length))` (engine time, the clock of block times) moves its fader to a new target over that window instead of `ramp`: it holds the current value until `start`, then moves linearly, ending at `start + length`; when `start` has passed, it moves from the current value over what is left of the window. An input that joins with an override fades in from 0 over the same window (from the block time when `start` has passed, over what is left, at least `ramp`). Taking the same target again, with or without the override, keeps a running ramp, so clearing the override at the end changes nothing. Sends, the monitor and the master keep `ramp`. The override is read only when parameters are taken and when an input joins; the per-sample path is unchanged.
 - At most `strips` strips are honoured (the first ones); their state is allocated in `new`. Taking new parameters in `process` does not allocate and keeps each strip's ramp by producer id.
 - A strip's volume and mute are the source's own, with the program scene's entry over them while that scene is in Own levels (ADR-0091 decision 3): `rbs-record` builds them in one place (`mix_of`) for start, `Studio::update` and `Studio::set_mix`, so a scene switch sends the scene's levels through the existing parameter send and the mixer's 10 ms ramp. Only the program scene of the canvas that owns the mixer sets levels; the preview scene, a nested scene's own levels and a following canvas's scene never do. While a program copy is held (ADR-0063) the real scene's levels apply. The mixer itself does not know about scenes.
 - `MixerParams::master` is set by the studio from the canvas's master volume and mute (0 while muted, ADR-0081, scene model spec); the mixer does not know about either.
