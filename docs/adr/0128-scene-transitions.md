@@ -1,6 +1,6 @@
 # ADR-0128: Scene transitions: Cut, Fade, Move, Swipe and Slide, and later Stinger
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 - Builds on: ADR-0013 (zero cost when unused), ADR-0023 (parameter channels; fades and slides evaluated on the node), ADR-0037 (mixer ramps), ADR-0061 (studio mode), ADR-0063 and ADR-0098 (held program, transition keeps the preview scene), ADR-0064 (Transition rail), ADR-0065 (global scenes), ADR-0074 (colour source), ADR-0089 (recording markers), ADR-0091 (per-scene audio levels), ADR-0093 (further canvases and followers), ADR-0100 (glide duration and easing), ADR-0107 (temporal sources sleep when hidden), ADR-0111 (new values of request fields), ADR-0124 (hold scenes)
@@ -123,3 +123,5 @@ Independent review per ADR-0014.
   3. `ramp_override` under-specified, and the mixer is a hot path. Resolved: `apply_params` and the rejoin path, clock, clearing, P15 (decision 10).
   4. Blocking: a held program transitioned to itself has one scene id going out and in. Resolved: `outgoing` carries the bound layers and heard sources, not a `SceneId` (decision 6), with a test.
   5. Followers: resolved, each runs its own transition from the leader's start (decision 11).
+
+Owner acceptance, 2026-11-16: Salih approved the ADR after both review rounds.
