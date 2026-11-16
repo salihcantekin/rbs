@@ -4020,14 +4020,25 @@ component FilterFieldView inherits VerticalLayout {
     in property <FilterData> filter;
     in property <FilterFieldData> data;
     in property <int> index;
-    // The position while a drag is on, so the value beside the slider follows it.
-    property <float> dragged: -1;
-    property <bool> dragging: dragged >= 0;
+    // The position the slider shows instead of the stored one: during a drag, and after
+    // it until the host stores the value (`waiting`), so the value beside the slider
+    // follows the pointer and does not flick back on release.
+    property <float> held: -1;
+    property <bool> waiting;
+    property <bool> shown: held >= 0;
+    // The stored value arrived (or changed elsewhere, such as undo): show it again.
+    changed data => {
+        if root.waiting { root.held = -1; root.waiting = false; }
+    }
     // The value at a slider position, as the host stores it (on its step).
     function text-at(p: float) -> string {
         let q = max(0, min(1, p));
         let raw = data.log ? data.min * Math.pow(data.max / data.min, q) : data.min + q * (data.max - data.min);
         let v = data.snap > 0 ? max(data.min, min(data.max, data.min + round((raw - data.min) / data.snap) * data.snap)) : raw;
+        // From 1 kHz up in kHz, as the host writes it (`number_text`).
+        if data.suffix == " Hz" && abs(v) >= 1000 {
+            return (v / 1000).to-fixed(abs(v) < 10000 ? 2 : 1) + " kHz";
+        }
         return v.to-fixed(data.decimals) + data.suffix;
     }
     property <string> colour-text: data.colour;
@@ -4059,41 +4070,45 @@ component FilterFieldView inherits VerticalLayout {
         if data.changed && filter.known: IconButton {
             icon: IconName.reset;
             name: @tr("Reset {} to {}", data.label, data.default-text);
-            clicked => { root.dragged = -1; Studio.reset-filter-field(filter.id, index); }
+            clicked => { root.held = -1; root.waiting = false; Studio.reset-filter-field(filter.id, index); }
         }
     }
+    // The standard slider row (the Mixer's volume, Settings > Audio): the track takes
+    // every pixel the fixed-width ValueReadout leaves.
     if data.kind == 0: HorizontalLayout {
-        spacing: Tokens.space-2;
+        spacing: Tokens.size-field-gap;
         Slider {
             horizontal-stretch: 1;
             label: @tr("{} of {}", data.label, filter.name);
-            value: dragging ? dragged : data.position;
-            value-text: dragging ? root.text-at(dragged) : data.value-text;
+            value: shown ? held : data.position;
+            value-text: shown ? root.text-at(held) : data.value-text;
             step: data.step;
             enabled: filter.known;
             moved(v) => {
-                root.dragged = v;
+                root.held = v;
+                root.waiting = false;
                 Studio.preview-filter(filter.id, index, v);
             }
+            // Keep showing the released position until the stored value comes back,
+            // so the knob does not jump to the old value and then to the new one.
             released => {
-                root.dragged = -1;
+                root.waiting = root.held >= 0;
                 Studio.commit-filter(filter.id);
             }
             cancelled => {
-                root.dragged = -1;
+                root.held = -1;
+                root.waiting = false;
                 Studio.cancel-filter(filter.id);
             }
+            reset => {
+                if data.changed {
+                    root.held = -1;
+                    root.waiting = false;
+                    Studio.reset-filter-field(filter.id, index);
+                }
+            }
         }
-        Text {
-            width: Tokens.size-control-lg * 3;
-            horizontal-stretch: 0;
-            text: dragging ? root.text-at(dragged) : data.value-text;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
+        ValueReadout { text: shown ? root.text-at(held) : data.value-text; }
     }
     Shown {
         shown: data.kind == 1;
