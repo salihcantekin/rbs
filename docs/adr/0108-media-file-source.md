@@ -1,6 +1,6 @@
 # ADR-0108: A local media-file source for video and animated pictures
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0007](0007-ffmpeg-as-optional-adapter.md), [ADR-0052](0052-ai-agent-control-through-mcp.md), [ADR-0074](0074-still-image-and-colour-sources.md), [ADR-0106](0106-picture-and-sound-on-one-source.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md)
@@ -178,3 +178,5 @@ Resolutions (author, 2026-11-16):
 Review round 7 (independent AI session, 2026-11-16, `/mnt/project-files/media-playback/review-round7.md`): accept with minor fixes 1–7. Round-6 B1, B2, M1–M9 closed.
 
 Resolutions (author, 2026-11-16): 1 the one-picture exception is named in decisions 5 and 10; 2 restart when the table starts at the range start; 3 the record that applies at `t`, and silence before an anchor is not an underrun; 4 over 4 commands per latency and scrub merging; 5 the picture node may act one picture late after a torn read; 6 a wake from Standby decodes one picture; 7 two tests added (decision 13).
+
+Owner acceptance: Salih, 2026-11-16 (after review round 7).
