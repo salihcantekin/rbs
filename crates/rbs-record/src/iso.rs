@@ -273,6 +273,12 @@ fn picture_role(
     let still = rbs_sources::is_still(type_id, settings);
     match video_as {
         VideoAs::Video => Ok(IsoRole::Video),
+        // A text's mark follows its stillness (ADR-0129 decision 1): an edit resets it,
+        // and a document read with a moving text marked `image` runs it as `auto`
+        // (`SourceSettingsAdjusted`), so a take is never refused for it.
+        VideoAs::Image if !still && class_of(type_id) == Some(SourceClass::Text) => {
+            Ok(IsoRole::Video)
+        }
         VideoAs::Image if !still => Err(IsoError::ImageOnMovingSource {
             source,
             name: name.to_owned(),
@@ -560,10 +566,8 @@ mod tests {
         assert_eq!(form("text", VideoAs::Auto), Ok(IsoRole::Image));
         assert_eq!(form("text", VideoAs::Image), Ok(IsoRole::Image));
         assert_eq!(form("clock", VideoAs::Auto), Ok(IsoRole::Video));
-        assert!(matches!(
-            form("clock", VideoAs::Image),
-            Err(IsoError::ImageOnMovingSource { .. })
-        ));
+        // Read from a document: the mark runs as `auto`.
+        assert_eq!(form("clock", VideoAs::Image), Ok(IsoRole::Video));
         let mut col = SceneCollection::new();
         let clock = source(&mut col, "Clock", TEXT_SOURCE);
         mark(&mut col, clock, false, true);

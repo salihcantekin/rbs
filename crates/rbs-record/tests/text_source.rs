@@ -9,8 +9,10 @@ use std::sync::Arc;
 
 use rbs_core::media::ContainerId;
 use rbs_graph::node::NodeTypeId;
-use rbs_record::{OutputSettings, Studio, StudioSettings};
-use rbs_scene::model::{ItemContent, Layout, SettingValue, Settings, SourceId};
+use rbs_record::{OutputSettings, Studio, StudioSettings, TextDue};
+use rbs_scene::model::{
+    ItemContent, Layout, RecordSeparately, SceneScope, SettingValue, Settings, SourceId, VideoAs,
+};
 use rbs_sources::types::{self, keys};
 use rbs_text_test::FakeTextRenderer;
 use support::*;
@@ -122,6 +124,133 @@ fn a_text_source_is_drawn_and_edited_in_place() {
     assert!(studio.picture_size(title).is_none());
     let report = studio.stop_output(out).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_switch_to_a_scene_with_a_text_waits_for_its_new_picture() {
+    let Some(gpu) = gpu() else { return };
+    let mut r = rig();
+    r.adapters
+        .sources
+        .register_text(Arc::new(FakeTextRenderer::new()));
+    let (mut col, canvas) = scene();
+    let (title, _) = col
+        .add_source(
+            "Title",
+            NodeTypeId::new_static(types::TEXT_SOURCE),
+            text_settings("Next"),
+        )
+        .unwrap();
+    // Only the scene that is not on air places the text, hidden.
+    let (next, _) = col.add_scene("Next", SceneScope::Shared).unwrap();
+    let (item, _) = col
+        .add_item(
+            next,
+            ItemContent::Source(title),
+            Layout::new([0.0, 0.0], [64.0, 24.0]),
+            None,
+        )
+        .unwrap();
+    col.set_item_visible(item, false).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://text-switch", ContainerId::Matroska),
+        )
+        .unwrap();
+    assert!(run_until(&mut studio, &clock, |s| s.picture_size(title)
+        == Some((64, 24))));
+    // Nothing enters for the scene on air.
+    let live = col.canvases().next().unwrap().program.unwrap();
+    assert!(!studio.text_prepare(canvas, live));
+    assert_eq!(studio.text_due(), TextDue::Ready);
+
+    // The text enters: drawn again now, and the switch waits until it is uploaded.
+    assert!(studio.text_prepare(canvas, next));
+    let mut due = TextDue::Wait;
+    while due == TextDue::Wait {
+        let mut stepped = false;
+        assert!(run_until(&mut studio, &clock, |_| std::mem::replace(
+            &mut stepped,
+            true
+        )));
+        due = studio.text_due();
+    }
+    // Late only if the render thread missed two ticks; then it is counted.
+    assert_eq!(studio.text_late(), u64::from(due == TextDue::Late));
+    // A second prepare of the same scene has nothing new to wait for.
+    assert!(!studio.text_prepare(canvas, next));
+
+    // The switch itself keeps the picture: no second draw is asked for.
+    col.set_program(canvas, Some(next)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.text_due(), TextDue::Ready);
+    let report = studio.stop_output(out).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_text_read_from_a_document_is_adjusted_and_reported() {
+    let Some(gpu) = gpu() else { return };
+    let mut r = rig();
+    r.adapters
+        .sources
+        .register_text(Arc::new(FakeTextRenderer::new()));
+    let (mut col, canvas) = scene();
+    // A size out of range and a clock marked to be recorded as images: values a
+    // document can hold that no edit would accept.
+    let mut settings = text_settings("12:00");
+    settings.insert(keys::SIZE.into(), SettingValue::Float(1.0e6));
+    settings.insert(keys::KIND.into(), SettingValue::Text("clock".into()));
+    let (clock_text, _) = col
+        .add_source(
+            "Clock",
+            NodeTypeId::new_static(types::TEXT_SOURCE),
+            settings,
+        )
+        .unwrap();
+    col.set_source_record_separately(
+        clock_text,
+        RecordSeparately::new(true, false).with_video_as(VideoAs::Image),
+    )
+    .unwrap();
+    let (engine, _clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let keys: Vec<&str> = studio
+        .source_adjusted()
+        .iter()
+        .filter(|a| a.source == clock_text)
+        .map(|a| a.key.as_str())
+        .collect();
+    assert_eq!(keys, ["size", "video_as"]);
+
+    // An edit that stores valid settings and the mark `auto` clears both.
+    col.set_source_settings(clock_text, text_settings("Plain"))
+        .unwrap();
+    col.set_source_record_separately(clock_text, RecordSeparately::new(true, false))
+        .unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(studio.source_adjusted().is_empty());
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }

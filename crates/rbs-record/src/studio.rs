@@ -432,6 +432,18 @@ pub struct FilterSettingsAdjusted {
     pub key: String,
 }
 
+/// A source's stored settings that were adjusted to run it (ADR-0129 decisions 1
+/// and 3, as ADR-0062 decision 8 for filters): the key was out of range, of the wrong
+/// kind or not known, or `video_as` is `image` on a text that is not still (it runs as
+/// `auto`). The document keeps them until the user edits that source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSettingsAdjusted {
+    /// The source.
+    pub source: SourceId,
+    /// The setting's key (`video_as` for the mark).
+    pub key: String,
+}
+
 /// A node the studio added to the graph, so it can be taken back.
 #[derive(Debug, Clone, Copy)]
 struct Added {
@@ -1144,6 +1156,8 @@ pub struct Studio {
     filters: Vec<FilterEntry>,
     /// Stored filter settings adjusted on load.
     filter_problems: Vec<FilterSettingsAdjusted>,
+    /// Text sources' settings adjusted when read (ADR-0129).
+    source_adjusted: Vec<SourceSettingsAdjusted>,
     /// The virtual camera while it sends (ADR-0066 decision 6); `None` otherwise, so
     /// nothing of it runs.
     camera: Option<CameraRun>,
@@ -1186,7 +1200,26 @@ pub struct Studio {
     text_on_air: BTreeSet<SourceId>,
     /// Requests of texts that entered the on-air set, not yet uploaded.
     text_entering: Vec<(SourceId, u64)>,
+    /// Render ticks run when a host started waiting for entering texts.
+    text_wait: Option<u64>,
+    /// Scene changes that went ahead with a text not yet uploaded (`text_late`).
+    text_late: u64,
 }
+
+/// Whether a scene change a host holds back for its texts may go ahead
+/// ([`Studio::text_due`], ADR-0129 decision 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDue {
+    /// Every entering text has its picture uploaded.
+    Ready,
+    /// Two render ticks passed first: the change goes ahead, counted in `text_late`.
+    Late,
+    /// Wait for the next service.
+    Wait,
+}
+
+/// Render ticks a scene change waits for its texts at most.
+pub const TEXT_WAIT_TICKS: u64 = 2;
 
 impl fmt::Debug for Studio {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1492,6 +1525,7 @@ impl Studio {
             master: master_of(collection, canvas_id),
             filters: Vec::new(),
             filter_problems: Vec::new(),
+            source_adjusted: Vec::new(),
             camera: None,
             monitor: None,
             loudness: None,
@@ -1511,6 +1545,8 @@ impl Studio {
             text_attached: BTreeSet::new(),
             text_on_air: BTreeSet::new(),
             text_entering: Vec::new(),
+            text_wait: None,
+            text_late: 0,
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)
@@ -2445,6 +2481,7 @@ impl Studio {
             }
         }
         self.filter_problems = adjusted;
+        self.source_adjusted = text_adjusted(&self.collection);
 
         // Layers in link order of the final plan, strips per mixer input.
         self.send_program_layers(&plan);
@@ -2802,6 +2839,64 @@ impl Studio {
         self.text_entering.is_empty()
     }
 
+    /// Prepares a change of `canvas`'s program to `scene` (ADR-0129 decision 7): the
+    /// texts it places that are not on air yet (hidden items, nested and global scenes
+    /// included) join the on-air set and get a new picture now, before the change.
+    /// True when the host should hold the change back until [`Studio::text_due`]
+    /// says it may go; false (nothing to wait for) costs one set walk.
+    pub fn text_prepare(&mut self, canvas: CanvasId, scene: SceneId) -> bool {
+        let Some(worker) = self.text.as_mut() else {
+            return false;
+        };
+        let mut added = false;
+        for source in self.collection.placed_sources(canvas, scene) {
+            if !self.text_attached.contains(&source) || !self.text_on_air.insert(source) {
+                continue;
+            }
+            added = true;
+            if let Some(request) = worker.refresh(source) {
+                self.text_entering.push((source, request));
+            }
+        }
+        if added {
+            worker.set_on_air(self.text_on_air.clone());
+        }
+        if self.text_ready() {
+            self.text_wait = None;
+            return false;
+        }
+        self.text_wait = Some(self.render_ticks());
+        true
+    }
+
+    /// Whether a change held back by [`Studio::text_prepare`] may go now: when every
+    /// entering text is uploaded, or after [`TEXT_WAIT_TICKS`] render ticks (then
+    /// counted in [`Studio::text_late`]).
+    pub fn text_due(&mut self) -> TextDue {
+        if self.text_ready() {
+            self.text_wait = None;
+            return TextDue::Ready;
+        }
+        let since = *self.text_wait.get_or_insert(self.render_ticks());
+        if self.render_ticks() < since + TEXT_WAIT_TICKS {
+            return TextDue::Wait;
+        }
+        // The late texts are composed at their last picture until theirs is uploaded.
+        self.text_wait = None;
+        self.text_entering.clear();
+        self.text_late += 1;
+        TextDue::Late
+    }
+
+    /// Scene changes that went ahead before an entering text was uploaded.
+    pub fn text_late(&self) -> u64 {
+        self.text_late
+    }
+
+    fn render_ticks(&self) -> u64 {
+        self.render_worker.as_ref().map_or(0, |w| w.ticks())
+    }
+
     /// Texts whose node runs no more are detached from the worker; the on-air set is
     /// recomputed.
     fn sync_text(&mut self) {
@@ -3005,6 +3100,12 @@ impl Studio {
             FilterInstance::Audio { meter, .. } => meter.as_ref(),
             FilterInstance::Video(..) => None,
         }
+    }
+
+    /// Text sources' stored settings that were adjusted to run them, as of the last
+    /// start or update.
+    pub fn source_adjusted(&self) -> &[SourceSettingsAdjusted] {
+        &self.source_adjusted
     }
 
     /// Blocks an audio filter dropped because they were not in the graph's format.
@@ -4544,6 +4645,34 @@ fn mixer_params(
     MixerParams::new(strips)
         .with_master(master.gain())
         .with_master_meter(Arc::clone(meter))
+}
+
+/// The adjustments of every text source's stored settings (ADR-0129): what
+/// `read_text_lenient` changed, and a `video_as: image` mark on a text that is not
+/// still. Text sources only; walks the sources once per start or update.
+fn text_adjusted(collection: &SceneCollection) -> Vec<SourceSettingsAdjusted> {
+    let mut out = Vec::new();
+    for source in collection.sources() {
+        if rbs_sources::types::class_of(&source.type_id)
+            != Some(rbs_sources::types::SourceClass::Text)
+        {
+            continue;
+        }
+        let (_, keys) = rbs_sources::text::read_text_lenient(&source.settings);
+        out.extend(keys.into_iter().map(|key| SourceSettingsAdjusted {
+            source: source.id,
+            key: key.to_owned(),
+        }));
+        if source.record_separately.video_as == rbs_scene::model::VideoAs::Image
+            && !rbs_sources::is_still(&source.type_id, &source.settings)
+        {
+            out.push(SourceSettingsAdjusted {
+                source: source.id,
+                key: "video_as".to_owned(),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
