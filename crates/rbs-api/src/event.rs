@@ -64,11 +64,14 @@ pub enum Topic {
     /// The sync offset measurement (state, protocol 1.66, ADR-0126).
     #[serde(rename = "sync.measure.changed")]
     SyncMeasureChanged,
+    /// The attribute clipboard (state, protocol 1.68, ADR-0133).
+    #[serde(rename = "source.attributes_clipboard.changed")]
+    AttributesClipboardChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 15] = [
+    pub const ALL: [Topic; 16] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -84,6 +87,7 @@ impl Topic {
         Topic::ProtectionChanged,
         Topic::CalibrationState,
         Topic::SyncMeasureChanged,
+        Topic::AttributesClipboardChanged,
     ];
 
     /// Its name on the wire.
@@ -104,6 +108,7 @@ impl Topic {
             Topic::ProtectionChanged => "protection.changed",
             Topic::CalibrationState => "calibration.state",
             Topic::SyncMeasureChanged => "sync.measure.changed",
+            Topic::AttributesClipboardChanged => "source.attributes_clipboard.changed",
         }
     }
 
@@ -273,6 +278,9 @@ pub enum EventPayload {
     /// The sync offset measurement (protocol 1.66).
     #[serde(rename = "sync.measure.changed")]
     SyncMeasureChanged(SyncMeasureChanged),
+    /// The attribute clipboard (protocol 1.68).
+    #[serde(rename = "source.attributes_clipboard.changed")]
+    AttributesClipboardChanged(crate::types::AttributesClipboardChanged),
 }
 
 impl EventPayload {
@@ -294,6 +302,7 @@ impl EventPayload {
             EventPayload::ProtectionChanged(_) => Topic::ProtectionChanged,
             EventPayload::CalibrationState(_) => Topic::CalibrationState,
             EventPayload::SyncMeasureChanged(_) => Topic::SyncMeasureChanged,
+            EventPayload::AttributesClipboardChanged(_) => Topic::AttributesClipboardChanged,
         }
     }
 }
