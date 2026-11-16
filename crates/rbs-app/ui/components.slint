@@ -1670,6 +1670,7 @@ export component Toggle inherits Rectangle {
 // start-align them. `extra` shows a third, quiet button between the two (Apply).
 export component DialogActions inherits HorizontalLayout {
     in property <string> cancel-text: @tr("Cancel");
+    // Empty: no confirm button (only Cancel and the extra button show).
     in property <string> confirm-text;
     // "primary", or "danger" (a destructive answer; Button draws its trash icon).
     in property <string> confirm-kind: "primary";
@@ -1698,7 +1699,8 @@ export component DialogActions inherits HorizontalLayout {
         enabled: root.extra-enabled;
         clicked => { root.extra-clicked(); }
     }
-    Button {
+    // Without confirm text only the way back shows (a window that is busy).
+    if root.confirm-text != "": Button {
         text: root.confirm-text;
         kind: root.confirm-kind;
         dense: root.dense;

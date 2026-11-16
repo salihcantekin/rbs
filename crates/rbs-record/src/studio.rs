@@ -85,7 +85,7 @@ pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
 pub use sync_measure::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
-    SyncMeasureState, SyncMeasureStatus,
+    SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
