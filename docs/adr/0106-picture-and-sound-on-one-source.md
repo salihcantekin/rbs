@@ -1,6 +1,6 @@
-# ADR-0106: A source that has both picture and sound names the queue reader as the mixer producer
+# ADR-0106: A source that has both picture and sound is a picture node and a sound node fed by one producer
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0004](0004-single-master-clock.md), [ADR-0026](0026-partitions-and-queues.md), [ADR-0037](0037-audio-graph.md), [ADR-0039](0039-scene-source-types.md), [ADR-0096](0096-capture-audio-companions-and-camera-microphone.md)
@@ -84,3 +84,5 @@ Review round 4 (independent AI session, 2026-11-16, `/mnt/project-files/media-pl
 Resolutions (author, 2026-11-16): M1 the pair is fixed whenever there is an audio partition (decision 5); M2 every stale block is dropped in one tick, and the first block is padded to the anchor (decision 3, ADR-0108 decision 5); M3 two `replaced_sources` entries per source (decision 2). ADR-0108 B1 and B2 are resolved in that ADR's decision 5.
 
 Review round 5 (independent AI session, 2026-11-16, `review-round5.md`): accept. Round-4 M1–M3 closed; ADR-0108 B1 and B2 resolved.
+
+Owner acceptance: Salih, 2026-11-16 (after review round 6).

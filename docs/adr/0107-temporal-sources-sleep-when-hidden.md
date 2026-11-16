@@ -1,6 +1,6 @@
 # ADR-0107: Temporal sources sleep unless a shown scene draws them
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0039](0039-scene-source-types.md), [ADR-0074](0074-still-image-and-colour-sources.md)
@@ -94,3 +94,5 @@ Review round 4 (independent AI session, 2026-11-16, `/mnt/project-files/media-pl
 Resolutions (author, 2026-11-16): M1 the take puts the cued picture on air at once and motion one lead later (decision 6); M2 the Interact-window cause is cited as reserved (decision 6); M3 cued only when no program or hold scene on any canvas draws it (decision 6).
 
 Review round 5 (independent AI session, 2026-11-16, `review-round5.md`): accept with minor fix M1. Resolution (author, 2026-11-16): a preview-only media source is cued or stays paused or ended (decision 6).
+
+Owner acceptance: Salih, 2026-11-16 (after review round 6).

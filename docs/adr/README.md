@@ -114,8 +114,8 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0103](0103-source-region.md) | A source may store a capture region distinct from the item crop | Proposed |
 | [0104](0104-display-chrome-insets.md) | Display chrome insets hide the taskbar or Dock via the source region | Proposed |
 | [0105](0105-timed-show.md) | Timed show draws a hidden item for a deadline without undo | Proposed |
-| [0106](0106-picture-and-sound-on-one-source.md) | A source that has both picture and sound names the queue reader as the mixer producer | Proposed |
-| [0107](0107-temporal-sources-sleep-when-hidden.md) | Temporal sources sleep unless a shown scene draws them | Proposed |
+| [0106](0106-picture-and-sound-on-one-source.md) | A source that has both picture and sound is a picture node and a sound node fed by one producer | Accepted |
+| [0107](0107-temporal-sources-sleep-when-hidden.md) | Temporal sources sleep unless a shown scene draws them | Accepted |
 | [0108](0108-media-file-source.md) | A local media-file source for video and animated pictures | Proposed |
 | [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
 | [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Accepted |
