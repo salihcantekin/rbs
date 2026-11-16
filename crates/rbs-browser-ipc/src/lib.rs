@@ -20,6 +20,7 @@
 
 use std::time::Duration;
 
+pub mod page;
 pub mod shm;
 
 /// Configure kind.
@@ -34,6 +35,9 @@ pub const MAX_PAYLOAD: usize = 64 * 1024;
 pub const HEARTBEAT_PERIOD: Duration = Duration::from_millis(500);
 /// No heartbeat for this long is a hang (ADR-0109 decision 8).
 pub const HEARTBEAT_LIMIT: Duration = Duration::from_secs(2);
+/// Before its first heartbeat a helper may take this long: a cold engine start
+/// (first launch after install, a slow disk) blocks before the helper can beat.
+pub const STARTUP_LIMIT: Duration = Duration::from_secs(15);
 
 /// What the page is not allowed to do. A later CEF runner inherits this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +149,11 @@ pub fn heartbeat_lost(silent_for: Duration) -> bool {
     silent_for >= HEARTBEAT_LIMIT
 }
 
+/// A helper that has not beaten once is hung after [`STARTUP_LIMIT`] from spawn.
+pub fn startup_lost(since_spawn: Duration) -> bool {
+    since_spawn >= STARTUP_LIMIT
+}
+
 fn prefix(body: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + body.len());
     let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
@@ -207,6 +216,8 @@ mod tests {
         assert!(!heartbeat_lost(Duration::from_millis(1999)));
         assert!(heartbeat_lost(HEARTBEAT_LIMIT));
         assert!(HEARTBEAT_PERIOD * 4 <= HEARTBEAT_LIMIT);
+        assert!(!startup_lost(HEARTBEAT_LIMIT));
+        assert!(startup_lost(STARTUP_LIMIT));
         assert_eq!(restart_delay(1), Duration::from_millis(500));
         assert_eq!(restart_delay(2), Duration::from_millis(1000));
     }

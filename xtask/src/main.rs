@@ -438,7 +438,8 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-media-decode-test"
         | "rbs-text-test"
         | "rbs-text-parley"
-        | "rbs-browser-runner" => Class::Adapter,
+        | "rbs-browser-runner"
+        | "rbs-browser-cef" => Class::Adapter,
         other if other.starts_with("rbs-") => return None,
         _ => return None,
     })
@@ -447,6 +448,26 @@ fn class(name: &str) -> Option<Class> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0132 decision 1: no workspace command may resolve, download or build
+    /// CEF. The CEF runner is excluded and keeps its own lock file.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn the_workspace_lock_file_has_no_cef() {
+        let lock = fs::read_to_string(workspace_root().join("Cargo.lock")).expect("Cargo.lock");
+        for name in ["cef-dll-sys", "cef", "rbs-browser-cef"] {
+            let entry = format!("name = \"{name}\"\n");
+            assert!(
+                !lock.contains(&entry),
+                "{name} is in the workspace Cargo.lock"
+            );
+        }
+        let manifest = fs::read_to_string(workspace_root().join("Cargo.toml")).expect("Cargo.toml");
+        assert!(
+            manifest.contains("\"crates/rbs-browser-cef\""),
+            "crates/rbs-browser-cef must stay in the workspace exclude list"
+        );
+    }
 
     #[test]
     fn core_cannot_see_an_adapter_or_wgpu() {

@@ -85,6 +85,7 @@ impl BrowserSession for HelperSession {
     }
 
     fn stop(&mut self) {
-        let _ = self.supervisor.stop();
+        // Never waits: the supervisor thread closes the helper (ADR-0109 decision 8).
+        self.supervisor.stop_detached();
     }
 }
