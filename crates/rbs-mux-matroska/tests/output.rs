@@ -8,7 +8,10 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 use rbs_mux::conformance::{SYNTHETIC_ASC, SYNTHETIC_AVCC, aac_stream, h264_stream};
 use rbs_mux::{CreateError, MuxError, MuxerConfig, MuxerFactory};
-use rbs_mux_matroska::MatroskaMuxerFactory;
+use rbs_mux_matroska::{Chapter, ChapterError, MatroskaMuxerFactory, append_chapters};
+
+/// The bytes the chapters are written into, in memory.
+type MemoryFile = std::io::Cursor<Vec<u8>>;
 
 const LP4: BitstreamFormat = BitstreamFormat::LengthPrefixed { length_size: 4 };
 const MKV: ContainerId = ContainerId::Matroska;
@@ -16,7 +19,7 @@ const MKV: ContainerId = ContainerId::Matroska;
 const SEGMENT: u64 = 0x1853_8067;
 const CLUSTER: u64 = 0x1f43_b675;
 /// Master elements whose payload is more elements.
-const MASTERS: [u64; 8] = [
+const MASTERS: [u64; 14] = [
     0x1a45_dfa3,
     SEGMENT,
     0x1549_a966,
@@ -25,7 +28,15 @@ const MASTERS: [u64; 8] = [
     0xe0,
     0xe1,
     CLUSTER,
+    SEEK_HEAD,
+    0x4dbb,
+    CHAPTERS,
+    0x45b9,
+    0xb6,
+    0x80,
 ];
+const SEEK_HEAD: u64 = 0x114d_9b74;
+const CHAPTERS: u64 = 0x1043_a770;
 
 #[derive(Debug)]
 struct Element {
@@ -738,4 +749,189 @@ fn an_empty_recording_gets_no_patches() {
     muxer.begin(&mut chunks).unwrap();
     muxer.finish(&mut chunks).unwrap();
     assert_eq!(chunks.len(), 1);
+}
+
+/// A finished file: a keyframe at 0 ms and frames to 100 ms, with audio.
+fn finished_file() -> Vec<u8> {
+    let config = MuxerConfig::new(MKV, vec![h264_stream(), aac_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    for (i, ms) in [0, 33, 66, 100].into_iter().enumerate() {
+        let data = if i == 0 {
+            vec![0, 0, 0, 2, 0x65, 9]
+        } else {
+            vec![0, 0, 0, 2, 0x41, 8]
+        };
+        let packet = video(ms, ms, i == 0, data, LP4);
+        muxer.write(StreamIndex(0), &packet, &mut chunks).unwrap();
+        muxer
+            .write(StreamIndex(1), &audio(ms), &mut chunks)
+            .unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+    file_bytes(&chunks)
+}
+
+#[test]
+fn the_segment_starts_with_room_for_a_seek_head() {
+    let bytes = finished_file();
+    let segment = &parse(&bytes)[1];
+    assert_eq!(segment.children[0].id, 0xec, "a Void first");
+    assert_eq!(segment.children[0].data.len(), 126, "128 bytes in all");
+    assert_eq!(segment.children[1].id, 0x1549_a966, "then Info");
+}
+
+#[test]
+fn chapters_are_appended_and_found_through_the_seek_head() {
+    let mut file = MemoryFile::new(finished_file());
+    let chapters = [
+        Chapter {
+            start_ns: 0,
+            title: "Start",
+        },
+        Chapter {
+            start_ns: 66_000_000,
+            title: "Marker 2",
+        },
+    ];
+    append_chapters(&mut file, &chapters).unwrap();
+    let bytes = file.into_inner();
+    let top = parse(&bytes);
+    assert_eq!(top.len(), 2, "the Segment size covers the chapters");
+    let segment = &top[1];
+    let size_at = bytes.len() - segment.data.len() - 8;
+    let data_start = size_at + 8;
+
+    let head = &segment.children[0];
+    assert_eq!(head.id, SEEK_HEAD);
+    assert_eq!(segment.children[1].id, 0xec, "a Void fills the rest");
+    assert_eq!(segment.children[2].id, 0x1549_a966);
+    // Info, Tracks and Chapters, each where the SeekHead says.
+    let seeks: Vec<&Element> = head.all(0x4dbb).collect();
+    assert_eq!(seeks.len(), 3);
+    for (seek, want) in seeks.iter().zip([0x1549_a966u64, 0x1654_ae6b, CHAPTERS]) {
+        let named = seek
+            .child(0x53ab)
+            .data
+            .iter()
+            .fold(0u64, |v, b| (v << 8) | u64::from(*b));
+        assert_eq!(named, want);
+        let position = seek.child(0x53ac).uint() as usize;
+        let (_, id) = vint(&bytes, data_start + position, true);
+        assert_eq!(id, want, "{want:#x} at {position}");
+    }
+
+    let edition = segment.child(CHAPTERS).child(0x45b9);
+    assert_eq!(edition.child(0x45bc).uint(), 1, "edition uid");
+    assert_eq!(edition.child(0x45db).uint(), 1, "default edition");
+    let atoms: Vec<&Element> = edition.all(0xb6).collect();
+    assert_eq!(atoms.len(), 2);
+    // The file's first sample is 1 s after time 0 (the interleaving bound); chapters
+    // count from it.
+    assert_eq!(atoms[0].child(0x91).uint(), 1_000_000_000);
+    assert_eq!(atoms[1].child(0x91).uint(), 1_066_000_000);
+    assert_eq!(atoms[0].child(0x73c4).uint(), 1);
+    assert_eq!(atoms[1].child(0x73c4).uint(), 2);
+    let display = atoms[1].child(0x80);
+    assert_eq!(display.child(0x85).data, b"Marker 2");
+    assert_eq!(display.child(0x437c).data, b"und");
+}
+
+#[test]
+fn chapters_are_refused_on_files_that_are_not_ready() {
+    // No chapters: nothing is written.
+    let original = finished_file();
+    let mut file = MemoryFile::new(original.clone());
+    append_chapters(&mut file, &[]).unwrap();
+    assert_eq!(file.into_inner(), original);
+
+    let chapters = [Chapter {
+        start_ns: 0,
+        title: "Start",
+    }];
+    // Added once already: the Void is gone.
+    let mut file = MemoryFile::new(original.clone());
+    append_chapters(&mut file, &chapters).unwrap();
+    let once = file.into_inner();
+    let mut file = MemoryFile::new(once.clone());
+    let again = append_chapters(&mut file, &chapters);
+    assert!(matches!(again, Err(ChapterError::NoRoom)), "{again:?}");
+    assert_eq!(file.into_inner(), once);
+
+    // Not finished (a live file without the patches).
+    let config = MuxerConfig::new(MKV, vec![h264_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    let packet = video(0, 0, true, vec![0, 0, 0, 2, 0x65, 9], LP4);
+    muxer.write(StreamIndex(0), &packet, &mut chunks).unwrap();
+    muxer.finish(&mut chunks).unwrap();
+    let live: Vec<u8> = chunks
+        .iter()
+        .filter(|c| c.is_sequential())
+        .flat_map(|c| c.data.iter().copied())
+        .collect();
+    let mut file = MemoryFile::new(live.clone());
+    let result = append_chapters(&mut file, &chapters);
+    assert!(
+        matches!(result, Err(ChapterError::Unfinished)),
+        "{result:?}"
+    );
+    assert_eq!(file.into_inner(), live);
+
+    // Bytes after the Segment.
+    let mut longer = original.clone();
+    longer.push(0);
+    let mut file = MemoryFile::new(longer);
+    let result = append_chapters(&mut file, &chapters);
+    assert!(
+        matches!(result, Err(ChapterError::Unfinished)),
+        "{result:?}"
+    );
+
+    // Not Matroska.
+    let mut file = MemoryFile::new(vec![0u8; 64]);
+    let result = append_chapters(&mut file, &chapters);
+    assert!(
+        matches!(result, Err(ChapterError::NotMatroska)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn chapters_count_from_the_earliest_cluster_even_a_late_one() {
+    let config = MuxerConfig::new(MKV, vec![h264_stream(), aac_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // The first Cluster holds only video from 100 ms; audio from 50 ms arrives after
+    // the next keyframe, so the second Cluster starts earlier than the first.
+    for (ms, key) in [(100, true), (133, false), (600, true)] {
+        let data = vec![0, 0, 0, 2, if key { 0x65 } else { 0x41 }, 9];
+        let p = video(ms, ms, key, data, LP4);
+        muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
+    }
+    muxer
+        .write(StreamIndex(1), &audio(50), &mut chunks)
+        .unwrap();
+    muxer.finish(&mut chunks).unwrap();
+    let times: Vec<u64> = chunks
+        .iter()
+        .filter(|c| matches!(c.kind, ChunkKind::Media { .. }))
+        .map(|c| cluster(&c.data).0)
+        .collect();
+    // Origin: the first dts (100 ms) minus 1 s.
+    assert_eq!(times, [1000, 950], "the later Cluster starts earlier");
+
+    let mut file = MemoryFile::new(file_bytes(&chunks));
+    let chapters = [Chapter {
+        start_ns: 0,
+        title: "Start",
+    }];
+    append_chapters(&mut file, &chapters).unwrap();
+    let bytes = file.into_inner();
+    let segment = &parse(&bytes)[1];
+    let atom = segment.child(CHAPTERS).child(0x45b9).child(0xb6);
+    assert_eq!(atom.child(0x91).uint(), 950_000_000);
 }

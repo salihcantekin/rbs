@@ -1451,6 +1451,9 @@ struct RecordingMarkers {
     flush_at: Option<u64>,
     /// A flush wrote the manifest during the recording.
     flushed: bool,
+    /// The master is Matroska: a clean stop adds the markers as chapters
+    /// (ADR-0089 decision 14).
+    matroska: bool,
 }
 
 impl RecordingMarkers {
@@ -1481,6 +1484,7 @@ impl RecordingMarkers {
                 stopped_ns: 0,
                 flush_at: None,
                 flushed: false,
+                matroska: false,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1503,6 +1507,7 @@ impl RecordingMarkers {
             stopped_ns: 0,
             flush_at: None,
             flushed: false,
+            matroska: false,
         })
     }
 
@@ -1578,6 +1583,54 @@ impl RecordingMarkers {
                     .map(|n| n.to_string_lossy().into_owned())
             })
             .map_err(|e| e.to_string())
+    }
+
+    /// The markers as chapters inside a Matroska master (ADR-0089 decision 14), after
+    /// the stop rewrite of a clean stop. Only when the master's timing is known (the
+    /// span is tracked for separate files and the editor project setting): a chapter
+    /// is at `t_ns - start_offset_ns`, from the file's first sample. A marker before it
+    /// is on it; one after the master's end is left out (the manifest keeps it). A file
+    /// that cannot take chapters is left as it is; only a read or write failure is an
+    /// error.
+    fn write_chapters(&self) -> Result<(), String> {
+        if !self.matroska || self.log.markers().is_empty() {
+            return Ok(());
+        }
+        let Some((file, timing)) = self
+            .manifest
+            .files
+            .iter()
+            .find(|f| f.role == "master")
+            .and_then(|f| f.timing.map(|t| (f, t)))
+        else {
+            return Ok(());
+        };
+        let mut chapters: Vec<rbs_mux_matroska::Chapter<'_>> = self
+            .log
+            .markers()
+            .iter()
+            .map(|m| rbs_mux_matroska::Chapter {
+                start_ns: m.t_ns.saturating_sub(timing.start_offset_ns),
+                title: &m.label,
+            })
+            .filter(|c| c.start_ns <= timing.duration_ns)
+            .collect();
+        if chapters.is_empty() {
+            return Ok(());
+        }
+        chapters.sort_by_key(|c| c.start_ns);
+        let mut media = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.dir.join(&file.file_name))
+            .map_err(|e| e.to_string())?;
+        match rbs_mux_matroska::append_chapters(&mut media, &chapters) {
+            Ok(()) => Ok(()),
+            Err(rbs_mux_matroska::ChapterError::Io(e)) => Err(e.to_string()),
+            // Written by another Matroska adapter, or by an output that could not
+            // seek: the file takes no chapters, and the manifest keeps the markers.
+            Err(_) => Ok(()),
+        }
     }
 
     /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
@@ -5754,7 +5807,11 @@ impl Host {
                 r.editor_project,
                 r.markers,
                 scene,
-            );
+            )
+            .map(|mut m| {
+                m.matroska = r.container == ContainerId::Matroska;
+                m
+            });
             // Tracked together with the master, after the last panic point of the
             // start, so recovery never finds files without their master (ADR-0055).
             let (tracks, skipped) = iso
@@ -6277,10 +6334,24 @@ impl Host {
             let why = match markers.write() {
                 Err(e) => Some(format!("The markers could not be saved: {e}.")),
                 // The project only after the manifest is on disk (ADR-0089 decision 10).
-                Ok(()) => markers
-                    .write_project()
-                    .err()
-                    .map(|e| format!("The editor project was not written: {e}.")),
+                Ok(()) => {
+                    let project = markers
+                        .write_project()
+                        .err()
+                        .map(|e| format!("The editor project was not written: {e}."));
+                    // Inside the media only after a clean stop (ADR-0089 decision 14).
+                    let chapters = if failure.is_none() {
+                        markers.write_chapters().err().map(|e| {
+                            format!("The markers could not be added to the file as chapters: {e}.")
+                        })
+                    } else {
+                        None
+                    };
+                    match (project, chapters) {
+                        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+                        (a, b) => a.or(b),
+                    }
+                }
             };
             if let Some(why) = why {
                 failure = Some(match failure {
