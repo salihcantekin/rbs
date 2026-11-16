@@ -492,6 +492,23 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The option keys of a source type (ADR-0133 decision 2): the settings Reset source and
+/// Paste attributes may change. Every other key a type uses is an identity key (which
+/// device, window, file, URL or picture), never pasted or reset. Empty for a type without
+/// options and for any type that is not built in (plugin types, until their manifest
+/// declares option keys). The host never resets or pastes `exclude_own_process` on a
+/// companion source (decision 2, companion rule).
+pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
+    match class_of(type_id) {
+        Some(SourceClass::Capture(TargetKind::Camera)) => &[keys::WIDTH, keys::HEIGHT, keys::FPS],
+        Some(SourceClass::Capture(_)) => &[keys::CURSOR, keys::WIDTH, keys::HEIGHT, keys::FPS],
+        Some(SourceClass::Audio(EndpointKind::OutputLoopback)) => &[keys::EXCLUDE_OWN_PROCESS],
+        Some(SourceClass::Media) => &[keys::LOOP, keys::RESTART_WHEN_SHOWN],
+        Some(SourceClass::Browser) => &[keys::WIDTH, keys::HEIGHT, keys::FPS, keys::TRANSPARENT],
+        Some(SourceClass::Audio(_) | SourceClass::Still) | None => &[],
+    }
+}
+
 /// Checks `settings` for a source of `type_id` without touching any device: only keys the
 /// type uses, each of the right kind, a size given as both sides, a sane size and rate.
 /// What the OS offers (does the target exist, does the camera have this mode) is only
@@ -1328,5 +1345,29 @@ mod fill_tests {
         bad.insert(keys::FILLED.into(), SettingValue::Text("no".into()));
         assert!(validate_settings(&id, &bad).is_err());
         assert!(validate_settings(&id, &colour_settings(Some(false))).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod option_key_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+    use super::*;
+
+    /// Option keys are known keys, and identity keys (the rest) are never empty for a
+    /// type that has a device, file, URL or picture (ADR-0133 decision 2).
+    #[test]
+    fn option_keys_are_known_and_leave_the_identity() {
+        for name in types::ALL {
+            let ty = NodeTypeId::new(name);
+            let known = known_keys(&ty).unwrap();
+            let options = option_keys(&ty);
+            assert!(options.iter().all(|k| known.contains(k)), "{name}");
+            assert!(
+                known.iter().any(|k| !options.contains(k)),
+                "{name} keeps an identity"
+            );
+        }
+        assert!(option_keys(&NodeTypeId::new("org.example.plugin")).is_empty());
+        assert!(option_keys(&NodeTypeId::new(types::IMAGE_SOURCE)).is_empty());
     }
 }
