@@ -95,6 +95,8 @@ impl MediaSoundNode {
     /// sees them abandoned and stops writing sound.
     pub fn detach(&mut self) {
         self.shared.sound_attached.store(false, Ordering::Release);
+        // Silence before the next attach's first block is not an underrun.
+        self.shared.sound_from.store(0, Ordering::Release);
         drop(self.shared.take_inlet());
         self.ring = None;
         self.shared.player().release(User::Sound);

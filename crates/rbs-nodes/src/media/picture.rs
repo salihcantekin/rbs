@@ -207,6 +207,7 @@ impl MediaPictureNode {
     /// first picture's master time plus the lead.
     pub fn wake(&mut self, _now: Timestamp) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
+        shared.picture_attached.store(true, Ordering::Release);
         let mut player = shared.player();
         let joined = player.acquire(User::Picture, &shared);
         let result = match joined {
@@ -300,6 +301,12 @@ impl MediaPictureNode {
             self.give_back(item);
         }
         if let Some(item) = self.next.take() {
+            self.give_back(item);
+        }
+        // The worker stops queueing; what it queued already goes back too, so a later
+        // wake starts from fresh pictures, not stale ones.
+        self.shared.picture_attached.store(false, Ordering::Release);
+        while let Some(item) = self.pop_picture() {
             self.give_back(item);
         }
         let shared = Arc::clone(&self.shared);

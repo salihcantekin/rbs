@@ -159,6 +159,7 @@ pub(crate) fn run(job: Job) {
         index: 0,
         sound: SoundStream::new(&job.config, job.cursor),
         primed_sound,
+        unseen: std::collections::VecDeque::new(),
         job: &job,
         decoder: &mut *decoder,
     };
@@ -182,6 +183,10 @@ struct Run<'a> {
     returns_rx: rtrb::Consumer<Pending>,
     index: u32,
     sound: SoundStream,
+    /// Pictures decoded while the picture node was not prepared, with their media
+    /// start and master time: the latest one due and those after it (at most
+    /// [`PICTURE_SLOTS`]). Decoded samples, not copies.
+    unseen: std::collections::VecDeque<(PictureSample, Duration, i128)>,
     /// The first sound chunk, decoded before the anchor was set.
     primed_sound: Option<rbs_media_decode::SoundSample>,
 }
@@ -210,7 +215,19 @@ impl Run<'_> {
             let horizon = now.as_nanos() as i128 + LEAD.as_nanos() as i128;
             let mut busy = false;
 
-            // Pictures.
+            // Pictures. What was decoded while nobody showed pictures (the picture due
+            // now and those within the lead) goes first once the picture node is
+            // back, so it shows the current picture.
+            if job.shared.picture_attached.load(Ordering::Acquire) && !self.unseen.is_empty() {
+                busy = true;
+                let unseen = std::mem::take(&mut self.unseen);
+                for (sample, start, master) in &unseen {
+                    if self.queue_picture(sample, *start, *master).is_err() {
+                        job.progress.failed.store(true, Ordering::Release);
+                        return;
+                    }
+                }
+            }
             if !self.pictures.done && self.master(self.pictures.next) <= horizon {
                 busy = true;
                 match self.next_picture() {
@@ -228,6 +245,7 @@ impl Run<'_> {
             if !attached {
                 // The sound node let go of its ring: decode no sound until it is back.
                 self.sound.inlet = None;
+                self.primed_sound = None;
             }
             if attached && has_audio {
                 if self
@@ -258,7 +276,7 @@ impl Run<'_> {
                 if !job.loop_flag.load(Ordering::Acquire) {
                     return;
                 }
-                let pass = self.pass_length(attached && has_audio);
+                let pass = self.pass_length();
                 if self.decoder.seek(Duration::ZERO).is_err() {
                     job.progress.failed.store(true, Ordering::Release);
                     return;
@@ -267,6 +285,7 @@ impl Run<'_> {
                 self.offset = self.offset.saturating_add(pass);
                 self.pictures.restart();
                 self.sound.restart();
+                self.primed_sound = None;
                 continue;
             }
             if !busy {
@@ -303,11 +322,12 @@ impl Run<'_> {
     }
 
     /// Media length of the pass that just ended: the later end of its pictures and its
-    /// sound, so the next pass starts after both. Without sound decoded in this pass,
-    /// the file's stated duration stands in for the sound's end.
-    fn pass_length(&self, sound: bool) -> Duration {
+    /// sound, so the next pass starts after both. With an audio stream the file's
+    /// stated duration counts too, so the loop phase does not depend on whether the
+    /// sound node is prepared.
+    fn pass_length(&self) -> Duration {
         let mut length = self.pictures.pass_end.max(self.sound.pass_end);
-        if !sound && self.job.shared.has_audio.load(Ordering::Acquire) {
+        if self.job.shared.has_audio.load(Ordering::Acquire) {
             if let Some(duration) = self.decoder.duration() {
                 length = length.max(duration);
             }
@@ -316,7 +336,6 @@ impl Run<'_> {
     }
 
     fn next_picture(&mut self) -> Result<(), ()> {
-        let job = self.job;
         let sample = match self.primed.take() {
             Some(sample) => sample,
             None => match self.pictures.pull(self.decoder) {
@@ -331,6 +350,33 @@ impl Run<'_> {
         let Some((start, _end)) = self.pictures.stamp(&sample) else {
             return Err(());
         };
+        // Nobody shows pictures: keep the pass timing and the latest picture, copy and
+        // queue nothing.
+        if !self.job.shared.picture_attached.load(Ordering::Acquire) {
+            let master = self.master(start);
+            let now = self.job.clock.now().as_nanos() as i128;
+            self.unseen.push_back((sample, start, master));
+            // Keep the latest picture that is due and the ones after it.
+            while self.unseen.len() > PICTURE_SLOTS
+                || self.unseen.get(1).is_some_and(|(_, _, m)| *m <= now)
+            {
+                self.unseen.pop_front();
+            }
+            return Ok(());
+        }
+        self.unseen.clear();
+        self.queue_picture(&sample, start, self.master(start))
+    }
+
+    /// Copies one picture into a frame and queues it, or drops and counts it when the
+    /// ring or the byte cap is full.
+    fn queue_picture(
+        &mut self,
+        sample: &PictureSample,
+        start: Duration,
+        master: i128,
+    ) -> Result<(), ()> {
+        let job = self.job;
         let picture = &sample.picture;
         if refuse_picture(picture.width, picture.height, picture.system_bytes()).is_some() {
             return Err(());
@@ -343,7 +389,7 @@ impl Run<'_> {
         let bytes = parts.bytes.len();
         let index = self.index;
         self.index = self.index.wrapping_add(1);
-        let start_master = to_timestamp(self.master(start));
+        let start_master = to_timestamp(master);
         let fill = fill_count(bytes);
         let queued = job.progress.queued_frames.load(Ordering::Relaxed) as usize;
         let queued_bytes = job.progress.queued_bytes.load(Ordering::Relaxed) as usize;
@@ -433,9 +479,7 @@ impl Run<'_> {
     /// of the range, then cuts every block that is complete.
     fn finish_sound(&mut self, now: Timestamp) {
         let rate = i128::from(self.job.config.format.sample_rate.hz());
-        let end = self
-            .sound
-            .frame_of(self.offset + self.pass_length(true), rate);
+        let end = self.sound.frame_of(self.offset + self.pass_length(), rate);
         self.sound.flush(end);
         self.cut_blocks(now, !self.job.loop_flag.load(Ordering::Acquire));
     }

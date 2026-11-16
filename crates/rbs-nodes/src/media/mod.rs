@@ -125,6 +125,9 @@ pub(crate) struct Shared {
     pub(crate) inlet: Mutex<Option<SoundInlet>>,
     /// The sound node is prepared: the worker decodes sound.
     pub(crate) sound_attached: AtomicBool,
+    /// The picture node is prepared: the worker queues pictures. Without it, pictures
+    /// are decoded for the pass timing only, not copied or queued.
+    pub(crate) picture_attached: AtomicBool,
     /// A block time the sound node has seen, in nanoseconds plus one; 0 before its
     /// first block. Every block time is on the same grid.
     pub(crate) grid: AtomicU64,
@@ -147,6 +150,7 @@ impl Shared {
             stats: Arc::new(MediaStats::default()),
             inlet: Mutex::new(None),
             sound_attached: AtomicBool::new(false),
+            picture_attached: AtomicBool::new(false),
             grid: AtomicU64::new(0),
             epoch: AtomicU32::new(0),
             sound_from: AtomicU64::new(0),

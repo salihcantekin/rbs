@@ -446,6 +446,39 @@ fn the_picture_node_joins_a_worker_the_sound_node_started() {
 }
 
 #[test]
+fn a_picture_node_that_joins_after_a_long_sound_only_stretch_shows_the_current_picture() {
+    let mut rig = rig(clip_with_steps(48_000), true, true);
+    rig.attach_sound();
+    for t in (0..2_000).step_by(10) {
+        rig.settle(ms(t));
+        let _ = rig.block_at(ms(t));
+    }
+    // Unseen pictures are neither copied nor queued.
+    let stats = rig.pair.picture.stats();
+    assert_eq!(stats.uploaded.load(Ordering::Relaxed), 0);
+    rig.pair.picture.wake(ms(2_000)).unwrap();
+    for t in (2_000..2_400).step_by(10) {
+        rig.settle(ms(t));
+        let _ = rig.pair.picture.dequeue(ms(t));
+        let _ = rig.block_at(ms(t));
+        if t >= 2_160 {
+            // Pass length 300 ms from the anchor at 150 ms.
+            let media = (t - 150) % 300;
+            assert_eq!(
+                rig.pair.picture.last_mark(),
+                Some((media / 100) as u8 + 1),
+                "picture at {t} ms"
+            );
+        }
+    }
+    let media = rig.pair.picture.cursor().as_millis() as u64;
+    // (2 390 - 150) mod 300 is 140: the second picture, media 100 ms.
+    assert_eq!(media, 100);
+    assert_eq!(stats.sound_underruns.load(Ordering::Relaxed), 0);
+    rig.pair.picture.standby();
+}
+
+#[test]
 fn detaching_the_sound_node_while_playing_keeps_the_pictures_and_can_attach_again() {
     let mut rig = rig(clip_with_steps(48_000), false, true);
     rig.attach_sound();
@@ -469,8 +502,18 @@ fn detaching_the_sound_node_while_playing_keeps_the_pictures_and_can_attach_agai
     for t in (300..400).step_by(10) {
         rig.settle(ms(t));
         let _ = rig.pair.picture.dequeue(ms(t));
+        // Silence before the first block after the attach is not an underrun.
+        let _ = rig.block_at(ms(t));
     }
     assert_eq!(rig.pair.picture.last_mark(), Some(3));
+    assert_eq!(
+        rig.pair
+            .picture
+            .stats()
+            .sound_underruns
+            .load(Ordering::Relaxed),
+        0
+    );
     // The sound comes back where the file is now.
     let (written, block) = rig.block_at(ms(400));
     assert!(written);
