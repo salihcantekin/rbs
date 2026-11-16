@@ -143,6 +143,23 @@ Windows result (SC-PC, RTX 4090, 2026-11-03), PASS: every type installed with WG
 - Audio that does not depend on the scene (a global microphone or system audio in every scene).
 - Restore tokens for picker-only targets (PipeWire portal): the application stores `CaptureSession::target_to_store` back into the `target` setting, which today makes a new node.
 
+## Identity and option keys (ADR-0133 decision 2)
+
+`rbs_sources::option_keys(type_id)` lists the settings Reset source and Paste attributes may change; every other key a type uses is an identity key and is never pasted or reset.
+
+| Class | Identity keys | Option keys |
+| --- | --- | --- |
+| Camera capture | `adapter`, `target` | `width`, `height`, `fps` |
+| Display and window capture | `adapter`, `target` | `cursor`, `width`, `height`, `fps` |
+| Output loopback audio | `adapter`, `target` | `exclude_own_process` (never written on a companion) |
+| Audio input, application audio | `adapter`, `target` | none |
+| Image, colour | all keys | none |
+| Media file | `adapter`, `path` | `loop`, `restart_when_shown` |
+| Browser | `url` | `width`, `height`, `fps`, `transparent` |
+| Plugin types | all keys | none |
+
+Option defaults depend on the canvas and are computed in `rbs-app` (`option_defaults`): a display or window gets the canvas frame rate as `fps`, a camera `1280 x 720` at 30 fps, a browser page the canvas size capped at 1920 x 1080; other option keys are left out (the type's own default). The Add source path uses the same values.
+
 ## Source region and display chrome (ADR-0103, ADR-0104)
 
 `region` and `chrome` live on `rbs_scene::Source`, not in settings. The binder compares settings only, so editing them does not replace the capture node. Chrome is refused on every type except `org.rbs.source.display`. Applying chrome writes the four insets into `region`. Cover and fit place the item box; they are not a compositor scale. `work_rect` is copied from `SourceTarget` when Reset runs, and Reset does nothing when that field is absent.
