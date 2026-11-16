@@ -4,7 +4,8 @@
 //! One thread owns the socket and is its only writer. Writes block without a timeout
 //! (a timed-out send leaves the socket in an undefined state on Windows); to abort,
 //! the producer shuts the socket down through a registered clone, which ends any
-//! blocked call. Reads during set-up use short timeouts ([`SLICE`]) to meet their
+//! blocked call. For `rtmps` the socket carries a TLS session ([`crate::tls`]); writes
+//! stay blocking and flush their records, reads see plain text. Reads during set-up use short timeouts ([`SLICE`]) to meet their
 //! deadline. Server messages are read when the thread is idle and between messages
 //! at least every [`READ_INTERVAL`] while it is busy, with the socket switched to
 //! non-blocking for that read; a long write of one message delays it.
@@ -24,6 +25,7 @@ use rbs_transport::{ReconnectPolicy, TransportError};
 
 use crate::chunk::{self, ChunkReader};
 use crate::command::{self, Reply};
+use crate::tls::{self, TlsWire};
 use crate::url::RtmpUrl;
 
 /// Longest single blocking socket call, so aborts are seen promptly.
@@ -63,6 +65,7 @@ pub(crate) struct Item {
 #[derive(Default)]
 #[repr(align(128))]
 pub(crate) struct Progress {
+    /// Bytes put on the wire (with TLS, the records, not the plain text).
     pub bytes_sent: AtomicU64,
     /// Items taken from the hand-off and finished with (sent or discarded).
     pub done_items: AtomicU64,
@@ -141,6 +144,70 @@ pub(crate) struct IoConfig {
     /// The queue's duration limit in ms: at the start of a connection, committed
     /// items this much older than the newest queued packet are discarded.
     pub stale_ms: i32,
+    /// Roots trusted for `rtmps` besides the system's (`tls_extra_roots`).
+    pub tls_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
+}
+
+/// The connection's byte stream: the socket, or a TLS session over it.
+enum Wire {
+    Plain(TcpStream),
+    Tls(Box<TlsWire>),
+}
+
+impl Wire {
+    fn socket(&self) -> &TcpStream {
+        match self {
+            Wire::Plain(s) => s,
+            Wire::Tls(t) => t.socket(),
+        }
+    }
+
+    /// Bytes on the wire for a write that took `n` bytes of `data`.
+    fn wire_bytes(&mut self, n: usize) -> u64 {
+        match self {
+            Wire::Plain(_) => n as u64,
+            Wire::Tls(t) => t.take_sent(),
+        }
+    }
+
+    fn set_nonblocking(&self, on: bool) -> std::io::Result<()> {
+        self.socket().set_nonblocking(on)
+    }
+
+    /// Ends our side: `close_notify` first with TLS, then FIN.
+    fn shutdown_write(&mut self) {
+        match self {
+            Wire::Plain(s) => {
+                let _ = s.shutdown(Shutdown::Write);
+            }
+            Wire::Tls(t) => t.shutdown_write(),
+        }
+    }
+}
+
+impl Read for Wire {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Wire::Plain(s) => s.read(buf),
+            Wire::Tls(t) => t.read(buf),
+        }
+    }
+}
+
+impl Write for Wire {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Wire::Plain(s) => s.write(buf),
+            Wire::Tls(t) => t.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Wire::Plain(s) => s.flush(),
+            Wire::Tls(t) => t.flush(),
+        }
+    }
 }
 
 enum Fail {
@@ -191,7 +258,7 @@ fn rejected(what: &str, status: &command::Status, key: &str) -> Fail {
 
 /// One connection to the server.
 struct Conn {
-    stream: TcpStream,
+    stream: Wire,
     reader: ChunkReader,
     /// Message stream id from `createStream`.
     stream_id: u32,
@@ -360,7 +427,7 @@ fn is_timeout(e: &std::io::Error) -> bool {
 
 /// Writes all of `data`, re-checking the abort flag between partial writes. A
 /// blocked write ends when an abort shuts the socket down.
-fn write_all(stream: &mut TcpStream, mut data: &[u8], shared: &Shared) -> Result<(), Fail> {
+fn write_all(stream: &mut Wire, mut data: &[u8], shared: &Shared) -> Result<(), Fail> {
     while !data.is_empty() {
         if shared.abort.load(Ordering::Acquire) {
             return Err(Fail::Aborted);
@@ -369,10 +436,11 @@ fn write_all(stream: &mut TcpStream, mut data: &[u8], shared: &Shared) -> Result
             Ok(0) => return Err(closed()),
             Ok(n) => {
                 data = &data[n..];
+                let wire = stream.wire_bytes(n);
                 shared
                     .progress
                     .bytes_sent
-                    .fetch_add(n as u64, Ordering::Relaxed);
+                    .fetch_add(wire, Ordering::Relaxed);
             }
             Err(e) if is_timeout(&e) => {}
             Err(e) => return Err(connection("send", &e)),
@@ -451,6 +519,9 @@ pub(crate) struct Io {
     /// Message bodies are built here, then chunked into `out`; both are reused.
     body: Vec<u8>,
     out: Vec<u8>,
+    /// The TLS client configuration, made at the first `rtmps` connection and kept
+    /// for the reconnects.
+    tls: Option<Arc<rustls::ClientConfig>>,
 }
 
 impl Io {
@@ -465,6 +536,7 @@ impl Io {
             consumer,
             body: Vec::with_capacity(64 * 1024),
             out: Vec::with_capacity(64 * 1024),
+            tls: None,
         }
     }
 
@@ -593,6 +665,15 @@ impl Io {
         stream.set_read_timeout(Some(SLICE)).map_err(setup)?;
         self.shared
             .register(Some(stream.try_clone().map_err(setup)?));
+        // An abort that came before the registration found no socket to shut down.
+        if self.shared.abort.load(Ordering::SeqCst) {
+            return Err(Fail::Aborted);
+        }
+        let stream = if self.config.url.tls {
+            Wire::Tls(Box::new(self.tls_handshake(stream, deadline)?))
+        } else {
+            Wire::Plain(stream)
+        };
         let mut conn = Conn {
             stream,
             reader: ChunkReader::new(MAX_MESSAGE),
@@ -606,10 +687,6 @@ impl Io {
             read_buf: vec![0; 16 * 1024].into_boxed_slice(),
             shared: Arc::clone(&self.shared),
         };
-        // An abort that came before the registration found no socket to shut down.
-        if self.shared.abort.load(Ordering::SeqCst) {
-            return Err(Fail::Aborted);
-        }
         self.handshake(&mut conn, deadline)?;
         let shared = Arc::clone(&self.shared);
         let key = self.config.key.clone();
@@ -670,8 +747,57 @@ impl Io {
                 Some(Err(rejected("publish", &info, key)))
             }
             _ => None,
+        })
+        .map_err(|fail| match fail {
+            // YouTube and Twitch close the connection after `publish` without a
+            // status when they refuse the key: say so, since nothing else will. It
+            // stays a connection error (a drop at that moment can also be the network).
+            Fail::Error(TransportError::Connection(text)) => {
+                Fail::Error(TransportError::Connection(format!(
+                    "{text} after the publish command (servers do this when they refuse the stream key)"
+                )))
+            }
+            other => other,
         })?;
         Ok(conn)
+    }
+
+    /// The TLS handshake over a connected socket, by `deadline`. A certificate the
+    /// verifier refused is a rejection (not retried); anything else is a connection
+    /// error.
+    fn tls_handshake(&mut self, sock: TcpStream, deadline: Instant) -> Result<TlsWire, Fail> {
+        let config = match &self.tls {
+            Some(config) => Arc::clone(config),
+            None => {
+                let config = tls::client_config(&self.config.tls_roots)?;
+                self.tls = Some(Arc::clone(&config));
+                config
+            }
+        };
+        let mut wire = TlsWire::new(config, &self.config.url.host, sock)?;
+        loop {
+            if self.shared.abort.load(Ordering::Acquire) {
+                return Err(Fail::Aborted);
+            }
+            if Instant::now() >= deadline {
+                return Err(Fail::Error(TransportError::Connection(
+                    "TLS handshake timed out".into(),
+                )));
+            }
+            match wire.handshake_step() {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(tls::StepError::Io(e)) if is_timeout(&e) => {}
+                Err(tls::StepError::Io(e)) => return Err(connection("TLS handshake", &e)),
+                Err(tls::StepError::Tls(e)) => return Err(Fail::Error(tls::transport_error(&e))),
+            }
+        }
+        let sent = wire.take_sent();
+        self.shared
+            .progress
+            .bytes_sent
+            .fetch_add(sent, Ordering::Relaxed);
+        Ok(wire)
     }
 
     /// The simple handshake: C0+C1, read S0+S1+S2, C2 echoes S1.
@@ -873,7 +999,7 @@ impl Io {
             command::delete_stream(out, stream_id)
         });
         conn.write_all(&self.out, shared)?;
-        let _ = conn.stream.shutdown(Shutdown::Write);
+        conn.stream.shutdown_write();
         let until = Instant::now() + CLOSE_WAIT;
         while Instant::now() < until && !shared.abort.load(Ordering::Acquire) {
             match conn.stream.read(&mut conn.read_buf) {
