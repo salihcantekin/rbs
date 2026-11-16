@@ -1,0 +1,502 @@
+// The Import from OBS window (ADR-0131 decision 12, owner direction 2026-11-16): a
+// two-page wizard opened from Settings › General. Choose: the OBS scene collection and
+// profile found on this computer (or a file), and what to bring. Check: what comes
+// across exactly, what does not and why. Nothing is written until Import; a new scene
+// collection and output profile are made, and nothing the user has now changes.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, Checkbox, DialogActions, OverlayHost, ScrollArea, Select, SettingRow, StatusLine, Toggle } from "components.slint";
+
+// One scene of the chosen collection and whether it is brought.
+export struct ObsSceneChoice {
+    name: string,
+    on: bool,
+}
+
+// One line of the check: the OBS object, where it is, and why it did not come across
+// exactly.
+export struct ObsReportRow {
+    name: string,
+    place: string,
+    reason: string,
+}
+
+// A raised card with a caps title, as on a Settings page.
+component Card inherits Rectangle {
+    in property <string> title;
+    background: Theme.surface-raised;
+    border-radius: Tokens.radius-lg;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-2;
+        Text {
+            text: root.title;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            letter-spacing: Tokens.size-tracking-caps;
+            accessible-role: none;
+        }
+        @children
+    }
+}
+
+// One step name in the header; the current one is underlined in the accent colour.
+component Step inherits VerticalLayout {
+    in property <string> text;
+    in property <bool> current;
+    spacing: Tokens.space-1;
+    vertical-stretch: 0;
+    Text {
+        text: root.text;
+        color: root.current ? Theme.text-primary : Theme.text-secondary;
+        font-weight: root.current ? Tokens.type-label-weight : Tokens.type-body-weight;
+        font-size: Tokens.type-body-size;
+    }
+    Rectangle {
+        height: Tokens.size-focus-ring;
+        background: root.current ? Theme.accent : transparent;
+    }
+}
+
+// A count on the Check page.
+component Count inherits Rectangle {
+    in property <string> number;
+    in property <string> text;
+    in property <color> ink: Theme.text-primary;
+    horizontal-stretch: 1;
+    background: Theme.surface-raised;
+    border-radius: Tokens.radius-lg;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.number + " " + root.text;
+    VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-1;
+        Text {
+            text: root.number;
+            color: root.ink;
+            font-size: Tokens.type-heading-size;
+            font-weight: Tokens.type-heading-weight;
+        }
+        Text {
+            text: root.text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// The rows of one list on the Check page: `head` (the first few) until "N more" is
+// pressed, then all `rows`.
+component ReportList inherits Card {
+    in property <[ObsReportRow]> rows;
+    in property <[ObsReportRow]> head;
+    in property <color> mark;
+    property <bool> all;
+    for row in root.all ? root.rows : root.head: HorizontalLayout {
+        spacing: Tokens.space-2;
+        accessible-role: text;
+        accessible-label: row.name + (row.place == "" ? "" : ", " + row.place) + ": " + row.reason;
+        VerticalLayout {
+            padding-top: Tokens.space-1;
+            alignment: start;
+            Rectangle {
+                width: Tokens.space-2;
+                height: Tokens.space-2;
+                border-radius: Tokens.space-1;
+                background: root.mark;
+            }
+        }
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Text {
+                text: row.place == "" ? row.name : @tr("{} · {}", row.name, row.place);
+                color: Theme.text-primary;
+                font-weight: Tokens.type-label-weight;
+                font-size: Tokens.type-body-size;
+                overflow: elide;
+            }
+            Text {
+                text: row.reason;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+        }
+    }
+    if !root.all && root.rows.length > root.head.length: StatusLine {
+        text: @tr("{} more", root.rows.length - root.head.length);
+        tone: 0;
+        action: @tr("Show");
+        activated => { root.all = true; }
+    }
+}
+
+export component ObsImportWindow inherits Window {
+    default-font-family: Theme.font-family;
+    default-font-size: Tokens.type-body-size;
+    title: @tr("Import from OBS");
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    preferred-width: Tokens.size-menu-md * 2 + Tokens.space-8 * 2;
+    min-width: Tokens.size-menu-md + Tokens.space-8;
+    preferred-height: Tokens.size-floating-h;
+    background: Theme.surface-base;
+
+    // 0 Choose, 1 Check, 2 Done.
+    in-out property <int> page;
+    in property <bool> busy;
+    // A problem reading the chosen files, or writing; empty when none.
+    in property <string> problem;
+
+    // Choose: where from.
+    in property <[string]> collections;
+    in-out property <int> collection-index: -1;
+    // The profiles found, and "No profile" last.
+    in property <[string]> profiles;
+    in-out property <int> profile-index: -1;
+    in property <bool> has-profile;
+    in property <string> file-name;
+    in property <string> nothing-found;
+    // Choose: what to bring.
+    in property <[ObsSceneChoice]> scenes;
+    in property <string> scenes-summary;
+    in property <bool> all-scenes-on: true;
+    in-out property <bool> picking;
+    in-out property <bool> global-audio: true;
+    in-out property <bool> audio-filters: true;
+    in-out property <bool> video-filters: true;
+    in-out property <bool> canvas: true;
+    in property <string> canvas-summary;
+    in-out property <bool> recording: true;
+    in-out property <bool> stream-server: true;
+    in-out property <bool> stream-key: true;
+    in property <string> key-place;
+    in-out property <bool> hotkeys: true;
+
+    // Check.
+    in property <string> exact;
+    in property <[ObsReportRow]> approximated;
+    in property <[ObsReportRow]> approximated-head;
+    in property <[ObsReportRow]> skipped;
+    in property <[ObsReportRow]> skipped-head;
+    // Done.
+    in property <string> done;
+
+    callback source-chosen();
+    callback choose-file();
+    callback scene-toggled(int, bool);
+    callback all-scenes(bool);
+    callback check();
+    callback import();
+    callback dismiss();
+
+    property <bool> can-check: !root.busy && root.collection-index >= 0 && root.problem == "";
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            VerticalLayout {
+                vertical-stretch: 0;
+                padding: Tokens.space-4;
+                padding-bottom: Tokens.space-2;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("Import from OBS");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-title-size;
+                    font-weight: Tokens.type-title-weight;
+                }
+                if root.page < 2: HorizontalLayout {
+                    spacing: Tokens.space-4;
+                    alignment: start;
+                    Step { text: @tr("1  Choose"); current: root.page == 0; }
+                    Step { text: @tr("2  Check"); current: root.page == 1; }
+                }
+            }
+
+            body := ScrollArea {
+                vertical-stretch: 1;
+                content-height: pages.preferred-height;
+                pages := VerticalLayout {
+                    padding-left: Tokens.space-4;
+                    padding-right: max(0px, Tokens.space-4 - body.bar-room);
+                    padding-bottom: Tokens.space-4;
+                    spacing: Tokens.space-3;
+                    alignment: start;
+
+                    if root.page == 0: Card {
+                        title: @tr("From");
+                        if root.nothing-found != "": Text {
+                            text: root.nothing-found;
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                            wrap: word-wrap;
+                        }
+                        if root.collections.length > 0: SettingRow {
+                            // find: none (a choice of this window, not a setting).
+                            findable: false;
+                            label: @tr("Scene collection");
+                            summary: root.file-name != "" ? root.file-name : @tr("Found in OBS's settings on this computer");
+                            Select {
+                                label: @tr("Scene collection");
+                                options: root.collections;
+                                index: root.collection-index;
+                                placeholder: @tr("Choose a scene collection");
+                                selected(i) => {
+                                    root.collection-index = i;
+                                    root.source-chosen();
+                                }
+                            }
+                        }
+                        SettingRow {
+                            findable: false;
+                            label: @tr("Profile");
+                            summary: @tr("Canvas size, recording, stream and hotkeys");
+                            enabled: root.profiles.length > 0;
+                            Select {
+                                label: @tr("Profile");
+                                options: root.profiles;
+                                index: root.profile-index;
+                                enabled: root.profiles.length > 0;
+                                selected(i) => {
+                                    root.profile-index = i;
+                                    root.source-chosen();
+                                }
+                            }
+                        }
+                        SettingRow {
+                            findable: false;
+                            divider: false;
+                            label: @tr("Another file");
+                            summary: @tr("For example a collection from another computer");
+                            fill: false;
+                            Button {
+                                text: @tr("Choose file…");
+                                clicked => { root.choose-file(); }
+                            }
+                        }
+                    }
+
+                    if root.page == 0 && root.problem != "": StatusLine {
+                        text: root.problem;
+                        tone: 2;
+                    }
+
+                    if root.page == 0 && root.collection-index >= 0: Card {
+                        title: @tr("What to bring");
+                        HorizontalLayout {
+                            spacing: Tokens.space-4;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: start;
+                                SettingRow {
+                                    findable: false;
+                                    label: @tr("Scenes");
+                                    summary: root.scenes-summary;
+                                    fill: false;
+                                    Button {
+                                        text: root.picking ? @tr("Done") : @tr("Pick…");
+                                        clicked => { root.picking = !root.picking; }
+                                    }
+                                }
+                                SettingRow {
+                                    findable: false;
+                                    label: @tr("Desktop audio and microphones");
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Desktop audio and microphones");
+                                        checked: root.global-audio;
+                                        toggled(on) => { root.global-audio = on; }
+                                    }
+                                }
+                                SettingRow {
+                                    findable: false;
+                                    label: @tr("Audio filters");
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Audio filters");
+                                        checked: root.audio-filters;
+                                        toggled(on) => { root.audio-filters = on; }
+                                    }
+                                }
+                                SettingRow {
+                                    findable: false;
+                                    divider: false;
+                                    label: @tr("Video filters");
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Video filters");
+                                        checked: root.video-filters;
+                                        toggled(on) => { root.video-filters = on; }
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: start;
+                                SettingRow {
+                                    findable: false;
+                                    label: @tr("Canvas size and frame rate");
+                                    summary: root.canvas-summary;
+                                    enabled: root.has-profile;
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Canvas size and frame rate");
+                                        checked: root.has-profile && root.canvas;
+                                        enabled: root.has-profile;
+                                        toggled(on) => { root.canvas = on; }
+                                    }
+                                }
+                                SettingRow {
+                                    findable: false;
+                                    label: @tr("Recording settings");
+                                    enabled: root.has-profile;
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Recording settings");
+                                        checked: root.has-profile && root.recording;
+                                        enabled: root.has-profile;
+                                        toggled(on) => { root.recording = on; }
+                                    }
+                                }
+                                SettingRow {
+                                    findable: false;
+                                    label: @tr("Stream server");
+                                    enabled: root.has-profile;
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Stream server");
+                                        checked: root.has-profile && root.stream-server;
+                                        enabled: root.has-profile;
+                                        toggled(on) => { root.stream-server = on; }
+                                    }
+                                }
+                                SettingRow {
+                                    findable: false;
+                                    label: @tr("Stream key");
+                                    summary: root.key-place;
+                                    enabled: root.has-profile && root.stream-server;
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Stream key");
+                                        checked: root.has-profile && root.stream-server && root.stream-key;
+                                        enabled: root.has-profile && root.stream-server;
+                                        toggled(on) => { root.stream-key = on; }
+                                    }
+                                }
+                                SettingRow {
+                                    findable: false;
+                                    divider: false;
+                                    label: @tr("Hotkeys");
+                                    summary: @tr("Added; never replaces yours");
+                                    fill: false;
+                                    Toggle {
+                                        label: @tr("Hotkeys");
+                                        checked: root.hotkeys;
+                                        toggled(on) => { root.hotkeys = on; }
+                                    }
+                                }
+                            }
+                        }
+                        if root.picking: VerticalLayout {
+                            spacing: Tokens.space-1;
+                            Checkbox {
+                                text: @tr("All scenes");
+                                emphasis: true;
+                                checked: root.all-scenes-on;
+                                toggled(on) => { root.all-scenes(on); }
+                            }
+                            for s[i] in root.scenes: Checkbox {
+                                text: s.name;
+                                checked: s.on;
+                                toggled(on) => { root.scene-toggled(i, on); }
+                            }
+                        }
+                    }
+
+                    if root.page == 1: HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        Count { number: root.exact; text: @tr("scenes · sources · items as in OBS"); }
+                        Count {
+                            number: root.approximated.length;
+                            text: @tr("not exactly as in OBS");
+                            ink: Theme.state-warning;
+                        }
+                        Count {
+                            number: root.skipped.length;
+                            text: @tr("not imported");
+                            ink: Theme.text-secondary;
+                        }
+                    }
+                    if root.page == 1 && root.approximated.length > 0: ReportList {
+                        title: @tr("Not exactly as in OBS ({})", root.approximated.length);
+                        rows: root.approximated;
+                        head: root.approximated-head;
+                        mark: Theme.state-warning;
+                    }
+                    if root.page == 1 && root.skipped.length > 0: ReportList {
+                        title: @tr("Not imported ({})", root.skipped.length);
+                        rows: root.skipped;
+                        head: root.skipped-head;
+                        mark: Theme.text-secondary;
+                    }
+                    if root.page == 1: Text {
+                        text: root.problem != "" ? root.problem : @tr("Nothing is written until you press Import.");
+                        color: root.problem != "" ? Theme.state-warning : Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        wrap: word-wrap;
+                    }
+
+                    if root.page == 2: Text {
+                        text: root.done;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    if root.page == 2 && root.approximated.length > 0: ReportList {
+                        title: @tr("Left out while writing ({})", root.approximated.length);
+                        rows: root.approximated;
+                        head: root.approximated-head;
+                        mark: Theme.state-warning;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                vertical-stretch: 0;
+                padding: Tokens.space-4;
+                padding-top: Tokens.space-2;
+                if root.page == 0: DialogActions {
+                    confirm-text: @tr("Next");
+                    confirm-enabled: root.can-check;
+                    cancelled => { root.dismiss(); }
+                    confirmed => { root.check(); }
+                }
+                if root.page == 1: DialogActions {
+                    confirm-text: @tr("Import");
+                    confirm-enabled: !root.busy;
+                    extra-text: @tr("Back");
+                    cancelled => { root.dismiss(); }
+                    extra-clicked => { root.page = 0; }
+                    confirmed => { root.import(); }
+                }
+                if root.page == 2: DialogActions {
+                    cancel-text: @tr("Close");
+                    confirm-text: "";
+                    cancelled => { root.dismiss(); }
+                }
+            }
+        }
+    }
+    // The info hint and tooltip layer, drawn last (ADR-0094).
+    OverlayHost { width: parent.width; height: parent.height; }
+}

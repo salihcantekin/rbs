@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rbs_api::request::FilterDomains;
 use rbs_api::types as api;
-use rbs_audio_filters::AudioFilterType;
+use rbs_audio_filters::{AudioFilterType, DspSetup};
 use rbs_filters::{FilterType, Values};
 use rbs_graph::node::NodeTypeId;
 use rbs_params::{Curve, Field, FieldKind, Schema, Value, color_text, parse_color};
@@ -84,6 +84,9 @@ pub struct FilterRow {
     /// The live meter of a running audio filter that has one (a noise gate); read it
     /// only while an editor shows it.
     pub meter: Option<MeterHandle>,
+    /// The delay it adds while it runs, in ns (ADR-0130 decision 2); 0 when it adds
+    /// none, is disabled or is a video filter.
+    pub latency_ns: i64,
 }
 
 /// A filter meter, equal to another only when it is the same meter (a row changes
@@ -113,6 +116,7 @@ impl FilterRow {
 pub fn rows(
     source: &Source,
     meter_of: impl Fn(FilterId) -> Option<Arc<rbs_audio_filters::FilterMeter>>,
+    latency_of: impl Fn(FilterId) -> i64,
 ) -> Vec<FilterRow> {
     let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
     source
@@ -132,6 +136,7 @@ pub fn rows(
                 values: ty.map(|t| filter_values_lenient(&t, &f.settings).0),
                 stored: f.settings.clone(),
                 meter: meter_of(f.id).map(MeterHandle),
+                latency_ns: latency_of(f.id),
             }
         })
         .collect()
@@ -281,8 +286,9 @@ fn api_field(f: &Field) -> api::FilterField {
     field
 }
 
-/// `filter.types`' answer for `domains`: video types first, then audio types.
-pub fn api_types(domains: FilterDomains) -> api::FilterTypeList {
+/// `filter.types`' answer for `domains`: video types first, then audio types. An
+/// audio type's latency is for `setup`, the running graph's (ADR-0130 decision 2).
+pub fn api_types(domains: FilterDomains, setup: DspSetup) -> api::FilterTypeList {
     let video = matches!(domains, FilterDomains::Video | FilterDomains::All)
         .then(|| {
             rbs_filters::catalogue()
@@ -307,6 +313,14 @@ pub fn api_types(domains: FilterDomains) -> api::FilterTypeList {
                 domain: if t.is_audio() { "audio" } else { "video" }.to_owned(),
                 name: t.name().to_owned(),
                 fields: t.fields().iter().map(api_field).collect(),
+                latency_ms: match t {
+                    AnyFilter::Audio(a) => {
+                        let rate = f64::from(setup.format.sample_rate.hz().max(1));
+                        let ms = f64::from(a.latency_frames(setup)) * 1_000.0 / rate;
+                        Some((ms * 1_000.0).round() / 1_000.0)
+                    }
+                    AnyFilter::Video(_) => None,
+                },
             })
             .collect(),
     }
