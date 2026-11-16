@@ -227,14 +227,9 @@ pub fn sync(
             let Some(slot) = open_slot(content, placement.clone(), *canvas_size, make) else {
                 continue;
             };
-            // macOS draws a new window once inside `show`, before the slot is listed:
-            // a second draw applies its size and places its layer (`settle`).
-            let weak = slot.window.as_weak();
-            entry::single_shot(Duration::ZERO, move || {
-                if let Some(w) = weak.upgrade() {
-                    w.window().request_redraw();
-                }
-            });
+            // macOS draws a new window once inside `show`, before the slot is listed,
+            // and maybe never again: its size is applied apart from any draw.
+            settle(content.canvas, 0);
             log(&format!("projector: {} opened", param(content.canvas)));
             slots.push(slot);
         }
@@ -279,7 +274,6 @@ fn open_slot(
         if matches!(state, slint::RenderingState::BeforeRendering)
             && let Some(w) = place.upgrade()
         {
-            settle(canvas);
             place_layer(canvas, &w);
         }
     });
@@ -317,38 +311,65 @@ fn open_slot(
     })
 }
 
-/// Applies a new projector's size once its OS window exists (its first draw), after
-/// the draw: Exact pixels needs the window's display, full screen the window itself.
-fn settle(canvas: ProjectorCanvas) {
-    let due = SLOTS.with(|slots| {
-        slots.try_borrow().is_ok_and(|slots| {
-            slots
-                .iter()
-                .any(|s| s.canvas == canvas && s.pending.is_some())
-        })
-    });
-    if !due {
-        return;
-    }
-    entry::single_shot(Duration::ZERO, move || {
-        SLOTS.with(|slots| {
+/// Applies a new projector's size once its OS window exists: Exact pixels needs the
+/// window's display, full screen the window itself. Not tied to a draw (a window whose
+/// content never changes may not draw again); it looks again a few times until the
+/// window is there.
+fn settle(canvas: ProjectorCanvas, tries: u32) {
+    let after = if tries == 0 {
+        Duration::ZERO
+    } else {
+        SETTLE_RETRY
+    };
+    entry::single_shot(after, move || {
+        let again = SLOTS.with(|slots| {
             let Ok(mut slots) = slots.try_borrow_mut() else {
-                return;
+                return true;
             };
             let Some(s) = slots.iter_mut().find(|s| s.canvas == canvas) else {
-                return;
+                return false;
             };
+            if s.pending.is_none() {
+                return false;
+            }
             if s.window.window().with_winit_window(|_| ()).is_none() {
-                return;
+                return true;
             }
             match s.pending.take() {
                 Some(Some(name)) => set_fullscreen_on(s, Some(name)),
                 Some(None) => apply_size(s),
                 None => {}
             }
+            false
         });
+        if again && tries < SETTLE_TRIES {
+            settle(canvas, tries + 1);
+        } else if again {
+            log(&format!(
+                "projector: {} has no window to size",
+                param(canvas)
+            ));
+        }
     });
 }
+
+/// How often and how many times [`settle`] looks for a new window: a second at most.
+const SETTLE_RETRY: Duration = Duration::from_millis(20);
+const SETTLE_TRIES: u32 = 50;
+
+/// Places the layer after this event, outside any borrow of the projectors.
+#[cfg(any(target_os = "macos", windows))]
+fn place_soon(canvas: ProjectorCanvas, pw: &ProjectorWindow) {
+    let weak = pw.as_weak();
+    entry::single_shot(Duration::ZERO, move || {
+        if let Some(w) = weak.upgrade() {
+            place_layer(canvas, &w);
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn place_soon(_: ProjectorCanvas, _: &ProjectorWindow) {}
 
 fn close_slot(s: &mut Slot) {
     s.generation.fetch_add(1, Ordering::Relaxed);
@@ -701,8 +722,13 @@ fn on_event(
             if !mine {
                 resized_by_hand(canvas);
             }
+            // The layer follows the window also when nothing in it draws again.
+            place_soon(canvas, pw);
         }
-        WindowEvent::ScaleFactorChanged { .. } => rescale(canvas),
+        WindowEvent::ScaleFactorChanged { .. } => {
+            rescale(canvas);
+            place_soon(canvas, pw);
+        }
         _ => {}
     }
 }
