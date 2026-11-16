@@ -24,7 +24,7 @@ Out of scope (later specs or PRs):
 
 - Export on D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF); same frame shape as the macOS exporter (ADR-0025). Cross-process preview on Linux and Windows (ADR-0028).
 - Scene tree evaluation (groups, nesting, animation): `rbs-scene` flattens a scene into the layer list below.
-- Filters, image masks, blend modes other than "normal", transitions and HDR output (PQ, HLG, BT.2020). Analytic shapes and borders of layers are in scope (ADR-0053).
+- Filters, image masks, blend modes other than "normal" and HDR output (PQ, HLG, BT.2020). Analytic shapes and borders of layers are in scope (ADR-0053). Scene transitions draw with what is here: another compositor's canvas as one layer with a fade (ADR-0128); no transition shader is in scope yet.
 
 ## Contract
 
@@ -252,6 +252,30 @@ impl SourceUpload {
 - `Nv12` / `P010`: written into two plane textures the upload keeps (`R8Unorm` + `Rg8Unorm`, or the 16-bit pair), one pair per size and bit depth, then decoded by the upload's own `YuvDecoder` (rule 6 of "Native import") into a canvas-format pool texture acquired per frame. The result is `Rgba16Float` with `decoded_color(...)`. One pair is enough: queue order puts the next frame's writes after the previous decode. Colour spaces the decode cannot handle are refused before anything is written (`check_color`).
 - Not real-time on first use: a new size or format creates its plane textures and pool slots, and the first 4:2:0 frame creates the decoder (P13), like the importer's first sight of a surface. Later frames of that size allocate nothing in RBS code; wgpu stages the bytes internally.
 - Other system formats (YUY2, I420, ...) are `GpuError::Unsupported`.
+
+### Reserved upload textures and the upload budget (ADR-0129)
+
+A source whose picture changes now and then, but is always read in the tick that publishes it (the text source), keeps two textures of its box size acquired instead of taking one per frame:
+
+```rust
+impl ReservedUpload {
+    /// Two `InUse` textures of `width` x `height` (`Rgba8` or `Bgra8`). Not real time,
+    /// except after a size change (ADR-0062 decision 5).
+    pub fn reserve(ctx: &GpuContext, pool: &mut TexturePool, width: u32, height: u32,
+        format: PixelFormat) -> Result<ReservedUpload, GpuError>;
+    pub fn size(&self) -> (u32, u32);
+    /// Writes into the texture whose `lease_count` is 0; `Ok(None)` when both are read.
+    /// Hot path: no allocation in RBS code.
+    pub fn upload_into(&mut self, ctx: &GpuContext, pool: &mut TexturePool,
+        system: &SystemFrame, time: Timestamp) -> Result<Option<VideoFrame>, GpuError>;
+    /// Releases and forgets both, so their memory goes once no reader holds them.
+    pub fn give_back(self, pool: &mut TexturePool);
+}
+```
+
+The textures stay `InUse` from `reserve` to `give_back`, so `trim_idle` cannot drop them and no other source takes them. A failed second acquire releases and forgets the first.
+
+`RenderLocal::upload_budget` (`rbs_gpu::budget::UploadBudget`) limits what such sources upload per render partition per tick: `try_take(tick, bytes, waiting_since)` allows the first upload of a tick whatever its size and further ones up to `UPLOAD_BUDGET_BYTES` (16 MiB). The state is stamped with the tick index and rolled over by the first caller of a new tick; `end_tick` does not touch it, so a partition with no such source does no work for it. Fairness: a refused caller reports the tick it first waited on; at the roll-over the earliest such tick becomes the gate, and while a gate is set only callers that first waited on that tick may upload (the first upload of the tick included). A gate whose callers left the schedule lasts one tick. Tests: `crates/rbs-gpu/src/budget.rs` (first upload always allowed, budget, twenty 1080p pictures within 12 ticks, a late node is not starved, a stale gate clears).
 
 ### System-memory download
 
@@ -621,8 +645,13 @@ impl CompositorNode {
     /// `capacity` is the most layers the node draws; it sizes the compositor in `prepare`.
     pub fn new(canvas: CanvasDesc, capacity: u32, layers: Vec<NodeLayer>) -> (CompositorNode, LayerSender);
     pub fn capacity(&self) -> u32;
+    /// ADR-0128 decision 7: after each tick on which every layer had a texture frame
+    /// from the pool, stores that tick's index (at least 1) with `Release`.
+    pub fn with_ready(self, ready: Arc<AtomicU64>) -> Self;
 }
 ```
+
+- **Ready counter (ADR-0128).** Only an incoming compositor of a scene transition has one. A tick on which any layer has no frame, a payload that is not a texture, or a texture not in the pool does not store. The control side reads it with `Acquire` and resets it to 0 when it reuses the node. Without `with_ready` the node does one `Option` test per tick and nothing else.
 
 - `GpuRuntime::end_tick` retires imported surfaces with the tick's time (`Importer::retire(ctx, pool, tick.time)`) and polls the device (`GpuContext::poll`). `begin_tick` does nothing.
 - `prepare` (control thread) builds the `Compositor` for the canvas and reserves room for the layer list. `release` drops it.

@@ -84,6 +84,76 @@ fn same_user_ipc_peer_is_authenticated_by_hello_with_all_scopes() {
 }
 
 #[test]
+fn same_user_ipc_peer_narrows_to_its_token_after_hello() {
+    let mut h = Harness::new();
+    let conn = h.connect(PeerInfo::same_user_ipc());
+    h.call(conn, "session.hello", hello());
+    h.take(conn);
+    let t = Token::from_bytes(&[PANEL_TOKEN_SEED; 32]);
+    h.call(conn, "session.authenticate", json!({"token": t.expose()}));
+    let auth = h.one(conn);
+    assert_eq!(auth["result"]["scopes"], json!(["read", "control"]));
+    assert_eq!(h.server.token_of(conn).as_deref(), Some("Stream Deck"));
+    h.call(conn, "settings.set", json!({}));
+    assert_eq!(error_kind(&h.one(conn)), "scope_denied");
+    assert!(h.forwarded.is_empty());
+}
+
+#[test]
+fn narrowing_is_refused_after_another_request_and_a_second_time() {
+    let mut h = Harness::new();
+    let conn = h.connect(PeerInfo::same_user_ipc());
+    h.call(conn, "session.hello", hello());
+    h.take(conn);
+    h.call(conn, "api.describe", json!({}));
+    h.take(conn);
+    let t = Token::from_bytes(&[PANEL_TOKEN_SEED; 32]);
+    h.call(conn, "session.authenticate", json!({"token": t.expose()}));
+    assert_eq!(error_kind(&h.one(conn)), "invalid_request");
+    assert_eq!(h.server.token_of(conn), None);
+
+    let conn = h.connect(PeerInfo::same_user_ipc());
+    h.call(conn, "session.hello", hello());
+    h.take(conn);
+    h.call(conn, "session.authenticate", json!({"token": t.expose()}));
+    h.take(conn);
+    h.call(conn, "session.authenticate", json!({"token": t.expose()}));
+    assert_eq!(error_kind(&h.one(conn)), "invalid_request");
+    assert_eq!(h.server.token_of(conn).as_deref(), Some("Stream Deck"));
+}
+
+#[test]
+fn a_wrong_token_on_ipc_fails_and_closes_without_back_off() {
+    let mut h = Harness::new();
+    for _ in 0..2 {
+        let conn = h.connect(PeerInfo::same_user_ipc());
+        h.call(conn, "session.hello", hello());
+        h.take(conn);
+        let wrong = Token::from_bytes(&[9; 32]);
+        h.call(
+            conn,
+            "session.authenticate",
+            json!({"token": wrong.expose()}),
+        );
+        assert_eq!(error_kind(&h.one(conn)), "auth_failed");
+        assert_eq!(h.closed(conn), Some(CloseReason::AuthFailed));
+    }
+}
+
+#[test]
+fn revoking_the_token_closes_a_narrowed_ipc_session() {
+    let mut h = Harness::new();
+    let conn = h.connect(PeerInfo::same_user_ipc());
+    h.call(conn, "session.hello", hello());
+    h.take(conn);
+    let t = Token::from_bytes(&[PANEL_TOKEN_SEED; 32]);
+    h.call(conn, "session.authenticate", json!({"token": t.expose()}));
+    h.take(conn);
+    h.server.set_tokens(TokenStore::new());
+    assert_eq!(h.closed(conn), Some(CloseReason::Revoked));
+}
+
+#[test]
 fn ipc_peer_of_another_user_needs_a_token() {
     let mut h = Harness::new();
     let mut peer = PeerInfo::same_user_ipc();

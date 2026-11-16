@@ -245,6 +245,10 @@ pub struct StudioUi {
     library_thumb_height: u32,
     /// The selected source's id (-1 none). The Sources rows follow this.
     pub selected: i32,
+    /// What the attribute clipboard holds (ADR-0133): Paste attributes is offered only
+    /// while it holds something. Follows the host, so a copy made through the control
+    /// API counts too.
+    pub attributes_clipboard: Option<rbs_api::types::AttributesClipboard>,
     /// The source Properties last showed. It stays when the selection is cleared,
     /// so the panel is empty only when the scene has no sources.
     inspected: Cell<i32>,
@@ -466,6 +470,11 @@ pub struct StudioUi {
     /// The vertical canvas's stream settings as saved (`stream-vertical`); `None`:
     /// none saved, so the vertical stream has no server.
     vertical_stream: Option<StreamProfile>,
+    /// The stream destinations as saved (`stream-destinations`, ADR-0127); none extra
+    /// when the section is absent, does not load or was written by a newer RBS.
+    destinations: rbs_app::stream_destinations::Destinations,
+    /// Why the saved destinations are not used, if they are not.
+    destinations_note: String,
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111).
     pub vertical_flags: VerticalFlags,
     /// What the Stream section shows for a vertical stream not saved yet.
@@ -569,6 +578,7 @@ impl StudioUi {
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
             selected: -1,
+            attributes_clipboard: None,
             inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
@@ -690,6 +700,8 @@ impl StudioUi {
             settings_canvas: OutputCanvas::Main,
             vertical_profile: None,
             vertical_stream: None,
+            destinations: rbs_app::stream_destinations::Destinations::default(),
+            destinations_note: String::new(),
             vertical_flags: VerticalFlags::default(),
             no_stream: StreamProfile::new(),
             st_live: None,
@@ -4916,6 +4928,21 @@ impl StudioUi {
                 v.key_saved &= self.keys_persistent;
                 v
             });
+        (self.destinations, self.destinations_note) =
+            match rbs_app::stream_destinations::Destinations::from_section(
+                self.user
+                    .section::<rbs_app::stream_destinations::Destinations>(
+                        rbs_app::stream_destinations::SECTION,
+                    ),
+            ) {
+                Ok(mut d) => {
+                    for e in &mut d.entries {
+                        e.key_saved &= self.keys_persistent;
+                    }
+                    (d, String::new())
+                }
+                Err(why) => (rbs_app::stream_destinations::Destinations::default(), why),
+            };
         self.profile = profile;
         self.profile_note = why
             .map(|w| format!("The saved recording settings were not used: {w}"))
@@ -4925,6 +4952,9 @@ impl StudioUi {
         self.stream_note = stream_why
             .map(|w| format!("The saved stream settings were not used: {w}"))
             .unwrap_or_default();
+        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
+            self.stream_note = format!("{}.", self.destinations_note);
+        }
         self.server_draft = None;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -4969,6 +4999,7 @@ impl StudioUi {
         self.send(Command::SetVerticalStreamProfile(
             self.vertical_stream.clone(),
         ));
+        self.send(Command::SetStreamDestinations(self.destinations.clone()));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a
@@ -5487,6 +5518,7 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_global_existing();
             }
+            Update::AttributesClipboard(view) => self.attributes_clipboard = view,
             Update::SyncMeasure(view) => match view {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
@@ -6910,7 +6942,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing,
 /// 21 how long Show draws a hidden item (the cue itself is not an undo step),
 /// 22 the source's capture region, 23 the source's Record separately mark, 24 a
-/// scene's levels (ADR-0091; the name is the scene's).
+/// scene's levels (ADR-0091; the name is the scene's), 25 a source duplicated, 26 a
+/// source reset, 27 attributes pasted (ADR-0133; the copied source's name).
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -6940,6 +6973,9 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Region => 22,
                 EditKind::RecordSeparately => 23,
                 EditKind::SceneLevels => 24,
+                EditKind::Duplicate => 25,
+                EditKind::Reset => 26,
+                EditKind::PasteAttributes => 27,
             },
             s.name.as_str(),
         ),
