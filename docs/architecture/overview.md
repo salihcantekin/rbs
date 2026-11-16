@@ -40,6 +40,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 | Recording model | `rbs-manifest` (the recording manifest: files, their timing, markers, TOML text; ADR-0089) | `rbs-core`, `toml`; no engine, port, adapter or UI crate |
 | Editor projects | `rbs-project` (FCPXML from a recording manifest; ADR-0089). Used only by composition roots | `rbs-core`, `rbs-manifest` |
 | User data | `rbs-user-data` (versioned documents, output profiles, scene collection documents, import and export; ADR-0051) | `rbs-scene`, `rbs-core`, `rbs-graph`, `serde`, `toml`; no toolkit, engine or adapter crate |
+| Importers | `rbs-import-obs` (reads an OBS scene collection and profile into an in-memory import plan and report; writes nothing; ADR-0131). Used only by composition roots | `rbs-core`, `rbs-graph`, `rbs-scene`, `rbs-params`, `rbs-ui`, `serde`, `serde_json`; no engine, user-data, adapter or toolkit crate |
 | Applications | `rbs-app` (desktop UI; `rbs-app-ui` holds the Rust code Slint generates from its UI files, a separate crate only so it is compiled once per build), `rbs-cli` (headless `record`, `token`; ADR-0040) | Everything; this is the composition root |
 | Agent application | `rbs-mcp` (MCP on stdio, ADR-0052; the unreachable-studio slice only so far) | `rbs-api`, `rbs-api-ipc` (its client, not wired yet), `rbs-remote-settings`; a composition root that uses no engine, port, other adapter or toolkit crate |
 

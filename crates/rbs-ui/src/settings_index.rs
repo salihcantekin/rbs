@@ -561,7 +561,21 @@ pub const SETTINGS: &[Setting] = &[
     row(
         "stream.hold-picture",
         "While on hold",
-        "hold break brb freeze last frame black picture",
+        "hold break brb freeze last frame black picture scene",
+        STREAM_WHILE_LIVE,
+        Simple,
+    ),
+    row(
+        "stream.hold-scene",
+        "Hold scene",
+        "hold break brb be right back scene starting soon",
+        STREAM_WHILE_LIVE,
+        Simple,
+    ),
+    row(
+        "stream.hold-sound",
+        "Sound while on hold",
+        "hold break brb audio sound silence mute music",
         STREAM_WHILE_LIVE,
         Simple,
     ),

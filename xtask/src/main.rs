@@ -207,6 +207,20 @@ fn deny(from: &str, to: &str) -> Option<String> {
             ],
             "user data sees the scene model, not an adapter or a toolkit",
         ),
+        Class::Import => deny_named(
+            to,
+            to_class,
+            &[
+                "rbs-core",
+                "rbs-graph",
+                "rbs-scene",
+                "rbs-params",
+                "rbs-ui",
+                "serde",
+                "serde_json",
+            ],
+            "an importer reads files into the scene model; only composition roots write (ADR-0131)",
+        ),
         Class::PluginSdk => deny_named(
             to,
             to_class,
@@ -266,6 +280,7 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::Import
             | Class::Tool
             | Class::Plugin
             | Class::PluginSdk,
@@ -298,6 +313,7 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::Import
             | Class::Tool
             | Class::Plugin
             | Class::PluginSdk,
@@ -356,6 +372,7 @@ enum Class {
     AppUi,
     Settings,
     UserData,
+    Import,
     App,
     Tool,
     PluginSdk,
@@ -380,6 +397,7 @@ fn class(name: &str) -> Option<Class> {
         "rbs-app-ui" => Class::AppUi,
         "rbs-remote-settings" => Class::Settings,
         "rbs-user-data" => Class::UserData,
+        "rbs-import-obs" => Class::Import,
         "rbs-app" | "rbs-cli" | "rbs-mcp" => Class::App,
         "rbs-plugin-sdk" => Class::PluginSdk,
         "rbs-plugin-host" => Class::Plugin,
