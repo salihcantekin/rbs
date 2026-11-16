@@ -51,7 +51,7 @@ Themes: `dark` (default when the OS is dark) and `light` (a high-contrast theme 
 
 ### Typography
 
-One family (initial choice: Inter, with the OS UI font as fallback). Numbers in meters and stats use its tabular figures.
+One family: the OS UI font (owner decision 2026-11-16; the built-in token file's `font.family` is empty, and a later setting will let the user choose a family). Numbers in meters and stats use its tabular figures.
 
 | Token | Size / line height (px at 100 %) | Weight |
 | --- | --- | --- |
