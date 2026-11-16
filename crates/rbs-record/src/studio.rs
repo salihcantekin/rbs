@@ -75,6 +75,7 @@ mod monitor;
 mod pause;
 mod replay;
 mod sync_measure;
+mod transition;
 pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
@@ -1141,6 +1142,11 @@ pub struct Studio {
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
+    /// Transitions running, by canvas (ADR-0128). Empty while none runs (P13).
+    transitions: BTreeMap<CanvasId, transition::CanvasTransition>,
+    /// A transition is done since the host last asked: it calls
+    /// [`Studio::settle_transitions`].
+    transition_done: bool,
     /// The scene each following canvas showed last (the `KeepLast` fallback).
     last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
@@ -1493,6 +1499,8 @@ impl Studio {
             pictures: Vec::new(),
             next_picture: 0,
             glide: None,
+            transitions: BTreeMap::new(),
+            transition_done: false,
             last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
@@ -1921,6 +1929,12 @@ impl Studio {
         old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
         old_layers: BTreeMap<CanvasId, Vec<BoundLayer>>,
     ) {
+        // Only Move glides (ADR-0128 decision 2): Cut and the kinds that draw the
+        // incoming picture whole change the boxes at once.
+        if collection.transition().kind != rbs_scene::TransitionKind::Move {
+            self.glide = None;
+            return;
+        }
         let mut from = BTreeMap::new();
         let new_main = program_scene(collection, self.settings.canvas);
         if old_main.is_some() && old_main != new_main {
@@ -1980,29 +1994,30 @@ impl Studio {
     /// moving. The preview picture is not glided.
     fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {
         let now = self.engine.clock().now();
-        let main = paint_layers(
-            &self.bound,
-            plan,
-            self.glide.as_ref(),
-            now,
-            self.settings.canvas,
-        );
-        let extras: Vec<_> = self
+        let program = self.bound.clone();
+        let main = match self.transition_layers(self.settings.canvas, plan, &program) {
+            Some(layers) => layers,
+            None => paint_layers(
+                &self.bound,
+                plan,
+                self.glide.as_ref(),
+                now,
+                self.settings.canvas,
+            ),
+        };
+        let views: Vec<(CanvasId, BoundCompositor)> = self
             .extras
             .iter()
-            .map(|extra| {
-                (
-                    extra.canvas,
-                    paint_layers(
-                        &extra.view.bound,
-                        plan,
-                        self.glide.as_ref(),
-                        now,
-                        extra.canvas,
-                    ),
-                )
-            })
+            .map(|extra| (extra.canvas, extra.view.bound.clone()))
             .collect();
+        let mut extras = Vec::with_capacity(views.len());
+        for (canvas, bound) in views {
+            let layers = match self.transition_layers(canvas, plan, &bound) {
+                Some(layers) => layers,
+                None => paint_layers(&bound, plan, self.glide.as_ref(), now, canvas),
+            };
+            extras.push((canvas, layers));
+        }
         let _ = self.layers.send(main);
         if let Some(preview) = &mut self.scene_preview {
             let _ = preview.layers.send(node_layers(&preview.bound, plan));
@@ -2052,6 +2067,7 @@ impl Studio {
             }
             None => None,
         };
+        self.note_transitions(collection, old_main, &old_extra, &old_layers);
         let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
         // already ran: the update goes on so the sources it created get their entries,
@@ -2122,6 +2138,7 @@ impl Studio {
         if let Some(report) = &report {
             self.sync_scene_preview(report, &mut leaving)?;
             self.sync_hold_views(report, &mut leaving)?;
+            self.sync_incoming(report, &mut leaving)?;
         }
         let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
@@ -2939,13 +2956,20 @@ impl Studio {
         self.cues
             .retain(|id| collection.item(id).is_some_and(|(_, item)| !item.visible));
         let hold = self.hold_requests();
-        if self.cues.is_empty() && hold.is_empty() {
+        let outgoing = self.outgoing_scenes();
+        if self.cues.is_empty() && hold.is_empty() && outgoing.is_empty() {
             return self.binder.sync(collection, &mut self.graph);
         }
         let items = self.cues.items();
         let sources = collection.cued_drawn_sources(&items);
-        self.binder
-            .sync_held(collection, &mut self.graph, &items, &sources, &hold)
+        self.binder.sync_transition(
+            collection,
+            &mut self.graph,
+            &items,
+            &sources,
+            &hold,
+            &outgoing,
+        )
     }
 
     /// Starts or restarts a timed show. Does nothing when `visible` is true or
@@ -2988,6 +3012,9 @@ impl Studio {
             control.control_tick();
         }
         let serviced = self.engine.service();
+        if self.step_transitions() {
+            self.transition_done = true;
+        }
         if !self.hold_scenes.is_empty() {
             let failed: BTreeSet<NodeId> = serviced
                 .events
