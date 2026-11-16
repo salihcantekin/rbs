@@ -277,7 +277,7 @@ impl CompressorDsp {
         let s = self.s;
         let mut work = std::mem::take(&mut self.work);
         let chunk = work.len().max(1);
-        let mut peak = 0.0f32;
+        let mut peak_bits = 0u32;
         let mut deepest = 0.0f32;
         let mut start = 0;
         while start < frames {
@@ -295,8 +295,9 @@ impl CompressorDsp {
                 if !(*d >= TINY_SQ && *d < f32::INFINITY) {
                     *d = 0.0;
                 }
-                peak = peak.max(*d);
             }
+            // Non-negative floats order like their bits; an integer max vectorises.
+            peak_bits = w.iter().fold(peak_bits, |m, d| m.max(d.to_bits()));
             if s.keyed {
                 w.fill(0.0);
                 for ch in key.unwrap_or(&[]) {
@@ -369,7 +370,8 @@ impl CompressorDsp {
         }
         self.work = work;
         let deepest = if deepest > SNAP_DB { 0.0 } else { deepest };
-        self.meter.store(amp_to_db(peak.sqrt()), -deepest);
+        self.meter
+            .store(amp_to_db(f32::from_bits(peak_bits).sqrt()), -deepest);
     }
 }
 

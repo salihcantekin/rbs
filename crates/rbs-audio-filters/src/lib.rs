@@ -23,6 +23,7 @@ pub mod conformance;
 pub mod ducker;
 pub mod gain;
 pub mod gate;
+pub mod limiter;
 pub mod node;
 pub mod noise;
 

@@ -376,7 +376,8 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
             "org.rbs.audio-filter.noise-gate",
             "org.rbs.audio-filter.ducker",
             "org.rbs.audio-filter.noise-suppression",
-            "org.rbs.audio-filter.compressor"
+            "org.rbs.audio-filter.compressor",
+            "org.rbs.audio-filter.limiter"
         ]
     );
     let attack = types[1]["fields"]
@@ -389,7 +390,7 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
     assert_eq!(attack["unit"], "ms");
     assert!(attack["help"].as_str().is_some_and(|h| !h.is_empty()));
     let all = c.call("filter.types", json!({"domain": "all"}));
-    assert_eq!(ok(&all)["types"].as_array().unwrap().len(), 9);
+    assert_eq!(ok(&all)["types"].as_array().unwrap().len(), 10);
 
     let mic = add(&mut c, "audio_input", "Mic");
     let screen = add(&mut c, "screen", "Screen");

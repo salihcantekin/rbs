@@ -146,8 +146,41 @@ fn compressor_benches(c: &mut Criterion) {
     }
 }
 
+/// The limiter (ADR-0130 decision 11, budget 5 us per block) on full-scale noise
+/// (limiting all the time) and on a quiet tone (an exact delay).
+fn limiter_benches(c: &mut Criterion) {
+    use rbs_audio_filters::limiter::Limiter;
+    let ty = &Limiter as &dyn AudioFilterType;
+    let values = Values::defaults(ty);
+    let mut loud = ty.make(setup(), &values).expect("valid");
+    let mut s = 1u32;
+    let noise: Vec<f32> = (0..FRAMES)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            (s as f32 / u32::MAX as f32) * 4.0 - 2.0
+        })
+        .collect();
+    c.bench_function("limiter_limiting", |b| {
+        let (mut l, mut r) = (noise.clone(), noise.clone());
+        b.iter(|| {
+            l.copy_from_slice(&noise);
+            r.copy_from_slice(&noise);
+            loud.process(&mut [&mut l[..], &mut r[..]], FRAMES);
+            black_box((&l, &r));
+        });
+    });
+    bench_one(
+        c,
+        "limiter_idle",
+        &mut [ty.make(setup(), &values).expect("valid")],
+    );
+}
+
 criterion_group!(
     benches,
+    limiter_benches,
     dsp_benches,
     ducker_benches,
     noise_benches,
