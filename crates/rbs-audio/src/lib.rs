@@ -36,7 +36,10 @@ mod sink;
 mod sync_probe;
 
 pub use config::{AudioGraphConfig, AudioGraphError, DEFAULT_LATENCY, MAX_LATENCY, MIN_LATENCY};
-pub use encoder::{ENCODER_NODE_TYPE, EncoderNode, encoder_descriptor};
+pub use encoder::{
+    ENCODER_NODE_TYPE, EncoderNode, HOLD_PIN as ENCODER_HOLD_PIN, encoder_descriptor,
+    encoder_hold_descriptor,
+};
 pub use gate::{AudioGate, HoldGate, NoGate, PAUSE_FADE, PauseGate};
 pub use input::{
     INPUT_NODE_TYPE, InputCounters, InputNode, InputParams, InputStats, MAP_TOLERANCE,

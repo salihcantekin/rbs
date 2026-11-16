@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rbs_core::media::{AudioBlock, AudioFormat, AudioSamples, MAX_CHANNELS};
-use rbs_core::pause::{HoldSwitch, PauseWindow, Window};
+use rbs_core::pause::{HoldPicture, HoldSwitch, PauseWindow, Window};
 use rbs_core::time::Timestamp;
 
 /// Length of the fade out before a cut and the fade in after it.
@@ -27,6 +27,22 @@ pub trait AudioGate: Send + 'static {
         block: &AudioBlock<'_>,
         submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
     ) -> Result<(), E>;
+
+    /// Whether the encoder node reads its host-only "hold" input and hands its blocks
+    /// to [`AudioGate::pass_hold`]. `false` (every gate but [`HoldGate`]) compiles the
+    /// read away.
+    const HOLDS: bool = false;
+
+    /// A block of the hold scene's mixer (ADR-0124 phase 2b), as it arrives: calls
+    /// `submit` with the parts to encode in place of the program's. Never allocates.
+    fn pass_hold<E>(
+        &mut self,
+        hold: &AudioBlock<'_>,
+        submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let _ = (hold, submit);
+        Ok(())
+    }
 }
 
 /// Passes every block unchanged.
@@ -114,10 +130,24 @@ impl Silence {
 }
 
 /// Sends silence while its stream is held, and every block unchanged otherwise
-/// (ADR-0124 decisions 12 and 13). Per block it pays one relaxed load.
+/// (ADR-0124 decisions 12 and 13). Per block it pays one relaxed load and, not held,
+/// one compare (is a scene hold's sound still to be closed?).
+///
+/// Held with [`HoldPicture::Scene`] (phase 2b) it sends the hold scene's blocks
+/// ([`AudioGate::pass_hold`]) in place of the program's, on one timeline: `cursor` is
+/// where the next part starts. The two mixers tick together, but each queue passes
+/// one block a tick, so a scene block may reach the encoder up to a block after the
+/// program's block of the same time. A program block that starts past the cursor
+/// means the scene fell more than a block behind (or has no sound): silence fills to
+/// it. A scene block, or the part of one, before the cursor is dropped. Leaving the
+/// scene fills to the next program block, so there is no gap or overlap on either
+/// edge; the scene's sound runs at most one block later than the program's would.
 #[derive(Debug)]
 pub struct HoldGate {
     silence: Silence,
+    /// Nanoseconds where the next part starts while the scene's sound is sent;
+    /// `None` otherwise.
+    cursor: Option<u64>,
 }
 
 impl HoldGate {
@@ -126,21 +156,126 @@ impl HoldGate {
     pub fn new(hold: Arc<HoldSwitch>, frames: usize) -> Self {
         Self {
             silence: Silence::new(hold, frames),
+            cursor: None,
+        }
+    }
+
+    /// Silence from `from` (nanoseconds) up to `to`, in `like`'s format, in parts no
+    /// longer than `like`.
+    fn fill<E>(
+        &self,
+        from: u64,
+        to: u64,
+        like: &AudioBlock<'_>,
+        submit: &mut impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut at = from;
+        while at < to {
+            let n = frames_in(like.format(), to - at).min(like.frames());
+            if n == 0 {
+                break;
+            }
+            let part = like.range(0, n).with_timestamp(Timestamp::from_nanos(at));
+            Silence::pass(&self.silence.zeros, self.silence.frames, &part, submit)?;
+            at = at.saturating_add(nanos(like.format(), n));
+        }
+        Ok(())
+    }
+
+    /// Ends a scene's sound: silence up to `block`, which then goes out as the hold
+    /// now says. Off the run path (only after a scene hold).
+    #[cold]
+    fn close_scene<E>(
+        &mut self,
+        cursor: u64,
+        block: &AudioBlock<'_>,
+        submit: &mut impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let start = block.timestamp().as_nanos();
+        self.fill(cursor, start, block, submit)?;
+        let from = if cursor > start {
+            // Scene parts already went out past this block's start.
+            frames_in(block.format(), cursor - start).min(block.frames())
+        } else {
+            0
+        };
+        let rest = block.range(from, block.frames());
+        if rest.frames() == 0 {
+            return Ok(());
+        }
+        if self.silence.hold.is_held() {
+            Silence::pass(&self.silence.zeros, self.silence.frames, &rest, submit)
+        } else {
+            submit(&rest)
         }
     }
 }
 
+/// Whole sample frames in `ns` nanoseconds at `format`'s rate, rounded to nearest.
+fn frames_in(format: AudioFormat, ns: u64) -> usize {
+    let hz = u128::from(format.sample_rate.hz());
+    ((u128::from(ns) * hz + 500_000_000) / 1_000_000_000) as usize
+}
+
 impl AudioGate for HoldGate {
+    const HOLDS: bool = true;
+
     #[inline]
     fn pass<E>(
         &mut self,
         block: &AudioBlock<'_>,
         mut submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
     ) -> Result<(), E> {
-        if !self.silence.hold.is_held() {
-            return submit(block);
+        match self.silence.hold.held() {
+            None if self.cursor.is_none() => submit(block),
+            Some(HoldPicture::Scene) => {
+                let start = block.timestamp().as_nanos();
+                match self.cursor {
+                    // The scene's first block: its sound starts with this block's time.
+                    None => self.cursor = Some(start),
+                    // The scene is more than a block behind: silence up to this block.
+                    Some(c) if start > c => {
+                        self.fill(c, start, block, &mut submit)?;
+                        self.cursor = Some(start);
+                    }
+                    Some(_) => {}
+                }
+                // The program's block is not sent.
+                Ok(())
+            }
+            _ => match self.cursor.take() {
+                Some(c) => self.close_scene(c, block, &mut submit),
+                None => Silence::pass(&self.silence.zeros, self.silence.frames, block, &mut submit),
+            },
         }
-        Silence::pass(&self.silence.zeros, self.silence.frames, block, &mut submit)
+    }
+
+    fn pass_hold<E>(
+        &mut self,
+        hold: &AudioBlock<'_>,
+        mut submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        // Only while the scene's timeline is open: from the scene's first program
+        // block until the next program block after it (so the block a late scene
+        // sends just after a release or a change still goes out).
+        let Some(c) = self.cursor else {
+            return Ok(());
+        };
+        let start = hold.timestamp().as_nanos();
+        let end = start.saturating_add(nanos(hold.format(), hold.frames()));
+        if end <= c {
+            return Ok(());
+        }
+        // A scene block lost on its way: silence over the gap.
+        self.fill(c, start, hold, &mut submit)?;
+        let part = if start < c {
+            hold.range(frames_in(hold.format(), c - start), hold.frames())
+        } else {
+            *hold
+        };
+        submit(&part)?;
+        self.cursor = Some(end);
+        Ok(())
     }
 }
 
@@ -546,5 +681,206 @@ mod tests {
             .map(|p| p.left.iter().all(|s| *s == 0.0))
             .collect();
         assert_eq!(silent, [false, true, true, false]);
+    }
+
+    // ---- Hold scene (ADR-0124 phase 2b) ---------------------------------------------
+
+    fn block_at<'a>(k: u64, left: &'a [f32], right: &'a [f32]) -> AudioBlock<'a> {
+        AudioBlock::planar(
+            AudioFormat::STEREO_48K,
+            Timestamp::from_nanos(k * BLOCK),
+            &[left, right],
+        )
+        .unwrap()
+    }
+
+    /// Ticks `0..ticks` through a hold gate. On each tick the scene's block of
+    /// `k - lag` (fives) arrives before the program's block `k` (ones), unless
+    /// `scene(k)` says the scene sends nothing; `between(k)` runs first.
+    fn run_held(
+        gate: &mut HoldGate,
+        ticks: u64,
+        lag: u64,
+        scene: impl Fn(u64) -> bool,
+        mut between: impl FnMut(u64),
+    ) -> Vec<Part> {
+        let ones = [1.0_f32; FRAMES];
+        let fives = [5.0_f32; FRAMES];
+        let mut parts = Vec::new();
+        let mut keep = |part: &AudioBlock<'_>| {
+            parts.push(Part {
+                at: part.timestamp().as_nanos(),
+                left: part.channel(0).unwrap().to_vec(),
+            });
+            Ok::<(), ()>(())
+        };
+        for k in 0..ticks {
+            between(k);
+            if k >= lag && scene(k - lag) {
+                gate.pass_hold(&block_at(k - lag, &fives, &fives), &mut keep)
+                    .unwrap();
+            }
+            gate.pass(&block_at(k, &ones, &ones), &mut keep).unwrap();
+        }
+        parts
+    }
+
+    /// Every part starts exactly where the previous one ended.
+    fn assert_exact(parts: &[Part]) {
+        let rate = SampleRate::HZ_48000;
+        let mut end = 0_u64;
+        for part in parts {
+            assert!(
+                part.at.abs_diff(end) <= 1,
+                "{} != {end}: {parts:?}",
+                part.at
+            );
+            end = part.at + rate.duration_of(part.left.len() as u64).as_nanos() as u64;
+        }
+    }
+
+    /// The value of the samples at `at` nanoseconds.
+    fn value_at(parts: &[Part], at: u64) -> f32 {
+        let p = parts.iter().rfind(|p| p.at <= at).unwrap();
+        p.left[0]
+    }
+
+    #[test]
+    fn a_scene_hold_sends_the_scene_on_one_timeline_with_either_lag() {
+        for lag in [0, 1] {
+            let hold = Arc::new(HoldSwitch::default());
+            let mut gate = HoldGate::new(Arc::clone(&hold), FRAMES);
+            let parts = run_held(
+                &mut gate,
+                20,
+                lag,
+                |_| true,
+                |k| {
+                    if k == 5 {
+                        hold.hold(HoldPicture::Scene);
+                    }
+                    if k == 12 {
+                        hold.release();
+                    }
+                },
+            );
+            assert_exact(&parts);
+            assert_eq!(kept(&parts), 20 * FRAMES, "lag {lag}");
+            // The program before, the scene (after at most one block of silence),
+            // the program after.
+            assert_eq!(value_at(&parts, 4 * BLOCK), 1.0);
+            assert_eq!(value_at(&parts, 7 * BLOCK), 5.0, "lag {lag}");
+            assert_eq!(value_at(&parts, 11 * BLOCK), 5.0, "lag {lag}");
+            assert_eq!(value_at(&parts, 13 * BLOCK), 1.0);
+            for p in &parts {
+                let v = p.left[0];
+                assert!(p.left.iter().all(|&s| s == v));
+                if (5 * BLOCK..12 * BLOCK).contains(&p.at) {
+                    assert!(v == 5.0 || v == 0.0, "lag {lag}: {parts:?}");
+                }
+            }
+            assert!(gate.cursor.is_none());
+        }
+    }
+
+    #[test]
+    fn a_scene_that_falls_silent_is_filled_without_a_gap() {
+        let hold = Arc::new(HoldSwitch::default());
+        let mut gate = HoldGate::new(Arc::clone(&hold), FRAMES);
+        // The scene's mixer sends blocks 0..8 only, a block late.
+        let parts = run_held(
+            &mut gate,
+            16,
+            1,
+            |k| k < 8,
+            |k| {
+                if k == 3 {
+                    hold.hold(HoldPicture::Scene);
+                }
+                if k == 13 {
+                    hold.release();
+                }
+            },
+        );
+        assert_exact(&parts);
+        assert_eq!(kept(&parts), 16 * FRAMES);
+        assert_eq!(value_at(&parts, 5 * BLOCK), 5.0);
+        assert_eq!(value_at(&parts, 10 * BLOCK), 0.0);
+        assert_eq!(value_at(&parts, 14 * BLOCK), 1.0);
+    }
+
+    #[test]
+    fn freeze_scene_freeze_and_release_keep_one_timeline() {
+        let hold = Arc::new(HoldSwitch::default());
+        let mut gate = HoldGate::new(Arc::clone(&hold), FRAMES);
+        let parts = run_held(
+            &mut gate,
+            20,
+            1,
+            |_| true,
+            |k| match k {
+                3 => hold.hold(HoldPicture::Freeze),
+                6 => hold.hold(HoldPicture::Scene),
+                10 => hold.hold(HoldPicture::Black),
+                14 => hold.release(),
+                _ => {}
+            },
+        );
+        assert_exact(&parts);
+        assert_eq!(kept(&parts), 20 * FRAMES);
+        assert_eq!(value_at(&parts, 4 * BLOCK), 0.0);
+        assert_eq!(value_at(&parts, 8 * BLOCK), 5.0);
+        assert_eq!(value_at(&parts, 12 * BLOCK), 0.0);
+        assert_eq!(value_at(&parts, 15 * BLOCK), 1.0);
+    }
+
+    #[test]
+    fn scene_blocks_are_ignored_unless_the_scene_is_held() {
+        let hold = Arc::new(HoldSwitch::default());
+        let mut gate = HoldGate::new(Arc::clone(&hold), FRAMES);
+        let parts = run_held(
+            &mut gate,
+            6,
+            0,
+            |_| true,
+            |k| {
+                if k == 2 {
+                    hold.hold(HoldPicture::Freeze);
+                }
+            },
+        );
+        assert_exact(&parts);
+        assert_eq!(kept(&parts), 6 * FRAMES);
+        assert!(parts.iter().all(|p| p.left[0] != 5.0));
+        assert!(gate.cursor.is_none());
+    }
+
+    #[test]
+    fn a_scene_hold_does_not_allocate() {
+        let hold = Arc::new(HoldSwitch::default());
+        let mut gate = HoldGate::new(Arc::clone(&hold), FRAMES);
+        let ones = [1.0_f32; FRAMES];
+        let fives = [5.0_f32; FRAMES];
+        let counted = allocation_counter::measure(|| {
+            for k in 0..12 {
+                match k {
+                    2 => hold.hold(HoldPicture::Scene),
+                    6 => hold.hold(HoldPicture::Freeze),
+                    7 => hold.hold(HoldPicture::Scene),
+                    10 => hold.release(),
+                    _ => {}
+                }
+                let sink = |part: &AudioBlock<'_>| {
+                    std::hint::black_box(part.frames());
+                    Ok::<(), ()>(())
+                };
+                if k > 0 && k != 5 {
+                    gate.pass_hold(&block_at(k - 1, &fives, &fives), sink)
+                        .unwrap();
+                }
+                gate.pass(&block_at(k, &ones, &ones), sink).unwrap();
+            }
+        });
+        assert_eq!(counted.count_total, 0);
     }
 }
