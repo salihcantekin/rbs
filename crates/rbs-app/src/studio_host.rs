@@ -63,6 +63,7 @@ use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
+mod attributes;
 mod calibration;
 mod device_sync;
 pub mod filters;
@@ -2480,6 +2481,8 @@ pub enum Update {
     SourceSettings(SourceSettingsView),
     /// What the Measure sync offset window shows; `None` closes it (ADR-0126).
     SyncMeasure(Option<SyncMeasureView>),
+    /// What the attribute clipboard holds (ADR-0133); `None` while it is empty.
+    AttributesClipboard(Option<rbs_api::types::AttributesClipboard>),
     /// Region-section preview grab (ADR-0103); `None` when the adapter cannot grab.
     RegionPreview {
         /// The source.
@@ -3205,6 +3208,8 @@ struct Host {
     levels: Arc<crate::levels::LevelFeed>,
     /// The last picture size seen per video source (ADR-0058).
     sizes: BTreeMap<SourceId, (u32, u32)>,
+    /// What Copy attributes took (ADR-0133 decision 6); `None` costs nothing.
+    attribute_clipboard: Option<attributes::AttributeSnapshot>,
     /// The user's undo history of scene edits, shared with control API clients.
     history: History<Undo>,
     /// The next undo and redo as last sent.
@@ -3752,6 +3757,7 @@ fn start(
         vertical_sent: None,
         master_sent: None,
         sizes: BTreeMap::new(),
+        attribute_clipboard: None,
         history: History::new(),
         history_shown: (None, None),
         waiting: false,
@@ -5002,6 +5008,10 @@ impl Host {
                 self.autosave = autosave;
                 self.saved = Some(loaded);
                 self.history.clear();
+                // The attribute clipboard belongs to the old collection (ADR-0133).
+                if self.attribute_clipboard.take().is_some() {
+                    self.clipboard_changed(notify);
+                }
                 Ok(())
             }
             Err(why) => {
@@ -7587,7 +7597,6 @@ impl Host {
             .canvas(self.canvas)
             .ok_or("the canvas is gone")?;
         let (w, h) = (canvas.size.width, canvas.size.height);
-        let fps = whole_fps(canvas.frame_rate);
         let mut settings = Settings::new();
         settings.insert(
             keys::ADAPTER.into(),
@@ -7599,17 +7608,15 @@ impl Host {
         );
         let layout = match kind {
             SourceKind::Screen | SourceKind::Window => {
-                settings.insert(keys::FPS.into(), SettingValue::Int(fps));
+                // The option defaults Reset source uses too (ADR-0133 decision 2).
+                settings.extend(self.option_defaults(&kind.type_id()));
                 match target.size {
                     Some((sw, sh)) => Layout::fit(w, h, sw, sh),
                     None => Layout::new([0.0, 0.0], [w as f32, h as f32]),
                 }
             }
             SourceKind::Camera => {
-                let (cw, ch, cfps) = CAMERA_SIZE;
-                settings.insert(keys::WIDTH.into(), SettingValue::Int(cw));
-                settings.insert(keys::HEIGHT.into(), SettingValue::Int(ch));
-                settings.insert(keys::FPS.into(), SettingValue::Int(cfps));
+                settings.extend(self.option_defaults(&kind.type_id()));
                 camera_layout(w, h)
             }
             _ => Layout::new([0.0, 0.0], [1.0, 1.0]),
@@ -8214,11 +8221,7 @@ impl Host {
             .collection
             .canvas(self.canvas)
             .ok_or_else(|| Refusal::NotFound("The canvas is gone.".into()))?;
-        let (w, h) = {
-            let width = i64::from(canvas.size.width).min(1920) & !1;
-            let height = i64::from(canvas.size.height).min(1080) & !1;
-            (width.max(2), height.max(2))
-        };
+        let (w, h) = attributes::browser_size(canvas.size.width, canvas.size.height);
         let mut settings = Settings::new();
         settings.insert(keys::URL.into(), SettingValue::Text(url.trim().to_owned()));
         settings.insert(keys::WIDTH.into(), SettingValue::Int(w));
@@ -11657,13 +11660,12 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::SceneDuplicate(p) => {
-                let id = host
-                    .duplicate_scene(SceneId::from_raw(p.scene))
-                    .map_err(|e| refused(&e))?;
-                host.apply(notify);
-                Ok(Response::SceneAdded(SceneAdded { scene: id.get() }))
-            }
+            C::SceneDuplicate(p) => host.api_scene_duplicate(p, notify),
+            C::SourceDuplicate(p) => host.api_source_duplicate(p, notify),
+            C::SourceReset(p) => host.api_source_reset(p, notify),
+            C::SourceCopyAttributes(p) => host.api_copy_attributes(p, notify),
+            C::SourceAttributesClipboard => Ok(host.api_attributes_clipboard()),
+            C::SourcePasteAttributes(p) => host.api_paste_attributes(p, notify),
             C::SceneAudioGet(p) => {
                 let id = SceneId::from_raw(p.scene);
                 host.levels_scene(id).map_err(|e| refused(&e))?;

@@ -4208,6 +4208,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.set_filter_source(filter, field, option);
         }
     );
+    on!(
+        on_set_filter_option,
+        |app, filter: i32, field: i32, option: i32| {
+            app.studio.set_filter_option(filter, field, option);
+        }
+    );
     on!(on_reset_filter_field, |app, filter: i32, field: i32| {
         app.studio.reset_filter_field(filter, field);
     });

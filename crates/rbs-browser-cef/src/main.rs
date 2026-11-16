@@ -8,6 +8,10 @@
 //! JavaScript dialogs or device permissions, a `file` page reads only its own
 //! directory, and the profile lives in a temporary directory removed on exit.
 //!
+//! The macOS and Windows code compiles from any host without the CEF binaries:
+//! `cargo clippy --target aarch64-apple-darwin --features cef/dox` (or
+//! `x86_64-pc-windows-msvc`), after `rustup target add` for that target.
+//!
 //! Not yet: the GPU texture path, page audio into the sound node (audio is taken
 //! from the OS and dropped), CSS, reload, input and the sandbox (ADR-0132 steps).
 
@@ -431,7 +435,7 @@ mod mac {
     use objc2::runtime::Bool;
     use objc2::{ClassType, DefinedClass, define_class, extern_methods, msg_send, rc::Retained};
     use objc2_app_kit::{NSApp, NSApplication, NSEvent};
-    use objc2_foundation::MainThreadMarker;
+    use objc2_foundation::{MainThreadMarker, NSObjectProtocol};
 
     #[derive(Default)]
     pub struct Ivars {
@@ -592,9 +596,14 @@ fn new_profile_dir() -> Option<std::path::PathBuf> {
             "rbs-browser-{}-{nanos:x}-{attempt}",
             std::process::id()
         ));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        let builder = {
+            let mut builder = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         if builder.create(&path).is_ok() {
             return Some(path);
         }

@@ -1632,3 +1632,66 @@ fn a_change_during_a_fade_starts_a_new_one_and_ending_drops_it() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn noise_suppression_latency_is_compensated_without_touching_the_stored_offset() {
+    // ADR-0130 decision 4: the input gets `stored - L`; the stored offset stays the
+    // device's value; disabling the filter takes the compensation away.
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let display = col.sources().find(|s| s.name == "Display").unwrap().id;
+    const MS: i64 = 1_000_000;
+    let (ns, _) = col
+        .add_filter(
+            mic,
+            NodeTypeId::new_static(rbs_audio_filters::noise::NOISE_SUPPRESSION),
+            Settings::new(),
+        )
+        .unwrap();
+    let mut settings = StudioSettings::new(canvas);
+    settings.audio_offsets.insert(mic, 20 * MS);
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    assert!(
+        studio.filter_problems().is_empty(),
+        "{:?}",
+        studio.filter_problems()
+    );
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.progress().master_peak_db.is_some_and(f32::is_finite)
+    }));
+    let latency = studio.audio_latency(mic).unwrap();
+    assert_eq!(latency.filter_latency_ns, 10 * MS);
+    assert_eq!(latency.heard_offset_ns, 20 * MS);
+    assert_eq!(latency.uncompensated_ns, 0);
+    assert_eq!(studio.settings().audio_offsets.get(&mic), Some(&(20 * MS)));
+    // A source without filters is unchanged.
+    assert_eq!(
+        studio.audio_latency(display).map(|l| l.filter_latency_ns),
+        Some(0)
+    );
+
+    // A new stored offset keeps the compensation.
+    assert!(studio.set_audio_offset(mic, -30 * MS));
+    let latency = studio.audio_latency(mic).unwrap();
+    // Default graph: 35 ms of advance; -30 - 10 is cut to -35, so 5 ms are left.
+    assert_eq!(latency.heard_offset_ns, -25 * MS);
+    assert_eq!(latency.uncompensated_ns, 5 * MS);
+    assert_eq!(studio.settings().audio_offsets.get(&mic), Some(&(-30 * MS)));
+
+    // Disabled: Standby, no latency, the stored offset alone.
+    col.set_filter_enabled(mic, ns, false).unwrap();
+    let updated = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(updated.failed.is_empty(), "{updated:?}");
+    let latency = studio.audio_latency(mic).unwrap();
+    assert_eq!(latency.filter_latency_ns, 0);
+    assert_eq!(latency.heard_offset_ns, -30 * MS);
+    assert_eq!(studio.settings().audio_offsets.get(&mic), Some(&(-30 * MS)));
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.progress().master_peak_db.is_some_and(f32::is_finite)
+    }));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
