@@ -28,6 +28,7 @@ pub mod protection;
 mod recording;
 mod select;
 mod studio;
+pub mod sync_measure;
 mod timed_show;
 
 pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_clip};
