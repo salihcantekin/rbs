@@ -52,14 +52,14 @@ export struct ModeData { label: string, rates: [string] }
 // 5 other. `progress`: 0 to 1 of the longest measurement.
 export struct SyncMeasureData { source: int, name: string, current: int, refs: [string], ref-ids: [int], ref-index: int, phase: int, pairs: int, sound: bool, picture: bool, progress: float, suggested: int, measured: int, clamped: bool, spread: int, reason: int, onset-filter: bool, refusal: int }
 // The Paste attributes and Reset source windows (ADR-0133 decision 8). A group row:
-// `section` 0 Picture, 1 Sound, 2 Source; `at-default` when the value is the default;
+// `index` is its place in the window's group order; `at-default` when the value is the default;
 // `help` says why it is off or that Undo leaves it.
-export struct AttributeGroupRow { id: string, title: string, section: int, checked: bool, enabled: bool, at-default: bool, help: string }
+export struct AttributeGroupRow { id: string, title: string, index: int, checked: bool, enabled: bool, at-default: bool, help: string }
 // A source to paste onto: `note` is its place when placed twice, or "global"; `shown`
 // is false while Same type only hides it.
 export struct AttributeTargetRow { name: string, note: string, checked: bool, copied: bool, shown: bool }
 // `count` sources are checked, `groups-on` groups; `has-filters` when a filter group is on.
-export struct AttributesData { paste: bool, name: string, groups: [AttributeGroupRow], targets: [AttributeTargetRow], same-type: bool, append: bool, count: int, groups-on: int, has-filters: bool }
+export struct AttributesData { paste: bool, name: string, picture: [AttributeGroupRow], sound: [AttributeGroupRow], source: [AttributeGroupRow], targets: [AttributeTargetRow], same-type: bool, append: bool, count: int, groups-on: int, has-filters: bool }
 export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }
 // `heading` is set on the first row of a group ("Same application", "Other").
 // `picture` is the target's thumbnail when `has-picture`; `wants-picture` is set for displays and windows, whose rows keep the kind's icon until the picture comes.

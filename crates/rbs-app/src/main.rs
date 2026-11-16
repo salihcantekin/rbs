@@ -3953,7 +3953,7 @@ fn open_attributes(ctx: &Ctx, app: &mut App, id: i32, paste: bool) {
     } else {
         t.get_size_menu_md() + t.get_space_8() * 2.0
     };
-    let size = slint::LogicalSize::new(width, t.get_size_floating_h() * 0.75);
+    let size = slint::LogicalSize::new(width, t.get_size_floating_h() * 1.6);
     let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
     let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
     app.capture_applied.1 = usize::MAX;

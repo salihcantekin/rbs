@@ -161,21 +161,34 @@ impl Dialog {
 
     /// What the window shows.
     pub(crate) fn data(&self) -> AttributesData {
-        let groups: Vec<AttributeGroupRow> = self
+        let rows: Vec<(i32, AttributeGroupRow)> = self
             .view
             .groups
             .iter()
             .enumerate()
-            .map(|(i, (g, differs, _))| AttributeGroupRow {
-                id: g.id().into(),
-                title: g.title().into(),
-                section: section(*g),
-                checked: self.groups[i],
-                enabled: self.available(i),
-                at_default: !differs,
-                help: self.help(i).into(),
+            .map(|(i, (g, differs, _))| {
+                (
+                    section(*g),
+                    AttributeGroupRow {
+                        id: g.id().into(),
+                        title: g.title().into(),
+                        index: i as i32,
+                        checked: self.groups[i],
+                        enabled: self.available(i),
+                        at_default: !differs,
+                        help: self.help(i).into(),
+                    },
+                )
             })
             .collect();
+        let section_rows = |n: i32| {
+            ModelRc::new(VecModel::from(
+                rows.iter()
+                    .filter(|(s, _)| *s == n)
+                    .map(|(_, r)| r.clone())
+                    .collect::<Vec<_>>(),
+            ))
+        };
         let targets: Vec<AttributeTargetRow> = self
             .view
             .targets
@@ -205,7 +218,9 @@ impl Dialog {
         AttributesData {
             paste: self.view.paste,
             name: self.view.name.as_str().into(),
-            groups: ModelRc::new(VecModel::from(groups)),
+            picture: section_rows(0),
+            sound: section_rows(1),
+            source: section_rows(2),
             targets: ModelRc::new(VecModel::from(targets)),
             same_type: self.same_type,
             append: self.append,
@@ -230,6 +245,7 @@ impl Dialog {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)] // Tests fail by panicking.
 mod tests {
     use super::*;
     use rbs_app::studio_host::AttributeTargetView;
@@ -308,13 +324,11 @@ mod tests {
         // Sound is live: never checked by default, even with a target that takes it.
         d.set_target(2, true);
         assert!(!d.chosen_groups().contains(&AttributeGroup::Sound));
-        d.set_group(
-            AttributeGroup::ALL
-                .iter()
-                .position(|g| *g == AttributeGroup::Sound)
-                .unwrap(),
-            true,
-        );
+        let sound = AttributeGroup::ALL
+            .iter()
+            .position(|g| *g == AttributeGroup::Sound)
+            .expect("Sound is a group");
+        d.set_group(sound, true);
         assert!(d.chosen_groups().contains(&AttributeGroup::Sound));
         // Same type only hides and drops source 3, and with it Sound.
         d.set_same_type(true);

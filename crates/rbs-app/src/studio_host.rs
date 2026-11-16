@@ -14294,6 +14294,16 @@ fn add_software_fallback(reasons: &mut Vec<api::EstimateReason>, software: &[Sou
     }
 }
 
+/// The control API parameters naming a source in the scene being edited, on the main
+/// canvas: what the window's commands mean.
+fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
+    rbs_api::request::SourceInScene {
+        source: id.get(),
+        scene: None,
+        canvas: OutputCanvas::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -14538,15 +14548,5 @@ mod tests {
         );
         let desktop = HostConfig::desktop().preview.map(|p| p.surfaces);
         assert_eq!(desktop, Some(preview_surfaces(FrameRate::FPS_30)));
-    }
-}
-
-/// The control API parameters naming a source in the scene being edited, on the main
-/// canvas: what the window's commands mean.
-fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
-    rbs_api::request::SourceInScene {
-        source: id.get(),
-        scene: None,
-        canvas: OutputCanvas::default(),
     }
 }
