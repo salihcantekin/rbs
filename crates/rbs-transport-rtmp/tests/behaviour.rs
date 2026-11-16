@@ -524,9 +524,17 @@ fn finish_and_drop_respect_their_bounds_against_a_silent_server() {
 fn refuses_bad_configurations() {
     let ok = config("rtmp://127.0.0.1/live");
     assert!(RtmpTransportFactory.create(&ok).is_ok());
+    assert!(
+        RtmpTransportFactory
+            .create(&config("rtmps://127.0.0.1/live"))
+            .is_ok()
+    );
     let cases = [
-        config("rtmps://127.0.0.1/live"),
+        config("rtmpt://127.0.0.1/live"),
         config("srt://127.0.0.1:9000"),
+        // TLS roots only with rtmps, and only PEM certificates.
+        config("rtmp://127.0.0.1/live").with_adapter_option("tls_extra_roots", "x"),
+        config("rtmps://127.0.0.1/live").with_adapter_option("tls_extra_roots", "not pem"),
         TransportConfig::new(
             "rtmp://127.0.0.1/live",
             TransportInput::Container(ContainerId::Flv),
@@ -782,4 +790,217 @@ fn finish_does_not_wait_for_the_next_attempt_after_a_failed_connection() {
     );
     assert_eq!(t.stats().items_dropped, 30, "{:?}", t.stats());
     assert_eq!(t.stats().queued_bytes, 0);
+}
+
+// RTMPS (ADR-0127 decision 10): the same publish over TLS, against a test authority
+// given with `tls_extra_roots`.
+
+fn tls_config(url: &str, roots: &str) -> TransportConfig {
+    config(url)
+        .with_adapter_option(rbs_transport_rtmp::OPTION_TLS_EXTRA_ROOTS, roots)
+        .with_reconnect(ReconnectPolicy::Backoff {
+            initial: Duration::from_millis(1),
+            max: Duration::from_millis(1),
+            attempts: Some(3),
+        })
+}
+
+#[test]
+fn publishes_over_tls() {
+    let identity = support::tls::Identity::new();
+    let server = TestServer::start_tls(Behaviour::default(), &identity);
+    let url = server.url();
+    let mut t = RtmpTransportFactory
+        .create(&tls_config(&url, &identity.ca_pem))
+        .unwrap();
+    t.start(&streams()).unwrap();
+    let packets = [
+        (VIDEO, video(5000, true, 9000)),
+        (AUDIO, audio(5010)),
+        (VIDEO, video(5033, false, 300)),
+    ];
+    for (stream, packet) in &packets {
+        assert_eq!(send(&mut t, *stream, packet), SendOutcome::Queued);
+    }
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| *e == TransportEvent::Connected);
+    t.finish(Duration::from_secs(5)).unwrap();
+    let plain: usize = packets.iter().map(|(_, p)| p.data().len()).sum();
+    assert!(
+        t.stats().bytes_sent > plain as u64,
+        "bytes on the wire, records included: {}",
+        t.stats().bytes_sent
+    );
+
+    let sessions = server.finish();
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    assert!(s.clean_eof, "the client closes the connection");
+    assert_eq!(
+        s.commands(),
+        [
+            "connect",
+            "releaseStream",
+            "FCPublish",
+            "createStream",
+            "publish",
+            "FCUnpublish",
+            "deleteStream"
+        ]
+    );
+    let connect = s.messages[1].command().unwrap();
+    assert_eq!(
+        connect[2].get("tcUrl").and_then(Decoded::as_str),
+        Some(url.as_str()),
+        "tcUrl keeps the rtmps scheme"
+    );
+    assert_eq!(s.media().len(), 3 + packets.len());
+}
+
+/// Waits for the end of the session and returns the error it ended with.
+fn tls_failure(server: &TestServer, roots: &str) -> TransportError {
+    let mut t = RtmpTransportFactory
+        .create(&tls_config(&server.url(), roots))
+        .unwrap();
+    t.start(&streams()).unwrap();
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| {
+        matches!(e, TransportEvent::Disconnected { .. })
+    });
+    let p = video(1000, true, 10);
+    t.send(TransportItem::Packet {
+        stream: VIDEO,
+        packet: &p,
+    })
+    .err()
+    .unwrap()
+}
+
+#[test]
+fn a_certificate_from_an_unknown_authority_is_a_rejection_not_retried() {
+    let identity = support::tls::Identity::new();
+    let other = support::tls::Identity::new();
+    let server = TestServer::start_tls(Behaviour::default(), &identity);
+    let error = tls_failure(&server, &other.ca_pem);
+    assert!(
+        matches!(&error, TransportError::Rejected(m) if m.contains("certificate")),
+        "{error:?}"
+    );
+    drop(server);
+}
+
+#[test]
+fn a_certificate_for_another_name_is_a_rejection() {
+    let identity = support::tls::Identity::for_names(&["ingest.example.test"]);
+    let server = TestServer::start_tls(Behaviour::default(), &identity);
+    let error = tls_failure(&server, &identity.ca_pem);
+    assert!(
+        matches!(&error, TransportError::Rejected(m) if m.contains("certificate")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_server_that_does_not_speak_tls_is_a_connection_error() {
+    // Not a certificate decision: the reconnect policy (3 attempts) bounds it. The
+    // server answers the ClientHello with RTMP bytes and closes.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let mut accepted = 0;
+        for conn in listener.incoming().take(4) {
+            let Ok(mut conn) = conn else { continue };
+            accepted += 1;
+            let _ = std::io::Write::write_all(&mut conn, &[3_u8; 1537]);
+        }
+        accepted
+    });
+    let identity = support::tls::Identity::new();
+    let error = {
+        let mut t = RtmpTransportFactory
+            .create(&tls_config(
+                &format!("rtmps://127.0.0.1:{port}/live"),
+                &identity.ca_pem,
+            ))
+            .unwrap();
+        t.start(&streams()).unwrap();
+        let mut events = Vec::new();
+        wait_for(&mut t, &mut events, |e| {
+            matches!(e, TransportEvent::Disconnected { .. })
+        });
+        let p = video(1000, true, 10);
+        t.send(TransportItem::Packet {
+            stream: VIDEO,
+            packet: &p,
+        })
+        .err()
+        .unwrap()
+    };
+    assert!(matches!(error, TransportError::Connection(_)), "{error:?}");
+    // The first try and three reconnect attempts; then the listener is done.
+    assert_eq!(server.join().unwrap(), 4);
+}
+
+#[test]
+fn drop_ends_a_tls_write_blocked_by_a_stalled_server() {
+    // The server stops reading right after publish, so the I/O thread blocks inside
+    // a TLS write; dropping the session must still end within its bound.
+    let identity = support::tls::Identity::new();
+    let pause = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let server = TestServer::start_tls(
+        Behaviour {
+            pause: Some(std::sync::Arc::clone(&pause)),
+            ..Behaviour::default()
+        },
+        &identity,
+    );
+    let mut t = RtmpTransportFactory
+        .create(&tls_config(&server.url(), &identity.ca_pem))
+        .unwrap();
+    t.start(&streams()).unwrap();
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| *e == TransportEvent::Connected);
+    for i in 0..300 {
+        send(&mut t, VIDEO, &video(1000 + i * 33, i % 30 == 0, 64 * 1024));
+    }
+    // Wait until the I/O thread is stuck: what it sent stops growing although
+    // packets are queued.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = t.stats().bytes_sent;
+    loop {
+        std::thread::yield_now();
+        let now = t.stats().bytes_sent;
+        if now == last && now > 0 && t.stats().queued_bytes > 0 {
+            break;
+        }
+        last = now;
+        assert!(Instant::now() < deadline, "the writer never blocked");
+    }
+    let started = Instant::now();
+    drop(t);
+    assert!(
+        started.elapsed() < Duration::from_millis(200) + SCHEDULING_SLACK,
+        "{:?}",
+        started.elapsed()
+    );
+    pause.wait();
+}
+
+#[test]
+fn a_close_after_publish_says_the_key_may_be_refused() {
+    let server = TestServer::start(Behaviour {
+        close_on_publish: true,
+        ..Behaviour::default()
+    });
+    let config = config(&server.url()).with_reconnect(ReconnectPolicy::Off);
+    let mut t = RtmpTransportFactory.create(&config).unwrap();
+    t.start(&streams()).unwrap();
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| {
+        matches!(e, TransportEvent::Disconnected { .. })
+    });
+    let shown = format!("{events:?}");
+    assert!(shown.contains("after the publish command"), "{shown}");
+    assert!(shown.contains("stream key"), "{shown}");
+    assert!(!shown.contains(KEY), "{shown}");
 }

@@ -165,7 +165,8 @@ pub struct BrowserSettings {
 }
 
 impl BrowserSettings {
-    /// The wire configure block. No click forwarding and no CSS.
+    /// The wire configure block. The composition root fills `frames` with the name of
+    /// the frame section it allocates before spawning the helper.
     pub fn configure(&self) -> Configure {
         Configure {
             url: self.url.clone(),
@@ -173,6 +174,7 @@ impl BrowserSettings {
             height: self.height,
             fps: self.fps,
             transparent: self.transparent,
+            frames: String::new(),
         }
     }
 }
