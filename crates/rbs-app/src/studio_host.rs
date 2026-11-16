@@ -407,6 +407,9 @@ pub struct SourceRow {
     /// The other sources of its audio device whose sync offset differs, by name
     /// (ADR-0126 decision 9); empty for every other source.
     pub device_peers: Vec<String>,
+    /// How the latency of its running audio filters is compensated (ADR-0130 decision
+    /// 4); `None` for a source the studio does not run.
+    pub latency: Option<rbs_record::AudioLatency>,
 }
 
 impl PartialEq for SourceRow {
@@ -421,6 +424,7 @@ impl PartialEq for SourceRow {
             && self.companion_of == other.companion_of
             && self.record_separately == other.record_separately
             && self.device_peers == other.device_peers
+            && self.latency == other.latency
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -11158,6 +11162,7 @@ impl Host {
                     cue_remaining_ms,
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
+                    latency: self.studio.audio_latency(s.id),
                     device_peers: self
                         .device_peers(s.id)
                         .into_iter()
@@ -11516,7 +11521,11 @@ impl ApiTarget<'_> {
             })),
             C::SourceList => Ok(Response::Sources(api::Snapshot {
                 seq: host.events.seq_map([Topic::SourceChanged]),
-                data: host.heard.iter().map(api_source).collect(),
+                data: host
+                    .heard
+                    .iter()
+                    .map(|row| with_input_counters(&host.studio, api_source(row)))
+                    .collect(),
             })),
             C::SourceTargets(p) => {
                 let kind = app_kind(p.kind);
@@ -11951,7 +11960,11 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::FilterTypes(p) => Ok(Response::FilterTypes(filters::api_types(p.domain))),
+            C::FilterTypes(p) => {
+                let graph = &host.studio.settings().audio_graph;
+                let setup = rbs_audio_filters::DspSetup::new(graph.format, graph.block_frames);
+                Ok(Response::FilterTypes(filters::api_types(p.domain, setup)))
+            }
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
                 let id = host
@@ -13727,6 +13740,21 @@ fn api_picture_form(form: VideoAs) -> api::PictureForm {
     }
 }
 
+/// Nanoseconds as milliseconds, to the microsecond (control API 1.70).
+fn ns_to_ms(ns: i64) -> f64 {
+    (ns as f64 / 1_000.0).round() / 1_000.0
+}
+
+/// `info` with the counters of its source's audio input, when one runs (`source.list`,
+/// protocol 1.70, ADR-0130 decision 9).
+fn with_input_counters(studio: &Studio, mut info: api::SourceInfo) -> api::SourceInfo {
+    if let Some(c) = studio.input_counters(SourceId::from_raw(info.id)) {
+        info.input_late_frames = Some(c.late_frames);
+        info.input_resyncs = Some(c.resyncs);
+    }
+    info
+}
+
 fn api_source(row: &SourceRow) -> api::SourceInfo {
     api::SourceInfo {
         item: Some(row.item.get()),
@@ -13768,6 +13796,13 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             volume: h.volume,
             muted: h.muted,
         }),
+        filter_latency_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.filter_latency_ns)),
+        effective_offset_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.heard_offset_ns)),
+        uncompensated_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.uncompensated_ns)),
+        // Growing counters: only `source.list` reads them (`with_input_counters`), so
+        // a row's change event is not sent on every block.
+        input_late_frames: None,
+        input_resyncs: None,
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),

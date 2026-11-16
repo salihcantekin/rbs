@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rbs_api::request::FilterDomains;
 use rbs_api::types as api;
-use rbs_audio_filters::AudioFilterType;
+use rbs_audio_filters::{AudioFilterType, DspSetup};
 use rbs_filters::{FilterType, Values};
 use rbs_graph::node::NodeTypeId;
 use rbs_params::{Curve, Field, FieldKind, Schema, Value, color_text, parse_color};
@@ -281,8 +281,9 @@ fn api_field(f: &Field) -> api::FilterField {
     field
 }
 
-/// `filter.types`' answer for `domains`: video types first, then audio types.
-pub fn api_types(domains: FilterDomains) -> api::FilterTypeList {
+/// `filter.types`' answer for `domains`: video types first, then audio types. An
+/// audio type's latency is for `setup`, the running graph's (ADR-0130 decision 2).
+pub fn api_types(domains: FilterDomains, setup: DspSetup) -> api::FilterTypeList {
     let video = matches!(domains, FilterDomains::Video | FilterDomains::All)
         .then(|| {
             rbs_filters::catalogue()
@@ -307,6 +308,14 @@ pub fn api_types(domains: FilterDomains) -> api::FilterTypeList {
                 domain: if t.is_audio() { "audio" } else { "video" }.to_owned(),
                 name: t.name().to_owned(),
                 fields: t.fields().iter().map(api_field).collect(),
+                latency_ms: match t {
+                    AnyFilter::Audio(a) => {
+                        let rate = f64::from(setup.format.sample_rate.hz().max(1));
+                        let ms = f64::from(a.latency_frames(setup)) * 1_000.0 / rate;
+                        Some((ms * 1_000.0).round() / 1_000.0)
+                    }
+                    AnyFilter::Video(_) => None,
+                },
             })
             .collect(),
     }

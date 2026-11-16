@@ -433,6 +433,62 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
 }
 
 #[test]
+fn filter_latency_and_input_counters_are_reported() {
+    // Protocol 1.70 (ADR-0130 decision 9).
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let audio = c.call("filter.types", json!({"domain": "all"}));
+    let types = ok(&audio)["types"].as_array().unwrap().clone();
+    let latency = |id: &str| {
+        types
+            .iter()
+            .find(|t| t["type"] == id)
+            .map(|t| t.get("latency_ms").cloned())
+            .unwrap()
+    };
+    // 96 frames at 48 kHz: 2 ms; a zero-latency audio type says 0; video types have none.
+    assert_eq!(latency("org.rbs.audio-filter.limiter"), Some(json!(2.0)));
+    assert_eq!(latency("org.rbs.audio-filter.gain"), Some(json!(0.0)));
+    assert_eq!(latency("org.rbs.filter.blur"), None);
+
+    let mic = add(&mut c, "audio_input", "Mic");
+    ok(&c.call(
+        "source.set_sync_offset",
+        json!({"source": mic, "offset_ms": 40}),
+    ));
+    let row = |c: &mut Client| sources(c).into_iter().find(|s| s["id"] == mic).unwrap();
+    let before = row(&mut c);
+    assert!(before.get("filter_latency_ms").is_none(), "{before}");
+    assert_eq!(before["effective_offset_ms"], 40.0, "{before}");
+    assert!(before.get("uncompensated_ms").is_none(), "{before}");
+
+    let limiter = c.call(
+        "filter.add",
+        json!({"source": mic, "type": "org.rbs.audio-filter.limiter"}),
+    );
+    let limiter = ok(&limiter)["filter"].as_u64().unwrap();
+    let after = row(&mut c);
+    // Compensated: the program still hears the mic at its stored offset.
+    assert_eq!(after["filter_latency_ms"], 2.0, "{after}");
+    assert_eq!(after["effective_offset_ms"], 40.0, "{after}");
+    assert!(after.get("uncompensated_ms").is_none(), "{after}");
+    assert_eq!(after["sync_offset_ms"], 40, "{after}");
+
+    // A disabled filter is Standby and adds nothing.
+    ok(&c.call(
+        "filter.set_enabled",
+        json!({"filter": limiter, "enabled": false}),
+    ));
+    let off = row(&mut c);
+    assert!(off.get("filter_latency_ms").is_none(), "{off}");
+    // A running input reports its counters in `source.list` only.
+    if after.get("input_resyncs").is_some() {
+        assert!(after["input_late_frames"].is_u64(), "{after}");
+    }
+}
+
+#[test]
 fn a_ducker_takes_a_sound_source_as_its_key() {
     let Some((_host, _updates, _api, mut c)) = start() else {
         return;
