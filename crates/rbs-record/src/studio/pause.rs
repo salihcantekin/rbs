@@ -22,6 +22,7 @@
 
 use std::fmt;
 
+use rbs_core::media::StreamParams;
 use rbs_core::pause::{PauseError, Window};
 use rbs_nodes::output_cut::OutputCut;
 
@@ -118,6 +119,11 @@ pub struct PauseState {
     pub resume_at: Option<Timestamp>,
     /// Time left out so far, an open pause counted up to now.
     pub paused_ns: u64,
+    /// How far the sound may be off at the join of the open (or last) pause: one
+    /// audio packet, when that pause cut a shared audio encoder's packets at the
+    /// output node (ADR-0124 decision 5), always later; `None` when the recording's
+    /// own encoder followed the pause, which leaves no error.
+    pub join_error: Option<Duration>,
 }
 
 impl PauseState {
@@ -134,6 +140,7 @@ impl PauseState {
             pause_at: Some(Timestamp::from_nanos(w.pause_at)),
             resume_at: (!w.is_open()).then(|| Timestamp::from_nanos(w.resume_at)),
             paused_ns: w.before + until.saturating_sub(w.pause_at),
+            join_error: None,
         }
     }
 }
@@ -271,8 +278,30 @@ impl Studio {
     /// Where a running output's pauses stand. `None` when `id` does not run or is not
     /// pausable.
     pub fn output_pause(&self, id: OutputId) -> Option<PauseState> {
-        let w = self.attached(id)?.pause.as_ref()?.read()?;
-        Some(PauseState::of(w, self.engine.clock().now().as_nanos()))
+        let r = self.attached(id)?;
+        let w = r.pause.as_ref()?.read()?;
+        let mut state = PauseState::of(w, self.engine.clock().now().as_nanos());
+        if state.pause_at.is_some() {
+            state.join_error = self.join_error(r);
+        }
+        Some(state)
+    }
+
+    /// One audio packet of `r`'s audio chain when its last pause cut that chain's
+    /// packets at the output node: audio passes again from the first packet at or
+    /// after the join, so the sound after it starts up to that much late.
+    fn join_error(&self, r: &Attached) -> Option<Duration> {
+        let audio_bit = 1u64 << u32::from(r.video.is_some());
+        if r.paused_at.output_mask & audio_bit == 0 {
+            return None;
+        }
+        let c = self.chains.audio[r.audio?].as_ref()?;
+        match c.stream.params {
+            StreamParams::Audio {
+                format, frame_size, ..
+            } => Some(format.sample_rate.duration_of(u64::from(frame_size))),
+            _ => None,
+        }
     }
 
     /// `p` with `r`'s pause fields filled in.

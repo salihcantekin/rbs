@@ -220,7 +220,14 @@ impl MarkerLog {
     /// The recording paused at `at_ns` on the master clock (ADR-0124): later times are
     /// file times with the pause taken out.
     pub fn pause(&mut self, at_ns: u64) {
-        self.pauses.pause(at_ns.saturating_sub(self.t0_ns));
+        self.pause_cut(at_ns, None);
+    }
+
+    /// As [`MarkerLog::pause`], for a pause whose join may be off by up to
+    /// `join_error_ns` (cut at a shared output, ADR-0124 decision 5).
+    pub fn pause_cut(&mut self, at_ns: u64, join_error_ns: Option<u64>) {
+        self.pauses
+            .pause_cut(at_ns.saturating_sub(self.t0_ns), join_error_ns);
     }
 
     /// The recording resumed at `at_ns` on the master clock; at or before the pause's

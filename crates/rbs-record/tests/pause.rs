@@ -58,6 +58,8 @@ fn a_paused_recording_continues_its_file_without_a_gap() {
     assert_eq!(studio.pause_output(rec), Err(PauseRefused::AlreadyPaused));
     let state = studio.output_pause(rec).unwrap();
     assert!(state.paused);
+    // Its own encoders followed the pause: the join is exact.
+    assert_eq!(state.join_error, None);
     // Paused for a second of master time.
     let resume_after = pause_at + std::time::Duration::from_secs(1);
     assert!(run_until(&mut studio, &clock, |_| clock.now() >= resume_after));
@@ -174,7 +176,16 @@ fn a_recording_sharing_the_streams_encoders_is_cut_at_its_output() {
     let before = r.log.count(0);
     assert!(run_until(&mut studio, &clock, |_| r.log.count(0) >= before + 10));
     let left_out = resume_at.as_nanos() - pause_at.as_nanos();
-    assert_eq!(studio.output_pause(rec).unwrap().paused_ns, left_out);
+    let state = studio.output_pause(rec).unwrap();
+    assert_eq!(state.paused_ns, left_out);
+    // Audio cut at the output resumes on a packet boundary: the join may be off by
+    // up to one audio packet (ADR-0124 decision 5).
+    assert!(
+        state
+            .join_error
+            .is_some_and(|e| !e.is_zero() && e <= std::time::Duration::from_millis(50)),
+        "{state:?}"
+    );
 
     // The stream never paused: its packets run on without a gap.
     let stream_video = pts_of(&r.stream_log, 0);
