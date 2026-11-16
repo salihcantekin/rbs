@@ -426,7 +426,7 @@ export global Studio {
     callback dismiss-deleted();
     // Markers (ADR-0089 decision 10): the running recording's manual markers, whether
     // its marker controls show (it writes an editor project), and the notice of the
-    // marker just added ("Marker 3 · 0:12:31"; empty: none).
+    // marker just added ("Marker 3 at 0:12:31"; empty: none).
     in property <int> rec-markers;
     in property <bool> rec-markers-shown;
     in property <string> marker-note;
@@ -6025,7 +6025,6 @@ component OutputCard inherits Rectangle {
             Button {
                 lead: IconName.flag;
                 text: @tr("Marker");
-                hint: @tr("Add marker (Ctrl+Shift+M)");
                 accessible-name: @tr("Add marker");
                 clicked => { root.add-marker(); }
             }

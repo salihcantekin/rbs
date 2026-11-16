@@ -2832,7 +2832,7 @@ impl StudioUi {
     }
 
     /// [`Update::Markers`]: the counts, and a notice for a marker just added
-    /// ("Marker 3 · 0:12:31").
+    /// ("Marker 3 at 0:12:31").
     fn markers(
         &mut self,
         counts: [Option<u32>; 2],
@@ -2846,7 +2846,7 @@ impl StudioUi {
         if let Some(note) = placed {
             let s = note.t_ns / 1_000_000_000;
             self.marker_note = format!(
-                "{} · {}:{:02}:{:02}",
+                "{} at {}:{:02}:{:02}",
                 note.label,
                 s / 3600,
                 (s / 60) % 60,
