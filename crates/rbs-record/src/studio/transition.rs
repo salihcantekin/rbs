@@ -243,15 +243,30 @@ impl Studio {
         program: &BoundCompositor,
     ) -> Option<Vec<rbs_gpu::node::NodeLayer>> {
         let size = self.canvas_size(canvas).ok()?;
+        // Items of the canvas's global scene (ADR-0065): drawn once, above the blend
+        // (decision 5), so an overlay does not double, dim or move.
+        let globals: BTreeSet<ItemId> = self
+            .collection
+            .globals_of(canvas)
+            .and_then(|g| self.collection.scene(g))
+            .map(|s| s.items.iter().map(|i| i.id).collect())
+            .unwrap_or_default();
+        let is_global = |l: &BoundLayer| l.path.first().is_some_and(|i| globals.contains(i));
         let t = self.transitions.get_mut(&canvas)?;
+        let running = matches!(t.phase, Phase::Running(_));
         if let Some(view) = &mut t.incoming {
-            let _ = view.layers.send(node_layers(&view.bound, plan));
+            let mut incoming = view.bound.clone();
+            if running {
+                incoming.layers.retain(|l| !is_global(l));
+            }
+            let _ = view.layers.send(node_layers(&incoming, plan));
         }
         let mut outgoing = program.clone();
         outgoing.layers.clone_from(&t.from);
         match t.phase {
             Phase::Waiting(_) => Some(node_layers(&outgoing, plan)),
             Phase::Running(start) => {
+                outgoing.layers.retain(|l| !is_global(l));
                 let mut layers = node_layers(&outgoing, plan);
                 if let Some(view) = &t.incoming {
                     let (w, h) = size;
@@ -274,6 +289,10 @@ impl Studio {
                     });
                     layers.push(top);
                 }
+                // The globals as they are now, above everything.
+                let mut above = program.clone();
+                above.layers.retain(|l| is_global(l));
+                layers.extend(node_layers(&above, plan));
                 Some(layers)
             }
             Phase::Ending(_) | Phase::Done => None,
