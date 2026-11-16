@@ -11730,7 +11730,11 @@ impl Host {
                         .program_levels(self.canvas)
                         .and_then(|l| l.level(s.id))
                         .map(|l| l.over(s.audio)),
-                    filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
+                    filters: filters::rows(
+                        s,
+                        |f| self.studio.audio_filter_meter(f).cloned(),
+                        |f| self.studio.audio_filter_latency_ns(f),
+                    ),
                     status,
                     global,
                     also_in: {

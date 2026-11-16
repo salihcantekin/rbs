@@ -84,6 +84,9 @@ pub struct FilterRow {
     /// The live meter of a running audio filter that has one (a noise gate); read it
     /// only while an editor shows it.
     pub meter: Option<MeterHandle>,
+    /// The delay it adds while it runs, in ns (ADR-0130 decision 2); 0 when it adds
+    /// none, is disabled or is a video filter.
+    pub latency_ns: i64,
 }
 
 /// A filter meter, equal to another only when it is the same meter (a row changes
@@ -113,6 +116,7 @@ impl FilterRow {
 pub fn rows(
     source: &Source,
     meter_of: impl Fn(FilterId) -> Option<Arc<rbs_audio_filters::FilterMeter>>,
+    latency_of: impl Fn(FilterId) -> i64,
 ) -> Vec<FilterRow> {
     let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
     source
@@ -132,6 +136,7 @@ pub fn rows(
                 values: ty.map(|t| filter_values_lenient(&t, &f.settings).0),
                 stored: f.settings.clone(),
                 meter: meter_of(f.id).map(MeterHandle),
+                latency_ns: latency_of(f.id),
             }
         })
         .collect()
