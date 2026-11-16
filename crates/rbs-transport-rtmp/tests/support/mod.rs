@@ -96,6 +96,9 @@ pub struct Behaviour {
     pub sink: bool,
     /// Never answer `connect` (the client's setup times out).
     pub silent: bool,
+    /// Close the connection on `publish` without an answer, as YouTube and Twitch
+    /// do with a stream key they refuse.
+    pub close_on_publish: bool,
     /// After answering `publish`, stop reading until the test also waits on this
     /// barrier (a stall in the middle of a stream).
     pub pause: Option<Arc<std::sync::Barrier>>,
@@ -399,6 +402,10 @@ fn serve<S: Read + Write>(mut conn: S, close: impl Fn(), b: &Behaviour, first: b
                 amf0::null(&mut body);
                 amf0::number(&mut body, 1.0);
                 write_msg(&mut out, 3, 20, 0, &body);
+            }
+            Some("publish") if b.close_on_publish => {
+                close();
+                return session;
             }
             Some("publish") => {
                 let (level, code, description) = match &b.reject_publish {

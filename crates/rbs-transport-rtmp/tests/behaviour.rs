@@ -985,3 +985,22 @@ fn drop_ends_a_tls_write_blocked_by_a_stalled_server() {
     );
     pause.wait();
 }
+
+#[test]
+fn a_close_after_publish_says_the_key_may_be_refused() {
+    let server = TestServer::start(Behaviour {
+        close_on_publish: true,
+        ..Behaviour::default()
+    });
+    let config = config(&server.url()).with_reconnect(ReconnectPolicy::Off);
+    let mut t = RtmpTransportFactory.create(&config).unwrap();
+    t.start(&streams()).unwrap();
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| {
+        matches!(e, TransportEvent::Disconnected { .. })
+    });
+    let shown = format!("{events:?}");
+    assert!(shown.contains("after the publish command"), "{shown}");
+    assert!(shown.contains("stream key"), "{shown}");
+    assert!(!shown.contains(KEY), "{shown}");
+}

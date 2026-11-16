@@ -747,6 +747,17 @@ impl Io {
                 Some(Err(rejected("publish", &info, key)))
             }
             _ => None,
+        })
+        .map_err(|fail| match fail {
+            // YouTube and Twitch close the connection after `publish` without a
+            // status when they refuse the key: say so, since nothing else will. It
+            // stays a connection error (a drop at that moment can also be the network).
+            Fail::Error(TransportError::Connection(text)) => {
+                Fail::Error(TransportError::Connection(format!(
+                    "{text} after the publish command (servers do this when they refuse the stream key)"
+                )))
+            }
+            other => other,
         })?;
         Ok(conn)
     }
