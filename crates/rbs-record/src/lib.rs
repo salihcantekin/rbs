@@ -60,7 +60,7 @@ pub use studio::{
     MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings,
     PauseRefused, PauseState, PictureId, PlannedOutput, ReplaySettings, SharedPause,
     SourceSettingsAdjusted, StartPlanRequest, Studio, StudioSettings, TEXT_WAIT_TICKS, TextDue,
-    Updated, VirtualCameraSettings, VirtualCameraState, compensate_filter_latency,
+    TextFonts, Updated, VirtualCameraSettings, VirtualCameraState, compensate_filter_latency,
 };
 pub use studio::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,

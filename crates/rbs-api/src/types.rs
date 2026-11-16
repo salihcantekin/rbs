@@ -65,6 +65,8 @@ pub enum SourceKind {
     Media,
     /// A browser page from the helper process (protocol TBD, ADR-0109).
     Browser,
+    /// A text drawn by the server's text renderer (protocol 1.71, ADR-0129).
+    Text,
 }
 
 /// Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does
@@ -2515,6 +2517,13 @@ pub struct AttributesClipboard {
     pub type_id: String,
     /// Groups whose copied value is not the default.
     pub groups: Vec<String>,
+}
+
+/// `text.fonts`' answer (protocol 1.71, ADR-0129 decision 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextFonts {
+    /// The installed font families, sorted, without duplicates.
+    pub families: Vec<String>,
 }
 
 /// The topic `source.attributes_clipboard.changed` (protocol 1.68).

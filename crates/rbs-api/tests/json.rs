@@ -213,7 +213,23 @@ fn every_request() -> Vec<Request> {
             scene: None,
             global: true,
             with_audio: true,
+            text: None,
         })),
+        c(Command::SourceAdd(AddSource {
+            kind: SourceKind::Text,
+            adapter: String::new(),
+            target: String::new(),
+            name: Some("Title".into()),
+            scene: Some(2),
+            global: false,
+            with_audio: false,
+            text: Some("Hello".into()),
+        })),
+        c(Command::SourceSetText(SetText {
+            source: 4,
+            text: "Bye".into(),
+        })),
+        c(Command::TextFonts),
         c(Command::SourceSetCompanionAudio(SetCompanionAudio {
             source: 4,
             enabled: true,
@@ -2765,4 +2781,24 @@ fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
     }))
     .unwrap();
     assert_eq!(entry.origin, DeviceSyncOrigin::Other);
+}
+
+#[test]
+fn text_sources_decode_as_protocol_1_71() {
+    let add: AddSource = serde_json::from_value(json!({"kind": "text", "text": "Live"})).unwrap();
+    assert_eq!(add.kind, SourceKind::Text);
+    assert_eq!(add.text.as_deref(), Some("Live"));
+    assert!(add.adapter.is_empty() && add.target.is_empty());
+    assert!(
+        serde_json::from_value::<SetText>(json!({"source": 1, "text": "x", "file": "y"})).is_err()
+    );
+    round_trip(&TextFonts {
+        families: vec!["Inter".into(), "Noto Sans".into()],
+    });
+    assert_eq!(ErrorKind::Forbidden.name(), "forbidden");
+    assert_eq!(ErrorKind::NotReady.name(), "not_ready");
+    assert_eq!(
+        serde_json::to_value(ErrorKind::NotReady).unwrap(),
+        json!("not_ready")
+    );
 }

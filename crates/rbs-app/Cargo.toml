@@ -58,6 +58,8 @@ rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
 rbs-audio = { path = "../rbs-audio" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
+rbs-text = { path = "../rbs-text" }
+rbs-text-parley = { path = "../rbs-text-parley" }
 rbs-filters = { path = "../rbs-filters" }
 rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-params = { path = "../rbs-params" }
@@ -178,6 +180,7 @@ serde_json = "1"
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
 rbs-vcam-test = { path = "../rbs-vcam-test" }
+rbs-text-test = { path = "../rbs-text-test" }
 # The audio graph check (examples/audio_graph.rs) is a composition root: it wires the
 # platform's audio and AAC adapters into the engine. Every one builds on every platform.
 rbs-audio-io = { path = "../rbs-audio-io" }

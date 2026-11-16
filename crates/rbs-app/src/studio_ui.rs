@@ -6903,6 +6903,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Color) => "palette",
         Some(SourceKind::Media) => "film",
         Some(SourceKind::Browser) => "globe",
+        // Until the text UI (ADR-0129 phase (f)) brings its own icon.
+        Some(SourceKind::Text) => "pencil",
         None => "window",
     }
 }

@@ -281,6 +281,8 @@ fn spawn_host_hw(
             a.sources
                 .register_audio(Arc::new(TestAudioBackend::new()))
                 .unwrap();
+            a.sources
+                .register_text(Arc::new(rbs_text_test::FakeTextRenderer::new()));
             for (id, broken) in [(BROKEN, true), (WORKING, false)] {
                 a.video_encoders
                     .register(Arc::new(FakeVideoFactory {
@@ -968,6 +970,89 @@ fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
     let file = std::fs::read(&videos[0]).unwrap();
     assert!(file.starts_with(HEADER) && file.ends_with(TRAILER));
 
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A text source's box cannot change while a take writes its separate picture track
+/// (ADR-0129 decision 5): an edit is refused with a reason, an undo that would change it
+/// is stepped back and refused; after the take both work again.
+#[test]
+fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-text-box-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::AddText {
+        text: "Title".into(),
+    });
+    let rows = rows_where(&rx, |r| r.iter().any(|r| r.kind == Some(SourceKind::Text)));
+    let text = rows
+        .into_iter()
+        .find(|r| r.kind == Some(SourceKind::Text))
+        .unwrap();
+    let width = |w: i64| {
+        let mut patch = std::collections::BTreeMap::new();
+        patch.insert("width".to_owned(), serde_json::json!(w));
+        Command::SetSourceSettings { id: text.id, patch }
+    };
+    // A box change before the take, to undo during it.
+    host.send(width(300));
+    host.send(Command::SetRecordSeparately {
+        id: text.id,
+        patch: RecordPatch::enabled(true),
+    });
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == text.id && r.record_separately.video)
+    });
+    host.send(Command::StartRecording(with_tracks(
+        dir.join("take.mkv"),
+        None,
+    )));
+    match recording(&rx) {
+        RecordingUpdate::Started { separate, .. } => {
+            assert!(
+                separate.iter().any(|s| s.starts_with(&text.name)),
+                "{separate:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    host.send(width(320));
+    let why = next(&rx, |u| match u {
+        Update::Error(why) => Some(why),
+        _ => None,
+    });
+    assert!(why.contains("Stop recording to change the box"), "{why}");
+    // Undo the mark first, then the earlier box change: the box step is refused.
+    host.send(Command::Undo);
+    host.send(Command::Undo);
+    let why = next(&rx, |u| match u {
+        Update::Error(why) => Some(why),
+        _ => None,
+    });
+    assert!(why.contains("Stop recording to change the box"), "{why}");
+
+    match stop_recording(&host, &rx, &clock) {
+        RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
+        other => panic!("{other:?}"),
+    }
+    // After the take the same edit goes through.
+    host.send(width(320));
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(&rx, |u| match u {
+        Update::Error(why) => panic!("refused after the take: {why}"),
+        Update::Targets(SourceKind::Screen, _) => Some(()),
+        _ => None,
+    });
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }
