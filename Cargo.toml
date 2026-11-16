@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "xtask"]
-exclude = ["prototypes"]
+# rbs-browser-cef has its own lock file so no workspace command builds CEF
+# (ADR-0132 decision 1).
+exclude = ["prototypes", "crates/rbs-browser-cef"]
 
 [workspace.package]
 version = "0.0.1"

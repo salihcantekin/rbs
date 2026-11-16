@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rbs_browser_ipc::Configure;
-use rbs_browser_ipc::shm::SlotLayout;
 use rbs_browser_runner::{Supervisor, spawn_helper};
+use rbs_browser_shm::SlotLayout;
 use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserTree};
 
 /// Locates `rbs-browser-helper` for this process.
@@ -85,6 +85,7 @@ impl BrowserSession for HelperSession {
     }
 
     fn stop(&mut self) {
-        let _ = self.supervisor.stop();
+        // Never waits: the supervisor thread closes the helper (ADR-0109 decision 8).
+        self.supervisor.stop_detached();
     }
 }

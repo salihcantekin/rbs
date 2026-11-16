@@ -30,10 +30,11 @@ use rbs_graph::description::PartitionId;
 use rbs_graph::node::NodeTypeId;
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::{
-    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, ISO_AUDIO_ENCODER,
-    ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT, OUTPUT_2, OUTPUT_3, OUTPUT_4, RENDER,
-    REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters, Recording, Studio,
-    VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4,
+    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, AUDIO_ENCODER_POOL,
+    ISO_AUDIO_ENCODER, ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT, OUTPUT_2, OUTPUT_3, OUTPUT_4,
+    OUTPUT_POOL, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters,
+    Recording, Studio, VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4,
+    VIDEO_ENCODER_POOL,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneScope, Settings};
@@ -213,9 +214,22 @@ pub struct Log {
     pub streams: Mutex<Vec<StreamDescriptor>>,
     /// The configuration of the last packet transport session (`stream://`).
     pub packet_config: Mutex<Option<TransportConfig>>,
+    /// Packet transports (`stream://`): the URL of each packet delivered, in order.
+    pub by_url: Mutex<Vec<(String, Written)>>,
 }
 
 impl Log {
+    /// Packets of `stream` the packet transport of `url` delivered.
+    pub fn sent_to(&self, url: &str, stream: u16) -> Vec<Written> {
+        self.by_url
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(u, w)| u == url && w.stream == stream)
+            .map(|(_, w)| *w)
+            .collect()
+    }
+
     pub fn count(&self, stream: u16) -> usize {
         self.packets
             .lock()
@@ -365,27 +379,47 @@ impl TransportFactory for PacketTransportFactory {
         &self,
         config: &TransportConfig,
     ) -> Result<Box<dyn Transport>, rbs_transport::CreateError> {
+        // `stream://fail/...` cannot be opened; `stream://stall/...` opens and then
+        // takes nothing (a destination whose uplink stalled).
+        if config.url.starts_with("stream://fail/") {
+            return Err(rbs_transport::CreateError::InvalidConfig(
+                "refused (test)".into(),
+            ));
+        }
         *self.0.packet_config.lock().unwrap() = Some(config.clone());
-        Ok(Box::new(PacketTransport(Arc::clone(&self.0), false)))
+        Ok(Box::new(PacketTransport {
+            log: Arc::clone(&self.0),
+            connected: false,
+            url: config.url.clone(),
+            stalls: config.url.starts_with("stream://stall/"),
+        }))
     }
 }
 
-pub struct PacketTransport(Arc<Log>, bool);
+pub struct PacketTransport {
+    log: Arc<Log>,
+    connected: bool,
+    url: String,
+    stalls: bool,
+}
 
 impl Transport for PacketTransport {
     fn start(&mut self, streams: &[StreamDescriptor]) -> Result<(), TransportError> {
-        *self.0.streams.lock().unwrap() = streams.to_vec();
+        *self.log.streams.lock().unwrap() = streams.to_vec();
         Ok(())
     }
     fn send(&mut self, item: TransportItem<'_>) -> Result<SendOutcome, TransportError> {
         match item {
+            TransportItem::Packet { .. } if self.stalls => Err(TransportError::QueueFull),
             TransportItem::Packet { stream, packet } => {
-                self.0.packets.lock().unwrap().push(Written {
+                let w = Written {
                     stream: stream.0,
                     pts: packet.pts(),
                     codec: packet.codec(),
                     keyframe: packet.keyframe(),
-                });
+                };
+                self.log.by_url.lock().unwrap().push((self.url.clone(), w));
+                self.log.packets.lock().unwrap().push(w);
                 Ok(SendOutcome::Queued)
             }
             _ => Err(TransportError::InvalidInput(
@@ -395,8 +429,8 @@ impl Transport for PacketTransport {
     }
     fn poll_events(&mut self, out: &mut Vec<TransportEvent>) {
         // Connects once, on the first look after `start`.
-        if !self.1 {
-            self.1 = true;
+        if !self.connected {
+            self.connected = true;
             out.push(TransportEvent::Connected);
         }
     }
@@ -404,7 +438,7 @@ impl Transport for PacketTransport {
         TransportStats::default()
     }
     fn finish(&mut self, _: Duration) -> Result<(), TransportError> {
-        self.0.finished.fetch_add(1, Ordering::Relaxed);
+        self.log.finished.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -579,6 +613,7 @@ fn cadences() -> Vec<(PartitionId, Cadence, Duration)> {
     .chain(
         ISO_VIDEO_ENCODERS
             .into_iter()
+            .chain(VIDEO_ENCODER_POOL)
             .map(|p| (p, frames, FPS.frame_duration() / 4)),
     )
     .collect()
@@ -618,6 +653,9 @@ pub fn run_until<T: Driven>(
     ]
     .into_iter()
     .chain(ISO_VIDEO_ENCODERS)
+    .chain(OUTPUT_POOL)
+    .chain(VIDEO_ENCODER_POOL)
+    .chain(AUDIO_ENCODER_POOL)
     .collect::<Vec<_>>();
     let gpu = gpu().expect("run_until needs the GPU the studio runs on");
     let wall = Instant::now();

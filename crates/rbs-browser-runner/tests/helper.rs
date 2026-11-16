@@ -6,9 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use rbs_browser_ipc::shm::SlotLayout;
-use rbs_browser_ipc::{Configure, HEARTBEAT_LIMIT};
+use rbs_browser_ipc::{Configure, HEARTBEAT_LIMIT, STARTUP_LIMIT};
 use rbs_browser_runner::{HelperChild, Supervisor, spawn_helper};
+use rbs_browser_shm::SlotLayout;
 
 const GUARD: Duration = Duration::from_secs(20);
 
@@ -99,6 +99,28 @@ fn a_lost_heartbeat_stops_the_helper_and_counts_as_an_exit() {
     assert!(child.unavailable);
     assert_eq!(child.attempts, 1);
     assert!(!child.process_alive());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_helper_gets_the_startup_limit_before_its_first_beat() {
+    // `sh` reading stdin stands in for an engine still starting: it never beats.
+    let mut child = spawn_helper(
+        std::path::Path::new("sh"),
+        &["-c", "cat > /dev/null"],
+        &config(),
+        SlotLayout::Rgba8Straight,
+    )
+    .expect("spawn sh");
+    let spawned = Instant::now();
+    assert!(
+        child.check_heartbeat(spawned + HEARTBEAT_LIMIT),
+        "not hung yet"
+    );
+    assert!(child.process_alive());
+    assert!(!child.check_heartbeat(spawned + STARTUP_LIMIT));
+    assert!(child.unavailable);
+    assert_eq!(child.attempts, 1);
 }
 
 #[test]

@@ -1,7 +1,9 @@
 //! Studio-allocated shared memory for browser frames (ADR-0109 decisions 3 and 8).
 //!
-//! Low-level module: the only `unsafe` in this crate. It maps one named shared memory
-//! section that the studio creates and the helper opens. The section holds a header
+//! Low-level crate: OS shared memory, and the only `unsafe` of the browser IPC. It
+//! maps one named shared memory section that the studio creates and the helper
+//! opens. It sits beside `rbs-browser-ipc`, which stays free of OS bindings. The
+//! section holds a header
 //! and three frame slots that form a triple buffer: the writer (helper) and the reader
 //! (studio) each own one slot at all times, and they exchange the third through one
 //! atomic word, so neither side ever waits and a slot is never written while it is read.
