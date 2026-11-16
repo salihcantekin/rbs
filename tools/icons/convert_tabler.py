@@ -20,7 +20,7 @@ MAP={
 "trash":"trash","transition":"transition-right","export":"upload","import":"download","arrow-left":"arrow-left","arrow-right":"arrow-right","menu":"menu-2",
 "flip-h":"flip-vertical","flip-v":"flip-horizontal","rotate-cw":"rotate-clockwise","rotate-ccw":"rotate-clockwise","fit":"aspect-ratio","fill-canvas":"maximize",
 "stretch":"arrows-horizontal","center":"focus-centered",
-"key":"key","wand":"wand","eraser":"eraser","ban":"ban",
+"key":"key","wand":"wand","eraser":"eraser","ban":"ban","flag":"flag",
 "collapse":"chevrons-up","auto-hide":"layout-sidebar-left-collapse","move":"arrows-move","float":"picture-in-picture","dock":"picture-in-picture-off","save":"device-floppy",
 }
 S=16/24

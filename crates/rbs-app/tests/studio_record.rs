@@ -2479,3 +2479,55 @@ fn scene_markers_and_the_marker_lead_follow_the_request() {
     assert!(!dir.join("quiet.rbs.toml").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ADR-0089 decision 10: the window adds a marker with `Command::AddMarker` and
+/// takes it back with `Command::RemoveMarkers`; each answers with the manual marker
+/// counts, and an add names the marker for the notice. Automatic markers do not count.
+#[test]
+fn the_window_adds_and_takes_back_a_marker() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-ui-markers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = TestClock::new();
+    let (host, rx, _display, _mic) = marked(gpu, &clock, None);
+    let markers = |rx: &Receiver<Update>| {
+        next(rx, |u| match u {
+            Update::Markers { counts, placed } => Some((counts, placed)),
+            _ => None,
+        })
+    };
+
+    host.send(Command::StartRecording(request(dir.join("ui.mkv"), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(3));
+    host.send(Command::AddMarker);
+    let (counts, placed) = markers(&rx);
+    assert_eq!(counts, [Some(1), None]);
+    let placed = placed.expect("an add names its marker");
+    assert_eq!(placed.label, "Marker 1");
+    assert_eq!(placed.t_ns, 3_000_000_000);
+    assert_eq!(placed.placed.len(), 1);
+
+    host.send(Command::RemoveMarkers(placed.placed));
+    let (counts, placed) = markers(&rx);
+    assert_eq!(counts, [Some(0), None]);
+    assert!(placed.is_none());
+
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(matches!(
+        stopped,
+        RecordingUpdate::Stopped { failure: None, .. }
+    ));
+    // The marker was taken back, so the plain take writes no manifest.
+    assert!(!dir.join("ui.rbs.toml").exists());
+
+    // Nothing records: the add is refused in words.
+    host.send(Command::AddMarker);
+    let why = next(&rx, |u| match u {
+        Update::Error(e) => Some(e),
+        _ => None,
+    });
+    assert!(why.contains("no recording"), "{why}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

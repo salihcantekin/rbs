@@ -700,6 +700,7 @@ impl App {
             Run::VirtualCamera(on) => vcam_page::send(self, on),
             Run::Replay(on) => replay_page::toggle(self, on),
             Run::SaveReplay => replay_page::save(self),
+            Run::AddMarker => self.studio.add_marker(),
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
             Run::SelectTheme(id) => self.select_theme = Some(id),
@@ -3421,7 +3422,7 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 27] = [
+const SETTINGS_SECTIONS: [&str; 28] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.audio.loudness",
@@ -3433,6 +3434,7 @@ const SETTINGS_SECTIONS: [&str; 27] = [
     "settings.general.studio",
     "settings.recording.files",
     "settings.recording.separate",
+    "settings.recording.markers",
     "settings.recording.encoding",
     "settings.recording.replay",
     "settings.remote.access-tokens",
@@ -4084,6 +4086,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_dismiss_deleted, |app| {
         app.studio.deleted.clear();
     });
+    on!(on_add_marker, |app| {
+        app.studio.add_marker();
+    });
+    on!(on_undo_marker, |app| {
+        app.studio.undo_marker();
+    });
+    on!(on_dismiss_marker, |app| {
+        app.studio.dismiss_marker();
+    });
     on!(on_reset_clip, |app, i: i32| {
         app.studio.reset_clip(i);
     });
@@ -4119,6 +4130,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_bit_depth, |app, i: i32| {
         app.studio.set_bit_depth(i);
+    });
+    on!(on_set_editor_project, |app, i: i32| {
+        app.studio.set_editor_project(i);
+    });
+    on!(on_set_marker_lead, |app, seconds: f32| {
+        app.studio.set_marker_lead(seconds);
+    });
+    on!(on_set_marker_option, |app, which: i32, on: bool| {
+        app.studio.set_marker_option(which, on);
     });
     on!(on_set_settings_canvas, |app, i: i32| {
         app.studio.set_settings_canvas(i);

@@ -1602,6 +1602,19 @@ component StatusBar inherits Rectangle {
                 vertical-alignment: center;
             }
         }
+        // Markers (ADR-0089 decision 10): while a recording that writes an editor
+        // project runs, its manual markers; a click adds one.
+        if Studio.rec-markers-shown: Button {
+            horizontal-stretch: 0;
+            kind: "ghost";
+            dense: true;
+            small: true;
+            lead: IconName.flag;
+            text: Studio.rec-markers;
+            hint: @tr("Add marker (Ctrl+Shift+M)");
+            accessible-name: @tr("Add marker. {} markers so far", Studio.rec-markers);
+            clicked => { Studio.add-marker(); }
+        }
         if Studio.st-text != "": Text {
             horizontal-stretch: 0;
             text: Studio.st-text;
@@ -1968,21 +1981,23 @@ export component MainWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("replay.toggle"); } }
             MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[31];
-                icon: Menus.icons[31];
-                enabled: Menus.enabled[31];
+                title: Menus.titles[32];
+                icon: Menus.icons[32];
+                enabled: Menus.enabled[32];
                 for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; checkable: true; checked: Menus.checked[32]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -2132,6 +2147,19 @@ export component MainWindow inherits Window {
         action-icon: IconName.stop;
         act => { Shell.vertical-left-stop(); }
         dismiss => { Shell.vertical-left-dismiss(); }
+    }
+    // A marker was added (ADR-0089 decision 10): its name and place in the
+    // recording; Undo takes it back. The notices above take the place first.
+    if Studio.marker-note != "" && Shell.toast-kind == 0 && Studio.deleted == "" && Shell.vertical-left == 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        mark: IconName.flag;
+        text: @tr("{} added", Studio.marker-note);
+        action: @tr("Undo");
+        action-icon: IconName.undo;
+        generation: Studio.marker-generation;
+        act => { Studio.undo-marker(); }
+        dismiss => { Studio.dismiss-marker(); }
     }
     // End stream asks first (U4), in a card under Go live and Record.
     if (Shell.end-stream-confirm || Shell.end-vertical-confirm) && !Shell.quit-confirm: EndStreamCard {
@@ -2332,21 +2360,23 @@ export component FloatWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("replay.toggle"); } }
             MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[31];
-                icon: Menus.icons[31];
-                enabled: Menus.enabled[31];
+                title: Menus.titles[32];
+                icon: Menus.icons[32];
+                enabled: Menus.enabled[32];
                 for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; checkable: true; checked: Menus.checked[32]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -2606,21 +2636,23 @@ export component SettingsWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("replay.toggle"); } }
             MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[31];
-                icon: Menus.icons[31];
-                enabled: Menus.enabled[31];
+                title: Menus.titles[32];
+                icon: Menus.icons[32];
+                enabled: Menus.enabled[32];
                 for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; checkable: true; checked: Menus.checked[32]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar

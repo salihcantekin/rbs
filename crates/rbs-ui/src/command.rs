@@ -1654,6 +1654,18 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "marker.add",
+        title: "Add marker",
+        tooltip: "Mark this moment in every running recording, for the editor project",
+        icon: Some("flag"),
+        shortcut: Some("Ctrl+Shift+M"),
+        menu: Menu::Output,
+        kind: action("marker.add"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
         id: "ui.app_menu.open",
         title: "Search commands",
         tooltip: "Open the RBS menu with its search field: every command, setting and panel",
@@ -2078,6 +2090,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "|",
             "replay.toggle",
             "replay.save",
+            "|",
+            "marker.add",
         ],
     ),
     (
