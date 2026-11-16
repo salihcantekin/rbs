@@ -97,5 +97,22 @@ fn ducker_benches(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, dsp_benches, ducker_benches);
+/// Noise suppression (ADR-0130 decision 11): one 480-frame stereo block, one RNNoise
+/// frame per block in `mono` mode, two in `separate` mode.
+fn noise_benches(c: &mut Criterion) {
+    use rbs_audio_filters::noise::NoiseSuppression;
+    let ty = &NoiseSuppression as &dyn AudioFilterType;
+    let mono = Values::defaults(ty);
+    let separate = mono
+        .with(ty, [("mode", Value::Choice(1))])
+        .expect("valid");
+    bench_one(c, "noise_suppression_mono", &mut [ty.make(setup(), &mono).expect("48 kHz")]);
+    bench_one(
+        c,
+        "noise_suppression_separate",
+        &mut [ty.make(setup(), &separate).expect("48 kHz")],
+    );
+}
+
+criterion_group!(benches, dsp_benches, ducker_benches, noise_benches);
 criterion_main!(benches);

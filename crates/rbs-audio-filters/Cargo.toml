@@ -1,6 +1,6 @@
 [package]
 name = "rbs-audio-filters"
-description = "Built-in audio filters for RBS: the audio filter type trait, the filter node, Gain and Noise gate (ADR-0082)."
+description = "Built-in audio filters for RBS: the audio filter type trait, the filter node, Gain, Noise gate, Ducker and Noise suppression (ADR-0082, ADR-0095, ADR-0130)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,8 @@ publish.workspace = true
 rbs-core = { path = "../rbs-core" }
 rbs-graph = { path = "../rbs-graph" }
 rbs-params = { path = "../rbs-params" }
+# RNNoise for noise suppression: pure Rust DSP, no OS or GPU (ADR-0130 decision 5).
+rbs-denoise = { path = "../rbs-denoise" }
 
 [dev-dependencies]
 # Allocation guard for `process` (performance budgets: no allocation on hot paths).

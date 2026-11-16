@@ -1,7 +1,7 @@
 # Spec: Audio filters
 
-- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082). Latency contract and compensation (ADR-0130 step 1) built; the ADR-0130 filter types and API fields are planned.
-- Owner crate(s): `rbs-audio-filters` (audio filter type trait, DSP trait, filter node, catalogue, conformance suite); `rbs-params` (settings schema, shared with video filters)
+- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082). Latency contract and compensation (ADR-0130 step 1) and Noise suppression (step 2, `rbs-denoise`) built; the compressor, limiter, equaliser and the API fields are planned.
+- Owner crate(s): `rbs-audio-filters` (audio filter type trait, DSP trait, filter node, catalogue, conformance suite); `rbs-denoise` (RNNoise, ADR-0130); `rbs-params` (settings schema, shared with video filters)
 - Related ADRs: ADR-0130 (latency, voice filters), ADR-0082, ADR-0062, ADR-0023, ADR-0020, ADR-0013
 
 ## Purpose
@@ -59,7 +59,10 @@ A DSP's output may be later than its input by `AudioDsp::latency_frames()` frame
 | --- | --- | --- |
 | `org.rbs.audio-filter.gain` | Gain | `gain` -30..+30, 0; dB, step 0.5 |
 | `org.rbs.audio-filter.noise-gate` | Noise gate | `open_threshold` -80..0, -40; dB. `close_threshold` -80..0, -46; dB. `attack` 0.1..100, 5; ms, log. `hold` 0..500, 100; ms. `release` 5..1000, 150; ms, log. `range` -80..0, -80; dB |
+| `org.rbs.audio-filter.noise-suppression` | Noise suppression | `max_reduction` 6..80, 30; dB. `mode` choice `mono` ("One pass for all channels", default) or `separate` ("Each channel"). `voice_gate` toggle, off. `voice_threshold` 0..100, 60; % |
 | `org.rbs.audio-filter.ducker` | Ducker | `key_source` a source (none), `threshold` -80..0, -30; dB. `amount` 0..60, 12; dB. `attack` 1..200, 20; ms, log. `hold` 0..2000, 300; ms. `release` 20..3000, 500; ms, log |
+
+**Noise suppression (ADR-0130 decision 5).** RNNoise from `rbs-denoise` (a vendored, patched copy of `nnnoiseless` 0.5.2; its README lists the patches). 48 kHz only: at another rate `make` returns `ParamError::Unsupported` and the studio runs a pass-through (latency 0). Samples are scaled by 32768 into RNNoise's i16 range and back. `mode` `mono` denoises the mean of the channels once and writes it to every channel; `separate` runs one RNNoise state per channel. `make` builds one state per channel of the graph format, so a `mode` change in `set` allocates nothing; it resets every state (about 10 ms of silence while they converge; the one value edit that is audible). `max_reduction` is a floor for the applied band gains (`10^(-max_reduction/20)`). With `voice_gate` on, a frame whose voice probability stays under `voice_threshold` for more than 20 frames (200 ms) is lowered by `max_reduction` too, ramped linearly across the frame; a frame at or above the threshold opens it at once (the probability belongs to the input a frame ahead of the output, so the opening leads the speech). Latency for a block of `B` frames: `960 - gcd(B, 480)` (480 for multiples of 480): input collects in a 480-frame FIFO, every full frame is denoised, and the output queues start with `480 - gcd(B, 480)` frames of silence so they never run dry; `process` reads the whole block before writing any output. It publishes a `FilterMeter`: the block's input peak, the last frame's reduction (energy ratio, dB) and the voice probability (`FilterMeter::voice`, 0..1; 0 for every other filter).
 
 **Gain** ramps linearly in amplitude over 10 ms to a new value; at 0 dB the output is bit-exact.
 
@@ -81,7 +84,7 @@ Hot path (P15, `hot-paths.md`). `cargo bench -p rbs-audio-filters` measures one 
 
 ## Tests
 
-`tests/dsp.rs` and `tests/ducker.rs` (block-driven DSP behaviour, allocation guards) and `tests/node.rs` (node in a real executor: timestamp kept, value edit without reset, missing input, wrong format, allocation guard including a value update).
+`tests/dsp.rs`, `tests/ducker.rs` and `tests/noise.rs` (block-driven DSP behaviour, allocation guards; noise suppression: latency for 480-, 960-, 256-, 1024-, 441- and 1-frame blocks, output equal to RNNoise delayed by the reported latency, reduction bounded by `max_reduction`, the voice gate, the 48 kHz rule, a `mode` switch without allocation, separate channels stay apart); `rbs-denoise/tests/denoise.rs` (agreement with `nnnoiseless` below -90 dBFS, one frame of latency, the gain floor, NaN and infinity, `reset`, no allocation including the first call) and `tests/node.rs` (node in a real executor: timestamp kept, value edit without reset, missing input, wrong format, allocation guard including a value update).
 
 ## Noise gate level bar (UI)
 
