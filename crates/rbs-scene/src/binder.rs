@@ -287,6 +287,13 @@ pub struct BindReport {
     /// in `created_sources`: the application adopts the sound half of the source's
     /// one instance into it.
     pub picture_sound: Vec<PictureSound>,
+    /// The on-air set (ADR-0107 decision 6): the media and browser sources that a
+    /// program scene (with its cued items) or a bound hold scene draws on some canvas,
+    /// with `visible` true. A temporal source that is Active but not in this set is
+    /// drawn only by a preview scene: a media source is then cued (ADR-0108 decision
+    /// 10). The host writes each media source's membership to its control handle
+    /// before it applies this sync. Listed on every sync.
+    pub on_air_sources: BTreeSet<SourceId>,
 }
 
 /// Why binding failed. The graph and the binder are unchanged.
@@ -1414,19 +1421,43 @@ impl State {
         // only while a shown program or preview scene draws them, or the host's
         // cue set names them (ADR-0105).
         let mut running = collection.running_sources_cued(cued_sources);
-        // An outgoing picture keeps playing until its transition ends.
+        // An outgoing picture keeps playing, on air, until its transition ends.
+        let mut on_air = BTreeSet::new();
         for o in outgoing.values() {
             running.extend(o.drawn.iter().copied());
             running.extend(o.heard.iter().copied());
-        }
-        // A hold scene's media and browser sources play while it is bound.
-        for (&canvas, h) in &hold {
-            running.extend(
-                collection
-                    .visible_sources_cued(canvas, h.scene, cued_items)
-                    .map_err(BindError::Scene)?,
+            on_air.extend(
+                o.drawn
+                    .iter()
+                    .chain(&o.heard)
+                    .copied()
+                    .filter(|id| collection.is_temporal(*id)),
             );
         }
+        // A program scene's temporal sources are on air (ADR-0107 decision 6).
+        for canvas in collection.canvases() {
+            if let Some(program) = canvas.program
+                && let Ok(drawn) = collection.visible_sources_cued(canvas.id, program, cued_items)
+            {
+                on_air.extend(drawn.into_iter().filter(|id| collection.is_temporal(*id)));
+            }
+        }
+        // A hold scene's media and browser sources play while it is bound, on air.
+        for (&canvas, h) in &hold {
+            let drawn = collection
+                .visible_sources_cued(canvas, h.scene, cued_items)
+                .map_err(BindError::Scene)?;
+            on_air.extend(
+                drawn
+                    .iter()
+                    .copied()
+                    .filter(|id| collection.is_temporal(*id)),
+            );
+            running.extend(drawn);
+        }
+        // Only an Active source has a membership that matters.
+        on_air.retain(|id| running.contains(id));
+        report.on_air_sources = on_air;
         for (id, bound) in &self.sources {
             let state = if running.contains(id) {
                 Lifecycle::Active

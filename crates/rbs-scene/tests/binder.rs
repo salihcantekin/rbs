@@ -2377,3 +2377,35 @@ fn a_transition_on_a_canvas_without_a_program_binds_nothing() {
         .unwrap();
     assert!(!report.compositors.contains_key(&(s.tall, Role::Incoming)));
 }
+
+#[test]
+fn the_on_air_set_holds_temporal_sources_a_program_scene_draws() {
+    let (mut s, mic) = audio_setup();
+    let (film, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    let (next, _) = s.col.add_scene("Next", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(next, ItemContent::Source(film), full(), None)
+        .unwrap();
+    // Only the preview scene draws the film: Active, not on air (cued).
+    s.col.set_preview(s.wide, Some(next)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let picture = s.binder.source_node(film).unwrap();
+    assert_eq!(state(&s, picture), Lifecycle::Active);
+    assert!(report.on_air_sources.is_empty());
+    // The take: program draws it.
+    s.col.set_program(s.wide, Some(next)).unwrap();
+    s.col.set_preview(s.wide, Some(s.live)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.on_air_sources, BTreeSet::from([film]));
+    // A capture source is never in the set.
+    assert!(!report.on_air_sources.contains(&mic));
+    // Hidden in program and drawn by no other scene: Standby, not on air.
+    let item = item_of(&s, next, film);
+    s.col.set_item_visible(item, false).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(state(&s, picture), Lifecycle::Standby);
+    assert!(report.on_air_sources.is_empty());
+}

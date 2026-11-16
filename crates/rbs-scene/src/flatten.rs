@@ -417,7 +417,7 @@ impl SceneCollection {
 
     /// True for the two temporal type ids (ADR-0107). No other type, including a
     /// plugin, is temporal.
-    fn is_temporal(&self, id: SourceId) -> bool {
+    pub(crate) fn is_temporal(&self, id: SourceId) -> bool {
         self.source(id).is_some_and(|source| {
             matches!(source.type_id.as_str(), TEMPORAL_MEDIA | TEMPORAL_BROWSER)
         })
