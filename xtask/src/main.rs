@@ -290,6 +290,10 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Plugin
             | Class::PluginSdk,
         ) => Some("the engine never depends on an adapter, the control API or the UI".to_owned()),
+        // Support crates that carry OS bindings stay with their adapters.
+        Some(Class::Support) if matches!(to, "rbs-browser-shm" | "rbs-vcam-mf-source") => {
+            Some("the engine never reaches OS bindings through a support crate".to_owned())
+        }
         Some(Class::Core | Class::Helper | Class::Support | Class::Engine) => None,
         None if is_ui_toolkit(to) || is_ffmpeg(to) || is_os_media(to) && from != "rbs-gpu" => Some(
             "OS media and UI toolkits stay in adapters; wgpu stays in the GPU crates".to_owned(),
@@ -444,6 +448,8 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-text-test"
         | "rbs-text-parley"
         | "rbs-browser-runner"
+        // Outside the workspace (ADR-0132 decision 1), so check-layers never walks
+        // it; `the_cef_runner_depends_only_on_its_allow_list` checks its manifest.
         | "rbs-browser-cef" => Class::Adapter,
         other if other.starts_with("rbs-") => return None,
         _ => return None,
@@ -504,6 +510,21 @@ mod tests {
         assert!(deny("rbs-browser-shm", "libc").is_none());
         assert!(deny("rbs-browser-shm", "rbs-browser-runner").is_some());
         assert!(deny("rbs-browser-runner", "rbs-browser-shm").is_none());
+        assert!(deny("rbs-sources", "rbs-browser-shm").is_some());
+        assert!(deny("rbs-app", "rbs-browser-shm").is_none());
+    }
+
+    /// The CEF runner is outside the workspace, so check its manifest here.
+    #[test]
+    fn the_cef_runner_depends_only_on_its_allow_list() {
+        let manifest = workspace_root().join("crates/rbs-browser-cef/Cargo.toml");
+        let edges = read_edges(&manifest).unwrap_or_default();
+        assert!(!edges.is_empty(), "rbs-browser-cef has dependencies");
+        for (_, to) in edges {
+            let allowed = matches!(to.as_str(), "cef" | "rbs-browser-ipc" | "rbs-browser-shm")
+                || to.starts_with("objc2");
+            assert!(allowed, "rbs-browser-cef must not depend on {to}");
+        }
     }
 
     #[test]
