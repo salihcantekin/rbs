@@ -53,13 +53,14 @@ pub use recording::{
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
-    DEFAULT_GIVE_WAY_SHARE, END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE,
+    AudioLatency, DEFAULT_GIVE_WAY_SHARE, END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE,
     FilterSettingsAdjusted, HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState,
     IsoAudioStart, IsoAudioStarted, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart,
     IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_CHAINS, MAX_CHAINS_PER_CANVAS,
     MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings,
     PauseRefused, PauseState, PictureId, PlannedOutput, ReplaySettings, SharedPause,
     StartPlanRequest, Studio, StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
+    compensate_filter_latency,
 };
 pub use studio::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,

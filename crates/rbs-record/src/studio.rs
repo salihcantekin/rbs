@@ -69,6 +69,7 @@ pub use estimate_plan::{PlannedOutput, StartPlanRequest};
 mod hold;
 mod iso_audio;
 mod iso_video;
+mod latency;
 mod loudness;
 mod monitor;
 mod pause;
@@ -80,6 +81,7 @@ pub use iso_video::{
     DEFAULT_GIVE_WAY_SHARE, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart, IsoVideoStarted,
     IsoVideoTrack,
 };
+pub use latency::{AudioLatency, compensate as compensate_filter_latency};
 pub use monitor::MonitorState;
 pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
@@ -355,6 +357,8 @@ struct Instance {
     watch: Watch,
     // The audio input's sync offset channel.
     offset: Option<ParamSender<InputParams>>,
+    /// The offset last sent on `offset` (stored minus the filter latency, ADR-0130).
+    sent_offset_ns: i64,
 }
 
 /// One bound source.
@@ -373,6 +377,8 @@ struct FilterEntry {
     node: NodeId,
     /// Its running instance.
     instance: Option<FilterInstance>,
+    /// In the running plan (enabled and not Standby); only those count latency.
+    scheduled: bool,
 }
 
 /// A running filter: the value channel the studio keeps and what the node shares
@@ -2174,6 +2180,7 @@ impl Studio {
                     source: source.id,
                     node: *node,
                     instance: None,
+                    scheduled: false,
                 });
             }
             for (filter, _) in &report.changed_filters {
@@ -2286,6 +2293,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Video(v.stats),
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 SourceInstance::Still(st) => {
@@ -2297,6 +2305,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Video(st.stats),
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 SourceInstance::Audio(a) => {
@@ -2309,9 +2318,13 @@ impl Studio {
                     }));
                     let partition = self.settings.partitions.audio;
                     let mut offset = a.offset;
-                    // Sent before the node runs, so its first block already has it.
+                    // Sent before the node runs, so its first block already has it. The
+                    // filter latency is compensated after the filters below are made
+                    // (ADR-0130 decision 4).
+                    let mut sent_offset_ns = 0;
                     if let Some(&ns) = self.settings.audio_offsets.get(&entry.source) {
                         offset.send(input_params(ns));
+                        sent_offset_ns = ns;
                     }
                     self.engine
                         .adopt::<()>(partition, entry.state.node, Box::new(a.node))?;
@@ -2320,6 +2333,7 @@ impl Studio {
                         gpu: false,
                         watch: Watch::Audio(a.stats, meter),
                         offset: Some(offset),
+                        sent_offset_ns,
                     });
                 }
                 SourceInstance::Media(m) => {
@@ -2333,6 +2347,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Media(m.stats),
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 SourceInstance::Browser(b) => {
@@ -2346,6 +2361,7 @@ impl Studio {
                         gpu: true,
                         watch: Watch::Browser { size },
                         offset: None,
+                        sent_offset_ns: 0,
                     });
                 }
                 _ => {
@@ -2419,6 +2435,8 @@ impl Studio {
             }
         }
         self.filter_problems = adjusted;
+        // Inputs compensate their filters' latency before the new plan runs.
+        self.apply_input_offsets(&scheduled);
 
         // Layers in link order of the final plan, strips per mixer input.
         self.send_program_layers(&plan);
@@ -2775,17 +2793,18 @@ impl Studio {
         } else {
             self.settings.audio_offsets.insert(source, offset_ns);
         }
-        let live = self
-            .entries
-            .iter_mut()
+        // The input gets the stored offset minus its filters' latency (ADR-0130).
+        let scheduled: BTreeSet<NodeId> = self
+            .filters
+            .iter()
+            .filter(|f| f.scheduled)
+            .map(|f| f.node)
+            .collect();
+        self.apply_input_offsets(&scheduled);
+        self.entries
+            .iter()
             .filter(|e| e.source == source)
-            .filter_map(|e| e.instance.as_mut()?.offset.as_mut());
-        let mut sent = false;
-        for offset in live {
-            offset.send(input_params(offset_ns));
-            sent = true;
-        }
-        sent
+            .any(|e| e.instance.as_ref().is_some_and(|i| i.offset.is_some()))
     }
 
     /// Sends `values` to a running filter without changing the collection (a slider
@@ -3743,6 +3762,7 @@ impl Studio {
         for e in &mut self.entries {
             e.scheduled = scheduled.contains(&e.state.node);
         }
+        self.apply_input_offsets(&scheduled);
         self.send_program_layers(&plan);
         (removed, errors)
     }

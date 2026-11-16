@@ -27,7 +27,7 @@ use rbs_gpu::yuv_decode::check_color;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, RestartPolicy, WarmCtx};
 use rbs_media_decode::{
-    AUDIO_LOOKAHEAD, DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory, MediaSample,
+    AUDIO_LOOKAHEAD, DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory,
     PictureLayout, SampleColor, VIDEO_LOOKAHEAD, refuse_picture,
 };
 
@@ -667,8 +667,9 @@ fn worker(
         let _ = tx.send(Err(MediaNodeError::Failed(error.to_string())));
         return;
     }
-    let has_audio = decoder.audio_stream();
-    let sample = match first_picture(&mut *decoder) {
+    let has_audio = decoder.has_audio();
+    let mut interleave = Interleave::new(cursor);
+    let sample = match first_picture(&mut *decoder, &mut interleave) {
         Ok(sample) => sample,
         Err(error) => {
             let _ = tx.send(Err(error));
@@ -676,7 +677,7 @@ fn worker(
         }
     };
     if let Some(picture) = sample.picture.as_ref() {
-        if let Some(why) = refuse_picture(picture.width, picture.height, picture.bytes.len()) {
+        if let Some(why) = refuse_picture(picture.width, picture.height, picture.system_bytes()) {
             let _ = tx.send(Err(MediaNodeError::Invalid(why.expected())));
             return;
         }
@@ -704,12 +705,13 @@ fn worker(
         let sample = if let Some(sample) = primed.take() {
             sample
         } else {
-            match decoder.pull() {
+            match interleave.pull(&mut *decoder) {
                 Ok(Some(sample)) => sample,
                 Ok(None) => {
                     if !loop_flag.load(Ordering::Acquire) {
                         break;
                     }
+                    interleave = Interleave::new(Duration::ZERO);
                     if decoder.seek(Duration::ZERO).is_err() {
                         break;
                     }
@@ -730,11 +732,16 @@ fn worker(
         known_duration = sample.frame_duration.or(known_duration);
         next_pts = end;
         if let Some(picture) = sample.picture {
-            if refuse_picture(picture.width, picture.height, picture.bytes.len()).is_some() {
+            if refuse_picture(picture.width, picture.height, picture.system_bytes()).is_some() {
                 break;
             }
-            let mark = picture.bytes.first().copied().unwrap_or(0);
-            let bytes = picture.bytes.len();
+            let Some(parts) = picture_parts(&picture) else {
+                // Native surfaces land with the node split (ADR-0108 decision 5).
+                failed.store(true, Ordering::Release);
+                break;
+            };
+            let mark = parts.bytes.first().copied().unwrap_or(0);
+            let bytes = parts.bytes.len();
             while !admit(
                 queued_frames.load(Ordering::Relaxed) as usize,
                 queued_bytes.load(Ordering::Relaxed) as usize,
@@ -745,7 +752,7 @@ fn worker(
                 }
                 thread::yield_now();
             }
-            if let Ok(frame) = system_frame(&picture_parts(&picture), origin + start) {
+            if let Ok(frame) = system_frame(&parts, origin + start) {
                 let item = Pending {
                     frame,
                     start,
@@ -778,13 +785,121 @@ fn worker(
     }
 }
 
-fn picture_parts(picture: &rbs_media_decode::Picture) -> PictureBits<'_> {
-    PictureBits {
-        width: picture.width,
-        height: picture.height,
-        layout: picture.layout,
-        color: picture.color,
-        bytes: &picture.bytes,
+fn picture_parts(picture: &rbs_media_decode::Picture) -> Option<PictureBits<'_>> {
+    match picture.data() {
+        rbs_media_decode::PictureData::System {
+            layout,
+            color,
+            bytes,
+        } => Some(PictureBits {
+            width: picture.width,
+            height: picture.height,
+            layout: *layout,
+            color: *color,
+            bytes,
+        }),
+        _ => None,
+    }
+}
+
+/// One picture with the sound that plays during it. The port reads streams
+/// separately (ADR-0108 decision 4); until the worker paces each stream on its own
+/// ring (decision 5), this pairs them.
+struct MediaSample {
+    pts: Option<Duration>,
+    frame_duration: Option<Duration>,
+    picture: Option<rbs_media_decode::Picture>,
+    pcm: Option<rbs_media_decode::InterleavedPcm>,
+}
+
+/// Most sound frames paired with one picture (1 s at 48 kHz). More is dropped, so a
+/// file whose pictures carry no timestamp cannot pull a whole track into one picture.
+const MAX_PAIRED_SOUND_FRAMES: usize = 48_000;
+
+/// Pairs each picture with the sound stamped before its end, using the same timestamp
+/// fallback as [`stamp`]. Pictures stamped before the seek cursor are skipped (an
+/// adapter may seek to the keyframe before it).
+struct Interleave {
+    cursor: Duration,
+    pending: Option<rbs_media_decode::SoundSample>,
+    sound_done: bool,
+    sound_end: Duration,
+    next_pts: Duration,
+    known: Option<Duration>,
+}
+
+impl Interleave {
+    fn new(cursor: Duration) -> Self {
+        Self {
+            cursor,
+            pending: None,
+            sound_done: false,
+            sound_end: cursor,
+            next_pts: cursor,
+            known: None,
+        }
+    }
+
+    fn pull(&mut self, decoder: &mut dyn MediaDecoder) -> Result<Option<MediaSample>, DecodeError> {
+        let picture = loop {
+            let Some(picture) = decoder.next_picture()? else {
+                return Ok(None);
+            };
+            let start = picture.pts.unwrap_or(self.next_pts);
+            let duration = picture.frame_duration.or(self.known);
+            self.known = duration;
+            self.next_pts = duration.map_or(start, |d| start.saturating_add(d));
+            let ends_after_cursor = duration.map_or(start >= self.cursor, |d| {
+                start.saturating_add(d) > self.cursor
+            });
+            if ends_after_cursor {
+                break picture;
+            }
+        };
+        let until = self.next_pts;
+        let mut pcm: Option<rbs_media_decode::InterleavedPcm> = None;
+        while !self.sound_done {
+            let sound = match self.pending.take() {
+                Some(sound) => sound,
+                None => match decoder.next_sound()? {
+                    Some(sound) => sound,
+                    None => {
+                        self.sound_done = true;
+                        break;
+                    }
+                },
+            };
+            let start = sound.pts.unwrap_or(self.sound_end);
+            if start >= until {
+                self.pending = Some(sound);
+                break;
+            }
+            let channels = usize::from(sound.pcm.channels.max(1));
+            let rate = u64::from(sound.pcm.sample_rate.max(1));
+            let frames = sound.pcm.samples.len() / channels;
+            self.sound_end =
+                start.saturating_add(Duration::from_nanos(frames as u64 * 1_000_000_000 / rate));
+            match pcm.as_mut() {
+                None => pcm = Some(sound.pcm),
+                Some(acc) => {
+                    // A chunk with another channel count or rate is skipped; the node
+                    // split resamples and remaps on the worker (ADR-0108 decision 5).
+                    let held = acc.samples.len() / usize::from(acc.channels.max(1));
+                    if acc.channels == sound.pcm.channels
+                        && acc.sample_rate == sound.pcm.sample_rate
+                        && held + frames <= MAX_PAIRED_SOUND_FRAMES
+                    {
+                        acc.samples.extend_from_slice(&sound.pcm.samples);
+                    }
+                }
+            }
+        }
+        Ok(Some(MediaSample {
+            pts: picture.pts,
+            frame_duration: picture.frame_duration,
+            picture: Some(picture.picture),
+            pcm,
+        }))
     }
 }
 
@@ -796,16 +911,14 @@ struct PictureBits<'a> {
     bytes: &'a [u8],
 }
 
-fn first_picture(decoder: &mut dyn MediaDecoder) -> Result<MediaSample, MediaNodeError> {
-    loop {
-        match decoder.pull() {
-            Ok(None) => {
-                return Err(MediaNodeError::Invalid("a file with a picture stream"));
-            }
-            Ok(Some(sample)) if sample.picture.is_some() => return Ok(sample),
-            Ok(Some(_)) => {}
-            Err(error) => return Err(MediaNodeError::Failed(error.to_string())),
-        }
+fn first_picture(
+    decoder: &mut dyn MediaDecoder,
+    interleave: &mut Interleave,
+) -> Result<MediaSample, MediaNodeError> {
+    match interleave.pull(decoder) {
+        Ok(None) => Err(MediaNodeError::Invalid("a file with a picture stream")),
+        Ok(Some(sample)) => Ok(sample),
+        Err(error) => Err(MediaNodeError::Failed(error.to_string())),
     }
 }
 
@@ -909,7 +1022,8 @@ fn system_frame(
                 DecodeError::Failed(format!("colour is not decodable: {error}"))
             })?;
             Err(DecodeError::Unsupported(
-                "nv12 is checked with check_color; YUV upload on the worker is not wired yet",
+                "nv12 is checked with check_color; YUV upload on the worker is not wired yet"
+                    .to_owned(),
             ))
         }
         PictureLayout::P010 => {
@@ -917,9 +1031,11 @@ fn system_frame(
                 DecodeError::Failed(format!("colour is not decodable: {error}"))
             })?;
             Err(DecodeError::Unsupported(
-                "p010 is checked with check_color; YUV upload on the worker is not wired yet",
+                "p010 is checked with check_color; YUV upload on the worker is not wired yet"
+                    .to_owned(),
             ))
         }
+        _ => Err(DecodeError::Unsupported("picture layout".to_owned())),
     }
 }
 
@@ -928,6 +1044,8 @@ fn map_color(color: SampleColor) -> ColorSpace {
         SampleColor::Srgb => ColorSpace::SRGB,
         SampleColor::Bt709Limited => ColorSpace::BT709_LIMITED,
         SampleColor::Bt709Full => ColorSpace::BT709_FULL,
+        // A colour this node does not know is refused by `check_color` later.
+        _ => ColorSpace::SRGB,
     }
 }
 

@@ -224,6 +224,9 @@ pub enum ParamError {
     OutOfRange(&'static str),
     /// A choice that is not one of the field's options.
     UnknownChoice(&'static str),
+    /// The type cannot run with this setup (for example its sample rate); the reason
+    /// is a short English phrase (ADR-0130 decision 5).
+    Unsupported(&'static str),
 }
 
 impl fmt::Display for ParamError {
@@ -233,6 +236,7 @@ impl fmt::Display for ParamError {
             ParamError::WrongKind(k) => write!(f, "setting {k:?} has the wrong kind of value"),
             ParamError::OutOfRange(k) => write!(f, "setting {k:?} is out of range"),
             ParamError::UnknownChoice(k) => write!(f, "setting {k:?} has no such option"),
+            ParamError::Unsupported(why) => write!(f, "not supported: {why}"),
         }
     }
 }

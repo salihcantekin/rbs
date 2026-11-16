@@ -137,5 +137,6 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0127](0127-multistreaming-to-several-destinations.md) | Multistreaming: one stream to several destinations, one shared encoder, each destination isolated; RTMPS; service presets | Accepted |
 | [0128](0128-scene-transitions.md) | Scene transitions: Cut, Fade, Move, Swipe, Slide (Stinger later); the incoming scene drawn by its own compositor only while a transition runs | Accepted |
 | [0129](0129-text-source.md) | A text source: a fixed box drawn on the CPU once per change through a text rendering port, updated in place; live kinds (clock, countdown, stopwatch, elapsed time) and crisp resizing | Accepted |
+| [0130](0130-voice-filters-noise-suppression-compressor-limiter-eq.md) | Voice filters: noise suppression, compressor, limiter and equaliser, with filter latency | Accepted |
 | [0131](0131-import-obs-scene-collections-and-profiles.md) | Import OBS scene collections, profiles and hotkeys as a new collection and output profile, through a mapper registry, with a report of what did not come across | Accepted |
 | [0132](0132-browser-engine-css-interaction.md) | The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in | Accepted |
