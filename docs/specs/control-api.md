@@ -173,6 +173,8 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | `undo_conflict` | -32032 | Undo record used out of order |
 | `file_exists` | -32033 | Explicit file exists |
 | `failed` | -32040 | Valid but could not be carried out |
+| `forbidden` | -32011 | The API may not do this whatever the token's scope (protocol 1.75: a text source's `file`) |
+| `not_ready` | -32024 | Being prepared; ask again shortly (protocol 1.75: `text.fonts` before the first font list) |
 
 ## API parity (ADR-0052)
 
@@ -537,6 +539,16 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Timing.** A pause or resume takes effect on a render tick at least two render periods after the call (`recording.md`, "Pause and hold"); a resume before the pause began cancels it. Every recording the desktop app starts can be paused, its separate files with it.
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
+
+### Protocol 1.75: text sources (ADR-0129 decision 8)
+
+- **`source.add {kind: "text", text?, name?, scene?, global?}`** (`control`; effect `edit` with the on-air check, as any `source.add`) adds a text source showing `text` (absent: "Text"), named `name` (absent: "Text", made unique). It has no target: `adapter` and `target` may be left out and are ignored. The box (`width`, `height`) fits the text with its padding, measured by the server's text renderer within 200 ms, else 640 x 160; the item has the same size, centred on the canvas, so it draws 1:1. One undo step; answers `{source}`. `text` on any other kind is `invalid_params`; `with_audio` is ignored. `source.list` rows carry `kind: "text"`.
+- **Settings.** `source.get_settings` and `source.set_settings` read and write the text keys of `scene-sources.md`, "Text", with the strict checks of an edit (`invalid_params` naming the key). **`file` cannot be written through the API** (`forbidden`, whatever the scope) until token scopes exist: a path would put any readable file on air. Error texts never include a path or file contents.
+- **`source.set_text {source, text}`** (`control`; `edit`) replaces only `text`; one undo step. `not_found` for an unknown source, `invalid_params` for a source that is not a text or a text over 10 000 characters.
+- **`text.fonts {}`** (`read`) answers `{families}`: the installed font families, sorted, from the text worker's cache (refreshed at most once a minute). It never waits: the first call starts the worker and answers `not_ready` until the first list exists. `failed` when the server has no text renderer.
+- **Not yet.** `text.timer` comes with the live kinds (phase (d)).
+- **Older clients and servers.** A 1.74 server answers the new methods `method_not_found` and refuses `kind: "text"` with `invalid_params`; a client reads unknown error kinds generically.
+- **As built.** `rbs-api` `SourceKind::Text`, `AddSource::text`, `SetText`, `TextFonts`, `ErrorKind::{Forbidden, NotReady}`; `rbs-app` `Host::{add_text, set_source_text}` and `Studio::text_fonts`; the desktop app registers `rbs-text-parley` on the system's fonts. Tests: `crates/rbs-api/tests/json.rs` (`text_sources_decode_as_protocol_1_75`), `crates/rbs-app/tests/studio_api.rs` (`a_control_api_client_adds_and_edits_a_text_source`), `crates/rbs-app/tests/studio_record.rs` (`a_text_box_is_locked_while_a_take_records_its_picture_separately`).
 
 ### Protocol 1.74: stream destinations (ADR-0127 decision 16)
 

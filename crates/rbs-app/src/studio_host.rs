@@ -130,6 +130,10 @@ pub enum SourceKind {
     Media,
     /// A web page from the browser helper (ADR-0109). Not in [`SourceKind::ALL`].
     Browser,
+    /// A text, drawn by the registered text renderer (ADR-0129). Not in
+    /// [`SourceKind::ALL`]: it has no target; the control API adds it (phase (c)), the
+    /// Add source menu later (phase (f)).
+    Text,
 }
 
 impl SourceKind {
@@ -156,6 +160,7 @@ impl SourceKind {
             SourceKind::Color => types::COLOR_SOURCE,
             SourceKind::Media => types::MEDIA_SOURCE,
             SourceKind::Browser => types::BROWSER_SOURCE,
+            SourceKind::Text => types::TEXT_SOURCE,
         })
     }
 
@@ -168,6 +173,7 @@ impl SourceKind {
                 SourceKind::Color,
                 SourceKind::Media,
                 SourceKind::Browser,
+                SourceKind::Text,
             ])
             .find(|k| k.type_id() == *type_id)
     }
@@ -185,6 +191,7 @@ impl SourceKind {
             SourceKind::Color => "Colour",
             SourceKind::Media => "Media file",
             SourceKind::Browser => "Browser",
+            SourceKind::Text => "Text",
         }
     }
 
@@ -201,6 +208,7 @@ impl SourceKind {
             SourceKind::Color => "color",
             SourceKind::Media => "media",
             SourceKind::Browser => "browser",
+            SourceKind::Text => "text",
         }
     }
 
@@ -783,6 +791,12 @@ pub enum Command {
     AddBrowser {
         /// `http`, `https`, or `file` URL.
         url: String,
+    },
+    /// Add a text source showing `text` (ADR-0129), its box fitted to the text, one
+    /// undo step. No menu sends it yet (phase (f)).
+    AddText {
+        /// What it shows.
+        text: String,
     },
     /// The fill colour of a colour source (`#rrggbb` or `#rrggbbaa`), one undo step.
     SetSourceFill {
@@ -4371,6 +4385,10 @@ impl Host {
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
             Command::AddMedia { path } => match self.add_media_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::AddText { text } => match self.add_text(None, &text, false) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
@@ -8572,7 +8590,18 @@ impl Host {
     /// with `global`); one undo step.
     fn add_global(&mut self, kind: SourceKind, target: &Target) -> Result<SourceId, Refusal> {
         let (settings, layout) = self.new_source(kind, target).map_err(Refusal::Failed)?;
-        let name = unique_name(&self.collection, &target.name);
+        self.add_global_with(&target.name, kind, settings, layout)
+    }
+
+    /// [`Host::add_global`] with the settings and layout given.
+    fn add_global_with(
+        &mut self,
+        base: &str,
+        kind: SourceKind,
+        settings: Settings,
+        layout: Layout,
+    ) -> Result<SourceId, Refusal> {
+        let name = unique_name(&self.collection, base);
         let mut records = Vec::new();
         let done = (|| {
             let g = self.ensure_globals(&mut records)?;
@@ -8986,6 +9015,81 @@ impl Host {
                 Err(Refusal::of(&e))
             }
         }
+    }
+
+    /// Settings and layout of a new text source showing `text` (ADR-0129 decision 4):
+    /// the box fits the text with its padding, measured by the registered renderer, or
+    /// is 640 x 160 when there is none, it fails or takes longer than
+    /// [`TEXT_MEASURE_WAIT`]; the item is the same size, centred, so it draws 1:1.
+    fn new_text(&self, text: &str) -> Result<(Settings, Layout), Refusal> {
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or_else(|| Refusal::NotFound("The canvas is gone.".into()))?;
+        let (cw, ch) = (canvas.size.width, canvas.size.height);
+        let mut settings = Settings::new();
+        settings.insert(keys::TEXT.into(), SettingValue::Text(text.to_owned()));
+        let [dw, dh] = rbs_sources::text::DEFAULT_BOX;
+        settings.insert(keys::WIDTH.into(), SettingValue::Int(i64::from(dw)));
+        settings.insert(keys::HEIGHT.into(), SettingValue::Int(i64::from(dh)));
+        let parsed = rbs_sources::text::validate_text(&settings)
+            .map_err(|e| Refusal::Invalid(e.to_string()))?;
+        let renderer = rbs_sources::text::pick_renderer(
+            &self.adapters.sources.text_renderers(),
+            &parsed.block,
+        );
+        let [w, h] = renderer
+            .and_then(|r| measure_text(r, parsed.block, TEXT_MEASURE_WAIT))
+            .map_or([dw, dh], |[w, h]| {
+                // At least one pixel, and within the canvas.
+                [w.clamp(1, cw.max(1)), h.clamp(1, ch.max(1))]
+            });
+        settings.insert(keys::WIDTH.into(), SettingValue::Int(i64::from(w)));
+        settings.insert(keys::HEIGHT.into(), SettingValue::Int(i64::from(h)));
+        rbs_sources::validate_settings(&SourceKind::Text.type_id(), &settings)
+            .map_err(|e| Refusal::Invalid(e.to_string()))?;
+        let layout = Layout::new(
+            [(cw as f32 - w as f32) * 0.5, (ch as f32 - h as f32) * 0.5],
+            [w as f32, h as f32],
+        );
+        Ok((settings, layout))
+    }
+
+    /// Adds a text source showing `text` to the scene being edited (or as a global
+    /// source); one undo step.
+    fn add_text(
+        &mut self,
+        name: Option<&str>,
+        text: &str,
+        global: bool,
+    ) -> Result<SourceId, Refusal> {
+        let (settings, layout) = self.new_text(text)?;
+        let base = name.filter(|n| !n.trim().is_empty()).unwrap_or("Text");
+        if global {
+            self.add_global_with(base, SourceKind::Text, settings, layout)
+        } else {
+            self.add_still(base, SourceKind::Text, settings, layout, None)
+        }
+    }
+
+    /// Replaces a text source's `text` only (`source.set_text`); one undo step.
+    fn set_source_text(&mut self, id: SourceId, text: &str) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        if SourceKind::of(&source.type_id) != Some(SourceKind::Text) {
+            return Err(Refusal::Invalid(format!(
+                "{} is not a text source.",
+                source.name
+            )));
+        }
+        let mut patch = std::collections::BTreeMap::new();
+        patch.insert(
+            keys::TEXT.to_owned(),
+            serde_json::Value::String(text.to_owned()),
+        );
+        self.patch_source_settings(id, &patch)
     }
 
     /// The shared end of adding a still source: one source, one item, one undo step.
@@ -12351,7 +12455,34 @@ impl ApiTarget<'_> {
                         .collect(),
                 }))
             }
+            C::SourceAdd(p) if p.kind == api::SourceKind::Text => {
+                // A text has no target (ADR-0129 decision 8).
+                let text = p.text.as_deref().unwrap_or("Text");
+                let id = if p.global {
+                    if p.scene.is_some() {
+                        return Err(ApiError::new(
+                            ErrorKind::InvalidParams,
+                            "a global source is in every scene: leave out scene",
+                        ));
+                    }
+                    host.add_text(p.name.as_deref(), text, true)
+                        .map_err(|e| refused(&e))?
+                } else {
+                    host.placing_into(p.scene, |h| {
+                        h.add_text(p.name.as_deref(), text, false)
+                            .map_err(|e| refused(&e))
+                    })?
+                };
+                host.apply(notify);
+                Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
+            }
             C::SourceAdd(p) => {
+                if p.text.is_some() {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "text is only for a text source",
+                    ));
+                }
                 let kind = app_kind(p.kind);
                 let Some(mut target) = host
                     .targets(kind)
@@ -12915,6 +13046,19 @@ impl ApiTarget<'_> {
                 }))
             }
             C::SourceSetSettings(p) => {
+                // A text path would put any readable file on air: the API cannot write
+                // it until token scopes exist (ADR-0129 decision 8).
+                if p.settings.contains_key(keys::FILE)
+                    && host
+                        .collection
+                        .source(SourceId::from_raw(p.source))
+                        .is_some_and(|s| SourceKind::of(&s.type_id) == Some(SourceKind::Text))
+                {
+                    return Err(ApiError::new(
+                        ErrorKind::Forbidden,
+                        "the control API cannot set a text source's file",
+                    ));
+                }
                 if host
                     .patch_source_settings(SourceId::from_raw(p.source), &p.settings)
                     .map_err(|e| refused(&e))?
@@ -12923,6 +13067,30 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceSetText(p) => {
+                if host
+                    .set_source_text(SourceId::from_raw(p.source), &p.text)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::TextFonts => match host.studio.text_fonts(&host.adapters.sources) {
+                rbs_record::TextFonts::Ready(families) => {
+                    Ok(Response::TextFonts(rbs_api::types::TextFonts {
+                        families: families.as_ref().clone(),
+                    }))
+                }
+                rbs_record::TextFonts::NotReady => Err(ApiError::new(
+                    ErrorKind::NotReady,
+                    "the font list is being read; ask again shortly",
+                )),
+                rbs_record::TextFonts::Unavailable => Err(ApiError::new(
+                    ErrorKind::Failed,
+                    "no text renderer is installed",
+                )),
+            },
             C::SourceReload(p) => {
                 if host
                     .reload_source(SourceId::from_raw(p.source))
@@ -14539,6 +14707,7 @@ fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
         SourceKind::Color => api::SourceKind::Color,
         SourceKind::Media => api::SourceKind::Media,
         SourceKind::Browser => api::SourceKind::Browser,
+        SourceKind::Text => api::SourceKind::Text,
     })
 }
 
@@ -14554,6 +14723,7 @@ fn app_kind(k: api::SourceKind) -> SourceKind {
         api::SourceKind::Color => SourceKind::Color,
         api::SourceKind::Media => SourceKind::Media,
         api::SourceKind::Browser => SourceKind::Browser,
+        api::SourceKind::Text => SourceKind::Text,
     }
 }
 
@@ -14765,6 +14935,31 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
 }
 
 /// A control API error for a refused edit.
+/// How long adding a text source waits for its text to be measured (ADR-0129
+/// decision 4) before it takes the default box.
+const TEXT_MEASURE_WAIT: Duration = Duration::from_millis(200);
+
+/// Measures `block` with `renderer` on a thread of its own, waiting at most `wait`:
+/// the first font load can be slow, and the control thread must not wait longer. A
+/// late answer is dropped with its thread; a failure or a panic is `None`.
+fn measure_text(
+    renderer: Arc<dyn rbs_text::TextRenderer>,
+    block: rbs_text::TextBlock,
+    wait: Duration,
+) -> Option<[u32; 2]> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("rbs-text-measure".into())
+        .spawn(move || {
+            let measured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                renderer.measure(&block, None)
+            }));
+            let _ = tx.send(measured.ok().and_then(Result::ok));
+        })
+        .ok()?;
+    rx.recv_timeout(wait).ok().flatten()
+}
+
 fn refused(e: &Refusal) -> ApiError {
     ApiError::new(
         match e {
