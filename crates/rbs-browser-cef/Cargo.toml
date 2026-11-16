@@ -1,0 +1,50 @@
+[package]
+name = "rbs-browser-cef"
+description = "CEF browser helper executable (ADR-0109, ADR-0132). Built outside the workspace so no workspace command downloads CEF."
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.87"
+repository = "https://github.com/salihcantekin/rbs"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Its own workspace and lock file (ADR-0132 decision 1). Build with
+# `cargo build --release --manifest-path crates/rbs-browser-cef/Cargo.toml`.
+[workspace]
+
+[[bin]]
+name = "rbs-browser-cef"
+path = "src/main.rs"
+
+# macOS runs the renderer, GPU and utility processes from helper apps inside the
+# bundle; Linux and Windows reuse the main executable.
+[[bin]]
+name = "rbs-browser-cef-helper"
+path = "src/bin/helper.rs"
+
+[package.metadata.cef.bundle]
+helper_name = "rbs-browser-cef-helper"
+
+[dependencies]
+# The pin is exact: the CEF version lives in the crate version (cef-pin.toml).
+cef = { version = "=156.6.0" }
+rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+rbs-browser-shm = { path = "../rbs-browser-shm" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSResponder", "NSEvent"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+strip = "debuginfo"

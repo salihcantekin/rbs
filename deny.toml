@@ -8,8 +8,10 @@ deny = [
     { name = "tauri", reason = "ADR-0016: no web view UI" },
     { name = "webview2-com", reason = "ADR-0016: no web view UI" },
     { name = "webkit2gtk", reason = "ADR-0016: no web view UI" },
-    # CEF renders the browser source as video in a separate process (ADR-0006); only that adapter may use it.
-    { name = "cef", wrappers = ["rbs-source-browser"], reason = "ADR-0016: CEF only for the browser source" },
+    # CEF renders the browser source as video in a separate process (ADR-0109, ADR-0132); only the excluded
+# rbs-browser-cef crate may use it. Check its own lock file with
+# `cargo deny --manifest-path crates/rbs-browser-cef/Cargo.toml check bans licenses advisories`.
+    { name = "cef", wrappers = ["rbs-browser-cef"], reason = "ADR-0016: CEF only for the browser source" },
     # The UI toolkit stays in the desktop shell: rbs-ui and rbs-user-data are toolkit-free (ADR-0022, ADR-0057).
     # rbs-app-ui is part of the shell: the code Slint generates from rbs-app/ui, used only by rbs-app.
     { name = "slint", wrappers = ["rbs-app", "rbs-app-ui"], reason = "ADR-0057: only the desktop shell (rbs-app, rbs-app-ui) uses the UI toolkit" },

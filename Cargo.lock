@@ -4391,6 +4391,7 @@ dependencies = [
  "rbs-audio-io-wasapi",
  "rbs-browser-ipc",
  "rbs-browser-runner",
+ "rbs-browser-shm",
  "rbs-capture",
  "rbs-capture-avf",
  "rbs-capture-mf",
@@ -4550,17 +4551,22 @@ dependencies = [
 [[package]]
 name = "rbs-browser-ipc"
 version = "0.0.1"
-dependencies = [
- "libc",
- "windows",
-]
 
 [[package]]
 name = "rbs-browser-runner"
 version = "0.0.1"
 dependencies = [
  "rbs-browser-ipc",
+ "rbs-browser-shm",
  "rbs-crash",
+]
+
+[[package]]
+name = "rbs-browser-shm"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "windows",
 ]
 
 [[package]]

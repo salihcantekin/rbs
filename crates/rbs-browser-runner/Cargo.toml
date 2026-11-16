@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+rbs-browser-shm = { path = "../rbs-browser-shm" }
 rbs-crash = { path = "../rbs-crash" }
 
 [lints]
