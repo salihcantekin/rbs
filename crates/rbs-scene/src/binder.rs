@@ -15,10 +15,11 @@
 //!
 //! With [`SceneBinder::with_audio`], each canvas also gets a mixer node (ADR-0039)
 //! fed by the sources with audio that are visible in its program scene. An
-//! audio-only source is linked from its filter-chain tail. A source that also has
-//! video keeps that node in the render partition and links its own audio pin
-//! across partitions (ADR-0106); the host names the queue reader after lowering.
-//! The application attaches the canvas's audio encoder to [`SceneBinder::mixer`].
+//! audio-only source is linked from its filter-chain tail. A source with picture
+//! and sound is two nodes (ADR-0106): its picture node in the render partition and
+//! its sound node in the audio partition, and the mixer is linked from the sound
+//! node. The application attaches the canvas's audio encoder to
+//! [`SceneBinder::mixer`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,7 +30,6 @@ use rbs_graph::description::{
     GraphDescription, GraphError, Link, NodeId, PartitionId, SchedulePlan,
 };
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId};
-use rbs_graph::partition::Crossing;
 
 use crate::collection::{SceneCollection, SceneError};
 use crate::flatten::Affine2;
@@ -45,6 +45,15 @@ pub const MIXER_TYPE: &str = "org.rbs.audio.mixer";
 pub trait NodeTypes {
     /// The descriptor of `type_id`, or `None` if no such type is installed.
     fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>>;
+
+    /// The sound node type of a picture-and-sound source type (ADR-0106 decision 2),
+    /// or `None` when `picture` has no sound node. With audio bound, the binder gives
+    /// each source of such a type a second node of this type in the audio partition,
+    /// and every mixer that hears the source is linked from it.
+    fn sound_type(&self, picture: &NodeTypeId) -> Option<NodeTypeId> {
+        let _ = picture;
+        None
+    }
 
     /// Whether a source of `type_id` takes every settings change in place: the binder
     /// keeps its node and reports it in [`BindReport::changed_sources`] instead of
@@ -137,33 +146,26 @@ pub struct BoundCompositor {
 pub struct BoundAudio {
     /// The source.
     pub source: SourceId,
-    /// The strip's producer (ADR-0037).
+    /// The strip's producer (ADR-0037), in the mixer's partition.
     ///
     /// For an audio-only source this is the tail of its audio filter chain (the
-    /// source node when no filter is enabled), in the mixer's partition (ADR-0082).
-    ///
-    /// For a source that also has video this is that source node until the host
-    /// calls [`BindReport::assign_queue_readers`] after lowering. That call sets it
-    /// to the partition-queue reader. The strip must use the reader, not the video
-    /// node (ADR-0106). There is no audio-filter chain on this path.
+    /// source node when no filter is enabled) (ADR-0082). For a picture-and-sound
+    /// source it is the source's sound node (ADR-0106 decision 2); there is no
+    /// audio-filter chain on that path.
     pub producer: NodeId,
 }
 
-/// A logical audio link from a picture-and-sound source into one canvas mixer
-/// (ADR-0106). One entry per canvas whose program scene hears the source. The
-/// queue reader does not exist until [`rbs_graph::partition::Lowering::lower`].
+/// The two nodes of a bound picture-and-sound source (ADR-0106 decision 2).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PictureSound {
-    /// The canvas whose mixer hears the source.
-    pub canvas: CanvasId,
-    /// Which of its mixers: [`Role::Program`], or [`Role::Hold`] for its hold mixer.
-    pub role: Role,
     /// The source.
     pub source: SourceId,
-    /// The logical link, from the source node's own audio pin to the mixer.
-    /// [`rbs_graph::partition::Crossing::link`] uses the same value.
-    pub link: Link,
+    /// Its picture node, in the render partition (the node in `created_sources`).
+    pub picture: NodeId,
+    /// Its sound node, in the audio partition. The application gives it the sound
+    /// half of the instance it made for the picture node.
+    pub sound: NodeId,
 }
 
 /// The bound mixer and what it mixes.
@@ -201,10 +203,9 @@ pub enum BindProblem {
     /// filter with the highest id in the loop is the one left out). The filter passes
     /// its sound unchanged until the key is valid (ADR-0095).
     KeyUnavailable(FilterId),
-    /// Retained so callers can still match it (ADR-0039). Sync does not report it
-    /// when a picture-and-sound source's logical audio link is created (ADR-0106).
-    /// A node with only a video output never takes this path; a camera microphone
-    /// stays a companion source (ADR-0096).
+    /// With audio bound, the source's node has both a video and an audio output but
+    /// its type names no sound node (ADR-0106 decisions 2 and 7): its sound is not
+    /// mixed. A camera microphone stays a companion source (ADR-0096).
     AudioOnVideoSource(SourceId),
 }
 
@@ -224,13 +225,16 @@ pub struct BindReport {
     pub created_sources: Vec<(SourceId, NodeId)>,
     /// Source nodes this sync removed, or that someone else removed since the last
     /// sync: the application takes their instances back once the runtime released
-    /// them (after the apply that removes them has been collected).
+    /// them (after the apply that removes them has been collected). A sound node is
+    /// listed too; it always goes with its picture node.
     pub retired_sources: Vec<NodeId>,
     /// Sources whose settings changed: `(source, old node, new node)`. Both nodes are
-    /// also in `retired_sources` and `created_sources`. An exclusive device (most
-    /// cameras) cannot open the new instance while the old one runs, so the
-    /// application applies break-before-make: first without the new node, then with
-    /// it (scene sources spec).
+    /// also in `retired_sources`, and a new picture or source node in
+    /// `created_sources`. A picture-and-sound source has one entry for its picture
+    /// node and one for its sound node (ADR-0106 decision 2). An exclusive device
+    /// (most cameras) cannot open the new instance while the old one runs, so the
+    /// application applies break-before-make: first without the new nodes, then with
+    /// them (scene sources spec).
     pub replaced_sources: Vec<(SourceId, NodeId, NodeId)>,
     /// Sources whose settings changed and whose type takes settings in place
     /// ([`NodeTypes::live_settings`]): the node was kept, and the application sends
@@ -253,10 +257,10 @@ pub struct BindReport {
     /// The hold mixer of each canvas whose hold scene asked for its sound
     /// ([`SceneBinder::sync_held`]). It has no monitor output and no meters.
     pub hold_mixers: BTreeMap<CanvasId, BoundMixer>,
-    /// Logical audio links from picture-and-sound sources into canvas mixers, in
-    /// canvas id then source id order. The host passes lowered crossings to
-    /// [`Self::assign_queue_readers`] so each matching mixer input's producer
-    /// becomes that crossing's reader.
+    /// Every bound picture-and-sound source with its two nodes, in source id order
+    /// (ADR-0106). Listed on every sync, not only when created. A sound node is not
+    /// in `created_sources`: the application adopts the sound half of the source's
+    /// one instance into it.
     pub picture_sound: Vec<PictureSound>,
 }
 
@@ -369,6 +373,9 @@ struct BoundNode {
 #[derive(Debug, Clone)]
 struct BoundSource {
     source: BoundNode,
+    /// The sound node of a picture-and-sound source, in the audio partition
+    /// (ADR-0106). Lives and dies with `source`.
+    sound: Option<BoundNode>,
     /// The settings the node was made for; other settings get a new node.
     settings: Settings,
     /// The settings each bound filter was last synced with.
@@ -487,8 +494,9 @@ impl SceneBinder {
     /// source nodes go into `partition`, an audio partition (ADR-0037; never
     /// `PartitionId::RENDER`, which ticks at frame rate). Each mixer gets a link from
     /// every source with audio that is visible in its canvas's program scene. A
-    /// source that also has video stays in the render partition; its audio pin is a
-    /// logical cross-partition link (ADR-0106).
+    /// source that also has video stays in the render partition; when its type names
+    /// a sound node ([`NodeTypes::sound_type`]) that node goes into `partition` and
+    /// is the one linked (ADR-0106).
     pub fn with_audio(mut self, partition: PartitionId) -> Self {
         self.audio = Some(partition);
         self
@@ -505,9 +513,18 @@ impl SceneBinder {
         self.state.hold_mixers.get(&canvas).map(|m| m.node.node)
     }
 
-    /// The node of a bound source.
+    /// The node of a bound source (the picture node of a picture-and-sound source).
     pub fn source_node(&self, id: SourceId) -> Option<NodeId> {
         self.state.sources.get(&id).map(|b| b.source.node)
+    }
+
+    /// The sound node of a bound picture-and-sound source (ADR-0106).
+    pub fn sound_node(&self, id: SourceId) -> Option<NodeId> {
+        self.state
+            .sources
+            .get(&id)
+            .and_then(|b| b.sound.as_ref())
+            .map(|s| s.node)
     }
 
     /// The last node of a bound source's chain: its last enabled filter, or the source
@@ -609,15 +626,27 @@ impl State {
         graph: &mut GraphDescription,
         report: &mut BindReport,
     ) -> Result<(), GraphError> {
+        // A source loses both nodes when someone removed either: it is bound again
+        // from scratch, so its picture and sound nodes stay a pair (ADR-0106).
         let lost: Vec<SourceId> = self
             .sources
             .iter()
-            .filter(|(_, b)| graph.node(b.source.node).is_none())
+            .filter(|(_, b)| {
+                graph.node(b.source.node).is_none()
+                    || b.sound
+                        .as_ref()
+                        .is_some_and(|s| graph.node(s.node).is_none())
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in lost {
             if let Some(b) = self.sources.remove(&id) {
+                retire(graph, b.source.node)?;
                 report.retired_sources.push(b.source.node);
+                if let Some(s) = &b.sound {
+                    retire(graph, s.node)?;
+                    report.retired_sources.push(s.node);
+                }
                 // Its filters would be orphans; remove them so the source is bound
                 // again from scratch.
                 for f in b.filters.values() {
@@ -826,6 +855,19 @@ impl State {
             report.retired_sources.push(old);
             report.created_sources.push((*id, node));
             report.replaced_sources.push((*id, old, node));
+            if let Some(sound) = &mut bound.sound {
+                let old = sound.node;
+                let (descriptor, partition) = graph
+                    .node(old)
+                    .map(|n| (Arc::clone(&n.descriptor), n.partition))
+                    .ok_or(GraphError::UnknownNode(old))?;
+                retire(graph, old)?;
+                let node = add_node(graph, descriptor)?;
+                graph.set_partition(node, partition)?;
+                sound.node = node;
+                report.retired_sources.push(old);
+                report.replaced_sources.push((*id, old, node));
+            }
         }
 
         // Sources that are gone.
@@ -839,6 +881,10 @@ impl State {
             if let Some(bound) = self.sources.remove(&id) {
                 retire(graph, bound.source.node)?;
                 report.retired_sources.push(bound.source.node);
+                if let Some(s) = &bound.sound {
+                    retire(graph, s.node)?;
+                    report.retired_sources.push(s.node);
+                }
                 for f in bound.filters.values() {
                     retire(graph, f.node)?;
                     report.retired_filters.push(f.node);
@@ -864,12 +910,48 @@ impl State {
                     report.problems.push(BindProblem::NoVideoOutput(source.id));
                     continue;
                 }
+                // The sound node of a picture-and-sound type (ADR-0106 decision 2):
+                // only with audio bound, and only for a type that names one. A named
+                // sound type that is not installed refuses the whole source, so it is
+                // never shown without its sound.
+                let sound_desc = match (audio, pins.output.is_some()) {
+                    (Some(_), true) => match types.sound_type(&source.type_id) {
+                        Some(t) => {
+                            let found = types
+                                .descriptor(&t)
+                                .map(|d| (video_pins(&d, false), d))
+                                .filter(|(p, d)| {
+                                    d.kind == NodeKind::Source
+                                        && p.output.is_none()
+                                        && p.audio.is_some()
+                                });
+                            if found.is_none() {
+                                report
+                                    .problems
+                                    .push(BindProblem::UnknownSourceType(source.id, t));
+                                continue;
+                            }
+                            found
+                        }
+                        None => None,
+                    },
+                    _ => None,
+                };
                 let node = add_node(graph, descriptor)?;
                 if let (true, Some(partition)) = (audio_only, audio) {
                     graph.set_partition(node, partition)?;
                 }
                 report.created_sources.push((source.id, node));
+                let sound = match (sound_desc, audio) {
+                    (Some((pins, desc)), Some(partition)) => {
+                        let node = add_node(graph, desc)?;
+                        graph.set_partition(node, partition)?;
+                        Some(BoundNode { node, pins })
+                    }
+                    _ => None,
+                };
                 slot.insert(BoundSource {
+                    sound,
                     source: BoundNode { node, pins },
                     settings: source.settings.clone(),
                     filter_settings: BTreeMap::new(),
@@ -1111,9 +1193,19 @@ impl State {
 
         // One mixer per canvas. Its inputs are the sources with audio visible in the
         // canvas's program scene. Audio-only sources are linked from their chain
-        // tail. A source that also has video is linked from its own audio pin
-        // (ADR-0106); the host names the queue reader after lowering.
+        // tail, picture-and-sound sources from their sound node (ADR-0106).
         if let (Some((desc, pins)), Some(partition)) = (mixer_desc, audio) {
+            for (id, bound) in &self.sources {
+                if let Some(s) = &bound.sound {
+                    report.picture_sound.push(PictureSound {
+                        source: *id,
+                        picture: bound.source.node,
+                        sound: s.node,
+                    });
+                } else if bound.source.pins.output.is_some() && bound.source.pins.audio.is_some() {
+                    report.problems.push(BindProblem::AudioOnVideoSource(*id));
+                }
+            }
             let canvases: BTreeSet<CanvasId> = collection.canvases().map(|c| c.id).collect();
             let unneeded: Vec<CanvasId> = self
                 .mixers
@@ -1152,15 +1244,7 @@ impl State {
                         .collect(),
                     None => BTreeSet::new(),
                 };
-                let (inputs, sound) = link_mixer(&self.sources, graph, mix, &heard)?;
-                for (source, link) in sound {
-                    report.picture_sound.push(PictureSound {
-                        canvas: canvas.id,
-                        role: Role::Program,
-                        source,
-                        link,
-                    });
-                }
+                let inputs = link_mixer(&self.sources, graph, mix, &heard)?;
                 report.mixers.insert(
                     canvas.id,
                     BoundMixer {
@@ -1207,15 +1291,7 @@ impl State {
                     .map_err(BindError::Scene)?
                     .into_iter()
                     .collect();
-                let (inputs, sound) = link_mixer(&self.sources, graph, mix, &heard)?;
-                for (source, link) in sound {
-                    report.picture_sound.push(PictureSound {
-                        canvas,
-                        role: Role::Hold,
-                        source,
-                        link,
-                    });
-                }
+                let inputs = link_mixer(&self.sources, graph, mix, &heard)?;
                 report.hold_mixers.insert(
                     canvas,
                     BoundMixer {
@@ -1247,6 +1323,11 @@ impl State {
                 Lifecycle::Standby
             };
             set_state(graph, bound.source.node, state)?;
+            // The sound node is Active exactly when the picture node is (ADR-0106
+            // decision 9).
+            if let Some(s) = &bound.sound {
+                set_state(graph, s.node, state)?;
+            }
             for (f, b) in &bound.filters {
                 let s = if bound.chain.contains(f) {
                     state
@@ -1266,46 +1347,37 @@ impl State {
     }
 }
 
-/// A mixer's inputs and its picture-and-sound links, from [`link_mixer`].
-type MixerLinks = (Vec<BoundAudio>, Vec<(SourceId, Link)>);
-
 /// Links `mix` to the sources in `heard` that have sound (ADR-0039, ADR-0106):
-/// audio-only sources from their chain tail, picture-and-sound sources from their own
-/// audio pin. Unlinks what it no longer hears. Returns its inputs, in source id order,
-/// and the picture-and-sound links made or kept.
+/// audio-only sources from their chain tail, picture-and-sound sources from their
+/// sound node. Unlinks what it no longer hears. Returns its inputs, in source id
+/// order.
 fn link_mixer(
     sources: &BTreeMap<SourceId, BoundSource>,
     graph: &mut GraphDescription,
     mix: &mut BoundMix,
     heard: &BTreeSet<SourceId>,
-) -> Result<MixerLinks, GraphError> {
+) -> Result<Vec<BoundAudio>, GraphError> {
     let mut inputs = Vec::new();
     let mut outs: BTreeMap<NodeId, String> = BTreeMap::new();
-    // The producer stored below is the source node until the host names the reader;
-    // it is not a filter tail (ADR-0106 decision 7).
-    let mut picture_sound: Vec<(SourceId, NodeId)> = Vec::new();
     for id in heard {
         let Some(bound) = sources.get(id) else {
             continue;
         };
-        if bound.source.pins.output.is_none() {
-            // The mixer hears the tail of the audio chain (ADR-0082).
-            let tail = bound.tail();
-            if let Some(out) = &tail.pins.audio {
+        // The mixer hears the tail of an audio chain (ADR-0082), or the sound node
+        // of a picture-and-sound source (ADR-0106). A picture node is never linked.
+        let producer = if bound.source.pins.output.is_none() {
+            Some(bound.tail())
+        } else {
+            bound.sound.as_ref()
+        };
+        if let Some(p) = producer {
+            if let Some(out) = &p.pins.audio {
                 inputs.push(BoundAudio {
                     source: *id,
-                    producer: tail.node,
+                    producer: p.node,
                 });
-                outs.insert(tail.node, out.clone());
+                outs.insert(p.node, out.clone());
             }
-        } else if let Some(out) = bound.source.pins.audio.clone() {
-            let node = bound.source.node;
-            inputs.push(BoundAudio {
-                source: *id,
-                producer: node,
-            });
-            outs.insert(node, out);
-            picture_sound.push((*id, node));
         }
     }
     mix.links.retain(|link| {
@@ -1322,58 +1394,7 @@ fn link_mixer(
             mix.links.push(link);
         }
     }
-    let mixer_node = mix.node.node;
-    let sound = picture_sound
-        .into_iter()
-        .filter_map(|(source, node)| {
-            mix.links
-                .iter()
-                .copied()
-                .find(|l| l.from.node == node && l.to.node == mixer_node)
-                .map(|link| (source, link))
-        })
-        .collect();
-    Ok((inputs, sound))
-}
-
-impl BindReport {
-    /// Sets each picture-and-sound mixer input's producer to the queue reader of
-    /// its logical link (ADR-0106).
-    ///
-    /// Call this after `Lowering::lower`, passing `Lowered::crossings`, or after
-    /// `Engine::apply`, passing `Engine::crossings`. Both must be the same lowering
-    /// the runtime applied: a second `Lowering` would number readers differently.
-    /// Reader ids are allocated only there. This method does not allocate any.
-    ///
-    /// An input whose link is not among `crossings` is left unchanged. Audio-only
-    /// inputs are not listed in [`Self::picture_sound`] and stay on their chain tail.
-    /// Strips stay keyed by [`SourceId`](crate::model::SourceId); use the producer
-    /// this call writes, which is the reader in the mixer's partition, not the
-    /// video node.
-    pub fn assign_queue_readers(&mut self, crossings: &[Crossing]) {
-        let pending = self.picture_sound.clone();
-        for listed in pending {
-            let Some(reader) = crossings
-                .iter()
-                .find(|c| c.link == listed.link)
-                .map(|c| c.reader)
-            else {
-                continue;
-            };
-            let mixers = match listed.role {
-                Role::Hold => &mut self.hold_mixers,
-                _ => &mut self.mixers,
-            };
-            let Some(mixer) = mixers.get_mut(&listed.canvas) else {
-                continue;
-            };
-            for input in mixer.inputs.iter_mut() {
-                if input.source == listed.source {
-                    input.producer = reader;
-                }
-            }
-        }
-    }
+    Ok(inputs)
 }
 
 /// The layers of a compositor as the running node sees them: each with the index of
