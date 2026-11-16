@@ -199,6 +199,9 @@ struct App {
     /// The float the Add source picker is open in (`None`: the main window).
     picker_host: Option<slint::Weak<FloatWindow>>,
     save_due: bool,
+    /// The projectors the studio host was told to make pictures for (ADR-0125): the
+    /// windows can open before the host exists, so this catches up once it does.
+    host_projectors: Vec<rbs_ui::projector::ProjectorCanvas>,
     /// The closed sections the windows were told about, and the number that tells them
     /// the answers changed (ADR-0078).
     sections_shown: Vec<String>,
@@ -2743,22 +2746,28 @@ impl Ctx {
             look::apply(&pw.global::<Theme>(), &pw.global::<Tokens>(), look.as_ref());
             install_context_menus(&pw.global::<ContextMenus>(), self, None);
         };
-        let (opened, closed) = projector::sync(&wanted, &make);
+        projector::sync(&wanted, &make);
         drop(look);
+        // The host makes a picture for every open window; told once it exists.
+        if app.studio.host.is_none() {
+            return;
+        }
+        let open = projector::open_canvases();
         let host_canvas = |c: ProjectorCanvas| match c {
             ProjectorCanvas::Main => OutputCanvas::Main,
             ProjectorCanvas::Vertical => OutputCanvas::Vertical,
         };
-        for c in closed {
+        for &c in app.host_projectors.iter().filter(|c| !open.contains(c)) {
             app.studio
                 .send(studio_host::Command::CloseProjector(projector::host_id(c)));
         }
-        for c in opened {
+        for &c in open.iter().filter(|c| !app.host_projectors.contains(c)) {
             app.studio.send(studio_host::Command::OpenProjector {
                 id: projector::host_id(c),
                 canvas: host_canvas(c),
             });
         }
+        app.host_projectors = open;
     }
 
     fn sync_floats(&self, app: &mut App) {
@@ -4779,6 +4788,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             run_origin: None,
             picker_host: None,
             save_due: false,
+            host_projectors: Vec::new(),
             sections_shown: Vec::new(),
             sections_rev: 0,
             sections_windows: 0,

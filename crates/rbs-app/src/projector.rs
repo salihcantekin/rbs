@@ -166,6 +166,9 @@ struct Slot {
     exact_k: Option<u32>,
     /// A size this module asked for: its resize event is not a resize by hand.
     asked: Rc<Cell<Option<[u32; 2]>>>,
+    /// Opened, its size not applied yet: the OS window exists only once it first draws.
+    /// `Some(display)` for full screen on that display.
+    pending: Option<Option<String>>,
     cursor: slint::Timer,
     layer: Option<Layer>,
     /// Bumped to end the frame thread of the connection before.
@@ -198,21 +201,17 @@ fn emit(event: Event) {
 
 /// The projectors that should be open, with their placements and the canvas sizes:
 /// opens a window for each new one (`make` sets up its globals), closes windows no
-/// longer wanted, and applies a changed size. Returns the canvases opened and closed,
-/// for the host.
+/// longer wanted, and applies a changed size.
 pub fn sync(
     wanted: &[(ProjectorContent, Option<Placement>, [u32; 2])],
     make: &dyn Fn(&ProjectorWindow),
-) -> (Vec<ProjectorCanvas>, Vec<ProjectorCanvas>) {
-    let mut opened = Vec::new();
-    let mut closed = Vec::new();
+) {
     SLOTS.with(|slots| {
         let mut slots = slots.borrow_mut();
         slots.retain_mut(|s| {
             let keep = wanted.iter().any(|(c, ..)| c.canvas == s.canvas);
             if !keep {
                 close_slot(s);
-                closed.push(s.canvas);
             }
             keep
         });
@@ -228,11 +227,9 @@ pub fn sync(
             let Some(slot) = open_slot(content, placement.clone(), *canvas_size, make) else {
                 continue;
             };
-            opened.push(content.canvas);
             slots.push(slot);
         }
     });
-    (opened, closed)
 }
 
 fn open_slot(
@@ -273,6 +270,7 @@ fn open_slot(
         if matches!(state, slint::RenderingState::BeforeRendering)
             && let Some(w) = place.upgrade()
         {
+            settle(canvas);
             place_layer(canvas, &w);
         }
     });
@@ -293,7 +291,7 @@ fn open_slot(
         .as_ref()
         .filter(|p| p.fullscreen)
         .and_then(|p| p.connector.clone());
-    let mut slot = Slot {
+    Some(Slot {
         canvas,
         content: content.clone(),
         window,
@@ -302,16 +300,45 @@ fn open_slot(
         saved: placement,
         exact_k: None,
         asked,
+        pending: Some(fullscreen),
         cursor: slint::Timer::default(),
         layer: None,
         generation: Arc::new(AtomicU64::new(0)),
         endpoint: None,
-    };
-    match fullscreen {
-        Some(name) => set_fullscreen_on(&mut slot, Some(name)),
-        None => apply_size(&mut slot),
+    })
+}
+
+/// Applies a new projector's size once its OS window exists (its first draw), after
+/// the draw: Exact pixels needs the window's display, full screen the window itself.
+fn settle(canvas: ProjectorCanvas) {
+    let due = SLOTS.with(|slots| {
+        slots.try_borrow().is_ok_and(|slots| {
+            slots
+                .iter()
+                .any(|s| s.canvas == canvas && s.pending.is_some())
+        })
+    });
+    if !due {
+        return;
     }
-    Some(slot)
+    entry::single_shot(Duration::ZERO, move || {
+        SLOTS.with(|slots| {
+            let Ok(mut slots) = slots.try_borrow_mut() else {
+                return;
+            };
+            let Some(s) = slots.iter_mut().find(|s| s.canvas == canvas) else {
+                return;
+            };
+            if s.window.window().with_winit_window(|_| ()).is_none() {
+                return;
+            }
+            match s.pending.take() {
+                Some(Some(name)) => set_fullscreen_on(s, Some(name)),
+                Some(None) => apply_size(s),
+                None => {}
+            }
+        });
+    });
 }
 
 fn close_slot(s: &mut Slot) {
@@ -361,6 +388,11 @@ pub fn picture(canvas: ProjectorCanvas, endpoint: Option<PreviewEndpoint>) {
             connect(canvas, endpoint, Arc::clone(&s.generation));
         }
     });
+}
+
+/// The canvases whose projector window is open.
+pub fn open_canvases() -> Vec<ProjectorCanvas> {
+    SLOTS.with(|slots| slots.borrow().iter().map(|s| s.canvas).collect())
 }
 
 /// The open projectors as the menu shows them.
@@ -638,7 +670,10 @@ fn on_event(
             }
         }
         WindowEvent::Resized(size) => {
-            let mine = asked.get() == Some([size.width, size.height]);
+            // The OS may round a size asked in physical pixels by a pixel or two.
+            let mine = asked
+                .get()
+                .is_some_and(|[w, h]| w.abs_diff(size.width) <= 2 && h.abs_diff(size.height) <= 2);
             asked.set(None);
             if !mine {
                 resized_by_hand(canvas);
