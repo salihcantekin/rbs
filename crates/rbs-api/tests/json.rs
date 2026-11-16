@@ -58,6 +58,7 @@ fn stream_settings() -> StreamSettings {
         encoding: encoding(),
         auto_record: true,
         output_size: None,
+        hold_picture: HoldPicture::Black,
     }
 }
 
@@ -532,6 +533,7 @@ fn every_request() -> Vec<Request> {
                 encoding: encoding(),
                 auto_record: Some(true),
                 output_size: None,
+                hold_picture: Some(HoldPicture::Black),
             }),
             loudness: Some(LoudnessSettings {
                 target: -16.0,
@@ -1478,8 +1480,18 @@ fn stream_settings_are_a_minor_addition() {
             encoding: encoding(),
             auto_record: Some(true),
             output_size: None,
+            hold_picture: Some(HoldPicture::Black),
         }
     );
+    // Protocol 1.65 added `hold_picture`: a 1.64 server's settings read as `freeze`,
+    // and a 1.64 client's patch leaves it as it is.
+    let mut older = serde_json::to_value(stream_settings()).unwrap();
+    assert_eq!(older["hold_picture"], "black");
+    older.as_object_mut().unwrap().remove("hold_picture");
+    let read: StreamSettings = serde_json::from_value(older.clone()).unwrap();
+    assert_eq!(read.hold_picture, HoldPicture::Freeze);
+    let patch: StreamSettingsPatch = serde_json::from_value(older).unwrap();
+    assert_eq!(patch.hold_picture, None);
     // Protocol 1.11 added `auto_record`: a 1.2 server's settings read as off, and a
     // 1.2 client's patch leaves it as it is.
     let mut old = serde_json::to_value(stream_settings()).unwrap();

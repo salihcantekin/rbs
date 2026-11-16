@@ -558,6 +558,13 @@ pub const SETTINGS: &[Setting] = &[
         STREAM_WHILE_LIVE,
         Simple,
     ),
+    row(
+        "stream.hold-picture",
+        "While on hold",
+        "hold break brb freeze last frame black picture",
+        STREAM_WHILE_LIVE,
+        Simple,
+    ),
     c(
         "settings.stream.encoding",
         "Encoding",

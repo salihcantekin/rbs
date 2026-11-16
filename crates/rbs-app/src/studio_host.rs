@@ -1826,8 +1826,8 @@ fn hold_refusal(e: rbs_record::HoldRefused) -> String {
 }
 
 /// The engine's hold picture for the control API's.
-fn hold_picture(p: Option<rbs_api::request::HoldPicture>) -> HoldPicture {
-    match p.unwrap_or_default() {
+fn hold_picture(p: rbs_api::request::HoldPicture) -> HoldPicture {
+    match p {
         rbs_api::request::HoldPicture::Freeze => HoldPicture::Freeze,
         rbs_api::request::HoldPicture::Black => HoldPicture::Black,
     }
@@ -4965,9 +4965,17 @@ impl Host {
         &mut self,
         c: OutputCanvas,
         hold: Option<bool>,
-        picture: HoldPicture,
+        picture: Option<HoldPicture>,
     ) -> Result<bool, ApiError> {
         let conflict = |m: String| ApiError::new(ErrorKind::Conflict, m);
+        // No picture named: the stream settings' "While on hold" (protocol 1.65).
+        let picture = picture.unwrap_or_else(|| {
+            hold_picture(
+                self.stream_profile_of(c)
+                    .map(|p| p.hold_picture)
+                    .unwrap_or_default(),
+            )
+        });
         let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
             return Err(conflict("nothing streams".into()));
         };
@@ -12667,7 +12675,7 @@ impl ApiTarget<'_> {
         hold: Option<bool>,
         picture: Option<rbs_api::request::HoldPicture>,
     ) -> Result<Response, ApiError> {
-        let picture = hold_picture(picture);
+        let picture = picture.map(hold_picture);
         let notify = self.notify;
         let host = &mut *self.host;
         if let Some(one) = target.single() {
@@ -12722,8 +12730,8 @@ impl ApiTarget<'_> {
     /// `output.break_toggle` (control API 1.64, ADR-0124 decision 15): when every
     /// live stream is on hold and every running recording is paused, resumes them
     /// all (streams first, so a recording a hold paused resumes with its stream);
-    /// otherwise holds the streams that are not held (freeze) and pauses the
-    /// recordings that are not paused. The answer lists the outputs it changed or
+    /// otherwise holds the streams that are not held (with the picture their "While on
+    /// hold" setting names) and pauses the recordings that are not paused. The answer lists the outputs it changed or
     /// that refused, main first, each with its `kind`.
     fn break_toggle(&mut self) -> Result<Response, ApiError> {
         let notify = self.notify;
@@ -12781,15 +12789,13 @@ impl ApiTarget<'_> {
         let before: Vec<bool> = records.iter().map(|&c| paused(host, c)).collect();
         for &c in &streams {
             if resume || !host.stream_held(c) {
-                let done = host
-                    .hold_stream(c, Some(!resume), HoldPicture::Freeze)
-                    .map(|held| {
-                        if held {
-                            api::OutputOutcome::Held
-                        } else {
-                            api::OutputOutcome::Resumed
-                        }
-                    });
+                let done = host.hold_stream(c, Some(!resume), None).map(|held| {
+                    if held {
+                        api::OutputOutcome::Held
+                    } else {
+                        api::OutputOutcome::Resumed
+                    }
+                });
                 entry(c, api::OutputKind::Stream, done);
             }
         }

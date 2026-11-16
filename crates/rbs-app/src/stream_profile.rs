@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub use rbs_api::request::HoldPicture;
 use rbs_core::media::ContainerId;
 use rbs_transport::{ReconnectPolicy, TransportInput};
 use serde::{Deserialize, Serialize};
@@ -174,6 +175,15 @@ pub struct StreamProfile {
     /// stream's canvas (ADR-0102).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_size: Option<OutputSize>,
+    /// What a hold sends when it names no picture: Hold stream and Break in the
+    /// window, and the control API without `picture` (ADR-0124). Omitted when
+    /// `freeze`, the default.
+    #[serde(default, skip_serializing_if = "is_freeze")]
+    pub hold_picture: HoldPicture,
+}
+
+fn is_freeze(p: &HoldPicture) -> bool {
+    *p == HoldPicture::Freeze
 }
 
 impl StreamProfile {
@@ -189,6 +199,7 @@ impl StreamProfile {
             encoding: stream_encoding(),
             auto_record: false,
             output_size: None,
+            hold_picture: HoldPicture::Freeze,
         }
     }
 
@@ -271,6 +282,7 @@ impl StreamProfile {
                 width: s.width,
                 height: s.height,
             }),
+            hold_picture: self.hold_picture,
         }
     }
 
@@ -284,6 +296,9 @@ impl StreamProfile {
         p.encoding = Encoding::from_api(&patch.encoding);
         if let Some(on) = patch.auto_record {
             p.auto_record = on;
+        }
+        if let Some(picture) = patch.hold_picture {
+            p.hold_picture = picture;
         }
         // Omitted or null stores the same as this stream's canvas (protocol 1.39).
         p.output_size = patch.output_size.map(|s| OutputSize {
@@ -495,6 +510,36 @@ mod tests {
     }
 
     #[test]
+    fn the_hold_picture_is_saved_only_when_black() {
+        let mut p = StreamProfile::new();
+        let text = toml::to_string(&p).unwrap();
+        assert!(!text.contains("hold_picture"), "{text}");
+        p.hold_picture = HoldPicture::Black;
+        let text = toml::to_string(&p).unwrap();
+        assert!(text.contains("hold_picture = \"black\""), "{text}");
+        assert_eq!(
+            toml::from_str::<StreamProfile>(&text).unwrap().hold_picture,
+            HoldPicture::Black
+        );
+        // A control API patch without it leaves it; one with it changes it.
+        let mut patch = rbs_api::types::StreamSettingsPatch {
+            reconnect: p.reconnect,
+            srt_latency_ms: None,
+            encoding: p.encoding.to_api(),
+            auto_record: None,
+            output_size: None,
+            hold_picture: None,
+        };
+        assert_eq!(p.with_api(&patch).unwrap().hold_picture, HoldPicture::Black);
+        patch.hold_picture = Some(HoldPicture::Freeze);
+        assert_eq!(
+            p.with_api(&patch).unwrap().hold_picture,
+            HoldPicture::Freeze
+        );
+        assert_eq!(p.to_api().hold_picture, HoldPicture::Black);
+    }
+
+    #[test]
     fn srt_latency_is_passed_only_to_srt() {
         let mut p = StreamProfile::new();
         p.srt_latency_ms = Some(500);
@@ -598,6 +643,7 @@ mod tests {
             encoding: api.encoding.clone(),
             auto_record: None,
             output_size: None,
+            hold_picture: None,
         };
         patch.encoding.video_kbps = 9_000;
         let changed = p.with_api(&patch).unwrap();
