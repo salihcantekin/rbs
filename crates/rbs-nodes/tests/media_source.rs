@@ -180,3 +180,34 @@ fn loop_can_change_without_replacing_the_node() {
     assert!(!node.loops());
     assert_eq!(node.phase(), MediaPhase::Standby);
 }
+
+fn clip_with_sound() -> ScriptClip {
+    // 0.3 s of a constant 0.5 at 48 kHz stereo beside three 100 ms pictures.
+    ScriptClip {
+        audio: Some(rbs_media_decode::InterleavedPcm {
+            sample_rate: 48_000,
+            channels: 2,
+            samples: vec![0.5; 14_400 * 2],
+        }),
+        ..ScriptClip::silent_frames()
+    }
+}
+
+#[test]
+fn sound_read_per_stream_reaches_the_audio_pin() {
+    let (mut node, _factory) = node(clip_with_sound(), false, true);
+    node.wake(Timestamp::ZERO).unwrap();
+    wait_until(|| node.enqueued() >= 1);
+    let mut heard = false;
+    for _ in 0..1_000_000 {
+        let mut audio = vec![0.0f32; 960];
+        node.write_audio(&mut audio);
+        if audio.iter().all(|s| (*s - 0.5).abs() < f32::EPSILON) {
+            heard = true;
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(heard, "a full block of the file's sound reached the pin");
+    node.standby();
+}
