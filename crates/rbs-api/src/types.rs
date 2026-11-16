@@ -65,7 +65,7 @@ pub enum SourceKind {
     Media,
     /// A browser page from the helper process (protocol TBD, ADR-0109).
     Browser,
-    /// A text drawn by the server's text renderer (protocol 1.71, ADR-0129).
+    /// A text drawn by the server's text renderer (protocol 1.74, ADR-0129).
     Text,
 }
 
@@ -2519,7 +2519,7 @@ pub struct AttributesClipboard {
     pub groups: Vec<String>,
 }
 
-/// `text.fonts`' answer (protocol 1.71, ADR-0129 decision 7).
+/// `text.fonts`' answer (protocol 1.74, ADR-0129 decision 7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextFonts {
     /// The installed font families, sorted, without duplicates.

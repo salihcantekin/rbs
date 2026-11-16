@@ -2784,7 +2784,7 @@ fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
 }
 
 #[test]
-fn text_sources_decode_as_protocol_1_71() {
+fn text_sources_decode_as_protocol_1_74() {
     let add: AddSource = serde_json::from_value(json!({"kind": "text", "text": "Live"})).unwrap();
     assert_eq!(add.kind, SourceKind::Text);
     assert_eq!(add.text.as_deref(), Some("Live"));

@@ -72,7 +72,7 @@ The same JSON-RPC messages over a local stream (`rbs-api-ipc`):
 3. Client: `session.authenticate {token}`.
 4. Server: `{scopes, server: {name, version}}`, or `auth_failed` and close.
 
-Until the `session.authenticate` answer arrives, the pre-authentication message limit (4 KiB) applies, so a client waits for it before sending larger requests. On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Planned (ADR-0052, minor addition): such a peer may still send `session.authenticate {token}` as its first request after `session.hello` (whose answer still reports all scopes); the session then has exactly the token's scopes and permission for the rest of its life (narrowing, never widening), and the answer reports both (`scopes`, and a new `irreversible` field). It is refused (`invalid_request`) once any other request was admitted, and a second time. A wrong token gets `auth_failed` and close; IPC has no back-off (the peer is the same user, the token has 256 bits). Revoking the token closes the session. Narrowing is voluntary: a peer that does not authenticate keeps all scopes. So an AI agent's `rbs-mcp` is limited by its own token on IPC too. Session tests on `TestClock` cover each case. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
+Until the `session.authenticate` answer arrives, the pre-authentication message limit (4 KiB) applies, so a client waits for it before sending larger requests. On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Since protocol 1.73 (ADR-0052): such a peer may still send `session.authenticate {token}` as its first request after `session.hello` (whose answer still reports all scopes); the session then has exactly the token's scopes for the rest of its life (narrowing, never widening), and the answer reports them (`scopes`; the token's permission, a new `irreversible` field, follows with the irreversible-actions permission). It is refused (`invalid_request`) once any other request was admitted, and a second time. A wrong token gets `auth_failed` and close; IPC has no back-off (the peer is the same user, the token has 256 bits). Revoking the token closes the session. Narrowing is voluntary: a peer that does not authenticate keeps all scopes. So an AI agent's `rbs-mcp` is limited by its own token on IPC too. Session tests on `TestClock` cover each case. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
 
 **Tokens.** Text `rbs1_` followed by 64 lowercase hex digits (32 bytes of OS randomness). The server stores `SHA-256` of the token's UTF-8 bytes, as lowercase hex, and compares in constant time. Each token has a user-given name and scopes, is shown once at creation (UI or `rbs-cli token create`), and can be revoked; revoking closes its sessions.
 
@@ -173,8 +173,8 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | `undo_conflict` | -32032 | Undo record used out of order |
 | `file_exists` | -32033 | Explicit file exists |
 | `failed` | -32040 | Valid but could not be carried out |
-| `forbidden` | -32011 | The API may not do this whatever the token's scope (protocol 1.71: a text source's `file`) |
-| `not_ready` | -32024 | Being prepared; ask again shortly (protocol 1.71: `text.fonts` before the first font list) |
+| `forbidden` | -32011 | The API may not do this whatever the token's scope (protocol 1.74: a text source's `file`) |
+| `not_ready` | -32024 | Being prepared; ask again shortly (protocol 1.74: `text.fonts` before the first font list) |
 
 ## API parity (ADR-0052)
 
@@ -539,17 +539,22 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
-### Protocol 1.71: text sources (ADR-0129 decision 8)
-
-The number is planned (1.69 and 1.70 are claimed by other changes) and is final when the change merges.
+### Protocol 1.74: text sources (ADR-0129 decision 8)
 
 - **`source.add {kind: "text", text?, name?, scene?, global?}`** (`control`; effect `edit` with the on-air check, as any `source.add`) adds a text source showing `text` (absent: "Text"), named `name` (absent: "Text", made unique). It has no target: `adapter` and `target` may be left out and are ignored. The box (`width`, `height`) fits the text with its padding, measured by the server's text renderer within 200 ms, else 640 x 160; the item has the same size, centred on the canvas, so it draws 1:1. One undo step; answers `{source}`. `text` on any other kind is `invalid_params`; `with_audio` is ignored. `source.list` rows carry `kind: "text"`.
 - **Settings.** `source.get_settings` and `source.set_settings` read and write the text keys of `scene-sources.md`, "Text", with the strict checks of an edit (`invalid_params` naming the key). **`file` cannot be written through the API** (`forbidden`, whatever the scope) until token scopes exist: a path would put any readable file on air. Error texts never include a path or file contents.
 - **`source.set_text {source, text}`** (`control`; `edit`) replaces only `text`; one undo step. `not_found` for an unknown source, `invalid_params` for a source that is not a text or a text over 10 000 characters.
 - **`text.fonts {}`** (`read`) answers `{families}`: the installed font families, sorted, from the text worker's cache (refreshed at most once a minute). It never waits: the first call starts the worker and answers `not_ready` until the first list exists. `failed` when the server has no text renderer.
 - **Not yet.** `text.timer` comes with the live kinds (phase (d)).
-- **Older clients and servers.** A 1.70 server answers the new methods `method_not_found` and refuses `kind: "text"` with `invalid_params`; a client reads unknown error kinds generically.
-- **As built.** `rbs-api` `SourceKind::Text`, `AddSource::text`, `SetText`, `TextFonts`, `ErrorKind::{Forbidden, NotReady}`; `rbs-app` `Host::{add_text, set_source_text}` and `Studio::text_fonts`; the desktop app registers `rbs-text-parley` on the system's fonts. Tests: `crates/rbs-api/tests/json.rs` (`text_sources_decode_as_protocol_1_71`), `crates/rbs-app/tests/studio_api.rs` (`a_control_api_client_adds_and_edits_a_text_source`), `crates/rbs-app/tests/studio_record.rs` (`a_text_box_is_locked_while_a_take_records_its_picture_separately`).
+- **Older clients and servers.** A 1.73 server answers the new methods `method_not_found` and refuses `kind: "text"` with `invalid_params`; a client reads unknown error kinds generically.
+- **As built.** `rbs-api` `SourceKind::Text`, `AddSource::text`, `SetText`, `TextFonts`, `ErrorKind::{Forbidden, NotReady}`; `rbs-app` `Host::{add_text, set_source_text}` and `Studio::text_fonts`; the desktop app registers `rbs-text-parley` on the system's fonts. Tests: `crates/rbs-api/tests/json.rs` (`text_sources_decode_as_protocol_1_74`), `crates/rbs-app/tests/studio_api.rs` (`a_control_api_client_adds_and_edits_a_text_source`), `crates/rbs-app/tests/studio_record.rs` (`a_text_box_is_locked_while_a_take_records_its_picture_separately`).
+
+### Protocol 1.73: narrowing a same-user IPC session to a token (ADR-0052 decision 3)
+
+- **`session.authenticate` after `session.hello` on IPC.** A same-user IPC peer, authenticated by `session.hello` with all scopes, may send `session.authenticate {token}` as its first request. On success the session has the token's scopes (channel limits applied as for any local peer) for the rest of its life, is shown and audited under the token's name, and is closed when the token is revoked or changed. A wrong or unknown token gets `auth_failed` and close, the same answer as on any channel; IPC has no back-off.
+- **Refused** with `invalid_request` ("the session is already authenticated") once any other request was admitted, and for a second `session.authenticate`.
+- **Voluntary.** A peer that does not send it keeps all scopes, as `rbs-cli` does.
+- **Older servers.** A 1.72 server answers `invalid_request` to it on IPC: a client that relies on narrowing (`rbs-mcp`) treats that as a failure and stops.
 
 ### Protocol 1.68: duplicate, reset and paste attributes of sources (ADR-0133)
 

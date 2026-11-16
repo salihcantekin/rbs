@@ -352,7 +352,7 @@ impl Studio {
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
         for e in &mut self.entries {
-            e.scheduled = scheduled.contains(&e.state.node);
+            e.scheduled = super::in_plan(&self.binder, e, &scheduled);
         }
         let _ = self.layers.send(node_layers(&self.bound, &plan));
         if let Some(sp) = &mut self.scene_preview {

@@ -77,6 +77,7 @@ mod monitor;
 mod pause;
 mod replay;
 mod sync_measure;
+mod transition;
 pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
@@ -91,6 +92,7 @@ pub use sync_measure::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
     SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
+pub use transition::{READY_WAIT, TransitionState};
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
 const WAITING: &str = "waiting for the source it replaces to close";
@@ -363,6 +365,16 @@ struct Instance {
     offset: Option<ParamSender<InputParams>>,
     /// The offset last sent on `offset` (stored minus the filter latency, ADR-0130).
     sent_offset_ns: i64,
+    /// The sound half of a picture-and-sound source (ADR-0106).
+    sound: SoundHalf,
+}
+
+/// The sound node of a media source: held until the plan schedules the binder's
+/// sound node, then adopted into the audio partition.
+enum SoundHalf {
+    None,
+    Held(Box<rbs_nodes::MediaSoundNode>),
+    Adopted(NodeId, PartitionId),
 }
 
 /// One bound source.
@@ -1157,6 +1169,11 @@ pub struct Studio {
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
+    /// Transitions running, by canvas (ADR-0128). Empty while none runs (P13).
+    transitions: BTreeMap<CanvasId, transition::CanvasTransition>,
+    /// A transition is done since the host last asked: it calls
+    /// [`Studio::settle_transitions`].
+    transition_done: bool,
     /// The scene each following canvas showed last (the `KeepLast` fallback).
     last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
@@ -1573,6 +1590,8 @@ impl Studio {
             pictures: Vec::new(),
             next_picture: 0,
             glide: None,
+            transitions: BTreeMap::new(),
+            transition_done: false,
             last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
@@ -2011,6 +2030,12 @@ impl Studio {
         old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
         old_layers: BTreeMap<CanvasId, Vec<BoundLayer>>,
     ) {
+        // Only Move glides (ADR-0128 decision 2): Cut and the kinds that draw the
+        // incoming picture whole change the boxes at once.
+        if collection.transition().kind != rbs_scene::TransitionKind::Move {
+            self.glide = None;
+            return;
+        }
         let mut from = BTreeMap::new();
         let new_main = program_scene(collection, self.settings.canvas);
         if old_main.is_some() && old_main != new_main {
@@ -2070,29 +2095,30 @@ impl Studio {
     /// moving. The preview picture is not glided.
     fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {
         let now = self.engine.clock().now();
-        let main = paint_layers(
-            &self.bound,
-            plan,
-            self.glide.as_ref(),
-            now,
-            self.settings.canvas,
-        );
-        let extras: Vec<_> = self
+        let program = self.bound.clone();
+        let main = match self.transition_layers(self.settings.canvas, plan, &program) {
+            Some(layers) => layers,
+            None => paint_layers(
+                &self.bound,
+                plan,
+                self.glide.as_ref(),
+                now,
+                self.settings.canvas,
+            ),
+        };
+        let views: Vec<(CanvasId, BoundCompositor)> = self
             .extras
             .iter()
-            .map(|extra| {
-                (
-                    extra.canvas,
-                    paint_layers(
-                        &extra.view.bound,
-                        plan,
-                        self.glide.as_ref(),
-                        now,
-                        extra.canvas,
-                    ),
-                )
-            })
+            .map(|extra| (extra.canvas, extra.view.bound.clone()))
             .collect();
+        let mut extras = Vec::with_capacity(views.len());
+        for (canvas, bound) in views {
+            let layers = match self.transition_layers(canvas, plan, &bound) {
+                Some(layers) => layers,
+                None => paint_layers(&bound, plan, self.glide.as_ref(), now, canvas),
+            };
+            extras.push((canvas, layers));
+        }
         let _ = self.layers.send(main);
         if let Some(preview) = &mut self.scene_preview {
             let _ = preview.layers.send(node_layers(&preview.bound, plan));
@@ -2142,6 +2168,7 @@ impl Studio {
             }
             None => None,
         };
+        self.note_transitions(collection, old_main, &old_extra, &old_layers);
         let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
         // already ran: the update goes on so the sources it created get their entries,
@@ -2212,6 +2239,7 @@ impl Studio {
         if let Some(report) = &report {
             self.sync_scene_preview(report, &mut leaving)?;
             self.sync_hold_views(report, &mut leaving)?;
+            self.sync_incoming(report, &mut leaving)?;
         }
         let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
@@ -2340,13 +2368,28 @@ impl Studio {
         // One budget and one helper tree from the composition root (ADR-0109).
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
             .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone());
+        let audio_partition = self.settings.partitions.audio;
         for entry in &mut self.entries {
+            // The sound half of a media source joins once its sound node is scheduled.
+            // It is marked adopted only after the engine took it; a failed adopt drops
+            // it (the source then plays without sound) and reports the error.
+            if let (Some(instance), Some(node)) = (
+                entry.instance.as_mut(),
+                self.binder.sound_node(entry.source),
+            ) && scheduled.contains(&node)
+                && matches!(instance.sound, SoundHalf::Held(_))
+                && let SoundHalf::Held(sound) =
+                    std::mem::replace(&mut instance.sound, SoundHalf::None)
+            {
+                self.engine.adopt::<()>(audio_partition, node, sound)?;
+                instance.sound = SoundHalf::Adopted(node, audio_partition);
+            }
             // A rename updates the collection without rebuilding the node: keep the
             // name the UI and diagnostics show in step with it.
             if let Some(source) = collection.source(entry.source) {
                 entry.state.name = source.name.clone();
             }
-            entry.scheduled = scheduled.contains(&entry.state.node);
+            entry.scheduled = in_plan(&self.binder, entry, &scheduled);
             if !entry.scheduled || entry.instance.is_some() {
                 continue;
             }
@@ -2392,6 +2435,7 @@ impl Studio {
                         watch: Watch::Video(v.stats),
                         offset: None,
                         sent_offset_ns: 0,
+                        sound: SoundHalf::None,
                     });
                 }
                 SourceInstance::Still(st) => {
@@ -2404,6 +2448,7 @@ impl Studio {
                         watch: Watch::Video(st.stats),
                         offset: None,
                         sent_offset_ns: 0,
+                        sound: SoundHalf::None,
                     });
                 }
                 SourceInstance::Audio(a) => {
@@ -2432,21 +2477,42 @@ impl Studio {
                         watch: Watch::Audio(a.stats, meter),
                         offset: Some(offset),
                         sent_offset_ns,
+                        sound: SoundHalf::None,
                     });
                 }
                 SourceInstance::Media(m) => {
-                    // Render partition, the same way as a still (ADR-0108). The audio
-                    // pin crosses to the mixer; its queue reader is the strip producer.
+                    // The picture node in the render partition, the same way as a
+                    // still; the sound node in the audio partition at the binder's
+                    // sound node, the mixer's producer (ADR-0106, ADR-0108).
+                    // The instance is recorded right after the picture node is adopted,
+                    // so a failed sound adopt leaves no picture node the studio does
+                    // not know about.
+                    let m = *m;
                     entry.state.adapter = m.adapter;
-                    self.engine
-                        .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(m.node))?;
-                    entry.instance = Some(Instance {
+                    self.engine.adopt::<GpuRuntime>(
+                        RENDER,
+                        entry.state.node,
+                        Box::new(m.picture),
+                    )?;
+                    let instance = entry.instance.insert(Instance {
                         partition: RENDER,
                         gpu: true,
                         watch: Watch::Media(m.stats),
                         offset: None,
                         sent_offset_ns: 0,
+                        sound: SoundHalf::None,
                     });
+                    match self.binder.sound_node(entry.source) {
+                        Some(node) if scheduled.contains(&node) => {
+                            self.engine
+                                .adopt::<()>(audio_partition, node, Box::new(m.sound))?;
+                            instance.sound = SoundHalf::Adopted(node, audio_partition);
+                        }
+                        Some(_) => instance.sound = SoundHalf::Held(Box::new(m.sound)),
+                        // No audio partition: no sound node, and the worker decodes
+                        // no sound.
+                        None => {}
+                    }
                 }
                 SourceInstance::Text(t) => {
                     // Render partition (ADR-0129). The worker owns the picture sender.
@@ -2463,6 +2529,7 @@ impl Studio {
                         watch: Watch::Text(t.stats),
                         offset: None,
                         sent_offset_ns: 0,
+                        sound: SoundHalf::None,
                     });
                 }
                 SourceInstance::Browser(b) => {
@@ -2477,6 +2544,7 @@ impl Studio {
                         watch: Watch::Browser { size },
                         offset: None,
                         sent_offset_ns: 0,
+                        sound: SoundHalf::None,
                     });
                 }
                 _ => {
@@ -2560,39 +2628,16 @@ impl Studio {
         // Strips: until the swap, the old schedule may still feed inputs that leave, so
         // the strips sent before the apply cover the old and the new inputs; the ones of
         // inputs that left go after it.
-        //
-        // A picture-and-sound producer is the partition-queue reader. That id exists
-        // only after this apply lowers the graph (ADR-0106), so those strips stay keyed
-        // by source across the swap: the reader already sent is kept, and a source heard
-        // for the first time waits. `assign_queue_readers` then names every reader,
-        // including on the apply that follows `replaced_sources`, and the strips are
-        // taken from the mixer inputs.
-        let picture_sound: BTreeSet<SourceId> = report
-            .as_ref()
-            .map(|r| {
-                r.picture_sound
-                    .iter()
-                    .filter(|p| p.canvas == self.settings.canvas && p.role == Role::Program)
-                    .map(|p| p.source)
-                    .collect()
-            })
-            .unwrap_or_default();
+        // A picture-and-sound source's producer is its sound node, known at bind time
+        // like any other (ADR-0106).
         let mut trimmed = None;
         if let (Some(mixer), Some(bound)) = (&mut self.mixer, &self.bound_mixer) {
             let live: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
             self.meters.retain(|s, _| live.contains(s));
             let mut staged: Vec<MixStrip> = Vec::new();
             for input in &bound.inputs {
-                let producer = if picture_sound.contains(&input.source) {
-                    let Some(kept) = self.strips.iter().find(|s| s.source == input.source) else {
-                        continue;
-                    };
-                    kept.producer
-                } else {
-                    input.producer
-                };
                 staged.push(MixStrip {
-                    producer,
+                    producer: input.producer,
                     source: input.source,
                     meter: self.meters.get(&input.source).cloned(),
                     audio: self.mix.get(&input.source).copied().unwrap_or_default(),
@@ -2628,7 +2673,6 @@ impl Studio {
         if applied.is_ok()
             && let Some(report) = report.as_mut()
         {
-            report.assign_queue_readers(self.engine.crossings());
             self.send_hold_strips(report, true);
             self.bound_mixer = report.mixers.get(&self.settings.canvas).cloned();
             if let (Some(mixer), Some(bound)) = (&self.mixer, self.bound_mixer.as_ref()) {
@@ -3252,13 +3296,20 @@ impl Studio {
         self.cues
             .retain(|id| collection.item(id).is_some_and(|(_, item)| !item.visible));
         let hold = self.hold_requests();
-        if self.cues.is_empty() && hold.is_empty() {
+        let outgoing = self.outgoing_scenes();
+        if self.cues.is_empty() && hold.is_empty() && outgoing.is_empty() {
             return self.binder.sync(collection, &mut self.graph);
         }
         let items = self.cues.items();
         let sources = collection.cued_drawn_sources(&items);
-        self.binder
-            .sync_held(collection, &mut self.graph, &items, &sources, &hold)
+        self.binder.sync_transition(
+            collection,
+            &mut self.graph,
+            &items,
+            &sources,
+            &hold,
+            &outgoing,
+        )
     }
 
     /// Starts or restarts a timed show. Does nothing when `visible` is true or
@@ -3302,6 +3353,9 @@ impl Studio {
         }
         self.service_text();
         let serviced = self.engine.service();
+        if self.step_transitions() {
+            self.transition_done = true;
+        }
         if !self.hold_scenes.is_empty() {
             let failed: BTreeSet<NodeId> = serviced
                 .events
@@ -4074,7 +4128,7 @@ impl Studio {
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
         for e in &mut self.entries {
-            e.scheduled = scheduled.contains(&e.state.node);
+            e.scheduled = in_plan(&self.binder, e, &scheduled);
         }
         self.apply_input_offsets(&scheduled);
         self.send_program_layers(&plan);
@@ -4633,6 +4687,15 @@ fn filter_of(
     Some((kind, &f.settings))
 }
 
+/// True when the plan schedules the source's node, or, for a picture-and-sound
+/// source, either of its nodes: a source that is heard but not seen still plays.
+fn in_plan(binder: &SceneBinder, entry: &Entry, scheduled: &BTreeSet<NodeId>) -> bool {
+    scheduled.contains(&entry.state.node)
+        || binder
+            .sound_node(entry.source)
+            .is_some_and(|node| scheduled.contains(&node))
+}
+
 fn take_instance(
     engine: &mut Engine,
     entry: &mut Entry,
@@ -4641,6 +4704,16 @@ fn take_instance(
     let Some(i) = entry.instance.take() else {
         return true;
     };
+    if let SoundHalf::Adopted(node, partition) = i.sound {
+        let sound = Added {
+            node,
+            partition,
+            gpu: false,
+        };
+        if !take(engine, sound) {
+            pending.push((sound, None));
+        }
+    }
     let a = Added {
         node: entry.state.node,
         partition: i.partition,

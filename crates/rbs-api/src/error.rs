@@ -46,10 +46,10 @@ pub enum ErrorKind {
     FileExists,
     /// The request was valid but could not be carried out; the message says why.
     Failed,
-    /// The API may not do this whatever the token's scope (protocol 1.71): for
+    /// The API may not do this whatever the token's scope (protocol 1.74): for
     /// example writing a text source's `file` (ADR-0129 decision 8).
     Forbidden,
-    /// The answer is being prepared; ask again shortly (protocol 1.71): for example
+    /// The answer is being prepared; ask again shortly (protocol 1.74): for example
     /// `text.fonts` before the first font list exists (ADR-0129 decision 7).
     NotReady,
 }

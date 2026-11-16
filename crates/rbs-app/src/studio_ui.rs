@@ -470,6 +470,11 @@ pub struct StudioUi {
     /// The vertical canvas's stream settings as saved (`stream-vertical`); `None`:
     /// none saved, so the vertical stream has no server.
     vertical_stream: Option<StreamProfile>,
+    /// The stream destinations as saved (`stream-destinations`, ADR-0127); none extra
+    /// when the section is absent, does not load or was written by a newer RBS.
+    destinations: rbs_app::stream_destinations::Destinations,
+    /// Why the saved destinations are not used, if they are not.
+    destinations_note: String,
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111).
     pub vertical_flags: VerticalFlags,
     /// What the Stream section shows for a vertical stream not saved yet.
@@ -695,6 +700,8 @@ impl StudioUi {
             settings_canvas: OutputCanvas::Main,
             vertical_profile: None,
             vertical_stream: None,
+            destinations: rbs_app::stream_destinations::Destinations::default(),
+            destinations_note: String::new(),
             vertical_flags: VerticalFlags::default(),
             no_stream: StreamProfile::new(),
             st_live: None,
@@ -4921,6 +4928,21 @@ impl StudioUi {
                 v.key_saved &= self.keys_persistent;
                 v
             });
+        (self.destinations, self.destinations_note) =
+            match rbs_app::stream_destinations::Destinations::from_section(
+                self.user
+                    .section::<rbs_app::stream_destinations::Destinations>(
+                        rbs_app::stream_destinations::SECTION,
+                    ),
+            ) {
+                Ok(mut d) => {
+                    for e in &mut d.entries {
+                        e.key_saved &= self.keys_persistent;
+                    }
+                    (d, String::new())
+                }
+                Err(why) => (rbs_app::stream_destinations::Destinations::default(), why),
+            };
         self.profile = profile;
         self.profile_note = why
             .map(|w| format!("The saved recording settings were not used: {w}"))
@@ -4930,6 +4952,9 @@ impl StudioUi {
         self.stream_note = stream_why
             .map(|w| format!("The saved stream settings were not used: {w}"))
             .unwrap_or_default();
+        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
+            self.stream_note = format!("{}.", self.destinations_note);
+        }
         self.server_draft = None;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -4974,6 +4999,7 @@ impl StudioUi {
         self.send(Command::SetVerticalStreamProfile(
             self.vertical_stream.clone(),
         ));
+        self.send(Command::SetStreamDestinations(self.destinations.clone()));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a

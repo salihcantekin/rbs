@@ -72,7 +72,7 @@ pub struct TargetsParams {
 }
 
 /// `source.add`: a source of `kind` capturing one target, on top of the program scene.
-/// A `text` source (protocol 1.71, ADR-0129 decision 8) has no target: `adapter` and
+/// A `text` source (protocol 1.74, ADR-0129 decision 8) has no target: `adapter` and
 /// `target` may be left out and are ignored, and `text` is what it shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddSource {
@@ -99,13 +99,13 @@ pub struct AddSource {
     /// Default false; the picture and its sound are one undo step.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub with_audio: bool,
-    /// The text a `text` source shows (protocol 1.71); absent: "Text". Not allowed for
+    /// The text a `text` source shows (protocol 1.74); absent: "Text". Not allowed for
     /// other kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
 }
 
-/// `source.set_text` (protocol 1.71, ADR-0129 decision 8): replaces a text source's
+/// `source.set_text` (protocol 1.74, ADR-0129 decision 8): replaces a text source's
 /// `text` only. One undo step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1546,9 +1546,9 @@ pub enum Command {
     SourceAttributesClipboard,
     /// `source.paste_attributes` (protocol 1.68).
     SourcePasteAttributes(PasteAttributes),
-    /// `source.set_text` (protocol 1.71).
+    /// `source.set_text` (protocol 1.74).
     SourceSetText(SetText),
-    /// `text.fonts` (protocol 1.71).
+    /// `text.fonts` (protocol 1.74).
     TextFonts,
     /// `scene.switch` (protocol 1.6).
     SceneSwitch(SceneRef),
@@ -3040,7 +3040,7 @@ pub enum Response {
     /// `source.copy_attributes`, `source.attributes_clipboard` (protocol 1.68); `null`
     /// while the clipboard is empty.
     AttributesClipboard(Option<crate::types::AttributesClipboard>),
-    /// `text.fonts` (protocol 1.71).
+    /// `text.fonts` (protocol 1.74).
     TextFonts(crate::types::TextFonts),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
