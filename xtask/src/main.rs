@@ -384,7 +384,7 @@ enum Class {
 fn class(name: &str) -> Option<Class> {
     Some(match name {
         "rbs-core" | "rbs-graph" | "rbs-scene" | "rbs-capture" | "rbs-audio-io" | "rbs-codec"
-        | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" => Class::Core,
+        | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" | "rbs-text" => Class::Core,
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
         }
@@ -436,6 +436,8 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-vcam-mf"
         | "rbs-vcam-test"
         | "rbs-media-decode-test"
+        | "rbs-text-test"
+        | "rbs-text-parley"
         | "rbs-browser-runner" => Class::Adapter,
         other if other.starts_with("rbs-") => return None,
         _ => return None,

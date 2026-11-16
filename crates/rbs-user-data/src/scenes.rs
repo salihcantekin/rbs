@@ -17,6 +17,12 @@
 //! # duration_ms = 400
 //! # easing = "ease-in-out"     # or "linear"
 //!
+//! # [transition]               # format 19, ADR-0128; absent: Move (format 18 and older: Cut when the glide is 0 ms)
+//! # kind = "fade"              # "cut", "fade", "move", "swipe" or "slide"
+//! # fade = { duration_ms = 300, easing = "linear", via = "#000000" }   # via: fade through a colour
+//! # swipe = { duration_ms = 500, easing = "ease-in-out", direction = "left" }  # "left", "right", "up", "down"
+//! # slide = { duration_ms = 500, easing = "ease-in-out", direction = "left" }
+//!
 //! [[canvases]]
 //! id = 0
 //! name = "Main"
@@ -70,10 +76,11 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, Canvas, CanvasId, CollectionGlide, Crop, Fallback, Filter, FilterId, GlideEasing,
-    ItemContent, ItemId, ItemStyle, Layout, MasterAudio, RecordSeparately, Scene, SceneAudio,
-    SceneId, SceneItem, SceneLevel, SceneScope, SettingValue, Settings, Shadow, Shape, Source,
-    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, VideoAs,
+    Border, Canvas, CanvasId, CollectionGlide, CollectionTransition, Crop, FadeSettings, Fallback,
+    Filter, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle, Layout, MasterAudio,
+    RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope, SettingValue,
+    Settings, Shadow, Shape, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
+    SourceRegion, SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, SceneCollection};
@@ -89,6 +96,9 @@ struct Body {
     /// Collection morph (format 12, ADR-0100); absent: defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     glide: Option<GlideDoc>,
+    /// The collection transition (format 19, ADR-0128); absent: the default (Move).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transition: Option<TransitionDoc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     canvases: Vec<CanvasDoc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -184,6 +194,110 @@ impl From<GlideDoc> for SourceGlide {
             duration_ms: g.duration_ms,
             easing: g.easing.into(),
         }
+    }
+}
+
+/// The collection transition in the document (ADR-0128). Each part is omitted while
+/// it holds its default.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct TransitionDoc {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fade: Option<FadeDoc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    swipe: Option<SwipeDoc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    slide: Option<SwipeDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FadeDoc {
+    duration_ms: u32,
+    easing: GlideEasingDoc,
+    /// `"#rrggbb"`; absent: a crossfade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    via: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SwipeDoc {
+    duration_ms: u32,
+    easing: GlideEasingDoc,
+    direction: String,
+}
+
+fn rgb_text(c: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+fn rgb_parse(t: &str) -> Result<[u8; 3], String> {
+    let hex = t
+        .strip_prefix('#')
+        .filter(|h| h.len() == 6 && h.is_ascii())
+        .ok_or_else(|| format!("`{t}` is not a colour of the form #rrggbb"))?;
+    let byte = |i: usize| {
+        u8::from_str_radix(&hex[i..i + 2], 16)
+            .map_err(|_| format!("`{t}` is not a colour of the form #rrggbb"))
+    };
+    Ok([byte(0)?, byte(2)?, byte(4)?])
+}
+
+impl From<CollectionTransition> for TransitionDoc {
+    fn from(t: CollectionTransition) -> Self {
+        let d = CollectionTransition::default();
+        let swipe = |s: SwipeSettings| SwipeDoc {
+            duration_ms: s.duration_ms,
+            easing: s.easing.into(),
+            direction: s.direction.as_str().to_owned(),
+        };
+        Self {
+            kind: (t.kind != d.kind).then(|| t.kind.as_str().to_owned()),
+            fade: (t.fade != d.fade).then(|| FadeDoc {
+                duration_ms: t.fade.duration_ms,
+                easing: t.fade.easing.into(),
+                via: t.fade.via.map(rgb_text),
+            }),
+            swipe: (t.swipe != d.swipe).then(|| swipe(t.swipe)),
+            slide: (t.slide != d.slide).then(|| swipe(t.slide)),
+        }
+    }
+}
+
+impl TryFrom<TransitionDoc> for CollectionTransition {
+    type Error = String;
+
+    fn try_from(doc: TransitionDoc) -> Result<Self, String> {
+        let mut t = CollectionTransition::default();
+        if let Some(kind) = doc.kind {
+            t.kind = TransitionKind::parse(&kind)
+                .ok_or_else(|| format!("unknown transition kind `{kind}`"))?;
+        }
+        if let Some(f) = doc.fade {
+            t.fade = FadeSettings {
+                duration_ms: f.duration_ms,
+                easing: f.easing.into(),
+                via: f.via.as_deref().map(rgb_parse).transpose()?,
+            };
+        }
+        let swipe = |s: SwipeDoc| -> Result<SwipeSettings, String> {
+            Ok(SwipeSettings {
+                duration_ms: s.duration_ms,
+                easing: s.easing.into(),
+                direction: SwipeDirection::parse(&s.direction)
+                    .ok_or_else(|| format!("unknown direction `{}`", s.direction))?,
+            })
+        };
+        if let Some(s) = doc.swipe {
+            t.swipe = swipe(s)?;
+        }
+        if let Some(s) = doc.slide {
+            t.slide = swipe(s)?;
+        }
+        Ok(t)
     }
 }
 
@@ -781,10 +895,14 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 18;
+    const FORMAT: u32 = 19;
 
     fn write_format(&self) -> u32 {
-        if self
+        // Format 18 and older read a 0 ms glide as Cut, so such a collection is written
+        // as 19 to keep its own transition (ADR-0128 decision 3).
+        if !self.transition().is_default() || self.glide().duration_ms == 0 {
+            19
+        } else if self
             .sources()
             .any(|s| s.record_separately.video && s.record_separately.video_as != VideoAs::Auto)
         {
@@ -824,10 +942,30 @@ impl Document for SceneCollection {
     /// scene `audio` (ADR-0091); a format 16 body is a format 17 body without it, and a
     /// file is written as 17 only when a scene has it. Format 18 adds the optional
     /// `record_separately.video_as` (ADR-0117); a format 17 body is a format 18 body
-    /// without it, and a file is written as 18 only when a source has it.
+    /// without it, and a file is written as 18 only when a source has it. Format 19
+    /// adds the optional collection `transition` (ADR-0128); a format 18 or older body
+    /// is a format 19 body whose transition is Move, or Cut when its glide is 0 ms, and a
+    /// file is written as 19 only when it needs it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=17 => {
+            1..=18 => {
+                if body.contains_key("transition") {
+                    return Err(format!("format {from} has no `transition` (format 19)"));
+                }
+                let still = body
+                    .get("glide")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|g| g.get("duration_ms"))
+                    .and_then(toml::Value::as_integer)
+                    == Some(0);
+                if still {
+                    let mut t = toml::Table::new();
+                    t.insert("kind".into(), toml::Value::String("cut".into()));
+                    body.insert("transition".into(), toml::Value::Table(t));
+                }
+                if from == 18 {
+                    return Ok(());
+                }
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -958,6 +1096,8 @@ impl Document for SceneCollection {
     fn to_body(&self) -> Result<toml::Table, String> {
         let n = self.id_counters();
         let glide = (!self.glide().is_default()).then(|| GlideDoc::from(self.glide()));
+        let transition =
+            (!self.transition().is_default()).then(|| TransitionDoc::from(self.transition()));
         let canvases = self
             .canvases()
             .map(|c| {
@@ -1081,6 +1221,7 @@ impl Document for SceneCollection {
                 filter: n.filter,
             },
             glide,
+            transition,
             canvases,
             sources,
             scenes,
@@ -1211,7 +1352,12 @@ impl Document for SceneCollection {
             .collect::<Result<Vec<_>, String>>()?;
         let n = b.next;
         let glide = b.glide.map(CollectionGlide::from).unwrap_or_default();
-        SceneCollection::from_parts_with_glide(
+        let transition = b
+            .transition
+            .map(CollectionTransition::try_from)
+            .transpose()?
+            .unwrap_or_default();
+        SceneCollection::from_parts_with_transition(
             canvases,
             sources,
             scenes,
@@ -1223,6 +1369,7 @@ impl Document for SceneCollection {
                 filter: n.filter,
             },
             glide,
+            transition,
         )
         .map_err(|e| e.to_string())
     }

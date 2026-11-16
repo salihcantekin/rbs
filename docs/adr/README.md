@@ -135,5 +135,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0125](0125-projector-windows.md) | Projector windows: the program of a canvas in a chromeless window for sharing apps, its own canvas-size picture only while open, Exact pixels size, cannot be minimised | Accepted |
 | [0126](0126-measured-sync-offset-and-device-memory.md) | Measure a source's sync offset with a clap, and remember it with the device | Accepted |
 | [0127](0127-multistreaming-to-several-destinations.md) | Multistreaming: one stream to several destinations, one shared encoder, each destination isolated; RTMPS; service presets | Accepted |
+| [0128](0128-scene-transitions.md) | Scene transitions: Cut, Fade, Move, Swipe, Slide (Stinger later); the incoming scene drawn by its own compositor only while a transition runs | Accepted |
+| [0129](0129-text-source.md) | A text source: a fixed box drawn on the CPU once per change through a text rendering port, updated in place; live kinds (clock, countdown, stopwatch, elapsed time) and crisp resizing | Accepted |
 | [0131](0131-import-obs-scene-collections-and-profiles.md) | Import OBS scene collections, profiles and hotkeys as a new collection and output profile, through a mapper registry, with a report of what did not come across | Accepted |
 | [0132](0132-browser-engine-css-interaction.md) | The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in | Accepted |

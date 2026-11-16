@@ -178,14 +178,72 @@ pub fn run(cmd: &ObsImportCommand, config: &Path, out: &mut dyn Write) -> Result
                 .try_lock()
                 .map_err(|e| e.to_string())?
                 .ok_or("RBS is running; close it or import from the app")?;
-            let (_, name) = data
+            let (id, name) = data
                 .scene_collections()
                 .create_free(&lock, &plan.name, &plan.collection)
                 .map_err(|e| e.to_string())?;
             writeln!(out, "Wrote the scene collection {name:?}.").map_err(|e| e.to_string())?;
+            write_shortcuts(&data, &lock, &plan, id.as_str(), out)?;
+            if plan.profile.is_some() {
+                writeln!(
+                    out,
+                    "The output profile and the stream key are imported by the app (Settings, Import from OBS)."
+                )
+                .map_err(|e| e.to_string())?;
+            }
             Ok(())
         }
     }
+}
+
+/// Adds the imported hotkeys to `shortcuts.toml` (ADR-0131 decision 9): the one
+/// existing file an import changes, and only by adding free chords. When the file
+/// cannot be read, it is left as it is and the step is skipped.
+fn write_shortcuts(
+    data: &rbs_user_data::UserData,
+    lock: &rbs_user_data::WriterLock,
+    plan: &rbs_import_obs::ImportPlan,
+    collection_id: &str,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    if plan.shortcuts.is_empty() {
+        return Ok(());
+    }
+    let w = |out: &mut dyn Write, line: String| writeln!(out, "{line}").map_err(|e| e.to_string());
+    let (mut doc, err) = data.shortcuts();
+    if err.is_some() {
+        return w(
+            out,
+            "The shortcuts file could not be read, so no hotkeys were added; it was left as it is."
+                .into(),
+        );
+    }
+    let left_out = rbs_import_obs::merge_shortcuts(
+        &mut doc,
+        &plan.shortcuts,
+        collection_id,
+        rbs_ui::shortcut::Platform::current(),
+    );
+    let added = plan.shortcuts.len() - left_out.len();
+    if added > 0
+        && let Err(e) = data.set_shortcuts(lock, &doc)
+    {
+        return w(
+            out,
+            format!("The hotkeys could not be added: {e}. The scene collection was written."),
+        );
+    }
+    w(
+        out,
+        format!(
+            "Added {added} of {} hotkeys as shortcuts.",
+            plan.shortcuts.len()
+        ),
+    )?;
+    for e in left_out {
+        w(out, format!("- {e}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,6 +391,34 @@ mod tests {
             .list()
             .unwrap();
         assert_eq!(listed.entries.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_with_a_profile_adds_the_hotkeys_as_shortcuts() {
+        let dir = std::env::temp_dir().join(format!("rbs-cli-obs-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../rbs-import-obs/tests/fixtures");
+        let cmd = ObsImportCommand::Plan(PlanArgs {
+            write: true,
+            collection: fixtures.join("show.json"),
+            profile: Some(fixtures.join("advanced")),
+            options: Options::default(),
+        });
+        let config = dir.join("config");
+        let mut out = Vec::new();
+        run(&cmd, &config, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("of 4 hotkeys as shortcuts."), "{text}");
+        assert!(!text.contains("SECRET"), "{text}");
+        let (doc, err) = rbs_user_data::UserData::new(&config).shortcuts();
+        assert!(err.is_none());
+        assert!(
+            doc.bindings.iter().any(|b| b.command == "stream.toggle"),
+            "{doc:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

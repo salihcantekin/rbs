@@ -4,30 +4,36 @@
 //! renderer, utilities). This crate is the message layout only. The studio process
 //! does not link or load CEF.
 //!
-//! Messages are little-endian and length-prefixed:
+//! Control messages are little-endian and length-prefixed, on the helper's stdin:
 //!
 //! ```text
 //! u32 length | payload
 //! payload: u8 kind | body
 //! kind 1 configure: u16 url_len | url utf-8 | u32 width | u32 height | u32 fps | u8 transparent
-//! kind 2 frame: u32 width | u32 height | rgba8 bytes (width * height * 4, straight alpha, sRGB)
+//!                   | u16 frames_len | frames section name utf-8
 //! ```
 //!
-//! The studio allocates the frame buffer. Dropping that buffer does not join the child.
-//! There is no JS binding and no device-permission field on the wire.
+//! Frames do not cross the pipe. They cross the studio-allocated shared memory
+//! section named in `configure` ([`shm`]), which also carries the heartbeat. The studio
+//! allocates that section before it spawns the helper. Dropping it does not join the
+//! child. There is no JS binding and no device-permission field on the wire.
 
 use std::time::Duration;
 
+pub mod shm;
+
 /// Configure kind.
 pub const KIND_CONFIGURE: u8 = 1;
-/// Frame kind.
-pub const KIND_FRAME: u8 = 2;
 /// Straight-alpha sRGB `Rgba8`.
 pub const PIXEL_FORMAT: &str = "rgba8";
 /// Colour space of helper frames.
 pub const COLOR_SPACE: &str = "srgb";
-/// Largest payload accepted from a child, so a bad length cannot allocate without bound.
-pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
+/// Largest control payload accepted, so a bad length cannot allocate without bound.
+pub const MAX_PAYLOAD: usize = 64 * 1024;
+/// The helper beats at least this often.
+pub const HEARTBEAT_PERIOD: Duration = Duration::from_millis(500);
+/// No heartbeat for this long is a hang (ADR-0109 decision 8).
+pub const HEARTBEAT_LIMIT: Duration = Duration::from_secs(2);
 
 /// What the page is not allowed to do. A later CEF runner inherits this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,17 +65,8 @@ pub struct Configure {
     pub fps: u32,
     /// When false, alpha is forced opaque before publish.
     pub transparent: bool,
-}
-
-/// One straight-alpha sRGB frame the studio copied into its own buffer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameBytes {
-    /// Width.
-    pub width: u32,
-    /// Height.
-    pub height: u32,
-    /// `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
+    /// Name of the studio-allocated frame section ([`shm::FrameRing`]).
+    pub frames: String,
 }
 
 /// Encodes a configure payload, including the length prefix.
@@ -77,7 +74,10 @@ pub fn encode_configure(config: &Configure) -> Vec<u8> {
     let url = config.url.as_bytes();
     let url_len = u16::try_from(url.len()).unwrap_or(u16::MAX);
     let url = &url[..usize::from(url_len)];
-    let mut body = Vec::with_capacity(1 + 2 + url.len() + 4 + 4 + 4 + 1);
+    let frames = config.frames.as_bytes();
+    let frames_len = u16::try_from(frames.len()).unwrap_or(u16::MAX);
+    let frames = &frames[..usize::from(frames_len)];
+    let mut body = Vec::with_capacity(1 + 2 + url.len() + 4 + 4 + 4 + 1 + 2 + frames.len());
     body.push(KIND_CONFIGURE);
     body.extend_from_slice(&url_len.to_le_bytes());
     body.extend_from_slice(url);
@@ -85,16 +85,8 @@ pub fn encode_configure(config: &Configure) -> Vec<u8> {
     body.extend_from_slice(&config.height.to_le_bytes());
     body.extend_from_slice(&config.fps.to_le_bytes());
     body.push(u8::from(config.transparent));
-    prefix(body)
-}
-
-/// Encodes one test frame, including the length prefix.
-pub fn encode_frame(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(1 + 8 + rgba.len());
-    body.push(KIND_FRAME);
-    body.extend_from_slice(&width.to_le_bytes());
-    body.extend_from_slice(&height.to_le_bytes());
-    body.extend_from_slice(rgba);
+    body.extend_from_slice(&frames_len.to_le_bytes());
+    body.extend_from_slice(frames);
     prefix(body)
 }
 
@@ -115,34 +107,18 @@ pub fn decode_configure(bytes: &[u8]) -> Option<Configure> {
     let height = u32::from_le_bytes(rest[n + 4..n + 8].try_into().ok()?);
     let fps = u32::from_le_bytes(rest[n + 8..n + 12].try_into().ok()?);
     let transparent = rest[n + 12] != 0;
+    let tail = rest.get(n + 13..)?;
+    let frames_len = u16::from_le_bytes([*tail.first()?, *tail.get(1)?]) as usize;
+    let frames = std::str::from_utf8(tail.get(2..2 + frames_len)?)
+        .ok()?
+        .to_owned();
     Some(Configure {
         url,
         width,
         height,
         fps,
         transparent,
-    })
-}
-
-/// Decodes a frame message (with or without the length prefix).
-pub fn decode_frame(bytes: &[u8]) -> Option<FrameBytes> {
-    let body = strip_prefix(bytes)?;
-    if body.first().copied() != Some(KIND_FRAME) || body.len() < 9 {
-        return None;
-    }
-    let width = u32::from_le_bytes(body[1..5].try_into().ok()?);
-    let height = u32::from_le_bytes(body[5..9].try_into().ok()?);
-    let rgba = body[9..].to_vec();
-    let expect = (width as usize)
-        .saturating_mul(height as usize)
-        .saturating_mul(4);
-    if rgba.len() != expect {
-        return None;
-    }
-    Some(FrameBytes {
-        width,
-        height,
-        rgba,
+        frames,
     })
 }
 
@@ -162,10 +138,11 @@ pub fn restart_delay(attempt: u32) -> Duration {
     Duration::from_millis(500u64.saturating_mul(1_u64 << shift)).min(Duration::from_secs(30))
 }
 
-/// A hang is two of the source's frame periods with no frame (supervised off the
-/// render thread). The test double does not run a timer; callers pass a duration.
-pub fn stalled(silent_for: Duration, frame_period: Duration) -> bool {
-    !frame_period.is_zero() && silent_for >= frame_period.saturating_mul(2)
+/// A hang is [`HEARTBEAT_LIMIT`] without a heartbeat (supervised off the render
+/// thread). A page that does not change paints nothing; that is not a hang. Callers
+/// pass the time since the counter last moved, from their own clock.
+pub fn heartbeat_lost(silent_for: Duration) -> bool {
+    silent_for >= HEARTBEAT_LIMIT
 }
 
 fn prefix(body: Vec<u8>) -> Vec<u8> {
@@ -180,7 +157,7 @@ fn strip_prefix(bytes: &[u8]) -> Option<&[u8]> {
     if bytes.len() >= 4 {
         let len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         let kind = bytes.get(4).copied();
-        if bytes.len() == 4 + len && (kind == Some(KIND_CONFIGURE) || kind == Some(KIND_FRAME)) {
+        if bytes.len() == 4 + len && kind == Some(KIND_CONFIGURE) {
             return bytes.get(4..);
         }
     }
@@ -193,22 +170,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn configure_and_frame_round_trip() {
+    fn configure_round_trips_with_the_frame_section() {
         let config = Configure {
             url: "https://example.com/overlay".into(),
             width: 2,
             height: 2,
             fps: 30,
             transparent: false,
+            frames: "/rbsb.1.0".into(),
         };
         let encoded = encode_configure(&config);
         assert_eq!(decode_configure(&encoded), Some(config));
-        let rgba = vec![
-            8, 16, 32, 128, 8, 16, 32, 128, 8, 16, 32, 128, 8, 16, 32, 128,
-        ];
-        let frame = encode_frame(2, 2, &rgba);
-        let decoded = decode_frame(&frame).unwrap();
-        assert_eq!(decoded.rgba, rgba);
+        assert_eq!(decode_configure(&encoded[..encoded.len() - 1]), None);
     }
 
     #[test]
@@ -230,10 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_is_two_frame_periods_without_sleeping() {
-        let period = Duration::from_millis(33);
-        assert!(!stalled(period, period));
-        assert!(stalled(period * 2, period));
+    fn a_hang_is_two_seconds_without_a_heartbeat() {
+        assert!(!heartbeat_lost(Duration::from_millis(1999)));
+        assert!(heartbeat_lost(HEARTBEAT_LIMIT));
+        assert!(HEARTBEAT_PERIOD * 4 <= HEARTBEAT_LIMIT);
         assert_eq!(restart_delay(1), Duration::from_millis(500));
         assert_eq!(restart_delay(2), Duration::from_millis(1000));
     }

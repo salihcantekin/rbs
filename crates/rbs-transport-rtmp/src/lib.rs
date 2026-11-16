@@ -2,7 +2,11 @@
 //!
 //! Publishes H.264 and AAC packets (`packets` input) to an RTMP server, as encoders
 //! publish to YouTube, Twitch or nginx-rtmp: `rtmp://host[:port]/app` with the stream
-//! key in `TransportConfig::secret`. Contract: `docs/specs/output-ports.md`, section
+//! key in `TransportConfig::secret`. `rtmps://host[:port]/app` (port 443 by default)
+//! does the same over TLS (ADR-0127 decision 10): the TLS session runs on the I/O
+//! thread, certificates are verified with the operating system's trust store plus
+//! the roots of the `tls_extra_roots` adapter option (PEM), and a certificate the
+//! verifier refuses is a rejection, never retried. Contract: `docs/specs/output-ports.md`, section
 //! "RTMP transport".
 //!
 //! Behaviour:
@@ -36,14 +40,15 @@
 //! - The stream key is never in `Debug` output, events or errors; server text that
 //!   becomes an error has it removed.
 //!
-//! Not yet: `rtmps` (TLS), enhanced RTMP (HEVC, AV1, Opus), AMF3, the digest
-//! handshake. Pure Rust on `std`; no FFmpeg.
+//! Not yet: enhanced RTMP (HEVC, AV1, Opus), AMF3, the digest handshake. Pure Rust on
+//! `std` and rustls; no FFmpeg.
 
 mod chunk;
 mod command;
 mod io;
 mod session;
 mod staging;
+mod tls;
 mod url;
 
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
@@ -56,6 +61,10 @@ use rbs_transport::{
 
 /// Stable adapter id.
 pub const ADAPTER_ID: &str = "org.rbs.transport.rtmp";
+
+/// Adapter option for `rtmps`: PEM certificates trusted as roots besides the system's,
+/// for a server with a private certificate authority.
+pub const OPTION_TLS_EXTRA_ROOTS: &str = "tls_extra_roots";
 
 /// Factory for RTMP transport sessions. Probing is free: no network access.
 #[derive(Debug, Default, Clone, Copy)]
@@ -72,7 +81,10 @@ impl AdapterFactory for RtmpTransportFactory {
 
     fn probe(&self) -> Result<CapabilitySet, ProbeError> {
         Ok(CapabilitySet::new()
-            .with(caps::SCHEMES, CapabilityValue::Set(vec!["rtmp".to_owned()]))
+            .with(
+                caps::SCHEMES,
+                CapabilityValue::Set(vec!["rtmp".to_owned(), "rtmps".to_owned()]),
+            )
             .with(
                 caps::INPUT,
                 CapabilityValue::Set(vec![caps::INPUT_PACKETS.to_owned()]),
@@ -90,21 +102,31 @@ impl AdapterFactory for RtmpTransportFactory {
 
 impl TransportFactory for RtmpTransportFactory {
     fn create(&self, config: &TransportConfig) -> Result<Box<dyn Transport>, CreateError> {
-        if config.scheme().as_deref() != Some("rtmp") {
-            return Err(CreateError::Unsupported {
-                what: "URL scheme (this adapter publishes to rtmp:// URLs; rtmps is not supported yet)"
-                    .into(),
-            });
-        }
+        let tls = match config.scheme().as_deref() {
+            Some("rtmp") => false,
+            Some("rtmps") => true,
+            _ => {
+                return Err(CreateError::Unsupported {
+                    what: "URL scheme (this adapter publishes to rtmp:// and rtmps:// URLs)".into(),
+                });
+            }
+        };
         if config.input != TransportInput::Packets {
             return Err(CreateError::Unsupported {
                 what: "container input (RTMP takes encoded packets)".into(),
             });
         }
-        if let Some((key, _)) = config.adapter_options.first() {
-            return Err(CreateError::Unsupported {
-                what: format!("adapter option {key:?} (the RTMP transport has none)"),
-            });
+        let mut tls_roots = Vec::new();
+        for (key, value) in &config.adapter_options {
+            if tls && key == OPTION_TLS_EXTRA_ROOTS && tls_roots.is_empty() {
+                tls_roots = tls::parse_roots(value).map_err(CreateError::InvalidConfig)?;
+            } else {
+                return Err(CreateError::Unsupported {
+                    what: format!(
+                        "adapter option {key:?} (the RTMP transport takes only {OPTION_TLS_EXTRA_ROOTS:?}, once, with rtmps)"
+                    ),
+                });
+            }
         }
         let url = url::parse(&config.url).map_err(CreateError::InvalidConfig)?;
         let key = match &config.secret {
@@ -132,6 +154,7 @@ impl TransportFactory for RtmpTransportFactory {
             key,
             limits: config.queue,
             reconnect: config.reconnect,
+            tls_roots,
         })))
     }
 }

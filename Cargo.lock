@@ -3750,6 +3750,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
+name = "openssl-probe"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4479,12 +4485,17 @@ dependencies = [
 [[package]]
 name = "rbs-browser-ipc"
 version = "0.0.1"
+dependencies = [
+ "libc",
+ "windows",
+]
 
 [[package]]
 name = "rbs-browser-runner"
 version = "0.0.1"
 dependencies = [
  "rbs-browser-ipc",
+ "rbs-crash",
 ]
 
 [[package]]
@@ -4633,6 +4644,7 @@ dependencies = [
  "rbs-transport-file",
  "rbs-transport-rtmp",
  "rbs-transport-srt",
+ "rbs-ui",
  "rbs-user-data",
  "rbs-vcam",
  "rbs-vcam-mf",
@@ -4854,6 +4866,7 @@ dependencies = [
  "rbs-graph",
  "rbs-params",
  "rbs-scene",
+ "rbs-ui",
  "serde_json",
 ]
 
@@ -5100,6 +5113,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-text"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-text-parley"
+version = "0.0.1"
+dependencies = [
+ "parley",
+ "png",
+ "rbs-core",
+ "rbs-text",
+ "swash",
+]
+
+[[package]]
+name = "rbs-text-test"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-text",
+]
+
+[[package]]
 name = "rbs-thread-os"
 version = "0.0.1"
 dependencies = [
@@ -5135,7 +5174,10 @@ dependencies = [
  "rbs-core",
  "rbs-media-format",
  "rbs-transport",
+ "rcgen",
  "rtrb",
+ "rustls",
+ "rustls-platform-verifier",
 ]
 
 [[package]]
@@ -5489,6 +5531,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-native-certs"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework 3.7.0",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5496,6 +5550,33 @@ checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "zeroize",
 ]
+
+[[package]]
+name = "rustls-platform-verifier"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "jni",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-platform-verifier-android",
+ "rustls-webpki",
+ "security-framework 3.7.0",
+ "security-framework-sys",
+ "webpki-root-certs",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustls-platform-verifier-android"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
@@ -5521,6 +5602,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "schannel"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cb23c424d8ee841bb4d813677ca237e2a610067d594fec130f87d6093495ab5"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6965,6 +7055,15 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "url",
  "web-sys",
+]
+
+[[package]]
+name = "webpki-root-certs"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "293198dcebfb821155b5092ab94b5a82ff180eddd7241df3bd6e66a4ffd1a585"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

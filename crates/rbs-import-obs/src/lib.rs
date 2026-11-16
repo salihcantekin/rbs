@@ -10,9 +10,11 @@
 mod build;
 pub mod discover;
 pub mod env;
+pub mod hotkeys;
 pub mod ini;
 pub mod mappers;
 pub mod obs;
+pub mod profile;
 pub mod report;
 pub mod transform;
 
@@ -22,8 +24,10 @@ use std::fmt;
 use rbs_scene::SceneCollection;
 
 pub use env::{Catalogue, Lookup, LookupTarget, NoLookup};
+pub use hotkeys::{ImportedShortcut, merge_into as merge_shortcuts};
 pub use ini::VideoFacts;
 pub use mappers::Mappers;
+pub use profile::{ImportedSecrets, OutputFacts, StreamKey};
 pub use report::{Area, Counts, ImportReport, Outcome, ReportEntry};
 
 /// Largest OBS file read, in bytes.
@@ -119,8 +123,7 @@ impl ProfileFiles {
 }
 
 /// What an OBS profile says, in neutral terms the composition root maps onto its own
-/// settings (ADR-0131 decision 4). Step 1 reads the video section; the output, stream
-/// and audio facts come with step 2.
+/// settings (ADR-0131 decision 4).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObsProfileFacts {
@@ -128,6 +131,8 @@ pub struct ObsProfileFacts {
     pub name: Option<String>,
     /// `[Video]`.
     pub video: VideoFacts,
+    /// Output, stream, replay and audio settings, each `None` when not chosen.
+    pub output: OutputFacts,
 }
 
 /// The result of [`plan`].
@@ -140,6 +145,10 @@ pub struct ImportPlan {
     pub collection: SceneCollection,
     /// The profile facts, when a profile was given.
     pub profile: Option<ObsProfileFacts>,
+    /// The stream key, for the credential store only.
+    pub secrets: ImportedSecrets,
+    /// Hotkeys as shortcuts, app scope. Empty when not chosen.
+    pub shortcuts: Vec<ImportedShortcut>,
     /// What did not come across exactly.
     pub report: ImportReport,
 }
@@ -199,12 +208,51 @@ pub fn plan(
     if !root.get("sources").is_some_and(serde_json::Value::is_array) {
         return Err(ImportError::NotACollection);
     }
-    let profile = profile.map(|p| {
-        let ini = ini::Ini::parse(&String::from_utf8_lossy(&p.basic_ini));
+    for f in profile.iter().flat_map(|p| {
+        [&p.service_json, &p.stream_encoder, &p.record_encoder]
+            .into_iter()
+            .flatten()
+    }) {
+        if f.len() as u64 > MAX_FILE {
+            return Err(ImportError::TooLarge);
+        }
+    }
+    let ini = profile.map(|p| ini::Ini::parse(&String::from_utf8_lossy(&p.basic_ini)));
+    let mut later = ImportReport::default();
+    let mut secrets = ImportedSecrets::default();
+    let facts = profile.zip(ini.as_ref()).map(|(files, ini)| {
+        let video = VideoFacts::read(ini);
+        let (output, s) = profile::read(ini, files, video.base, video.output, options, &mut later);
+        secrets = s;
         ObsProfileFacts {
             name: ini.get("General", "Name").map(str::to_owned),
-            video: VideoFacts::read(&ini),
+            video,
+            output,
         }
     });
-    build::build(&root, profile, mappers, catalogue, lookup, options)
+    let (mut plan, scenes) = build::build(
+        &root,
+        facts,
+        mappers,
+        catalogue,
+        lookup,
+        options,
+        ImportReport::default(),
+    )?;
+    if options.hotkeys {
+        plan.shortcuts = hotkeys::read(ini.as_ref(), &root, &scenes, lookup.platform(), &mut later);
+    } else if profile.is_some() {
+        later.push(ReportEntry::new(
+            Outcome::NotChosen,
+            Area::Hotkey,
+            "Hotkeys",
+            "",
+            "Hotkeys were not chosen.",
+        ));
+    }
+    plan.secrets = secrets;
+    for e in later.entries {
+        plan.report.push(e);
+    }
+    Ok(plan)
 }

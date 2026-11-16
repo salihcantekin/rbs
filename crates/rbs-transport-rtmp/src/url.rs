@@ -1,9 +1,11 @@
-//! `rtmp://` URLs.
+//! `rtmp://` and `rtmps://` URLs.
 
 /// Default RTMP port.
 pub(crate) const DEFAULT_PORT: u16 = 1935;
+/// Default RTMPS port (RTMP over TLS, as YouTube, Facebook, Kick and X publish it).
+pub(crate) const DEFAULT_TLS_PORT: u16 = 443;
 
-/// A parsed `rtmp://host[:port]/app` URL. The stream key is never part of it.
+/// A parsed `rtmp[s]://host[:port]/app` URL. The stream key is never part of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RtmpUrl {
     /// Host name or IP address (IPv6 without brackets).
@@ -13,17 +15,23 @@ pub(crate) struct RtmpUrl {
     /// Application: the whole path without the leading and trailing `/`, query
     /// included (`live`, `live2`, `app/instance`, `app?token=...`).
     pub app: String,
-    /// The `tcUrl` of the `connect` command: `rtmp://authority/app`.
+    /// The `tcUrl` of the `connect` command: `rtmp[s]://authority/app`.
     pub tc_url: String,
+    /// `rtmps`: the connection is TLS (ADR-0127 decision 10).
+    pub tls: bool,
 }
 
-/// Parses an RTMP URL. Only the `rtmp` scheme (any case); user info is refused,
-/// because credentials in a URL would be logged (the key goes in the secret).
+/// Parses an RTMP URL. Only the `rtmp` and `rtmps` schemes (any case); user info is
+/// refused, because credentials in a URL would be logged (the key goes in the secret).
 pub(crate) fn parse(url: &str) -> Result<RtmpUrl, String> {
     let (scheme, rest) = url.split_once("://").ok_or("not a URL")?;
-    if !scheme.eq_ignore_ascii_case("rtmp") {
-        return Err(format!("scheme {scheme:?} (expected rtmp)"));
-    }
+    let tls = if scheme.eq_ignore_ascii_case("rtmp") {
+        false
+    } else if scheme.eq_ignore_ascii_case("rtmps") {
+        true
+    } else {
+        return Err(format!("scheme {scheme:?} (expected rtmp or rtmps)"));
+    };
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i + 1..]),
         None => (rest, ""),
@@ -48,6 +56,7 @@ pub(crate) fn parse(url: &str) -> Result<RtmpUrl, String> {
         return Err("RTMP URL without a host".into());
     }
     let port = match port {
+        None if tls => DEFAULT_TLS_PORT,
         None => DEFAULT_PORT,
         Some(p) => p
             .parse::<u16>()
@@ -63,7 +72,8 @@ pub(crate) fn parse(url: &str) -> Result<RtmpUrl, String> {
         host: host.to_owned(),
         port,
         app: app.to_owned(),
-        tc_url: format!("rtmp://{authority}/{app}"),
+        tc_url: format!("{}://{authority}/{app}", if tls { "rtmps" } else { "rtmp" }),
+        tls,
     })
 }
 
@@ -93,12 +103,26 @@ mod tests {
         );
         let u = parse("rtmp://[::1]/live").unwrap();
         assert_eq!(u.port, 1935);
+        assert!(!u.tls);
+    }
+
+    #[test]
+    fn parses_rtmps_urls() {
+        let u = parse("rtmps://live-api-s.facebook.com:443/rtmp/").unwrap();
+        assert_eq!(
+            (u.host.as_str(), u.port, u.app.as_str(), u.tls),
+            ("live-api-s.facebook.com", 443, "rtmp", true)
+        );
+        assert_eq!(u.tc_url, "rtmps://live-api-s.facebook.com:443/rtmp");
+        let u = parse("RTMPS://a.rtmps.youtube.com/live2").unwrap();
+        assert_eq!((u.port, u.tls), (443, true));
+        assert_eq!(u.tc_url, "rtmps://a.rtmps.youtube.com/live2");
     }
 
     #[test]
     fn refuses_bad_urls() {
         for url in [
-            "rtmps://host/app",
+            "rtmpt://host/app",
             "srt://host:9000",
             "rtmp://host",
             "rtmp://host/",
