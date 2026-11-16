@@ -14273,13 +14273,13 @@ fn api_picture_form(form: VideoAs) -> api::PictureForm {
     }
 }
 
-/// Nanoseconds as milliseconds, to the microsecond (control API 1.70).
+/// Nanoseconds as milliseconds, to the microsecond (control API 1.74).
 fn ns_to_ms(ns: i64) -> f64 {
     (ns as f64 / 1_000.0).round() / 1_000.0
 }
 
 /// `info` with the counters of its source's audio input, when one runs (`source.list`,
-/// protocol 1.70, ADR-0130 decision 9).
+/// protocol 1.74, ADR-0130 decision 9).
 fn with_input_counters(studio: &Studio, mut info: api::SourceInfo) -> api::SourceInfo {
     if let Some(c) = studio.input_counters(SourceId::from_raw(info.id)) {
         info.input_late_frames = Some(c.late_frames);

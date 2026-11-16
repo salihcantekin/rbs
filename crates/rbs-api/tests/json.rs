@@ -2776,7 +2776,7 @@ fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
 
 #[test]
 fn filter_latency_fields_are_optional_and_round_trip() {
-    // Protocol 1.70 (ADR-0130 decision 9): a source without latent filters, offset or
+    // Protocol 1.74 (ADR-0130 decision 9): a source without latent filters, offset or
     // running input looks as it did before.
     let plain = serde_json::to_value(SourceInfo {
         filter_latency_ms: 0.0,
