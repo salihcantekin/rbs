@@ -4982,6 +4982,7 @@ dependencies = [
  "rbs-media-decode-test",
  "rbs-mux",
  "rbs-mux-matroska",
+ "rbs-text",
  "rbs-transport",
  "rbs-transport-file",
  "rbs-vcam",

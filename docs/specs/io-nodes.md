@@ -123,6 +123,20 @@ Invariants:
 
 Counters are those of the capture node: `picture_size` is known from construction, `uploaded` and `frames` count one per warm-up. Test: `crates/rbs-nodes/tests/still_gpu.rs` (one upload and one publication over many ticks; the exported canvas shows the picture; an upload after Standby has a new generation).
 
+### Text source node (ADR-0129)
+
+`rbs_nodes::TextSourceNode` (`org.rbs.text`, kind `Source`, output "video", render partition). `TextSourceNode::new(initial: Option<TextFrame>) -> (node, ParamSender<Option<TextFrame>>)`: the text worker keeps the only sender (ADR-0023 parameter channel). `TextFrame::new(request, settings_generation, Arc<TextPicture>)` is built on the worker; its system frame shares the picture's pixels (`Bytes::from_owner`), so the render thread never copies or allocates a picture.
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Nothing |
+| `warm` | Takes the channel's newest picture; if there is one within the caps (`rbs_text::MAX_SIDE`, `MAX_PIXELS`), reserves two textures of its size (`ReservedUpload`, gpu-compositor spec) and uploads it, outside the upload budget. A node with no picture publishes nothing (the layer is not drawn) |
+| `process` | 1. A frame `warm` uploaded is published with the tick's time. 2. `ParamReceiver::update` (one atomic load when nothing is new). 3. Nothing pending: return. 4. Over the caps: held, counted in `over_cap`, never uploaded. 5. Box size changed: give the textures back and reserve two of the new size (not real time, once per size change); a failure is counted in `reserve_failures`, retried after `RESERVE_FAULT_AFTER` (5 s) or on a new picture, and a failure still there 5 s after the first sets `fault` to `SourceFault::Other`. 6. `upload_budget.try_take(tick, bytes, waiting_since)`; refused: remember the first tick waited on, count `budget_deferred`, try next tick. 7. `upload_into` the free texture; both leased (an export holds one): count `upload_deferred`, keep the picture for the next tick, never a third texture, never a wait. 8. Publish with the tick's time and a new generation, store `request` in `uploaded_request` (Release) |
+| `cool` | Gives both textures back; the next `warm` uploads the current picture again |
+| `release` | Drops everything |
+
+`TextNodeStats`: `frames`, `uploaded`, `uploaded_request` (what the host waits on before a switch, ADR-0129 decision 7), `upload_deferred`, `budget_deferred`, `over_cap`, `reserve_failures`, `gpu_errors`, `picture_size`, `fault`. Tests: `crates/rbs-nodes/tests/text_gpu.rs` (no picture publishes nothing; each new picture is uploaded once with a new generation, and a size change re-reserves; a picture over the caps is held; three 8 MiB pictures take two ticks under the budget; Standby gives the textures back and `warm` uploads again; a steady text node adds no allocation to a tick, measured against a still source).
+
 ### Image track node (ADR-0117)
 
 `rbs_nodes::ImageTrackNode` (`org.rbs.image-track`, kind `VideoFilter`, input "picture", output "video", render partition) writes a still source's picture as images, one readback per change. `new(width, height)` sizes its `RgbaDownload`; `give_way_after(budget)` and `yield_to(master_drops)` set the ADR-0086 decision 9 rules.
