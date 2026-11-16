@@ -1782,7 +1782,9 @@ component NestBand inherits Rectangle {
     FocusRing { show: focus.ring; }
 }
 
-component NestExtra inherits Rectangle {
+// A layout, not a Rectangle: a Rectangle takes no size from its child, so its row had
+// no room for the button and the button was drawn over the size line and the fields.
+component NestExtra inherits HorizontalLayout {
     in property <string> title;
     in property <string> detail;
     in property <bool> checked;
@@ -1862,7 +1864,7 @@ export component SizeNest inherits Rectangle {
         Text {
             text: root.hot-line != "" ? root.hot-line : root.value;
             color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-            font-size: Tokens.type-caption-size;
+            font-size: Tokens.type-body-size;
             wrap: word-wrap;
             accessible-role: none;
         }

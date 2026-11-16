@@ -1070,6 +1070,11 @@ impl CommandState for Shown<'_> {
                         format!("Maximize {name}")
                     });
                 }
+                // The vertical picture's panel: the registry's "Hide vertical preview"
+                // says that the vertical output stays.
+                "ui.panel.close" if id.param("id") == Some(crate::studio_ui::VERTICAL_PANEL) => {
+                    return None;
+                }
                 "ui.panel.close" => return Some(format!("Close {name}")),
                 _ => {}
             }

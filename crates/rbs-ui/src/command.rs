@@ -805,7 +805,7 @@ pub const ENTRIES: &[Entry] = &[
         tooltip: "Show or hide the vertical canvas's picture",
         icon: Some("canvas-vertical"),
         shortcut: None,
-        menu: Menu::View,
+        menu: Menu::Output,
         kind: Kind::Toggle {
             on: "ui.panel.open",
             off: "ui.panel.close",
@@ -1988,7 +1988,6 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.area.toggle?area=left",
             "ui.area.toggle?area=right",
             "ui.area.toggle?area=bottom",
-            "canvas.vertical_preview.toggle",
             "ui.area.hide_all",
             "ui.area.show_all",
             "}",
@@ -2098,6 +2097,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "stream.vertical.toggle",
             "record.vertical.toggle",
             "|",
+            "canvas.vertical_preview.toggle",
             "canvas.add_vertical",
             "canvas.remove_vertical",
             "}",
@@ -2283,6 +2283,11 @@ pub fn title(id: &CommandId, e: &Entry) -> String {
     if let ("ui.settings.open", Some("settings.audio.loudness")) = (e.id, id.param("setting")) {
         return "Loudness settings…".to_owned();
     }
+    // The vertical picture's panel: closing it only hides the picture, the vertical
+    // output stays (its own item, Remove vertical output, follows in the panel menu).
+    if let ("ui.panel.close", Some(VERTICAL_PANEL)) = (e.id, id.param("id")) {
+        return "Hide vertical preview".to_owned();
+    }
     if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
         return format!("Scene at position {n}");
     }
@@ -2380,6 +2385,11 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
             continue;
         };
         let mut rows: Vec<AppRow> = Vec::new();
+        // The picker ids that a group lists more than once with different parameters
+        // (`output.with_vertical` for recording and for going live): flattened into
+        // one submenu their choices would read the same, so each takes its picker's
+        // title first ("When recording: Main only").
+        let mut twice: Vec<&str> = Vec::new();
         #[allow(clippy::type_complexity)] // Local scratch, same shape as context_menu.
         let mut group: Option<(
             String,
@@ -2387,13 +2397,14 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
             Vec<(String, CommandId, bool)>,
             Option<String>,
         )> = None;
-        for text in *ids {
+        for (at, text) in ids.iter().enumerate() {
             if let Some(head) = text.strip_prefix('{') {
                 let (title, icon) = match head.split_once(':') {
                     Some((t, i)) => (t, Some(i)),
                     None => (head, None),
                 };
                 group = Some((title.to_owned(), icon, Vec::new(), None));
+                twice = repeated_bases(&ids[at + 1..]);
                 continue;
             }
             if *text == "}" {
@@ -2446,6 +2457,7 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
             if !state.applies(&id) {
                 continue;
             }
+            let prefix = twice.contains(&id.base()).then(|| flat_title(&id, e));
             let made = item(id, e, state);
             if let Some((_, _, choices, group_disabled)) = group.as_mut() {
                 match made {
@@ -2466,7 +2478,13 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
                         disabled: None,
                         choices: c,
                         ..
-                    } => choices.extend(c),
+                    } => match &prefix {
+                        Some(p) => choices.extend(
+                            c.into_iter()
+                                .map(|(t, run, on)| (format!("{p}: {t}"), run, on)),
+                        ),
+                        None => choices.extend(c),
+                    },
                     MenuItem::Choices {
                         disabled: Some(reason),
                         ..
@@ -2484,6 +2502,34 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
         }
         if !rows.is_empty() {
             out.push((menu, rows));
+        }
+    }
+    out
+}
+
+/// What a picker's choices start with when a group lists the picker twice and its
+/// choices are flattened into the group's submenu: shorter than its submenu title, so
+/// the row with its choice still fits the menu.
+fn flat_title(id: &CommandId, e: &Entry) -> String {
+    match (e.id, id.param("kind")) {
+        ("output.with_vertical", Some("record")) => "Recording".to_owned(),
+        ("output.with_vertical", Some("stream")) => "Going live".to_owned(),
+        _ => title(id, e),
+    }
+}
+
+/// The base ids listed more than once in a `{Group` whose entries start `inside` (up
+/// to its `}`).
+fn repeated_bases<'a>(inside: &[&'a str]) -> Vec<&'a str> {
+    let bases: Vec<&str> = inside
+        .iter()
+        .take_while(|t| **t != "}")
+        .map(|t| t.split_once('?').map_or(*t, |(base, _)| base))
+        .collect();
+    let mut out: Vec<&str> = Vec::new();
+    for (i, base) in bases.iter().enumerate() {
+        if bases[i + 1..].contains(base) && !out.contains(base) {
+            out.push(base);
         }
     }
     out
@@ -2969,6 +3015,10 @@ pub fn context_menu(
         ids.extend_from_slice(VERTICAL_EXTRAS);
     }
     ids.extend_from_slice(layout);
+    // Its Close reads "Hide vertical preview"; removing the output is said apart.
+    if context == Context::Panel && target.iter().any(|(k, v)| k == "id" && v == VERTICAL_PANEL) {
+        ids.push("canvas.remove_vertical");
+    }
     let mut items: Vec<MenuItem> = Vec::new();
     // A group (`{Title:icon` ... `}`) is one submenu of every command and choice
     // inside it, so a family of commands takes one row of the menu.
@@ -3671,6 +3721,66 @@ mod tests {
             MenuItem::Command { id, title, .. }
                 if id.to_string() == "scene.select?scene=3" && title == "Put on air"
         ));
+    }
+
+    #[test]
+    fn a_picker_listed_twice_in_a_group_names_itself_in_each_choice() {
+        let menus = app_menu(&Fake);
+        let (_, output) = menus.iter().find(|(m, _)| *m == Menu::Output).unwrap();
+        let vertical = output
+            .iter()
+            .find_map(|r| match r {
+                AppRow::Item(MenuItem::Choices { title, choices, .. }) if title == "Vertical" => {
+                    Some(choices)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let titles: Vec<&str> = vertical.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert_eq!(
+            titles[..4],
+            [
+                "Recording: Edit",
+                "Recording: Live show",
+                "Going live: Edit",
+                "Going live: Live show"
+            ]
+        );
+        assert!(titles.contains(&"Vertical preview"));
+        // A picker listed once keeps its choices as they are (View's Display group).
+        let (_, view) = menus.iter().find(|(m, _)| *m == Menu::View).unwrap();
+        assert!(view.iter().any(|r| matches!(
+            r,
+            AppRow::Item(MenuItem::Choices { choices, .. })
+                if choices.iter().any(|(t, _, _)| t == "Live show")
+        )));
+    }
+
+    #[test]
+    fn the_vertical_panel_menu_hides_the_picture_and_removes_the_output_apart() {
+        let target = [("id".to_owned(), VERTICAL_PANEL.to_owned())];
+        let titles: Vec<String> = context_menu(Context::Panel, &target, &Fake)
+            .into_iter()
+            .filter_map(|i| match i {
+                MenuItem::Command { title, .. } => Some(title),
+                _ => None,
+            })
+            .collect();
+        let n = titles.len();
+        assert_eq!(
+            titles[n - 2..],
+            ["Hide vertical preview", "Remove vertical output"]
+        );
+        // Other panels keep Close and have no Remove vertical output.
+        let mixer = [("id".to_owned(), "rbs.mixer".to_owned())];
+        let titles: Vec<String> = context_menu(Context::Panel, &mixer, &Fake)
+            .into_iter()
+            .filter_map(|i| match i {
+                MenuItem::Command { title, .. } => Some(title),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(titles.last().map(String::as_str), Some("Close"));
     }
 
     struct Layouts;
