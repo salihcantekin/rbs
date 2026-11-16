@@ -71,6 +71,7 @@ mod device_sync;
 pub mod filters;
 mod loudness;
 mod monitor;
+mod network;
 mod on_air;
 pub mod protection;
 pub mod replay;
@@ -12395,6 +12396,7 @@ impl ControlTarget for ApiTarget<'_> {
         events: &mut EventPublisher,
     ) -> Result<Response, ApiError> {
         self.host.check_on_air(caller.irreversible, &command)?;
+        self.host.check_network(caller.irreversible, &command)?;
         self.handle(command, events)
     }
 

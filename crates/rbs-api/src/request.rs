@@ -2012,6 +2012,25 @@ impl Command {
             c => method_effect(c.method()).unwrap_or(Effect::Destructive),
         }
     }
+
+    /// True when the call, by its parameters alone, could make RBS open a connection
+    /// to a host (ADR-0052 decision 4, protocol 1.79): a browser source, or a location
+    /// value that is not a local absolute path ([`crate::location::is_local_path`]).
+    /// Checked on the API thread; a source's settings and target, whose meaning
+    /// depends on the source's kind, are checked by the control target.
+    pub fn reaches_network(&self) -> bool {
+        use crate::location::is_local_path;
+        match self {
+            Command::SourceAdd(p) => p.kind == SourceKind::Browser,
+            Command::RecordStartToFile(p) => !is_local_path(&p.path),
+            Command::SettingsSet(p) => p.profiles.as_ref().is_some_and(|profiles| {
+                profiles
+                    .iter()
+                    .any(|r| !r.folder.is_empty() && !is_local_path(&r.folder))
+            }),
+            _ => false,
+        }
+    }
 }
 
 impl Command {

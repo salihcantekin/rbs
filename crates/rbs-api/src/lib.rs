@@ -25,6 +25,7 @@ pub mod control;
 pub mod error;
 pub mod event;
 pub mod exposure;
+pub mod location;
 pub mod request;
 pub mod scope;
 pub mod session;

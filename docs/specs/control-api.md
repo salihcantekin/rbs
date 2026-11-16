@@ -163,7 +163,7 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | `auth_failed` | -32002 | Unknown or wrong token |
 | `unsupported_protocol` | -32003 | No common protocol major |
 | `scope_denied` | -32010 | Scope missing |
-| `not_permitted` | -32012 | The token lacks the irreversible-actions permission (protocol 1.76, ADR-0052); `data.reason` is `irreversible` (1.76), `on_air` (1.78), later `network` |
+| `not_permitted` | -32012 | The token lacks the irreversible-actions permission (protocol 1.76, ADR-0052); `data.reason` is `irreversible` (1.76), `on_air` (1.78), `network` (1.79) |
 | `busy` | -32020 | Request queue full |
 | `rate_limited` | -32021 | Request rate exceeded (also `marker.add` above its own rate, protocol 1.50) |
 | `message_too_large` | -32022 | Message over the size limit |
@@ -540,11 +540,19 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.79: the network check (ADR-0052 decision 4, third part)
+
+- **Locations.** A location value is a local absolute file system path when it starts with one `/`, or with a drive letter, a colon and `\` or `/` (`rbs_api::location::is_local_path`, the same on every platform). URL schemes (`file:` included), UNC paths (`\\host\x`, `//host/x`), verbatim and device paths (`\\?\`, `\\.\`), relative paths and values with control characters are not.
+- **The check on the API thread** (`rbs_api::Command::reaches_network`), after the scope and irreversible checks, for a session without the permission: `source.add` of `kind: "browser"`, a `settings.set` whose `profiles` name a non-empty `folder` that is not a local absolute path, and a `record.start_to_file` whose `path` is not one (already refused as `live`) are answered `not_permitted` with `data.reason: "network"`, audited, and nothing reaches the control thread. An unchanged recording folder that is not local also fails: the check reads values, not differences.
+- **The check on the control thread** (`rbs-app` `studio_host/network.rs`), where a source's kind is known: `source.set_settings` of a browser source's `url`, of an image or media source's `path` that is not a local absolute path, or of any setting of a source whose type this build does not know (a plugin type counts as network; it fails closed), and `source.retarget` of such an unknown type, are answered `not_permitted` with `data.reason: "network"` and audited when the answer is forwarded. Capture sources' targets come from their adapters' lists; colour and text sources name no location the API can write (a text source's `file` stays `forbidden`).
+- **Not yet.** `tokens.create {irreversible}`, the media protocol allow list (scene sources spec) and `openWorldHint` in `rbs-mcp`.
+- **As built.** Tests: `crates/rbs-api/src/location.rs`, `crates/rbs-api/tests/effect.rs` (`a_browser_source_reaches_the_network_and_is_refused_without_the_permission`, `a_recording_folder_on_another_computer_is_refused_without_the_permission`), `rbs-app` `studio_host::network` unit tests and `crates/rbs-app/tests/studio_record.rs` (`a_token_without_the_permission_cannot_point_a_source_at_another_computer`).
+
 ### Protocol 1.78: the on-air check (ADR-0052 decision 4, second part)
 
 - **What is on air.** While any output runs (a recording or stream of either canvas, the virtual camera, or the armed replay buffer), every canvas counts as on air: stricter than ADR-0052's per-canvas rule, and simple. On air is each canvas's program scene, the followed canvas's program scene for a follower, a fallback scene, the canvas's global scene, and everything reachable from them: nested scenes, their items and the sources those items show (`rbs_scene::SceneCollection::on_air`, a pure function tested directly).
 - **The check.** The server passes the caller (token name and permission) with each forwarded command (`rbs_api::Caller`, `ControlTarget::handle_as`). For a caller without the permission, an `edit` that changes what is on air is answered `not_permitted` with `data.reason: "on_air"`, and the refusal is audited when the answer is forwarded. It fails closed: an `edit` passes only when it is known never to touch the picture or sound on air (`settings.set` without `canvas`, `monitor.*`, `output.set_with_vertical`, `replay.save`, `project.export`, `marker.add`, `canvas.set_preview`, `scene.add`, `source.copy_attributes`), or when it acts only on what it names (the `item.*`, `source.*`, `filter.*` and `scene.*` edits) and every scene, item, source and filter it names is off air; a method that places into a scene and names none (it would use the program scene) is refused. Every other `edit` (program switch, transitions, undo and redo, master levels, global sources, looks, layouts) is refused while an output runs.
-- **Not yet.** The network and location checks (`network`) and `tokens.create {irreversible}`.
+- **Not yet** (in 1.78; the network check is in 1.79). The network and location checks (`network`) and `tokens.create {irreversible}`.
 
 ### Protocol 1.77: filter latency (ADR-0130 decision 9)
 
