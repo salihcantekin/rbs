@@ -33,10 +33,7 @@ const VOICE_GATE: usize = 2;
 const VOICE_THRESHOLD: usize = 3;
 
 /// `mode` options: one pass for all channels (index 0) or each channel (index 1).
-const MODES: [(&str, &str); 2] = [
-    ("mono", "One pass for all channels"),
-    ("separate", "Each channel"),
-];
+const MODES: [(&str, &str); 2] = [("mono", "One pass"), ("separate", "Each channel")];
 
 const FIELDS: [Field; 4] = [
     Field::number("max_reduction", "Max reduction", 6.0, 80.0, 30.0, 1.0, "dB").with_help(
