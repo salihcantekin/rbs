@@ -75,6 +75,10 @@ Reasons are one sentence of plain English ("Only PNG pictures can be shown for n
 
 `rbs-app` saves the report as `imports/<collection id>.report.toml` (`kind = "obs-import-report"`, format 1), deleted with its collection and not exported with it. Skipped objects keep only allow-listed keys under `[[skipped]]` (ADR-0131 decision 11): URLs without query or fragment, no key containing `token`, `key`, `password`, `secret`, `auth` or `cookie`, paths cut to the file name, no opaque plugin state. The allow-list per OBS type is added here with the mapper that will use it.
 
+### Stream server
+
+A server from `service.json` is kept only if `parse_server` accepts it. Otherwise the report names its scheme only; the server text and the check's error text (which can contain the full URL) are never shown, logged or written.
+
 ### Transform conversion
 
 ADR-0131 decision 8 is normative: absolute `pos`, `scale`, `bounds` are read; an item with only OBS 31 relative keys is reported until their conversion is checked against a real OBS 31 file; `bounds_crop`; crop filter as region plus item crop. OBS places an item at `pos` with the anchor `align` (bits: left 1, right 2, top 4, bottom 8; none is centre), size `native × scale` or, with a bounds type, the bounds box (stretch, scale inner, scale outer, to width, to height, max only) aligned by `bounds_align`, rotated by `rot` degrees about `pos`, after `crop_*`. RBS stores the box (`Layout.position`, `Layout.size`, negative for a flip) rotated about its centre. The converter computes the four corners of the OBS item and returns the RBS box with the same corners in texture order (within 0.01 px). The native size comes from `Lookup` or settings; when unknown, the canvas size is used and the item is marked approximate.
@@ -94,7 +98,8 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `InvalidLayout`, `InvalidVolume`, `InvalidSyncOffset`, `InvalidSetting` | value clamped or the key dropped, Approximated |
 | `CanvasTooLarge`, `EmptyCanvas`, `FrameRateTooHigh` (also a zero rate or `FPSDen` 0) | 1920×1080 at 30, Profile entry |
 | `ScopeViolation`, `GlobalScene` | cannot arise: user scenes are shared; the global scene is scoped to its canvas and made only by the importer |
-| `UnknownCanvas`, `UnknownSource`, `UnknownScene`, `UnknownItem`, `UnknownFilter`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict` | cannot arise: edit-time errors, not raised by `from_parts` |
+| `UnknownCanvas`, `UnknownSource`, `UnknownScene` | cannot arise: references are resolved in pass two (ADR-0131 decision 6); an item, nested scene or audio level whose target was skipped is left out and reported on the referring object |
+| `UnknownItem`, `UnknownFilter`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict` | cannot arise: edit-time errors, not raised by `from_parts` |
 | `DuplicateId`, `DuplicateFilter`, `IdsExhausted` | cannot arise: the importer issues ids from one counter per kind |
 | `BadTypeId` | cannot arise: mapper type ids are checked by the `rbs-app` catalogue test |
 | `InvalidFollow`, `SharedLevels` | cannot arise: one canvas, no follow, no scene levels imported |

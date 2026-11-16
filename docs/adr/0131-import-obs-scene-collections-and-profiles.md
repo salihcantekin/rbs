@@ -110,4 +110,6 @@ Round 2: independent AI session, 2026-11-16, changes requested. Resolutions: (1)
 
 Round 3: independent AI session, 2026-11-16, changes requested (small). Resolutions: (1) a server URL is kept only if it passes `parse_server`, never written or shown otherwise, as its query may be a secret (decision 4); (2) spec transform sentence aligned with decision 8; (3) the spec table covers every `SceneError` variant, an empty name gets an action, the global scene's own scope noted (decision 4); (4) modifiers to `Ctrl`/`Meta` per platform, `app_problem` chords reported (decision 10); (5) "bound" is `Keymap::check` `Taken`, defaults never displaced (decision 9); (6) concrete `rtmp_common` server kept when it passes the check.
 
-Round 4: pending.
+Round 4: independent AI session, 2026-11-16, approve with nits. Resolved: the spec's `Unknown*` row now says references are resolved in pass two and dangling ones are left out and reported; the spec says a refused server is reported by scheme only and the check's error text is never shown.
+
+Owner approval: pending.
