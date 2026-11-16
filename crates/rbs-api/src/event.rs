@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::{
     CalibrationState, Canvas, CanvasRecordState, CanvasStreamState, MonitorStatus,
     ProtectionStatus, RecordState, ReplayStatus, SceneList, Settings, SourceInfo, SourceLevels,
-    StreamState, VcamStatus,
+    StreamState, SyncMeasureChanged, VcamStatus,
 };
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
@@ -61,11 +61,14 @@ pub enum Topic {
     /// The calibration run, *Test this computer* (state, protocol 1.55, ADR-0087).
     #[serde(rename = "calibration.state")]
     CalibrationState,
+    /// The sync offset measurement (state, protocol 1.66, ADR-0126).
+    #[serde(rename = "sync.measure.changed")]
+    SyncMeasureChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 14] = [
+    pub const ALL: [Topic; 15] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -80,6 +83,7 @@ impl Topic {
         Topic::MonitorChanged,
         Topic::ProtectionChanged,
         Topic::CalibrationState,
+        Topic::SyncMeasureChanged,
     ];
 
     /// Its name on the wire.
@@ -99,6 +103,7 @@ impl Topic {
             Topic::MonitorChanged => "monitor.changed",
             Topic::ProtectionChanged => "protection.changed",
             Topic::CalibrationState => "calibration.state",
+            Topic::SyncMeasureChanged => "sync.measure.changed",
         }
     }
 
@@ -265,6 +270,9 @@ pub enum EventPayload {
     /// The calibration run (protocol 1.55).
     #[serde(rename = "calibration.state")]
     CalibrationState(CalibrationState),
+    /// The sync offset measurement (protocol 1.66).
+    #[serde(rename = "sync.measure.changed")]
+    SyncMeasureChanged(SyncMeasureChanged),
 }
 
 impl EventPayload {
@@ -285,6 +293,7 @@ impl EventPayload {
             EventPayload::MonitorChanged(_) => Topic::MonitorChanged,
             EventPayload::ProtectionChanged(_) => Topic::ProtectionChanged,
             EventPayload::CalibrationState(_) => Topic::CalibrationState,
+            EventPayload::SyncMeasureChanged(_) => Topic::SyncMeasureChanged,
         }
     }
 }

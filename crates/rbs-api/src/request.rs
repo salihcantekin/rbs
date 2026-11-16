@@ -17,6 +17,7 @@ use crate::types::{
     SkippedTrack, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
     VcamStatus,
 };
+use crate::types::{DeviceKey, DeviceSyncEntry};
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -880,6 +881,65 @@ pub struct SetSourceSyncOffset {
     pub offset_ms: i32,
 }
 
+/// `sync.measure_start` (protocol 1.66, ADR-0126 decision 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncMeasureStart {
+    /// The audio source to measure.
+    pub source: u32,
+    /// The picture source to clap in view of; absent: the camera of a camera
+    /// microphone, else the only camera in the program scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<u32>,
+}
+
+/// `sync.measure_start`'s answer (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncMeasureStarted {
+    /// The measurement's id, as `sync.measure.changed` names it.
+    pub measurement: String,
+    /// The reference picture source used.
+    pub reference: u32,
+}
+
+/// `sync.measure_cancel` (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncMeasureCancel {
+    /// The id `sync.measure_start` answered.
+    pub measurement: String,
+}
+
+/// `sync.forget_device` (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncForgetDevice {
+    /// The device, as `sync.devices` lists it.
+    pub key: DeviceKey,
+}
+
+/// `sync.apply_to_device_sources` (protocol 1.66).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncApplyToDeviceSources {
+    /// The source whose offset the other sources of its device get.
+    pub source: u32,
+}
+
+/// `sync.apply_to_device_sources`'s answer (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncAppliedToDeviceSources {
+    /// The sources that changed.
+    pub changed: Vec<u32>,
+}
+
+/// `sync.devices`'s answer (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncDeviceList {
+    /// One entry per remembered device.
+    pub devices: Vec<DeviceSyncEntry>,
+}
+
 /// `item.add` (protocol 1.6): a source the collection has, placed on top of the
 /// program scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1403,6 +1463,16 @@ pub enum Command {
     FilterSetSettings(SetFilterSettings),
     /// `source.set_sync_offset` (protocol 1.8).
     SourceSetSyncOffset(SetSourceSyncOffset),
+    /// `sync.measure_start` (protocol 1.66, ADR-0126).
+    SyncMeasureStart(SyncMeasureStart),
+    /// `sync.measure_cancel` (protocol 1.66).
+    SyncMeasureCancel(SyncMeasureCancel),
+    /// `sync.devices` (protocol 1.66).
+    SyncDevices,
+    /// `sync.forget_device` (protocol 1.66).
+    SyncForgetDevice(SyncForgetDevice),
+    /// `sync.apply_to_device_sources` (protocol 1.66).
+    SyncApplyToDeviceSources(SyncApplyToDeviceSources),
     /// `source.retarget` (protocol 1.13).
     SourceRetarget(RetargetSource),
     /// `source.reload` (protocol 1.13).
@@ -1631,6 +1701,11 @@ impl Command {
             Command::FilterSetEnabled(_) => "filter.set_enabled",
             Command::FilterSetSettings(_) => "filter.set_settings",
             Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
+            Command::SyncMeasureStart(_) => "sync.measure_start",
+            Command::SyncMeasureCancel(_) => "sync.measure_cancel",
+            Command::SyncDevices => "sync.devices",
+            Command::SyncForgetDevice(_) => "sync.forget_device",
+            Command::SyncApplyToDeviceSources(_) => "sync.apply_to_device_sources",
             Command::SourceRetarget(_) => "source.retarget",
             Command::SourceReload(_) => "source.reload",
             Command::SourceGetSettings(_) => "source.get_settings",
@@ -1808,6 +1883,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("filter.set_enabled", Some(Scope::Control)),
     m("filter.set_settings", Some(Scope::Control)),
     m("source.set_sync_offset", Some(Scope::Control)),
+    m("sync.measure_start", Some(Scope::Control)),
+    m("sync.measure_cancel", Some(Scope::Control)),
+    m("sync.devices", Some(Scope::Read)),
+    m("sync.forget_device", Some(Scope::Control)),
+    m("sync.apply_to_device_sources", Some(Scope::Control)),
     m("source.retarget", Some(Scope::Control)),
     m("source.reload", Some(Scope::Control)),
     m("source.get_settings", Some(Scope::Control)),
@@ -2062,6 +2142,16 @@ enum WireRequest {
     FilterSetSettings(SetFilterSettings),
     #[serde(rename = "source.set_sync_offset")]
     SourceSetSyncOffset(SetSourceSyncOffset),
+    #[serde(rename = "sync.measure_start")]
+    SyncMeasureStart(SyncMeasureStart),
+    #[serde(rename = "sync.measure_cancel")]
+    SyncMeasureCancel(SyncMeasureCancel),
+    #[serde(rename = "sync.devices")]
+    SyncDevices(Empty),
+    #[serde(rename = "sync.forget_device")]
+    SyncForgetDevice(SyncForgetDevice),
+    #[serde(rename = "sync.apply_to_device_sources")]
+    SyncApplyToDeviceSources(SyncApplyToDeviceSources),
     #[serde(rename = "source.retarget")]
     SourceRetarget(RetargetSource),
     #[serde(rename = "source.reload")]
@@ -2292,6 +2382,13 @@ impl From<WireRequest> for Request {
             WireRequest::FilterSetEnabled(p) => Request::Command(C::FilterSetEnabled(p)),
             WireRequest::FilterSetSettings(p) => Request::Command(C::FilterSetSettings(p)),
             WireRequest::SourceSetSyncOffset(p) => Request::Command(C::SourceSetSyncOffset(p)),
+            WireRequest::SyncMeasureStart(p) => Request::Command(C::SyncMeasureStart(p)),
+            WireRequest::SyncMeasureCancel(p) => Request::Command(C::SyncMeasureCancel(p)),
+            WireRequest::SyncDevices(_) => Request::Command(C::SyncDevices),
+            WireRequest::SyncForgetDevice(p) => Request::Command(C::SyncForgetDevice(p)),
+            WireRequest::SyncApplyToDeviceSources(p) => {
+                Request::Command(C::SyncApplyToDeviceSources(p))
+            }
             WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
             WireRequest::SourceGetSettings(p) => Request::Command(C::SourceGetSettings(p)),
@@ -2438,6 +2535,11 @@ impl From<Request> for WireRequest {
                 C::FilterSetEnabled(p) => WireRequest::FilterSetEnabled(p),
                 C::FilterSetSettings(p) => WireRequest::FilterSetSettings(p),
                 C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
+                C::SyncMeasureStart(p) => WireRequest::SyncMeasureStart(p),
+                C::SyncMeasureCancel(p) => WireRequest::SyncMeasureCancel(p),
+                C::SyncDevices => WireRequest::SyncDevices(Empty {}),
+                C::SyncForgetDevice(p) => WireRequest::SyncForgetDevice(p),
+                C::SyncApplyToDeviceSources(p) => WireRequest::SyncApplyToDeviceSources(p),
                 C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
                 C::SourceReload(p) => WireRequest::SourceReload(p),
                 C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
@@ -2801,6 +2903,12 @@ pub enum Response {
     ProtectionStatus(Snapshot<ProtectionStatus>),
     /// `calibration.status` (protocol 1.55).
     CalibrationStatus(Snapshot<CalibrationState>),
+    /// `sync.measure_start` (protocol 1.66).
+    SyncMeasureStarted(SyncMeasureStarted),
+    /// `sync.devices` (protocol 1.66).
+    SyncDevices(SyncDeviceList),
+    /// `sync.apply_to_device_sources` (protocol 1.66).
+    SyncAppliedToDeviceSources(SyncAppliedToDeviceSources),
     /// `monitor.status` (protocol 1.30).
     MonitorStatus(Snapshot<MonitorStatus>),
     /// `monitor.devices` (protocol 1.30).
