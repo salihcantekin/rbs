@@ -69,9 +69,9 @@ fn a_regular_file_is_probed_and_then_the_decoder_is_dropped() {
     let SourceInstance::Media(media) = instance else {
         panic!("media");
     };
-    assert!(!media.node.queues_live());
-    assert!(!media.node.decoder_held());
-    assert_eq!(media.node.phase(), rbs_nodes::MediaPhase::Standby);
+    assert!(!media.picture.queues_live());
+    assert!(!media.picture.decoder_held());
+    assert_eq!(media.picture.phase(), rbs_nodes::MediaPhase::Standby);
     assert_eq!(factory.counts.alive.load(Ordering::Relaxed), 0);
     assert_eq!(factory.counts.file_bytes.load(Ordering::Relaxed), 0);
     assert!(factory.counts.opens.load(Ordering::Relaxed) >= 1);

@@ -1315,7 +1315,7 @@ impl OnCanvases {
     }
 }
 
-/// `stream.destinations` (protocol 1.69, ADR-0127 decision 16): one canvas's
+/// `stream.destinations` (protocol 1.74, ADR-0127 decision 16): one canvas's
 /// destinations, or both canvases' when `canvas` is absent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1325,7 +1325,7 @@ pub struct DestinationsOf {
     pub canvas: Option<OutputCanvas>,
 }
 
-/// `stream.destination.start` and `stream.destination.stop` (protocol 1.69).
+/// `stream.destination.start` and `stream.destination.stop` (protocol 1.74).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DestinationRef {
@@ -1333,7 +1333,7 @@ pub struct DestinationRef {
     pub id: u32,
 }
 
-/// `stream.destination.set_enabled` (protocol 1.69).
+/// `stream.destination.set_enabled` (protocol 1.74).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetDestinationEnabled {
@@ -1685,13 +1685,13 @@ pub enum Command {
     OutputBreakToggle,
     /// `stream.status`.
     StreamStatus(OnCanvas),
-    /// `stream.destinations` (protocol 1.69).
+    /// `stream.destinations` (protocol 1.74).
     StreamDestinations(DestinationsOf),
-    /// `stream.destination.start` (protocol 1.69).
+    /// `stream.destination.start` (protocol 1.74).
     StreamDestinationStart(DestinationRef),
-    /// `stream.destination.stop` (protocol 1.69).
+    /// `stream.destination.stop` (protocol 1.74).
     StreamDestinationStop(DestinationRef),
-    /// `stream.destination.set_enabled` (protocol 1.69).
+    /// `stream.destination.set_enabled` (protocol 1.74).
     StreamDestinationSetEnabled(SetDestinationEnabled),
     /// `output.set_with_vertical` (protocol 1.42).
     OutputSetWithVertical(SetWithVertical),
@@ -3099,7 +3099,7 @@ pub enum Response {
     StreamCanvasStatus(Snapshot<CanvasStreamState>),
     /// `stream.status`.
     StreamStatus(Snapshot<StreamState>),
-    /// `stream.destinations` (protocol 1.69).
+    /// `stream.destinations` (protocol 1.74).
     StreamDestinations(crate::types::StreamDestinations),
     /// `vcam.status` (protocol 1.12).
     VcamStatus(Snapshot<VcamStatus>),

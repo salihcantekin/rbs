@@ -2108,7 +2108,7 @@ struct LiveDestination {
 }
 
 impl LiveDestination {
-    /// Its row in the stream's state (control API 1.69), as of `now`.
+    /// Its row in the stream's state (control API 1.74), as of `now`.
     fn api(&self, now: Timestamp) -> api::LiveDestination {
         api::LiveDestination {
             id: self.id,
@@ -2708,7 +2708,7 @@ pub enum Update {
     /// the UI shows and saves them.
     StreamProfile(StreamProfile),
     /// A control API client turned a stream destination on or off
-    /// (`stream.destination.set_enabled`, protocol 1.69); the UI saves the section.
+    /// (`stream.destination.set_enabled`, protocol 1.74); the UI saves the section.
     StreamDestinations(Destinations),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
@@ -7680,7 +7680,7 @@ impl Host {
         self.destinations.of(role, &profile, &self.key_account)
     }
 
-    /// `stream.destinations` rows of `c` (control API 1.69): never a server or a key.
+    /// `stream.destinations` rows of `c` (control API 1.74): never a server or a key.
     fn api_destinations(&self, c: OutputCanvas) -> Vec<api::StreamDestination> {
         self.resolved_destinations(c)
             .into_iter()
@@ -8106,7 +8106,7 @@ impl Host {
                 s.transport_drops += d.link.transport_drops;
             }
         }
-        // Each destination's row (control API 1.69): a change of state, counters or
+        // Each destination's row (control API 1.74): a change of state, counters or
         // error is published; the time on air alone is not (never per round).
         let now = self.clock.now();
         let rows: Vec<api::LiveDestination> = self.outs[slot(c)]
@@ -14307,7 +14307,7 @@ impl ApiTarget<'_> {
         self.host.api_canvas_of(Some(c))
     }
 
-    /// `stream.destination.start` (protocol 1.69, ADR-0127 decision 16).
+    /// `stream.destination.start` (protocol 1.74, ADR-0127 decision 16).
     fn destination_start(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
         let notify = self.notify;
@@ -14355,7 +14355,7 @@ impl ApiTarget<'_> {
         Ok(Response::Done(Empty {}))
     }
 
-    /// `stream.destination.stop` (protocol 1.69): the last running destination ends
+    /// `stream.destination.stop` (protocol 1.74): the last running destination ends
     /// the stream, as `stream.stop` does.
     fn destination_stop(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
@@ -14384,7 +14384,7 @@ impl ApiTarget<'_> {
     }
 
     /// `stream.start` of `c`, or `stream.destination.start` of `only` while `c` does
-    /// not stream: that canvas's stream with this destination alone (protocol 1.69).
+    /// not stream: that canvas's stream with this destination alone (protocol 1.74).
     fn stream_to(&mut self, c: OutputCanvas, only: Option<u32>) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;

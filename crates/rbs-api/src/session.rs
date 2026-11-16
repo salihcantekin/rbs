@@ -31,7 +31,7 @@ use crate::transport::{
 /// profile's `markers`, `while_paused` on `marker.add`'s answer, and marker times in
 /// file time.
 /// 1.62 adds the marker settings (ADR-0089): `markers` on a recording profile.
-/// 1.69 adds the destinations of a stream (ADR-0127 decision 16): `stream.destinations`,
+/// 1.74 adds the destinations of a stream (ADR-0127 decision 16): `stream.destinations`,
 /// `stream.destination.start`, `stream.destination.stop`,
 /// `stream.destination.set_enabled`, and `destinations` on a live stream's state.
 /// 1.68 adds duplicating, resetting and pasting attributes of sources (ADR-0133):
@@ -91,7 +91,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.69";
+pub const PROTOCOL_VERSION: &str = "1.74";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -335,6 +335,10 @@ struct Session {
     handshake_deadline: Timestamp,
     transport_closed: bool,
     pending_auth: Option<PendingAuth>,
+    /// A same-user IPC session authenticated by `session.hello` that has sent no
+    /// other request yet: it may still narrow itself to a token (protocol 1.73,
+    /// ADR-0052 decision 3).
+    narrowable: bool,
     queue: VecDeque<Queued>,
     in_flight: bool,
     bucket: Bucket,
@@ -598,6 +602,7 @@ impl Server {
                 handshake_deadline: now + limits.handshake_timeout,
                 transport_closed: false,
                 pending_auth: None,
+                narrowable: false,
                 queue: VecDeque::new(),
                 in_flight: false,
                 bucket: Bucket {
@@ -711,6 +716,7 @@ impl Server {
                         scopes,
                         token: None,
                     };
+                    s.narrowable = true;
                     s.limit.set(limits.max_message_bytes);
                     self.actions
                         .push_back(Action::Audit(AuditEvent::Authenticated {
@@ -756,7 +762,12 @@ impl Server {
                 );
                 self.send_now(conn, Some(&incoming.id), Err(e));
             }
+            (Phase::Ready { .. }, Request::Authenticate(auth)) if s.narrowable => {
+                s.narrowable = false;
+                self.narrow(conn, incoming.id, &auth.token);
+            }
             (Phase::Ready { scopes, token }, request) => {
+                s.narrowable = false;
                 if s.queue.len() >= limits.queue_len {
                     let e = ApiError::new(ErrorKind::Busy, "request queue full");
                     self.send_now(conn, Some(&incoming.id), Err(e));
@@ -877,6 +888,50 @@ impl Server {
                 if let Some(key) = s.address_key.clone() {
                     self.record_failure(key, now);
                 }
+                self.actions
+                    .push_back(Action::Audit(AuditEvent::AuthFailed { conn, address }));
+                let e = ApiError::new(ErrorKind::AuthFailed, "authentication failed");
+                self.send_now(conn, Some(&id), Err(e));
+                self.close(conn, CloseReason::AuthFailed);
+            }
+        }
+    }
+
+    /// Narrows a same-user IPC session to a token's scopes for the rest of its life
+    /// (protocol 1.73, ADR-0052 decision 3). Only reached before any other request
+    /// was admitted, so nothing ran with all scopes after the client chose a token.
+    /// A wrong token fails as on any channel; IPC has no back-off (same user,
+    /// 256-bit tokens).
+    fn narrow(&mut self, conn: ConnectionId, id: RequestId, token: &str) {
+        let allow_remote_admin = self.config.allow_remote_admin;
+        let entry = self
+            .tokens
+            .verify(token)
+            .map(|e| (e.name.clone(), e.scopes, e.hash));
+        let Some(s) = self.sessions.get_mut(&conn) else {
+            return;
+        };
+        match entry {
+            Some((name, stored, hash)) => {
+                let scopes = stored.for_channel(s.peer.is_local(), allow_remote_admin);
+                s.phase = Phase::Ready {
+                    scopes,
+                    token: Some((name.clone(), hash, stored)),
+                };
+                self.actions
+                    .push_back(Action::Audit(AuditEvent::Authenticated {
+                        conn,
+                        token: Some(name),
+                        scopes,
+                    }));
+                let result = AuthResult {
+                    scopes,
+                    server: self.config.server.clone(),
+                };
+                self.send_now(conn, Some(&id), Ok(Response::Authenticated(result)));
+            }
+            None => {
+                let address = s.peer.address.clone();
                 self.actions
                     .push_back(Action::Audit(AuditEvent::AuthFailed { conn, address }));
                 let e = ApiError::new(ErrorKind::AuthFailed, "authentication failed");

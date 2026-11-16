@@ -1476,7 +1476,7 @@ pub enum StreamState {
         /// Why the hold fell back, while it does (protocol 1.67).
         #[serde(default)]
         hold_fallback_reason: Option<String>,
-        /// Each destination of the stream (protocol 1.69, ADR-0127 decision 16), in
+        /// Each destination of the stream (protocol 1.74, ADR-0127 decision 16), in
         /// the order Go live started them; the top-level `connected`, `connects` and
         /// `reconnect_attempts` sum the running ones.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1484,7 +1484,7 @@ pub enum StreamState {
     },
 }
 
-/// One destination of a live stream (protocol 1.69, ADR-0127 decision 16). Never its
+/// One destination of a live stream (protocol 1.74, ADR-0127 decision 16). Never its
 /// server or key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveDestination {
@@ -1509,7 +1509,7 @@ pub struct LiveDestination {
     pub error: Option<String>,
 }
 
-/// Where one destination of a live stream stands (protocol 1.69).
+/// Where one destination of a live stream stands (protocol 1.74).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationState {
@@ -1525,7 +1525,7 @@ pub enum DestinationState {
     Stopped,
 }
 
-/// One saved destination (`stream.destinations`, protocol 1.69, ADR-0127 decision 16).
+/// One saved destination (`stream.destinations`, protocol 1.74, ADR-0127 decision 16).
 /// Never its server or key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamDestination {
@@ -1545,7 +1545,7 @@ pub struct StreamDestination {
     pub encoding: DestinationEncodingKind,
 }
 
-/// Whether a destination shares the stream's encoding (protocol 1.69).
+/// Whether a destination shares the stream's encoding (protocol 1.74).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationEncodingKind {
@@ -1555,7 +1555,7 @@ pub enum DestinationEncodingKind {
     Own,
 }
 
-/// `stream.destinations` (protocol 1.69).
+/// `stream.destinations` (protocol 1.74).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamDestinations {
     /// The asked canvas's destinations (both canvases' without `canvas`), by id.
