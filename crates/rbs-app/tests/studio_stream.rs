@@ -1835,8 +1835,17 @@ fn a_control_api_client_holds_a_stream_and_takes_a_break() {
     let resume = c.call("stream.resume", main.clone());
     assert_eq!(resume["error"]["data"]["kind"], "conflict", "{resume}");
     assert!(resume.to_string().contains("not on hold"), "{resume}");
-    let bad = c.call("stream.hold", serde_json::json!({"picture": "scene"}));
+    let bad = c.call("stream.hold", serde_json::json!({"picture": "slate"}));
     assert_eq!(bad["error"]["data"]["kind"], "invalid_params", "{bad}");
+    let bad = c.call(
+        "stream.hold",
+        serde_json::json!({"picture": "black", "sound": "scene"}),
+    );
+    assert_eq!(bad["error"]["data"]["kind"], "invalid_params", "{bad}");
+    // A scene hold with no scene named or set (protocol 1.67).
+    let unset = c.call("stream.hold", serde_json::json!({"picture": "scene"}));
+    assert_eq!(unset["error"]["data"]["kind"], "conflict", "{unset}");
+    assert!(unset.to_string().contains("no hold scene"), "{unset}");
     let hold = c.call("stream.hold", serde_json::json!({"picture": "black"}));
     assert!(hold["result"].is_object(), "{hold}");
     c.event("stream.state", |d| d["held"] == true);
@@ -1878,6 +1887,91 @@ fn a_control_api_client_holds_a_stream_and_takes_a_break() {
 
     assert!(c.call("record.stop", main.clone())["result"].is_object());
     assert!(c.call("stream.stop", main)["result"].is_object());
+    drop(host);
+    drop(api);
+}
+
+/// ADR-0124 phase 2b through the control API (protocol 1.67): a live stream holds
+/// with a scene named in the call, its state says which scene and sound, a scene not
+/// in the collection is `not_found`, and the scene and sound set in the stream
+/// settings are used when the call names none.
+#[test]
+fn a_control_api_client_holds_a_stream_with_a_scene() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    let (api, mut c) = api_client(&host);
+    let sub = c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["stream.state"]}),
+    );
+    assert!(sub["result"].is_object(), "{sub}");
+    add_display(&host, &rx);
+    let added = c.call("scene.add", serde_json::json!({"name": "Break"}));
+    let brk = added["result"]["scene"].as_u64().unwrap();
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    c.event("stream.state", |d| d["state"] == "live");
+
+    let gone = c.call(
+        "stream.hold",
+        serde_json::json!({"picture": "scene", "scene": 9_999}),
+    );
+    assert_eq!(gone["error"]["data"]["kind"], "not_found", "{gone}");
+    let hold = c.call(
+        "stream.hold",
+        serde_json::json!({"picture": "scene", "scene": brk, "sound": "scene"}),
+    );
+    assert!(hold["result"].is_object(), "{hold}");
+    let held = c.event("stream.state", |d| d["held"] == true);
+    let data = &held["params"]["data"];
+    assert_eq!(data["hold_picture"], "scene", "{held}");
+    assert_eq!(data["hold_scene"], brk, "{held}");
+    assert_eq!(data["hold_sound"], "scene", "{held}");
+    assert_eq!(data["hold_fallback"], false, "{held}");
+    let other = c.call(
+        "stream.hold",
+        serde_json::json!({"picture": "scene", "scene": brk, "sound": "silence"}),
+    );
+    assert_eq!(other["error"]["data"]["kind"], "conflict", "{other}");
+    // Another picture while held leaves the scene.
+    let freeze = c.call("stream.hold", serde_json::json!({"picture": "freeze"}));
+    assert!(freeze["result"].is_object(), "{freeze}");
+    let frozen = c.event("stream.state", |d| d["hold_picture"] == "freeze");
+    assert_eq!(
+        frozen["params"]["data"]["hold_scene"],
+        serde_json::Value::Null
+    );
+    let resume = c.call("stream.resume", serde_json::json!({}));
+    assert!(resume["result"].is_object(), "{resume}");
+    c.event("stream.state", |d| d["held"] == false);
+
+    // The stream settings' hold scene and sound, used when the call names none.
+    let mut profile = StreamProfile::new();
+    profile.server = URL.into();
+    profile.key_saved = true;
+    profile.hold_picture = rbs_app::stream_profile::HoldPicture::Scene;
+    profile.hold_scene = Some(brk as u32);
+    profile.hold_sound = rbs_app::stream_profile::HoldSound::Scene;
+    host.send(Command::SetStreamProfile(profile));
+    let got = c.call("settings.get", serde_json::json!({}));
+    let stream = &got["result"]["data"]["stream"];
+    assert_eq!(stream["hold_scene"], brk, "{got}");
+    assert_eq!(stream["hold_sound"], "scene", "{got}");
+    let toggle = c.call("stream.hold_toggle", serde_json::json!({}));
+    assert!(toggle["result"].is_object(), "{toggle}");
+    let held = c.event("stream.state", |d| d["held"] == true);
+    assert_eq!(held["params"]["data"]["hold_scene"], brk, "{held}");
+    assert_eq!(held["params"]["data"]["hold_sound"], "scene", "{held}");
+    let toggle = c.call("stream.hold_toggle", serde_json::json!({}));
+    assert!(toggle["result"].is_object(), "{toggle}");
+    c.event("stream.state", |d| d["held"] == false);
+
+    assert!(c.call("stream.stop", serde_json::json!({}))["result"].is_object());
     drop(host);
     drop(api);
 }

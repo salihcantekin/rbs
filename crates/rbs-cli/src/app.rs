@@ -155,6 +155,12 @@ mod tests {
             audio_encoder: Some("AudioToolbox AAC".into()),
             held: false,
             held_ms: 0,
+            hold_picture: None,
+            hold_scene: None,
+            hold_sound: None,
+            hold_fallback: false,
+            hold_sound_fallback: false,
+            hold_fallback_reason: None,
         })
         .unwrap();
         assert_eq!(
@@ -170,6 +176,12 @@ mod tests {
             audio_encoder: None,
             held: false,
             held_ms: 0,
+            hold_picture: None,
+            hold_scene: None,
+            hold_sound: None,
+            hold_fallback: false,
+            hold_sound_fallback: false,
+            hold_fallback_reason: None,
         })
         .unwrap();
         assert_eq!(
@@ -237,6 +249,12 @@ mod tests {
                         audio_encoder: Some("Fake AAC".into()),
                         held: false,
                         held_ms: 0,
+                        hold_picture: None,
+                        hold_scene: None,
+                        hold_sound: None,
+                        hold_fallback: false,
+                        hold_sound_fallback: false,
+                        hold_fallback_reason: None,
                     };
                     Ok(Response::StreamStarted(StreamStarted {
                         video_encoder: "Fake".into(),

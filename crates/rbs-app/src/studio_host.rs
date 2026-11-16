@@ -1849,7 +1849,53 @@ fn hold_picture(p: rbs_api::request::HoldPicture) -> HoldPicture {
     match p {
         rbs_api::request::HoldPicture::Freeze => HoldPicture::Freeze,
         rbs_api::request::HoldPicture::Black => HoldPicture::Black,
+        rbs_api::request::HoldPicture::Scene => HoldPicture::Scene,
     }
+}
+
+/// The control API's hold picture for the engine's (`freeze` for one it does not
+/// know).
+fn api_hold_picture(p: HoldPicture) -> rbs_api::request::HoldPicture {
+    match p {
+        HoldPicture::Black => rbs_api::request::HoldPicture::Black,
+        HoldPicture::Scene => rbs_api::request::HoldPicture::Scene,
+        _ => rbs_api::request::HoldPicture::Freeze,
+    }
+}
+
+/// The studio's hold sound for the control API's.
+fn hold_sound(s: rbs_api::request::HoldSound) -> rbs_record::HoldSound {
+    match s {
+        rbs_api::request::HoldSound::Silence => rbs_record::HoldSound::Silence,
+        rbs_api::request::HoldSound::Scene => rbs_record::HoldSound::Scene,
+    }
+}
+
+/// The control API's hold sound for the studio's.
+fn api_hold_sound(s: rbs_record::HoldSound) -> rbs_api::request::HoldSound {
+    match s {
+        rbs_record::HoldSound::Scene => rbs_api::request::HoldSound::Scene,
+        _ => rbs_api::request::HoldSound::Silence,
+    }
+}
+
+/// A refused hold as a control API error (protocol 1.67): a scene not in the
+/// collection is `not_found`, one the canvas cannot show `invalid_params`, the rest
+/// `conflict`.
+fn hold_error(e: rbs_record::HoldRefused) -> ApiError {
+    use rbs_record::HoldRefused as R;
+    let kind = match e {
+        R::UnknownScene => ErrorKind::NotFound,
+        R::SceneNotShowable => ErrorKind::InvalidParams,
+        _ => ErrorKind::Conflict,
+    };
+    let message = match e {
+        R::OtherSceneHeld => {
+            "the stream is already on hold with another scene or sound: resume it first".to_owned()
+        }
+        e => hold_refusal(e),
+    };
+    ApiError::new(kind, message)
 }
 
 fn slot(c: OutputCanvas) -> usize {
@@ -1917,10 +1963,19 @@ struct HoldPlan {
     /// A hold asked for that waits until the recording sharing the stream's encoder
     /// is paused: the studio holds a shared chain only then, so the hold picture
     /// never reaches the file.
-    pending: Option<HoldPicture>,
+    pending: Option<HoldAsk>,
     /// The hold paused the recording: Resume stream resumes it, and never a
     /// recording the user paused.
     paused_recording: bool,
+}
+
+/// A hold as asked for, with the stream settings' defaults filled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HoldAsk {
+    picture: HoldPicture,
+    /// The scene, with [`HoldPicture::Scene`] only (phase 2b).
+    scene: Option<SceneId>,
+    sound: rbs_record::HoldSound,
 }
 
 impl Default for CanvasOutputs {
@@ -3386,6 +3441,16 @@ fn round(
         host.apply(notify);
     }
     host.waiting = waiting;
+    // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
+    // the stream states say so.
+    if host.studio.take_hold_fallback() {
+        host.studio.settle_hold_scenes(&host.adapters.sources);
+        for c in OutputCanvas::ALL {
+            host.refresh_stream_hold(c);
+        }
+        notify(host.hold_update());
+        host.publish(notify);
+    }
     for c in OutputCanvas::ALL {
         let o = &host.outs[slot(c)];
         if let Some((_, id)) = &o.recording
@@ -4444,7 +4509,7 @@ impl Host {
                     Command::HoldStream => (
                         rbs_api::Command::StreamHoldToggle(rbs_api::request::StreamHold {
                             canvas: Some(api::OutputTarget::All),
-                            picture: None,
+                            ..rbs_api::request::StreamHold::default()
                         }),
                         "The stream could not hold or resume",
                     ),
@@ -5013,26 +5078,19 @@ impl Host {
         &mut self,
         c: OutputCanvas,
         hold: Option<bool>,
-        picture: Option<HoldPicture>,
+        asked: rbs_api::request::StreamHold,
     ) -> Result<bool, ApiError> {
         let conflict = |m: String| ApiError::new(ErrorKind::Conflict, m);
-        // No picture named: the stream settings' "While on hold" (protocol 1.65).
-        let picture = picture.unwrap_or_else(|| {
-            hold_picture(
-                self.stream_profile_of(c)
-                    .map(|p| p.hold_picture)
-                    .unwrap_or_default(),
-            )
-        });
         let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
             return Err(conflict("nothing streams".into()));
         };
         let hold = hold.unwrap_or_else(|| !self.stream_held(c));
         if hold {
-            match self.studio.hold_output(id, picture) {
+            let ask = self.hold_ask(c, asked)?;
+            match self.hold_engine(id, ask) {
                 Ok(_) => self.outs[slot(c)].hold.pending = None,
                 Err(rbs_record::HoldRefused::SharedWithRecording) => {
-                    if self.outs[slot(c)].hold.pending == Some(picture) {
+                    if self.outs[slot(c)].hold.pending == Some(ask) {
                         return Err(conflict("the stream is already on hold".into()));
                     }
                     let paused = self.outs[slot(c)]
@@ -5044,9 +5102,9 @@ impl Host {
                         self.pause_recording(c, Some(true))?;
                         self.outs[slot(c)].hold.paused_recording = true;
                     }
-                    self.outs[slot(c)].hold.pending = Some(picture);
+                    self.outs[slot(c)].hold.pending = Some(ask);
                 }
-                Err(e) => return Err(conflict(hold_refusal(e))),
+                Err(e) => return Err(hold_error(e)),
             }
         } else {
             if !self.stream_held(c) {
@@ -5054,7 +5112,7 @@ impl Host {
             }
             if self.outs[slot(c)].hold.pending.take().is_none() {
                 self.studio
-                    .release_hold(id)
+                    .release_hold_scene(id, &self.adapters.sources)
                     .map_err(|e| conflict(hold_refusal(e)))?;
             }
             if std::mem::take(&mut self.outs[slot(c)].hold.paused_recording) {
@@ -5064,6 +5122,73 @@ impl Host {
         }
         self.refresh_stream_hold(c);
         Ok(hold)
+    }
+
+    /// The hold `asked` names, with the stream settings' "While on hold" for what it
+    /// leaves out (protocols 1.65 and 1.67). A scene or a sound with a picture that
+    /// is not a scene is `invalid_params`; a scene hold with no scene named or set is
+    /// `conflict`.
+    fn hold_ask(
+        &self,
+        c: OutputCanvas,
+        asked: rbs_api::request::StreamHold,
+    ) -> Result<HoldAsk, ApiError> {
+        use rbs_api::request::HoldPicture as P;
+        let profile = self.stream_profile_of(c);
+        let picture = asked
+            .picture
+            .unwrap_or_else(|| profile.map(|p| p.hold_picture).unwrap_or_default());
+        if picture != P::Scene {
+            if asked.scene.is_some() || asked.sound.is_some() {
+                return Err(ApiError::new(
+                    ErrorKind::InvalidParams,
+                    "scene and sound go only with picture \"scene\"",
+                ));
+            }
+            return Ok(HoldAsk {
+                picture: hold_picture(picture),
+                scene: None,
+                sound: rbs_record::HoldSound::Silence,
+            });
+        }
+        let scene = asked
+            .scene
+            .or_else(|| profile.and_then(|p| p.hold_scene))
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorKind::Conflict,
+                    "no hold scene is set: choose one in Settings, Stream",
+                )
+            })?;
+        let sound = asked
+            .sound
+            .or_else(|| profile.map(|p| p.hold_sound))
+            .unwrap_or_default();
+        Ok(HoldAsk {
+            picture: HoldPicture::Scene,
+            scene: Some(SceneId::from_raw(scene)),
+            sound: hold_sound(sound),
+        })
+    }
+
+    /// Asks the studio for the hold `ask`: a scene's (bound and opened first) or a
+    /// picture's. A scene left by a change to another picture leaves at once.
+    fn hold_engine(
+        &mut self,
+        id: OutputId,
+        ask: HoldAsk,
+    ) -> Result<Timestamp, rbs_record::HoldRefused> {
+        match ask.scene {
+            Some(scene) => {
+                self.studio
+                    .hold_output_scene(id, scene, ask.sound, &self.adapters.sources)
+            }
+            None => {
+                let at = self.studio.hold_output(id, ask.picture)?;
+                self.studio.settle_hold_scenes(&self.adapters.sources);
+                Ok(at)
+            }
+        }
     }
 
     /// Canvas `c`'s stream is on hold, or a hold waits for its recording's pause.
@@ -5079,9 +5204,9 @@ impl Host {
     /// Holds a stream whose hold waits for its recording's pause, once that pause
     /// has begun. Returns how soon to look again while it still waits.
     fn drive_hold(&mut self, c: OutputCanvas) -> Option<Duration> {
-        let picture = self.outs[slot(c)].hold.pending?;
+        let ask = self.outs[slot(c)].hold.pending?;
         let id = self.outs[slot(c)].streaming.as_ref()?.2;
-        match self.studio.hold_output(id, picture) {
+        match self.hold_engine(id, ask) {
             Err(rbs_record::HoldRefused::SharedWithRecording) => {
                 let paused = self.outs[slot(c)]
                     .recording
@@ -5107,12 +5232,41 @@ impl Host {
         let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
             return;
         };
-        let pending = self.outs[slot(c)].hold.pending.is_some();
+        let pending = self.outs[slot(c)].hold.pending;
         let hold = self.studio.output_hold(id).unwrap_or_default();
         let mut state = self.outs[slot(c)].stream_state.clone();
-        if let api::StreamState::Live { held, held_ms, .. } = &mut state {
-            *held = pending || hold.picture.is_some();
+        if let api::StreamState::Live {
+            held,
+            held_ms,
+            hold_picture,
+            hold_scene,
+            hold_sound,
+            hold_fallback,
+            hold_sound_fallback,
+            hold_fallback_reason,
+            ..
+        } = &mut state
+        {
+            *held = pending.is_some() || hold.picture.is_some();
             *held_ms = hold.held_ns / 1_000_000;
+            // A hold waiting for the recording's pause says what it will send.
+            let (picture, scene, sound) = match (hold.picture, pending) {
+                (Some(p), _) => (Some(p), hold.scene, hold.sound),
+                (None, Some(ask)) => (Some(ask.picture), ask.scene, ask.scene.map(|_| ask.sound)),
+                (None, None) => (None, None, None),
+            };
+            *hold_picture = picture.map(api_hold_picture);
+            *hold_scene = scene.map(SceneId::get);
+            *hold_sound = sound.map(api_hold_sound);
+            *hold_fallback = hold.fallback.is_some();
+            *hold_sound_fallback = hold.sound_fallback.is_some();
+            *hold_fallback_reason = hold
+                .fallback
+                .map(|f| format!("{f}: showing the last frame"))
+                .or_else(|| {
+                    hold.sound_fallback
+                        .map(|f| format!("{f}: its sound is silent"))
+                });
             self.set_stream_state(c, state);
         }
     }
@@ -6933,6 +7087,12 @@ impl Host {
                 audio_encoder: audio_encoder.clone(),
                 held: false,
                 held_ms: 0,
+                hold_picture: None,
+                hold_scene: None,
+                hold_sound: None,
+                hold_fallback: false,
+                hold_sound_fallback: false,
+                hold_fallback_reason: None,
             },
         );
         self.mark_stream(c, true);
@@ -7167,25 +7327,17 @@ impl Host {
         {
             *last = link;
             notify(stream_update(c, StreamUpdate::Link(link)));
+            let mut state = self.outs[slot(c)].stream_state.clone();
             if let api::StreamState::Live {
-                protocol,
-                video_encoder,
-                audio_encoder,
-                held,
-                held_ms,
+                connected,
+                connects,
+                reconnect_attempts,
                 ..
-            } = &self.outs[slot(c)].stream_state
+            } = &mut state
             {
-                let state = api::StreamState::Live {
-                    protocol: *protocol,
-                    connected: link.connected,
-                    connects: link.connects,
-                    reconnect_attempts: link.reconnect_attempts,
-                    video_encoder: video_encoder.clone(),
-                    audio_encoder: audio_encoder.clone(),
-                    held: *held,
-                    held_ms: *held_ms,
-                };
+                *connected = link.connected;
+                *connects = link.connects;
+                *reconnect_attempts = link.reconnect_attempts;
                 self.set_stream_state(c, state);
             }
         }
@@ -12046,9 +12198,13 @@ impl ApiTarget<'_> {
             C::RecordPause(p) => self.pause_asked(p, Some(true)),
             C::RecordResume(p) => self.pause_asked(p, Some(false)),
             C::RecordPauseToggle(p) => self.pause_asked(p, None),
-            C::StreamHold(p) => self.hold_asked(p.target(), Some(true), p.picture),
-            C::StreamResume(p) => self.hold_asked(p.target(), Some(false), None),
-            C::StreamHoldToggle(p) => self.hold_asked(p.target(), None, p.picture),
+            C::StreamHold(p) => self.hold_asked(p.target(), Some(true), p),
+            C::StreamResume(p) => self.hold_asked(
+                p.target(),
+                Some(false),
+                rbs_api::request::StreamHold::default(),
+            ),
+            C::StreamHoldToggle(p) => self.hold_asked(p.target(), None, p),
             C::OutputBreakToggle => self.break_toggle(),
             C::MarkerAdd(p) => {
                 let added = host.add_marker(&p)?;
@@ -12778,14 +12934,13 @@ impl ApiTarget<'_> {
         &mut self,
         target: api::OutputTarget,
         hold: Option<bool>,
-        picture: Option<rbs_api::request::HoldPicture>,
+        asked: rbs_api::request::StreamHold,
     ) -> Result<Response, ApiError> {
-        let picture = picture.map(hold_picture);
         let notify = self.notify;
         let host = &mut *self.host;
         if let Some(one) = target.single() {
             let c = host.api_canvas_of(Some(one))?;
-            host.hold_stream(c, hold, picture)?;
+            host.hold_stream(c, hold, asked)?;
             notify(host.pause_update());
             notify(host.hold_update());
             host.publish(notify);
@@ -12804,7 +12959,7 @@ impl ApiTarget<'_> {
             let (outcome, error) = if !live(host, c) {
                 (api::OutputOutcome::NotRunning, None)
             } else {
-                match host.hold_stream(c, Some(hold), picture) {
+                match host.hold_stream(c, Some(hold), asked) {
                     Ok(true) => (api::OutputOutcome::Held, None),
                     Ok(false) => (api::OutputOutcome::Resumed, None),
                     Err(e) => {
@@ -12894,13 +13049,15 @@ impl ApiTarget<'_> {
         let before: Vec<bool> = records.iter().map(|&c| paused(host, c)).collect();
         for &c in &streams {
             if resume || !host.stream_held(c) {
-                let done = host.hold_stream(c, Some(!resume), None).map(|held| {
-                    if held {
-                        api::OutputOutcome::Held
-                    } else {
-                        api::OutputOutcome::Resumed
-                    }
-                });
+                let done = host
+                    .hold_stream(c, Some(!resume), rbs_api::request::StreamHold::default())
+                    .map(|held| {
+                        if held {
+                            api::OutputOutcome::Held
+                        } else {
+                            api::OutputOutcome::Resumed
+                        }
+                    });
                 entry(c, api::OutputKind::Stream, done);
             }
         }

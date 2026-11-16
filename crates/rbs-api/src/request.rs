@@ -1267,16 +1267,27 @@ pub struct SetWithVertical {
 }
 
 /// `stream.hold` and `stream.hold_toggle` (protocol 1.64, ADR-0124 decisions 12 and
-/// 13): the canvases as in [`OnCanvases`] and the picture sent while held. Unknown
+/// 13): the canvases as in [`OnCanvases`] and the picture sent while held (a scene
+/// and its sound from protocol 1.67). Unknown
 /// fields are ignored; an unknown `picture` is `invalid_params`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamHold {
     /// The canvases; the main one when absent or `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<OutputTarget>,
-    /// What the stream sends while held; `freeze` when absent or `null`.
+    /// What the stream sends while held; the stream settings' `hold_picture` when
+    /// absent or `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<HoldPicture>,
+    /// With `picture: "scene"`: the scene shown (protocol 1.67); the stream settings'
+    /// `hold_scene` when absent or `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<u32>,
+    /// With `picture: "scene"`: the sound sent (protocol 1.67); the stream settings'
+    /// `hold_sound` when absent or `null`. With `freeze` or `black` it is
+    /// `invalid_params`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<HoldSound>,
 }
 
 impl StreamHold {
@@ -1295,6 +1306,20 @@ pub enum HoldPicture {
     Freeze,
     /// A black picture.
     Black,
+    /// A scene of the collection, drawn live (protocol 1.67, ADR-0124 phase 2b).
+    Scene,
+}
+
+/// What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase
+/// 2b).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldSound {
+    /// Silence, as a freeze or black hold.
+    #[default]
+    Silence,
+    /// The scene's own sources, mixed at their levels.
+    Scene,
 }
 
 /// `record.status` and `stream.status`: the canvas they report (protocol 1.29). Unknown

@@ -1082,6 +1082,8 @@ pub struct Studio {
     scene_preview: Option<ScenePreview>,
     /// Hold scenes by canvas while a stream holds with one (ADR-0124 phase 2b).
     hold_scenes: BTreeMap<CanvasId, hold::HoldRun>,
+    /// A hold scene fell back in [`Studio::service`] since the host last asked.
+    hold_fell_back: bool,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
     /// Boxes on screen before the latest program-scene change, so a source that is in
@@ -1429,6 +1431,7 @@ impl Studio {
             preview,
             scene_preview: None,
             hold_scenes: BTreeMap::new(),
+            hold_fell_back: false,
             extras,
             glide: None,
             last_follow,
@@ -2760,7 +2763,9 @@ impl Studio {
                     _ => None,
                 })
                 .collect();
-            self.check_hold_scenes(&failed);
+            if self.check_hold_scenes(&failed) {
+                self.hold_fell_back = true;
+            }
         }
         if !self.pending_takes.is_empty() {
             let engine = &mut self.engine;
