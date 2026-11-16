@@ -744,14 +744,19 @@ fn on_event(
 }
 
 /// Opens the projector's menu after this event: the native menu runs its own loop,
-/// which must not start inside the window's event handler.
+/// which must not start inside the window's event handler. Nor inside a timer: on
+/// macOS that loop runs the toolkit's timers again, and timers started while timers
+/// run abort the app ("Recursion in timer code"). So it is posted to the event loop.
 fn open_menu(pw: &ProjectorWindow, x: f32, y: f32) {
     let weak = pw.as_weak();
-    entry::single_shot(Duration::ZERO, move || {
+    let posted = entry::invoke(move || {
         if let Some(pw) = weak.upgrade() {
             pw.invoke_open_menu(x, y);
         }
     });
+    if let Err(e) = posted {
+        log(&format!("projector: cannot open the menu: {e}"));
+    }
 }
 
 /// The pointer hides after `delay.projector-cursor` without moving over the picture.
