@@ -42,6 +42,8 @@ rbs-media-decode-test = { path = "../rbs-media-decode-test" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 # The in-process virtual camera (records what it takes).
 rbs-vcam-test = { path = "../rbs-vcam-test" }
+# Deterministic text renderer (ADR-0129).
+rbs-text-test = { path = "../rbs-text-test" }
 # The real AAC session over its fake engine (runs on every platform).
 rbs-codec-mf = { path = "../rbs-codec-mf", features = ["testing"] }
 

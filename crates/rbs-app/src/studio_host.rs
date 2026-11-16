@@ -45,7 +45,8 @@ use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_ne
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
-    RecordAdapters, RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
+    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, VideoSettings,
+    VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
@@ -82,6 +83,9 @@ use crate::record_profile::{
     API_PROFILE_ID, LimitPolicy, RecordProfile, SeparateFiles, output_size_matches,
 };
 use crate::remote_control::ApiTokens;
+use crate::stream_destinations::{
+    Canvas as DestinationCanvas, DestinationEncoding, Destinations, Resolved,
+};
 use crate::stream_key::{self, KeyStore, MemoryKeyStore};
 use crate::stream_profile::{Protocol, StreamProfile, parse_server};
 use crate::user_session::CollectionSaver;
@@ -1129,6 +1133,9 @@ pub enum Command {
     /// The vertical canvas's stream settings as saved (`None`: none saved). Sent at
     /// start and after each change.
     SetVerticalStreamProfile(Option<StreamProfile>),
+    /// The output profile's stream destinations (ADR-0127 decision 1): the next Go
+    /// live of each canvas sends to every enabled, configured one.
+    SetStreamDestinations(Destinations),
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// output profile saved them. Sent at start and after each change.
     SetVerticalFlags(VerticalFlags),
@@ -1987,8 +1994,13 @@ struct CanvasOutputs {
     /// starts"): ending the stream stops it too. Cleared when the recording stops or
     /// the stream ends.
     auto_recording: bool,
-    /// The running stream: its URL, the connection last reported and its output.
+    /// The running stream: its URL, the connection last reported and its output. With
+    /// several destinations (ADR-0127) this is one destination that still runs, the
+    /// stream's anchor: its output carries the stream's hold and counters.
     streaming: Option<(String, Link, OutputId)>,
+    /// The destinations of the running stream, the anchor's among them; empty while
+    /// nothing streams.
+    destinations: Vec<LiveDestination>,
     /// Recording protection ended the recording (ADR-0090 decision 3): the reason for
     /// its summary once the tail is in.
     protection_stop: Option<String>,
@@ -2000,6 +2012,139 @@ struct CanvasOutputs {
     markers: Option<RecordingMarkers>,
     /// The stream's hold as the host keeps it (ADR-0124 decision 14).
     hold: HoldPlan,
+}
+
+/// A destination Go live is about to start: its request and key account.
+struct Planned {
+    /// What it becomes once started.
+    live: LiveDestination,
+    /// Where and how to stream to it.
+    request: StreamRequest,
+    /// Its key's account in the key store.
+    account: String,
+    /// It is its canvas's first destination.
+    first: bool,
+}
+
+impl Planned {
+    fn of(d: &Resolved, request: StreamRequest, first: bool) -> Self {
+        Self {
+            live: LiveDestination {
+                id: d.destination.id,
+                name: d.destination.name.clone(),
+                url: request.url.clone(),
+                own: d.destination.encoding.is_own(),
+                output: None,
+                state: DestinationState::Connecting,
+                link: Link::default(),
+                error: None,
+                on_air_since: None,
+            },
+            request,
+            account: d.account.clone(),
+            first,
+        }
+    }
+
+    /// It started as `output`.
+    fn started(self, output: OutputId) -> LiveDestination {
+        LiveDestination {
+            output: Some(output),
+            ..self.live
+        }
+    }
+
+    /// It did not start, because of `why`.
+    fn failed(self, why: String) -> LiveDestination {
+        LiveDestination {
+            state: DestinationState::Failed,
+            error: Some(why),
+            ..self.live
+        }
+    }
+}
+
+/// The studio output of a stream to `r`'s server with `key`, from `canvas`.
+fn stream_output(
+    r: &StreamRequest,
+    key: Option<Secret>,
+    canvas: Option<CanvasId>,
+    adapters: &RecordAdapters,
+) -> OutputSettings {
+    let mut out = match r.input {
+        TransportInput::Container(c) => OutputSettings::new(r.url.clone(), c),
+        _ => OutputSettings::packets(r.url.clone()),
+    };
+    // Never in a crash report (ADR-0055 decision 4).
+    if let Some(key) = &key {
+        rbs_crash::add_secret(key.expose());
+    }
+    rbs_crash::add_secret(&r.url);
+    out.secret = key;
+    out.canvas = canvas;
+    out.reconnect = r.reconnect;
+    out.transport_options = r.transport_options.clone();
+    out.video = Some(r.video.clone());
+    out.audio = adapters.audio_encoders.ids().next().map(|_| {
+        let mut a = AudioSettings::default();
+        a.bitrate_bps = r.audio_bitrate_bps;
+        a
+    });
+    // The size this stream starts with. A later settings change waits for the next
+    // start (ADR-0102). `None` stays the canvas.
+    out.size = r.size;
+    // Every stream can be held (ADR-0124 decision 12).
+    out.holdable = true;
+    out
+}
+
+/// Where one destination of a running stream stands (ADR-0127 decision 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestinationState {
+    /// Started; not connected yet.
+    Connecting,
+    /// Connected and sending.
+    Live,
+    /// The connection dropped; the transport tries again.
+    Reconnecting,
+    /// Refused at start, gave up reconnecting, or its output failed.
+    Failed,
+    /// Stopped by the user while the others run.
+    Stopped,
+}
+
+/// One destination of a running stream, as the host tracks it.
+#[derive(Debug, Clone)]
+struct LiveDestination {
+    /// The destination's id in the profile.
+    id: u32,
+    /// Its name, for notices.
+    name: String,
+    /// Its server URL (never with the key).
+    url: String,
+    /// It has its own encoder chain.
+    own: bool,
+    /// Its output while it runs.
+    output: Option<OutputId>,
+    /// Where it stands.
+    state: DestinationState,
+    /// The connection last read.
+    link: Link,
+    /// Why it failed, the URL and key never in it.
+    error: Option<String>,
+    /// When it first connected (master clock).
+    on_air_since: Option<Timestamp>,
+}
+
+impl LiveDestination {
+    /// The name to show: its own, or "Destination <id>".
+    fn label(&self) -> String {
+        if self.name.is_empty() {
+            format!("Destination {}", self.id)
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 /// What the host remembers about a stream's hold (ADR-0124 decision 14).
@@ -2030,6 +2175,7 @@ impl Default for CanvasOutputs {
             ending: false,
             auto_recording: false,
             streaming: None,
+            destinations: Vec::new(),
             protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
@@ -3250,6 +3396,9 @@ struct Host {
     /// The next undo and redo as last sent.
     history_shown: (Option<StepInfo>, Option<StepInfo>),
     waiting: bool,
+    /// A program switch held back until its entering texts are uploaded, at most
+    /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
+    held_switch: Option<SceneId>,
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
@@ -3299,6 +3448,8 @@ struct Host {
     /// The vertical canvas's stream settings as saved; `None`: none saved, so the
     /// vertical stream has no server.
     vertical_stream_profile: Option<StreamProfile>,
+    /// The output profile's stream destinations as the UI sent them (ADR-0127).
+    destinations: Destinations,
     /// The output profiles and scene collections as the UI listed them last; `None`
     /// until the UI sent them.
     library: Option<(api::Library, api::Library)>,
@@ -3442,6 +3593,14 @@ fn run(
     let _ = host.studio.shutdown();
 }
 
+/// Why a text's box cannot change during a take that records its picture separately
+/// (ADR-0129 decision 5).
+const STOP_TO_CHANGE_BOX: &str =
+    "Stop recording to change the box: the separate picture track keeps one size.";
+
+/// How often the control loop looks at a program switch held back for its texts.
+const HELD_SWITCH_POLL: Duration = Duration::from_millis(4);
+
 /// Caught panics in a row after which the studio counts as failed: its recording and
 /// stream end cleanly instead of running on with a host that keeps panicking.
 const CAUGHT_LIMIT: u32 = 3;
@@ -3565,6 +3724,13 @@ fn round(
         host.apply(notify);
     }
     host.waiting = waiting;
+    if host.held_switch.is_some() {
+        host.drive_held_switch(notify);
+        if host.held_switch.is_some() {
+            // Look again within a render tick.
+            wait = wait.min(HELD_SWITCH_POLL);
+        }
+    }
     // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
     // the stream states say so.
     if host.studio.take_hold_fallback() {
@@ -3593,8 +3759,8 @@ fn round(
                 wait = wait.min(ENDING_WAIT);
             }
         }
-        if let Some((_, _, id)) = &host.outs[slot(c)].streaming {
-            if let Some(why) = host.studio.output_failure(*id) {
+        if host.outs[slot(c)].streaming.is_some() {
+            if let Some(why) = host.check_destinations(c, notify) {
                 host.end_stream(c, Some(why), notify);
             } else {
                 host.report_link(c, notify);
@@ -3787,6 +3953,7 @@ fn start(
         history: History::new(),
         history_shown: (None, None),
         waiting: false,
+        held_switch: None,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
         iso: None,
         stats_due: None,
@@ -3847,6 +4014,7 @@ fn start(
         stream_profile: None,
         vertical_profile: None,
         vertical_stream_profile: None,
+        destinations: Destinations::default(),
         library: None,
         switch_pending: None,
         switch_seq: 0,
@@ -4582,6 +4750,7 @@ impl Host {
             }
             Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
             Command::SetVerticalStreamProfile(profile) => self.vertical_stream_profile = profile,
+            Command::SetStreamDestinations(destinations) => self.destinations = destinations,
             Command::SetVerticalFlags(flags) => {
                 if flags != self.vertical_flags {
                     self.vertical_flags = flags;
@@ -5276,7 +5445,10 @@ impl Host {
         if hold {
             let ask = self.hold_ask(c, asked)?;
             match self.hold_engine(id, ask) {
-                Ok(_) => self.outs[slot(c)].hold.pending = None,
+                Ok(_) => {
+                    self.outs[slot(c)].hold.pending = None;
+                    self.hold_own_encodings(c, Some(ask));
+                }
                 Err(rbs_record::HoldRefused::SharedWithRecording) => {
                     if self.outs[slot(c)].hold.pending == Some(ask) {
                         return Err(conflict("the stream is already on hold".into()));
@@ -5302,6 +5474,7 @@ impl Host {
                 self.studio
                     .release_hold_scene(id, &self.adapters.sources)
                     .map_err(|e| conflict(hold_refusal(e)))?;
+                self.hold_own_encodings(c, None);
             }
             if std::mem::take(&mut self.outs[slot(c)].hold.paused_recording) {
                 // Ended meanwhile, or already resumed: nothing to resume.
@@ -5408,10 +5581,39 @@ impl Host {
                 // The recording was resumed meanwhile: the hold is given up.
                 self.outs[slot(c)].hold = HoldPlan::default();
             }
-            Ok(_) | Err(_) => self.outs[slot(c)].hold.pending = None,
+            Ok(_) => {
+                self.outs[slot(c)].hold.pending = None;
+                self.hold_own_encodings(c, Some(ask));
+            }
+            Err(_) => self.outs[slot(c)].hold.pending = None,
         }
         self.refresh_stream_hold(c);
         None
+    }
+
+    /// Holds (`Some`) or releases (`None`) every destination of `c` with its own
+    /// encoder chain besides the anchor's, so the whole stream holds (ADR-0127 decision
+    /// 13). The anchor's chain, and every destination sharing it, is held already. A
+    /// refusal leaves that destination as it is: it is only one of the stream's.
+    fn hold_own_encodings(&mut self, c: OutputCanvas, ask: Option<HoldAsk>) {
+        let anchor = self.outs[slot(c)].streaming.as_ref().map(|s| s.2);
+        let own: Vec<OutputId> = self.outs[slot(c)]
+            .destinations
+            .iter()
+            .filter(|d| d.own)
+            .filter_map(|d| d.output)
+            .filter(|id| Some(*id) != anchor)
+            .collect();
+        for id in own {
+            match ask {
+                Some(ask) => {
+                    let _ = self.hold_engine(id, ask);
+                }
+                None => {
+                    let _ = self.studio.release_hold_scene(id, &self.adapters.sources);
+                }
+            }
+        }
     }
 
     /// Puts the hold fields of `c`'s live stream into its stream state, as of now
@@ -5635,7 +5837,9 @@ impl Host {
         for id in &running {
             let known = self.outs.iter().any(|o| {
                 let (r, s) = tracked(o);
-                r == Some(*id) || s == Some(*id)
+                r == Some(*id)
+                    || s == Some(*id)
+                    || o.destinations.iter().any(|d| d.output == Some(*id))
             });
             if !known {
                 let _ = rbs_crash::contain(|| self.studio.stop_output(*id));
@@ -5686,6 +5890,7 @@ impl Host {
             for o in &mut self.outs {
                 o.recording = None;
                 o.streaming = None;
+                o.destinations.clear();
             }
             notify(Update::Failed(why));
         }
@@ -7001,6 +7206,12 @@ impl Host {
         let started = matches!(update, StreamUpdate::Started { .. });
         notify(stream_update(c, update));
         if started {
+            // Each destination that did not start, by name (ADR-0127 decision 7).
+            for d in &self.outs[slot(c)].destinations {
+                if let (DestinationState::Failed, Some(why)) = (d.state, &d.error) {
+                    notify(Update::Error(format!("{}: {why}", d.label())));
+                }
+            }
             self.record_with_stream(c, notify);
         }
         self.publish(notify);
@@ -7218,9 +7429,13 @@ impl Host {
         }
     }
 
-    /// Goes live: reads the key (RTMP: required) from the key store, then attaches the
-    /// stream's encoders and output to the running studio. The connection is made in
-    /// the background; [`Host::report_link`] tells the UI how it goes.
+    /// Goes live: reads each destination's key (RTMP: required) from the key store,
+    /// then attaches the stream's encoders and one output per enabled destination to
+    /// the running studio (ADR-0127): destinations sharing the stream's encoding in
+    /// one apply, so they start on the same keyframe, then each with its own
+    /// encoding. It goes live when at least one destination starts; the others are
+    /// kept as failed with their reason. The connections are made in the background;
+    /// [`Host::report_link`] tells the UI how they go.
     fn start_stream(&mut self, c: OutputCanvas, r: &StreamRequest) -> Result<StreamUpdate, String> {
         if let Some(why) = self.calibration_blocks() {
             return Err(format!("{why}."));
@@ -7235,49 +7450,93 @@ impl Host {
                 os_name()
             ));
         }
-        let key = self.keys.read(&self.key_account_of(c)).map_err(|e| {
-            let which = match c {
-                OutputCanvas::Main => "",
-                OutputCanvas::Vertical => " of the vertical stream",
+        let (plans, mut failed) = self.destination_plans(c, r);
+        if plans.is_empty() {
+            return Err(failed
+                .first()
+                .and_then(|d| d.error.clone())
+                .unwrap_or_else(|| {
+                    "No destination is turned on: turn one on in Settings, Stream.".into()
+                }));
+        }
+        let alone = plans.len() == 1 && failed.is_empty();
+        let mut ready: Vec<(Planned, OutputSettings)> = Vec::new();
+        for p in plans {
+            let key = match self.keys.read(&p.account) {
+                Ok(key) => key,
+                Err(e) => {
+                    let which = match (p.live.id, c) {
+                        (_, _) if !p.first => format!(" of {}", p.live.label()),
+                        (_, OutputCanvas::Main) => String::new(),
+                        (_, OutputCanvas::Vertical) => " of the vertical stream".into(),
+                    };
+                    let why = format!(
+                        "The stream key{which} could not be read from {}: {e}",
+                        self.keys.place()
+                    );
+                    if alone {
+                        return Err(why);
+                    }
+                    failed.push(p.failed(why));
+                    continue;
+                }
             };
-            format!(
-                "The stream key{which} could not be read from {}: {e}",
-                self.keys.place()
-            )
-        })?;
-        if r.needs_key && key.is_none() {
-            return Ok(StreamUpdate::NoKey);
+            if p.request.needs_key && key.is_none() {
+                if alone {
+                    return Ok(StreamUpdate::NoKey);
+                }
+                failed.push(p.failed("No stream key is saved for it.".into()));
+                continue;
+            }
+            let out = stream_output(&p.request, key, canvas, &self.adapters);
+            ready.push((p, out));
         }
-        let mut out = match r.input {
-            TransportInput::Container(c) => OutputSettings::new(r.url.clone(), c),
-            _ => OutputSettings::packets(r.url.clone()),
+        // Destinations with the stream's encoding start together; each other one
+        // after, on its own encoder.
+        let (shared, own): (Vec<_>, Vec<_>) = ready.into_iter().partition(|(p, _)| !p.live.own);
+        let mut started: Vec<LiveDestination> = Vec::new();
+        if !shared.is_empty() {
+            let outs: Vec<OutputSettings> = shared.iter().map(|(_, o)| o.clone()).collect();
+            let results = self.start_outputs(&outs, r.encoder.as_deref());
+            for ((p, _), result) in shared.into_iter().zip(results) {
+                match result {
+                    Ok(id) => started.push(p.started(id)),
+                    Err(why) if alone => return Err(why),
+                    Err(why) => failed.push(p.failed(why)),
+                }
+            }
+        }
+        for (p, out) in own {
+            match self.start_output(&out, p.request.encoder.as_deref()) {
+                Ok((id, _, _)) => started.push(p.started(id)),
+                Err(why) if alone => return Err(why),
+                Err(why) => failed.push(p.failed(why)),
+            }
+        }
+        let Some(anchor) = started.first().cloned() else {
+            return Err(failed
+                .first()
+                .and_then(|d| d.error.clone())
+                .unwrap_or_else(|| "No destination started.".into()));
         };
-        // Never in a crash report (ADR-0055 decision 4).
-        if let Some(key) = &key {
-            rbs_crash::add_secret(key.expose());
-        }
-        rbs_crash::add_secret(&r.url);
-        out.secret = key;
-        out.canvas = canvas;
-        out.reconnect = r.reconnect;
-        out.transport_options = r.transport_options.clone();
-        out.video = Some(r.video.clone());
-        out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
-            let mut a = AudioSettings::default();
-            a.bitrate_bps = r.audio_bitrate_bps;
-            a
-        });
-        // The size this stream starts with. A later settings change waits for the
-        // next start (ADR-0102). `None` stays the canvas.
-        out.size = r.size;
-        // Every stream can be held (ADR-0124 decision 12).
-        out.holdable = true;
-        let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
+        let id = anchor.output.ok_or("the stream did not start")?;
+        let (video_encoder, audio_encoder) = match self.studio.output(id) {
+            Some(report) => (
+                report
+                    .video_encoder
+                    .as_ref()
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default(),
+                report.audio_encoder.as_ref().map(|c| c.name.clone()),
+            ),
+            None => (String::new(), None),
+        };
         // Before the host tracks it: recovery stops an output a panicked start left
         // running (ADR-0055 decision 3).
         inject!(self, Fault::AfterStreamStart);
-        self.outs[slot(c)].streaming = Some((r.url.clone(), Link::default(), id));
-        let protocol = match parse_server(&r.url).map(|s| s.protocol) {
+        self.outs[slot(c)].streaming = Some((anchor.url.clone(), Link::default(), id));
+        self.outs[slot(c)].destinations = started.into_iter().chain(failed).collect();
+        let protocol = match parse_server(&anchor.url).map(|s| s.protocol) {
             Ok(Protocol::Srt) => api::StreamProtocol::Srt,
             // Only RTMP and SRT servers pass the settings' check.
             _ => api::StreamProtocol::Rtmp,
@@ -7303,10 +7562,68 @@ impl Host {
         );
         self.mark_stream(c, true);
         Ok(StreamUpdate::Started {
-            url: r.url.clone(),
+            url: anchor.url,
             video_encoder,
             audio_encoder,
         })
+    }
+
+    /// The destinations Go live of `c` sends to, with their requests: the first one
+    /// with `r` (what the UI or the API built from the stream settings), every other
+    /// enabled one from the saved destinations. Those enabled but not configured come
+    /// back failed with the reason.
+    fn destination_plans(
+        &self,
+        c: OutputCanvas,
+        r: &StreamRequest,
+    ) -> (Vec<Planned>, Vec<LiveDestination>) {
+        let role = match c {
+            OutputCanvas::Main => DestinationCanvas::Main,
+            OutputCanvas::Vertical => DestinationCanvas::Vertical,
+        };
+        let profile = self.stream_profile_of(c).cloned().unwrap_or_default();
+        let mut plans = Vec::new();
+        let mut skipped = Vec::new();
+        for d in self.destinations.of(role, &profile, &self.key_account) {
+            if !d.destination.enabled {
+                continue;
+            }
+            let first = d.destination.is_first();
+            let base = if first {
+                r.clone()
+            } else {
+                let Some(server) = d.parsed() else {
+                    skipped.push(
+                        Planned::of(&d, r.clone(), first)
+                            .failed("Not set up: enter its server in Settings, Stream.".into()),
+                    );
+                    continue;
+                };
+                StreamRequest {
+                    url: d.destination.server.clone(),
+                    input: server.protocol.input(),
+                    needs_key: server.protocol.needs_key(),
+                    reconnect: d.reconnect_policy(),
+                    transport_options: d.transport_options(),
+                    ..r.clone()
+                }
+            };
+            let request = match &d.destination.encoding {
+                DestinationEncoding::Shared => base,
+                DestinationEncoding::Own {
+                    encoding,
+                    output_size,
+                } => StreamRequest {
+                    encoder: encoding.encoder.clone(),
+                    video: encoding.video_settings(),
+                    audio_bitrate_bps: encoding.audio_bps(),
+                    size: output_size.map(|s| s.pair()),
+                    ..base
+                },
+            };
+            plans.push(Planned::of(&d, request, first));
+        }
+        (plans, skipped)
     }
 
     /// Attaches `out` to the studio with the picked encoder only, or the best one (a
@@ -7346,6 +7663,32 @@ impl Host {
             self.adapters.video_encoders = all;
         }
         started
+    }
+
+    /// [`Host::start_output`] for several outputs in one apply (ADR-0127 decision 3):
+    /// one result per output, in order; one that fails does not stop the others.
+    fn start_outputs(
+        &mut self,
+        outs: &[OutputSettings],
+        encoder: Option<&str>,
+    ) -> Vec<Result<OutputId, String>> {
+        let all = match encoder {
+            None => None,
+            Some(id) => match only_encoder(&self.adapters.video_encoders, id) {
+                Ok(only) => Some(std::mem::replace(&mut self.adapters.video_encoders, only)),
+                Err(why) => return outs.iter().map(|_| Err(why.clone())).collect(),
+            },
+        };
+        let results = self
+            .studio
+            .start_outputs(&self.adapters, outs)
+            .into_iter()
+            .map(|r| r.map_err(|e| e.to_string()))
+            .collect();
+        if let Some(all) = all {
+            self.adapters.video_encoders = all;
+        }
+        results
     }
 
     /// Sends the running outputs' counters to the Stats panel once every
@@ -7521,14 +7864,97 @@ impl Host {
         Some(STATS_INTERVAL)
     }
 
+    /// Reads each running destination of `c`'s stream (ADR-0127 decisions 5 and 6):
+    /// its connection and state, and its failure. A destination whose output failed is
+    /// removed without a drain and named in a notice; the others run on. When the
+    /// anchor fails and another destination runs, that one becomes the anchor. Returns
+    /// the stream's failure when no destination is left running.
+    fn check_destinations(&mut self, c: OutputCanvas, notify: &dyn Fn(Update)) -> Option<String> {
+        let now = self.clock.now();
+        let mut lost: Option<String> = None;
+        let anchor = self.outs[slot(c)].streaming.as_ref().map(|s| s.2);
+        let mut dests = std::mem::take(&mut self.outs[slot(c)].destinations);
+        if dests.is_empty()
+            && let Some(id) = anchor
+        {
+            // A stream the host started before it tracked destinations: one.
+            if let Some(why) = self.studio.output_failure(id) {
+                return Some(why);
+            }
+            return None;
+        }
+        for d in &mut dests {
+            let Some(id) = d.output else {
+                continue;
+            };
+            if let Some(why) = self.studio.output_failure(id) {
+                let _ = self.studio.abort_output(id);
+                d.output = None;
+                d.state = DestinationState::Failed;
+                d.link.connected = false;
+                notify(Update::Error(format!("{}: {why}", d.label())));
+                lost = Some(why.clone());
+                d.error = Some(why);
+                continue;
+            }
+            if let Some(link) = self.studio.link(id) {
+                d.state = if link.connected {
+                    DestinationState::Live
+                } else if link.connects > 0 {
+                    DestinationState::Reconnecting
+                } else {
+                    DestinationState::Connecting
+                };
+                if link.connected && d.on_air_since.is_none() {
+                    d.on_air_since = Some(now);
+                }
+                d.link = link;
+            }
+        }
+        let running = dests.iter().find(|d| d.output.is_some()).cloned();
+        self.outs[slot(c)].destinations = dests;
+        match (running, anchor) {
+            (None, _) => Some(lost.unwrap_or_else(|| "every destination failed".into())),
+            (Some(next), Some(id))
+                if next.output != Some(id)
+                    && !self.outs[slot(c)]
+                        .destinations
+                        .iter()
+                        .any(|d| d.output == Some(id)) =>
+            {
+                // The anchor failed: the stream goes on with the next destination.
+                let next_id = next.output?;
+                self.outs[slot(c)].streaming = Some((next.url, Link::default(), next_id));
+                self.refresh_stream_hold(c);
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Tells the UI when the stream's connection changed.
     fn report_link(&mut self, c: OutputCanvas, notify: &dyn Fn(Update)) {
-        let Some((_, last, id)) = &mut self.outs[slot(c)].streaming else {
+        if self.outs[slot(c)].streaming.is_none() {
             return;
-        };
+        }
         // Only what the UI shows: a change of transport drops alone sends nothing.
         let shown = |l: &Link| (l.connected, l.connects, l.reconnect_attempts);
-        if let Some(link) = self.studio.link(*id)
+        // The stream's link sums its running destinations' (ADR-0127 decision 16):
+        // connected while one is.
+        let mut sum: Option<Link> = None;
+        for d in &self.outs[slot(c)].destinations {
+            if d.output.is_some() {
+                let s = sum.get_or_insert_with(Link::default);
+                s.connected |= d.link.connected;
+                s.connects += d.link.connects;
+                s.reconnect_attempts += d.link.reconnect_attempts;
+                s.transport_drops += d.link.transport_drops;
+            }
+        }
+        let Some((_, last, _)) = &mut self.outs[slot(c)].streaming else {
+            return;
+        };
+        if let Some(link) = sum
             && shown(&link) != shown(last)
         {
             *last = link;
@@ -7558,7 +7984,23 @@ impl Host {
     ) -> Option<String> {
         // Tracked until the end, as in `stop_recording`.
         let (_, _, id) = self.outs[slot(c)].streaming.clone()?;
-        let report = self.studio.stop_output(id);
+        // Every destination in one draining apply (ADR-0127 decision 7); the anchor's
+        // report is the stream's.
+        let ids: Vec<OutputId> = std::iter::once(id)
+            .chain(
+                self.outs[slot(c)]
+                    .destinations
+                    .iter()
+                    .filter_map(|d| d.output)
+                    .filter(|o| *o != id),
+            )
+            .collect();
+        let report = self
+            .studio
+            .stop_outputs(&ids)
+            .into_iter()
+            .find(|(o, _)| *o == id)
+            .map(|(_, r)| r);
         // Still tracked: recovery ends a stream whose stop panicked half-way.
         inject!(self, Fault::InStreamEnd);
         let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
@@ -7572,6 +8014,7 @@ impl Host {
         });
         let failure = failure.or(failed);
         self.outs[slot(c)].streaming = None;
+        self.outs[slot(c)].destinations.clear();
         self.outs[slot(c)].hold = HoldPlan::default();
         self.mark_stream(c, false);
         // A recording started with the stream outlives a stream that failed: it is the
@@ -8515,7 +8958,14 @@ impl Host {
         let program = self.scene;
         let preview = self.preview();
         let offsets = filters::audio_offsets(&self.collection);
-        let result = self.undo_or_redo_records(back);
+        let boxes = self.recorded_text_boxes();
+        let mut result = self.undo_or_redo_records(back);
+        if result.is_ok() && self.recorded_text_boxes() != boxes {
+            // The step would change the box of a text with a separate picture track
+            // in the running take (ADR-0129 decision 5): stepped back, refused.
+            let _ = self.undo_or_redo_records(!back);
+            result = Err((false, STOP_TO_CHANGE_BOX.to_owned()));
+        }
         self.resync_audio_offsets(&offsets);
         // Undo and redo never change what is on air (ADR-0059) or the preview scene
         // (ADR-0061): a record that put a scene back on air or in preview is
@@ -8536,6 +8986,30 @@ impl Host {
             let _ = self.collection.set_preview(self.canvas, restored);
         }
         result
+    }
+
+    /// The box of every text source a running take writes a separate picture track
+    /// of; empty while no take records one.
+    fn recorded_text_boxes(&self) -> Vec<(SourceId, Option<SettingValue>, Option<SettingValue>)> {
+        if !self.studio.iso_video_running() {
+            return Vec::new();
+        }
+        self.collection
+            .sources()
+            .filter(|s| {
+                rbs_sources::types::class_of(&s.type_id)
+                    == Some(rbs_sources::types::SourceClass::Text)
+                    && self.studio.iso_video_records(s.id)
+            })
+            .map(|s| {
+                let get = |k: &str| s.settings.get(k).cloned();
+                (
+                    s.id,
+                    get(rbs_sources::types::keys::WIDTH),
+                    get(rbs_sources::types::keys::HEIGHT),
+                )
+            })
+            .collect()
     }
 
     fn undo_or_redo_records(&mut self, back: bool) -> Result<(), (bool, String)> {
@@ -9520,12 +9994,39 @@ impl Host {
         {
             return Ok(false);
         }
+        // A separate picture track keeps its size for the whole take (ADR-0129
+        // decision 4): a text's box does not change while one is written.
+        if rbs_sources::types::class_of(&type_id) == Some(rbs_sources::types::SourceClass::Text)
+            && self.studio.iso_video_records(id)
+            && self.collection.source(id).is_some_and(|s| {
+                [
+                    rbs_sources::types::keys::WIDTH,
+                    rbs_sources::types::keys::HEIGHT,
+                ]
+                .iter()
+                .any(|k| s.settings.get(*k) != settings.get(*k))
+            })
+        {
+            return Err(Refusal::Invalid(format!("{name}: {STOP_TO_CHANGE_BOX}")));
+        }
         let undo = self
             .collection
             .set_source_settings(id, settings)
             .map_err(|e| Refusal::of(&e))?;
+        let mut undos = vec![undo];
+        // Marks follow stillness (ADR-0129 decision 1): a text that starts to move
+        // loses its `video_as: image` in the same undo step.
+        if let Some(mark) = self.collection.source(id).and_then(|s| {
+            rbs_sources::mark_after_edit(&s.type_id, &s.settings, s.record_separately)
+        }) {
+            undos.push(
+                self.collection
+                    .set_source_record_separately(id, mark)
+                    .map_err(|e| Refusal::of(&e))?,
+            );
+        }
         self.history
-            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+            .record(EditKind::SourceSettings, &name, 0, undos);
         self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::SourceSettings);
         Ok(true)
     }
@@ -9697,6 +10198,7 @@ impl Host {
                 types::SourceClass::Capture(_)
                     | types::SourceClass::Still
                     | types::SourceClass::Browser
+                    | types::SourceClass::Text
             )
         );
         let sound_only = matches!(class, Some(types::SourceClass::Audio(_)));
@@ -9740,7 +10242,7 @@ impl Host {
             flag.audio = on;
         }
         if let Some(form) = patch.video_as {
-            if form == VideoAs::Image && class != Some(types::SourceClass::Still) {
+            if form == VideoAs::Image && !rbs_sources::is_still(&source.type_id, &source.settings) {
                 return Err(Refusal::Invalid(format!(
                     "{} is not a still picture, so it cannot be recorded as images.",
                     source.name
@@ -10114,14 +10616,43 @@ impl Host {
                 id.get()
             )));
         }
+        // A newer switch replaces one still held back for its texts.
+        self.held_switch = None;
         if self.scene == id {
             return Ok(false);
         }
+        if self.studio.text_prepare(self.canvas, id) {
+            // Goes on air from the control loop once its texts are uploaded.
+            self.held_switch = Some(id);
+            return Ok(false);
+        }
+        self.put_on_air(id)
+    }
+
+    fn put_on_air(&mut self, id: SceneId) -> Result<bool, Refusal> {
         self.collection
             .set_program(self.canvas, Some(id))
             .map_err(|e| Refusal::of(&e))?;
         self.scene = id;
         Ok(true)
+    }
+
+    /// Makes a held-back program switch once its texts are ready or late.
+    fn drive_held_switch(&mut self, notify: &dyn Fn(Update)) {
+        let Some(id) = self.held_switch else {
+            return;
+        };
+        if self.studio.text_due() == TextDue::Wait {
+            return;
+        }
+        self.held_switch = None;
+        // The scene may have been removed meanwhile; the refusal is then news.
+        let done = if self.listed(id) && self.scene != id {
+            self.put_on_air(id)
+        } else {
+            Ok(false)
+        };
+        self.answer(done, notify);
     }
 
     /// A scene the Scenes panel lists, by name, for the scene levels methods; a global

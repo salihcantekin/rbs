@@ -21,6 +21,10 @@ rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }
 rbs-vcam = { path = "../rbs-vcam" }
 rbs-media-decode = { path = "../rbs-media-decode" }
+# The audio graph configuration and resampling kernel for the media sound node
+# (ADR-0106, ADR-0108). Engine to engine; rbs-audio does not depend on this crate.
+rbs-audio = { path = "../rbs-audio" }
+rbs-text = { path = "../rbs-text" }
 # Lock-free lookahead queues (ADR-0108). The render thread only pops.
 rtrb = "0.4"
 # Pixel buffers of system-memory frames (same crate and version as rbs-core).
@@ -50,6 +54,14 @@ harness = false
 
 [[bench]]
 name = "export"
+harness = false
+
+[[bench]]
+name = "media"
+harness = false
+
+[[bench]]
+name = "text"
 harness = false
 
 [lints]

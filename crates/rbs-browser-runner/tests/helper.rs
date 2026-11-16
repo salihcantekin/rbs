@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use rbs_browser_ipc::{Configure, HEARTBEAT_LIMIT, STARTUP_LIMIT};
+use rbs_browser_ipc::{Configure, HEARTBEAT_LIMIT};
 use rbs_browser_runner::{HelperChild, Supervisor, spawn_helper};
 use rbs_browser_shm::SlotLayout;
 
@@ -118,7 +118,7 @@ fn a_helper_gets_the_startup_limit_before_its_first_beat() {
         "not hung yet"
     );
     assert!(child.process_alive());
-    assert!(!child.check_heartbeat(spawned + STARTUP_LIMIT));
+    assert!(!child.check_heartbeat(spawned + rbs_browser_ipc::STARTUP_LIMIT));
     assert!(child.unavailable);
     assert_eq!(child.attempts, 1);
 }
