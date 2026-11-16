@@ -450,6 +450,11 @@ fn filter_latency_and_input_counters_are_reported() {
     // 96 frames at 48 kHz: 2 ms; a zero-latency audio type says 0; video types have none.
     assert_eq!(latency("org.rbs.audio-filter.limiter"), Some(json!(2.0)));
     assert_eq!(latency("org.rbs.audio-filter.gain"), Some(json!(0.0)));
+    // RNNoise frames of 480 at the default 480-frame blocks: 10 ms.
+    assert_eq!(
+        latency("org.rbs.audio-filter.noise-suppression"),
+        Some(json!(10.0))
+    );
     assert_eq!(latency("org.rbs.filter.blur"), None);
 
     let mic = add(&mut c, "audio_input", "Mic");
