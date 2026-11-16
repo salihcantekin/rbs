@@ -159,6 +159,9 @@ impl ExportEnd {
 pub struct ExportHold {
     switch: Arc<HoldSwitch>,
     black: Mutex<Option<VideoFrame>>,
+    /// Scene frames read back on the hold path so far (phase 2b): the control thread
+    /// compares it to tell whether a hold scene's canvas arrives.
+    scene_frames: AtomicU64,
 }
 
 impl ExportHold {
@@ -167,7 +170,13 @@ impl ExportHold {
         Self {
             switch,
             black: Mutex::new(None),
+            scene_frames: AtomicU64::new(0),
         }
+    }
+
+    /// Scene frames read back on the hold path so far (only grows).
+    pub fn scene_frames(&self) -> u64 {
+        self.scene_frames.load(Ordering::Relaxed)
     }
 
     /// The switch.
@@ -675,6 +684,9 @@ impl VideoExportNode {
                     Some(frame) if scene && !program => {
                         // The newest scene frame; the previous picture's buffer goes back.
                         held.frozen = Some(frame);
+                        if let Some(hold) = &self.hold {
+                            hold.scene_frames.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                     // A late program readback, or a scene frame no longer wanted.
                     other => drop(other),
