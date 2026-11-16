@@ -5084,6 +5084,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-text"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-text-parley"
+version = "0.0.1"
+dependencies = [
+ "parley",
+ "png",
+ "rbs-core",
+ "rbs-text",
+ "swash",
+]
+
+[[package]]
+name = "rbs-text-test"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-text",
+]
+
+[[package]]
 name = "rbs-thread-os"
 version = "0.0.1"
 dependencies = [

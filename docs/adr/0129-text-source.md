@@ -21,7 +21,7 @@ Forces:
 
 1. **Scene type `org.rbs.source.text`, node type `org.rbs.text`.** One text block per source. The node is kind `Source`, one "video" output, render partition, like `org.rbs.still`. `SourceInstance` gains `Text { node, stats }` and `SourceClass` gains `Text`. A text source is not temporal (ADR-0107 decision 7 is unchanged): its node stays scheduled while placed, as a still does. **Still or not depends on settings**, so ADR-0117 decision 2's "ask the class" becomes "ask `rbs_sources::is_still(type_id, &Settings)`" for every caller (`rbs-record` `picture_role`, the `video_as` check in the host); for every other type it answers what the class answers today. A text source is still only when `kind` is `text` and `fields` is off (its picture then changes only when its settings or file change). A separate file track keeps the form it started with for the whole take: if a still text becomes a clock during a take, its image track keeps writing images under ADR-0117's image cap and count, and the next take gives it a video file.
 
-2. **Drawing text is a port.** A new port crate `rbs-text` (layer Core in `check-layers`, depends on `rbs-core` only) owns the contract: `TextBlock` (the validated settings below), `TextPicture` (straight-alpha sRGB `Rgba8`, width, height), `TextError`, all `#[non_exhaustive]`, and the trait
+2. **Drawing text is a port.** A new port crate `rbs-text` (layer Core in `check-layers`, depends on `rbs-core` only) owns the contract: `TextBlock` (the validated settings below), `TextPicture` (straight-alpha sRGB `Rgba8`, width, height), `TextError` and `RenderNotes` (for example `font_missing`), all `#[non_exhaustive]` except the picture, and the trait
 
    ```rust
    pub trait TextRenderer: Send + Sync {
@@ -29,7 +29,7 @@ Forces:
        fn capabilities(&self) -> &Capabilities;          // e.g. text.color_glyphs, text.tabular_figures
        /// Lays out and draws `block` into a picture of exactly `block.box_size()`.
        /// Off the render thread only; may block, read fonts and allocate.
-       fn render(&self, block: &TextBlock) -> Result<TextPicture, TextError>;
+       fn render(&self, block: &TextBlock) -> Result<(TextPicture, RenderNotes), TextError>;
        /// Installed font families, for pickers.
        fn families(&self) -> Result<Vec<String>, TextError>;
        /// The natural size of `block`'s text: unbounded, or wrapped at `max_width`.
