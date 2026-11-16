@@ -215,8 +215,40 @@ fn link_of(inputs: &Inputs<'_>, layer: &NodeLayer) -> Option<usize> {
     }
 }
 
+/// Whether a compositor reports when it drew every layer (ADR-0128 decision 7). A type
+/// parameter, so a compositor without a counter compiles the bookkeeping away and does
+/// no more work per tick than before (P13).
+pub trait ReadySignal: Send + 'static {
+    /// False for [`NoReady`]: `process` keeps no bookkeeping at all.
+    const TRACKS: bool;
+    /// Called after a tick at which every linked layer had a texture frame.
+    fn mark(&self, tick: u64);
+}
+
+/// No ready counter: every compositor except a transition's incoming one.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoReady;
+
+impl ReadySignal for NoReady {
+    const TRACKS: bool = false;
+    #[inline(always)]
+    fn mark(&self, _: u64) {}
+}
+
+/// A ready counter: stores the tick index (at least 1) with `Release`.
+#[derive(Debug, Clone)]
+pub struct ReadyCounter(Arc<AtomicU64>);
+
+impl ReadySignal for ReadyCounter {
+    const TRACKS: bool = true;
+    #[inline]
+    fn mark(&self, tick: u64) {
+        self.0.store(tick.max(1), Ordering::Release);
+    }
+}
+
 /// Draws the frames on its "layers" links into a canvas and publishes it on "canvas".
-pub struct CompositorNode {
+pub struct CompositorNode<R: ReadySignal = NoReady> {
     descriptor: NodeDescriptor,
     canvas: CanvasDesc,
     capacity: u32,
@@ -226,9 +258,9 @@ pub struct CompositorNode {
     /// Reused every tick; room for `capacity` layers.
     scratch: Vec<Layer>,
     /// An incoming compositor's ready counter (ADR-0128 decision 7): the last tick at
-    /// which every layer of its list whose link resolves had a texture frame. `None`
-    /// for every other compositor, which then does no more work.
-    ready: Option<Arc<AtomicU64>>,
+    /// which every layer of its list whose link resolves had a texture frame.
+    /// [`NoReady`] for every other compositor, which then does no more work.
+    ready: R,
 }
 
 impl CompositorNode {
@@ -243,7 +275,7 @@ impl CompositorNode {
             layers: receiver,
             compositor: None,
             scratch: Vec::new(),
-            ready: None,
+            ready: NoReady,
         };
         (node, sender)
     }
@@ -251,11 +283,20 @@ impl CompositorNode {
     /// This compositor with a ready counter (ADR-0128 decision 7): `process` stores the
     /// tick index (Release) on each tick at which every listed layer whose link resolves
     /// had a texture frame; an empty list counts as ready. 0 means never.
-    pub fn with_ready(mut self, ready: Arc<AtomicU64>) -> Self {
-        self.ready = Some(ready);
-        self
+    pub fn with_ready(self, ready: Arc<AtomicU64>) -> CompositorNode<ReadyCounter> {
+        CompositorNode {
+            descriptor: self.descriptor,
+            canvas: self.canvas,
+            capacity: self.capacity,
+            layers: self.layers,
+            compositor: self.compositor,
+            scratch: self.scratch,
+            ready: ReadyCounter(ready),
+        }
     }
+}
 
+impl<R: ReadySignal> CompositorNode<R> {
     /// The most layers this node draws.
     pub fn capacity(&self) -> u32 {
         self.capacity
@@ -287,7 +328,7 @@ fn uv(crop: PixelCrop, width: u32, height: u32) -> UvRect {
     }
 }
 
-impl Node<GpuRuntime> for CompositorNode {
+impl<R: ReadySignal> Node<GpuRuntime> for CompositorNode<R> {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }
@@ -328,15 +369,15 @@ impl Node<GpuRuntime> for CompositorNode {
                 continue;
             };
             let Some(frame) = inputs.video(LAYERS_PIN, link) else {
-                missing = true;
+                missing = R::TRACKS;
                 continue;
             };
             let FramePayload::Texture(id) = *frame.payload() else {
-                missing = true;
+                missing = R::TRACKS;
                 continue;
             };
             let Some(tex) = local.pool.get(id) else {
-                missing = true;
+                missing = R::TRACKS;
                 continue;
             };
             let d = tex.desc();
@@ -379,8 +420,8 @@ impl Node<GpuRuntime> for CompositorNode {
         released.map_err(backend)?;
         // Dropping the previous frame only releases its lease.
         drop(outputs.set_video(CANVAS_PIN, Some(frame.with_sequence(tick.index)))?);
-        if let (Some(ready), false) = (&self.ready, missing) {
-            ready.store(tick.index.max(1), Ordering::Release);
+        if R::TRACKS && !missing {
+            self.ready.mark(tick.index);
         }
         Ok(())
     }
