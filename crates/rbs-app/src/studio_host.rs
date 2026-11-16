@@ -64,6 +64,7 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 mod attributes;
+pub use attributes::{AttributeTargetView, AttributesView};
 mod calibration;
 mod device_sync;
 pub mod filters;
@@ -924,6 +925,38 @@ pub enum Command {
     /// Copy a scene with the same sources and layouts (one undo step). It does not go
     /// on air.
     DuplicateScene(SceneId),
+    /// Copy a scene with copies of its sources (ADR-0133 decision 4, one undo step).
+    DuplicateSceneWithCopies(SceneId),
+    /// Duplicate source (ADR-0133 decision 3, one undo step).
+    DuplicateSource(SourceId),
+    /// Copy attributes of a source (ADR-0133 decision 6): the attribute clipboard.
+    CopyAttributes(SourceId),
+    /// Ask for what the Reset source (`paste` false) or Paste attributes dialog shows
+    /// ([`Update::Attributes`]).
+    OpenAttributes {
+        /// The source right-clicked.
+        source: SourceId,
+        /// Paste attributes.
+        paste: bool,
+    },
+    /// Reset source: the chosen groups back to their defaults (one undo step plus the
+    /// live groups).
+    ResetSource {
+        /// The source.
+        source: SourceId,
+        /// The groups.
+        groups: Vec<rbs_scene::AttributeGroup>,
+    },
+    /// Paste attributes: the chosen groups of the clipboard onto the items (one undo
+    /// step plus the live groups).
+    PasteAttributes {
+        /// The items pasted onto.
+        items: Vec<ItemId>,
+        /// The groups.
+        groups: Vec<rbs_scene::AttributeGroup>,
+        /// Add the filters after the target's own instead of replacing them.
+        append: bool,
+    },
     /// Remove a scene (one undo step). Refused for the last scene the canvas may show;
     /// the scene on air is first switched away from (not undone with the removal).
     RemoveScene(SceneId),
@@ -2483,6 +2516,8 @@ pub enum Update {
     SyncMeasure(Option<SyncMeasureView>),
     /// What the attribute clipboard holds (ADR-0133); `None` while it is empty.
     AttributesClipboard(Option<rbs_api::types::AttributesClipboard>),
+    /// What the Reset source or Paste attributes dialog shows (ADR-0133).
+    Attributes(AttributesView),
     /// Region-section preview grab (ADR-0103); `None` when the adapter cannot grab.
     RegionPreview {
         /// The source.
@@ -4298,6 +4333,56 @@ impl Host {
             Command::DuplicateScene(id) => {
                 let done = self.duplicate_scene(id).map(|_| true);
                 self.answer(done, notify);
+            }
+            Command::DuplicateSceneWithCopies(id) => {
+                let p = rbs_api::request::DuplicateScene {
+                    scene: id.get(),
+                    sources: rbs_api::types::DuplicateSources::Copied,
+                };
+                let done = self.api_scene_duplicate(p, notify);
+                self.answer_api(done, notify);
+            }
+            Command::DuplicateSource(id) => {
+                let done = self.api_source_duplicate(in_scene(id), notify);
+                self.answer_api(done, notify);
+            }
+            Command::CopyAttributes(id) => {
+                let done = self.api_copy_attributes(in_scene(id), notify);
+                self.answer_api(done, notify);
+            }
+            Command::OpenAttributes { source, paste } => {
+                match self.attributes_view(source, paste) {
+                    Ok(view) => notify(Update::Attributes(view)),
+                    Err(e) => notify(Update::Error(e.text().to_owned())),
+                }
+            }
+            Command::ResetSource { source, groups } => {
+                let p = rbs_api::request::ResetSource {
+                    source: source.get(),
+                    scene: None,
+                    canvas: OutputCanvas::default(),
+                    groups: Some(groups.iter().map(|g| g.id().to_owned()).collect()),
+                };
+                let done = self.api_source_reset(p, notify);
+                self.answer_api(done, notify);
+            }
+            Command::PasteAttributes {
+                items,
+                groups,
+                append,
+            } => {
+                let p = rbs_api::request::PasteAttributes {
+                    items: items.iter().map(|i| i.get()).collect(),
+                    groups: groups.iter().map(|g| g.id().to_owned()).collect(),
+                    filters: if append {
+                        rbs_api::types::FilterPasteMode::Append
+                    } else {
+                        rbs_api::types::FilterPasteMode::Replace
+                    },
+                    canvas: OutputCanvas::default(),
+                };
+                let done = self.api_paste_attributes(p, notify);
+                self.answer_api(done, notify);
             }
             Command::RemoveScene(id) => {
                 let done = self.remove_scene(id).map(|()| true);
@@ -10968,6 +11053,14 @@ impl Host {
         }
     }
 
+    /// The window's answer to a command run through its control API composition: a
+    /// refusal shows as the error bar (the composition published what changed).
+    fn answer_api(&mut self, done: Result<rbs_api::Response, ApiError>, notify: &dyn Fn(Update)) {
+        if let Err(e) = done {
+            notify(Update::Error(e.message));
+        }
+    }
+
     /// Like [`Host::answer`] for volume and mute, which reached the mixer already.
     fn answer_live(&mut self, done: Result<bool, Refusal>, notify: &dyn Fn(Update)) {
         match done {
@@ -14445,5 +14538,15 @@ mod tests {
         );
         let desktop = HostConfig::desktop().preview.map(|p| p.surfaces);
         assert_eq!(desktop, Some(preview_surfaces(FrameRate::FPS_30)));
+    }
+}
+
+/// The control API parameters naming a source in the scene being edited, on the main
+/// canvas: what the window's commands mean.
+fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
+    rbs_api::request::SourceInScene {
+        source: id.get(),
+        scene: None,
+        canvas: OutputCanvas::default(),
     }
 }

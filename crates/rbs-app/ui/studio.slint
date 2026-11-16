@@ -51,6 +51,15 @@ export struct ModeData { label: string, rates: [string] }
 // (phase 4): 0 busy, 1 not heard, 2 no picture now, 3 no reference, 4 not a picture,
 // 5 other. `progress`: 0 to 1 of the longest measurement.
 export struct SyncMeasureData { source: int, name: string, current: int, refs: [string], ref-ids: [int], ref-index: int, phase: int, pairs: int, sound: bool, picture: bool, progress: float, suggested: int, measured: int, clamped: bool, spread: int, reason: int, onset-filter: bool, refusal: int }
+// The Paste attributes and Reset source windows (ADR-0133 decision 8). A group row:
+// `section` 0 Picture, 1 Sound, 2 Source; `at-default` when the value is the default;
+// `help` says why it is off or that Undo leaves it.
+export struct AttributeGroupRow { id: string, title: string, section: int, checked: bool, enabled: bool, at-default: bool, help: string }
+// A source to paste onto: `note` is its place when placed twice, or "global"; `shown`
+// is false while Same type only hides it.
+export struct AttributeTargetRow { name: string, note: string, checked: bool, copied: bool, shown: bool }
+// `count` sources are checked, `groups-on` groups; `has-filters` when a filter group is on.
+export struct AttributesData { paste: bool, name: string, groups: [AttributeGroupRow], targets: [AttributeTargetRow], same-type: bool, append: bool, count: int, groups-on: int, has-filters: bool }
 export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }
 // `heading` is set on the first row of a group ("Same application", "Other").
 // `picture` is the target's thumbnail when `has-picture`; `wants-picture` is set for displays and windows, whose rows keep the kind's icon until the picture comes.
@@ -147,6 +156,8 @@ export global Studio {
     in property <[SourceSettingsData]> source-settings;
     // The Measure sync offset window's content: empty until the host answers, then one entry.
     in property <[SyncMeasureData]> sync-measure;
+    // The Paste attributes or Reset source window's content: empty until the host answers.
+    in property <[AttributesData]> attributes;
     // The source whose sync offset was just changed in Properties: its row offers
     // "Apply to N sources" while other sources of its device differ (ADR-0126).
     in-out property <int> sync-offer-for: -1;
@@ -204,6 +215,13 @@ export global Studio {
     callback close-sync-measure();
     // The other sources of a source's audio device take its sync offset.
     callback apply-sync-to-device-sources(int /* source */);
+    // The Paste attributes window's checks (ADR-0133): a group, a source to paste
+    // onto, Same type only and the filter mode; then the confirm button.
+    callback attributes-group(int /* index */, bool);
+    callback attributes-target(int /* index */, bool);
+    callback attributes-same-type(bool);
+    callback attributes-append(bool);
+    callback attributes-apply();
     // Apply or OK in the Source settings window: the chosen mode (cameras), rate and cursor.
     callback apply-source-settings(int /* source */, int /* mode */, int /* rate */, bool /* cursor */);
     callback filter-source-targets(string);

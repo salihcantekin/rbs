@@ -2143,6 +2143,8 @@ pub const UI_METHODS: &[&str] = &[
     "ui.density.switch",
     "ui.settings.open",
     "ui.source.settings",
+    "ui.source.paste_attributes",
+    "ui.source.reset",
     "ui.properties.show",
     "ui.app_menu.open",
     "ui.command.list",

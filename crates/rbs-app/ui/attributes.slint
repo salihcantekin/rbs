@@ -1,0 +1,141 @@
+// The Paste attributes and Reset source windows (ADR-0133 decision 8): one small window
+// over the studio. Left, the attribute groups as checkboxes under Picture, Sound and
+// Source; for a paste, right, the sources to paste onto. Nothing changes until the
+// confirm button; Cancel, Escape or closing the window changes nothing.
+import { Theme, Tokens } from "tokens.slint";
+import { Checkbox, DialogActions, InfoHint, OverlayHost, ScrollArea, SectionHeader, SegmentedControl, Toggle } from "components.slint";
+import { Studio, AttributesData, AttributeGroupRow, AttributeTargetRow } from "studio.slint";
+
+// One group: its checkbox, "(default)" when the value is the default, and (i) with why
+// it is off or that Undo leaves it.
+component GroupRow inherits HorizontalLayout {
+    in property <AttributeGroupRow> group;
+    in property <int> index;
+    spacing: Tokens.space-1;
+    Checkbox {
+        horizontal-stretch: 1;
+        text: group.at-default ? @tr("{} (default)", group.title) : group.title;
+        checked: group.checked && group.enabled;
+        enabled: group.enabled;
+        toggled(on) => { Studio.attributes-group(root.index, on); }
+    }
+    if group.help != "": VerticalLayout {
+        alignment: center;
+        InfoHint { label: group.title; text: group.help; }
+    }
+}
+
+// One section of groups: a header, then its rows.
+component GroupSection inherits VerticalLayout {
+    in property <string> title;
+    in property <int> section;
+    in property <[AttributeGroupRow]> rows;
+    spacing: Tokens.space-1;
+    SectionHeader { title: root.title; }
+    for r[i] in root.rows: VerticalLayout {
+        if r.section == root.section: GroupRow { group: r; index: i; }
+    }
+}
+
+export component AttributesWindow inherits Window {
+    default-font-family: Theme.font-family;
+    default-font-size: Tokens.type-body-size;
+    property <AttributesData> d: Studio.attributes.length > 0 ? Studio.attributes[0] : {
+        paste: false, name: "", groups: [], targets: [], same-type: false, append: false,
+        count: 0, groups-on: 0, has-filters: false
+    };
+    title: d.paste ? @tr("Paste attributes of {}", d.name) : @tr("Reset {}", d.name);
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    background: Theme.surface-base;
+    // Cancel, the confirm button or Escape: the window closes.
+    callback dismiss();
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            padding: Tokens.space-4;
+            spacing: Tokens.space-3;
+            Text {
+                text: d.paste ? @tr("Paste attributes of {}", d.name) : @tr("Reset {}", d.name);
+                color: Theme.text-primary;
+                font-size: Tokens.type-title-size;
+                font-weight: Tokens.type-title-weight;
+                overflow: elide;
+            }
+            if !d.paste: Text {
+                text: @tr("The checked parts go back to their defaults.");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Tokens.space-4;
+                vertical-stretch: 1;
+                // The groups.
+                groups := VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    GroupSection { title: @tr("Picture"); section: 0; rows: d.groups; }
+                    if d.paste && d.has-filters: SegmentedControl {
+                        label: @tr("Filters");
+                        options: [@tr("Replace"), @tr("Add after")];
+                        index: d.append ? 1 : 0;
+                        selected(i) => { Studio.attributes-append(i == 1); }
+                    }
+                    GroupSection { title: @tr("Sound"); section: 1; rows: d.groups; }
+                    GroupSection { title: @tr("Source"); section: 2; rows: d.groups; }
+                }
+                // The sources to paste onto.
+                if d.paste: VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: Tokens.space-2;
+                    SectionHeader { title: @tr("Paste onto"); }
+                    Toggle {
+                        text: @tr("Same type only");
+                        checked: d.same-type;
+                        toggled(on) => { Studio.attributes-same-type(on); }
+                    }
+                    list := ScrollArea {
+                        vertical-stretch: 1;
+                        content-height: targets.preferred-height;
+                        drag-pan: false;
+                        targets := VerticalLayout {
+                            width: list.width - list.bar-room;
+                            spacing: Tokens.space-1;
+                            alignment: start;
+                            for t[i] in d.targets: VerticalLayout {
+                                if t.shown: Checkbox {
+                                    text: t.note != "" ? @tr("{} ({})", t.name, t.note) : t.name;
+                                    checked: t.checked;
+                                    emphasis: t.copied;
+                                    toggled(on) => { Studio.attributes-target(i, on); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            DialogActions {
+                confirm-text: !d.paste ? @tr("Reset")
+                    : d.count == 1 ? @tr("Paste onto 1 source")
+                    : @tr("Paste onto {} sources", d.count);
+                confirm-enabled: d.groups-on > 0 && (!d.paste || d.count > 0);
+                cancelled => { root.dismiss(); }
+                confirmed => {
+                    Studio.attributes-apply();
+                    root.dismiss();
+                }
+            }
+        }
+    }
+    // The info hint and tooltip layer, drawn last (ADR-0094).
+    OverlayHost { width: parent.width; height: parent.height; }
+}
