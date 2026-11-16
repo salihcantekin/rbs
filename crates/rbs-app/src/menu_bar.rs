@@ -512,6 +512,18 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.source(id).map(|_| ())
             }
+            "source.duplicate" | "source.copy_attributes" | "ui.source.reset" => {
+                self.running()?;
+                self.source(id).map(|_| ())
+            }
+            "ui.source.paste_attributes" => {
+                self.running()?;
+                self.source(id)?;
+                match s.attributes_clipboard {
+                    Some(_) => Ok(()),
+                    None => Err("Copy a source's attributes first.".to_owned()),
+                }
+            }
             "item.visible.toggle" | "source.rename" | "source.delete" | "item.remove" => {
                 self.running()?;
                 self.source(id).map(|_| ())
@@ -1738,6 +1750,14 @@ pub enum Run {
     AddScene,
     /// Copy a scene with the same sources and layouts.
     DuplicateScene(i32),
+    /// Duplicate scene with new sources (ADR-0133 decision 4).
+    DuplicateSceneWithCopies(i32),
+    /// Duplicate source (ADR-0133 decision 3).
+    DuplicateSource(i32),
+    /// Copy attributes of a source (ADR-0133 decision 6).
+    CopyAttributes(i32),
+    /// Open the Paste attributes (`true`) or Reset source window for a source.
+    OpenAttributes(i32, bool),
     /// Open the Add vertical output dialog (ADR-0093 decision 8).
     AddVertical,
     /// Rename the scene with this id; without a name, ask for one in its row.
@@ -1999,7 +2019,14 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "scene.next" => Run::Scene(state.studio.scene_step(1)?),
         "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),
         "scene.add" => Run::AddScene,
+        "scene.duplicate" if id.param("sources") == Some("copied") => {
+            Run::DuplicateSceneWithCopies(state.scene(&id).ok()?)
+        }
         "scene.duplicate" => Run::DuplicateScene(state.scene(&id).ok()?),
+        "source.duplicate" => Run::DuplicateSource(state.source(&id).ok()?.id),
+        "source.copy_attributes" => Run::CopyAttributes(state.source(&id).ok()?.id),
+        "ui.source.paste_attributes" => Run::OpenAttributes(state.source(&id).ok()?.id, true),
+        "ui.source.reset" => Run::OpenAttributes(state.source(&id).ok()?.id, false),
         "scene.rename" => {
             Run::RenameScene(state.scene(&id).ok()?, id.param("name").map(str::to_owned))
         }
