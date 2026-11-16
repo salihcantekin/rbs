@@ -4587,6 +4587,7 @@ dependencies = [
  "rbs-api",
  "rbs-api-ipc",
  "rbs-api-ws",
+ "rbs-audio-filters",
  "rbs-audio-io",
  "rbs-audio-io-coreaudio",
  "rbs-audio-io-pipewire",
@@ -4612,13 +4613,16 @@ dependencies = [
  "rbs-codec-videotoolbox",
  "rbs-core",
  "rbs-engine",
+ "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-import-obs",
  "rbs-mux-flac",
  "rbs-mux-fmp4",
  "rbs-mux-matroska",
  "rbs-mux-mpegts",
  "rbs-mux-wav",
+ "rbs-params",
  "rbs-project",
  "rbs-record",
  "rbs-remote-settings",
@@ -4629,6 +4633,7 @@ dependencies = [
  "rbs-transport-file",
  "rbs-transport-rtmp",
  "rbs-transport-srt",
+ "rbs-user-data",
  "rbs-vcam",
  "rbs-vcam-mf",
  "rbs-vcam-test",
@@ -4839,6 +4844,17 @@ dependencies = [
  "allocation-counter",
  "criterion 0.8.2",
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-import-obs"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-graph",
+ "rbs-params",
+ "rbs-scene",
+ "serde_json",
 ]
 
 [[package]]
