@@ -434,7 +434,7 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
 
 #[test]
 fn filter_latency_and_input_counters_are_reported() {
-    // Protocol 1.74 (ADR-0130 decision 9).
+    // Protocol 1.77 (ADR-0130 decision 9).
     let Some((_host, _updates, _api, mut c)) = start() else {
         return;
     };

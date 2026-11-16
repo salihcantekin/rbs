@@ -47,6 +47,9 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
         a.transports
             .register(Arc::new(rbs_transport_srt::SrtTransportFactory)),
     );
+    // Text sources (ADR-0129): parley on the system's fonts, loaded on first use.
+    a.sources
+        .register_text(Arc::new(rbs_text_parley::ParleyRenderer::system()));
     #[cfg(windows)]
     {
         note(

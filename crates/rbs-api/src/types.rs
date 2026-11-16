@@ -65,6 +65,8 @@ pub enum SourceKind {
     Media,
     /// A browser page from the helper process (protocol TBD, ADR-0109).
     Browser,
+    /// A text drawn by the server's text renderer (protocol 1.75, ADR-0129).
+    Text,
 }
 
 /// Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does
@@ -208,26 +210,26 @@ pub struct SourceInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heard: Option<Heard>,
     /// `L`: the latency of the source's running audio filters, in milliseconds
-    /// (protocol 1.74, ADR-0130; absent when 0).
+    /// (protocol 1.77, ADR-0130; absent when 0).
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub filter_latency_ms: f64,
     /// `h`: the offset the program hears the source's sound at, in milliseconds: the
-    /// input's effective offset plus `filter_latency_ms` (protocol 1.74, ADR-0130
+    /// input's effective offset plus `filter_latency_ms` (protocol 1.77, ADR-0130
     /// decision 4). It equals `sync_offset_ms` while the input's limits and the filter
     /// compensation do not bite. Absent when 0.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub effective_offset_ms: f64,
     /// The part of `filter_latency_ms` the input's advance limit left uncompensated,
     /// in milliseconds; for a source without an audio input (media, browser audio)
-    /// all of it (protocol 1.74; absent when 0).
+    /// all of it (protocol 1.77; absent when 0).
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub uncompensated_ms: f64,
     /// Output frames of the source's audio input that were silence because its audio
-    /// had not arrived (protocol 1.74). Only in `source.list` answers, and only for a
+    /// had not arrived (protocol 1.77). Only in `source.list` answers, and only for a
     /// source with a running audio input; the count only grows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_late_frames: Option<u64>,
-    /// Times the source's audio input resynchronised (protocol 1.74); present like
+    /// Times the source's audio input resynchronised (protocol 1.77); present like
     /// `input_late_frames`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_resyncs: Option<u64>,
@@ -401,7 +403,7 @@ pub struct FilterTypeInfo {
     /// Its settings, in display order.
     pub fields: Vec<FilterField>,
     /// The delay, in milliseconds, an instance adds at the running audio graph's format
-    /// and block size (protocol 1.74, ADR-0130 decision 2); the studio compensates it
+    /// and block size (protocol 1.77, ADR-0130 decision 2); the studio compensates it
     /// on sources with an audio input. Present for audio types, absent for video types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<f64>,
@@ -1509,7 +1511,90 @@ pub enum StreamState {
         /// Why the hold fell back, while it does (protocol 1.67).
         #[serde(default)]
         hold_fallback_reason: Option<String>,
+        /// Each destination of the stream (protocol 1.77, ADR-0127 decision 16), in
+        /// the order Go live started them; the top-level `connected`, `connects` and
+        /// `reconnect_attempts` sum the running ones.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        destinations: Vec<LiveDestination>,
     },
+}
+
+/// One destination of a live stream (protocol 1.77, ADR-0127 decision 16). Never its
+/// server or key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDestination {
+    /// Its id in the output profile (`stream.destinations`).
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+    /// Its service preset's id, or `custom`.
+    pub service: String,
+    /// Where it stands.
+    pub state: DestinationState,
+    /// Times it connected so far.
+    pub connects: u64,
+    /// Reconnect attempts so far.
+    pub reconnect_attempts: u64,
+    /// Items its transport dropped while the connection was slow or down.
+    pub dropped: u64,
+    /// Time since it first connected, in milliseconds, as of this state; 0 before.
+    pub on_air_ms: u64,
+    /// Why it failed; never the server or the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Where one destination of a live stream stands (protocol 1.77).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationState {
+    /// Started; not connected yet.
+    Connecting,
+    /// Connected and sending.
+    Live,
+    /// The connection dropped; it tries again.
+    Reconnecting,
+    /// Refused at start, gave up, or failed; the others go on.
+    Failed,
+    /// Stopped with `stream.destination.stop` while the others go on.
+    Stopped,
+}
+
+/// One saved destination (`stream.destinations`, protocol 1.77, ADR-0127 decision 16).
+/// Never its server or key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamDestination {
+    /// Its id, unique in the output profile and never reused.
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+    /// Its service preset's id, or `custom`.
+    pub service: String,
+    /// The canvas it belongs to.
+    pub canvas: OutputCanvas,
+    /// Go live sends to it.
+    pub enabled: bool,
+    /// A server is saved for it (a key may still be missing; Go live says so).
+    pub configured: bool,
+    /// The stream's encoding, or its own.
+    pub encoding: DestinationEncodingKind,
+}
+
+/// Whether a destination shares the stream's encoding (protocol 1.77).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationEncodingKind {
+    /// The stream's encoder, shared.
+    Shared,
+    /// An encoder of its own.
+    Own,
+}
+
+/// `stream.destinations` (protocol 1.77).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamDestinations {
+    /// The asked canvas's destinations (both canvases' without `canvas`), by id.
+    pub destinations: Vec<StreamDestination>,
 }
 
 /// How a stream ended.
@@ -2548,6 +2633,13 @@ pub struct AttributesClipboard {
     pub type_id: String,
     /// Groups whose copied value is not the default.
     pub groups: Vec<String>,
+}
+
+/// `text.fonts`' answer (protocol 1.75, ADR-0129 decision 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextFonts {
+    /// The installed font families, sorted, without duplicates.
+    pub families: Vec<String>,
 }
 
 /// The topic `source.attributes_clipboard.changed` (protocol 1.68).

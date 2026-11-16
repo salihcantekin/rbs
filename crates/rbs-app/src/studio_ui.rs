@@ -52,6 +52,7 @@ use rbs_user_data::EntryId;
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
+use crate::ui::AttributesData;
 use crate::ui::{
     EncoderData, EntryRow, KindData, LookData, MarkData, MeterRow, ModeData, SampleData, ScaleMark,
     SceneData, SizeBand, SourceData, SourceSettingsData, SourceTargetData, StackData, StatRow,
@@ -65,6 +66,7 @@ const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
 pub(crate) mod add_picker;
+pub(crate) mod attributes;
 pub(crate) mod filters;
 pub(crate) mod loudness;
 pub(crate) mod monitor;
@@ -290,6 +292,12 @@ pub struct StudioUi {
     source_settings_view: Option<SettingsChoices>,
     /// The Measure sync offset window's content (ADR-0126 step 6): one row while open.
     sync_measure: Rc<VecModel<SyncMeasureData>>,
+    /// The Paste attributes or Reset source window's content (ADR-0133).
+    attributes: Rc<VecModel<AttributesData>>,
+    /// Its checks while it is open.
+    attributes_dialog: Option<attributes::Dialog>,
+    /// The non-live groups chosen in the last paste of this session.
+    attributes_remembered: Option<Vec<rbs_scene::AttributeGroup>>,
     /// The source the list is for, and what the search field holds.
     source_targets_for: Option<SourceId>,
     source_query: String,
@@ -597,6 +605,9 @@ impl StudioUi {
             source_settings: Rc::new(VecModel::default()),
             source_settings_view: None,
             sync_measure: Rc::new(VecModel::default()),
+            attributes: Rc::new(VecModel::default()),
+            attributes_dialog: None,
+            attributes_remembered: None,
             source_target_list: Vec::new(),
             source_targets_for: None,
             source_pictures: std::collections::HashMap::new(),
@@ -734,6 +745,7 @@ impl StudioUi {
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_source_settings(ModelRc::from(self.source_settings.clone()));
         g.set_sync_measure(ModelRc::from(self.sync_measure.clone()));
+        g.set_attributes(ModelRc::from(self.attributes.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
         g.set_master_meter(ModelRc::from(self.master_meter.clone()));
@@ -1797,6 +1809,61 @@ impl StudioUi {
         self.send(Command::StartSyncMeasure(SourceId::from_raw(
             reference as u32,
         )));
+    }
+
+    /// Duplicate source (ADR-0133 decision 3).
+    pub fn duplicate_source(&mut self, id: i32) {
+        self.send(Command::DuplicateSource(SourceId::from_raw(id as u32)));
+    }
+
+    /// Duplicate scene with new sources (ADR-0133 decision 4).
+    pub fn duplicate_scene_with_copies(&mut self, id: i32) {
+        self.send(Command::DuplicateSceneWithCopies(SceneId::from_raw(
+            id as u32,
+        )));
+    }
+
+    /// Copy attributes of a source (ADR-0133 decision 6).
+    pub fn copy_attributes(&mut self, id: i32) {
+        self.send(Command::CopyAttributes(SourceId::from_raw(id as u32)));
+    }
+
+    /// Ask what the Paste attributes (`paste`) or Reset source window shows.
+    pub fn open_attributes(&mut self, id: i32, paste: bool) {
+        self.attributes_dialog = None;
+        self.attributes.set_vec(Vec::new());
+        self.send(Command::OpenAttributes {
+            source: SourceId::from_raw(id as u32),
+            paste,
+        });
+    }
+
+    /// A check in that window changed.
+    pub fn attributes_edit(&mut self, edit: impl FnOnce(&mut attributes::Dialog)) {
+        if let Some(d) = &mut self.attributes_dialog {
+            edit(d);
+            self.attributes.set_vec(vec![d.data()]);
+        }
+    }
+
+    /// Its confirm button: one reset or paste.
+    pub fn attributes_apply(&mut self) {
+        let Some(d) = self.attributes_dialog.take() else {
+            return;
+        };
+        if d.paste() {
+            self.attributes_remembered = Some(d.remembered());
+        }
+        if let Some(c) = d.command() {
+            self.send(c);
+        }
+        self.attributes.set_vec(Vec::new());
+    }
+
+    /// The window closed.
+    pub fn attributes_closed(&mut self) {
+        self.attributes_dialog = None;
+        self.attributes.set_vec(Vec::new());
     }
 
     /// The Measure window closed: a measurement it started is cancelled.
@@ -4110,6 +4177,18 @@ impl StudioUi {
         }
     }
 
+    /// Saves the stream destinations section (ADR-0127) and hands it to the control
+    /// thread.
+    fn save_destinations(&mut self) {
+        if let Err(e) = self
+            .user
+            .set_section(rbs_app::stream_destinations::SECTION, &self.destinations)
+        {
+            self.stream_note = format!("The stream destinations could not be saved: {e}");
+        }
+        self.send(Command::SetStreamDestinations(self.destinations.clone()));
+    }
+
     fn save_stream(&mut self) {
         self.stream_note = match self.user.set_section(STREAM, &self.stream) {
             Ok(()) => String::new(),
@@ -5519,6 +5598,11 @@ impl StudioUi {
                 self.refresh_global_existing();
             }
             Update::AttributesClipboard(view) => self.attributes_clipboard = view,
+            Update::Attributes(view) => {
+                let d = attributes::Dialog::new(view, self.attributes_remembered.as_deref());
+                self.attributes.set_vec(vec![d.data()]);
+                self.attributes_dialog = Some(d);
+            }
             Update::SyncMeasure(view) => match view {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
@@ -5709,6 +5793,17 @@ impl StudioUi {
                 self.stream.auto_record = p.auto_record;
                 self.stream.hold_picture = p.hold_picture;
                 self.save_stream();
+            }
+            Update::StreamDestinations(d) => {
+                // `stream.destination.set_enabled`. A section this version must not
+                // overwrite (written by a newer RBS) stays; the control thread gets
+                // the copy in use back.
+                if self.destinations_note.is_empty() {
+                    self.destinations = d;
+                    self.save_destinations();
+                } else {
+                    self.send(Command::SetStreamDestinations(self.destinations.clone()));
+                }
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
@@ -6929,6 +7024,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Color) => "palette",
         Some(SourceKind::Media) => "film",
         Some(SourceKind::Browser) => "globe",
+        // Until the text UI (ADR-0129 phase (f)) brings its own icon.
+        Some(SourceKind::Text) => "pencil",
         None => "window",
     }
 }
