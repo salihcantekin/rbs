@@ -1060,6 +1060,8 @@ impl App {
         let param = |t: &[(String, String)], k: &str| {
             t.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone())
         };
+        // The picture's panel, when a source on it was right-clicked.
+        let mut panel: Option<(String, String)> = None;
         let context = match context {
             // The picture: the source under the pointer, else the panel's own menu.
             "preview" => {
@@ -1070,8 +1072,15 @@ impl App {
                 };
                 // On the vertical picture the source's Transform entries carry
                 // `canvas=vertical` (protocol 1.44): they change its layout there only.
-                let vertical = param(&target, "id").as_deref() == Some(studio_ui::VERTICAL_PANEL);
-                let hit = if vertical {
+                let panel_id = param(&target, "id");
+                let vertical = panel_id.as_deref() == Some(studio_ui::VERTICAL_PANEL);
+                // In studio mode Program and Vertical show the scene on air, which is
+                // not edited: their sources are not picked, the panel's menu opens.
+                let on_air = self.studio.studio_mode
+                    && (vertical || panel_id.as_deref() == Some("rbs.program"));
+                let hit = if on_air {
+                    None
+                } else if vertical {
                     self.studio.vertical_source_at([x, y], [w, h])
                 } else {
                     self.studio.preview_source_at([x, y], [w, h])
@@ -1079,14 +1088,24 @@ impl App {
                 match hit {
                     Some(id) => {
                         let Some(f) = self.studio.source_facts(Some(&id.to_string()), None) else {
-                            return Vec::new();
+                            // The picture's own menu rather than none at all.
+                            target.retain(|(k, _)| k == "id");
+                            return context_menu::items(Context::Preview, &target, &self.shown());
                         };
+                        panel = panel_id.clone().map(|p| ("id".to_owned(), p));
                         target = vec![
                             ("item".to_owned(), f.item.to_string()),
                             ("source".to_owned(), f.id.to_string()),
                         ];
                         if vertical {
                             target.push(("canvas".to_owned(), "vertical".to_owned()));
+                        }
+                        // The source menu then offers this picture's projector.
+                        if vertical
+                            || matches!(panel_id.as_deref(), Some("rbs.program" | "rbs.preview"))
+                        {
+                            let canvas = if vertical { "vertical" } else { "main" };
+                            target.push(("picture".to_owned(), canvas.to_owned()));
                         }
                         Context::Source
                     }
@@ -1116,7 +1135,14 @@ impl App {
                 None => return Vec::new(),
             },
         };
-        context_menu::items(context, &target, &self.shown())
+        let shown = self.shown();
+        let items = context_menu::items(context, &target, &shown);
+        // A source on a picture whose menu has nothing to offer: the picture's own
+        // menu, so a right-click on a picture never opens nothing.
+        if let Some(panel) = panel.filter(|_| items.is_empty()) {
+            return context_menu::items(Context::Preview, &[panel], &shown);
+        }
+        items
     }
 
     /// Opens the Sources panel's Add source menu, at the list of `kind`'s targets when

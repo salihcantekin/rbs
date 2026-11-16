@@ -698,6 +698,9 @@ fn on_event(
                 let _ = w.drag_resize_window(dir);
                 return;
             }
+            // It opens without focus (decision 5); a press gives it focus, so Esc
+            // and the Menu key reach it after one click.
+            w.focus_window();
             let _ = w.drag_window();
         }
         WindowEvent::MouseInput {
@@ -705,6 +708,7 @@ fn on_event(
             button: MouseButton::Right,
             ..
         } => {
+            w.focus_window();
             let scale = w.scale_factor();
             let (x, y) = at.get();
             open_menu(pw, (x / scale) as f32, (y / scale) as f32);

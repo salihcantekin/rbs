@@ -907,10 +907,12 @@ export component ProgramPanel inherits Rectangle {
         target: "h=" + round(touch.height / 1px) + "&id=" + root.panel + "&w=" + round(touch.width / 1px)
             + "&x=" + round(root.menu-at.x / 1px) + "&y=" + round(root.menu-at.y / 1px);
     }
+    // The menu opens on every running picture, also one that is not edited (Program
+    // in studio mode); only selecting and moving need `editable`.
     touch := TouchArea {
         y: root.strip;
         height: root.height - root.strip;
-        enabled: editable;
+        enabled: here && Studio.state == 1;
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { root.release(); return; }
             // The menu opens when the right button goes up, not down, so the press it
@@ -929,7 +931,7 @@ export component ProgramPanel inherits Rectangle {
                 }
                 return;
             }
-            if e.button != PointerEventButton.left { return; }
+            if e.button != PointerEventButton.left || !editable { return; }
             if e.kind == PointerEventKind.down {
                 keys.focus();
                 if vertical {
@@ -941,7 +943,7 @@ export component ProgramPanel inherits Rectangle {
             if e.kind == PointerEventKind.up { root.release(); }
         }
         moved => {
-            if self.pressed {
+            if self.pressed && editable {
                 if vertical {
                     Studio.vertical-drag(self.mouse-x / 1px, self.mouse-y / 1px);
                 } else {

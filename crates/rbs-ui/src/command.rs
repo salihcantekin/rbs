@@ -3186,8 +3186,26 @@ pub fn context_menu(
             .find(|(k, _)| k == "id")
             .map(|(_, v)| v.as_str())
         {
-            Some("rbs.program") => ids.extend_from_slice(&["|", "ui.projector.open?canvas=main"]),
+            // Outside studio mode the Preview panel shows the program.
+            Some("rbs.program" | "rbs.preview") => {
+                ids.extend_from_slice(&["|", "ui.projector.open?canvas=main"]);
+            }
             Some(VERTICAL_PANEL) => {
+                ids.extend_from_slice(&["|", "ui.projector.open?canvas=vertical"]);
+            }
+            _ => {}
+        }
+    }
+    // A source right-clicked on a picture (`picture=main|vertical`) offers that
+    // canvas's projector too: sources often cover the whole picture.
+    if context == Context::Source {
+        match target
+            .iter()
+            .find(|(k, _)| k == "picture")
+            .map(|(_, v)| v.as_str())
+        {
+            Some("main") => ids.extend_from_slice(&["|", "ui.projector.open?canvas=main"]),
+            Some("vertical") => {
                 ids.extend_from_slice(&["|", "ui.projector.open?canvas=vertical"]);
             }
             _ => {}
@@ -3874,6 +3892,23 @@ mod tests {
                 "|",
                 "ui.projector.open?canvas=main"
             ]
+        );
+        // The Preview panel shows the program outside studio mode, so it opens
+        // the main canvas's projector too.
+        let main_preview = context_menu(Context::Preview, &t(&[("id", "rbs.preview")]), &Picky);
+        assert_eq!(
+            ids(&main_preview).last().map(String::as_str),
+            Some("ui.projector.open?canvas=main")
+        );
+        // A source on a picture offers the projector of that picture's canvas.
+        let on_picture = context_menu(
+            Context::Source,
+            &t(&[("item", "1"), ("source", "2"), ("picture", "main")]),
+            &Picky,
+        );
+        assert_eq!(
+            ids(&on_picture).last().map(String::as_str),
+            Some("ui.projector.open?canvas=main")
         );
         // Without the panel, Maximize has no required `id` and is left out.
         let bare = context_menu(Context::Preview, &[], &Picky);
