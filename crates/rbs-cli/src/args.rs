@@ -28,6 +28,8 @@ pub enum Command {
     /// `rbs-cli project ...`: an editor project from a recording manifest (ADR-0089
     /// decision 10).
     Project(ProjectArgs),
+    /// `rbs-cli obs-import ...`: an OBS scene collection into RBS (ADR-0131).
+    ObsImport(crate::obs_import::ObsImportCommand),
     /// `rbs-cli help` or `--help`.
     Help,
 }
@@ -226,6 +228,9 @@ usage:
   rbs-cli app stream start|stop|status [--json]
   rbs-cli vcam status|add|format|remove [--size WxH] [--fps N]
   rbs-cli project --manifest <recording.rbs.toml> [--format fcpxml|xmeml] [--strict]
+  rbs-cli obs-import scan
+  rbs-cli obs-import check|run <collection.json> [--profile <folder>] [--scene <name>]...
+                       [--no-global-audio] [--no-audio-filters] [--no-video-filters] [--no-canvas]
 
 record options:
   --seconds N          stop after N seconds (default: Enter or Ctrl+C)
@@ -481,6 +486,7 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
         Some("app") => app(it).map(Command::App),
         Some("vcam") => vcam(it).map(Command::Vcam),
         Some("project") => project(it).map(Command::Project),
+        Some("obs-import") => crate::obs_import::parse(it).map(Command::ObsImport),
         Some("remote") => match (it.next(), it.next()) {
             (Some("fingerprint"), None) => Ok(Command::RemoteFingerprint),
             (Some("fingerprint"), Some(extra)) => {

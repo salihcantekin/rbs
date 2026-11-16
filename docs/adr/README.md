@@ -117,7 +117,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0106](0106-picture-and-sound-on-one-source.md) | A source that has both picture and sound is a picture node and a sound node fed by one producer | Accepted |
 | [0107](0107-temporal-sources-sleep-when-hidden.md) | Temporal sources sleep unless a shown scene draws them | Accepted |
 | [0108](0108-media-file-source.md) | A local media-file source for video and animated pictures | Accepted |
-| [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Proposed |
+| [0109](0109-browser-source.md) | A browser source is CEF in a helper process, one process per Active source | Accepted |
 | [0110](0110-canvas-layout-space.md) | Item boxes stay in a canvas layout space and are fitted into the current size | Accepted |
 | [0111](0111-vertical-outputs-start-with-the-main-ones.md) | Vertical outputs start and stop with the main ones, and each output shows its own state | Accepted |
 | [0112](0112-calm-look-and-roomy-density.md) | The Calm look for the built-in themes and a roomy density | Accepted; decision 6 superseded in part by ADR-0120; high-contrast lines of decisions 2 and 3 by ADR-0123 |
@@ -134,3 +134,6 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0124](0124-pause-recording-and-hold-stream.md) | Pause a recording (one continuous file, cut before the encoder when owned, at the output when shared); hold a stream with a hold picture instead of pausing it | Accepted |
 | [0125](0125-projector-windows.md) | Projector windows: the program of a canvas in a chromeless window for sharing apps, its own canvas-size picture only while open, Exact pixels size, cannot be minimised | Accepted |
 | [0126](0126-measured-sync-offset-and-device-memory.md) | Measure a source's sync offset with a clap, and remember it with the device | Accepted |
+| [0127](0127-multistreaming-to-several-destinations.md) | Multistreaming: one stream to several destinations, one shared encoder, each destination isolated; RTMPS; service presets | Accepted |
+| [0131](0131-import-obs-scene-collections-and-profiles.md) | Import OBS scene collections, profiles and hotkeys as a new collection and output profile, through a mapper registry, with a report of what did not come across | Accepted |
+| [0132](0132-browser-engine-css-interaction.md) | The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in | Accepted |
