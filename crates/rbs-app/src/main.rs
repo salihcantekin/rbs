@@ -4253,6 +4253,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_auto_record, |app, on: bool| {
         app.studio.set_auto_record(on);
     });
+    on!(on_set_hold_picture, |app, i: i32| {
+        app.studio.set_hold_picture(i);
+    });
     on!(on_set_reconnect, |app, on: bool| {
         app.studio.set_reconnect(on);
     });

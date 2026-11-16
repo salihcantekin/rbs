@@ -22,7 +22,9 @@ use rbs_app::record_profile::{
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
-use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
+use rbs_app::stream_profile::{
+    self, HoldPicture, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
+};
 use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
     RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
@@ -3958,6 +3960,17 @@ impl StudioUi {
         self.save_stream_form();
     }
 
+    /// "While on hold": 0 Last frame, 1 Black. It changes the next hold, so it is
+    /// never disabled while live.
+    pub fn set_hold_picture(&mut self, i: i32) {
+        self.stream_form_mut().hold_picture = if i == 1 {
+            HoldPicture::Black
+        } else {
+            HoldPicture::Freeze
+        };
+        self.save_stream_form();
+    }
+
     pub fn set_reconnect(&mut self, on: bool) {
         self.stream_form_mut().reconnect = on;
         self.save_stream_form();
@@ -4092,6 +4105,7 @@ impl StudioUi {
         g.set_st_key_serial(self.key_serial as i32);
         g.set_st_reconnect(st.reconnect);
         g.set_st_auto_record(st.auto_record);
+        g.set_st_hold_black(st.hold_picture == HoldPicture::Black);
         let record = self.record_form_for(self.settings_canvas).encoding();
         let same_encoder = self.encoder_id(&record) == self.encoder_id(&st.encoding);
         g.set_st_auto_record_note(
@@ -5571,6 +5585,7 @@ impl StudioUi {
                 self.stream.srt_latency_ms = p.srt_latency_ms;
                 self.stream.encoding = p.encoding;
                 self.stream.auto_record = p.auto_record;
+                self.stream.hold_picture = p.hold_picture;
                 self.save_stream();
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control
@@ -7585,10 +7600,12 @@ mod tests {
         p.server = "rtmp://elsewhere.example/app".into();
         p.reconnect = false;
         p.encoding.video_kbps = 9_000;
+        p.hold_picture = HoldPicture::Black;
         ui.apply(Update::StreamProfile(p));
         assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
         assert!(ui.stream.key_saved);
         assert!(!ui.stream.reconnect);
+        assert_eq!(ui.stream.hold_picture, HoldPicture::Black);
         assert_eq!(ui.stream.encoding.video_kbps, 9_000);
         let saved: StreamProfile = ui.user.section(STREAM).unwrap().unwrap();
         assert_eq!(saved, ui.stream);

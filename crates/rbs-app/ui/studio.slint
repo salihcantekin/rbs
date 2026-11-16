@@ -626,6 +626,8 @@ export global Studio {
     // "Record when the stream starts", and what it costs (shown while it is on).
     in property <bool> st-auto-record;
     in property <string> st-auto-record-note;
+    // "While on hold" is Black (else Last frame).
+    in property <bool> st-hold-black;
     // The server is srt://: the latency field shows.
     in property <bool> st-srt;
     in property <[string]> st-latencies;
@@ -661,6 +663,7 @@ export global Studio {
     callback remove-key();
     callback set-reconnect(bool);
     callback set-auto-record(bool);
+    callback set-hold-picture(int);
     callback set-latency(int);
 
     // The canvas (Settings, Video): tiles for the current orientation, the one in
@@ -5261,6 +5264,21 @@ export component StreamSettings inherits Rectangle {
                 }
             }
             if Studio.st-auto-record: SettingsNotice { text: Studio.st-auto-record-note; }
+            SettingRow {
+                find: "stream.hold-picture";
+                label: @tr("While on hold");
+                summary: @tr("What viewers see");
+                hint: @tr("What viewers see while the stream is on hold, with silence. It applies to the next hold.");
+                changed: Studio.st-hold-black;
+                default-text: @tr("Last frame");
+                reset => { Studio.set-hold-picture(0); }
+                Select {
+                    label: @tr("While on hold");
+                    options: [@tr("Last frame"), @tr("Black")];
+                    index: Studio.st-hold-black ? 1 : 0;
+                    selected(i) => { Studio.set-hold-picture(i); }
+                }
+            }
         }
         enc-card := SettingsCard {
             title: @tr("Encoding");
