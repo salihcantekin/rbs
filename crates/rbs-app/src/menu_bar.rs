@@ -437,9 +437,19 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.has_vertical()
             }
-            "scene.duplicate" | "scene.rename" => {
+            "scene.duplicate" | "scene.rename" | "scene.audio.own_levels.toggle" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
+            }
+            "scene.audio.reset_source" => {
+                self.running()?;
+                let scene = self.scene(id)?;
+                let source = heard_source(id).ok_or_else(|| "No source is named.".to_owned())?;
+                if self.studio.has_scene_level(scene, source) {
+                    Ok(())
+                } else {
+                    Err("The scene uses the source's own level.".to_owned())
+                }
             }
             "scene.remove" => {
                 self.running()?;
@@ -734,6 +744,25 @@ impl CommandState for Shown<'_> {
                 Ok(())
             }
             "replay.toggle" => self.running(),
+            "stream.hold_toggle" => {
+                self.running()?;
+                if s.st_state == st_state::LIVE || matches!(s.vertical_st, VerticalOut::On) {
+                    Ok(())
+                } else {
+                    Err("Hold works while a stream is live.".to_owned())
+                }
+            }
+            "output.break_toggle" => {
+                self.running()?;
+                let live = s.st_state == st_state::LIVE || matches!(s.vertical_st, VerticalOut::On);
+                let recording = s.rec_state == rec_state::RECORDING
+                    || matches!(s.vertical_rec, VerticalOut::On);
+                if live || recording {
+                    Ok(())
+                } else {
+                    Err("Break works while a stream is live or a recording runs.".to_owned())
+                }
+            }
             "record.pause_toggle" => {
                 self.running()?;
                 let vertical = matches!(s.vertical_rec, VerticalOut::On);
@@ -848,6 +877,9 @@ impl CommandState for Shown<'_> {
             "source.active.toggle" => self.source(id).is_ok_and(|f| f.active),
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
+            "scene.audio.own_levels.toggle" => self
+                .scene(id)
+                .is_ok_and(|s| self.studio.scene_own_levels(s)),
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
             "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.soloed),
             "loudness.shown.toggle" => self.studio.loudness_shown(),
@@ -1027,6 +1059,9 @@ impl CommandState for Shown<'_> {
                 .to_owned(),
             );
         }
+        if id.base() == "stream.hold_toggle" && self.studio.stream_held() {
+            return Some("Resume stream".to_owned());
+        }
         if id.base() == "record.pause_toggle" && self.studio.record_paused() {
             return Some("Resume recording".to_owned());
         }
@@ -1169,6 +1204,12 @@ impl CommandState for Shown<'_> {
             | "source.monitor_solo.toggle" => match self.source(id) {
                 Ok(f) => f.audio,
                 Err(_) => true,
+            },
+            // Only while the program scene has its own level for the source (the
+            // Mixer strip's menu, ADR-0091).
+            "scene.audio.reset_source" => match (self.scene(id), heard_source(id)) {
+                (Ok(scene), Some(source)) => self.studio.has_scene_level(scene, source),
+                _ => false,
             },
             // A vertical canvas's outputs, while it exists (or one of them still runs).
             "stream.vertical.toggle"
@@ -1647,6 +1688,11 @@ pub enum Run {
     MixerBulk(MixerBulk),
     /// Show loudness on or off (`loudness.shown.toggle`, ADR-0092).
     LoudnessShown(bool),
+    /// A scene's Own levels on (`true`) or back to Shared levels, which asks first
+    /// from a window (`scene.audio.own_levels.toggle`, ADR-0091).
+    SceneOwnLevels(i32, bool),
+    /// Remove a scene's own level for a source (`scene.audio.reset_source`).
+    ResetSceneLevel(i32, i32),
     /// Restart the loudness measurement (`loudness.reset`).
     ResetLoudness,
     /// The Mixer's layout (ADR-0083); view state, not layout history.
@@ -1679,6 +1725,10 @@ pub enum Run {
     AddMarker,
     /// Pause the running recordings, or resume them (ADR-0124).
     PauseRecording,
+    /// Hold the live streams, or resume them (ADR-0124).
+    HoldStream,
+    /// Break: hold every stream and pause every recording, or resume them all.
+    Break,
 }
 
 /// The output kind an `output.with_vertical` id names.
@@ -1898,6 +1948,10 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
         "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
         "loudness.shown.toggle" => Run::LoudnessShown(!on),
+        "scene.audio.own_levels.toggle" => Run::SceneOwnLevels(state.scene(&id).ok()?, !on),
+        "scene.audio.reset_source" => {
+            Run::ResetSceneLevel(state.scene(&id).ok()?, heard_source(&id)?)
+        }
         "loudness.reset" => Run::ResetLoudness,
         "mixer.hide_all" => Run::MixerBulk(MixerBulk::HideAll),
         "mixer.hide_muted" => Run::MixerBulk(MixerBulk::HideMuted),
@@ -1930,6 +1984,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "replay.save" => Run::SaveReplay,
         "marker.add" => Run::AddMarker,
         "record.pause_toggle" => Run::PauseRecording,
+        "stream.hold_toggle" => Run::HoldStream,
+        "output.break_toggle" => Run::Break,
         "canvas.add_vertical" => Run::AddVertical,
         "canvas.vertical_size" => {
             let (w, h) = size_of(&id)?;
@@ -1973,6 +2029,12 @@ pub fn density_from_id(id: &str) -> Option<rbs_ui::tokens::Density> {
     [Density::Regular, Density::Compact, Density::Roomy]
         .into_iter()
         .find(|d| density_id(*d) == id)
+}
+
+/// The source an id names by its `source` parameter: a source the Mixer hears may not
+/// be in the scene being edited (studio mode), so it is not looked up there.
+fn heard_source(id: &CommandId) -> Option<i32> {
+    id.param("source")?.parse().ok()
 }
 
 #[cfg(test)]
@@ -2142,13 +2204,14 @@ mod tests {
 
     #[test]
     fn refreshing_keeps_the_text_around_the_markers() {
-        let text = format!("a\n    {BEGIN}\n    old\n    {END}\nb\n");
+        // A marker no menu title contains ("old" is in "Hold stream").
+        let text = format!("a\n    {BEGIN}\n    stale-line\n    {END}\nb\n");
         let fresh = refreshed(&text).expect("markers");
         assert!(fresh.starts_with(&format!(
             "a\n    {BEGIN}\n    if Shell.native-menu-bar: MenuBar {{\n"
         )));
         assert!(fresh.ends_with(&format!("    }}\n    {END}\nb\n")));
-        assert!(!fresh.contains("old"));
+        assert!(!fresh.contains("stale-line"));
         assert_eq!(refreshed("no markers"), None);
     }
 }

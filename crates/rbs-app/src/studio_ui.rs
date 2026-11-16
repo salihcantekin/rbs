@@ -22,12 +22,14 @@ use rbs_app::record_profile::{
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
-use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
+use rbs_app::stream_profile::{
+    self, HoldPicture, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
+};
 use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
     RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
-    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost,
-    Target, TransformOp, Update,
+    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate,
+    StudioHost, Target, TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -425,6 +427,9 @@ pub struct StudioUi {
     /// studio last sent it, and when it came (a pause began then, or the recorded
     /// time moves on from there). `None`: never paused since it started.
     rec_pause: [Option<(RecordPause, Instant)>; 2],
+    /// Hold (ADR-0124): each live stream's hold state (main, vertical) as the studio
+    /// last sent it, and when the hold began. `None`: never held since it started.
+    st_hold: [Option<(StreamHold, Instant)>; 2],
     pub marker_note: String,
     marker_undo: Vec<(OutputCanvas, u32)>,
     marker_serial: u32,
@@ -620,6 +625,7 @@ impl StudioUi {
             rec_markers: 0,
             rec_markers_shown: false,
             rec_pause: [None, None],
+            st_hold: [None, None],
             marker_note: String::new(),
             marker_undo: Vec::new(),
             marker_serial: 0,
@@ -938,6 +944,8 @@ impl StudioUi {
             self.rec_state == rec_state::RECORDING || self.vertical_rec == VerticalOut::On,
         );
         g.set_rec_paused(self.record_paused());
+        g.set_st_holdable(self.streams_live().iter().any(|l| *l));
+        g.set_st_held(self.stream_held());
         g.set_rec_markers_shown(self.rec_markers_shown && self.rec_state == rec_state::RECORDING);
         g.set_marker_note(self.marker_note.as_str().into());
         g.set_marker_generation(self.marker_serial as i32);
@@ -952,6 +960,12 @@ impl StudioUi {
         let globals = self.meters.iter().filter(|m| m.global).count();
         g.set_meter_globals(globals as i32);
         g.set_meter_scenes((self.meters.row_count() - globals) as i32);
+        g.set_program_scene(
+            self.scene_list
+                .as_ref()
+                .map_or(-1, |l| l.program.get() as i32),
+        );
+        g.set_scene_levels(self.scene_levels().unwrap_or_default().into());
         let (kind, name) = step_view(self.next_undo.as_ref());
         g.set_undo_kind(kind);
         g.set_undo_name(name.into());
@@ -2012,6 +2026,47 @@ impl StudioUi {
         });
     }
 
+    /// Turns a scene's Own levels on or puts it back in Shared levels (ADR-0091).
+    pub fn set_scene_own_levels(&mut self, scene: i32, own: bool) {
+        self.send(Command::SetSceneOwnLevels {
+            scene: SceneId::from_raw(scene as u32),
+            own,
+        });
+    }
+
+    /// Removes the scene's own level for `source`: its own level is heard there again.
+    pub fn reset_scene_level(&mut self, scene: i32, source: i32) {
+        self.send(Command::ResetSceneLevel {
+            scene: SceneId::from_raw(scene as u32),
+            source: SourceId::from_raw(source as u32),
+        });
+    }
+
+    /// The program scene's id while it keeps its own levels (ADR-0091), else `None`.
+    pub fn levels_scene(&self) -> Option<i32> {
+        self.scene_levels()?;
+        self.scene_list.as_ref().map(|l| l.program.get() as i32)
+    }
+
+    /// Whether the scene keeps its own levels (`scene.audio.own_levels.toggle`).
+    pub fn scene_own_levels(&self, scene: i32) -> bool {
+        self.scene_list.as_ref().is_some_and(|l| {
+            l.scenes
+                .iter()
+                .any(|s| s.id.get() as i32 == scene && s.own_audio)
+        })
+    }
+
+    /// Whether `scene` is the program scene and has its own level for `source`
+    /// (`scene.audio.reset_source` has something to remove).
+    pub fn has_scene_level(&self, scene: i32, source: i32) -> bool {
+        self.levels_scene() == Some(scene)
+            && self
+                .heard
+                .iter()
+                .any(|h| h.id as i32 == source && h.scene_level)
+    }
+
     /// A source's volume from the fader position (0 to 1, ADR-0059 fader law). Each
     /// pointer move sends one change; the host sends it on to the mixer at once.
     pub fn set_source_volume(&mut self, id: i32, position: f32) {
@@ -2824,6 +2879,55 @@ impl StudioUi {
     /// card; ADR-0124).
     pub fn pause_recording(&mut self) {
         self.send(Command::PauseRecording);
+    }
+
+    /// Hold every live stream, or resume them all when every one is held
+    /// (`stream.hold_toggle`, Ctrl+Shift+H, the frame's End stream button and the
+    /// Outputs card; ADR-0124).
+    pub fn hold_stream(&mut self) {
+        self.send(Command::HoldStream);
+    }
+
+    /// Break (`output.break_toggle`, Ctrl+Shift+B; ADR-0124 decision 15).
+    pub fn take_break(&mut self) {
+        self.send(Command::Break);
+    }
+
+    /// Which canvases stream now (main, vertical).
+    fn streams_live(&self) -> [bool; 2] {
+        [
+            self.st_state == st_state::LIVE,
+            self.vertical_st == VerticalOut::On,
+        ]
+    }
+
+    /// Every live stream is on hold: Hold reads Resume. False while none is live.
+    pub fn stream_held(&self) -> bool {
+        let live = self.streams_live();
+        live.iter().any(|l| *l)
+            && live
+                .iter()
+                .zip(&self.st_hold)
+                .all(|(l, h)| !l || h.is_some_and(|(h, _)| h.held))
+    }
+
+    /// How long the main stream's hold has lasted, while it is held.
+    pub fn held_for(&self) -> Option<Duration> {
+        self.st_hold[0]
+            .filter(|(h, _)| h.held)
+            .map(|(_, at)| at.elapsed())
+    }
+
+    /// [`Update::StreamHold`]: a hold that goes on keeps when it began.
+    fn stream_hold(&mut self, states: [Option<StreamHold>; 2]) {
+        for (slot, state) in self.st_hold.iter_mut().zip(states) {
+            let kept = slot.filter(|(h, _)| state.is_some_and(|s| s.held && h.held));
+            *slot = match (state, kept) {
+                (Some(s), Some((_, at))) => Some((s, at)),
+                (Some(s), None) => Some((s, Instant::now())),
+                (None, _) => None,
+            };
+        }
     }
 
     /// Every running recording is paused: Pause reads Resume. False while none runs.
@@ -3856,6 +3960,17 @@ impl StudioUi {
         self.save_stream_form();
     }
 
+    /// "While on hold": 0 Last frame, 1 Black. It changes the next hold, so it is
+    /// never disabled while live.
+    pub fn set_hold_picture(&mut self, i: i32) {
+        self.stream_form_mut().hold_picture = if i == 1 {
+            HoldPicture::Black
+        } else {
+            HoldPicture::Freeze
+        };
+        self.save_stream_form();
+    }
+
     pub fn set_reconnect(&mut self, on: bool) {
         self.stream_form_mut().reconnect = on;
         self.save_stream_form();
@@ -3990,6 +4105,7 @@ impl StudioUi {
         g.set_st_key_serial(self.key_serial as i32);
         g.set_st_reconnect(st.reconnect);
         g.set_st_auto_record(st.auto_record);
+        g.set_st_hold_black(st.hold_picture == HoldPicture::Black);
         let record = self.record_form_for(self.settings_canvas).encoding();
         let same_encoder = self.encoder_id(&record) == self.encoder_id(&st.encoding);
         g.set_st_auto_record_note(
@@ -4124,6 +4240,7 @@ impl StudioUi {
                 dropped,
                 connects,
             } => {
+                self.st_hold[0] = None;
                 let duration = self
                     .st_live
                     .take()
@@ -4603,7 +4720,7 @@ impl StudioUi {
             visible: row.visible,
             active: row.active,
             locked: row.locked,
-            muted: row.audio.muted,
+            muted: row.heard.unwrap_or(row.audio).muted,
             mixer_hidden: row.audio.mixer_hidden,
             monitor: row.audio.monitor,
             soloed: self.is_soloed(row.id.get()),
@@ -5232,6 +5349,7 @@ impl StudioUi {
                         live: s.id == list.program,
                         preview: Some(s.id) == list.preview,
                         number: i as i32 + 1,
+                        own_levels: s.own_audio,
                     })
                     .collect();
                 set_rows(&self.scenes, data);
@@ -5275,7 +5393,11 @@ impl StudioUi {
                     .map(|(n, what)| format!("{n} {what}"))
                     .collect::<Vec<_>>()
                     .join(" · ");
+                let was_own = self.scene_levels().is_some();
                 self.scene_list = Some(list);
+                if self.scene_levels().is_some() != was_own {
+                    self.mark_scene_levels();
+                }
                 self.refresh_existing();
                 self.refresh_global_existing();
             }
@@ -5357,6 +5479,7 @@ impl StudioUi {
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Markers { counts, placed } => self.markers(counts, placed),
             Update::RecordPause(states) => self.record_pause(states),
+            Update::StreamHold(states) => self.stream_hold(states),
             Update::Stream(u) => self.stream_update(u, &mut out),
             // The vertical canvas's outputs start from the frame's Record and Go live
             // menus or through the control API (protocol 1.29): what went wrong is a
@@ -5398,6 +5521,7 @@ impl StudioUi {
                         self.vertical_st_connected = false;
                     }
                     StreamUpdate::Ended { .. } => {
+                        self.st_hold[1] = None;
                         self.vertical_st = VerticalOut::Off;
                         self.vertical_st_since = None;
                         self.vertical_st_connected = false;
@@ -5461,6 +5585,7 @@ impl StudioUi {
                 self.stream.srt_latency_ms = p.srt_latency_ms;
                 self.stream.encoding = p.encoding;
                 self.stream.auto_record = p.auto_record;
+                self.stream.hold_picture = p.hold_picture;
                 self.save_stream();
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control
@@ -5576,6 +5701,48 @@ impl StudioUi {
         self.set_rows(rows);
     }
 
+    /// The program scene's name while it keeps its own levels (ADR-0091): the Mixer's
+    /// faders and Properties › Sound edit its levels then.
+    fn scene_levels(&self) -> Option<String> {
+        let l = self.scene_list.as_ref()?;
+        l.scenes
+            .iter()
+            .find(|s| s.id == l.program && s.own_audio)
+            .map(|s| s.name.clone())
+    }
+
+    /// Whether Properties › Sound edits the program scene's level for `r` (ADR-0091):
+    /// that scene keeps its own levels and makes the source heard.
+    fn levels_edit(&self, r: &SourceRow) -> bool {
+        self.scene_levels().is_some()
+            && (!self.studio_mode
+                || r.heard.is_some()
+                || self.heard.iter().any(|h| h.id == r.id.get()))
+    }
+
+    /// The scene marks after the program scene went to or from Own levels: the Mixer
+    /// strips and Properties › Sound follow without waiting for their own updates.
+    fn mark_scene_levels(&mut self) {
+        let own = self.scene_levels().is_some();
+        for i in 0..self.meters.row_count() {
+            if let Some(mut m) = self.meters.row_data(i)
+                && m.scene_level != own
+            {
+                m.scene_level = own;
+                self.meters.set_row_data(i, m);
+            }
+        }
+        let marks: Vec<bool> = self.rows.iter().map(|r| self.levels_edit(r)).collect();
+        for (i, mark) in marks.into_iter().enumerate() {
+            if let Some(mut d) = self.sources.row_data(i)
+                && d.scene_level != mark
+            {
+                d.scene_level = mark;
+                self.sources.set_row_data(i, d);
+            }
+        }
+    }
+
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
         // Layers move within their group: the global sources, then the scene's.
         let pictures = |global: bool| -> Vec<usize> {
@@ -5661,9 +5828,9 @@ impl StudioUi {
                     flip_v: shown.is_some_and(|l| l.flip_state().vertical),
                     rotation: shown.map_or(0.0, |l| l.rotation),
                     audio: r.kind.is_some_and(SourceKind::is_audio),
-                    muted: r.audio.muted,
-                    volume: fader::position_of(r.audio.volume),
-                    volume_text: fader::volume_text(r.audio.volume).into(),
+                    muted: r.heard.unwrap_or(r.audio).muted,
+                    volume: fader::position_of(r.heard.unwrap_or(r.audio).volume),
+                    volume_text: fader::volume_text(r.heard.unwrap_or(r.audio).volume).into(),
                     filters,
                     selected_filter,
                     sync_offset: r.audio.sync_offset_ms,
@@ -5674,6 +5841,11 @@ impl StudioUi {
                         _ => 0,
                     },
                     record_form: record_form(r),
+                    // Properties › Sound edits what the Mixer does (ADR-0091): the
+                    // program scene's own level while it keeps its own.
+                    scene_level: self.levels_edit(r),
+                    scene_entry: r.heard.is_some(),
+                    own_volume_text: fader::volume_text(r.audio.volume).into(),
                     global: r.global,
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
@@ -5756,7 +5928,8 @@ impl StudioUi {
             .filter(|r| r.meter.is_some())
             .map(|r| HeardFact {
                 id: r.id.get(),
-                muted: r.audio.muted,
+                muted: r.heard.unwrap_or(r.audio).muted,
+                scene_level: r.heard.is_some(),
                 hidden: r.audio.mixer_hidden,
                 monitor: r.audio.monitor,
             })
@@ -5779,17 +5952,21 @@ impl StudioUi {
             };
             self.slots.push(slot);
         }
+        let own = self.scene_levels().is_some();
         let meters: Vec<MeterRow> = rows
             .iter()
             .filter(|r| !r.audio.mixer_hidden && mixer_source(r))
             .map(|r| {
                 let live = r.meter.is_some();
+                // What is heard: the program scene's own level over the source's
+                // (ADR-0091 decision 3); the fader edits that.
+                let heard = r.heard.unwrap_or(r.audio);
                 MeterRow {
                     id: r.id.get() as i32,
-                    muted: r.audio.muted,
-                    volume: fader::position_of(r.audio.volume),
+                    muted: heard.muted,
+                    volume: fader::position_of(heard.volume),
                     volume_text: if live {
-                        fader::volume_text(r.audio.volume).into()
+                        fader::volume_text(heard.volume).into()
                     } else {
                         "Not running".into()
                     },
@@ -5800,6 +5977,7 @@ impl StudioUi {
                     monitor: monitor::mode_code(r.audio.monitor),
                     solo: self.is_soloed(r.id.get()),
                     live,
+                    scene_level: own,
                     ..MeterRow::default()
                 }
             })
@@ -5811,7 +5989,7 @@ impl StudioUi {
             .filter(|r| r.audio.mixer_hidden && mixer_source(r))
             .map(|r| MeterRow {
                 id: r.id.get() as i32,
-                muted: r.audio.muted,
+                muted: r.heard.unwrap_or(r.audio).muted,
                 name: r.name.as_str().into(),
                 icon: source_icon(r.kind).into(),
                 global: r.global,
@@ -6280,6 +6458,8 @@ pub struct SourceFacts {
 struct HeardFact {
     id: u32,
     muted: bool,
+    /// The program scene has its own level for it (ADR-0091).
+    scene_level: bool,
     hidden: bool,
     monitor: rbs_scene::model::SourceMonitor,
 }
@@ -7315,6 +7495,47 @@ mod tests {
     }
 
     #[test]
+    fn a_held_stream_reads_resume_and_forgets_its_hold_when_it_ends() {
+        let (mut ui, d) = ui("hold");
+        let hold = |held: bool| Some(StreamHold { held });
+        assert!(!ui.stream_held());
+        ui.apply(Update::Stream(StreamUpdate::Started {
+            url: "rtmp://example.com/app".into(),
+            video_encoder: "x".into(),
+            audio_encoder: None,
+        }));
+        assert_eq!(ui.st_state, st_state::LIVE);
+        assert!(!ui.stream_held());
+        ui.apply(Update::StreamHold([hold(true), None]));
+        assert!(ui.stream_held());
+        assert!(ui.held_for().is_some());
+        // A state sent again while the hold goes on keeps when it began.
+        let began = ui.st_hold[0].map(|(_, at)| at);
+        ui.apply(Update::StreamHold([hold(true), None]));
+        assert_eq!(ui.st_hold[0].map(|(_, at)| at), began);
+        // A vertical stream that is not held keeps Hold.
+        ui.vertical_st = VerticalOut::On;
+        assert!(!ui.stream_held());
+        ui.apply(Update::StreamHold([hold(true), hold(true)]));
+        assert!(ui.stream_held());
+        ui.apply(Update::StreamHold([hold(false), hold(false)]));
+        assert!(!ui.stream_held());
+        assert_eq!(ui.held_for(), None);
+        // Ending forgets the hold.
+        ui.apply(Update::StreamHold([hold(true), None]));
+        ui.vertical_st = VerticalOut::Off;
+        ui.apply(Update::Stream(StreamUpdate::Ended {
+            failure: None,
+            frames: 1,
+            dropped: 0,
+            connects: 1,
+        }));
+        assert!(!ui.stream_held());
+        assert_eq!(ui.st_hold[0], None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn a_paused_recording_reads_resume_and_its_recorded_time_stands_still() {
         let (mut ui, d) = ui("pause");
         let pause = |paused: bool, secs: u64| {
@@ -7379,10 +7600,12 @@ mod tests {
         p.server = "rtmp://elsewhere.example/app".into();
         p.reconnect = false;
         p.encoding.video_kbps = 9_000;
+        p.hold_picture = HoldPicture::Black;
         ui.apply(Update::StreamProfile(p));
         assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
         assert!(ui.stream.key_saved);
         assert!(!ui.stream.reconnect);
+        assert_eq!(ui.stream.hold_picture, HoldPicture::Black);
         assert_eq!(ui.stream.encoding.video_kbps, 9_000);
         let saved: StreamProfile = ui.user.section(STREAM).unwrap().unwrap();
         assert_eq!(saved, ui.stream);
@@ -7860,6 +8083,7 @@ mod tests {
             live: true,
             preview: false,
             number: 1,
+            own_levels: false,
         }]);
         ui.selected = 1;
         ui.clear_collection_view();

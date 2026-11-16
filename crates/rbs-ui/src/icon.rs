@@ -52,6 +52,16 @@ pub const ICONS: &[Icon] = &[
         "M 4.5 3.5 L 7 3.5 L 7 12.5 L 4.5 12.5 Z M 9 3.5 L 11.5 3.5 L 11.5 12.5 L 9 12.5 Z",
     ),
     fill("play", "M 5 3.5 L 12.5 8 L 5 12.5 Z"),
+    // RBS drawings: Hold stream (a frame with two bars, so it never reads as Pause
+    // recording) and Break (a cup), ADR-0124.
+    line(
+        "hold",
+        "M 2 3.5 L 14 3.5 L 14 12.5 L 2 12.5 Z M 6.5 6 L 6.5 10 M 9.5 6 L 9.5 10",
+    ),
+    line(
+        "coffee",
+        "M 3 6 L 11 6 L 11 9.5 C 11 11.43 9.43 13 7.5 13 L 6.5 13 C 4.57 13 3 11.43 3 9.5 Z M 11 7 L 12 7 C 12.83 7 13.5 7.67 13.5 8.5 C 13.5 9.33 12.83 10 12 10 L 11 10 M 5.5 2.5 L 5.5 4 M 8.5 2.5 L 8.5 4",
+    ),
     line("plus", "M 8 3.33 L 8 12.67 M 3.33 8 L 12.67 8"),
     line(
         "pin",

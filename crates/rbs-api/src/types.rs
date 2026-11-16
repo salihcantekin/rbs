@@ -964,6 +964,10 @@ pub struct StreamSettings {
     /// (protocol 1.39, ADR-0102). Not inside `encoding`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_size: Option<Dimensions>,
+    /// What `stream.hold` and Break send when they name no picture (protocol 1.65,
+    /// ADR-0124); `freeze` from older servers.
+    #[serde(default)]
+    pub hold_picture: crate::request::HoldPicture,
 }
 
 /// The stream settings an API client may change (`settings.set`; protocol 1.2): all of
@@ -986,6 +990,9 @@ pub struct StreamSettingsPatch {
     /// stream's canvas, which clears a custom size. Not inside `encoding`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_size: Option<Dimensions>,
+    /// What a hold sends when it names no picture (protocol 1.65); absent: unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_picture: Option<crate::request::HoldPicture>,
 }
 
 /// Settings the control thread owns.

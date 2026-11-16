@@ -1044,6 +1044,36 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "scene.audio.own_levels.toggle",
+        title: "Own levels",
+        tooltip: "Let the scene keep its own volumes and mutes; off goes back to the sources' own",
+        icon: Some("sliders"),
+        shortcut: None,
+        menu: Menu::Scene,
+        // ADR-0091: on copies what is heard now; off discards the scene's levels (the
+        // window asks first; a control surface does not, as for scene.remove).
+        kind: Kind::Toggle {
+            on: "scene.audio.own",
+            off: "scene.audio.shared",
+        },
+        // Without `scene`: the scene on air, whose levels the Mixer edits.
+        params: &[target("scene"), COLLECTION],
+        checkable: true,
+        fixed: &[],
+    },
+    Entry {
+        id: "scene.audio.reset_source",
+        title: "Use the source's level",
+        tooltip: "Remove the scene's own level for the source; the source's own level is heard",
+        icon: Some("reset"),
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.audio.reset_source"),
+        params: &[target("scene"), target("source"), COLLECTION],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
         id: "source.add",
         title: "Add source",
         tooltip: "Add a screen, window, camera or audio source to the scene",
@@ -1489,6 +1519,35 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: Some("Ctrl+Shift+P"),
         menu: Menu::Output,
         kind: action("record.pause_toggle"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    // Hold the live streams, or resume them (ADR-0124 decisions 12 and 13): the second
+    // half of the frame's End stream button while a stream runs. The shell titles it
+    // "Resume stream" while held.
+    Entry {
+        id: "stream.hold_toggle",
+        title: "Hold stream",
+        tooltip: "Keep the stream connected while viewers see the last frame with no sound, or resume it",
+        icon: Some("hold"),
+        shortcut: Some("Ctrl+Shift+H"),
+        menu: Menu::Output,
+        kind: action("stream.hold_toggle"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    // Break (ADR-0124 decision 15): every live stream holds and every recording
+    // pauses; again, they all resume.
+    Entry {
+        id: "output.break_toggle",
+        title: "Break",
+        tooltip: "Hold every live stream and pause every recording, or resume them all",
+        icon: Some("coffee"),
+        shortcut: Some("Ctrl+Shift+B"),
+        menu: Menu::Output,
+        kind: action("output.break_toggle"),
         params: &[],
         checkable: false,
         fixed: &[],
@@ -2028,6 +2087,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "scene.move?direction=down",
             "scene.remove",
             "}",
+            "scene.audio.own_levels.toggle",
             "|",
             "canvas.studio_mode.toggle",
             "canvas.transition",
@@ -2088,6 +2148,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "stream.toggle",
             "record.toggle",
             "record.pause_toggle",
+            "stream.hold_toggle",
+            "output.break_toggle",
             "{Vertical:canvas-vertical",
             "output.with_vertical?kind=record",
             "output.with_vertical?kind=stream",
@@ -2132,6 +2194,9 @@ pub const NOT_IN_MENU: &[&str] = &[
     // Add filter acts on a source (`source`): it runs from the Add filter button of
     // Properties and the control API's `filter.add`, not from a menu bar menu.
     "filter.add",
+    // A scene's own level for a source the Mixer hears (ADR-0091): it runs from the
+    // Mixer strip's menu and the control API, not from a menu bar menu.
+    "scene.audio.reset_source",
     // The profile and collection commands run from the status bar's pickers and the
     // control API; the File menu keeps the two pickers.
     "ui.profile.new",
@@ -2719,6 +2784,9 @@ pub enum Context {
     /// The Master strip or row in the Mixer, or its "more" button (no target;
     /// ADR-0092 decision 3).
     MixerMaster,
+    /// The "This scene" group's header in the Mixer, or its "more" button (target
+    /// `scene`, the program scene; ADR-0091 decision 5).
+    MixerScene,
     /// A panel's tab or header menu (target `id`, the panel).
     Panel,
     /// The toolbar's Workspace item (no target).
@@ -2738,7 +2806,7 @@ pub enum Context {
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 16] = [
+    pub const ALL: [Context; 17] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -2748,6 +2816,7 @@ impl Context {
         Context::MixerMonitor,
         Context::Mixer,
         Context::MixerMaster,
+        Context::MixerScene,
         Context::Panel,
         Context::Workspace,
         Context::Profiles,
@@ -2769,6 +2838,7 @@ impl Context {
             Context::MixerMonitor => "mixer-monitor",
             Context::Mixer => "mixer",
             Context::MixerMaster => "mixer-master",
+            Context::MixerScene => "mixer-scene",
             Context::Panel => "panel",
             Context::Workspace => "workspace",
             Context::Profiles => "profiles",
@@ -2815,6 +2885,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "scene.select",
             "scene.rename",
             "scene.duplicate",
+            "scene.audio.own_levels.toggle",
             "|",
             "scene.move?direction=up",
             "scene.move?direction=down",
@@ -2896,6 +2967,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "ui.mixer.orientation",
             "|",
             "source.muted.toggle",
+            "scene.audio.reset_source",
             "source.mixer_hidden.toggle",
             "source.monitor",
             "source.monitor_solo.toggle",
@@ -2903,6 +2975,10 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "source.rename",
             "ui.panel.select?id=rbs.properties",
         ],
+    ),
+    (
+        Context::MixerScene,
+        &["scene.audio.own_levels.toggle", "|", "ui.mixer.orientation"],
     ),
     (
         Context::MixerMonitor,
@@ -3640,6 +3716,7 @@ mod tests {
             [
                 "scene.rename?scene=7",
                 "scene.duplicate?scene=7",
+                "scene.audio.own_levels.toggle?scene=7",
                 "|",
                 "scene.move?direction=up&scene=7",
                 "scene.move?direction=down&scene=7",

@@ -633,7 +633,9 @@ pub enum Command {
         locked: bool,
     },
     /// A source's volume, a linear factor from 0 to 1 (ADR-0059). A live control: not
-    /// on the undo stack, and it reaches the mixer without rebinding the scene.
+    /// on the undo stack, and it reaches the mixer without rebinding the scene. The
+    /// window's fader: while the program scene keeps its own levels and places the
+    /// source, that scene's level changes instead (ADR-0091 decision 5).
     SetSourceVolume {
         /// The source.
         id: SourceId,
@@ -641,12 +643,28 @@ pub enum Command {
         volume: f32,
     },
     /// Mute or unmute a source's sound (ADR-0059). A live control: not on the undo
-    /// stack.
+    /// stack. In Own levels, as [`Command::SetSourceVolume`], the scene's mute.
     SetSourceMuted {
         /// The source.
         id: SourceId,
         /// Muted.
         muted: bool,
+    },
+    /// Turns a scene's Own levels on (`own` true, copying what is heard) or puts it
+    /// back in Shared levels (ADR-0091, `scene.audio.own` / `scene.audio.shared`). One
+    /// undo step; a refusal comes back as [`Update::Error`].
+    SetSceneOwnLevels {
+        /// The scene.
+        scene: SceneId,
+        /// Own levels on.
+        own: bool,
+    },
+    /// Removes a scene's own level for one source (`scene.audio.reset_source`).
+    ResetSceneLevel {
+        /// The scene.
+        scene: SceneId,
+        /// The source.
+        source: SourceId,
     },
     /// Adds a vertical second canvas and runs it beside the main one (ADR-0093 decision
     /// 8): the canvas is made, follows the main canvas's program scene when asked, gets
@@ -1133,6 +1151,13 @@ pub enum Command {
     /// (`record.pause_toggle`, ADR-0124); answered with [`Update::RecordPause`], or
     /// [`Update::Error`] when refused.
     PauseRecording,
+    /// Hold every live stream, or resume them all when every one is held
+    /// (`stream.hold_toggle`, ADR-0124); answered with [`Update::StreamHold`], or
+    /// [`Update::Error`] when refused.
+    HoldStream,
+    /// Break (`output.break_toggle`, ADR-0124 decision 15): hold every live stream and
+    /// pause every recording, or resume them all.
+    Break,
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -1639,10 +1664,12 @@ impl RecordingMarkers {
     }
 
     /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
-    /// markers and the manifest are in file time. A pause changes the manifest.
-    fn paused(&mut self, pause: bool, at_ns: u64) {
+    /// markers and the manifest are in file time. A pause changes the manifest. A
+    /// pause cut at a shared output records how far its join may be off.
+    fn paused(&mut self, pause: bool, at_ns: u64, join_error: Option<Duration>) {
         if pause {
-            self.log.pause(at_ns);
+            self.log
+                .pause_cut(at_ns, join_error.map(|e| e.as_nanos() as u64));
         } else {
             self.log.resume(at_ns);
         }
@@ -1801,8 +1828,8 @@ fn hold_refusal(e: rbs_record::HoldRefused) -> String {
 }
 
 /// The engine's hold picture for the control API's.
-fn hold_picture(p: Option<rbs_api::request::HoldPicture>) -> HoldPicture {
-    match p.unwrap_or_default() {
+fn hold_picture(p: rbs_api::request::HoldPicture) -> HoldPicture {
+    match p {
         rbs_api::request::HoldPicture::Freeze => HoldPicture::Freeze,
         rbs_api::request::HoldPicture::Black => HoldPicture::Black,
     }
@@ -2169,6 +2196,13 @@ impl PartialEq for LoudnessView {
     }
 }
 
+/// A live stream's hold state for the window (ADR-0124), as of the moment it was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamHold {
+    /// It is on hold now (or the hold waits for a sharing recording's pause).
+    pub held: bool,
+}
+
 /// A running recording's pause state for the window (ADR-0124), as of the moment it
 /// was sent: the window moves its clocks on from there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2369,6 +2403,10 @@ pub enum Update {
     /// does not record), after a pause or resume through the window or the control
     /// API (ADR-0124).
     RecordPause([Option<RecordPause>; 2]),
+    /// The live streams' hold states (main, vertical; `None` while that canvas does
+    /// not stream), after a hold or resume through the window or the control API
+    /// (ADR-0124).
+    StreamHold([Option<StreamHold>; 2]),
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -3759,19 +3797,53 @@ impl Host {
                 self.answer(done, notify);
             }
             Command::SetSourceVolume { id, volume } => {
-                self.run_ui_api(
+                let call = if self.levels_take(id) {
+                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
+                        scene: self.scene.get(),
+                        source: id.get(),
+                        volume: Some(volume),
+                        muted: None,
+                    })
+                } else {
                     rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
                         source: id.get(),
                         volume,
-                    }),
-                    notify,
-                );
+                    })
+                };
+                self.run_ui_api(call, notify);
             }
             Command::SetSourceMuted { id, muted } => {
-                self.run_ui_api(
+                let call = if self.levels_take(id) {
+                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
+                        scene: self.scene.get(),
+                        source: id.get(),
+                        volume: None,
+                        muted: Some(muted),
+                    })
+                } else {
                     rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
                         source: id.get(),
                         muted,
+                    })
+                };
+                self.run_ui_api(call, notify);
+            }
+            Command::SetSceneOwnLevels { scene, own } => {
+                let scene = rbs_api::request::SceneRef { scene: scene.get() };
+                self.run_ui_api(
+                    if own {
+                        rbs_api::Command::SceneAudioOwn(scene)
+                    } else {
+                        rbs_api::Command::SceneAudioShared(scene)
+                    },
+                    notify,
+                );
+            }
+            Command::ResetSceneLevel { scene, source } => {
+                self.run_ui_api(
+                    rbs_api::Command::SceneAudioResetSource(rbs_api::request::SceneSourceRef {
+                        scene: scene.get(),
+                        source: source.get(),
                     }),
                     notify,
                 );
@@ -4322,6 +4394,29 @@ impl Host {
                     }
                 }
             }
+            Command::HoldStream | Command::Break => {
+                let (command, what) = match c {
+                    Command::HoldStream => (
+                        rbs_api::Command::StreamHoldToggle(rbs_api::request::StreamHold {
+                            canvas: Some(api::OutputTarget::All),
+                            picture: None,
+                        }),
+                        "The stream could not hold or resume",
+                    ),
+                    _ => (
+                        rbs_api::Command::OutputBreakToggle,
+                        "The break could not start or end",
+                    ),
+                };
+                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => notify(Update::Error(format!("{what}: {}.", e.message))),
+                    Err(_) => {
+                        self.caught = true;
+                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+                    }
+                }
+            }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {
                     notify(Update::ReplaySaved(Err(why)));
@@ -4832,8 +4927,9 @@ impl Host {
             .map_err(|e| ApiError::new(ErrorKind::Conflict, pause_refusal(e)))?
             .as_nanos();
         // Markers and the manifest are in file time (ADR-0124 decision 10).
+        let join_error = self.studio.output_pause(id).and_then(|p| p.join_error);
         if let Some(markers) = self.outs[slot(c)].markers.as_mut() {
-            markers.paused(pause, at);
+            markers.paused(pause, at, join_error);
         }
         self.refresh_record_pause(c);
         Ok(pause)
@@ -4872,9 +4968,17 @@ impl Host {
         &mut self,
         c: OutputCanvas,
         hold: Option<bool>,
-        picture: HoldPicture,
+        picture: Option<HoldPicture>,
     ) -> Result<bool, ApiError> {
         let conflict = |m: String| ApiError::new(ErrorKind::Conflict, m);
+        // No picture named: the stream settings' "While on hold" (protocol 1.65).
+        let picture = picture.unwrap_or_else(|| {
+            hold_picture(
+                self.stream_profile_of(c)
+                    .map(|p| p.hold_picture)
+                    .unwrap_or_default(),
+            )
+        });
         let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
             return Err(conflict("nothing streams".into()));
         };
@@ -6264,6 +6368,17 @@ impl Host {
             }
         }
         next.map(|due| Duration::from_nanos(due.saturating_sub(now_ns)))
+    }
+
+    /// [`Update::StreamHold`]: each live stream's hold state now.
+    fn hold_update(&self) -> Update {
+        let state = |c: OutputCanvas| {
+            self.outs[slot(c)].streaming.as_ref()?;
+            Some(StreamHold {
+                held: self.stream_held(c),
+            })
+        };
+        Update::StreamHold([state(OutputCanvas::Main), state(OutputCanvas::Vertical)])
     }
 
     /// [`Update::RecordPause`]: each running recording's pause state now.
@@ -9580,6 +9695,19 @@ impl Host {
         Ok((turned_own, changed || turned_own))
     }
 
+    /// Whether the window's fader and mute for `source` edit the program scene's level
+    /// (ADR-0091 decision 5): that scene keeps its own levels and places the source
+    /// (directly, nested, or as a global source of the canvas).
+    fn levels_take(&self, source: SourceId) -> bool {
+        self.collection
+            .scene(self.scene)
+            .is_some_and(Scene::own_levels)
+            && self
+                .collection
+                .placed_sources(self.canvas, self.scene)
+                .contains(&source)
+    }
+
     /// True while `id` is the studio canvas's program scene, whose levels are heard.
     fn on_air(&self, id: SceneId) -> bool {
         self.scene == id
@@ -12550,13 +12678,14 @@ impl ApiTarget<'_> {
         hold: Option<bool>,
         picture: Option<rbs_api::request::HoldPicture>,
     ) -> Result<Response, ApiError> {
-        let picture = hold_picture(picture);
+        let picture = picture.map(hold_picture);
         let notify = self.notify;
         let host = &mut *self.host;
         if let Some(one) = target.single() {
             let c = host.api_canvas_of(Some(one))?;
             host.hold_stream(c, hold, picture)?;
             notify(host.pause_update());
+            notify(host.hold_update());
             host.publish(notify);
             return Ok(Response::Done(Empty {}));
         }
@@ -12596,6 +12725,7 @@ impl ApiTarget<'_> {
         }
         changed_or_first_refusal(&outputs, refusals, "nothing streams")?;
         notify(host.pause_update());
+        notify(host.hold_update());
         host.publish(notify);
         Ok(Response::Outputs(api::OutputsResult { outputs }))
     }
@@ -12603,8 +12733,8 @@ impl ApiTarget<'_> {
     /// `output.break_toggle` (control API 1.64, ADR-0124 decision 15): when every
     /// live stream is on hold and every running recording is paused, resumes them
     /// all (streams first, so a recording a hold paused resumes with its stream);
-    /// otherwise holds the streams that are not held (freeze) and pauses the
-    /// recordings that are not paused. The answer lists the outputs it changed or
+    /// otherwise holds the streams that are not held (with the picture their "While on
+    /// hold" setting names) and pauses the recordings that are not paused. The answer lists the outputs it changed or
     /// that refused, main first, each with its `kind`.
     fn break_toggle(&mut self) -> Result<Response, ApiError> {
         let notify = self.notify;
@@ -12662,15 +12792,13 @@ impl ApiTarget<'_> {
         let before: Vec<bool> = records.iter().map(|&c| paused(host, c)).collect();
         for &c in &streams {
             if resume || !host.stream_held(c) {
-                let done = host
-                    .hold_stream(c, Some(!resume), HoldPicture::Freeze)
-                    .map(|held| {
-                        if held {
-                            api::OutputOutcome::Held
-                        } else {
-                            api::OutputOutcome::Resumed
-                        }
-                    });
+                let done = host.hold_stream(c, Some(!resume), None).map(|held| {
+                    if held {
+                        api::OutputOutcome::Held
+                    } else {
+                        api::OutputOutcome::Resumed
+                    }
+                });
                 entry(c, api::OutputKind::Stream, done);
             }
         }
@@ -12698,6 +12826,7 @@ impl ApiTarget<'_> {
         }
         changed_or_first_refusal(&outputs, refusals, "nothing changed")?;
         notify(host.pause_update());
+        notify(host.hold_update());
         host.publish(notify);
         Ok(Response::Outputs(api::OutputsResult { outputs }))
     }
