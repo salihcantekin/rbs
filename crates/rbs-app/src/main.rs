@@ -241,6 +241,8 @@ struct App {
     settings: Option<SettingsWindow>,
     /// The Source settings window of a source (ADR-0077), open or not.
     source_settings: Option<SourceSettingsWindow>,
+    /// The Measure sync offset window (ADR-0126 step 6), open or not.
+    sync_measure: Option<SyncMeasureWindow>,
     menus: MenuModels,
     /// The toolbar row's leading group (ADR-0071).
     toolbar_model: Rc<VecModel<ToolbarData>>,
@@ -341,6 +343,10 @@ impl App {
         if let Some(w) = self.source_settings.take() {
             let _ = w.hide();
             self.studio.source_settings_closed();
+        }
+        if let Some(w) = self.sync_measure.take() {
+            let _ = w.hide();
+            self.studio.sync_measure_closed();
         }
     }
 
@@ -2389,6 +2395,9 @@ impl Ctx {
         if let Some(w) = &app.source_settings {
             ok &= exclude_window_from_capture(w.window(), exclude);
         }
+        if let Some(w) = &app.sync_measure {
+            ok &= exclude_window_from_capture(w.window(), exclude);
+        }
         for f in &app.floats {
             ok &= exclude_window_from_capture(f.window.window(), exclude);
         }
@@ -2399,6 +2408,7 @@ impl Ctx {
     fn capture_window_count(app: &App) -> usize {
         1 + usize::from(app.settings.is_some())
             + usize::from(app.source_settings.is_some())
+            + usize::from(app.sync_measure.is_some())
             + app.floats.len()
     }
 
@@ -3817,6 +3827,61 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
     app.source_settings = Some(w);
 }
 
+/// Opens the Measure sync offset window for a source (ADR-0126 step 6), or brings it
+/// forward with that source's content.
+fn open_sync_measure(ctx: &Ctx, app: &mut App, id: i32) {
+    app.studio.open_sync_measure(id);
+    if let Some(w) = &app.sync_measure {
+        w.set_ref_index(-1);
+        window_place::raise(w.window());
+        return;
+    }
+    let Ok(w) = SyncMeasureWindow::new() else {
+        app.show_error(UiError::Other(
+            "The Measure sync offset window cannot be opened.".into(),
+        ));
+        return;
+    };
+    rbs_app::window_events::install(&w);
+    look::apply(
+        &w.global::<Theme>(),
+        &w.global::<Tokens>(),
+        ctx.look.borrow().as_ref(),
+    );
+    install_studio(&w.global::<Studio>(), ctx);
+    app.studio.attach_models(&w.global::<Studio>());
+    let c = ctx.clone();
+    entry::on_close_requested(w.window(), move || {
+        c.update(|app| {
+            app.sync_measure = None;
+            app.studio.sync_measure_closed();
+        });
+        slint::CloseRequestResponse::HideWindow
+    });
+    let (weak, c) = (w.as_weak(), ctx.clone());
+    w.on_dismiss(move || {
+        entry::guard(|| {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.hide();
+            }
+            c.update(|app| {
+                app.sync_measure = None;
+                app.studio.sync_measure_closed();
+            });
+        });
+    });
+    let t = w.global::<Tokens>();
+    let size = slint::LogicalSize::new(
+        t.get_size_menu_md() + t.get_space_8() * 3.0,
+        t.get_size_floating_h() / 2.0,
+    );
+    let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
+    let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
+    app.capture_applied.1 = usize::MAX;
+    app.capture_retry = None;
+    app.sync_measure = Some(w);
+}
+
 fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     if let Ok(app) = ctx.app.try_borrow() {
         app.studio.attach_models(g);
@@ -3826,6 +3891,13 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         g.on_open_source_settings(move |id| {
             let ctx = c.clone();
             c.update(move |app| open_source_settings(&ctx, app, id));
+        });
+    }
+    {
+        let c = ctx.clone();
+        g.on_open_sync_measure(move |id| {
+            let ctx = c.clone();
+            c.update(move |app| open_sync_measure(&ctx, app, id));
         });
     }
     macro_rules! on {
@@ -3840,6 +3912,18 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.apply_source_settings(id, mode, rate, cursor);
         }
     );
+    on!(on_start_sync_measure, |app, reference: i32| {
+        app.studio.start_sync_measure(reference);
+    });
+    on!(on_close_sync_measure, |app| {
+        if let Some(w) = app.sync_measure.take() {
+            let _ = w.hide();
+        }
+        app.studio.sync_measure_closed();
+    });
+    on!(on_apply_sync_to_device_sources, |app, id: i32| {
+        app.studio.apply_sync_to_device_sources(id);
+    });
     on!(on_list_targets, |app, kind: i32| {
         app.studio.list_targets(kind);
     });
@@ -4655,6 +4739,9 @@ fn apply_os_scheme(app: &mut App) {
     if let Some(w) = &app.source_settings {
         look::set_os_scheme(&w.global::<Theme>());
     }
+    if let Some(w) = &app.sync_measure {
+        look::set_os_scheme(&w.global::<Theme>());
+    }
     for f in &app.floats {
         look::set_os_scheme(&f.window.global::<Theme>());
     }
@@ -4838,6 +4925,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             tray: None,
             settings: None,
             source_settings: None,
+            sync_measure: None,
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
             toolbar_end_model: Rc::new(VecModel::default()),

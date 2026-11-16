@@ -85,7 +85,7 @@ pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
 pub use sync_measure::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
-    SyncMeasureState, SyncMeasureStatus,
+    SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
@@ -1097,6 +1097,8 @@ pub struct Studio {
     scene_preview: Option<ScenePreview>,
     /// Hold scenes by canvas while a stream holds with one (ADR-0124 phase 2b).
     hold_scenes: BTreeMap<CanvasId, hold::HoldRun>,
+    /// A hold scene fell back in [`Studio::service`] since the host last asked.
+    hold_fell_back: bool,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
     /// Pictures added while the studio runs (ADR-0125), in the order they were added.
@@ -1448,6 +1450,7 @@ impl Studio {
             preview,
             scene_preview: None,
             hold_scenes: BTreeMap::new(),
+            hold_fell_back: false,
             extras,
             pictures: Vec::new(),
             next_picture: 0,
@@ -2942,7 +2945,9 @@ impl Studio {
                     _ => None,
                 })
                 .collect();
-            self.check_hold_scenes(&failed);
+            if self.check_hold_scenes(&failed) {
+                self.hold_fell_back = true;
+            }
         }
         if !self.pending_takes.is_empty() {
             let engine = &mut self.engine;

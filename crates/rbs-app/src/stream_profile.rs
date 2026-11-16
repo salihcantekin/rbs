@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use rbs_api::request::HoldPicture;
+pub use rbs_api::request::{HoldPicture, HoldSound};
 use rbs_core::media::ContainerId;
 use rbs_transport::{ReconnectPolicy, TransportInput};
 use serde::{Deserialize, Serialize};
@@ -180,6 +180,17 @@ pub struct StreamProfile {
     /// `freeze`, the default.
     #[serde(default, skip_serializing_if = "is_freeze")]
     pub hold_picture: HoldPicture,
+    /// The scene a hold with a scene shows (ADR-0124 phase 2b), by its id in the
+    /// collection. Omitted while none is chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_scene: Option<u32>,
+    /// The sound such a hold sends. Omitted when `silence`, the default.
+    #[serde(default, skip_serializing_if = "is_silence")]
+    pub hold_sound: HoldSound,
+}
+
+fn is_silence(s: &HoldSound) -> bool {
+    *s == HoldSound::Silence
 }
 
 fn is_freeze(p: &HoldPicture) -> bool {
@@ -200,6 +211,8 @@ impl StreamProfile {
             auto_record: false,
             output_size: None,
             hold_picture: HoldPicture::Freeze,
+            hold_scene: None,
+            hold_sound: HoldSound::Silence,
         }
     }
 
@@ -283,6 +296,8 @@ impl StreamProfile {
                 height: s.height,
             }),
             hold_picture: self.hold_picture,
+            hold_scene: self.hold_scene,
+            hold_sound: self.hold_sound,
         }
     }
 
@@ -299,6 +314,12 @@ impl StreamProfile {
         }
         if let Some(picture) = patch.hold_picture {
             p.hold_picture = picture;
+        }
+        if let Some(scene) = patch.hold_scene {
+            p.hold_scene = scene;
+        }
+        if let Some(sound) = patch.hold_sound {
+            p.hold_sound = sound;
         }
         // Omitted or null stores the same as this stream's canvas (protocol 1.39).
         p.output_size = patch.output_size.map(|s| OutputSize {
@@ -529,6 +550,8 @@ mod tests {
             auto_record: None,
             output_size: None,
             hold_picture: None,
+            hold_scene: None,
+            hold_sound: None,
         };
         assert_eq!(p.with_api(&patch).unwrap().hold_picture, HoldPicture::Black);
         patch.hold_picture = Some(HoldPicture::Freeze);
@@ -537,6 +560,27 @@ mod tests {
             HoldPicture::Freeze
         );
         assert_eq!(p.to_api().hold_picture, HoldPicture::Black);
+        // A hold scene and its sound (ADR-0124 phase 2b): saved only when set, and
+        // `null` in a patch clears the scene.
+        assert!(!text.contains("hold_scene") && !text.contains("hold_sound"));
+        patch.hold_picture = Some(HoldPicture::Scene);
+        patch.hold_scene = Some(Some(7));
+        patch.hold_sound = Some(HoldSound::Scene);
+        let scene = p.with_api(&patch).unwrap();
+        let text = toml::to_string(&scene).unwrap();
+        assert!(text.contains("hold_picture = \"scene\""), "{text}");
+        assert!(text.contains("hold_scene = 7"), "{text}");
+        assert!(text.contains("hold_sound = \"scene\""), "{text}");
+        let back = toml::from_str::<StreamProfile>(&text).unwrap();
+        assert_eq!(
+            (back.hold_scene, back.hold_sound),
+            (Some(7), HoldSound::Scene)
+        );
+        assert_eq!(scene.to_api().hold_scene, Some(7));
+        patch.hold_scene = Some(None);
+        assert_eq!(scene.with_api(&patch).unwrap().hold_scene, None);
+        patch.hold_scene = None;
+        assert_eq!(scene.with_api(&patch).unwrap().hold_scene, Some(7));
     }
 
     #[test]
@@ -644,6 +688,8 @@ mod tests {
             auto_record: None,
             output_size: None,
             hold_picture: None,
+            hold_scene: None,
+            hold_sound: None,
         };
         patch.encoding.video_kbps = 9_000;
         let changed = p.with_api(&patch).unwrap();

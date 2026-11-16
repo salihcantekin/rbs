@@ -14,7 +14,7 @@ use rbs_record::{
 use rbs_scene::COMPANION_OF_HINT;
 use rbs_scene::model::{ItemContent, SourceId};
 
-use super::{Host, SourceKind};
+use super::{Host, SourceKind, Update};
 use crate::device_sync_file::{DeviceEntry, Origin};
 
 /// How often the control loop reads a running measurement's probes.
@@ -30,13 +30,89 @@ pub(super) struct MeasureRun {
     reference: SourceId,
 }
 
-/// The host's measurement state: the next id, the running one, and the last state
-/// published (kept after the end, for `sync.measure.changed` subscribers).
+/// The host's measurement state: the next id, the running one, the last state
+/// published (kept after the end, for `sync.measure.changed` subscribers), and the
+/// desktop Measure window while it is open.
 #[derive(Default)]
 pub(super) struct MeasureHost {
     next_id: u64,
     run: Option<MeasureRun>,
     published: Option<api::SyncMeasureChanged>,
+    window: Option<SyncMeasureView>,
+}
+
+/// Why the Measure window could not start (the API's refusal reasons).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncMeasureRefusal {
+    /// A measurement runs already.
+    Busy,
+    /// The program mix does not hear the source.
+    NotHeard,
+    /// The reference shows no picture now.
+    SourceClosed,
+    /// No reference was chosen or found.
+    NoReference,
+    /// The reference has no picture.
+    NotPicture,
+    /// The source has no sound, or another refusal.
+    Other,
+}
+
+/// Where the Measure window is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SyncMeasurePhase {
+    /// Waiting for Start.
+    Ready,
+    /// Start was refused.
+    Refused(SyncMeasureRefusal),
+    /// Measuring.
+    Running {
+        /// Claps paired so far.
+        pairs: u32,
+        /// Some sound was loud enough to be a clap.
+        sound: bool,
+        /// Some picture moved enough to be a clap.
+        picture: bool,
+        /// Share of the longest measurement gone, 0 to 1.
+        progress: f32,
+    },
+    /// A result.
+    Done {
+        /// The offset to apply.
+        suggested_ms: i32,
+        /// The offset measured, before the clamp.
+        measured_ms: i32,
+        /// The two differ.
+        clamped: bool,
+        /// Claps the result rests on.
+        pairs: u32,
+        /// How much they disagree, in milliseconds.
+        spread_ms: f32,
+    },
+    /// No result.
+    Failed {
+        /// Why.
+        reason: api::SyncMeasureFailure,
+        /// The source has an enabled gate or ducker, which can remove claps.
+        onset_filter: bool,
+    },
+}
+
+/// What the desktop Measure window shows (ADR-0126 step 6).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncMeasureView {
+    /// The measured source.
+    pub source: SourceId,
+    /// Its name.
+    pub name: String,
+    /// Its offset now, in milliseconds.
+    pub current_ms: i32,
+    /// The picture sources it can be measured against, by name.
+    pub references: Vec<(SourceId, String)>,
+    /// The one chosen.
+    pub reference: Option<SourceId>,
+    /// Where it is.
+    pub phase: SyncMeasurePhase,
 }
 
 fn refusal(kind: ErrorKind, reason: &str, message: impl Into<String>) -> ApiError {
@@ -214,12 +290,17 @@ impl Host {
     /// Reads the running measurement and publishes what changed; ends it when the
     /// studio did. The wait until the next read while one runs; `None` otherwise, so
     /// nothing is polled without a measurement (P13).
-    pub(super) fn drive_sync_measure(&mut self) -> Option<Duration> {
-        let run = self.measure.run.as_ref()?;
+    pub(super) fn drive_sync_measure(&mut self, notify: &dyn Fn(Update)) -> Option<Duration> {
+        let Some(run) = self.measure.run.as_ref() else {
+            // `sync.measure_cancel` ended the window's measurement.
+            self.window_failed(api::SyncMeasureFailure::Cancelled, notify);
+            return None;
+        };
         let studio_id = run.studio_id;
         match self.studio.sync_measure() {
             Some(SyncMeasureStatus { id, state, .. }) if id == studio_id => {
                 self.publish_measure(state);
+                self.window_follows(state, notify);
                 if matches!(state, SyncMeasureState::Running { .. }) {
                     return Some(MEASURE_POLL);
                 }
@@ -235,10 +316,176 @@ impl Host {
             // A new studio (a canvas change, a collection switch) has none of it.
             _ => {
                 self.publish_studio_restarted();
+                self.window_failed(api::SyncMeasureFailure::StudioRestarted, notify);
                 self.measure.run = None;
                 None
             }
         }
+    }
+
+    /// Opens the Measure window for `source`: the picture sources to clap in view of,
+    /// with the default one chosen.
+    pub(super) fn open_sync_measure_window(&mut self, source: SourceId, notify: &dyn Fn(Update)) {
+        // A measurement the window started for another source ends with it.
+        if self
+            .measure
+            .window
+            .as_ref()
+            .is_some_and(|w| w.source != source)
+        {
+            self.close_sync_measure_window(notify);
+        }
+        let Some(s) = self.collection.source(source) else {
+            return;
+        };
+        let mut references: Vec<(SourceId, String)> = self
+            .collection
+            .sources()
+            .filter(|r| SourceKind::of(&r.type_id).is_some_and(|k| !k.is_audio()))
+            .map(|r| (r.id, r.name.clone()))
+            .collect();
+        references.sort_by_key(|r| r.1.to_lowercase());
+        let reference = self.default_reference(source);
+        let view = SyncMeasureView {
+            source,
+            name: s.name.clone(),
+            current_ms: s.audio.sync_offset_ms,
+            references,
+            reference,
+            phase: SyncMeasurePhase::Ready,
+        };
+        self.set_window(Some(view), notify);
+    }
+
+    /// Start in the Measure window, against `reference`.
+    pub(super) fn start_sync_measure_window(
+        &mut self,
+        reference: SourceId,
+        notify: &dyn Fn(Update),
+    ) {
+        let Some(mut view) = self.measure.window.clone() else {
+            return;
+        };
+        view.reference = Some(reference);
+        view.phase = match self.start_sync_measure(view.source, Some(reference)) {
+            Ok(_) => SyncMeasurePhase::Running {
+                pairs: 0,
+                sound: false,
+                picture: false,
+                progress: 0.0,
+            },
+            Err(e) => SyncMeasurePhase::Refused(
+                match e
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("reason"))
+                    .and_then(|r| r.as_str())
+                {
+                    Some("busy") => SyncMeasureRefusal::Busy,
+                    Some("not_heard") => SyncMeasureRefusal::NotHeard,
+                    Some("source_closed") => SyncMeasureRefusal::SourceClosed,
+                    Some("no_reference") => SyncMeasureRefusal::NoReference,
+                    Some("not_picture") => SyncMeasureRefusal::NotPicture,
+                    _ => SyncMeasureRefusal::Other,
+                },
+            ),
+        };
+        self.set_window(Some(view), notify);
+    }
+
+    /// The Measure window closed (Cancel, Apply, or the window's close button): a
+    /// measurement of its source still running is cancelled.
+    pub(super) fn close_sync_measure_window(&mut self, notify: &dyn Fn(Update)) {
+        let Some(view) = self.measure.window.take() else {
+            return;
+        };
+        if let Some(run) = &self.measure.run
+            && run.source == view.source
+        {
+            let id = run.id.to_string();
+            let _ = self.cancel_sync_measure(&id);
+        }
+        notify(Update::SyncMeasure(None));
+    }
+
+    fn set_window(&mut self, view: Option<SyncMeasureView>, notify: &dyn Fn(Update)) {
+        if self.measure.window == view {
+            return;
+        }
+        self.measure.window.clone_from(&view);
+        notify(Update::SyncMeasure(view));
+    }
+
+    /// The window shows the measurement of its source.
+    fn window_follows(&mut self, state: SyncMeasureState, notify: &dyn Fn(Update)) {
+        let Some(run) = &self.measure.run else {
+            return;
+        };
+        let Some(mut view) = self.measure.window.clone() else {
+            return;
+        };
+        if view.source != run.source {
+            return;
+        }
+        view.reference = Some(run.reference);
+        view.phase = match state {
+            SyncMeasureState::Running { pairs } => {
+                let signals = self.studio.sync_measure_signals();
+                #[allow(clippy::cast_precision_loss)] // at most ten seconds in ns
+                let progress = signals.map_or(0.0, |s| {
+                    (s.elapsed.as_secs_f32() / rbs_record::MEASURE_WINDOW.as_secs_f32())
+                        .clamp(0.0, 1.0)
+                });
+                SyncMeasurePhase::Running {
+                    pairs: u32::try_from(pairs).unwrap_or(u32::MAX),
+                    sound: signals.is_some_and(|s| s.sound),
+                    picture: signals.is_some_and(|s| s.picture),
+                    progress,
+                }
+            }
+            SyncMeasureState::Done(r) => SyncMeasurePhase::Done {
+                suggested_ms: r.suggestion.offset_ms,
+                measured_ms: r.suggestion.measured_ms,
+                clamped: r.suggestion.clamped,
+                pairs: u32::try_from(r.estimate.pairs).unwrap_or(u32::MAX),
+                #[allow(clippy::cast_precision_loss)] // a spread of at most seconds
+                spread_ms: r.estimate.spread_ns as f32 / 1e6,
+            },
+            SyncMeasureState::Failed(f) => SyncMeasurePhase::Failed {
+                reason: api_failure(f),
+                onset_filter: self.has_onset_filter(view.source),
+            },
+            _ => return,
+        };
+        if let Some(s) = self.collection.source(view.source) {
+            view.current_ms = s.audio.sync_offset_ms;
+        }
+        self.set_window(Some(view), notify);
+    }
+
+    fn window_failed(&mut self, reason: api::SyncMeasureFailure, notify: &dyn Fn(Update)) {
+        let Some(mut view) = self.measure.window.clone() else {
+            return;
+        };
+        if !matches!(view.phase, SyncMeasurePhase::Running { .. }) {
+            return;
+        }
+        view.phase = SyncMeasurePhase::Failed {
+            reason,
+            onset_filter: self.has_onset_filter(view.source),
+        };
+        self.set_window(Some(view), notify);
+    }
+
+    /// The source's chain has an enabled gate or ducker, which can remove claps.
+    fn has_onset_filter(&self, source: SourceId) -> bool {
+        self.collection.source(source).is_some_and(|s| {
+            s.filters.iter().any(|f| {
+                f.enabled
+                    && (f.type_id.as_str() == rbs_audio_filters::gate::NOISE_GATE
+                        || f.type_id.as_str() == rbs_audio_filters::ducker::DUCKER)
+            })
+        })
     }
 
     fn publish_studio_restarted(&mut self) {

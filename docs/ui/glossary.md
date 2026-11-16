@@ -22,6 +22,8 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Hold stream / Resume stream | Keep a live stream connected while viewers see a hold picture with silence; the program stays free to edit (ADR-0124) | Pause stream, Stop stream (it does not stop) | `hold_output` |
 | Break | Hold every live stream and pause every recording at once, and resume them together (ADR-0124) | BRB, Intermission | `output.break_toggle` |
 | Preview / Program | What you are preparing / what viewers see (studio mode) | - | - |
+| Sync offset | How much later (positive) or earlier (negative) a source's sound plays, in milliseconds, to match the picture. A microphone remembers its value on this computer (ADR-0126) | Audio delay, latency, A/V sync | `sync_offset_ms` |
+| Measure sync offset | Find a source's sync offset from claps a picture source sees: the window lists the picture sources under "Clap in view of", and nothing changes until Apply (ADR-0126) | Calibrate, auto-sync, test | `sync.measure_start` |
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
 | Automatic, Rows, Columns | Mixer layouts: follow the panel's shape, sources stacked top to bottom, or side by side | Horizontal, Vertical, Auto | Orientation (in UI text) |
 | Workspace | A saved arrangement of panels, floating windows and projectors. It never holds scenes, sources or output settings | Profile, layout, scene collection | UI workspace file |

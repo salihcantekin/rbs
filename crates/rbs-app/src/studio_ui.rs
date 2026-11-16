@@ -29,7 +29,7 @@ use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
     RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
     SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate,
-    StudioHost, Target, TransformOp, Update,
+    StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target, TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -54,7 +54,7 @@ use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
     EncoderData, EntryRow, KindData, LookData, MarkData, MeterRow, ModeData, SampleData, ScaleMark,
     SceneData, SizeBand, SourceData, SourceSettingsData, SourceTargetData, StackData, StatRow,
-    Studio, TokenRow,
+    Studio, SyncMeasureData, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -283,6 +283,8 @@ pub struct StudioUi {
     /// then one entry; and what its choices mean.
     source_settings: Rc<VecModel<SourceSettingsData>>,
     source_settings_view: Option<SettingsChoices>,
+    /// The Measure sync offset window's content (ADR-0126 step 6): one row while open.
+    sync_measure: Rc<VecModel<SyncMeasureData>>,
     /// The source the list is for, and what the search field holds.
     source_targets_for: Option<SourceId>,
     source_query: String,
@@ -580,6 +582,7 @@ impl StudioUi {
             source_targets: Rc::new(VecModel::default()),
             source_settings: Rc::new(VecModel::default()),
             source_settings_view: None,
+            sync_measure: Rc::new(VecModel::default()),
             source_target_list: Vec::new(),
             source_targets_for: None,
             source_pictures: std::collections::HashMap::new(),
@@ -713,6 +716,7 @@ impl StudioUi {
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_source_settings(ModelRc::from(self.source_settings.clone()));
+        g.set_sync_measure(ModelRc::from(self.sync_measure.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
         g.set_master_meter(ModelRc::from(self.master_meter.clone()));
@@ -1763,6 +1767,31 @@ impl StudioUi {
         self.source_settings.set_vec(Vec::new());
         self.source_settings_view = None;
         self.send(Command::OpenSourceSettings(SourceId::from_raw(id as u32)));
+    }
+
+    /// The Measure sync offset window opens for a source (ADR-0126 step 6).
+    pub fn open_sync_measure(&mut self, id: i32) {
+        self.send(Command::OpenSyncMeasure(SourceId::from_raw(id as u32)));
+    }
+
+    /// Start in the Measure window, against the picture source `reference`.
+    pub fn start_sync_measure(&mut self, reference: i32) {
+        self.send(Command::StartSyncMeasure(SourceId::from_raw(
+            reference as u32,
+        )));
+    }
+
+    /// The Measure window closed: a measurement it started is cancelled.
+    pub fn sync_measure_closed(&mut self) {
+        self.sync_measure.set_vec(Vec::new());
+        self.send(Command::CloseSyncMeasure);
+    }
+
+    /// The other sources of a source's microphone take its sync offset.
+    pub fn apply_sync_to_device_sources(&mut self, id: i32) {
+        self.send(Command::ApplySyncToDeviceSources(SourceId::from_raw(
+            id as u32,
+        )));
     }
 
     /// The Source settings window was closed: its content is dropped.
@@ -4990,6 +5019,8 @@ impl StudioUi {
         self.source_targets.set_vec(Vec::new());
         self.marks.set_vec(Vec::new());
         self.send(Command::CloseSourceSettings);
+        self.sync_measure.set_vec(Vec::new());
+        self.send(Command::CloseSyncMeasure);
         self.refresh_existing();
         self.refresh_global_existing();
         self.refresh_marks();
@@ -5404,6 +5435,10 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_global_existing();
             }
+            Update::SyncMeasure(view) => match view {
+                Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
+                None => self.sync_measure.set_vec(Vec::new()),
+            },
             Update::SourceSettings(view) => {
                 let (data, choices) = source_settings_data(&view);
                 self.source_settings.set_vec(vec![data]);
@@ -5849,6 +5884,8 @@ impl StudioUi {
                     scene_level: self.levels_edit(r),
                     scene_entry: r.heard.is_some(),
                     own_volume_text: fader::volume_text(r.audio.volume).into(),
+                    device_peers: r.device_peers.join(", ").into(),
+                    peer_count: r.device_peers.len() as i32,
                     global: r.global,
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
@@ -6173,6 +6210,94 @@ pub struct Applied {
         Option<rbs_gpu::share::PreviewEndpoint>,
         rbs_app::studio_host::ProjectorState,
     )>,
+}
+
+/// What the Measure sync offset window shows, as `SyncMeasureData` codes (see
+/// `studio.slint`).
+fn sync_measure_data(v: &SyncMeasureView) -> SyncMeasureData {
+    use rbs_api::types::SyncMeasureFailure as F;
+    let mut d = SyncMeasureData {
+        source: v.source.get() as i32,
+        name: v.name.as_str().into(),
+        current: v.current_ms,
+        refs: ModelRc::new(VecModel::from(
+            v.references
+                .iter()
+                .map(|(_, n)| SharedString::from(n.as_str()))
+                .collect::<Vec<_>>(),
+        )),
+        ref_ids: ModelRc::new(VecModel::from(
+            v.references
+                .iter()
+                .map(|(id, _)| id.get() as i32)
+                .collect::<Vec<_>>(),
+        )),
+        ref_index: v
+            .reference
+            .and_then(|r| v.references.iter().position(|(id, _)| *id == r))
+            .map_or(-1, |i| i as i32),
+        ..SyncMeasureData::default()
+    };
+    match v.phase {
+        SyncMeasurePhase::Ready => d.phase = 0,
+        SyncMeasurePhase::Running {
+            pairs,
+            sound,
+            picture,
+            progress,
+        } => {
+            d.phase = 1;
+            d.pairs = pairs.min(i32::MAX as u32) as i32;
+            d.sound = sound;
+            d.picture = picture;
+            d.progress = progress;
+        }
+        SyncMeasurePhase::Done {
+            suggested_ms,
+            measured_ms,
+            clamped,
+            pairs,
+            spread_ms,
+        } => {
+            d.phase = 2;
+            d.suggested = suggested_ms;
+            d.measured = measured_ms;
+            d.clamped = clamped;
+            d.pairs = pairs.min(i32::MAX as u32) as i32;
+            d.spread = spread_ms.round() as i32;
+        }
+        SyncMeasurePhase::Failed {
+            reason,
+            onset_filter,
+        } => {
+            d.phase = 3;
+            d.reason = match reason {
+                F::TooFewClaps => 0,
+                F::NoPictureMotion => 1,
+                F::Inconsistent => 2,
+                F::NotHeard => 3,
+                F::SourceClosed => 4,
+                F::OffsetChanged => 5,
+                F::ChainChanged => 6,
+                F::StudioRestarted => 7,
+                F::Cancelled => 8,
+                _ => 9,
+            };
+            d.onset_filter = onset_filter;
+        }
+        SyncMeasurePhase::Refused(r) => {
+            d.phase = 4;
+            d.refusal = match r {
+                SyncMeasureRefusal::Busy => 0,
+                SyncMeasureRefusal::NotHeard => 1,
+                SyncMeasureRefusal::SourceClosed => 2,
+                SyncMeasureRefusal::NoReference => 3,
+                SyncMeasureRefusal::NotPicture => 4,
+                SyncMeasureRefusal::Other => 5,
+            };
+        }
+    }
+    d
 }
 
 /// A library as `profile.list` and `collection.list` show it.

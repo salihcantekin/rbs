@@ -545,6 +545,13 @@ impl Studio {
         any
     }
 
+    /// True once after [`Studio::service`] fell a hold scene, or its sound, back
+    /// (ADR-0124 phase 2b): the host then syncs (an update), so the scene's parts
+    /// leave, and reads [`Studio::output_hold`] again.
+    pub fn take_hold_fallback(&mut self) -> bool {
+        std::mem::take(&mut self.hold_fell_back)
+    }
+
     /// Falls back every scene hold whose scene `collection` no longer has or can no
     /// longer show on its canvas (an update, a collection switched).
     pub(super) fn check_hold_scenes_in(&mut self, collection: &SceneCollection) {
@@ -652,11 +659,23 @@ impl Studio {
         sources: &SourceTypes,
     ) -> Result<Timestamp, HoldRefused> {
         let at = self.release_hold(id)?;
-        if self.hold_scenes.values().any(|r| r.released) {
+        self.settle_hold_scenes(sources);
+        Ok(at)
+    }
+
+    /// Syncs at once when a hold scene's parts are to leave: one released (its last
+    /// stream let go of it, or changed to another picture) or fallen back, or a sound
+    /// fallen back to silence. Nothing happens otherwise. The host calls it after
+    /// [`Studio::hold_output`] and when [`Studio::take_hold_fallback`] says so.
+    pub fn settle_hold_scenes(&mut self, sources: &SourceTypes) {
+        let leaving = self.hold_scenes.values().any(|r| {
+            (r.released || r.fallback.is_some()) && (r.view.is_some() || r.mixer.is_some())
+                || r.sound_fallback.is_some() && r.mixer.is_some()
+        });
+        if leaving {
             let collection = self.collection.clone();
             let _ = self.update(&collection, sources);
         }
-        Ok(at)
     }
 
     /// Puts a running stream on hold (ADR-0124 decisions 12 and 13): from the next

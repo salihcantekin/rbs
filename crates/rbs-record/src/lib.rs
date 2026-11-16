@@ -62,5 +62,5 @@ pub use studio::{
 };
 pub use studio::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
-    SyncMeasureState, SyncMeasureStatus,
+    SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
