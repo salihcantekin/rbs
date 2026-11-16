@@ -94,6 +94,7 @@ rbs-api-ipc = { path = "../rbs-api-ipc" }
 rbs-remote-settings = { path = "../rbs-remote-settings" }
 # Output profiles and scene collections on disk (ADR-0051).
 rbs-user-data = { path = "../rbs-user-data" }
+rbs-import-obs = { path = "../rbs-import-obs" }
 # Font lookup for theme font families (ADR-0057); the same version Slint uses.
 fontique = "0.11.1"
 # Panic boundaries, crash reports and unclean-exit detection (ADR-0055).
