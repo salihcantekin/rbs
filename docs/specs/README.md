@@ -22,6 +22,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [video-filters.md](video-filters.md) | Draft | `rbs-filters` (filter type trait, filter node, catalogue, conformance), `rbs-sources`, `rbs-record` (ADR-0062) |
 | [audio-filters.md](audio-filters.md) | Draft | `rbs-audio-filters` (audio filter type trait, DSP, filter node, Gain, Noise gate, conformance), `rbs-params` (ADR-0082) |
 | [virtual-camera.md](virtual-camera.md) | Draft | `rbs-vcam` (port, conformance), `rbs-vcam-ring` (frame ring), `rbs-vcam-*` adapters, `rbs-nodes` (virtual camera node), `rbs-record` (ADR-0066) |
+| [text-port.md](text-port.md) | Draft | `rbs-text` (text rendering port, conformance), `rbs-text-parley` (adapter), `rbs-text-test` (fake). ADR-0129 |
 | [scene-sources.md](scene-sources.md) | Draft | `rbs-sources` (built-in source types, adapter registry for sources, instances for bound sources) |
 | [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
