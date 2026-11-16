@@ -245,6 +245,10 @@ pub struct StudioUi {
     library_thumb_height: u32,
     /// The selected source's id (-1 none). The Sources rows follow this.
     pub selected: i32,
+    /// What the attribute clipboard holds (ADR-0133): Paste attributes is offered only
+    /// while it holds something. Follows the host, so a copy made through the control
+    /// API counts too.
+    pub attributes_clipboard: Option<rbs_api::types::AttributesClipboard>,
     /// The source Properties last showed. It stays when the selection is cleared,
     /// so the panel is empty only when the scene has no sources.
     inspected: Cell<i32>,
@@ -569,6 +573,7 @@ impl StudioUi {
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
             selected: -1,
+            attributes_clipboard: None,
             inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
@@ -5487,6 +5492,7 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_global_existing();
             }
+            Update::AttributesClipboard(view) => self.attributes_clipboard = view,
             Update::SyncMeasure(view) => match view {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
@@ -6910,7 +6916,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing,
 /// 21 how long Show draws a hidden item (the cue itself is not an undo step),
 /// 22 the source's capture region, 23 the source's Record separately mark, 24 a
-/// scene's levels (ADR-0091; the name is the scene's).
+/// scene's levels (ADR-0091; the name is the scene's), 25 a source duplicated, 26 a
+/// source reset, 27 attributes pasted (ADR-0133; the copied source's name).
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -6940,6 +6947,9 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Region => 22,
                 EditKind::RecordSeparately => 23,
                 EditKind::SceneLevels => 24,
+                EditKind::Duplicate => 25,
+                EditKind::Reset => 26,
+                EditKind::PasteAttributes => 27,
             },
             s.name.as_str(),
         ),

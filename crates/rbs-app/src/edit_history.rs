@@ -74,6 +74,12 @@ pub enum EditKind {
     /// A scene's levels changed mode (Own or Shared) or lost an entry (ADR-0091; the
     /// name is the scene's). Level edits themselves are live, not undo steps.
     SceneLevels,
+    /// A source was duplicated (ADR-0133; the name is the original's).
+    Duplicate,
+    /// A source was reset to its defaults (ADR-0133).
+    Reset,
+    /// Attributes were pasted onto sources (ADR-0133; the name is the copied source's).
+    PasteAttributes,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or
