@@ -45,8 +45,8 @@ use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_ne
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
-    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, VideoSettings,
-    VirtualCameraSettings,
+    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, TransitionOnce, TransitionPhase,
+    VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
@@ -2319,6 +2319,8 @@ pub struct SceneList {
     pub master: MasterAudio,
     /// Collection morph defaults (ADR-0100).
     pub glide: rbs_scene::CollectionGlide,
+    /// The collection's transition (ADR-0128).
+    pub transition: rbs_scene::CollectionTransition,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -2356,6 +2358,7 @@ impl Refusal {
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
             | SceneError::InvalidShowFor
+            | SceneError::InvalidTransition
             | SceneError::ChromeNotDisplay
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
             _ => Self::Failed(edit_error(e)),
@@ -3324,6 +3327,9 @@ struct Host {
     /// scene the program shows until the next transition, so edits stay off air
     /// (ADR-0063). Never saved, never listed.
     held: Option<Held>,
+    /// The scene the last held copy was taken from, so a transition away from the
+    /// copy names the real scene on `transition.state`.
+    held_was: Option<SceneId>,
     /// The preview scene's picture endpoint last sent to the UI.
     scene_preview_sent: Option<PreviewEndpoint>,
     /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
@@ -3703,6 +3709,7 @@ fn round(
     if host.studio.take_transition_done() {
         host.studio.settle_transitions(&host.adapters.sources);
     }
+    host.publish_transitions();
     if host.studio.take_hold_fallback() {
         host.studio.settle_hold_scenes(&host.adapters.sources);
         for c in OutputCanvas::ALL {
@@ -3909,6 +3916,7 @@ fn start(
         globals_shown: Vec::new(),
         into: None,
         held,
+        held_was: None,
         scene_preview_sent: None,
         vertical_picture: false,
         vertical_preview_sent: None,
@@ -10037,6 +10045,45 @@ impl Host {
         Ok(true)
     }
 
+    /// `collection.set_transition` (ADR-0128 decision 13): merges the given parts into
+    /// the collection's transition as one undo step.
+    fn set_transition(
+        &mut self,
+        p: &rbs_api::request::SetCollectionTransition,
+    ) -> Result<bool, Refusal> {
+        let mut t = self.collection.transition();
+        if let Some(kind) = p.kind {
+            t.kind = scene_transition_kind(kind);
+        }
+        if let Some(f) = &p.fade {
+            t.fade = rbs_scene::FadeSettings {
+                duration_ms: f.duration_ms,
+                easing: scene_easing(f.easing),
+                via: match &f.via {
+                    None => None,
+                    Some(c) => Some(parse_rgb(c).ok_or_else(|| {
+                        Refusal::Invalid(format!("{c} is not a colour like #1a2b3c."))
+                    })?),
+                },
+            };
+        }
+        if let Some(s) = p.swipe {
+            t.swipe = scene_swipe(s);
+        }
+        if let Some(s) = p.slide {
+            t.slide = scene_swipe(s);
+        }
+        if self.collection.transition() == t {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_transition(t)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Transition, "", 0, vec![undo]);
+        Ok(true)
+    }
+
     fn set_source_glide(
         &mut self,
         id: SourceId,
@@ -10809,7 +10856,11 @@ impl Host {
         let program = self.scene;
         if preview == program {
             // `apply` holds the scene as it is now.
-            return Ok(self.held.take().is_some());
+            let taken = self.held.take();
+            if let Some(h) = &taken {
+                self.held_was = Some(h.from);
+            }
+            return Ok(taken.is_some());
         }
         self.collection
             .set_program(self.canvas, Some(preview))
@@ -10833,6 +10884,9 @@ impl Host {
     /// (a duplicate name, say) is taken again from the scene as it is now; if even a
     /// fresh copy does not fit, nothing is held.
     fn run_collection(&mut self) -> Option<SceneCollection> {
+        if let Some(h) = &self.held {
+            self.held_was = Some(h.from);
+        }
         self.sync_held();
         let held = self.held.as_ref()?;
         if let Some(run) = run_copy(&self.collection, self.canvas, held) {
@@ -10927,6 +10981,7 @@ impl Host {
                 .map(|c| c.master)
                 .unwrap_or_default(),
             glide: self.collection.glide(),
+            transition: self.collection.transition(),
             sources,
         }
     }
@@ -11537,7 +11592,51 @@ impl Host {
             }
             Err(e) => notify(Update::Error(e.to_string())),
         }
+        self.publish_transitions();
         self.publish(notify);
+    }
+
+    /// Publishes the transitions' starts and ends since the last call on
+    /// `transition.state` (ADR-0128 decision 13), one key per canvas. Like every state
+    /// topic the slot keeps the latest: a cut's start and end in one update reach a
+    /// slow client as `ended` with a `seq` that skipped the start.
+    fn publish_transitions(&mut self) {
+        for e in self.studio.take_transition_events() {
+            let canvas = if e.canvas == self.canvas {
+                OutputCanvas::Main
+            } else if self.vertical.map(|v| v.canvas) == Some(e.canvas) {
+                OutputCanvas::Vertical
+            } else {
+                continue;
+            };
+            // The held copy (ADR-0063) is named by its real scene.
+            let real = |id: SceneId, held: Option<SceneId>| {
+                if id.get() == HELD_IDS { held } else { Some(id) }
+            };
+            let now_held = self.held.as_ref().map(|h| h.from);
+            let (Some(from), Some(to)) = (
+                e.from.and_then(|id| real(id, self.held_was.or(now_held))),
+                e.to.and_then(|id| real(id, now_held.or(self.held_was))),
+            ) else {
+                continue;
+            };
+            let state = api::TransitionStateChanged {
+                canvas,
+                state: match e.phase {
+                    TransitionPhase::Started => api::TransitionPhase::Started,
+                    _ => api::TransitionPhase::Ended,
+                },
+                kind: api_transition_kind(e.kind),
+                duration_ms: u32::try_from(e.duration.as_millis()).unwrap_or(u32::MAX),
+                from: from.get(),
+                to: to.get(),
+                at: e.at.as_nanos(),
+            };
+            self.events
+                .changed(canvas_key(Topic::TransitionState, canvas), || {
+                    EventPayload::TransitionState(state)
+                });
+        }
     }
 
     /// Sends the rows and the undo history when they changed, and saves the collection
@@ -12302,18 +12401,22 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::CanvasTransition => {
+            C::CanvasTransition(p) => {
+                let once = transition_once(p).map_err(|e| refused(&e))?;
                 let changed = host.transition().map_err(|e| refused(&e))?;
                 if changed {
+                    host.studio.set_transition_once(once);
                     host.apply(notify);
                 }
                 Ok(Response::Done(Empty {}))
             }
             C::SceneSwitch(p) => {
+                let once = transition_once(p.once()).map_err(|e| refused(&e))?;
                 let changed = host
                     .switch_scene(SceneId::from_raw(p.scene))
                     .map_err(|e| refused(&e))?;
                 if changed {
+                    host.studio.set_transition_once(once);
                     host.apply(notify);
                 }
                 Ok(Response::Done(Empty {}))
@@ -13386,6 +13489,13 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::CollectionSetTransition(p) => {
+                let changed = host.set_transition(&p).map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::SourceSetGlide(p) => {
                 let (custom, duration_ms, easing) = match p.glide {
                     None => (false, 0, 0),
@@ -14347,6 +14457,103 @@ fn api_glide_source(g: rbs_scene::SourceGlide) -> api::Glide {
     }
 }
 
+/// A one-off transition of `canvas.transition` or `scene.switch` (ADR-0128 decision
+/// 13), refused when its duration is out of range.
+fn transition_once(p: rbs_api::request::TransitionOnce) -> Result<TransitionOnce, Refusal> {
+    if let Some(ms) = p.duration_ms
+        && ms > rbs_scene::MAX_GLIDE_MS
+    {
+        return Err(Refusal::Invalid(format!(
+            "duration_ms must be at most {}.",
+            rbs_scene::MAX_GLIDE_MS
+        )));
+    }
+    Ok(TransitionOnce::new(
+        p.kind.map(scene_transition_kind),
+        p.duration_ms,
+    ))
+}
+
+fn scene_transition_kind(k: api::TransitionKind) -> rbs_scene::TransitionKind {
+    match k {
+        api::TransitionKind::Cut => rbs_scene::TransitionKind::Cut,
+        api::TransitionKind::Fade => rbs_scene::TransitionKind::Fade,
+        api::TransitionKind::Move => rbs_scene::TransitionKind::Move,
+        api::TransitionKind::Swipe => rbs_scene::TransitionKind::Swipe,
+        api::TransitionKind::Slide => rbs_scene::TransitionKind::Slide,
+    }
+}
+
+fn api_transition_kind(k: rbs_scene::TransitionKind) -> api::TransitionKind {
+    match k {
+        rbs_scene::TransitionKind::Cut => api::TransitionKind::Cut,
+        rbs_scene::TransitionKind::Fade => api::TransitionKind::Fade,
+        rbs_scene::TransitionKind::Swipe => api::TransitionKind::Swipe,
+        rbs_scene::TransitionKind::Slide => api::TransitionKind::Slide,
+        _ => api::TransitionKind::Move,
+    }
+}
+
+fn scene_easing(e: api::GlideEasing) -> rbs_scene::GlideEasing {
+    match e {
+        api::GlideEasing::Linear => rbs_scene::GlideEasing::Linear,
+        api::GlideEasing::EaseInOut => rbs_scene::GlideEasing::EaseInOut,
+    }
+}
+
+fn scene_swipe(s: api::SwipeTransition) -> rbs_scene::SwipeSettings {
+    rbs_scene::SwipeSettings {
+        duration_ms: s.duration_ms,
+        easing: scene_easing(s.easing),
+        direction: match s.direction {
+            api::SwipeDirection::Left => rbs_scene::SwipeDirection::Left,
+            api::SwipeDirection::Right => rbs_scene::SwipeDirection::Right,
+            api::SwipeDirection::Up => rbs_scene::SwipeDirection::Up,
+            api::SwipeDirection::Down => rbs_scene::SwipeDirection::Down,
+        },
+    }
+}
+
+fn api_swipe(s: rbs_scene::SwipeSettings) -> api::SwipeTransition {
+    api::SwipeTransition {
+        duration_ms: s.duration_ms,
+        easing: api_easing(s.easing),
+        direction: match s.direction {
+            rbs_scene::SwipeDirection::Right => api::SwipeDirection::Right,
+            rbs_scene::SwipeDirection::Up => api::SwipeDirection::Up,
+            rbs_scene::SwipeDirection::Down => api::SwipeDirection::Down,
+            _ => api::SwipeDirection::Left,
+        },
+    }
+}
+
+/// The collection's transition as `scene.list` shows it (protocol 1.74).
+fn api_transition(t: rbs_scene::CollectionTransition) -> api::Transition {
+    api::Transition {
+        kind: api_transition_kind(t.kind),
+        fade: api::FadeTransition {
+            duration_ms: t.fade.duration_ms,
+            easing: api_easing(t.fade.easing),
+            via: t
+                .fade
+                .via
+                .map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
+        },
+        swipe: api_swipe(t.swipe),
+        slide: api_swipe(t.slide),
+    }
+}
+
+/// `#rrggbb` as bytes.
+fn parse_rgb(s: &str) -> Option<[u8; 3]> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
 fn api_easing(e: rbs_scene::GlideEasing) -> api::GlideEasing {
     match e {
         rbs_scene::GlideEasing::Linear => api::GlideEasing::Linear,
@@ -14385,6 +14592,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             muted: list.master.muted,
         },
         glide: api_glide(list.glide),
+        transition: api_transition(list.transition),
         sources: list
             .sources
             .iter()
