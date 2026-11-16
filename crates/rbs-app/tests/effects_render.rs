@@ -21,7 +21,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rbs_app_ui::tokens_apply::{apply_tokens, slot};
-use rbs_app_ui::{EffectsProbe, MainWindow, Shell, Theme, ThemeSlot, Tokens, ToolbarData};
+use rbs_app_ui::{
+    EffectsProbe, MainWindow, SegmentProbe, Shell, Theme, ThemeSlot, Tokens, ToolbarData,
+};
 use rbs_ui::tokens::{
     Base, CONTRAST_RULES, Color, Density, Effects, FACE_KINDS, KIND_CHECKED, KIND_DANGER,
     KIND_PRIMARY, KIND_SECONDARY, ResolvedTheme, THEME_CONTRAST_RULES, ThemeBody,
@@ -614,6 +616,7 @@ fn effects_keep_every_focus_ring_every_size_and_the_halo_zone() {
         the_probe_keeps_the_halo_zone_clear(&file);
         the_frame_bar_keeps_the_halo_zone_and_its_neighbours_rings(&file, Density::Regular);
         the_caption_row_follows_the_frame_bar(&file);
+        the_chosen_plate_keeps_its_ring_and_its_track(&file);
     });
 }
 
@@ -1020,4 +1023,108 @@ fn the_caption_row_follows_the_frame_bar(file: &TokenFile) {
         "the caption row back in Calm"
     );
     w.hide().unwrap();
+}
+
+/// The segment probe with `slot`, shown; with `keyed`, the chosen "Regular" segment of
+/// the first control has the keyboard focus (two Tabs: "Roomy", then "Regular").
+fn segments(file: &TokenFile, s: &ThemeSlot, keyed: bool) -> (Shot, String) {
+    let p = SegmentProbe::new().expect("the segment probe");
+    apply_tokens(
+        &p.global::<Theme>(),
+        &p.global::<Tokens>(),
+        file,
+        [s.clone(), s.clone()],
+    )
+    .expect("the tokens apply");
+    p.show().expect("show");
+    let _ = Shot::of(p.window());
+    if keyed {
+        for _ in 0..2 {
+            let tab: slint::SharedString = slint::platform::Key::Tab.into();
+            p.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: tab.clone() });
+            p.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: tab });
+        }
+    }
+    let shot = Shot::of(p.window());
+    let boxes = p.get_boxes().to_string();
+    p.hide().expect("hide");
+    (shot, boxes)
+}
+
+/// A SegmentedControl's chosen plate (ADR-0120 decision 14): in every setting the
+/// controls keep their places and sizes, nothing of an effect is drawn outside a
+/// control's track, and the focused plate's ring is drawn exactly as in calm, with
+/// at least min(3, its calm ratio) against the plate two pixels inside it.
+fn the_chosen_plate_keeps_its_ring_and_its_track(file: &TokenFile) {
+    for base in [Base::Dark, Base::Light] {
+        let slot_of =
+            |effects| slot(&theme(file, base, effects, Density::Regular), "").expect("a slot");
+        let colour = file.built_in_theme(base).colors["color.border.focus"];
+        let ring_px = [colour.r, colour.g, colour.b, 255];
+        let (calm_plain, calm_boxes) = segments(file, &slot_of(Effects::Calm), false);
+        let (calm_keyed, _) = segments(file, &slot_of(Effects::Calm), true);
+        let calm_ring = ring_mask(&calm_keyed, &calm_plain, ring_px);
+        assert!(
+            calm_ring.iter().any(|r| *r),
+            "{base:?}: the ring shows in calm"
+        );
+        let tracks: Vec<[usize; 4]> = calm_boxes
+            .split(';')
+            .filter(|b| !b.is_empty())
+            .map(|b| {
+                let v: Vec<usize> = b
+                    .split('|')
+                    .skip(1)
+                    .map(|n| n.parse::<f32>().unwrap() as usize)
+                    .collect();
+                [v[0], v[1], v[2], v[3]]
+            })
+            .collect();
+        let in_track = |x: usize, y: usize| {
+            tracks
+                .iter()
+                .any(|[tx, ty, w, h]| x >= *tx && x < tx + w && y >= *ty && y < ty + h)
+        };
+        // The ring's lowest row, in its middle: the plate two pixels above it.
+        let ys = (0..calm_ring.len())
+            .filter(|i| calm_ring[*i])
+            .map(|i| i / calm_plain.width);
+        let bottom = ys.max().unwrap();
+        let xs: Vec<usize> = (0..calm_plain.width)
+            .filter(|x| calm_ring[bottom * calm_plain.width + x])
+            .collect();
+        let mid = xs[xs.len() / 2];
+        let calm_ratio = colour.contrast(calm_keyed.at(mid, bottom - 2));
+        for effects in Effects::LIVELY {
+            let why = format!("{base:?} {effects:?}");
+            let (plain, boxes) = segments(file, &slot_of(effects), false);
+            assert_eq!(boxes, calm_boxes, "{why}: the controls keep their places");
+            // The Button row below is the buttons' own business: only the tracks' rows.
+            let last = tracks.iter().map(|[_, y, _, h]| y + h).max().unwrap();
+            for y in 0..last {
+                for x in 0..plain.width {
+                    if !in_track(x, y) {
+                        assert_eq!(
+                            plain.at(x, y),
+                            calm_plain.at(x, y),
+                            "{why}: ({x}, {y}) outside a track"
+                        );
+                    }
+                }
+            }
+            let (keyed, _) = segments(file, &slot_of(effects), true);
+            assert_eq!(
+                ring_mask(&keyed, &plain, ring_px),
+                calm_ring,
+                "{why}: the ring is whole"
+            );
+            let ratio = colour.contrast(keyed.at(mid, bottom - 2));
+            assert!(
+                ratio + ROUNDING >= calm_ratio.min(3.0),
+                "{why}: the ring keeps {ratio:.2} against the plate (calm {calm_ratio:.2})"
+            );
+        }
+    }
 }

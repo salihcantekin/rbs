@@ -585,6 +585,7 @@ export component Button inherits Rectangle {
         : kind == "danger" ? Theme.effects-shade-danger
         : checked ? Theme.effects-shade-checked
         : Theme.effects-shade-secondary);
+    property <bool> fx-glow: root.fx && Theme.effects-halo-blur > 0 && !focus.ring;
     property <color> fx-top: focus.ring ? face-fill
         : kind == "primary" ? (touch.pressed ? Theme.effects-top-primary-pressed : touch.has-hover ? Theme.effects-top-primary-hover : Theme.effects-top-primary-rest)
         : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.effects-top-danger-hover : Theme.effects-top-danger-rest)
@@ -1717,8 +1718,51 @@ component Segment inherits Rectangle {
     horizontal-stretch: 1;
     min-width: label.preferred-width + Tokens.space-3 * 2;
     border-radius: Tokens.radius-sm;
-    background: root.checked ? (root.enabled ? Theme.surface-overlay : Theme.surface-raised)
+    // Effects (ADR-0120 decision 14, owner 2026-11-16): the chosen plate of an enabled
+    // control is raised. Its soft shadow stays in the track's room round it, its face
+    // takes the plate's gradient, and Tactile adds a darker edge inside its bottom,
+    // never reaching the label. Glow gives it the secondary button's rim and an accent
+    // glow in that room instead of the shadow (no halo: it has neighbours). The gloss,
+    // edge, rim and glow turn off while the focus ring shows, so nothing of an effect
+    // lies under the ring. No inner glow or press: the plate neither hovers nor
+    // presses. Calm draws none of it.
+    property <bool> fx: Theme.effects-on && root.enabled && root.checked;
+    property <float> fx-stop: max(root.height > 0 ? (root.height - Tokens.type-label-line) / 2 / root.height : 0,
+        Theme.effects-stop-plate);
+    property <bool> fx-glow: root.fx && Theme.effects-plate-glow-blur > 0 && !focus.ring;
+    property <color> fx-top: focus.ring ? Theme.surface-overlay : Theme.effects-top-plate-rest;
+    background: root.fx ? transparent
+        : root.checked ? (root.enabled ? Theme.surface-overlay : Theme.surface-raised)
         : touch.has-hover ? Theme.surface-raised : transparent;
+    // The shadow's base, a sibling of the face, so the face's clip never cuts it.
+    if root.fx: Rectangle {
+        width: root.width;
+        height: root.height;
+        border-radius: root.border-radius;
+        background: Theme.surface-overlay;
+        // Glow: an accent glow in the track's room instead of the dark shadow.
+        drop-shadow-blur: root.fx-glow ? Theme.effects-plate-glow-blur : Theme.effects-plate-shadow-blur;
+        drop-shadow-offset-y: root.fx-glow ? 0px : Theme.effects-plate-shadow-offset;
+        drop-shadow-color: root.fx-glow ? Theme.effects-halo : Theme.effects-shadow;
+    }
+    // The face, clipped so the edge follows its rounded corners.
+    if root.fx: Rectangle {
+        width: root.width;
+        height: root.height;
+        border-radius: root.border-radius;
+        clip: true;
+        background: Theme.effects-shade-plate
+            ? @linear-gradient(180deg, root.fx-top 0%, Theme.surface-overlay root.fx-stop * 100%, Theme.effects-bottom-plate-rest 100%)
+            : Theme.surface-overlay;
+        // Glow: the secondary button's rim, which stays apart from a checked outline.
+        border-width: root.fx-glow && Theme.effects-rim-on && !focus.ring ? Tokens.size-border : 0px;
+        border-color: Theme.effects-rim-secondary;
+        if Theme.effects-plate-key-edge > 0 && !focus.ring: Rectangle {
+            y: parent.height - Theme.effects-plate-key-edge;
+            height: Theme.effects-plate-key-edge;
+            background: Theme.effects-key-plate;
+        }
+    }
     accessible-role: button;
     accessible-label: root.accessible-name;
     accessible-checked: root.checked;
