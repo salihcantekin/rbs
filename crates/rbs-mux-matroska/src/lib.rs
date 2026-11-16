@@ -9,8 +9,9 @@
 //! (`mux.live`).
 //!
 //! Behaviour:
-//! - `begin` emits the EBML header, the Segment start, `Info` and `Tracks` as one
-//!   `Header` chunk.
+//! - `begin` emits the EBML header, the Segment start, a 128-byte `Void`, `Info` and
+//!   `Tracks` as one `Header` chunk. The `Void` is room for a `SeekHead` that
+//!   [`append_chapters`] writes after the stop; readers skip it.
 //! - Blocks are collected and emitted as one `Media` chunk per Cluster (sized exactly:
 //!   one allocation per Cluster, one copy of the media for length-prefixed input and
 //!   AAC, two for Annex B input), in decode order across tracks, as `SimpleBlock`s
@@ -39,11 +40,26 @@
 //!   data. An in-band parameter set that differs from the extradata is refused
 //!   (`InvalidPacket`). Annex B HEVC is refused until hvcC can be built from it.
 //!
-//! Limitations: H.264, HEVC (length-prefixed), AV1 (OBU samples) and AAC (Opus to come); no Cues, chapters or
+//! Chapters (ADR-0089 decision 14): [`append_chapters`] adds a `Chapters` element (one
+//! default edition, one atom per chapter with its start and title, language `und`) to
+//! a finished file this crate wrote, after it is closed, outside the mux path. Chapter
+//! times count from the file's first sample, the earliest Cluster timestamp (a late
+//! stream can start a later Cluster earlier, at most 30 s after the first). It
+//! appends the element at the Segment's end, patches the Segment size and turns the
+//! reserved `Void` into a `SeekHead` indexing `Info`, `Tracks` and `Chapters`, syncing
+//! after each write, so the file is valid after each one. A file with an unknown
+//! Segment size (an unclean end, an output that could not seek), without the
+//! reserved `Void` (another writer, or chapters added already) or without a Cluster
+//! is refused and left untouched.
+//!
+//! Limitations: H.264, HEVC (length-prefixed), AV1 (OBU samples) and AAC (Opus to come); no Cues or
 //! tags; no WebM doc type yet (it needs VP9/AV1 and Opus).
 
+mod chapters;
 mod ebml;
 mod muxer;
+
+pub use chapters::{Chapter, ChapterError, MAX_TITLE_BYTES, append_chapters};
 
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::ContainerId;

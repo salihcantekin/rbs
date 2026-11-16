@@ -52,9 +52,9 @@ pub use recording::{
 pub use select::{Chosen, scheme_of};
 pub use studio::{
     DEFAULT_GIVE_WAY_SHARE, END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE,
-    FilterSettingsAdjusted, IsoAudioStart, IsoAudioStarted, IsoImageTrack, IsoSkip, IsoSkipped,
-    IsoVideoStart, IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES, MAX_LAYERS, MAX_OUTPUTS,
-    MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings, PauseRefused, PauseState,
-    PlannedOutput, ReplaySettings, SharedPause, StartPlanRequest, Studio, StudioSettings, Updated,
-    VirtualCameraSettings, VirtualCameraState,
+    FilterSettingsAdjusted, HoldRefused, HoldState, IsoAudioStart, IsoAudioStarted, IsoImageTrack,
+    IsoSkip, IsoSkipped, IsoVideoStart, IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES,
+    MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings,
+    PauseRefused, PauseState, PlannedOutput, ReplaySettings, SharedPause, StartPlanRequest, Studio,
+    StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
 };

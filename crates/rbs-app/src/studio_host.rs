@@ -35,6 +35,7 @@ use rbs_codec::caps as codec_caps;
 use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
 use rbs_core::fault::SourceFault;
 use rbs_core::media::{CodecId, ContainerId, Size};
+use rbs_core::pause::HoldPicture;
 use rbs_core::registry::{AdapterFactory, Registry};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::FrameRate;
@@ -1146,6 +1147,10 @@ pub enum Command {
     /// Remove these markers, each a recording's canvas and the marker's index (the
     /// marker notice's Undo); answered with [`Update::Markers`].
     RemoveMarkers(Vec<(OutputCanvas, u32)>),
+    /// Pause every running recording, or resume them all when none runs unpaused
+    /// (`record.pause_toggle`, ADR-0124); answered with [`Update::RecordPause`], or
+    /// [`Update::Error`] when refused.
+    PauseRecording,
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -1464,6 +1469,14 @@ struct RecordingMarkers {
     /// When the recording stopped, from `t0` (master time): the end of a pause still
     /// open then (ADR-0124 decision 10).
     stopped_ns: u64,
+    /// When the marker flush runs (host clock, ns): armed by the first marker not
+    /// yet on disk, `None` while nothing waits (ADR-0089 decision 5).
+    flush_at: Option<u64>,
+    /// A flush wrote the manifest during the recording.
+    flushed: bool,
+    /// The master is Matroska: a clean stop adds the markers as chapters
+    /// (ADR-0089 decision 14).
+    matroska: bool,
 }
 
 impl RecordingMarkers {
@@ -1492,6 +1505,9 @@ impl RecordingMarkers {
                 settings,
                 scene,
                 stopped_ns: 0,
+                flush_at: None,
+                flushed: false,
+                matroska: false,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1512,6 +1528,9 @@ impl RecordingMarkers {
             settings,
             scene,
             stopped_ns: 0,
+            flush_at: None,
+            flushed: false,
+            matroska: false,
         })
     }
 
@@ -1589,6 +1608,54 @@ impl RecordingMarkers {
             .map_err(|e| e.to_string())
     }
 
+    /// The markers as chapters inside a Matroska master (ADR-0089 decision 14), after
+    /// the stop rewrite of a clean stop. Only when the master's timing is known (the
+    /// span is tracked for separate files and the editor project setting): a chapter
+    /// is at `t_ns - start_offset_ns`, from the file's first sample. A marker before it
+    /// is on it; one after the master's end is left out (the manifest keeps it). A file
+    /// that cannot take chapters is left as it is; only a read or write failure is an
+    /// error.
+    fn write_chapters(&self) -> Result<(), String> {
+        if !self.matroska || self.log.markers().is_empty() {
+            return Ok(());
+        }
+        let Some((file, timing)) = self
+            .manifest
+            .files
+            .iter()
+            .find(|f| f.role == "master")
+            .and_then(|f| f.timing.map(|t| (f, t)))
+        else {
+            return Ok(());
+        };
+        let mut chapters: Vec<rbs_mux_matroska::Chapter<'_>> = self
+            .log
+            .markers()
+            .iter()
+            .map(|m| rbs_mux_matroska::Chapter {
+                start_ns: m.t_ns.saturating_sub(timing.start_offset_ns),
+                title: &m.label,
+            })
+            .filter(|c| c.start_ns <= timing.duration_ns)
+            .collect();
+        if chapters.is_empty() {
+            return Ok(());
+        }
+        chapters.sort_by_key(|c| c.start_ns);
+        let mut media = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.dir.join(&file.file_name))
+            .map_err(|e| e.to_string())?;
+        match rbs_mux_matroska::append_chapters(&mut media, &chapters) {
+            Ok(()) => Ok(()),
+            Err(rbs_mux_matroska::ChapterError::Io(e)) => Err(e.to_string()),
+            // Written by another Matroska adapter, or by an output that could not
+            // seek: the file takes no chapters, and the manifest keeps the markers.
+            Err(_) => Ok(()),
+        }
+    }
+
     /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
     /// markers and the manifest are in file time. A pause changes the manifest.
     fn paused(&mut self, pause: bool, at_ns: u64) {
@@ -1605,6 +1672,11 @@ impl RecordingMarkers {
         // A plain recording writes a manifest only when it has markers or writes an
         // editor project (ADR-0089 decision 5, owner choice 1).
         if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
+            // A flush wrote one for markers since taken back: it goes.
+            if self.flushed {
+                self.flushed = false;
+                let _ = std::fs::remove_file(self.dir.join(&self.name));
+            }
             return Ok(());
         }
         if !self.dirty && !self.log.has_pending() {
@@ -1616,6 +1688,35 @@ impl RecordingMarkers {
         rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
         self.log.mark_flushed();
         self.dirty = false;
+        Ok(())
+    }
+
+    /// The marker flush (ADR-0089 decision 5): the manifest as it stands, with the
+    /// markers so far, rewritten while the recording runs, so a crash loses at most
+    /// the last 5 seconds of markers. `now_ns` is the host clock. The stop still
+    /// rewrites it whole.
+    fn flush(&mut self, now_ns: u64) -> Result<(), String> {
+        self.flush_at = None;
+        if !self.log.has_pending() {
+            return Ok(());
+        }
+        if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
+            // Every marker was taken back: a plain recording keeps no manifest.
+            self.log.mark_flushed();
+            if self.flushed {
+                self.flushed = false;
+                return std::fs::remove_file(self.dir.join(&self.name)).map_err(|e| e.to_string());
+            }
+            return Ok(());
+        }
+        self.manifest.markers = self.log.markers().to_vec();
+        let ran = now_ns.saturating_sub(self.log.t0_ns());
+        self.manifest.pauses = self.log.pauses().rows(ran);
+        rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
+        self.log.mark_flushed();
+        self.flushed = true;
+        // The stop rewrite still runs: an open pause and the stop fields change.
+        self.dirty = true;
         Ok(())
     }
 
@@ -1682,6 +1783,49 @@ fn pause_refusal(e: rbs_record::PauseRefused) -> String {
     }
 }
 
+/// How long a marker waits before the manifest is rewritten with it (ADR-0089
+/// decision 5).
+const MARKER_FLUSH_NS: u64 = 5_000_000_000;
+
+/// `Ok` when an entry changed; else the first refusal, or `conflict` with `none`.
+fn changed_or_first_refusal(
+    outputs: &[api::OutputEntry],
+    refusals: Vec<ApiError>,
+    none: &str,
+) -> Result<(), ApiError> {
+    if outputs.iter().any(|o| {
+        matches!(
+            o.outcome,
+            api::OutputOutcome::Paused | api::OutputOutcome::Resumed | api::OutputOutcome::Held
+        )
+    }) {
+        return Ok(());
+    }
+    Err(refusals
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| ApiError::new(ErrorKind::Conflict, none)))
+}
+
+fn hold_refusal(e: rbs_record::HoldRefused) -> String {
+    use rbs_record::HoldRefused as R;
+    match e {
+        R::NotHoldable => "this stream cannot be held".to_owned(),
+        R::PictureUnsupported => {
+            "the hold picture cannot be made for this stream's video format".to_owned()
+        }
+        e => e.to_string(),
+    }
+}
+
+/// The engine's hold picture for the control API's.
+fn hold_picture(p: Option<rbs_api::request::HoldPicture>) -> HoldPicture {
+    match p.unwrap_or_default() {
+        rbs_api::request::HoldPicture::Freeze => HoldPicture::Freeze,
+        rbs_api::request::HoldPicture::Black => HoldPicture::Black,
+    }
+}
+
 fn slot(c: OutputCanvas) -> usize {
     match c {
         OutputCanvas::Main => 0,
@@ -1737,6 +1881,20 @@ struct CanvasOutputs {
     stream_state: api::StreamState,
     /// The running recording's markers (ADR-0089); `None` while nothing records.
     markers: Option<RecordingMarkers>,
+    /// The stream's hold as the host keeps it (ADR-0124 decision 14).
+    hold: HoldPlan,
+}
+
+/// What the host remembers about a stream's hold (ADR-0124 decision 14).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct HoldPlan {
+    /// A hold asked for that waits until the recording sharing the stream's encoder
+    /// is paused: the studio holds a shared chain only then, so the hold picture
+    /// never reaches the file.
+    pending: Option<HoldPicture>,
+    /// The hold paused the recording: Resume stream resumes it, and never a
+    /// recording the user paused.
+    paused_recording: bool,
 }
 
 impl Default for CanvasOutputs {
@@ -1750,6 +1908,7 @@ impl Default for CanvasOutputs {
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
             markers: None,
+            hold: HoldPlan::default(),
         }
     }
 }
@@ -2028,6 +2187,16 @@ impl PartialEq for LoudnessView {
     }
 }
 
+/// A running recording's pause state for the window (ADR-0124), as of the moment it
+/// was sent: the window moves its clocks on from there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordPause {
+    /// It is paused now.
+    pub paused: bool,
+    /// What the files hold: the time recorded, pauses left out.
+    pub recorded_ns: u64,
+}
+
 /// A marker just added, for the window's notice (ADR-0089 decision 10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerNote {
@@ -2214,6 +2383,10 @@ pub enum Update {
         /// The marker just added, if this update is for one.
         placed: Option<MarkerNote>,
     },
+    /// The running recordings' pause states (main, vertical; `None` while that canvas
+    /// does not record), after a pause or resume through the window or the control
+    /// API (ADR-0124).
+    RecordPause([Option<RecordPause>; 2]),
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -3190,6 +3363,9 @@ fn round(
                 host.end_stream(c, Some(why), notify);
             } else {
                 host.report_link(c, notify);
+                if let Some(left) = host.drive_hold(c) {
+                    wait = wait.min(left);
+                }
             }
         }
     }
@@ -3207,6 +3383,9 @@ fn round(
         wait = wait.min(left);
     }
     if let Some(left) = host.drive_calibration() {
+        wait = wait.min(left);
+    }
+    if let Some(left) = host.drive_marker_flush(now, notify) {
         wait = wait.min(left);
     }
     host.report_monitor(notify);
@@ -4178,6 +4357,23 @@ impl Host {
                     );
                 }
             }
+            Command::PauseRecording => {
+                let command = rbs_api::Command::RecordPauseToggle(rbs_api::request::OnCanvases {
+                    canvas: Some(api::OutputTarget::All),
+                });
+                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
+                    Ok(Ok(_)) => {}
+                    // The window's toast says it in a sentence of its own.
+                    Ok(Err(e)) => notify(Update::Error(format!(
+                        "The recording could not pause or resume: {}.",
+                        e.message
+                    ))),
+                    Err(_) => {
+                        self.caught = true;
+                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+                    }
+                }
+            }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {
                     notify(Update::ReplaySaved(Err(why)));
@@ -4671,6 +4867,14 @@ impl Host {
         };
         let pause =
             pause.unwrap_or_else(|| !self.studio.output_pause(id).is_some_and(|p| p.paused));
+        if !pause && self.outs[slot(c)].hold.pending.is_some() {
+            // The stream's hold waits for this pause (ADR-0124 decision 14), as the
+            // studio refuses while the hold is on.
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                pause_refusal(rbs_record::PauseRefused::Held),
+            ));
+        }
         let done = if pause {
             self.studio.pause_output(id)
         } else {
@@ -4708,6 +4912,111 @@ impl Host {
             *paused_ms = progress.paused_ns / 1_000_000;
             *recorded_ms = progress.recorded_ns / 1_000_000;
             self.set_record_state(c, state);
+        }
+    }
+
+    /// Puts canvas `c`'s stream on hold (`Some(true)`) with `picture`, takes it back
+    /// to the program (`Some(false)`), or toggles (`None`) (ADR-0124 decisions 12 to
+    /// 14). A stream sharing its encoder with the recording pauses that recording
+    /// first and holds once the pause has begun; Resume stream resumes only a
+    /// recording its hold paused. Returns whether the stream is on hold now.
+    fn hold_stream(
+        &mut self,
+        c: OutputCanvas,
+        hold: Option<bool>,
+        picture: HoldPicture,
+    ) -> Result<bool, ApiError> {
+        let conflict = |m: String| ApiError::new(ErrorKind::Conflict, m);
+        let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
+            return Err(conflict("nothing streams".into()));
+        };
+        let hold = hold.unwrap_or_else(|| !self.stream_held(c));
+        if hold {
+            match self.studio.hold_output(id, picture) {
+                Ok(_) => self.outs[slot(c)].hold.pending = None,
+                Err(rbs_record::HoldRefused::SharedWithRecording) => {
+                    if self.outs[slot(c)].hold.pending == Some(picture) {
+                        return Err(conflict("the stream is already on hold".into()));
+                    }
+                    let paused = self.outs[slot(c)]
+                        .recording
+                        .as_ref()
+                        .and_then(|r| self.studio.output_pause(r.1))
+                        .is_some_and(|p| p.paused);
+                    if !paused {
+                        self.pause_recording(c, Some(true))?;
+                        self.outs[slot(c)].hold.paused_recording = true;
+                    }
+                    self.outs[slot(c)].hold.pending = Some(picture);
+                }
+                Err(e) => return Err(conflict(hold_refusal(e))),
+            }
+        } else {
+            if !self.stream_held(c) {
+                return Err(conflict("the stream is not on hold".into()));
+            }
+            if self.outs[slot(c)].hold.pending.take().is_none() {
+                self.studio
+                    .release_hold(id)
+                    .map_err(|e| conflict(hold_refusal(e)))?;
+            }
+            if std::mem::take(&mut self.outs[slot(c)].hold.paused_recording) {
+                // Ended meanwhile, or already resumed: nothing to resume.
+                let _ = self.pause_recording(c, Some(false));
+            }
+        }
+        self.refresh_stream_hold(c);
+        Ok(hold)
+    }
+
+    /// Canvas `c`'s stream is on hold, or a hold waits for its recording's pause.
+    fn stream_held(&self, c: OutputCanvas) -> bool {
+        let o = &self.outs[slot(c)];
+        o.hold.pending.is_some()
+            || o.streaming
+                .as_ref()
+                .and_then(|s| self.studio.output_hold(s.2))
+                .is_some_and(|h| h.picture.is_some())
+    }
+
+    /// Holds a stream whose hold waits for its recording's pause, once that pause
+    /// has begun. Returns how soon to look again while it still waits.
+    fn drive_hold(&mut self, c: OutputCanvas) -> Option<Duration> {
+        let picture = self.outs[slot(c)].hold.pending?;
+        let id = self.outs[slot(c)].streaming.as_ref()?.2;
+        match self.studio.hold_output(id, picture) {
+            Err(rbs_record::HoldRefused::SharedWithRecording) => {
+                let paused = self.outs[slot(c)]
+                    .recording
+                    .as_ref()
+                    .and_then(|r| self.studio.output_pause(r.1))
+                    .is_some_and(|p| p.paused);
+                if paused {
+                    // The pause begins within two render periods.
+                    return Some(ENDING_WAIT);
+                }
+                // The recording was resumed meanwhile: the hold is given up.
+                self.outs[slot(c)].hold = HoldPlan::default();
+            }
+            Ok(_) | Err(_) => self.outs[slot(c)].hold.pending = None,
+        }
+        self.refresh_stream_hold(c);
+        None
+    }
+
+    /// Puts the hold fields of `c`'s live stream into its stream state, as of now
+    /// (published as a change, never per frame).
+    fn refresh_stream_hold(&mut self, c: OutputCanvas) {
+        let Some(id) = self.outs[slot(c)].streaming.as_ref().map(|s| s.2) else {
+            return;
+        };
+        let pending = self.outs[slot(c)].hold.pending.is_some();
+        let hold = self.studio.output_hold(id).unwrap_or_default();
+        let mut state = self.outs[slot(c)].stream_state.clone();
+        if let api::StreamState::Live { held, held_ms, .. } = &mut state {
+            *held = pending || hold.picture.is_some();
+            *held_ms = hold.held_ns / 1_000_000;
+            self.set_stream_state(c, state);
         }
     }
 
@@ -5756,7 +6065,11 @@ impl Host {
                 r.editor_project,
                 r.markers,
                 scene,
-            );
+            )
+            .map(|mut m| {
+                m.matroska = r.container == ContainerId::Matroska;
+                m
+            });
             // Tracked together with the master, after the last panic point of the
             // start, so recovery never finds files without their master (ADR-0055).
             let (tracks, skipped) = iso
@@ -5970,6 +6283,53 @@ impl Host {
                 format!("the recording has no marker {index}"),
             ))
         }
+    }
+
+    /// The marker flush timers (ADR-0089 decision 5): a recording with a marker not
+    /// yet on disk arms a one-shot 5-second timer; when it is due the manifest is
+    /// rewritten. Returns the time to the next one. No marker, no timer (P13).
+    fn drive_marker_flush(
+        &mut self,
+        now: rbs_core::time::Timestamp,
+        notify: &dyn Fn(Update),
+    ) -> Option<Duration> {
+        let now_ns = now.as_nanos();
+        let mut next: Option<u64> = None;
+        for c in OutputCanvas::ALL {
+            let Some(m) = self.outs[slot(c)].markers.as_mut() else {
+                continue;
+            };
+            if !m.log.has_pending() {
+                continue;
+            }
+            let due = *m
+                .flush_at
+                .get_or_insert(now_ns.saturating_add(MARKER_FLUSH_NS));
+            if now_ns < due {
+                next = Some(next.map_or(due, |n| n.min(due)));
+                continue;
+            }
+            if let Err(e) = m.flush(now_ns) {
+                notify(Update::Error(format!(
+                    "The markers could not be saved yet: {e}"
+                )));
+            }
+        }
+        next.map(|due| Duration::from_nanos(due.saturating_sub(now_ns)))
+    }
+
+    /// [`Update::RecordPause`]: each running recording's pause state now.
+    fn pause_update(&self) -> Update {
+        let state = |c: OutputCanvas| {
+            let o = &self.outs[slot(c)];
+            let id = o.recording.as_ref().filter(|_| !o.ending)?.1;
+            let progress = self.studio.output_counters(id)?;
+            Some(RecordPause {
+                paused: progress.paused,
+                recorded_ns: progress.recorded_ns,
+            })
+        };
+        Update::RecordPause([state(OutputCanvas::Main), state(OutputCanvas::Vertical)])
     }
 
     /// [`Update::Markers`]: each running recording's manual marker count and, after
@@ -6206,6 +6566,7 @@ impl Host {
         let o = &mut self.outs[slot(c)];
         o.ending = false;
         o.auto_recording = false;
+        o.hold.paused_recording = false;
         let protected = o.protection_stop.take();
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
         // recording still tracked and ends it again (ADR-0055 decision 3).
@@ -6246,10 +6607,24 @@ impl Host {
             let why = match markers.write() {
                 Err(e) => Some(format!("The markers could not be saved: {e}.")),
                 // The project only after the manifest is on disk (ADR-0089 decision 10).
-                Ok(()) => markers
-                    .write_project()
-                    .err()
-                    .map(|e| format!("The editor project was not written: {e}.")),
+                Ok(()) => {
+                    let project = markers
+                        .write_project()
+                        .err()
+                        .map(|e| format!("The editor project was not written: {e}."));
+                    // Inside the media only after a clean stop (ADR-0089 decision 14).
+                    let chapters = if failure.is_none() {
+                        markers.write_chapters().err().map(|e| {
+                            format!("The markers could not be added to the file as chapters: {e}.")
+                        })
+                    } else {
+                        None
+                    };
+                    match (project, chapters) {
+                        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+                        (a, b) => a.or(b),
+                    }
+                }
             };
             if let Some(why) = why {
                 failure = Some(match failure {
@@ -6427,6 +6802,8 @@ impl Host {
         // The size this stream starts with. A later settings change waits for the
         // next start (ADR-0102). `None` stays the canvas.
         out.size = r.size;
+        // Every stream can be held (ADR-0124 decision 12).
+        out.holdable = true;
         let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
         // Before the host tracks it: recovery stops an output a panicked start left
         // running (ADR-0055 decision 3).
@@ -6446,6 +6823,8 @@ impl Host {
                 reconnect_attempts: 0,
                 video_encoder: video_encoder.clone(),
                 audio_encoder: audio_encoder.clone(),
+                held: false,
+                held_ms: 0,
             },
         );
         self.mark_stream(c, true);
@@ -6684,6 +7063,8 @@ impl Host {
                 protocol,
                 video_encoder,
                 audio_encoder,
+                held,
+                held_ms,
                 ..
             } = &self.outs[slot(c)].stream_state
             {
@@ -6694,6 +7075,8 @@ impl Host {
                     reconnect_attempts: link.reconnect_attempts,
                     video_encoder: video_encoder.clone(),
                     audio_encoder: audio_encoder.clone(),
+                    held: *held,
+                    held_ms: *held_ms,
                 };
                 self.set_stream_state(c, state);
             }
@@ -6723,6 +7106,7 @@ impl Host {
         });
         let failure = failure.or(failed);
         self.outs[slot(c)].streaming = None;
+        self.outs[slot(c)].hold = HoldPlan::default();
         self.mark_stream(c, false);
         // A recording started with the stream outlives a stream that failed: it is the
         // copy of what the viewers missed. From now on it is the user's to stop.
@@ -11497,6 +11881,10 @@ impl ApiTarget<'_> {
             C::RecordPause(p) => self.pause_asked(p, Some(true)),
             C::RecordResume(p) => self.pause_asked(p, Some(false)),
             C::RecordPauseToggle(p) => self.pause_asked(p, None),
+            C::StreamHold(p) => self.hold_asked(p.target(), Some(true), p.picture),
+            C::StreamResume(p) => self.hold_asked(p.target(), Some(false), None),
+            C::StreamHoldToggle(p) => self.hold_asked(p.target(), None, p.picture),
+            C::OutputBreakToggle => self.break_toggle(),
             C::MarkerAdd(p) => {
                 let added = host.add_marker(&p)?;
                 notify(host.markers_update(Some(&added)));
@@ -12115,6 +12503,7 @@ impl ApiTarget<'_> {
                 api::OutputKind::Stream => (out.streaming.is_some(), false),
             };
             let entry = |outcome| api::OutputEntry {
+                kind: None,
                 canvas: c,
                 outcome,
                 video_encoder: None,
@@ -12129,6 +12518,7 @@ impl ApiTarget<'_> {
                     return Err(e);
                 }
                 outputs.push(api::OutputEntry {
+                    kind: None,
                     error: Some(api::OutputError::from(&e)),
                     ..entry(api::OutputOutcome::Refused)
                 });
@@ -12157,6 +12547,7 @@ impl ApiTarget<'_> {
             };
             match started {
                 Ok(Response::RecordStarted(r)) => outputs.push(api::OutputEntry {
+                    kind: None,
                     video_encoder: Some(r.video_encoder),
                     audio_encoder: r.audio_encoder,
                     estimate: r.estimate,
@@ -12164,6 +12555,7 @@ impl ApiTarget<'_> {
                     ..entry(api::OutputOutcome::Started)
                 }),
                 Ok(Response::StreamStarted(r)) => outputs.push(api::OutputEntry {
+                    kind: None,
                     video_encoder: Some(r.video_encoder),
                     audio_encoder: r.audio_encoder,
                     ..entry(api::OutputOutcome::Started)
@@ -12171,6 +12563,7 @@ impl ApiTarget<'_> {
                 Ok(_) => outputs.push(entry(api::OutputOutcome::Started)),
                 Err(e) if c == OutputCanvas::Main => return Err(e),
                 Err(e) => outputs.push(api::OutputEntry {
+                    kind: None,
                     error: Some(api::OutputError::from(&e)),
                     ..entry(api::OutputOutcome::Refused)
                 }),
@@ -12207,8 +12600,171 @@ impl ApiTarget<'_> {
         let host = &mut *self.host;
         let c = host.api_canvas_of(Some(one))?;
         host.pause_recording(c, pause)?;
+        notify(host.pause_update());
         host.publish(notify);
         Ok(Response::Done(Empty {}))
+    }
+
+    /// `stream.hold` (`Some(true)`), `stream.resume` (`Some(false)`) or
+    /// `stream.hold_toggle` (`None`) on the canvases `target` names (control API
+    /// 1.64). With `all`: every live stream, main first; a toggle holds them all when
+    /// any is not held, else resumes them all.
+    fn hold_asked(
+        &mut self,
+        target: api::OutputTarget,
+        hold: Option<bool>,
+        picture: Option<rbs_api::request::HoldPicture>,
+    ) -> Result<Response, ApiError> {
+        let picture = hold_picture(picture);
+        let notify = self.notify;
+        let host = &mut *self.host;
+        if let Some(one) = target.single() {
+            let c = host.api_canvas_of(Some(one))?;
+            host.hold_stream(c, hold, picture)?;
+            notify(host.pause_update());
+            host.publish(notify);
+            return Ok(Response::Done(Empty {}));
+        }
+        let canvases = host.output_canvases();
+        let live = |host: &Host, c: OutputCanvas| host.outs[slot(c)].streaming.is_some();
+        let hold = hold.unwrap_or_else(|| {
+            canvases
+                .iter()
+                .any(|&c| live(host, c) && !host.stream_held(c))
+        });
+        let mut outputs = Vec::new();
+        let mut refusals = Vec::new();
+        for c in canvases {
+            let (outcome, error) = if !live(host, c) {
+                (api::OutputOutcome::NotRunning, None)
+            } else {
+                match host.hold_stream(c, Some(hold), picture) {
+                    Ok(true) => (api::OutputOutcome::Held, None),
+                    Ok(false) => (api::OutputOutcome::Resumed, None),
+                    Err(e) => {
+                        let error = api::OutputError::from(&e);
+                        refusals.push(e);
+                        (api::OutputOutcome::Refused, Some(error))
+                    }
+                }
+            };
+            outputs.push(api::OutputEntry {
+                canvas: c,
+                kind: None,
+                outcome,
+                video_encoder: None,
+                audio_encoder: None,
+                error,
+                estimate: None,
+                skipped: Vec::new(),
+            });
+        }
+        changed_or_first_refusal(&outputs, refusals, "nothing streams")?;
+        notify(host.pause_update());
+        host.publish(notify);
+        Ok(Response::Outputs(api::OutputsResult { outputs }))
+    }
+
+    /// `output.break_toggle` (control API 1.64, ADR-0124 decision 15): when every
+    /// live stream is on hold and every running recording is paused, resumes them
+    /// all (streams first, so a recording a hold paused resumes with its stream);
+    /// otherwise holds the streams that are not held (freeze) and pauses the
+    /// recordings that are not paused. The answer lists the outputs it changed or
+    /// that refused, main first, each with its `kind`.
+    fn break_toggle(&mut self) -> Result<Response, ApiError> {
+        let notify = self.notify;
+        let host = &mut *self.host;
+        let canvases = host.output_canvases();
+        let streams: Vec<_> = canvases
+            .iter()
+            .copied()
+            .filter(|&c| host.outs[slot(c)].streaming.is_some())
+            .collect();
+        let recording = |host: &Host, c: OutputCanvas| {
+            let o = &host.outs[slot(c)];
+            o.recording.as_ref().filter(|_| !o.ending).map(|r| r.1)
+        };
+        let paused = |host: &Host, c: OutputCanvas| {
+            recording(host, c)
+                .and_then(|id| host.studio.output_pause(id))
+                .is_some_and(|p| p.paused)
+        };
+        let records: Vec<_> = canvases
+            .iter()
+            .copied()
+            .filter(|&c| recording(host, c).is_some())
+            .collect();
+        if streams.is_empty() && records.is_empty() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "nothing records or streams",
+            ));
+        }
+        let resume = streams.iter().all(|&c| host.stream_held(c))
+            && records.iter().all(|&c| paused(host, c));
+        let mut outputs = Vec::new();
+        let mut refusals = Vec::new();
+        let mut entry = |c, kind, done: Result<api::OutputOutcome, ApiError>| {
+            let (outcome, error) = match done {
+                Ok(o) => (o, None),
+                Err(e) => {
+                    let error = api::OutputError::from(&e);
+                    refusals.push(e);
+                    (api::OutputOutcome::Refused, Some(error))
+                }
+            };
+            outputs.push(api::OutputEntry {
+                canvas: c,
+                kind: Some(kind),
+                outcome,
+                video_encoder: None,
+                audio_encoder: None,
+                error,
+                estimate: None,
+                skipped: Vec::new(),
+            });
+        };
+        let before: Vec<bool> = records.iter().map(|&c| paused(host, c)).collect();
+        for &c in &streams {
+            if resume || !host.stream_held(c) {
+                let done = host
+                    .hold_stream(c, Some(!resume), HoldPicture::Freeze)
+                    .map(|held| {
+                        if held {
+                            api::OutputOutcome::Held
+                        } else {
+                            api::OutputOutcome::Resumed
+                        }
+                    });
+                entry(c, api::OutputKind::Stream, done);
+            }
+        }
+        // After the streams: a hold may have paused, or its end resumed, a recording
+        // sharing its encoder (decision 14); that recording is listed as changed.
+        for (&c, was) in records.iter().zip(before) {
+            let now = paused(host, c);
+            if was != now {
+                let outcome = if now {
+                    api::OutputOutcome::Paused
+                } else {
+                    api::OutputOutcome::Resumed
+                };
+                entry(c, api::OutputKind::Record, Ok(outcome));
+            } else if now == resume {
+                let done = host.pause_recording(c, Some(!resume)).map(|p| {
+                    if p {
+                        api::OutputOutcome::Paused
+                    } else {
+                        api::OutputOutcome::Resumed
+                    }
+                });
+                entry(c, api::OutputKind::Record, done);
+            }
+        }
+        changed_or_first_refusal(&outputs, refusals, "nothing changed")?;
+        notify(host.pause_update());
+        host.publish(notify);
+        Ok(Response::Outputs(api::OutputsResult { outputs }))
     }
 
     /// `record.pause`, `record.resume` or `record.pause_toggle` with `canvas: "all"`
@@ -12246,6 +12802,7 @@ impl ApiTarget<'_> {
                 }
             };
             outputs.push(api::OutputEntry {
+                kind: None,
                 canvas: c,
                 outcome,
                 video_encoder: None,
@@ -12266,6 +12823,7 @@ impl ApiTarget<'_> {
                 .next()
                 .unwrap_or_else(|| ApiError::new(ErrorKind::Conflict, "nothing records")));
         }
+        notify(host.pause_update());
         host.publish(notify);
         Ok(Response::Outputs(api::OutputsResult { outputs }))
     }
@@ -12290,6 +12848,7 @@ impl ApiTarget<'_> {
                 api::OutputOutcome::NotRunning
             };
             outputs.push(api::OutputEntry {
+                kind: None,
                 canvas: c,
                 outcome,
                 video_encoder: None,

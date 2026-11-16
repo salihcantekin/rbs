@@ -1206,6 +1206,37 @@ pub struct SetWithVertical {
     pub on: bool,
 }
 
+/// `stream.hold` and `stream.hold_toggle` (protocol 1.64, ADR-0124 decisions 12 and
+/// 13): the canvases as in [`OnCanvases`] and the picture sent while held. Unknown
+/// fields are ignored; an unknown `picture` is `invalid_params`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamHold {
+    /// The canvases; the main one when absent or `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<OutputTarget>,
+    /// What the stream sends while held; `freeze` when absent or `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<HoldPicture>,
+}
+
+impl StreamHold {
+    /// The canvases asked for, the main one by default.
+    pub fn target(self) -> OutputTarget {
+        self.canvas.unwrap_or_default()
+    }
+}
+
+/// What a held stream sends (protocol 1.64, ADR-0124 decision 13).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldPicture {
+    /// The program's last frame, repeated.
+    #[default]
+    Freeze,
+    /// A black picture.
+    Black,
+}
+
 /// `record.status` and `stream.status`: the canvas they report (protocol 1.29). Unknown
 /// fields are ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1452,6 +1483,14 @@ pub enum Command {
     StreamStart(OnCanvases),
     /// `stream.stop`.
     StreamStop(OnCanvases),
+    /// `stream.hold` (protocol 1.64, ADR-0124).
+    StreamHold(StreamHold),
+    /// `stream.resume` (protocol 1.64, ADR-0124).
+    StreamResume(OnCanvases),
+    /// `stream.hold_toggle` (protocol 1.64, ADR-0124).
+    StreamHoldToggle(StreamHold),
+    /// `output.break_toggle` (protocol 1.64, ADR-0124 decision 15).
+    OutputBreakToggle,
     /// `stream.status`.
     StreamStatus(OnCanvas),
     /// `output.set_with_vertical` (protocol 1.42).
@@ -1632,6 +1671,10 @@ impl Command {
             Command::RecordStatus(_) => "record.status",
             Command::StreamStart(_) => "stream.start",
             Command::StreamStop(_) => "stream.stop",
+            Command::StreamHold(_) => "stream.hold",
+            Command::StreamResume(_) => "stream.resume",
+            Command::StreamHoldToggle(_) => "stream.hold_toggle",
+            Command::OutputBreakToggle => "output.break_toggle",
             Command::OutputSetWithVertical(_) => "output.set_with_vertical",
             Command::StreamStatus(_) => "stream.status",
             Command::ReplayStatus => "replay.status",
@@ -1807,6 +1850,10 @@ pub const METHODS: &[MethodInfo] = &[
     m("record.status", Some(Scope::Read)),
     m("stream.start", Some(Scope::Control)),
     m("stream.stop", Some(Scope::Control)),
+    m("stream.hold", Some(Scope::Control)),
+    m("stream.resume", Some(Scope::Control)),
+    m("stream.hold_toggle", Some(Scope::Control)),
+    m("output.break_toggle", Some(Scope::Control)),
     m("stream.status", Some(Scope::Read)),
     m("output.set_with_vertical", Some(Scope::Control)),
     m("replay.status", Some(Scope::Read)),
@@ -2095,6 +2142,14 @@ enum WireRequest {
     StreamStart(OnCanvases),
     #[serde(rename = "stream.stop")]
     StreamStop(OnCanvases),
+    #[serde(rename = "stream.hold")]
+    StreamHold(StreamHold),
+    #[serde(rename = "stream.resume")]
+    StreamResume(OnCanvases),
+    #[serde(rename = "stream.hold_toggle")]
+    StreamHoldToggle(StreamHold),
+    #[serde(rename = "output.break_toggle")]
+    OutputBreakToggle(Empty),
     #[serde(rename = "stream.status")]
     StreamStatus(OnCanvas),
     #[serde(rename = "output.set_with_vertical")]
@@ -2283,6 +2338,10 @@ impl From<WireRequest> for Request {
             WireRequest::RecordStatus(p) => Request::Command(C::RecordStatus(p)),
             WireRequest::StreamStart(p) => Request::Command(C::StreamStart(p)),
             WireRequest::StreamStop(p) => Request::Command(C::StreamStop(p)),
+            WireRequest::StreamHold(p) => Request::Command(C::StreamHold(p)),
+            WireRequest::StreamResume(p) => Request::Command(C::StreamResume(p)),
+            WireRequest::StreamHoldToggle(p) => Request::Command(C::StreamHoldToggle(p)),
+            WireRequest::OutputBreakToggle(_) => Request::Command(C::OutputBreakToggle),
             WireRequest::StreamStatus(p) => Request::Command(C::StreamStatus(p)),
             WireRequest::OutputSetWithVertical(p) => Request::Command(C::OutputSetWithVertical(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
@@ -2421,6 +2480,10 @@ impl From<Request> for WireRequest {
                 C::RecordStatus(p) => WireRequest::RecordStatus(p),
                 C::StreamStart(p) => WireRequest::StreamStart(p),
                 C::StreamStop(p) => WireRequest::StreamStop(p),
+                C::StreamHold(p) => WireRequest::StreamHold(p),
+                C::StreamResume(p) => WireRequest::StreamResume(p),
+                C::StreamHoldToggle(p) => WireRequest::StreamHoldToggle(p),
+                C::OutputBreakToggle => WireRequest::OutputBreakToggle(Empty {}),
                 C::StreamStatus(p) => WireRequest::StreamStatus(p),
                 C::OutputSetWithVertical(p) => WireRequest::OutputSetWithVertical(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),

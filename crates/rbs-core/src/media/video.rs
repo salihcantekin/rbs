@@ -891,6 +891,13 @@ impl VideoFrame {
         self
     }
 
+    /// Sets the presentation time: a frame shown again on a later tick (a held
+    /// stream's picture, ADR-0124 decision 13) takes that tick's time.
+    pub fn with_timestamp(mut self, timestamp: Timestamp) -> Self {
+        self.timestamp = timestamp;
+        self
+    }
+
     /// Sets the producer-domain timestamp (diagnostics only).
     pub fn with_source_time(mut self, source_nanos: u64) -> Self {
         self.source_time = Some(source_nanos);

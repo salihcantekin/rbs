@@ -45,6 +45,13 @@ pub const ICONS: &[Icon] = &[
     fill("dot", "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"),
     line("ring", "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"),
     fill("stop", "M 4.5 4.5 L 11.5 4.5 L 11.5 11.5 L 4.5 11.5 Z"),
+    // RBS drawings: Pause and Resume of a recording (ADR-0124), centred in the box
+    // like `stop`, so the halves of the toolbar's Stop button line up.
+    fill(
+        "pause",
+        "M 4.5 3.5 L 7 3.5 L 7 12.5 L 4.5 12.5 Z M 9 3.5 L 11.5 3.5 L 11.5 12.5 L 9 12.5 Z",
+    ),
+    fill("play", "M 5 3.5 L 12.5 8 L 5 12.5 Z"),
     line("plus", "M 8 3.33 L 8 12.67 M 3.33 8 L 12.67 8"),
     line(
         "pin",

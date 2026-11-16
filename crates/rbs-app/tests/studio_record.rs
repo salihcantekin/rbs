@@ -76,7 +76,15 @@ struct FakeVideoFactory {
     broken: bool,
     /// Declares itself a hardware encoder (ranked before the others).
     hardware: bool,
+    /// Length-prefixed packets with a real avcC, which the Matroska muxer accepts.
+    matroska: bool,
 }
+
+/// The `rbs-mux` conformance avcC (H.264 High, one SPS and one PPS).
+const TEST_AVCC: &[u8] = &[
+    0x01, 0x64, 0x00, 0x1f, 0xff, 0xe1, 0x00, 0x09, 0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50,
+    0x05, 0x01, 0x00, 0x04, 0x68, 0xeb, 0xe3, 0xcb,
+];
 
 fn set(values: &[&str]) -> CapabilityValue {
     CapabilityValue::Set(values.iter().map(|v| (*v).to_owned()).collect())
@@ -109,11 +117,19 @@ impl VideoEncoderFactory for FakeVideoFactory {
                 what: "no device (test)".into(),
             });
         }
+        let (format, extradata) = if self.matroska {
+            (
+                BitstreamFormat::LengthPrefixed { length_size: 4 },
+                TEST_AVCC,
+            )
+        } else {
+            (BitstreamFormat::AnnexB, &b"sps-pps"[..])
+        };
         Ok(Box::new(FakeVideo {
             stream: StreamDescriptor::new(
                 CodecId::H264,
-                BitstreamFormat::AnnexB,
-                Bytes::from_static(b"sps-pps"),
+                format,
+                Bytes::from_static(extradata),
                 StreamParams::video(config.format, config.frame_rate),
             ),
             pending: Vec::new(),
@@ -132,13 +148,18 @@ impl VideoEncoder for FakeVideo {
     }
     fn submit(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
         let t = frame.timestamp();
+        let data: &'static [u8] = match self.stream.bitstream {
+            // One IDR slice NAL unit of one byte.
+            BitstreamFormat::LengthPrefixed { .. } => &[0, 0, 0, 2, 0x65, 9],
+            _ => b"frame",
+        };
         let packet = EncodedPacket::new(
             CodecId::H264,
-            BitstreamFormat::AnnexB,
+            self.stream.bitstream,
             t,
             t,
             true,
-            Bytes::from_static(b"frame"),
+            Bytes::from_static(data),
         )
         .map_err(|e| EncodeError::InvalidInput(format!("{e:?}")))?;
         self.pending.push(packet);
@@ -235,7 +256,7 @@ fn spawn_host(
     clock: &TestClock,
     config: HostConfig,
 ) -> (StudioHost, Receiver<Update>) {
-    spawn_host_hw(gpu, clock, config, false)
+    spawn_host_hw(gpu, clock, config, false, false)
 }
 
 /// [`spawn_host`], the broken encoder declaring itself a hardware one when
@@ -245,6 +266,7 @@ fn spawn_host_hw(
     clock: &TestClock,
     mut config: HostConfig,
     broken_hardware: bool,
+    matroska: bool,
 ) -> (StudioHost, Receiver<Update>) {
     let (tx, rx) = mpsc::channel();
     let clock = clock.clone();
@@ -265,13 +287,20 @@ fn spawn_host_hw(
                         id,
                         broken,
                         hardware: broken && broken_hardware,
+                        matroska,
                     }))
                     .unwrap();
             }
             a.audio_encoders
                 .register(Arc::new(FakeAacFactory::new()))
                 .unwrap();
-            a.muxers.register(Arc::new(FakeMuxerFactory)).unwrap();
+            if matroska {
+                a.muxers
+                    .register(Arc::new(rbs_mux_matroska::MatroskaMuxerFactory))
+                    .unwrap();
+            } else {
+                a.muxers.register(Arc::new(FakeMuxerFactory)).unwrap();
+            }
             // Separate audio files are 24-bit PCM in WAV (ADR-0086).
             a.audio_encoders
                 .register(Arc::new(rbs_codec_pcm::PcmEncoderFactory))
@@ -1978,7 +2007,7 @@ fn a_file_whose_hardware_encoder_refuses_is_skipped_or_refuses_the_start_under_a
     let dir = std::env::temp_dir().join(format!("rbs-app-hw-stop-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let clock = TestClock::new();
-    let (host, rx) = spawn_host_hw(gpu, &clock, HostConfig::desktop(), true);
+    let (host, rx) = spawn_host_hw(gpu, &clock, HostConfig::desktop(), true, false);
     let ids = mark_screens(&host, &rx, 1);
     let mut api = ApiClient::attach(&host);
     let fallback = |answer: &serde_json::Value, at: &str| {
@@ -2529,5 +2558,229 @@ fn the_window_adds_and_takes_back_a_marker() {
         _ => None,
     });
     assert!(why.contains("no recording"), "{why}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR-0089 decision 5: a marker not yet on disk is written into the manifest 5
+/// seconds later, while the recording runs, so a crash keeps it; taking every marker
+/// back removes a plain recording's manifest again.
+#[test]
+fn markers_reach_the_manifest_while_recording() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-marker-flush-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = TestClock::new();
+    let (host, rx, _display, _mic) = marked(gpu, &clock, None);
+    let mut api = ApiClient::attach(&host);
+    let manifest = dir.join("flush.rbs.toml");
+    // Two requests: the second is served in a later round, so the first round's
+    // timers have run by its answer.
+    let settle = |api: &mut ApiClient| {
+        for _ in 0..2 {
+            let status = api.call("record.status", serde_json::json!({}));
+            assert!(status.get("error").is_none(), "{status}");
+        }
+    };
+
+    host.send(Command::StartRecording(request(
+        dir.join("flush.mkv"),
+        None,
+    )));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(1));
+    let added = api.call("marker.add", serde_json::json!({"label": "Keep"}));
+    assert!(added.get("error").is_none(), "{added}");
+    // The timer arms in the round that served it, on the clock as it is now.
+    settle(&mut api);
+    clock.advance(Duration::from_secs(4));
+    settle(&mut api);
+    assert!(!manifest.exists(), "written before its 5 seconds");
+    clock.advance(Duration::from_secs(1));
+    settle(&mut api);
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let flushed = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    assert!(!flushed.is_complete(), "{text}");
+    let labels: Vec<_> = flushed.markers.iter().map(|m| m.label.as_str()).collect();
+    assert_eq!(labels, ["Keep"], "{text}");
+
+    // Taken back: the next flush removes the plain recording's manifest.
+    api.reconnect();
+    let removed = api.call(
+        "marker.remove",
+        serde_json::json!({"canvas": "main", "index": 1}),
+    );
+    assert!(removed.get("error").is_none(), "{removed}");
+    // The timer arms in the round that served it, on the clock as it is now.
+    settle(&mut api);
+    clock.advance(Duration::from_secs(5));
+    settle(&mut api);
+    assert!(!manifest.exists());
+
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(matches!(
+        stopped,
+        RecordingUpdate::Stopped { failure: None, .. }
+    ));
+    assert!(!manifest.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The 8-byte unsigned integer after the first `pattern` (an element id and its
+/// 1-byte size 8) at or after `from`, and where it ends.
+fn uint_after(bytes: &[u8], from: usize, pattern: &[u8]) -> Option<(u64, usize)> {
+    let at = from
+        + bytes[from..]
+            .windows(pattern.len())
+            .position(|w| w == pattern)?;
+    let start = at + pattern.len();
+    let value = bytes[start..start + 8]
+        .iter()
+        .fold(0u64, |v, b| (v << 8) | u64::from(*b));
+    Some((value, start + 8))
+}
+
+/// ADR-0089 decision 14: a Matroska master whose timing is known gets its markers as
+/// chapters at a clean stop, counted from its first sample; one past the end is left
+/// out.
+#[test]
+#[ignore = "slow: about 20 s, the clock moves 1 ms per step for the real muxer"]
+fn slow_a_matroska_master_gets_its_markers_as_chapters() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-chapters-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = TestClock::new();
+    let (host, rx) = spawn_host_hw(gpu, &clock, HostConfig::desktop(), false, true);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::ListTargets(SourceKind::Screen));
+    let target = next(&rx, |u| match u {
+        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
+        _ => None,
+    });
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target,
+    });
+    rows_where(&rx, |r| r.len() == 1);
+    let mut api = ApiClient::attach(&host);
+
+    let path = dir.join("chapters.mkv");
+    let mut r = request(path.clone(), None);
+    // The editor project setting keeps the master's timing.
+    r.editor_project = Some(rbs_app::record_profile::EditorProject::Xmeml);
+    host.send(Command::StartRecording(r));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    // The real muxer refuses a stream more than its interleaving bound (1 s) behind
+    // the other: the clock moves slowly enough for the software GPU's video to keep up
+    // with the audio, which is made on demand.
+    let packets = |n: u64| {
+        next_while(
+            &rx,
+            || clock.advance(Duration::from_millis(1)),
+            |u| match u {
+                Update::Stats(s) if s.recording.is_some_and(|r| r.packets >= n) => Some(()),
+                _ => None,
+            },
+        )
+    };
+    packets(4);
+    let added = api.call("marker.add", serde_json::json!({"label": "Chapter A"}));
+    assert!(added.get("error").is_none(), "{added}");
+    // More frames after the marker, so it is inside the master.
+    packets(20);
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+
+    let text = std::fs::read_to_string(dir.join("chapters.rbs.toml")).unwrap();
+    let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    assert!(manifest.is_complete(), "{text}");
+    let timing = manifest.files[0].timing.unwrap();
+    let marker = &manifest.markers[0];
+    let bytes = std::fs::read(&path).unwrap();
+    // The earliest Cluster timestamp (ms): the master's first sample. Audio arriving
+    // after the first video keyframe can start a later Cluster earlier.
+    let first_ms = bytes
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == [0x1f, 0x43, 0xb6, 0x75])
+        .filter_map(|(at, _)| uint_after(&bytes, at, &[0xe7, 0x88]).map(|(t, _)| t))
+        .min()
+        .unwrap();
+    let chapters = bytes
+        .windows(4)
+        .rposition(|w| w == [0x10, 0x43, 0xa7, 0x70])
+        .expect("a Chapters element");
+    let (start, end) = uint_after(&bytes, chapters, &[0x91, 0x88]).unwrap();
+    assert_eq!(
+        start,
+        first_ms * 1_000_000 + marker.t_ns - timing.start_offset_ns,
+        "{text}"
+    );
+    assert!(
+        bytes[end..].windows(9).any(|w| w == b"Chapter A"),
+        "the label is the title"
+    );
+    assert!(
+        uint_after(&bytes, end, &[0x91, 0x88]).is_none(),
+        "one chapter"
+    );
+
+    drop(api);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR-0124: the window pauses and resumes the running recordings with
+/// `Command::PauseRecording`; each answers with every recording's pause state. With
+/// nothing recording the toggle is refused in a sentence for the toast.
+#[test]
+fn the_window_pauses_and_resumes_the_recording() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-ui-pause-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = TestClock::new();
+    let (host, rx, _display, _mic) = marked(gpu, &clock, None);
+    let paused = |rx: &Receiver<Update>| {
+        next(rx, |u| match u {
+            Update::RecordPause(states) => Some(states.map(|s| s.map(|s| s.paused))),
+            _ => None,
+        })
+    };
+
+    host.send(Command::StartRecording(request(
+        dir.join("pause.mkv"),
+        None,
+    )));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(2));
+    host.send(Command::PauseRecording);
+    assert_eq!(paused(&rx), [Some(true), None]);
+    clock.advance(Duration::from_secs(1));
+    host.send(Command::PauseRecording);
+    assert_eq!(paused(&rx), [Some(false), None]);
+
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(matches!(
+        stopped,
+        RecordingUpdate::Stopped { failure: None, .. }
+    ));
+    host.send(Command::PauseRecording);
+    let why = next(&rx, |u| match u {
+        Update::Error(e) => Some(e),
+        _ => None,
+    });
+    assert!(
+        why.starts_with("The recording could not pause or resume"),
+        "{why}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

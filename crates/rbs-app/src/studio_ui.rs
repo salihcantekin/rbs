@@ -25,9 +25,9 @@ use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
-    RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind, SourceRow,
-    SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target,
-    TransformOp, Update,
+    RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
+    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost,
+    Target, TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -421,6 +421,10 @@ pub struct StudioUi {
     /// marker), and the notice of the marker just added with what its Undo removes.
     rec_markers: u32,
     rec_markers_shown: bool,
+    /// Pause (ADR-0124): each running recording's pause state (main, vertical) as the
+    /// studio last sent it, and when it came (a pause began then, or the recorded
+    /// time moves on from there). `None`: never paused since it started.
+    rec_pause: [Option<(RecordPause, Instant)>; 2],
     pub marker_note: String,
     marker_undo: Vec<(OutputCanvas, u32)>,
     marker_serial: u32,
@@ -615,6 +619,7 @@ impl StudioUi {
             rec_separate: Vec::new(),
             rec_markers: 0,
             rec_markers_shown: false,
+            rec_pause: [None, None],
             marker_note: String::new(),
             marker_undo: Vec::new(),
             marker_serial: 0,
@@ -929,6 +934,10 @@ impl StudioUi {
         g.set_deleted_from_scene(self.deleted_from_scene);
         g.set_deleted_generation(self.deleted_serial as i32);
         g.set_rec_markers(self.rec_markers as i32);
+        g.set_rec_pausable(
+            self.rec_state == rec_state::RECORDING || self.vertical_rec == VerticalOut::On,
+        );
+        g.set_rec_paused(self.record_paused());
         g.set_rec_markers_shown(self.rec_markers_shown && self.rec_state == rec_state::RECORDING);
         g.set_marker_note(self.marker_note.as_str().into());
         g.set_marker_generation(self.marker_serial as i32);
@@ -2855,6 +2864,45 @@ impl StudioUi {
         }
         set_rows(&self.vertical_marks, mark_data(&buf));
         self.vmark_buf = buf;
+    }
+
+    /// Pause every running recording, or resume them all when none runs unpaused
+    /// (`record.pause_toggle`, Ctrl+Shift+P, the frame's Stop button and the Outputs
+    /// card; ADR-0124).
+    pub fn pause_recording(&mut self) {
+        self.send(Command::PauseRecording);
+    }
+
+    /// Every running recording is paused: Pause reads Resume. False while none runs.
+    pub fn record_paused(&self) -> bool {
+        let running = [
+            self.rec_state == rec_state::RECORDING,
+            self.vertical_rec == VerticalOut::On,
+        ];
+        running.iter().any(|r| *r)
+            && running
+                .iter()
+                .zip(&self.rec_pause)
+                .all(|(r, p)| !r || p.is_some_and(|(p, _)| p.paused))
+    }
+
+    /// How long the main recording's pause has lasted, while it is paused.
+    pub fn paused_for(&self) -> Option<Duration> {
+        self.rec_pause[0]
+            .filter(|(p, _)| p.paused)
+            .map(|(_, at)| at.elapsed())
+    }
+
+    /// [`Update::RecordPause`]: a pause that goes on keeps when it began.
+    fn record_pause(&mut self, states: [Option<RecordPause>; 2]) {
+        for (slot, state) in self.rec_pause.iter_mut().zip(states) {
+            let kept = slot.filter(|(p, _)| state.is_some_and(|s| s.paused && p.paused));
+            *slot = match (state, kept) {
+                (Some(s), Some((_, at))) => Some((s, at)),
+                (Some(s), None) => Some((s, Instant::now())),
+                (None, _) => None,
+            };
+        }
     }
 
     /// Add a manual marker to every running recording (`marker.add`, Ctrl+Shift+M,
@@ -5033,10 +5081,16 @@ impl StudioUi {
     }
 
     /// The recording's duration so far, while one runs.
+    /// The main recording's time recorded (pauses left out, ADR-0124) and its file.
     pub fn recording_for(&self) -> Option<(Duration, String)> {
-        self.rec_file
-            .as_ref()
-            .map(|(p, since)| (since.elapsed(), file_name(p)))
+        self.rec_file.as_ref().map(|(p, since)| {
+            let recorded = match self.rec_pause[0] {
+                Some((s, _)) if s.paused => Duration::from_nanos(s.recorded_ns),
+                Some((s, at)) => Duration::from_nanos(s.recorded_ns) + at.elapsed(),
+                None => since.elapsed(),
+            };
+            (recorded, file_name(p))
+        })
     }
 
     /// Clears one source's clip latch. `id` is the source id: the Mixer list also holds
@@ -5354,6 +5408,7 @@ impl StudioUi {
             }
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Markers { counts, placed } => self.markers(counts, placed),
+            Update::RecordPause(states) => self.record_pause(states),
             Update::Stream(u) => self.stream_update(u, &mut out),
             // The vertical canvas's outputs start from the frame's Record and Go live
             // menus or through the control API (protocol 1.29): what went wrong is a
@@ -5362,10 +5417,12 @@ impl StudioUi {
             Update::VerticalRecording(r) => {
                 match &r {
                     RecordingUpdate::Started { .. } => {
+                        self.rec_pause[1] = None;
                         self.vertical_rec = VerticalOut::On;
                         self.vertical_rec_since = Some(Instant::now());
                     }
                     RecordingUpdate::Stopped { .. } => {
+                        self.rec_pause[1] = None;
                         self.vertical_rec = VerticalOut::Off;
                         self.vertical_rec_since = None;
                     }
@@ -5509,6 +5566,7 @@ impl StudioUi {
                 self.rec_file_audio = self.profile.format.is_audio_only();
                 self.rec_markers = 0;
                 self.rec_markers_shown = self.profile.editor_project.is_some();
+                self.rec_pause[0] = None;
                 if !self.rec_file_audio {
                     self.set_note(format!("Video encoder: {video_encoder}"), false);
                 }
@@ -5532,6 +5590,7 @@ impl StudioUi {
                 dropped,
                 flush_lost,
             } => {
+                self.rec_pause[0] = None;
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 self.rec_file_audio = false;
@@ -7359,6 +7418,61 @@ mod tests {
         ui.apply(Update::Recording(RecordingUpdate::NotStarted("no".into())));
         assert_eq!(ui.rec_state, rec_state::OFF);
         assert!(ui.rec_note_bad);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_paused_recording_reads_resume_and_its_recorded_time_stands_still() {
+        let (mut ui, d) = ui("pause");
+        let pause = |paused: bool, secs: u64| {
+            Some(RecordPause {
+                paused,
+                recorded_ns: secs * 1_000_000_000,
+            })
+        };
+        ui.apply(Update::Recording(RecordingUpdate::Started {
+            path: d.join("take.mkv"),
+            video_encoder: "x".into(),
+            audio_encoder: None,
+            separate: Vec::new(),
+        }));
+        assert!(!ui.record_paused());
+        assert_eq!(ui.paused_for(), None);
+        ui.apply(Update::RecordPause([pause(true, 5), None]));
+        assert!(ui.record_paused());
+        assert!(ui.paused_for().is_some());
+        assert_eq!(
+            ui.recording_for().map(|(t, _)| t),
+            Some(Duration::from_secs(5))
+        );
+        // A state sent again while the pause goes on keeps when it began.
+        let began = ui.rec_pause[0].map(|(_, at)| at);
+        ui.apply(Update::RecordPause([pause(true, 5), None]));
+        assert_eq!(ui.rec_pause[0].map(|(_, at)| at), began);
+        // A vertical recording that runs unpaused keeps Pause.
+        ui.vertical_rec = VerticalOut::On;
+        assert!(!ui.record_paused());
+        ui.apply(Update::RecordPause([pause(true, 5), pause(true, 4)]));
+        assert!(ui.record_paused());
+        ui.apply(Update::RecordPause([pause(false, 5), pause(false, 4)]));
+        assert!(!ui.record_paused());
+        assert_eq!(ui.paused_for(), None);
+        assert!(
+            ui.recording_for()
+                .is_some_and(|(t, _)| t >= Duration::from_secs(5))
+        );
+        // Stopping forgets the pause.
+        ui.apply(Update::RecordPause([pause(true, 6), None]));
+        ui.vertical_rec = VerticalOut::Off;
+        ui.apply(Update::Recording(RecordingUpdate::Stopped {
+            path: d.join("take.mkv"),
+            failure: None,
+            frames: 1,
+            dropped: 0,
+            flush_lost: 0,
+        }));
+        assert!(!ui.record_paused());
+        assert_eq!(ui.rec_pause[0], None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

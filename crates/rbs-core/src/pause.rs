@@ -11,7 +11,7 @@
 //! writer (the control thread); readers retry a bounded number of times and keep
 //! their last good [`Window`] when a write is in progress.
 
-use std::sync::atomic::{AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering, fence};
 
 use crate::timing::SampleRate;
 
@@ -271,6 +271,64 @@ impl PauseWindow {
     }
 }
 
+/// What a held stream sends in place of the program (ADR-0124 decision 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HoldPicture {
+    /// The last picture sent, repeated with each tick's time.
+    Freeze,
+    /// A black picture.
+    Black,
+}
+
+impl HoldPicture {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Freeze => 1,
+            Self::Black => 2,
+        }
+    }
+
+    const fn of(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Freeze),
+            2 => Some(Self::Black),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a stream's chain is held (ADR-0124 decisions 12 and 13): one byte the
+/// control thread writes and the stream's export and audio encoder read. A hold
+/// takes effect from the next tick or block the reader runs; timestamps keep running.
+#[derive(Debug, Default)]
+pub struct HoldSwitch {
+    state: AtomicU8,
+}
+
+impl HoldSwitch {
+    /// Holds with `picture`; a hold already on changes its picture.
+    pub fn hold(&self, picture: HoldPicture) {
+        self.state.store(picture.code(), Ordering::Release);
+    }
+
+    /// Ends the hold.
+    pub fn release(&self) {
+        self.state.store(0, Ordering::Release);
+    }
+
+    /// The hold picture while held; `None` otherwise.
+    #[inline]
+    pub fn held(&self) -> Option<HoldPicture> {
+        HoldPicture::of(self.state.load(Ordering::Acquire))
+    }
+
+    /// Whether a hold is on, with one relaxed load (the audio encoder's run path).
+    #[inline]
+    pub fn is_held(&self) -> bool {
+        self.state.load(Ordering::Relaxed) != 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // Tests fail by panicking.
@@ -467,5 +525,20 @@ mod tests {
             }
         });
         assert_eq!(counted.count_total, 0);
+    }
+
+    #[test]
+    fn a_hold_switch_holds_changes_its_picture_and_releases() {
+        let h = HoldSwitch::default();
+        assert_eq!(h.held(), None);
+        assert!(!h.is_held());
+        h.hold(HoldPicture::Freeze);
+        assert_eq!(h.held(), Some(HoldPicture::Freeze));
+        assert!(h.is_held());
+        h.hold(HoldPicture::Black);
+        assert_eq!(h.held(), Some(HoldPicture::Black));
+        h.release();
+        assert_eq!(h.held(), None);
+        assert!(!h.is_held());
     }
 }

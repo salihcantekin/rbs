@@ -18,7 +18,7 @@ use rbs_audio_filters::{
 use rbs_codec::{EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
-use rbs_core::pause::PauseWindow;
+use rbs_core::pause::{HoldSwitch, PauseWindow};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
@@ -33,7 +33,7 @@ use rbs_graph::runtime::{FaultCause, JoinError, Node, NodeHealth, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::encode::KeyframeAt;
-use rbs_nodes::export::{ExportEnd, ExportNodeStats};
+use rbs_nodes::export::{ExportEnd, ExportHold, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::output_cut::OutputCut;
 use rbs_nodes::{
@@ -66,12 +66,14 @@ use crate::select::{self, Chosen};
 
 mod estimate_plan;
 pub use estimate_plan::{PlannedOutput, StartPlanRequest};
+mod hold;
 mod iso_audio;
 mod iso_video;
 mod loudness;
 mod monitor;
 mod pause;
 mod replay;
+pub use hold::{HoldRefused, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
     DEFAULT_GIVE_WAY_SHARE, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart, IsoVideoStarted,
@@ -215,6 +217,13 @@ pub struct OutputSettings {
     /// audio files opened first follow it too ([`IsoAudioStart::pause`]). `None`: a
     /// new window. Ignored when not `pausable`.
     pub shared_pause: Option<SharedPause>,
+    /// A stream that can be held (ADR-0124 decisions 12 and 13): its new export and
+    /// audio encoder follow a hold switch, so [`Studio::hold_output`] can send a hold
+    /// picture with silence while the connection stays up. A `pausable` recording's
+    /// new chains follow one too, so a stream sharing them can hold (decision 14).
+    /// Off (and not `pausable`): none of that is built and [`Studio::hold_output`]
+    /// refuses with [`HoldRefused::NotHoldable`].
+    pub holdable: bool,
 }
 
 /// Smallest side of an explicit output size (ADR-0102 decision 7).
@@ -271,6 +280,7 @@ impl OutputSettings {
             track_span: false,
             pausable: false,
             shared_pause: None,
+            holdable: false,
         }
     }
 
@@ -505,6 +515,9 @@ enum VideoPlan {
         keyframe_capable: bool,
         /// The chain's own pause window, for a pausable recording's new chain.
         chain_pause: Option<Arc<PauseWindow>>,
+        /// The chain's hold, for a holdable stream's or a pausable recording's new
+        /// chain (ADR-0124 decision 13), and the format its frames are.
+        chain_hold: Option<(Arc<ExportHold>, rbs_core::media::VideoFormat)>,
         chosen: Chosen,
         settings: VideoSettings,
         /// Resolved output size the encoder is opened with.
@@ -522,6 +535,8 @@ enum AudioPlan {
         counters: AudioCounters,
         /// The chain's own pause window, for a pausable recording's new chain.
         chain_pause: Option<Arc<PauseWindow>>,
+        /// The chain's hold switch, as for the video chain.
+        chain_hold: Option<Arc<HoldSwitch>>,
         chosen: Chosen,
         settings: AudioSettings,
         stream: StreamDescriptor,
@@ -623,6 +638,8 @@ pub(crate) struct Prepared {
     pause: Option<Arc<PauseWindow>>,
     /// Its cut at the output node, for the streams it shares (ADR-0124).
     cut: Option<Arc<OutputCut>>,
+    /// A stream that can be held (ADR-0124 decision 12).
+    holdable: bool,
 }
 
 impl Prepared {
@@ -650,6 +667,8 @@ impl Prepared {
                 |p| Arc::clone(p.window()),
             )
         });
+        // A stream that can be held, or a recording a stream may share (ADR-0124).
+        let holds = out.holdable || out.pausable;
         let video = match &out.video {
             None => VideoPlan::None,
             Some(video) => {
@@ -706,12 +725,20 @@ impl Prepared {
                             }
                             None => (export, None),
                         };
+                        let format = export.frame_format();
+                        let (export, chain_hold) = if holds {
+                            let hold = Arc::new(ExportHold::new(Arc::new(HoldSwitch::default())));
+                            (export.with_hold(Arc::clone(&hold)), Some((hold, format)))
+                        } else {
+                            (export, None)
+                        };
                         VideoPlan::New {
                             export: Box::new(export),
                             encoder: Box::new(encoder),
                             keyframes,
                             keyframe_capable,
                             chain_pause,
+                            chain_hold,
                             chosen,
                             settings: video.clone(),
                             size: (width, height),
@@ -746,22 +773,33 @@ impl Prepared {
                         streams.push(stream.clone());
                         let node = EncoderNode::new(session, AUDIO_ENCODER_PACKETS);
                         let chain_pause = pause.as_ref().map(|_| Arc::new(PauseWindow::default()));
-                        let (node, counters): (Box<dyn Node<()>>, _) = match &chain_pause {
-                            Some(p) => {
-                                let node = node
-                                    .with_pause(Arc::clone(p), audio_graph.block_frames as usize);
-                                let counters = AudioCounters::of(&node);
-                                (Box::new(node), counters)
-                            }
-                            None => {
-                                let counters = AudioCounters::of(&node);
-                                (Box::new(node), counters)
-                            }
-                        };
+                        let chain_hold = holds.then(|| Arc::new(HoldSwitch::default()));
+                        let frames = audio_graph.block_frames as usize;
+                        let (node, counters): (Box<dyn Node<()>>, _) =
+                            match (&chain_pause, &chain_hold) {
+                                (Some(p), hold) => {
+                                    let mut node = node.with_pause(Arc::clone(p), frames);
+                                    if let Some(h) = hold {
+                                        node = node.and_hold(Arc::clone(h));
+                                    }
+                                    let counters = AudioCounters::of(&node);
+                                    (Box::new(node), counters)
+                                }
+                                (None, Some(h)) => {
+                                    let node = node.with_hold(Arc::clone(h), frames);
+                                    let counters = AudioCounters::of(&node);
+                                    (Box::new(node), counters)
+                                }
+                                (None, None) => {
+                                    let counters = AudioCounters::of(&node);
+                                    (Box::new(node), counters)
+                                }
+                            };
                         AudioPlan::New {
                             node,
                             counters,
                             chain_pause,
+                            chain_hold,
                             chosen,
                             settings: a.clone(),
                             stream,
@@ -802,6 +840,7 @@ impl Prepared {
             transport,
             pause,
             cut,
+            holdable: out.holdable,
         })
     }
 }
@@ -835,6 +874,9 @@ struct VideoChain {
     /// The encoder's keyframe requests, and whether its adapter honours them.
     keyframes: Arc<KeyframeAt>,
     keyframe_capable: bool,
+    /// Its hold and the format its frames are, for a holdable stream's or a pausable
+    /// recording's new chain (ADR-0124 decision 13).
+    hold: Option<(Arc<ExportHold>, rbs_core::media::VideoFormat)>,
 }
 
 /// A running audio encoder, used by one or more outputs.
@@ -851,6 +893,8 @@ struct AudioChain {
     /// The pause window its encoder node follows, for a pausable recording's new
     /// chain (ADR-0124); written only while that recording is its only user.
     pause: Option<Arc<PauseWindow>>,
+    /// Its hold switch, as for the video chain.
+    hold: Option<Arc<HoldSwitch>>,
 }
 
 /// The encoder chains running, by slot (the slot picks their partitions).
@@ -933,6 +977,8 @@ struct Attached {
     /// Where the open (or last) pause was written: its own video chain, its own
     /// audio chain, the output cut.
     paused_at: pause::Targets,
+    /// Its holds (ADR-0124 decision 13).
+    hold: hold::Holds,
 }
 
 /// The cross-partition queues feeding an output's encoders.
@@ -3039,6 +3085,7 @@ impl Studio {
                 keyframes,
                 keyframe_capable,
                 chain_pause,
+                chain_hold,
                 chosen,
                 settings,
                 size,
@@ -3070,6 +3117,7 @@ impl Studio {
                 pause: chain_pause,
                 keyframes,
                 keyframe_capable,
+                hold: chain_hold,
             });
         }
         let mut audio_chain = None;
@@ -3084,6 +3132,7 @@ impl Studio {
                         tail_lost,
                     },
                 chain_pause,
+                chain_hold,
                 chosen,
                 settings,
                 stream,
@@ -3104,6 +3153,7 @@ impl Studio {
                 tail_lost,
                 queue: None,
                 pause: chain_pause,
+                hold: chain_hold,
             });
         }
         let r = self
@@ -3173,6 +3223,7 @@ impl Studio {
             pause: p.pause,
             cut: p.cut,
             paused_at: pause::Targets::default(),
+            hold: hold::Holds::new(p.holdable),
         });
         Ok((id, nodes))
     }
@@ -3542,7 +3593,7 @@ impl Studio {
     /// before). `None` when `id` does not run.
     pub fn output_progress(&self, id: OutputId) -> Option<Progress> {
         let r = self.attached(id)?;
-        Some(self.with_pause_progress(r, self.progress_of(r)))
+        Some(self.with_hold_progress(r, self.with_pause_progress(r, self.progress_of(r))))
     }
 
     /// A running output's counters, as in [`Studio::output_progress`], without the
@@ -3556,7 +3607,10 @@ impl Studio {
             late_audio_ticks: self.audio_worker.as_ref().map_or(0, |w| w.late()),
             ..Progress::default()
         };
-        Some(self.with_pause_progress(r, Self::counters_of(r, workers)))
+        Some(self.with_hold_progress(
+            r,
+            self.with_pause_progress(r, Self::counters_of(r, workers)),
+        ))
     }
 
     fn progress_of(&self, r: &Attached) -> Progress {

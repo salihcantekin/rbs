@@ -9,8 +9,8 @@ use rbs_core::media::EncodedPacket;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 
-use crate::gate::{AudioGate, NoGate, PauseGate};
-use rbs_core::pause::PauseWindow;
+use crate::gate::{AudioGate, HoldGate, NoGate, PauseGate};
+use rbs_core::pause::{HoldSwitch, PauseWindow};
 
 /// Node type id of [`EncoderNode`].
 pub const ENCODER_NODE_TYPE: &str = "org.rbs.audio.encoder";
@@ -25,7 +25,8 @@ pub const ENCODER_NODE_TYPE: &str = "org.rbs.audio.encoder";
 /// tail on and takes no more blocks until it is prepared again.
 ///
 /// The gate `G` decides which samples reach the session (ADR-0124): [`NoGate`] for a
-/// stream or the replay buffer, [`PauseGate`] for a recording
+/// stream that is never held or the replay buffer, [`HoldGate`] for a stream
+/// ([`EncoderNode::with_hold`]), [`PauseGate`] for a recording
 /// ([`EncoderNode::with_pause`]).
 pub struct EncoderNode<G: AudioGate = NoGate> {
     desc: NodeDescriptor,
@@ -88,6 +89,34 @@ impl EncoderNode {
             tail_lost: self.tail_lost,
             gate: PauseGate::new(pause, frames),
         }
+    }
+
+    /// The same node following a stream's hold (ADR-0124 decisions 12 and 13):
+    /// silence with the blocks' own timestamps while `hold` is on. `frames` is the
+    /// graph's block length; the silence is reserved here.
+    pub fn with_hold(self, hold: Arc<HoldSwitch>, frames: usize) -> EncoderNode<HoldGate> {
+        EncoderNode {
+            desc: self.desc,
+            encoder: self.encoder,
+            waiting: self.waiting,
+            drained: self.drained,
+            capacity: self.capacity,
+            dropped: self.dropped,
+            ended: self.ended,
+            flushes: self.flushes,
+            tail_lost: self.tail_lost,
+            gate: HoldGate::new(hold, frames),
+        }
+    }
+}
+
+impl EncoderNode<PauseGate> {
+    /// The same node also sending silence while `hold` is on: a recording's chain
+    /// that a stream may share (ADR-0124 decision 14).
+    #[must_use]
+    pub fn and_hold(mut self, hold: Arc<HoldSwitch>) -> Self {
+        self.gate = self.gate.with_hold(hold);
+        self
     }
 }
 

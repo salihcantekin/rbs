@@ -398,6 +398,15 @@ fn every_request() -> Vec<Request> {
         c(Command::RecordPauseToggle(OnCanvases {
             canvas: Some(OutputTarget::All),
         })),
+        c(Command::StreamHold(StreamHold {
+            canvas: None,
+            picture: Some(HoldPicture::Black),
+        })),
+        c(Command::StreamResume(OnCanvases {
+            canvas: Some(OutputTarget::All),
+        })),
+        c(Command::StreamHoldToggle(StreamHold::default())),
+        c(Command::OutputBreakToggle),
         c(Command::OutputSetWithVertical(SetWithVertical {
             kind: OutputKind::Stream,
             on: false,
@@ -883,6 +892,8 @@ fn every_result_and_event_type_round_trips() {
             reconnect_attempts: 0,
             video_encoder: "NVENC".into(),
             audio_encoder: Some("MF AAC".into()),
+            held: true,
+            held_ms: 1500,
         }),
         EventPayload::VcamChanged(VcamStatus {
             frames: None,
@@ -1130,6 +1141,66 @@ fn canvas_states_are_the_main_object_with_canvas_added() {
 }
 
 #[test]
+fn hold_methods_take_a_canvas_and_a_picture() {
+    let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
+        Ok(Request::Command(c)) => Ok(c),
+        Ok(other) => panic!("not a command: {other:?}"),
+        Err(e) => Err(e.error.kind),
+    };
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.hold"}"#),
+        Ok(Command::StreamHold(StreamHold::default()))
+    );
+    assert_eq!(
+        StreamHold::default().picture.unwrap_or_default(),
+        HoldPicture::Freeze
+    );
+    assert_eq!(
+        decode(
+            r#"{"jsonrpc":"2.0","id":1,"method":"stream.hold_toggle","params":{"canvas":"all","picture":"black"}}"#
+        ),
+        Ok(Command::StreamHoldToggle(StreamHold {
+            canvas: Some(OutputTarget::All),
+            picture: Some(HoldPicture::Black),
+        }))
+    );
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"stream.hold","params":{"picture":"scene"}}"#),
+        Err(ErrorKind::InvalidParams)
+    );
+    assert_eq!(
+        decode(r#"{"jsonrpc":"2.0","id":1,"method":"output.break_toggle"}"#),
+        Ok(Command::OutputBreakToggle)
+    );
+    for method in [
+        "stream.hold",
+        "stream.resume",
+        "stream.hold_toggle",
+        "output.break_toggle",
+    ] {
+        assert_eq!(
+            rbs_api::request::method_scope(method),
+            Some(Some(Scope::Control)),
+            "{method}"
+        );
+    }
+    let entry = OutputEntry {
+        canvas: OutputCanvas::Main,
+        kind: Some(OutputKind::Stream),
+        outcome: OutputOutcome::Held,
+        video_encoder: None,
+        audio_encoder: None,
+        error: None,
+        estimate: None,
+        skipped: Vec::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        json!({"canvas": "main", "kind": "stream", "outcome": "held"})
+    );
+}
+
+#[test]
 fn output_methods_take_an_optional_canvas() {
     let decode = |text: &str| match JsonCodec.decode(text).map(|m| m.request) {
         Ok(Request::Command(c)) => Ok(c),
@@ -1206,6 +1277,7 @@ fn an_all_answer_lists_each_canvas_main_first() {
     let answer = Response::Outputs(OutputsResult {
         outputs: vec![
             OutputEntry {
+                kind: None,
                 canvas: OutputCanvas::Main,
                 outcome: OutputOutcome::Started,
                 video_encoder: Some("NVENC".into()),
@@ -1215,6 +1287,7 @@ fn an_all_answer_lists_each_canvas_main_first() {
                 skipped: vec![],
             },
             OutputEntry {
+                kind: None,
                 canvas: OutputCanvas::Vertical,
                 outcome: OutputOutcome::Refused,
                 video_encoder: None,
@@ -1319,6 +1392,8 @@ fn stream_state_has_a_stable_wire_form() {
         reconnect_attempts: 1,
         video_encoder: "VT".into(),
         audio_encoder: None,
+        held: false,
+        held_ms: 0,
     };
     assert_eq!(
         serde_json::to_value(&live).unwrap(),
@@ -1330,8 +1405,24 @@ fn stream_state_has_a_stable_wire_form() {
             "reconnect_attempts": 1,
             "video_encoder": "VT",
             "audio_encoder": null,
+            "held": false,
+            "held_ms": 0,
         })
     );
+    // A 1.63 server's live state, without the hold fields, reads as not held.
+    let old: StreamState = serde_json::from_value(json!({
+        "state": "live", "protocol": "rtmp", "connected": true, "connects": 1,
+        "reconnect_attempts": 0, "video_encoder": "VT", "audio_encoder": null,
+    }))
+    .unwrap();
+    assert!(matches!(
+        old,
+        StreamState::Live {
+            held: false,
+            held_ms: 0,
+            ..
+        }
+    ));
     let event = Event {
         object: None,
         seq: 3,
