@@ -2955,9 +2955,13 @@ export component SettingsWindow inherits Window {
     property <int> scroll-serial: SettingsScroll.serial;
     changed scroll-serial => { root.show-revealed(); }
     function show-revealed() {
-        if SettingsScroll.h <= 0px { return; }
+        if SettingsScroll.h <= 0px && !SettingsScroll.top { return; }
         let margin = Tokens.space-4;
         let y = SettingsScroll.y - page.absolute-position.y;
+        if SettingsScroll.top {
+            flick.scroll-into-view(y - margin, flick.view-height);
+            return;
+        }
         let h = SettingsScroll.h;
         flick.scroll-into-view(y - margin, h + 2 * margin);
     }
