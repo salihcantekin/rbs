@@ -144,7 +144,8 @@ fn source_fields(type_id: &NodeTypeId) -> Vec<String> {
 
 /// A free source name from `base`, avoiding `also` (names chosen in the same step).
 fn free_name(host: &Host, base: &str, also: &[String]) -> String {
-    let taken = |n: &str| host.collection.sources().any(|s| s.name == n) || also.iter().any(|a| a == n);
+    let taken =
+        |n: &str| host.collection.sources().any(|s| s.name == n) || also.iter().any(|a| a == n);
     let base = base.trim();
     (2..)
         .map(|i| format!("{base} {i}"))
@@ -159,7 +160,8 @@ fn writable_options(source: &Source) -> Vec<&'static str> {
         .iter()
         .copied()
         .filter(|k| {
-            !(source.companion_of().is_some() && *k == rbs_sources::types::keys::EXCLUDE_OWN_PROCESS)
+            !(source.companion_of().is_some()
+                && *k == rbs_sources::types::keys::EXCLUDE_OWN_PROCESS)
         })
         .collect()
 }
@@ -412,7 +414,17 @@ impl Host {
         let mut records = Vec::new();
         let mut report = TargetReport::new(id, item);
         let mut live = Vec::new();
-        let done = self.write_groups(id, item, groups, None, FilterPaste::Replace, on, &mut records, &mut report, &mut live);
+        let done = self.write_groups(
+            id,
+            item,
+            groups,
+            None,
+            FilterPaste::Replace,
+            on,
+            &mut records,
+            &mut report,
+            &mut live,
+        );
         self.finish(done, EditKind::Reset, &name, records, live, &mut report)?;
         Ok(report)
     }
@@ -441,7 +453,12 @@ impl Host {
                         item.get()
                     )));
                 }
-                None => return Err(Refusal::NotFound(format!("There is no item {}.", item.get()))),
+                None => {
+                    return Err(Refusal::NotFound(format!(
+                        "There is no item {}.",
+                        item.get()
+                    )));
+                }
             }
         }
         let mut records = Vec::new();
@@ -477,7 +494,14 @@ impl Host {
         let name = snapshot.state.name.clone();
         let mut summary = TargetReport::new(snapshot.source, None);
         let done = failed.map_or(Ok(()), Err);
-        self.finish(done, EditKind::PasteAttributes, &name, records, live, &mut summary)?;
+        self.finish(
+            done,
+            EditKind::PasteAttributes,
+            &name,
+            records,
+            live,
+            &mut summary,
+        )?;
         // The live writes are reported per target.
         for r in &mut reports {
             r.live.retain(|g| summary.live.contains(g));
@@ -699,7 +723,11 @@ impl Host {
                             .collect()
                     })
                     .unwrap_or_default();
-                let mode = if from.is_none() { FilterPaste::Replace } else { filters };
+                let mode = if from.is_none() {
+                    FilterPaste::Replace
+                } else {
+                    filters
+                };
                 self.write_filters(&target, audio, &chain, mode, records)
             }
             AttributeGroup::Options => {
@@ -745,7 +773,12 @@ impl Host {
                             .map_err(|e| Refusal::of(&e))?,
                     );
                 }
-                if chrome.is_none() && self.collection.source(id).is_some_and(|s| s.region != region) {
+                if chrome.is_none()
+                    && self
+                        .collection
+                        .source(id)
+                        .is_some_and(|s| s.region != region)
+                {
                     records.push(
                         self.collection
                             .set_source_region(id, region)
@@ -834,8 +867,8 @@ impl Host {
             .cloned()
             .collect();
         let before = records.len();
-        let same_types = own.len() == chain.len()
-            && own.iter().zip(chain).all(|(a, b)| a.type_id == b.type_id);
+        let same_types =
+            own.len() == chain.len() && own.iter().zip(chain).all(|(a, b)| a.type_id == b.type_id);
         if mode == FilterPaste::Replace && same_types {
             for (mine, theirs) in own.iter().zip(chain) {
                 if mine.settings != theirs.settings {
@@ -946,7 +979,10 @@ fn parse_groups(ids: &[String]) -> Result<Vec<AttributeGroup>, ApiError> {
     ids.iter()
         .map(|id| {
             AttributeGroup::from_id(id).ok_or_else(|| {
-                ApiError::new(ErrorKind::InvalidParams, format!("there is no group {id:?}"))
+                ApiError::new(
+                    ErrorKind::InvalidParams,
+                    format!("there is no group {id:?}"),
+                )
             })
         })
         .collect()
@@ -1002,16 +1038,17 @@ impl Host {
 
     /// Publishes `source.attributes_clipboard.changed` and tells the window.
     pub(super) fn clipboard_changed(&mut self, notify: &dyn Fn(Update)) {
-        let view = self.attribute_clipboard.as_ref().map(AttributeSnapshot::view);
+        let view = self
+            .attribute_clipboard
+            .as_ref()
+            .map(AttributeSnapshot::view);
         notify(Update::AttributesClipboard(view.clone()));
-        self.events.changed(
-            StateKey::topic(Topic::AttributesClipboardChanged),
-            || {
+        self.events
+            .changed(StateKey::topic(Topic::AttributesClipboardChanged), || {
                 EventPayload::AttributesClipboardChanged(api::AttributesClipboardChanged {
                     clipboard: view,
                 })
-            },
-        );
+            });
     }
 
     pub(super) fn api_scene_duplicate(
@@ -1082,7 +1119,8 @@ impl Host {
         };
         let canvas = p.canvas;
         let report = self.in_named_scene(id, p.scene, |host| {
-            host.reset_source(id, &groups, canvas).map_err(|e| refused(&e))
+            host.reset_source(id, &groups, canvas)
+                .map_err(|e| refused(&e))
         })?;
         if !report.changed.is_empty() || !report.live.is_empty() {
             self.apply(notify);
@@ -1107,7 +1145,11 @@ impl Host {
     }
 
     pub(super) fn api_attributes_clipboard(&self) -> Response {
-        Response::AttributesClipboard(self.attribute_clipboard.as_ref().map(AttributeSnapshot::view))
+        Response::AttributesClipboard(
+            self.attribute_clipboard
+                .as_ref()
+                .map(AttributeSnapshot::view),
+        )
     }
 
     pub(super) fn api_paste_attributes(
