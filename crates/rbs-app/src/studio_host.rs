@@ -1446,6 +1446,11 @@ struct RecordingMarkers {
     /// When the recording stopped, from `t0` (master time): the end of a pause still
     /// open then (ADR-0124 decision 10).
     stopped_ns: u64,
+    /// When the marker flush runs (host clock, ns): armed by the first marker not
+    /// yet on disk, `None` while nothing waits (ADR-0089 decision 5).
+    flush_at: Option<u64>,
+    /// A flush wrote the manifest during the recording.
+    flushed: bool,
 }
 
 impl RecordingMarkers {
@@ -1474,6 +1479,8 @@ impl RecordingMarkers {
                 settings,
                 scene,
                 stopped_ns: 0,
+                flush_at: None,
+                flushed: false,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1494,6 +1501,8 @@ impl RecordingMarkers {
             settings,
             scene,
             stopped_ns: 0,
+            flush_at: None,
+            flushed: false,
         })
     }
 
@@ -1587,6 +1596,11 @@ impl RecordingMarkers {
         // A plain recording writes a manifest only when it has markers or writes an
         // editor project (ADR-0089 decision 5, owner choice 1).
         if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
+            // A flush wrote one for markers since taken back: it goes.
+            if self.flushed {
+                self.flushed = false;
+                let _ = std::fs::remove_file(self.dir.join(&self.name));
+            }
             return Ok(());
         }
         if !self.dirty && !self.log.has_pending() {
@@ -1598,6 +1612,35 @@ impl RecordingMarkers {
         rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
         self.log.mark_flushed();
         self.dirty = false;
+        Ok(())
+    }
+
+    /// The marker flush (ADR-0089 decision 5): the manifest as it stands, with the
+    /// markers so far, rewritten while the recording runs, so a crash loses at most
+    /// the last 5 seconds of markers. `now_ns` is the host clock. The stop still
+    /// rewrites it whole.
+    fn flush(&mut self, now_ns: u64) -> Result<(), String> {
+        self.flush_at = None;
+        if !self.log.has_pending() {
+            return Ok(());
+        }
+        if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
+            // Every marker was taken back: a plain recording keeps no manifest.
+            self.log.mark_flushed();
+            if self.flushed {
+                self.flushed = false;
+                return std::fs::remove_file(self.dir.join(&self.name)).map_err(|e| e.to_string());
+            }
+            return Ok(());
+        }
+        self.manifest.markers = self.log.markers().to_vec();
+        let ran = now_ns.saturating_sub(self.log.t0_ns());
+        self.manifest.pauses = self.log.pauses().rows(ran);
+        rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
+        self.log.mark_flushed();
+        self.flushed = true;
+        // The stop rewrite still runs: an open pause and the stop fields change.
+        self.dirty = true;
         Ok(())
     }
 
@@ -1663,6 +1706,10 @@ fn pause_refusal(e: rbs_record::PauseRefused) -> String {
         e => e.to_string(),
     }
 }
+
+/// How long a marker waits before the manifest is rewritten with it (ADR-0089
+/// decision 5).
+const MARKER_FLUSH_NS: u64 = 5_000_000_000;
 
 fn slot(c: OutputCanvas) -> usize {
     match c {
@@ -3189,6 +3236,9 @@ fn round(
         wait = wait.min(left);
     }
     if let Some(left) = host.drive_calibration() {
+        wait = wait.min(left);
+    }
+    if let Some(left) = host.drive_marker_flush(now, notify) {
         wait = wait.min(left);
     }
     host.report_monitor(notify);
@@ -5918,6 +5968,39 @@ impl Host {
                 format!("the recording has no marker {index}"),
             ))
         }
+    }
+
+    /// The marker flush timers (ADR-0089 decision 5): a recording with a marker not
+    /// yet on disk arms a one-shot 5-second timer; when it is due the manifest is
+    /// rewritten. Returns the time to the next one. No marker, no timer (P13).
+    fn drive_marker_flush(
+        &mut self,
+        now: rbs_core::time::Timestamp,
+        notify: &dyn Fn(Update),
+    ) -> Option<Duration> {
+        let now_ns = now.as_nanos();
+        let mut next: Option<u64> = None;
+        for c in OutputCanvas::ALL {
+            let Some(m) = self.outs[slot(c)].markers.as_mut() else {
+                continue;
+            };
+            if !m.log.has_pending() {
+                continue;
+            }
+            let due = *m
+                .flush_at
+                .get_or_insert(now_ns.saturating_add(MARKER_FLUSH_NS));
+            if now_ns < due {
+                next = Some(next.map_or(due, |n| n.min(due)));
+                continue;
+            }
+            if let Err(e) = m.flush(now_ns) {
+                notify(Update::Error(format!(
+                    "The markers could not be saved yet: {e}"
+                )));
+            }
+        }
+        next.map(|due| Duration::from_nanos(due.saturating_sub(now_ns)))
     }
 
     /// [`Update::Markers`]: each running recording's manual marker count and, after

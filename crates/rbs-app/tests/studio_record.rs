@@ -2531,3 +2531,68 @@ fn the_window_adds_and_takes_back_a_marker() {
     assert!(why.contains("no recording"), "{why}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ADR-0089 decision 5: a marker not yet on disk is written into the manifest 5
+/// seconds later, while the recording runs, so a crash keeps it; taking every marker
+/// back removes a plain recording's manifest again.
+#[test]
+fn markers_reach_the_manifest_while_recording() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-marker-flush-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = TestClock::new();
+    let (host, rx, _display, _mic) = marked(gpu, &clock, None);
+    let mut api = ApiClient::attach(&host);
+    let manifest = dir.join("flush.rbs.toml");
+    // Two requests: the second is served in a later round, so the first round's
+    // timers have run by its answer.
+    let settle = |api: &mut ApiClient| {
+        for _ in 0..2 {
+            let status = api.call("record.status", serde_json::json!({}));
+            assert!(status.get("error").is_none(), "{status}");
+        }
+    };
+
+    host.send(Command::StartRecording(request(
+        dir.join("flush.mkv"),
+        None,
+    )));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(1));
+    let added = api.call("marker.add", serde_json::json!({"label": "Keep"}));
+    assert!(added.get("error").is_none(), "{added}");
+    // The timer arms in the round that served it, on the clock as it is now.
+    settle(&mut api);
+    clock.advance(Duration::from_secs(4));
+    settle(&mut api);
+    assert!(!manifest.exists(), "written before its 5 seconds");
+    clock.advance(Duration::from_secs(1));
+    settle(&mut api);
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let flushed = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
+    assert!(!flushed.is_complete(), "{text}");
+    let labels: Vec<_> = flushed.markers.iter().map(|m| m.label.as_str()).collect();
+    assert_eq!(labels, ["Keep"], "{text}");
+
+    // Taken back: the next flush removes the plain recording's manifest.
+    api.reconnect();
+    let removed = api.call(
+        "marker.remove",
+        serde_json::json!({"canvas": "main", "index": 1}),
+    );
+    assert!(removed.get("error").is_none(), "{removed}");
+    // The timer arms in the round that served it, on the clock as it is now.
+    settle(&mut api);
+    clock.advance(Duration::from_secs(5));
+    settle(&mut api);
+    assert!(!manifest.exists());
+
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(matches!(
+        stopped,
+        RecordingUpdate::Stopped { failure: None, .. }
+    ));
+    assert!(!manifest.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
