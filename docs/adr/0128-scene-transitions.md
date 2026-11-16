@@ -37,7 +37,7 @@ Forces:
    - **Swipe:** the incoming scene slides in from the edge opposite `direction`, over the outgoing scene, which stays still.
    - **Slide:** like Swipe, and the outgoing scene moves out by the same offset at the same time.
    - **Stinger:** decision 12.
-3. **Scene document format 19.** Root table `transition = { kind, fade = {...}, swipe = {...}, slide = {...}, stinger = {...} }`, with defaults omitted when writing. Formats up to 18 load with `kind = "move"` when `glide.duration_ms > 0` and `"cut"` when it is 0, so an existing show looks the same after the upgrade. Older builds refuse format 19 without touching the file (P9). What kind a new collection starts with is the owner's choice (open question 1).
+3. **Scene document format 19.** Root table `transition = { kind, fade = {...}, swipe = {...}, slide = {...}, stinger = {...} }`, with defaults omitted when writing. Formats up to 18 load with `kind = "move"` when `glide.duration_ms > 0` and `"cut"` when it is 0, so an existing show looks the same after the upgrade. Older builds refuse format 19 without touching the file (P9). A new collection starts with Move and the 400 ms ease-in-out glide, today's look (owner, 2026-11-16).
 4. **Per scene: later.** An override "transition into this scene" (`Scene.transition_in: Option<TransitionKind>`) is phase 3. It is in this ADR so the format reserves the key now; format 19 refuses it until phase 3 ships.
 
 ### Running a transition
@@ -90,10 +90,6 @@ Forces:
 - **Render both scenes to textures and blend in a third compositor.** One more full pass than drawing the outgoing scene's layers directly into the program compositor. Rejected.
 - **Keep "Cut" as today's morph and add Fade beside it.** The name would keep lying. Rejected; Move is the honest name and existing shows keep their look.
 - **Stinger now as a silent overlay.** ADR-0108 forbids a media node that later grows sound. Waits for it.
-
-## Open questions for the owner
-
-1. Which kind a new collection starts with: Move 400 ms (today's look) or Fade 300 ms (what OBS users expect).
 
 ## Review
 
