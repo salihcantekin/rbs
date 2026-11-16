@@ -2072,3 +2072,104 @@ fn a_hold_scene_that_is_gone_binds_nothing() {
     assert!(report.hold_mixers.is_empty());
     assert_eq!(report.compositors.len(), before);
 }
+
+#[test]
+fn a_transition_binds_the_incoming_picture_and_keeps_the_outgoing_scene() {
+    use rbs_scene::binder::OutgoingScene;
+    let (mut s, mic) = audio_setup();
+    let (film, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(film), full(), None)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let film_node = s.binder.source_node(film).unwrap();
+    let mic_node = s.binder.source_node(mic).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    let mixer = s.binder.mixer(s.wide).unwrap();
+
+    // The program goes to a scene with only the screen, the camera coming along.
+    let (next, _) = s.col.add_scene("Next", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(next, ItemContent::Source(s.screen), full(), None)
+        .unwrap();
+    s.col.set_program(s.wide, Some(next)).unwrap();
+    let outgoing = BTreeMap::from([(
+        s.wide,
+        OutgoingScene::new(
+            BTreeSet::from([s.screen, s.cam, film]),
+            BTreeSet::from([mic]),
+        ),
+    )]);
+    let none = BTreeSet::new();
+    let report = s
+        .binder
+        .sync_transition(
+            &s.col,
+            &mut s.graph,
+            &BTreeSet::new(),
+            &none,
+            &BTreeMap::new(),
+            &outgoing,
+        )
+        .unwrap();
+    let incoming = s.binder.compositor(s.wide, Role::Incoming).unwrap();
+    let bound = &report.compositors[&(s.wide, Role::Incoming)];
+    assert!(bound.created);
+    // The incoming compositor draws the new program scene...
+    let screen_node = s.binder.source_node(s.screen).unwrap();
+    assert_eq!(links_into(&s, incoming), [screen_node]);
+    assert_eq!(bound.layers.len(), 1);
+    // ...and is a producer of the program compositor, which keeps the outgoing
+    // picture's sources linked; the film keeps playing and the mic is still heard.
+    let into_program = links_into(&s, comp);
+    assert!(into_program.contains(&incoming));
+    assert!(into_program.contains(&film_node));
+    assert_eq!(state(&s, film_node), Lifecycle::Active);
+    assert!(links_into(&s, mixer).contains(&mic_node));
+    // The same call again changes nothing.
+    let again = s
+        .binder
+        .sync_transition(
+            &s.col,
+            &mut s.graph,
+            &BTreeSet::new(),
+            &none,
+            &BTreeMap::new(),
+            &outgoing,
+        )
+        .unwrap();
+    assert!(!again.compositors[&(s.wide, Role::Incoming)].created);
+    assert_eq!(s.binder.compositor(s.wide, Role::Incoming), Some(incoming));
+
+    // The end: without the outgoing entry the incoming compositor goes, the film
+    // sleeps, and the mic is no longer heard.
+    let end = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(end.retired_compositors.contains(&incoming));
+    assert_eq!(s.binder.compositor(s.wide, Role::Incoming), None);
+    assert!(!links_into(&s, comp).contains(&film_node));
+    assert_eq!(state(&s, film_node), Lifecycle::Standby);
+    assert!(!links_into(&s, mixer).contains(&mic_node));
+}
+
+#[test]
+fn a_transition_on_a_canvas_without_a_program_binds_nothing() {
+    use rbs_scene::binder::OutgoingScene;
+    let mut s = setup();
+    let outgoing = BTreeMap::from([(s.tall, OutgoingScene::default())]);
+    let none = BTreeSet::new();
+    let report = s
+        .binder
+        .sync_transition(
+            &s.col,
+            &mut s.graph,
+            &BTreeSet::new(),
+            &none,
+            &BTreeMap::new(),
+            &outgoing,
+        )
+        .unwrap();
+    assert!(!report.compositors.contains_key(&(s.tall, Role::Incoming)));
+}

@@ -67,6 +67,31 @@ pub enum Role {
     /// The scene a held stream shows (ADR-0124 phase 2b), bound only while asked
     /// for with [`SceneBinder::sync_held`].
     Hold,
+    /// The scene coming on air while a transition runs (ADR-0128 decision 5): the
+    /// canvas's program scene drawn whole, so the program compositor can draw it as
+    /// one layer over the outgoing scene. Bound only while asked for with
+    /// [`SceneBinder::sync_transition`].
+    Incoming,
+}
+
+/// The scene going off air on one canvas while a transition runs (ADR-0128 decision
+/// 6). It names sources, not a scene: a held program transitioned to itself has the
+/// same scene id going out and coming in (ADR-0063 decision 3).
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutgoingScene {
+    /// The sources the outgoing picture draws: kept linked to the program compositor
+    /// and running for the transition's length.
+    pub drawn: BTreeSet<SourceId>,
+    /// The sources the outgoing scene is heard with: kept in the program mixer.
+    pub heard: BTreeSet<SourceId>,
+}
+
+impl OutgoingScene {
+    /// The outgoing picture's `drawn` sources and its `heard` ones.
+    pub fn new(drawn: BTreeSet<SourceId>, heard: BTreeSet<SourceId>) -> Self {
+        Self { drawn, heard }
+    }
 }
 
 /// A hold scene asked for on one canvas (ADR-0124 phase 2b).
@@ -573,6 +598,32 @@ impl SceneBinder {
         cued_sources: &BTreeSet<SourceId>,
         hold: &BTreeMap<CanvasId, HoldScene>,
     ) -> Result<BindReport, BindError> {
+        self.sync_transition(
+            collection,
+            graph,
+            cued_items,
+            cued_sources,
+            hold,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// Like [`Self::sync_held`], also binding a running transition per canvas in
+    /// `outgoing` (ADR-0128 decision 6): a compositor for `(canvas, Role::Incoming)`
+    /// drawing the canvas's program scene, linked into the program compositor; the
+    /// outgoing scene's `drawn` sources linked to the program compositor and running;
+    /// its `heard` sources in the program mixer. A canvas not in the collection, or
+    /// without a program scene, is skipped. An empty map binds nothing of it and
+    /// retires what an earlier call bound.
+    pub fn sync_transition(
+        &mut self,
+        collection: &SceneCollection,
+        graph: &mut GraphDescription,
+        cued_items: &BTreeSet<ItemId>,
+        cued_sources: &BTreeSet<SourceId>,
+        hold: &BTreeMap<CanvasId, HoldScene>,
+        outgoing: &BTreeMap<CanvasId, OutgoingScene>,
+    ) -> Result<BindReport, BindError> {
         let mut draft_graph = graph.clone();
         let mut draft = self.state.clone();
         let report = draft.sync(
@@ -581,7 +632,7 @@ impl SceneBinder {
             collection,
             &mut draft_graph,
             (cued_items, cued_sources),
-            hold,
+            (hold, outgoing),
         )?;
         *graph = draft_graph;
         self.state = draft;
@@ -744,9 +795,22 @@ impl State {
         collection: &SceneCollection,
         graph: &mut GraphDescription,
         (cued_items, cued_sources): (&BTreeSet<ItemId>, &BTreeSet<SourceId>),
-        hold: &BTreeMap<CanvasId, HoldScene>,
+        (hold, outgoing): (
+            &BTreeMap<CanvasId, HoldScene>,
+            &BTreeMap<CanvasId, OutgoingScene>,
+        ),
     ) -> Result<BindReport, BindError> {
         let mut report = BindReport::default();
+        // Transitions the collection can run: their canvas has a program scene.
+        let outgoing: BTreeMap<CanvasId, &OutgoingScene> = outgoing
+            .iter()
+            .filter(|(c, _)| {
+                collection
+                    .canvases()
+                    .any(|k| k.id == **c && k.program.is_some())
+            })
+            .map(|(c, o)| (*c, o))
+            .collect();
         // Hold scenes the collection can draw: their canvas and scene exist.
         let hold: BTreeMap<CanvasId, HoldScene> = hold
             .iter()
@@ -977,6 +1041,9 @@ impl State {
             if let Some(h) = hold.get(&canvas.id) {
                 needed.insert((canvas.id, Role::Hold), h.scene);
             }
+            if let (Some(scene), true) = (canvas.program, outgoing.contains_key(&canvas.id)) {
+                needed.insert((canvas.id, Role::Incoming), scene);
+            }
         }
         let unneeded: Vec<(CanvasId, Role)> = self
             .compositors
@@ -990,8 +1057,32 @@ impl State {
                 report.retired_compositors.push(b.node.node);
             }
         }
+        // An incoming compositor exists before the program compositor of its canvas
+        // is linked, so the program compositor can draw it as a layer.
+        let mut fresh: BTreeSet<(CanvasId, Role)> = BTreeSet::new();
+        for &(canvas, role) in needed.keys().filter(|(_, r)| *r == Role::Incoming) {
+            if let std::collections::btree_map::Entry::Vacant(e) =
+                self.compositors.entry((canvas, role))
+            {
+                let node = add_node(graph, Arc::clone(&compositor_desc))?;
+                e.insert(BoundComp {
+                    node: BoundNode {
+                        node,
+                        pins: compositor_pins.clone(),
+                    },
+                    links: Vec::new(),
+                });
+                fresh.insert((canvas, role));
+            }
+        }
+        let incoming: BTreeMap<CanvasId, BoundNode> = self
+            .compositors
+            .iter()
+            .filter(|((_, r), _)| *r == Role::Incoming)
+            .map(|((c, _), b)| (*c, b.node.clone()))
+            .collect();
         for (&(canvas, role), &scene) in &needed {
-            let mut created = false;
+            let mut created = fresh.contains(&(canvas, role));
             let comp = match self.compositors.entry((canvas, role)) {
                 std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::btree_map::Entry::Vacant(e) => {
@@ -1045,9 +1136,13 @@ impl State {
                             .visible_sources_cued(canvas, scene, cued_items)
                             .map_err(BindError::Scene)?,
                     );
+                    // The outgoing picture's sources stay linked for the transition.
+                    if let Some(o) = outgoing.get(&canvas) {
+                        warm.extend(o.drawn.iter().copied());
+                    }
                     warm
                 }
-                Role::Preview | Role::Hold => collection
+                Role::Preview | Role::Hold | Role::Incoming => collection
                     .visible_sources_cued(canvas, scene, cued_items)
                     .map_err(BindError::Scene)?,
             };
@@ -1063,6 +1158,13 @@ impl State {
                         producers.push(tail.clone());
                     }
                 }
+            }
+            // The incoming scene's picture is one more producer of the program
+            // compositor while a transition runs.
+            if role == Role::Program
+                && let Some(node) = incoming.get(&canvas)
+            {
+                producers.push(node.clone());
             }
             let wanted: BTreeSet<NodeId> = producers.iter().map(|p| p.node).collect();
             comp.links.retain(|link| {
@@ -1127,7 +1229,7 @@ impl State {
                         })
                     }
                 };
-                let heard: BTreeSet<SourceId> = match canvas.program {
+                let mut heard: BTreeSet<SourceId> = match canvas.program {
                     Some(scene) => collection
                         .visible_sources_cued(canvas.id, scene, cued_items)
                         .map_err(BindError::Scene)?
@@ -1135,6 +1237,10 @@ impl State {
                         .collect(),
                     None => BTreeSet::new(),
                 };
+                // The outgoing scene is heard until its transition ends.
+                if let Some(o) = outgoing.get(&canvas.id) {
+                    heard.extend(o.heard.iter().copied());
+                }
                 let (inputs, sound) = link_mixer(&self.sources, graph, mix, &heard)?;
                 for (source, link) in sound {
                     report.picture_sound.push(PictureSound {
@@ -1215,6 +1321,11 @@ impl State {
         // only while a shown program or preview scene draws them, or the host's
         // cue set names them (ADR-0105).
         let mut running = collection.running_sources_cued(cued_sources);
+        // An outgoing picture keeps playing until its transition ends.
+        for o in outgoing.values() {
+            running.extend(o.drawn.iter().copied());
+            running.extend(o.heard.iter().copied());
+        }
         // A hold scene's media and browser sources play while it is bound.
         for (&canvas, h) in &hold {
             running.extend(
