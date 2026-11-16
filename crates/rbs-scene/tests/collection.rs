@@ -2208,3 +2208,55 @@ fn recording_a_source_separately_is_one_undo_and_starts_off() {
         Err(SceneError::UnknownSource(_))
     ));
 }
+
+#[test]
+fn transition_defaults_to_move_undoes_and_refuses_out_of_range() {
+    use rbs_scene::{CollectionTransition, SwipeDirection, TransitionKind};
+    let mut s = studio();
+    let t = s.col.transition();
+    assert_eq!(t.kind, TransitionKind::Move);
+    assert_eq!(t.fade.duration_ms, 300);
+    assert_eq!(t.fade.easing, GlideEasing::Linear);
+    assert_eq!(t.swipe.direction, SwipeDirection::Left);
+    assert_eq!(t.duration_ms(s.col.glide()), 400);
+
+    let before = s.col.clone();
+    let mut fade = t;
+    fade.kind = TransitionKind::Fade;
+    fade.fade.duration_ms = 1000;
+    fade.fade.via = Some([0, 0, 0]);
+    let undo = s.col.set_transition(fade).unwrap();
+    assert_eq!(s.col.transition(), fade);
+    assert_ne!(s.col, before);
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+
+    let mut long = t;
+    long.slide.duration_ms = MAX_GLIDE_MS + 1;
+    assert_eq!(
+        s.col.set_transition(long),
+        Err(SceneError::InvalidTransition)
+    );
+    assert_eq!(s.col, before);
+
+    let cut = CollectionTransition {
+        kind: TransitionKind::Cut,
+        ..Default::default()
+    };
+    assert_eq!(cut.duration_ms(s.col.glide()), 0);
+}
+
+#[test]
+fn legacy_documents_map_to_move_or_cut() {
+    use rbs_scene::{CollectionTransition, TransitionKind};
+    let moving = CollectionTransition::from_legacy(CollectionGlide::default());
+    assert_eq!(moving.kind, TransitionKind::Move);
+    let still = CollectionTransition::from_legacy(CollectionGlide {
+        duration_ms: 0,
+        easing: GlideEasing::EaseInOut,
+    });
+    assert_eq!(still.kind, TransitionKind::Cut);
+    for kind in TransitionKind::ALL {
+        assert_eq!(TransitionKind::parse(kind.as_str()), Some(kind));
+    }
+}

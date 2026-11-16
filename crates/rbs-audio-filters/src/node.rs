@@ -29,9 +29,16 @@ pub fn descriptor(ty: &dyn AudioFilterType) -> NodeDescriptor {
 #[derive(Debug, Default)]
 pub struct AudioFilterStats {
     invalid_inputs: AtomicU64,
+    latency_frames: u32,
 }
 
 impl AudioFilterStats {
+    /// The latency of the DSP this node runs, in frames; 0 for a pass-through
+    /// (ADR-0130 decision 2). Fixed for the node's life.
+    pub fn latency_frames(&self) -> u32 {
+        self.latency_frames
+    }
+
     /// Input blocks dropped because their format or length was not the graph's.
     pub fn invalid_inputs(&self) -> u64 {
         self.invalid_inputs.load(Ordering::Relaxed)
@@ -55,6 +62,11 @@ pub struct AudioFilterNode {
     format: AudioFormat,
     frames: usize,
     keyed: bool,
+    /// The DSP has latency, so it is reset after a missing input block (ADR-0130
+    /// decision 3). Fixed when the node is built.
+    latent: bool,
+    /// A latent DSP missed an input block since it last processed one.
+    gap: bool,
     dsp: Box<dyn AudioDsp>,
     params: ParamReceiver<Values>,
     stats: Arc<AudioFilterStats>,
@@ -96,14 +108,20 @@ impl AudioFilterNode {
         values: Values,
     ) -> (Self, FilterHandles) {
         let meter = dsp.meter();
+        let latency_frames = dsp.latency_frames();
         let (tx, rx) = channel(values);
-        let stats = Arc::new(AudioFilterStats::default());
+        let stats = Arc::new(AudioFilterStats {
+            invalid_inputs: AtomicU64::new(0),
+            latency_frames,
+        });
         let keyed = desc_has_key(&desc);
         let node = Self {
             desc,
             format: setup.format,
             frames: setup.block_frames as usize,
             keyed,
+            latent: latency_frames > 0,
+            gap: false,
             dsp,
             params: rx,
             stats: Arc::clone(&stats),
@@ -122,6 +140,7 @@ impl<X: Runtime> Node<X> for AudioFilterNode {
         let values = *self.params.get();
         self.dsp.set(&values);
         self.dsp.reset();
+        self.gap = false;
         Ok(())
     }
 
@@ -132,9 +151,15 @@ impl<X: Runtime> Node<X> for AudioFilterNode {
             self.dsp.set(self.params.get());
         }
         let Some(block) = ctx.inputs().audio(0, 0) else {
-            // No input block: publish nothing; the consumer hears silence.
+            // No input block: publish nothing; the consumer hears silence. A latent DSP
+            // must not play the stale audio it holds when input resumes.
+            self.gap = self.latent;
             return Ok(());
         };
+        if self.gap {
+            self.dsp.reset();
+            self.gap = false;
+        }
         if block.format() != self.format || block.frames() != self.frames {
             self.stats.invalid_inputs.fetch_add(1, Ordering::Relaxed);
             return Ok(());

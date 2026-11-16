@@ -602,6 +602,177 @@ impl SourceGlide {
     }
 }
 
+/// What a program-scene change looks like (ADR-0128 decision 2). Duration 0 is a cut for
+/// every kind.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransitionKind {
+    /// The new layers on the next frame; no glide and no fade-in.
+    Cut,
+    /// The incoming scene, drawn whole, fades in over the outgoing one.
+    Fade,
+    /// Shared sources slide, new ones fade in, leaving ones fade out (the collection
+    /// glide, ADR-0100). A new collection starts with it (owner, 2026-11-16).
+    #[default]
+    Move,
+    /// The incoming scene slides in over the outgoing one.
+    Swipe,
+    /// The incoming scene slides in and pushes the outgoing one out.
+    Slide,
+}
+
+impl TransitionKind {
+    /// Every kind, in the order the UI lists them.
+    pub const ALL: [Self; 5] = [Self::Cut, Self::Fade, Self::Move, Self::Swipe, Self::Slide];
+
+    /// The document and control-API name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::Fade => "fade",
+            Self::Move => "move",
+            Self::Swipe => "swipe",
+            Self::Slide => "slide",
+        }
+    }
+
+    /// Parses a document or API name.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
+/// The edge a Swipe or Slide moves towards (ADR-0128 decision 1): the incoming scene
+/// comes in from the opposite edge.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SwipeDirection {
+    /// Towards the left edge (in from the right).
+    #[default]
+    Left,
+    /// Towards the right edge.
+    Right,
+    /// Towards the top edge.
+    Up,
+    /// Towards the bottom edge.
+    Down,
+}
+
+impl SwipeDirection {
+    /// Every direction.
+    pub const ALL: [Self; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
+
+    /// The document and control-API name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+
+    /// Parses a document or API name.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == s)
+    }
+}
+
+/// Fade's settings (ADR-0128 decision 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FadeSettings {
+    /// Milliseconds in `0..=MAX_GLIDE_MS`.
+    pub duration_ms: u32,
+    /// How unit time is mapped.
+    pub easing: GlideEasing,
+    /// An opaque sRGB colour to fade through; `None` is a crossfade.
+    pub via: Option<[u8; 3]>,
+}
+
+impl Default for FadeSettings {
+    fn default() -> Self {
+        Self {
+            duration_ms: 300,
+            easing: GlideEasing::Linear,
+            via: None,
+        }
+    }
+}
+
+/// Swipe's and Slide's settings (ADR-0128 decision 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwipeSettings {
+    /// Milliseconds in `0..=MAX_GLIDE_MS`.
+    pub duration_ms: u32,
+    /// How unit time is mapped.
+    pub easing: GlideEasing,
+    /// The edge the picture moves towards.
+    pub direction: SwipeDirection,
+}
+
+impl Default for SwipeSettings {
+    fn default() -> Self {
+        Self {
+            duration_ms: 500,
+            easing: GlideEasing::EaseInOut,
+            direction: SwipeDirection::Left,
+        }
+    }
+}
+
+/// The collection's transition (ADR-0128 decision 1): the selected kind and each kind's
+/// own settings, so changing kind loses no tuned value. Move's settings are the
+/// collection glide (ADR-0100), not a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CollectionTransition {
+    /// The kind a program change uses.
+    pub kind: TransitionKind,
+    /// Fade's settings.
+    pub fade: FadeSettings,
+    /// Swipe's settings.
+    pub swipe: SwipeSettings,
+    /// Slide's settings.
+    pub slide: SwipeSettings,
+}
+
+impl CollectionTransition {
+    /// True when every duration is in range.
+    pub fn is_valid(self) -> bool {
+        self.fade.duration_ms <= MAX_GLIDE_MS
+            && self.swipe.duration_ms <= MAX_GLIDE_MS
+            && self.slide.duration_ms <= MAX_GLIDE_MS
+    }
+
+    /// True for a new collection's transition.
+    pub fn is_default(self) -> bool {
+        self == Self::default()
+    }
+
+    /// The selected kind's duration, with `glide` for Move and 0 for Cut.
+    pub fn duration_ms(self, glide: CollectionGlide) -> u32 {
+        match self.kind {
+            TransitionKind::Cut => 0,
+            TransitionKind::Fade => self.fade.duration_ms,
+            TransitionKind::Move => glide.duration_ms,
+            TransitionKind::Swipe => self.swipe.duration_ms,
+            TransitionKind::Slide => self.slide.duration_ms,
+        }
+    }
+
+    /// What a document of format 18 or older means (ADR-0128 decision 3): Move, or Cut
+    /// when its glide was 0 ms, so an existing show looks the same.
+    pub fn from_legacy(glide: CollectionGlide) -> Self {
+        Self {
+            kind: if glide.duration_ms == 0 {
+                TransitionKind::Cut
+            } else {
+                TransitionKind::Move
+            },
+            ..Self::default()
+        }
+    }
+}
+
 /// The hint key that marks an audio source as the companion of a picture source
 /// (ADR-0096): the value is the picture's source id in decimal.
 pub const COMPANION_OF_HINT: &str = "companion_of";

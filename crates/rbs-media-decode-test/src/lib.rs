@@ -1,8 +1,8 @@
 //! Fake [`MediaDecoder`](rbs_media_decode::MediaDecoder) (ADR-0108 decision 10).
 //!
-//! Frames are preloaded in the factory. `open` does not read the file. `pull` does
-//! not read the file. A file with no audio stream reports [`ScriptDecoder::audio_stream`]
-//! false; the node still emits silence on its audio pin.
+//! Frames are preloaded in the factory. Neither `open` nor a read touches the file. A
+//! clip with no audio stream reports `has_audio` false; the source still has a sound
+//! node that writes silence. Pictures and sound are read per stream, as the port says.
 //!
 //! This crate is not an FFmpeg adapter and does not link `ffmpeg-sys`.
 
@@ -16,8 +16,8 @@ use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_media_decode::caps::PIXEL;
 use rbs_media_decode::pixel::CPU_UPLOAD;
 use rbs_media_decode::{
-    DecodeError, InterleavedPcm, MediaDecoder, MediaDecoderFactory, MediaSample, Picture,
-    PictureLayout, SampleColor,
+    DecodeError, InterleavedPcm, MediaDecoder, MediaDecoderFactory, Picture, PictureLayout,
+    PictureSample, SampleColor, SoundSample, frame_duration_rule,
 };
 
 /// One scripted picture. `bytes` is straight-alpha sRGB `Rgba8` unless `layout` says
@@ -125,7 +125,7 @@ impl ScriptFrame {
 pub struct ScriptCounts {
     /// `open` calls.
     pub opens: AtomicU64,
-    /// `pull` calls.
+    /// `next_picture` and `next_sound` calls.
     pub pulls: AtomicU64,
     /// Bytes read from the filesystem. Always 0.
     pub file_bytes: AtomicU64,
@@ -142,8 +142,14 @@ pub struct ScriptClip {
     pub frames: Vec<ScriptFrame>,
     /// Interleaved PCM, or `None` for silence on the node's pin.
     pub audio: Option<InterleavedPcm>,
-    /// When set, `open` fails with `Media`.
+    /// When set, `open` fails with `DecodeError::Failed`.
     pub fail_open: Option<String>,
+    /// When set, `open` fails with `DecodeError::Unsupported` (a missing codec).
+    pub unsupported: Option<String>,
+    /// An animated picture (GIF, APNG, WebP): short delays read as 100 ms.
+    pub animated: bool,
+    /// The stated duration, if any.
+    pub duration: Option<Duration>,
 }
 
 impl ScriptClip {
@@ -158,6 +164,9 @@ impl ScriptClip {
             ],
             audio: None,
             fail_open: None,
+            unsupported: None,
+            animated: false,
+            duration: None,
         }
     }
 
@@ -174,6 +183,9 @@ impl ScriptClip {
             ],
             audio: None,
             fail_open: None,
+            unsupported: None,
+            animated: false,
+            duration: None,
         }
     }
 
@@ -191,6 +203,9 @@ impl ScriptClip {
             }],
             audio: None,
             fail_open: None,
+            unsupported: None,
+            animated: false,
+            duration: None,
         }
     }
 }
@@ -241,20 +256,32 @@ impl MediaDecoderFactory for ScriptFactory {
         if let Some(text) = &self.clip.fail_open {
             return Err(DecodeError::Failed(text.clone()));
         }
+        if let Some(codec) = &self.clip.unsupported {
+            return Err(DecodeError::Unsupported(codec.clone()));
+        }
         self.counts.alive.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(ScriptDecoder {
             frames: self.clip.frames.clone(),
             audio: self.clip.audio.clone(),
+            animated: self.clip.animated,
+            duration: self.clip.duration,
             index: 0,
+            sound_frame: 0,
             counts: Arc::clone(&self.counts),
         }))
     }
 }
 
+/// PCM frames handed out per `next_sound` call.
+pub const SOUND_CHUNK_FRAMES: usize = 1024;
+
 struct ScriptDecoder {
     frames: Vec<ScriptFrame>,
     audio: Option<InterleavedPcm>,
+    animated: bool,
+    duration: Option<Duration>,
     index: usize,
+    sound_frame: usize,
     counts: Arc<ScriptCounts>,
 }
 
@@ -274,35 +301,62 @@ impl MediaDecoder for ScriptDecoder {
             .iter()
             .position(|frame| frame.pts.unwrap_or(Duration::ZERO) >= cursor)
             .unwrap_or(self.frames.len());
+        if let Some(audio) = &self.audio {
+            let rate = u128::from(audio.sample_rate.max(1));
+            self.sound_frame = (cursor.as_nanos() * rate / 1_000_000_000) as usize;
+        }
         Ok(())
     }
 
-    fn pull(&mut self) -> Result<Option<MediaSample>, DecodeError> {
+    fn next_picture(&mut self) -> Result<Option<PictureSample>, DecodeError> {
         self.counts.pulls.fetch_add(1, Ordering::Relaxed);
         let Some(frame) = self.frames.get(self.index) else {
             return Ok(None);
         };
         self.index += 1;
-        let pcm = if self.index == 1 {
-            self.audio.clone()
-        } else {
-            None
-        };
-        Ok(Some(MediaSample {
+        Ok(Some(PictureSample {
             pts: frame.pts,
-            frame_duration: frame.frame_duration,
-            picture: Some(Picture {
-                width: frame.width,
-                height: frame.height,
-                layout: frame.layout,
-                color: frame.color,
-                bytes: frame.bytes.clone(),
-            }),
-            pcm,
+            frame_duration: frame_duration_rule(frame.frame_duration, self.animated, None),
+            picture: Picture::system(
+                frame.width,
+                frame.height,
+                frame.layout,
+                frame.color,
+                frame.bytes.clone(),
+            ),
         }))
     }
 
-    fn audio_stream(&self) -> bool {
+    fn next_sound(&mut self) -> Result<Option<SoundSample>, DecodeError> {
+        self.counts.pulls.fetch_add(1, Ordering::Relaxed);
+        let Some(audio) = &self.audio else {
+            return Ok(None);
+        };
+        let channels = usize::from(audio.channels.max(1));
+        let total = audio.samples.len() / channels;
+        if self.sound_frame >= total {
+            return Ok(None);
+        }
+        let end = (self.sound_frame + SOUND_CHUNK_FRAMES).min(total);
+        let rate = u64::from(audio.sample_rate.max(1));
+        let pts = Duration::from_nanos(self.sound_frame as u64 * 1_000_000_000 / rate);
+        let samples = audio.samples[self.sound_frame * channels..end * channels].to_vec();
+        self.sound_frame = end;
+        Ok(Some(SoundSample {
+            pts: Some(pts),
+            pcm: InterleavedPcm {
+                sample_rate: audio.sample_rate,
+                channels: audio.channels,
+                samples,
+            },
+        }))
+    }
+
+    fn has_audio(&self) -> bool {
         self.audio.is_some()
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        self.duration
     }
 }

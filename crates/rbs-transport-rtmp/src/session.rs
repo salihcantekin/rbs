@@ -42,6 +42,8 @@ pub(crate) struct Settings {
     pub key: String,
     pub limits: QueueLimits,
     pub reconnect: ReconnectPolicy,
+    /// Roots trusted for `rtmps` besides the system's.
+    pub tls_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
 }
 
 struct Running {
@@ -321,6 +323,7 @@ impl Transport for RtmpTransport {
                     .max_duration
                     .as_millis()
                     .min(i32::MAX as u128) as i32,
+                tls_roots: self.settings.tls_roots.clone(),
             },
             Arc::clone(&shared),
             consumer,

@@ -76,19 +76,21 @@ pub struct Server {
     pub host: String,
 }
 
-/// Checks a server URL: `rtmp://host[:port]/app` or `srt://host:port`.
+/// Checks a server URL: `rtmp://host[:port]/app`, `rtmps://host[:port]/app` (RTMP over
+/// TLS, ADR-0127 decision 10; the same protocol for everything else) or
+/// `srt://host:port`.
 pub fn parse_server(url: &str) -> Result<Server, String> {
     let Some((scheme, rest)) = url.split_once("://") else {
         return Err(format!(
-            "{url} is not a server address: it starts with rtmp:// or srt://."
+            "{url} is not a server address: it starts with rtmp://, rtmps:// or srt://."
         ));
     };
     let protocol = match scheme.to_ascii_lowercase().as_str() {
-        "rtmp" => Protocol::Rtmp,
+        "rtmp" | "rtmps" => Protocol::Rtmp,
         "srt" => Protocol::Srt,
         other => {
             return Err(format!(
-                "RBS streams over rtmp:// and srt:// so far; {other}:// is not supported yet."
+                "RBS streams over rtmp://, rtmps:// and srt:// so far; {other}:// is not supported yet."
             ));
         }
     };
@@ -471,6 +473,11 @@ mod tests {
             ),
             ("rtmp://127.0.0.1:1935/live", Protocol::Rtmp, "127.0.0.1"),
             (
+                "rtmps://live-api-s.facebook.com:443/rtmp/",
+                Protocol::Rtmp,
+                "live-api-s.facebook.com",
+            ),
+            (
                 "srt://ingest.example.com:9000",
                 Protocol::Srt,
                 "ingest.example.com",
@@ -489,7 +496,7 @@ mod tests {
         }
         let bad = [
             ("live.example.com/app", "starts with rtmp://"),
-            ("rtmps://live.example.com/app", "rtmps:// is not supported"),
+            ("rtmpt://live.example.com/app", "rtmpt:// is not supported"),
             ("https://x/app", "https:// is not supported"),
             ("rtmp://live.example.com", "no application name"),
             ("rtmp://live.example.com/", "no application name"),
@@ -744,7 +751,7 @@ mod tests {
     fn a_bad_file_gives_the_defaults_and_why() {
         let d = dir("bad-stream-profile");
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(file(&d), "format_version = 1\nserver = \"rtmps://x/app\"\n").unwrap();
+        std::fs::write(file(&d), "format_version = 1\nserver = \"https://x/app\"\n").unwrap();
         let (p, why) = load(&d);
         assert_eq!(p, StreamProfile::new());
         assert!(why.unwrap().contains("not supported"));

@@ -1,8 +1,8 @@
 # Spec: Audio filters
 
-- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082)
+- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082). Latency contract and compensation (ADR-0130 step 1) built; the ADR-0130 filter types and API fields are planned.
 - Owner crate(s): `rbs-audio-filters` (audio filter type trait, DSP trait, filter node, catalogue, conformance suite); `rbs-params` (settings schema, shared with video filters)
-- Related ADRs: ADR-0082, ADR-0062, ADR-0023, ADR-0020, ADR-0013
+- Related ADRs: ADR-0130 (latency, voice filters), ADR-0082, ADR-0062, ADR-0023, ADR-0020, ADR-0013
 
 ## Purpose
 
@@ -25,6 +25,7 @@ pub trait AudioFilterType: Send + Sync + 'static {
     fn fields(&self) -> &'static [Field];            // at most 12, rbs_params schema
     fn make(&self, setup: DspSetup, values: &Values) -> Result<Box<dyn AudioDsp>, ParamError>;
     fn key_input(&self) -> bool { false }            // a second input `key` (ADR-0095)
+    fn latency_frames(&self, setup: DspSetup) -> u32 { 0 } // display only (ADR-0130)
 }
 
 pub trait AudioDsp: Send {
@@ -34,6 +35,7 @@ pub trait AudioDsp: Send {
     // `key`: the key's planar channels, or None (no key linked or no block): silence.
     fn process_keyed(&mut self, channels: &mut [&mut [f32]], key: Option<&[&[f32]]>, frames: usize);
     fn meter(&self) -> Option<Arc<FilterMeter>>;     // once, before adoption
+    fn latency_frames(&self) -> u32 { 0 }            // fixed at make (ADR-0130)
 }
 ```
 
@@ -42,6 +44,14 @@ pub trait AudioDsp: Send {
 ### Node
 
 `AudioFilterNode` (kind `AudioFilter`, input `in`, output `out`, no latency; a type with `key_input()` has a second audio input `key`, whose block counts only in the graph's format and size and is silence otherwise). In `process` it takes the newest values from its `ParamSender<Values>` (ADR-0023), copies the input block to the output buffer with the input's timestamp, and runs the DSP in place. No input block: it publishes nothing. A block whose format or length is not the graph's is dropped and counted (`AudioFilterStats::invalid_inputs`). `prepare` applies the current values and calls `reset`, so a filter joining the schedule starts clean; a value edit never resets. `AudioFilterNode::pass_through` builds a node that passes audio unchanged, for a filter that could not be made.
+
+### Latency (ADR-0130 decisions 2 to 4)
+
+A DSP's output may be later than its input by `AudioDsp::latency_frames()` frames. The value is fixed when the DSP is made: `set` never changes it, so a value edit never changes a chain's latency. `reset` fills the delay with silence. `AudioFilterType::latency_frames(setup)` is for display (control API, help text); it equals what `make` would build for `setup` and is 0 where `make` refuses. The conformance suite checks both, at the defaults and at every number field's extreme. A pass-through (a filter that could not be made) has latency 0. `AudioFilterStats::latency_frames()` carries the built DSP's latency to the studio.
+
+**Reset after a gap.** A node whose DSP has latency above 0 (fixed when the node is built) resets the DSP before the first block that follows a tick without an input block, so stale audio never plays after a gap. A joining upstream node with no output on its first tick causes one more reset right after `prepare`; it is harmless. Zero-latency DSPs are never reset by a gap.
+
+**Compensation.** The chain latency `L` of a source is the sum over its audio filter instances that the plan schedules (enabled, not Standby). For a source with an input node the studio sends the input `stored - L`; the input clamps it to `a` (`audio-graph.md`, "Offset"), and the program hears the source at `h = a + L`. When the clamp does not bite, `h` is the stored offset; otherwise `uncompensated = h - clamp(stored)` is reported. A source without an input node is late by `L`. `Studio::apply_input_offsets` sends the new value when a filter instance is made, enabled, disabled or removed, or when the stored offset changes, and never writes the stored offset or the device memory (ADR-0126). `Studio::audio_latency(source)` returns `AudioLatency { filter_latency_ns, heard_offset_ns, uncompensated_ns }`; `rbs_record::compensate_filter_latency` is the pure calculation. The sync measurement's effective offset is `h` (ADR-0126 decision 4 as amended by ADR-0130).
 
 ### Catalogue v1
 
@@ -67,7 +77,7 @@ The scene binder puts an audio filter node in its source's partition and links t
 
 ## Performance
 
-Hot path (P15, `hot-paths.md`). `cargo bench -p rbs-audio-filters` measures one block of 480 frames at 48 kHz stereo; the PR that introduced the crate records the numbers.
+Hot path (P15, `hot-paths.md`). `cargo bench -p rbs-audio-filters` measures one block of 480 frames at 48 kHz stereo; the PR that introduced the crate records the numbers. `--bench node` measures one executor tick of a source, a Gain node and a sink (the node's own per-block cost, ADR-0130).
 
 ## Tests
 
