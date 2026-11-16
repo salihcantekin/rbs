@@ -30,6 +30,9 @@ pub enum ErrorKind {
     AuthFailed,
     /// The method needs a scope the session does not have.
     ScopeDenied,
+    /// The token lacks the irreversible-actions permission (protocol 1.74,
+    /// ADR-0052 decision 4); `data.reason` says why.
+    NotPermitted,
     /// The session's request queue is full.
     Busy,
     /// The session sends requests faster than its rate limit.
@@ -62,6 +65,7 @@ impl ErrorKind {
             ErrorKind::NotAuthenticated => "not_authenticated",
             ErrorKind::AuthFailed => "auth_failed",
             ErrorKind::ScopeDenied => "scope_denied",
+            ErrorKind::NotPermitted => "not_permitted",
             ErrorKind::Busy => "busy",
             ErrorKind::RateLimited => "rate_limited",
             ErrorKind::MessageTooLarge => "message_too_large",
@@ -86,6 +90,7 @@ impl ErrorKind {
             ErrorKind::AuthFailed => -32002,
             ErrorKind::UnsupportedProtocol => -32003,
             ErrorKind::ScopeDenied => -32010,
+            ErrorKind::NotPermitted => -32011,
             ErrorKind::Busy => -32020,
             ErrorKind::RateLimited => -32021,
             ErrorKind::MessageTooLarge => -32022,
