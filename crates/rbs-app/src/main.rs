@@ -1663,6 +1663,10 @@ impl Ctx {
                 replay_page::update(app, &u);
             }
             for (id, picture, state) in applied.projectors {
+                studio_ui::log(&format!(
+                    "projector: host says {id} is {state:?}, picture {}",
+                    picture.is_some()
+                ));
                 let Some(canvas) = projector::canvas_of(id) else {
                     continue;
                 };
@@ -2762,6 +2766,7 @@ impl Ctx {
                 .send(studio_host::Command::CloseProjector(projector::host_id(c)));
         }
         for &c in open.iter().filter(|c| !app.host_projectors.contains(c)) {
+            studio_ui::log(&format!("projector: asking the host for {c:?}"));
             app.studio.send(studio_host::Command::OpenProjector {
                 id: projector::host_id(c),
                 canvas: host_canvas(c),
