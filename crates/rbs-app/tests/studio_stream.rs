@@ -206,12 +206,13 @@ struct FakeRtmp(Arc<Server>, String);
 
 impl Transport for FakeRtmp {
     fn start(&mut self, _: &[StreamDescriptor]) -> Result<(), TransportError> {
-        // Connects at once, as a server on this computer would.
+        // Connects at once, as a server on this computer would; its own session, so
+        // with several destinations each one connects once.
         self.0
-            .events
+            .events_for
             .lock()
             .unwrap()
-            .push(TransportEvent::Connected);
+            .push((self.1.clone(), TransportEvent::Connected));
         Ok(())
     }
     fn send(&mut self, _: TransportItem<'_>) -> Result<SendOutcome, TransportError> {
@@ -2276,4 +2277,135 @@ fn a_destination_that_drops_ends_alone_and_the_stream_goes_on() {
     });
     assert!(failure.unwrap().contains("second refused"));
     drop(host);
+}
+
+#[test]
+fn a_control_api_client_lists_starts_and_stops_destinations() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
+    let (api, mut c) = api_client(&host);
+    c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["stream.state"]}),
+    );
+    let mut profile = StreamProfile::new();
+    profile.server = URL.into();
+    profile.key_saved = true;
+    host.send(Command::SetStreamProfile(profile));
+    let saved = destinations(&keys);
+    let [second, off, refused] = [2, 3, 4];
+    assert_eq!(saved.get(off).map(|d| d.enabled), Some(false));
+    host.send(Command::SetStreamDestinations(saved));
+    add_display(&host, &rx);
+
+    // The list: the first destination, then the others; never a server or a key.
+    let list = c.call("stream.destinations", serde_json::json!({}));
+    let rows = list["result"]["destinations"].as_array().unwrap().clone();
+    let ids: Vec<_> = rows.iter().map(|r| r["id"].as_u64().unwrap()).collect();
+    assert_eq!(ids, [0, 2, 3, 4], "{list}");
+    assert_eq!(rows[1]["name"], "Second", "{list}");
+    assert_eq!(rows[1]["configured"], true, "{list}");
+    assert_eq!(rows[1]["encoding"], "shared", "{list}");
+    assert_eq!(rows[2]["enabled"], false, "{list}");
+    assert!(!list.to_string().contains("example.com"), "{list}");
+    assert!(!list.to_string().contains("_key"), "{list}");
+    let vertical = c.call(
+        "stream.destinations",
+        serde_json::json!({"canvas": "vertical"}),
+    );
+    assert_eq!(vertical["error"]["data"]["kind"], "not_found", "{vertical}");
+
+    // Turning one on or off is saved by the UI; an unknown id is not found.
+    let on = c.call(
+        "stream.destination.set_enabled",
+        serde_json::json!({"id": off, "enabled": true}),
+    );
+    assert!(on["result"].is_object(), "{on}");
+    let d = next(&rx, |u| match u {
+        Update::StreamDestinations(d) => Some(d),
+        _ => None,
+    });
+    assert_eq!(d.get(off).map(|d| d.enabled), Some(true));
+    c.call(
+        "stream.destination.set_enabled",
+        serde_json::json!({"id": off, "enabled": false}),
+    );
+    let unknown = c.call(
+        "stream.destination.set_enabled",
+        serde_json::json!({"id": 99, "enabled": true}),
+    );
+    assert_eq!(unknown["error"]["data"]["kind"], "not_found", "{unknown}");
+    // A destination turned off is not started: turning it on stays a visible step.
+    let disabled = c.call("stream.destination.start", serde_json::json!({"id": off}));
+    assert_eq!(disabled["error"]["data"]["kind"], "conflict", "{disabled}");
+    let idle_stop = c.call("stream.destination.stop", serde_json::json!({"id": second}));
+    assert_eq!(
+        idle_stop["error"]["data"]["kind"], "conflict",
+        "{idle_stop}"
+    );
+
+    // Starting one while nothing streams goes live with it alone.
+    let start = c.call(
+        "stream.destination.start",
+        serde_json::json!({"id": second}),
+    );
+    assert!(start["result"].is_object(), "{start}");
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    assert_eq!(
+        *server.sessions.lock().unwrap(),
+        [(SECOND.to_owned(), Some("second_key".to_owned()))]
+    );
+    let live = c.stream_state(|d| d["state"] == "live" && d["destinations"][0]["state"] == "live");
+    let rows = &live["params"]["data"]["destinations"];
+    assert_eq!(rows.as_array().unwrap().len(), 1, "{live}");
+    assert_eq!(rows[0]["id"], second, "{live}");
+    assert!(!live.to_string().contains("example.com"), "{live}");
+    let again = c.call(
+        "stream.destination.start",
+        serde_json::json!({"id": second}),
+    );
+    assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
+
+    // The first destination joins the running stream; a refused one fails alone.
+    let join = c.call("stream.destination.start", serde_json::json!({"id": 0}));
+    assert!(join["result"].is_object(), "{join}");
+    c.stream_state(|d| {
+        d["destinations"]
+            .as_array()
+            .is_some_and(|r| r.len() == 2 && r.iter().all(|r| r["state"] == "live"))
+            && d["connects"] == 2
+    });
+    let no = c.call(
+        "stream.destination.start",
+        serde_json::json!({"id": refused}),
+    );
+    assert_eq!(no["error"]["data"]["kind"], "failed", "{no}");
+    assert!(!no.to_string().contains("refused.example.com"), "{no}");
+
+    // Stopping the anchor leaves the other on air; its transport is finished.
+    let stop = c.call("stream.destination.stop", serde_json::json!({"id": second}));
+    assert!(stop["result"].is_object(), "{stop}");
+    assert_eq!(*server.finished.lock().unwrap(), 1);
+    c.stream_state(|d| {
+        d["state"] == "live"
+            && d["destinations"].as_array().is_some_and(|r| {
+                r.iter()
+                    .any(|r| r["id"] == second && r["state"] == "stopped")
+            })
+    });
+    // The last one ends the stream, as `stream.stop` does.
+    let last = c.call("stream.destination.stop", serde_json::json!({"id": 0}));
+    assert!(last["result"].is_object(), "{last}");
+    let idle = c.stream_state(|d| d["state"] == "idle");
+    assert_eq!(
+        idle["params"]["data"]["last"]["failure"],
+        serde_json::Value::Null
+    );
+    assert_eq!(*server.finished.lock().unwrap(), 2);
+    drop(host);
+    drop(api);
 }

@@ -1,5 +1,5 @@
 //! Method effects and the irreversible-actions permission (ADR-0052 decisions 4
-//! and 5, protocol 1.74), on the session state machine.
+//! and 5, protocol 1.76), on the session state machine.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
@@ -78,7 +78,7 @@ fn a_token_without_the_permission_is_refused_live_calls_and_audited() {
     h.call(conn, "record.start", json!({"profile": "default"}));
     let answer = h.one(conn);
     assert_eq!(error_kind(&answer), "not_permitted");
-    assert_eq!(answer["error"]["code"], -32011);
+    assert_eq!(answer["error"]["code"], -32012);
     assert_eq!(answer["error"]["data"]["reason"], "irreversible");
     assert!(h.forwarded.is_empty());
     h.collect();

@@ -30,7 +30,7 @@ pub enum ErrorKind {
     AuthFailed,
     /// The method needs a scope the session does not have.
     ScopeDenied,
-    /// The token lacks the irreversible-actions permission (protocol 1.74,
+    /// The token lacks the irreversible-actions permission (protocol 1.76,
     /// ADR-0052 decision 4); `data.reason` says why.
     NotPermitted,
     /// The session's request queue is full.
@@ -49,6 +49,12 @@ pub enum ErrorKind {
     FileExists,
     /// The request was valid but could not be carried out; the message says why.
     Failed,
+    /// The API may not do this whatever the token's scope (protocol 1.75): for
+    /// example writing a text source's `file` (ADR-0129 decision 8).
+    Forbidden,
+    /// The answer is being prepared; ask again shortly (protocol 1.75): for example
+    /// `text.fonts` before the first font list exists (ADR-0129 decision 7).
+    NotReady,
 }
 
 impl ErrorKind {
@@ -74,6 +80,8 @@ impl ErrorKind {
             ErrorKind::UndoConflict => "undo_conflict",
             ErrorKind::FileExists => "file_exists",
             ErrorKind::Failed => "failed",
+            ErrorKind::Forbidden => "forbidden",
+            ErrorKind::NotReady => "not_ready",
         }
     }
 
@@ -90,7 +98,7 @@ impl ErrorKind {
             ErrorKind::AuthFailed => -32002,
             ErrorKind::UnsupportedProtocol => -32003,
             ErrorKind::ScopeDenied => -32010,
-            ErrorKind::NotPermitted => -32011,
+            ErrorKind::NotPermitted => -32012,
             ErrorKind::Busy => -32020,
             ErrorKind::RateLimited => -32021,
             ErrorKind::MessageTooLarge => -32022,
@@ -100,6 +108,8 @@ impl ErrorKind {
             ErrorKind::UndoConflict => -32032,
             ErrorKind::FileExists => -32033,
             ErrorKind::Failed => -32040,
+            ErrorKind::Forbidden => -32011,
+            ErrorKind::NotReady => -32024,
         }
     }
 }

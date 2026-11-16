@@ -161,6 +161,7 @@ mod tests {
             hold_fallback: false,
             hold_sound_fallback: false,
             hold_fallback_reason: None,
+            destinations: Vec::new(),
         })
         .unwrap();
         assert_eq!(
@@ -182,6 +183,7 @@ mod tests {
             hold_fallback: false,
             hold_sound_fallback: false,
             hold_fallback_reason: None,
+            destinations: Vec::new(),
         })
         .unwrap();
         assert_eq!(
@@ -255,6 +257,7 @@ mod tests {
                         hold_fallback: false,
                         hold_sound_fallback: false,
                         hold_fallback_reason: None,
+                        destinations: Vec::new(),
                     };
                     Ok(Response::StreamStarted(StreamStarted {
                         video_encoder: "Fake".into(),
