@@ -64,6 +64,7 @@ A kind implements `Document`: `KIND`, `FORMAT` (the newest version this build re
 - `delete(id)`: moves the file to `deleted/<id>.toml` (or `<id>-N.toml` when taken) and returns the new path. Nothing is removed.
 - `export_with(id, path, scrub)`: writes the entry, after `scrub` changed it (removing what belongs to this computer only), in the current format, to `path` under the `write` rules; a path inside the library directory is refused (`Invalid`). `export(id, path)` scrubs nothing.
 - `import(path) -> (id, name)`: reads with upgrades; refuses newer formats and other kinds; names the entry after the file's `name`, else the file stem, else `Imported`, shortened to 64 characters; a clashing name becomes `Name 2`, `Name 3`, ..., shortened so it stays within 64 characters.
+- `free_name(wanted) -> name` and `create_free(wanted, document) -> (id, name)`: the same naming rule for other importers (the OBS import, ADR-0131 decision 9).
 
 ### Writer lock
 

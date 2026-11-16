@@ -1,6 +1,6 @@
 # ADR-0109: A browser source is CEF in a helper process, one process per Active source
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0006](0006-three-tier-plugin-model.md), [ADR-0016](0016-native-desktop-ui.md), [ADR-0052](0052-ai-agent-control-through-mcp.md), [ADR-0055](0055-crash-resilience.md), [ADR-0106](0106-picture-and-sound-on-one-source.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md)
@@ -82,3 +82,5 @@ Round 3 (re-check of round 2, same independent AI session, 2026-11-16): changes 
 Round 4 (same independent AI session, 2026-11-16): changes requested. Concerns: (1) pictures were not stamped, so ADR-0106 lip sync could not hold. -> Pictures stamped at the same edge as sound, newest due picture used, ring sized from the sound delay, lip-sync check named (decisions 8, 12). (2) A texture could return to the helper while the studio's GPU still read it. -> Release only after the studio's conversion copy completes; the helper drops a frame when no texture is free (decision 8).
 
 Round 5 (same independent AI session, 2026-11-16): **approve**. Lip sync and texture release resolved. Acceptance still waits on ADR-0106 and ADR-0107 and the owner.
+
+Owner acceptance: Salih, 2026-11-16 (accepted with ADR-0132, after ADR-0106 and ADR-0107 were accepted).

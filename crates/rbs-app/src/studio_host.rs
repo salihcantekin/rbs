@@ -2161,6 +2161,9 @@ pub struct SourceEntry {
 pub struct SceneList {
     /// The scenes the canvas may show, in panel order.
     pub scenes: Vec<SceneRow>,
+    /// The scenes a stream of each canvas (main, vertical) may hold with (ADR-0124
+    /// phase 2b), in panel order; the vertical one empty while it does not exist.
+    pub hold_scenes: [Vec<SceneRow>; 2],
     /// The one on air.
     pub program: SceneId,
     /// The preview scene in studio mode (ADR-0061); `None` outside it.
@@ -2331,6 +2334,17 @@ impl PartialEq for LoudnessView {
 pub struct StreamHold {
     /// It is on hold now (or the hold waits for a sharing recording's pause).
     pub held: bool,
+    /// A hold scene fell back (ADR-0124 phase 2b), while it does.
+    pub note: Option<HoldNote>,
+}
+
+/// How a scene hold fell back, for the Stream card's notice (ADR-0124 phase 2b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldNote {
+    /// The scene could not open or went away: the last frame and silence go out.
+    Picture,
+    /// The scene's sound failed: its picture goes out with silence.
+    Sound,
 }
 
 /// A running recording's pause state for the window (ADR-0124), as of the moment it
@@ -6657,8 +6671,21 @@ impl Host {
     fn hold_update(&self) -> Update {
         let state = |c: OutputCanvas| {
             self.outs[slot(c)].streaming.as_ref()?;
+            let hold = self.outs[slot(c)]
+                .streaming
+                .as_ref()
+                .and_then(|s| self.studio.output_hold(s.2))
+                .unwrap_or_default();
+            let note = if hold.fallback.is_some() {
+                Some(HoldNote::Picture)
+            } else if hold.sound_fallback.is_some() {
+                Some(HoldNote::Sound)
+            } else {
+                None
+            };
             Some(StreamHold {
                 held: self.stream_held(c),
+                note,
             })
         };
         Update::StreamHold([state(OutputCanvas::Main), state(OutputCanvas::Vertical)])
@@ -10324,17 +10351,26 @@ impl Host {
             })
             .collect();
         sources.sort_by_key(|s| s.name.to_lowercase());
-        SceneList {
-            scenes: self
-                .collection
-                .showable_scenes(self.canvas)
-                .into_iter()
-                .map(|s| SceneRow {
-                    id: s.id,
-                    name: s.name.clone(),
-                    own_audio: s.own_levels(),
+        let rows = |canvas: Option<CanvasId>| -> Vec<SceneRow> {
+            canvas
+                .map(|c| {
+                    self.collection
+                        .showable_scenes(c)
+                        .into_iter()
+                        .map(|s| SceneRow {
+                            id: s.id,
+                            name: s.name.clone(),
+                            own_audio: s.own_levels(),
+                        })
+                        .collect()
                 })
-                .collect(),
+                .unwrap_or_default()
+        };
+        let scenes = rows(Some(self.canvas));
+        let hold_scenes = [scenes.clone(), rows(self.vertical.map(|v| v.canvas))];
+        SceneList {
+            scenes,
+            hold_scenes,
             program: self.scene,
             preview: self.preview(),
             master: self

@@ -1,6 +1,6 @@
 # ADR-0132: The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 - Builds on: [ADR-0109](0109-browser-source.md), [ADR-0006](0006-three-tier-plugin-model.md), [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0052](0052-ai-agent-control-through-mcp.md), [ADR-0106](0106-picture-and-sound-on-one-source.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md), [ADR-0125](0125-projector-windows.md)
@@ -113,3 +113,5 @@ Also aligned decision 7 with the revised ADR-0106. Owner decision 10 recorded (2
 Round 3 (same independent AI session, 2026-11-16): changes requested. Concerns: (1) a writable `profile_id` lets a client point a source at another's sign-in; duplicating a collection copied it. -> Server-owned id, client writes refused, new id on enable, duplicate, collection duplicate, import and clash, checks added (decisions 10, 12). (2) The start-up sweep could delete profiles of a collection that failed to load. -> Sweep skipped then (decision 10). (3) The excluded crate's lock file escaped dependency checks. -> Same `deny.toml` checks (decision 1).
 
 Round 4 (same independent AI session, 2026-11-16): **approve**. `profile_id`, the sweep and the lock-file checks resolved. Implementation note: when a loaded `profile_id` clashes, the source that already holds it keeps it and the newly loaded one starts signed out (scene-sources spec, in the implementing PR). Acceptance waits on ADR-0106, ADR-0107 (including the Interact-window Active cause) and ADR-0109, and the owner.
+
+Owner acceptance: Salih, 2026-11-16.
