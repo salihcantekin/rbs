@@ -13,7 +13,12 @@ use std::time::Duration;
 use rbs_core::media::ContainerId;
 use rbs_core::pause::HoldPicture;
 use rbs_core::time::{Clock, TestClock, Timestamp};
-use rbs_record::{HoldRefused, OutputSettings, PauseRefused, Studio, StudioSettings};
+use rbs_record::{
+    HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, OutputSettings, PauseRefused, Studio,
+    StudioSettings,
+};
+use rbs_scene::SceneCollection;
+use rbs_scene::model::{SceneId, SceneScope};
 use support::*;
 
 fn start(r: &Rig) -> (Studio, TestClock) {
@@ -184,5 +189,110 @@ fn a_stream_sharing_a_recordings_encoder_holds_only_while_it_is_paused() {
     // The stream ran on through the hold.
     let stream_video = pts_of(&r.stream_log, 0);
     assert!(largest_step(&stream_video) <= FRAME, "{stream_video:?}");
+    studio.shutdown();
+}
+
+// ---- Hold scene (ADR-0124 phase 2b) --------------------------------------------------
+
+/// A studio whose collection also has an empty shared scene, "Break" (drawn black).
+fn start_with_break(r: &Rig) -> (Studio, TestClock, SceneCollection, SceneId) {
+    let (mut col, canvas) = scene();
+    let (brk, _) = col.add_scene("Break", SceneScope::Shared).unwrap();
+    let (engine, clock) = engine_at_start();
+    let studio = Studio::start(
+        engine,
+        gpu().unwrap(),
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    (studio, clock, col, brk)
+}
+
+#[test]
+fn a_stream_held_with_a_scene_sends_it_and_comes_back_without_a_gap() {
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig();
+    let (mut studio, clock, _col, brk) = start_with_break(&r);
+    let live = studio.start_output(&r.adapters, &stream()).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0)
+        >= 10
+        && r.stream_log.count(1) >= 10));
+    assert_eq!(
+        studio.hold_output(live, HoldPicture::Scene),
+        Err(HoldRefused::NoScene)
+    );
+    let held_at = studio
+        .hold_output_scene(live, brk, HoldSound::Silence, &r.adapters.sources)
+        .unwrap();
+    let state = studio.output_hold(live).unwrap();
+    assert_eq!(state.picture, Some(HoldPicture::Scene));
+    assert_eq!(state.scene, Some(brk));
+    assert_eq!(state.fallback, None);
+    // Past the fallback deadline: the scene's pictures arrived, so no fallback.
+    let after = held_at + HOLD_SCENE_TIMEOUT + Duration::from_millis(500);
+    assert!(run_until(&mut studio, &clock, |_| clock.now() >= after));
+    let state = studio.output_hold(live).unwrap();
+    assert_eq!(state.fallback, None, "{state:?}");
+    assert_eq!(state.picture, Some(HoldPicture::Scene));
+
+    studio
+        .release_hold_scene(live, &r.adapters.sources)
+        .unwrap();
+    assert_eq!(studio.output_hold(live).unwrap().picture, None);
+    let before = r.stream_log.count(0);
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0)
+        >= before + 10));
+    let video = pts_of(&r.stream_log, 0);
+    let audio = pts_of(&r.stream_log, 1);
+    assert!(largest_step(&video) <= FRAME, "{video:?}");
+    assert!(video.windows(2).all(|w| w[0] < w[1]), "{video:?}");
+    assert!(largest_step(&audio) <= 50_000_000, "{audio:?}");
+    assert_eq!(studio.output_progress(live).unwrap().export_drops, 0);
+    studio.shutdown();
+}
+
+#[test]
+fn a_hold_scene_that_leaves_the_collection_falls_back_to_the_frozen_frame() {
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig();
+    let (mut studio, clock, mut col, brk) = start_with_break(&r);
+    let live = studio.start_output(&r.adapters, &stream()).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0) >= 4));
+    assert_eq!(
+        studio.hold_output_scene(
+            live,
+            SceneId::from_raw(9_999),
+            HoldSound::Silence,
+            &r.adapters.sources
+        ),
+        Err(HoldRefused::UnknownScene)
+    );
+    studio
+        .hold_output_scene(live, brk, HoldSound::Silence, &r.adapters.sources)
+        .unwrap();
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0) >= 10));
+    col.remove_scene(brk).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let state = studio.output_hold(live).unwrap();
+    assert_eq!(state.fallback, Some(HoldFallback::SceneGone));
+    assert_eq!(state.picture, Some(HoldPicture::Freeze));
+    let before = r.stream_log.count(0);
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0)
+        >= before + 10));
+    studio
+        .release_hold_scene(live, &r.adapters.sources)
+        .unwrap();
+    let before = r.stream_log.count(0);
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(0)
+        >= before + 10));
+    let video = pts_of(&r.stream_log, 0);
+    assert!(largest_step(&video) <= FRAME, "{video:?}");
+    assert!(video.windows(2).all(|w| w[0] < w[1]), "{video:?}");
     studio.shutdown();
 }

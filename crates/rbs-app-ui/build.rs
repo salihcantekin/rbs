@@ -75,14 +75,41 @@ fn effect_fields() -> Vec<EffectField> {
             "0px",
             "fx.inner_blur".into(),
         ),
+        (
+            "effects-plate-shadow-blur".into(),
+            "length",
+            "0px",
+            "fx.plate_shadow_blur".into(),
+        ),
+        (
+            "effects-plate-shadow-offset".into(),
+            "length",
+            "0px",
+            "fx.plate_shadow_offset".into(),
+        ),
+        (
+            "effects-plate-key-edge".into(),
+            "length",
+            "0px",
+            "fx.plate_key_edge".into(),
+        ),
+        (
+            "effects-plate-glow-blur".into(),
+            "length",
+            "0px",
+            "fx.plate_glow_blur".into(),
+        ),
     ];
     // Per kind, in `rbs_ui::tokens::FACE_KINDS` order. Checked and danger have no
-    // pressed fill of their own, so they have no pressed stops either.
+    // pressed fill of their own, so they have no pressed stops either; the plate has
+    // only its rest stops.
     for (i, (kind, states)) in [
         ("primary", 3),
         ("secondary", 3),
         ("checked", 2),
         ("danger", 2),
+        // The chosen plate neither hovers nor presses.
+        ("plate", 1),
     ]
     .into_iter()
     .enumerate()

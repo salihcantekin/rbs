@@ -74,7 +74,7 @@ mod monitor;
 mod pause;
 mod replay;
 mod sync_measure;
-pub use hold::{HoldRefused, HoldState};
+pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
     DEFAULT_GIVE_WAY_SHARE, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart, IsoVideoStarted,
@@ -1080,6 +1080,8 @@ pub struct Studio {
     /// The preview scene's compositor and picture while the canvas is in studio mode
     /// (ADR-0061); `None` otherwise, so nothing of it runs.
     scene_preview: Option<ScenePreview>,
+    /// Hold scenes by canvas while a stream holds with one (ADR-0124 phase 2b).
+    hold_scenes: BTreeMap<CanvasId, hold::HoldRun>,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
     /// Boxes on screen before the latest program-scene change, so a source that is in
@@ -1426,6 +1428,7 @@ impl Studio {
             meters: BTreeMap::new(),
             preview,
             scene_preview: None,
+            hold_scenes: BTreeMap::new(),
             extras,
             glide: None,
             last_follow,
@@ -1784,6 +1787,11 @@ impl Studio {
         if let Some(preview) = &mut self.scene_preview {
             let _ = preview.layers.send(node_layers(&preview.bound, plan));
         }
+        for run in self.hold_scenes.values_mut() {
+            if let Some(view) = run.view_mut() {
+                let _ = view.layers.send(node_layers(&view.bound, plan));
+            }
+        }
         for (canvas, layers) in extras {
             if let Some(extra) = self.extras.iter_mut().find(|extra| extra.canvas == canvas) {
                 let _ = extra.view.layers.send(layers);
@@ -1807,6 +1815,7 @@ impl Studio {
             .map(|extra| (extra.canvas, program_scene(&self.collection, extra.canvas)))
             .collect();
         self.check_collection(collection)?;
+        self.check_hold_scenes_in(collection);
         let fps = self.fps;
         let new = match add {
             Some(extra) => {
@@ -1892,6 +1901,7 @@ impl Studio {
         let mut leaving: Vec<Added> = Vec::new();
         if let Some(report) = &report {
             self.sync_scene_preview(report, &mut leaving)?;
+            self.sync_hold_views(report, &mut leaving)?;
         }
         let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
@@ -2684,13 +2694,14 @@ impl Studio {
     ) -> Result<BindReport, rbs_scene::binder::BindError> {
         self.cues
             .retain(|id| collection.item(id).is_some_and(|(_, item)| !item.visible));
-        if self.cues.is_empty() {
+        let hold = self.hold_requests();
+        if self.cues.is_empty() && hold.is_empty() {
             return self.binder.sync(collection, &mut self.graph);
         }
         let items = self.cues.items();
         let sources = collection.cued_drawn_sources(&items);
         self.binder
-            .sync_cued(collection, &mut self.graph, &items, &sources)
+            .sync_held(collection, &mut self.graph, &items, &sources, &hold)
     }
 
     /// Starts or restarts a timed show. Does nothing when `visible` is true or
@@ -2733,6 +2744,17 @@ impl Studio {
             control.control_tick();
         }
         let serviced = self.engine.service();
+        if !self.hold_scenes.is_empty() {
+            let failed: BTreeSet<NodeId> = serviced
+                .events
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    RuntimeEvent::Failed { node, .. } => Some(*node),
+                    _ => None,
+                })
+                .collect();
+            self.check_hold_scenes(&failed);
+        }
         if !self.pending_takes.is_empty() {
             let engine = &mut self.engine;
             self.pending_takes.retain(|(a, _)| !take(engine, *a));

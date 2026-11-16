@@ -19,6 +19,11 @@
 use std::fmt;
 
 use rbs_core::pause::HoldPicture;
+use rbs_scene::binder::HoldScene;
+
+/// How long a hold scene may take to send its first picture before the hold falls
+/// back to the frozen frame (ADR-0124 phase 2b), on the master clock.
+pub const HOLD_SCENE_TIMEOUT: Duration = Duration::from_secs(2);
 
 use super::*;
 
@@ -42,6 +47,18 @@ pub enum HoldRefused {
     AlreadyHeld,
     /// The stream is not on hold.
     NotHeld,
+    /// The hold scene is not in the collection (phase 2b).
+    UnknownScene,
+    /// The hold scene cannot be shown on the stream's canvas (phase 2b).
+    SceneNotShowable,
+    /// Another stream of the canvas holds with another scene or sound: one hold scene
+    /// per canvas (phase 2b).
+    OtherSceneHeld,
+    /// [`HoldPicture::Scene`] was asked for without a scene: use
+    /// [`Studio::hold_output_scene`].
+    NoScene,
+    /// The hold scene's parts could not be bound or applied.
+    NotBound,
 }
 
 impl fmt::Display for HoldRefused {
@@ -56,18 +73,61 @@ impl fmt::Display for HoldRefused {
             Self::Ending => "the output is ending",
             Self::AlreadyHeld => "the stream is already on hold",
             Self::NotHeld => "the stream is not on hold",
+            Self::UnknownScene => "the hold scene is not in the collection",
+            Self::SceneNotShowable => "the hold scene cannot be shown on this canvas",
+            Self::OtherSceneHeld => "another stream of this canvas holds with another scene",
+            Self::NoScene => "no hold scene was given",
+            Self::NotBound => "the hold scene could not be started",
         })
     }
 }
 
 impl std::error::Error for HoldRefused {}
 
+/// What a hold scene sends for sound (ADR-0124 phase 2b).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HoldSound {
+    /// Silence, as a freeze or black hold.
+    #[default]
+    Silence,
+    /// The scene's own sources, mixed at their levels.
+    Scene,
+}
+
+/// Why a scene hold fell back to the frozen frame and silence (phase 2b).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldFallback {
+    /// No scene picture arrived within [`HOLD_SCENE_TIMEOUT`].
+    NoPicture,
+    /// The hold scene's compositor failed.
+    Failed,
+    /// The hold scene left the collection, or can no longer be shown on the canvas.
+    SceneGone,
+}
+
+impl fmt::Display for HoldFallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NoPicture => "the hold scene sent no picture in time",
+            Self::Failed => "the hold scene failed",
+            Self::SceneGone => "the hold scene is gone",
+        })
+    }
+}
+
 /// Where a holdable output's holds stand, on the master clock.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HoldState {
-    /// The picture sent while on hold; `None` while not held.
+    /// The picture sent while on hold; `None` while not held. A scene hold that fell
+    /// back says [`HoldPicture::Freeze`].
     pub picture: Option<HoldPicture>,
+    /// The hold scene while held with one (phase 2b).
+    pub scene: Option<SceneId>,
+    /// Why a scene hold fell back to the frozen frame, while it does.
+    pub fallback: Option<HoldFallback>,
     /// When the open hold began.
     pub held_at: Option<Timestamp>,
     /// Time on hold so far, an open hold counted up to now.
@@ -99,6 +159,8 @@ impl Holds {
             .map_or(0, |(_, at)| now.as_nanos().saturating_sub(at.as_nanos()));
         HoldState {
             picture: self.on.map(|(p, _)| p),
+            scene: None,
+            fallback: None,
             held_at: self.on.map(|(_, at)| at),
             held_ns: self.before_ns.saturating_add(open),
         }
@@ -120,7 +182,307 @@ impl Holds {
     }
 }
 
+/// A canvas's hold scene while a stream of it holds with one, kept on the control
+/// thread (phase 2b).
+pub(super) struct HoldRun {
+    scene: SceneId,
+    sound: HoldSound,
+    /// When it was asked for, and the exports' scene frames then.
+    since: Timestamp,
+    frames_at: u64,
+    /// Its compositor once bound and adopted.
+    view: Option<HoldView>,
+    /// Set when it fell back: the binder no longer binds it.
+    fallback: Option<HoldFallback>,
+    /// Released: its parts leave at the next sync.
+    released: bool,
+}
+
+impl HoldRun {
+    pub(super) fn view_mut(&mut self) -> Option<&mut HoldView> {
+        self.view.as_mut()
+    }
+}
+
+/// A hold scene's compositor and what draws its layers.
+pub(super) struct HoldView {
+    pub(super) compositor: NodeId,
+    pub(super) layers: LayerSender,
+    pub(super) bound: BoundCompositor,
+}
+
 impl Studio {
+    /// The hold scenes the binder binds now: one per canvas, those not fallen back
+    /// or released.
+    pub(super) fn hold_requests(&self) -> BTreeMap<CanvasId, HoldScene> {
+        self.hold_scenes
+            .iter()
+            .filter(|(_, r)| r.fallback.is_none() && !r.released)
+            // Sound comes with the hold mixer's wiring (next step): silence for now.
+            .map(|(c, r)| (*c, HoldScene::new(r.scene, false)))
+            .collect()
+    }
+
+    /// Adopts a newly bound hold compositor and links it to the "hold" input of every
+    /// holdable export of its canvas; a retired one goes to `leaving`.
+    pub(super) fn sync_hold_views(
+        &mut self,
+        report: &BindReport,
+        leaving: &mut Vec<Added>,
+    ) -> Result<(), RecordError> {
+        let gpu = |node| Added {
+            node,
+            partition: RENDER,
+            gpu: true,
+        };
+        let canvases: Vec<CanvasId> = self.hold_scenes.keys().copied().collect();
+        for canvas in canvases {
+            let bound = report.compositors.get(&(canvas, Role::Hold)).cloned();
+            let size = self.canvas_size(canvas).ok();
+            let Some(run) = self.hold_scenes.get_mut(&canvas) else {
+                continue;
+            };
+            match (run.view.as_mut(), bound, size) {
+                (Some(view), Some(bound), _) => view.bound = bound,
+                (None, Some(bound), Some((width, height))) => {
+                    let (compositor, layers) = CompositorNode::new(
+                        CanvasDesc { width, height },
+                        MAX_LAYERS as u32,
+                        Vec::new(),
+                    );
+                    self.engine
+                        .adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
+                    for chain in self.chains.video.iter().flatten() {
+                        if chain.canvas == canvas && chain.hold.is_some() {
+                            self.graph
+                                .connect(bound.node, "canvas", chain.export.node, "hold")?;
+                        }
+                    }
+                    run.view = Some(HoldView {
+                        compositor: bound.node,
+                        layers,
+                        bound,
+                    });
+                }
+                (Some(_), None, _) => {
+                    if let Some(view) = run.view.take() {
+                        leaving.push(gpu(view.compositor));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Released and fallen-back runs whose parts are gone are forgotten (a fallen
+        // back one stays, without parts, for its state while the hold lasts).
+        self.hold_scenes
+            .retain(|_, r| !(r.released && r.view.is_none()));
+        Ok(())
+    }
+
+    /// The scene frames the holdable exports of `canvas` read back so far.
+    fn scene_frames(&self, canvas: CanvasId) -> u64 {
+        self.chains
+            .video
+            .iter()
+            .flatten()
+            .filter(|c| c.canvas == canvas)
+            .filter_map(|c| c.hold.as_ref())
+            .map(|(h, _)| h.scene_frames())
+            .sum()
+    }
+
+    /// Falls a canvas's scene hold back to the frozen frame and silence: every chain
+    /// of the canvas held with the scene changes to [`HoldPicture::Freeze`]; the
+    /// scene's parts leave at the next sync.
+    pub(super) fn fall_back(&mut self, canvas: CanvasId, why: HoldFallback) {
+        let Some(run) = self.hold_scenes.get_mut(&canvas) else {
+            return;
+        };
+        if run.fallback.is_some() || run.released {
+            return;
+        }
+        run.fallback = Some(why);
+        for chain in self.chains.video.iter().flatten() {
+            if chain.canvas == canvas
+                && let Some((hold, _)) = &chain.hold
+                && hold.switch().held() == Some(HoldPicture::Scene)
+            {
+                hold.switch().hold(HoldPicture::Freeze);
+            }
+        }
+        for a in self.audio_chains_of(canvas) {
+            if let Some(switch) = self.chains.audio[a].as_ref().and_then(|c| c.hold.as_ref())
+                && switch.held() == Some(HoldPicture::Scene)
+            {
+                switch.hold(HoldPicture::Freeze);
+            }
+        }
+    }
+
+    /// The audio chain slots of the outputs whose video chain exports `canvas`.
+    fn audio_chains_of(&self, canvas: CanvasId) -> Vec<usize> {
+        let mut slots: Vec<usize> = self
+            .outputs
+            .iter()
+            .filter(|o| {
+                o.video
+                    .and_then(|v| self.chains.video[v].as_ref())
+                    .is_some_and(|c| c.canvas == canvas)
+            })
+            .filter_map(|o| o.audio)
+            .collect();
+        slots.sort_unstable();
+        slots.dedup();
+        slots
+    }
+
+    /// Checks the hold scenes on the control thread (from [`Studio::service`]): one
+    /// that sent no picture within [`HOLD_SCENE_TIMEOUT`] or whose compositor failed
+    /// falls back. True when one fell back (an update then releases its parts).
+    pub(super) fn check_hold_scenes(&mut self, failed: &BTreeSet<NodeId>) -> bool {
+        if self.hold_scenes.is_empty() {
+            return false;
+        }
+        let now = self.engine.clock().now();
+        let mut fell = Vec::new();
+        for (canvas, run) in &self.hold_scenes {
+            if run.fallback.is_some() || run.released {
+                continue;
+            }
+            if run
+                .view
+                .as_ref()
+                .is_some_and(|v| failed.contains(&v.compositor))
+            {
+                fell.push((*canvas, HoldFallback::Failed));
+                continue;
+            }
+            let waited = now.as_nanos().saturating_sub(run.since.as_nanos());
+            if waited >= HOLD_SCENE_TIMEOUT.as_nanos() as u64
+                && self.scene_frames(*canvas) == run.frames_at
+            {
+                fell.push((*canvas, HoldFallback::NoPicture));
+            }
+        }
+        let any = !fell.is_empty();
+        for (canvas, why) in fell {
+            self.fall_back(canvas, why);
+        }
+        any
+    }
+
+    /// Falls back every scene hold whose scene `collection` no longer has or can no
+    /// longer show on its canvas (an update, a collection switched).
+    pub(super) fn check_hold_scenes_in(&mut self, collection: &SceneCollection) {
+        let gone: Vec<CanvasId> = self
+            .hold_scenes
+            .iter()
+            .filter(|(c, r)| {
+                r.fallback.is_none()
+                    && !collection
+                        .showable_scenes(**c)
+                        .iter()
+                        .any(|s| s.id == r.scene)
+            })
+            .map(|(c, _)| *c)
+            .collect();
+        for canvas in gone {
+            self.fall_back(canvas, HoldFallback::SceneGone);
+        }
+    }
+
+    /// Puts a running stream on hold with a scene of the collection (ADR-0124 phase
+    /// 2b): the scene is bound on the stream's canvas (its compositor, its media and
+    /// browser sources playing) and applied, then the stream's switches go to
+    /// [`HoldPicture::Scene`]; the export sends the frozen frame until the scene's
+    /// first picture. The sound is silence for now ([`HoldSound::Scene`] needs the hold
+    /// mixer's wiring). A second stream of the canvas may hold with the same scene and
+    /// sound (they share it), not another ([`HoldRefused::OtherSceneHeld`]). When no
+    /// scene picture arrives within [`HOLD_SCENE_TIMEOUT`], or the scene leaves the
+    /// collection, the hold falls back to [`HoldPicture::Freeze`] and
+    /// [`Studio::output_hold`] says why.
+    pub fn hold_output_scene(
+        &mut self,
+        id: OutputId,
+        scene: SceneId,
+        sound: HoldSound,
+        sources: &SourceTypes,
+    ) -> Result<Timestamp, HoldRefused> {
+        let r = self.attached(id).ok_or(HoldRefused::NotRunning)?;
+        let canvas = r
+            .video
+            .and_then(|v| self.chains.video[v].as_ref())
+            .map(|c| c.canvas)
+            .ok_or(HoldRefused::NotHoldable)?;
+        if self.collection.scene(scene).is_none() {
+            return Err(HoldRefused::UnknownScene);
+        }
+        if !self
+            .collection
+            .showable_scenes(canvas)
+            .iter()
+            .any(|s| s.id == scene)
+        {
+            return Err(HoldRefused::SceneNotShowable);
+        }
+        let fresh = match self.hold_scenes.get(&canvas) {
+            Some(run) if run.fallback.is_none() && !run.released => {
+                if run.scene != scene || run.sound != sound {
+                    return Err(HoldRefused::OtherSceneHeld);
+                }
+                false
+            }
+            _ => true,
+        };
+        // The same checks as any hold, before anything is bound.
+        self.check_holdable(id, HoldPicture::Scene)?;
+        if fresh {
+            let now = self.engine.clock().now();
+            let frames_at = self.scene_frames(canvas);
+            self.hold_scenes.insert(
+                canvas,
+                HoldRun {
+                    scene,
+                    sound,
+                    since: now,
+                    frames_at,
+                    view: None,
+                    fallback: None,
+                    released: false,
+                },
+            );
+            let collection = self.collection.clone();
+            let bound = self.update(&collection, sources).is_ok()
+                && self
+                    .hold_scenes
+                    .get(&canvas)
+                    .is_some_and(|r| r.view.is_some());
+            if !bound {
+                if let Some(run) = self.hold_scenes.get_mut(&canvas) {
+                    run.released = true;
+                }
+                let _ = self.update(&collection, sources);
+                return Err(HoldRefused::NotBound);
+            }
+        }
+        self.hold_output(id, HoldPicture::Scene)
+    }
+
+    /// [`Studio::release_hold`], then the next sync at once: the hold scene's
+    /// compositor and its sources leave when no stream of the canvas holds with it.
+    pub fn release_hold_scene(
+        &mut self,
+        id: OutputId,
+        sources: &SourceTypes,
+    ) -> Result<Timestamp, HoldRefused> {
+        let at = self.release_hold(id)?;
+        if self.hold_scenes.values().any(|r| r.released) {
+            let collection = self.collection.clone();
+            let _ = self.update(&collection, sources);
+        }
+        Ok(at)
+    }
+
     /// Puts a running stream on hold (ADR-0124 decisions 12 and 13): from the next
     /// render tick its export sends `picture` stamped with each tick and its audio
     /// encoder sends silence; the connection, the encoder sessions and the
@@ -132,49 +494,23 @@ impl Studio {
         id: OutputId,
         picture: HoldPicture,
     ) -> Result<Timestamp, HoldRefused> {
+        self.check_holdable(id, picture)?;
         let r = self.attached(id).ok_or(HoldRefused::NotRunning)?;
-        if r.ended.is_some() {
-            return Err(HoldRefused::Ending);
-        }
-        if !r.hold.holdable {
-            return Err(HoldRefused::NotHoldable);
-        }
-        if r.hold.on.is_some_and(|(p, _)| p == picture) {
-            return Err(HoldRefused::AlreadyHeld);
-        }
         let (video, audio) = (r.video, r.audio);
         let video_chain = video.and_then(|v| self.chains.video[v].as_ref());
         let audio_chain = audio.and_then(|a| self.chains.audio[a].as_ref());
-        let video_hold = match (video, video_chain) {
-            (None, _) => None,
-            (Some(_), Some(c)) => Some(c.hold.as_ref().ok_or(HoldRefused::NotHoldable)?),
-            (Some(_), None) => return Err(HoldRefused::NotRunning),
-        };
-        let audio_hold = match (audio, audio_chain) {
-            (None, _) => None,
-            (Some(_), Some(c)) => Some(c.hold.as_ref().ok_or(HoldRefused::NotHoldable)?),
-            (Some(_), None) => return Err(HoldRefused::NotRunning),
-        };
-        // Every other user of these chains is a stream held with it, or a paused
-        // recording whose output cuts what the chains send (decision 14).
-        let now = self.engine.clock().now();
-        for o in self
-            .outputs
-            .iter()
-            .filter(|o| o.id != id && shares(o, video, audio))
+        let video_hold = video_chain.and_then(|c| c.hold.as_ref());
+        let audio_hold = audio_chain.and_then(|c| c.hold.as_ref());
+        let canvas = video_chain.map(|c| c.canvas);
+        if picture == HoldPicture::Scene
+            && !canvas
+                .and_then(|c| self.hold_scenes.get(&c))
+                .is_some_and(|r| r.fallback.is_none() && !r.released && r.view.is_some())
         {
-            if o.hold.holdable {
-                continue;
-            }
-            let paused = o
-                .pause
-                .as_ref()
-                .and_then(|p| p.read())
-                .is_some_and(|w| w.is_open() && w.pause_at <= now.as_nanos());
-            if !paused {
-                return Err(HoldRefused::SharedWithRecording);
-            }
+            // A scene is bound by `hold_output_scene`, never by a picture alone.
+            return Err(HoldRefused::NoScene);
         }
+        let now = self.engine.clock().now();
         if let Some((hold, format)) = video_hold
             && picture == HoldPicture::Black
             && !hold.has_black()
@@ -198,7 +534,79 @@ impl Studio {
                 o.hold.start(picture, now);
             }
         }
+        self.release_unused_scene(canvas);
         Ok(now)
+    }
+
+    /// The checks every hold makes before it changes anything.
+    fn check_holdable(&self, id: OutputId, picture: HoldPicture) -> Result<(), HoldRefused> {
+        let r = self.attached(id).ok_or(HoldRefused::NotRunning)?;
+        if r.ended.is_some() {
+            return Err(HoldRefused::Ending);
+        }
+        if !r.hold.holdable {
+            return Err(HoldRefused::NotHoldable);
+        }
+        if r.hold.on.is_some_and(|(p, _)| p == picture) {
+            return Err(HoldRefused::AlreadyHeld);
+        }
+        let (video, audio) = (r.video, r.audio);
+        match (video, video.map(|v| self.chains.video[v].as_ref())) {
+            (Some(_), Some(Some(c))) if c.hold.is_none() => return Err(HoldRefused::NotHoldable),
+            (Some(_), Some(None)) => return Err(HoldRefused::NotRunning),
+            _ => {}
+        }
+        match (audio, audio.map(|a| self.chains.audio[a].as_ref())) {
+            (Some(_), Some(Some(c))) if c.hold.is_none() => return Err(HoldRefused::NotHoldable),
+            (Some(_), Some(None)) => return Err(HoldRefused::NotRunning),
+            _ => {}
+        }
+        // Every other user of these chains is a stream held with it, or a paused
+        // recording whose output cuts what the chains send (decision 14).
+        let now = self.engine.clock().now();
+        for o in self
+            .outputs
+            .iter()
+            .filter(|o| o.id != id && shares(o, video, audio))
+        {
+            if o.hold.holdable {
+                continue;
+            }
+            let paused = o
+                .pause
+                .as_ref()
+                .and_then(|p| p.read())
+                .is_some_and(|w| w.is_open() && w.pause_at <= now.as_nanos());
+            if !paused {
+                return Err(HoldRefused::SharedWithRecording);
+            }
+        }
+        Ok(())
+    }
+
+    /// Marks the scene of `canvas` released when no chain of the canvas holds with it
+    /// any more; its parts leave at the next sync.
+    fn release_unused_scene(&mut self, canvas: Option<CanvasId>) {
+        let Some(canvas) = canvas else {
+            return;
+        };
+        let used = self.chains.video.iter().flatten().any(|c| {
+            c.canvas == canvas
+                && c.hold
+                    .as_ref()
+                    .is_some_and(|(h, _)| h.switch().held() == Some(HoldPicture::Scene))
+        });
+        let fell_back_and_free = self.hold_scenes.get(&canvas).is_some_and(|r| {
+            r.fallback.is_some()
+                && !self.chains.video.iter().flatten().any(|c| {
+                    c.canvas == canvas && c.hold.as_ref().is_some_and(|(h, _)| h.switch().is_held())
+                })
+        });
+        if let Some(run) = self.hold_scenes.get_mut(&canvas)
+            && (!used && run.fallback.is_none() || fell_back_and_free)
+        {
+            run.released = true;
+        }
     }
 
     /// Takes a held stream back to the program from the next render tick, with every
@@ -212,6 +620,9 @@ impl Studio {
             return Err(HoldRefused::NotHeld);
         }
         let (video, audio) = (r.video, r.audio);
+        let canvas = video
+            .and_then(|v| self.chains.video[v].as_ref())
+            .map(|c| c.canvas);
         if let Some((hold, _)) = video
             .and_then(|v| self.chains.video[v].as_ref())
             .and_then(|c| c.hold.as_ref())
@@ -230,6 +641,7 @@ impl Studio {
                 o.hold.end(now);
             }
         }
+        self.release_unused_scene(canvas);
         Ok(now)
     }
 
@@ -237,9 +649,23 @@ impl Studio {
     /// holdable.
     pub fn output_hold(&self, id: OutputId) -> Option<HoldState> {
         let r = self.attached(id)?;
-        r.hold
-            .holdable
-            .then(|| r.hold.state(self.engine.clock().now()))
+        if !r.hold.holdable {
+            return None;
+        }
+        let mut state = r.hold.state(self.engine.clock().now());
+        if state.picture == Some(HoldPicture::Scene)
+            && let Some(run) = r
+                .video
+                .and_then(|v| self.chains.video[v].as_ref())
+                .and_then(|c| self.hold_scenes.get(&c.canvas))
+        {
+            state.scene = Some(run.scene);
+            state.fallback = run.fallback;
+            if run.fallback.is_some() {
+                state.picture = Some(HoldPicture::Freeze);
+            }
+        }
+        Some(state)
     }
 
     /// True when a hold is on for a chain `r` uses (a recording sharing a held
