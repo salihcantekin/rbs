@@ -15,5 +15,5 @@ Mac M4 Pro, macOS 26.7.1 (25G241), built-in 3024x1964 at 2x, wgpu, release build
 
 - Idle: 0 frames in every valid run.
 - Where seg has a valid round (Glow, Tactile), its p95 and max are at or below main's in every scenario.
-- **Not measured:** seg Calm and seg Glass. Three runs stopped drawing partway (the window lost the front) and are invalid; the run was stopped early at the owner's request.
+- **Pending (not measured yet):** seg Calm and seg Glass, to be measured on a later device slot. Three runs stopped drawing partway (the window lost the front) and are invalid; the run was stopped early at the owner's request.
 - The main window of the measure mode shows few SegmentedControls (Properties only, with a source). Calm adds no drawn item to a segment, only the `if` slots, as in Button (ADR-0120 decision 10).
