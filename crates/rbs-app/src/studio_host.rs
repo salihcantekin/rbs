@@ -1451,6 +1451,14 @@ struct RecordingMarkers {
     /// When the recording stopped, from `t0` (master time): the end of a pause still
     /// open then (ADR-0124 decision 10).
     stopped_ns: u64,
+    /// When the marker flush runs (host clock, ns): armed by the first marker not
+    /// yet on disk, `None` while nothing waits (ADR-0089 decision 5).
+    flush_at: Option<u64>,
+    /// A flush wrote the manifest during the recording.
+    flushed: bool,
+    /// The master is Matroska: a clean stop adds the markers as chapters
+    /// (ADR-0089 decision 14).
+    matroska: bool,
 }
 
 impl RecordingMarkers {
@@ -1479,6 +1487,9 @@ impl RecordingMarkers {
                 settings,
                 scene,
                 stopped_ns: 0,
+                flush_at: None,
+                flushed: false,
+                matroska: false,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1499,6 +1510,9 @@ impl RecordingMarkers {
             settings,
             scene,
             stopped_ns: 0,
+            flush_at: None,
+            flushed: false,
+            matroska: false,
         })
     }
 
@@ -1576,6 +1590,54 @@ impl RecordingMarkers {
             .map_err(|e| e.to_string())
     }
 
+    /// The markers as chapters inside a Matroska master (ADR-0089 decision 14), after
+    /// the stop rewrite of a clean stop. Only when the master's timing is known (the
+    /// span is tracked for separate files and the editor project setting): a chapter
+    /// is at `t_ns - start_offset_ns`, from the file's first sample. A marker before it
+    /// is on it; one after the master's end is left out (the manifest keeps it). A file
+    /// that cannot take chapters is left as it is; only a read or write failure is an
+    /// error.
+    fn write_chapters(&self) -> Result<(), String> {
+        if !self.matroska || self.log.markers().is_empty() {
+            return Ok(());
+        }
+        let Some((file, timing)) = self
+            .manifest
+            .files
+            .iter()
+            .find(|f| f.role == "master")
+            .and_then(|f| f.timing.map(|t| (f, t)))
+        else {
+            return Ok(());
+        };
+        let mut chapters: Vec<rbs_mux_matroska::Chapter<'_>> = self
+            .log
+            .markers()
+            .iter()
+            .map(|m| rbs_mux_matroska::Chapter {
+                start_ns: m.t_ns.saturating_sub(timing.start_offset_ns),
+                title: &m.label,
+            })
+            .filter(|c| c.start_ns <= timing.duration_ns)
+            .collect();
+        if chapters.is_empty() {
+            return Ok(());
+        }
+        chapters.sort_by_key(|c| c.start_ns);
+        let mut media = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.dir.join(&file.file_name))
+            .map_err(|e| e.to_string())?;
+        match rbs_mux_matroska::append_chapters(&mut media, &chapters) {
+            Ok(()) => Ok(()),
+            Err(rbs_mux_matroska::ChapterError::Io(e)) => Err(e.to_string()),
+            // Written by another Matroska adapter, or by an output that could not
+            // seek: the file takes no chapters, and the manifest keeps the markers.
+            Err(_) => Ok(()),
+        }
+    }
+
     /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
     /// markers and the manifest are in file time. A pause changes the manifest.
     fn paused(&mut self, pause: bool, at_ns: u64) {
@@ -1592,6 +1654,11 @@ impl RecordingMarkers {
         // A plain recording writes a manifest only when it has markers or writes an
         // editor project (ADR-0089 decision 5, owner choice 1).
         if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
+            // A flush wrote one for markers since taken back: it goes.
+            if self.flushed {
+                self.flushed = false;
+                let _ = std::fs::remove_file(self.dir.join(&self.name));
+            }
             return Ok(());
         }
         if !self.dirty && !self.log.has_pending() {
@@ -1603,6 +1670,35 @@ impl RecordingMarkers {
         rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
         self.log.mark_flushed();
         self.dirty = false;
+        Ok(())
+    }
+
+    /// The marker flush (ADR-0089 decision 5): the manifest as it stands, with the
+    /// markers so far, rewritten while the recording runs, so a crash loses at most
+    /// the last 5 seconds of markers. `now_ns` is the host clock. The stop still
+    /// rewrites it whole.
+    fn flush(&mut self, now_ns: u64) -> Result<(), String> {
+        self.flush_at = None;
+        if !self.log.has_pending() {
+            return Ok(());
+        }
+        if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
+            // Every marker was taken back: a plain recording keeps no manifest.
+            self.log.mark_flushed();
+            if self.flushed {
+                self.flushed = false;
+                return std::fs::remove_file(self.dir.join(&self.name)).map_err(|e| e.to_string());
+            }
+            return Ok(());
+        }
+        self.manifest.markers = self.log.markers().to_vec();
+        let ran = now_ns.saturating_sub(self.log.t0_ns());
+        self.manifest.pauses = self.log.pauses().rows(ran);
+        rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
+        self.log.mark_flushed();
+        self.flushed = true;
+        // The stop rewrite still runs: an open pause and the stop fields change.
+        self.dirty = true;
         Ok(())
     }
 
@@ -1668,6 +1764,10 @@ fn pause_refusal(e: rbs_record::PauseRefused) -> String {
         e => e.to_string(),
     }
 }
+
+/// How long a marker waits before the manifest is rewritten with it (ADR-0089
+/// decision 5).
+const MARKER_FLUSH_NS: u64 = 5_000_000_000;
 
 /// `Ok` when an entry changed; else the first refusal, or `conflict` with `none`.
 fn changed_or_first_refusal(
@@ -3265,6 +3365,9 @@ fn round(
         wait = wait.min(left);
     }
     if let Some(left) = host.drive_calibration() {
+        wait = wait.min(left);
+    }
+    if let Some(left) = host.drive_marker_flush(now, notify) {
         wait = wait.min(left);
     }
     host.report_monitor(notify);
@@ -5910,7 +6013,11 @@ impl Host {
                 r.editor_project,
                 r.markers,
                 scene,
-            );
+            )
+            .map(|mut m| {
+                m.matroska = r.container == ContainerId::Matroska;
+                m
+            });
             // Tracked together with the master, after the last panic point of the
             // start, so recovery never finds files without their master (ADR-0055).
             let (tracks, skipped) = iso
@@ -6124,6 +6231,39 @@ impl Host {
                 format!("the recording has no marker {index}"),
             ))
         }
+    }
+
+    /// The marker flush timers (ADR-0089 decision 5): a recording with a marker not
+    /// yet on disk arms a one-shot 5-second timer; when it is due the manifest is
+    /// rewritten. Returns the time to the next one. No marker, no timer (P13).
+    fn drive_marker_flush(
+        &mut self,
+        now: rbs_core::time::Timestamp,
+        notify: &dyn Fn(Update),
+    ) -> Option<Duration> {
+        let now_ns = now.as_nanos();
+        let mut next: Option<u64> = None;
+        for c in OutputCanvas::ALL {
+            let Some(m) = self.outs[slot(c)].markers.as_mut() else {
+                continue;
+            };
+            if !m.log.has_pending() {
+                continue;
+            }
+            let due = *m
+                .flush_at
+                .get_or_insert(now_ns.saturating_add(MARKER_FLUSH_NS));
+            if now_ns < due {
+                next = Some(next.map_or(due, |n| n.min(due)));
+                continue;
+            }
+            if let Err(e) = m.flush(now_ns) {
+                notify(Update::Error(format!(
+                    "The markers could not be saved yet: {e}"
+                )));
+            }
+        }
+        next.map(|due| Duration::from_nanos(due.saturating_sub(now_ns)))
     }
 
     /// [`Update::RecordPause`]: each running recording's pause state now.
@@ -6415,10 +6555,24 @@ impl Host {
             let why = match markers.write() {
                 Err(e) => Some(format!("The markers could not be saved: {e}.")),
                 // The project only after the manifest is on disk (ADR-0089 decision 10).
-                Ok(()) => markers
-                    .write_project()
-                    .err()
-                    .map(|e| format!("The editor project was not written: {e}.")),
+                Ok(()) => {
+                    let project = markers
+                        .write_project()
+                        .err()
+                        .map(|e| format!("The editor project was not written: {e}."));
+                    // Inside the media only after a clean stop (ADR-0089 decision 14).
+                    let chapters = if failure.is_none() {
+                        markers.write_chapters().err().map(|e| {
+                            format!("The markers could not be added to the file as chapters: {e}.")
+                        })
+                    } else {
+                        None
+                    };
+                    match (project, chapters) {
+                        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+                        (a, b) => a.or(b),
+                    }
+                }
             };
             if let Some(why) = why {
                 failure = Some(match failure {

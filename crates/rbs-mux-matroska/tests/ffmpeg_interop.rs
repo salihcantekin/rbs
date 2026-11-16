@@ -18,7 +18,7 @@ use rbs_core::timing::{Cadence, FrameRate, SampleRate};
 use rbs_media_format::avc::AvcConfig;
 use rbs_media_format::nal::{self, h264};
 use rbs_mux::{MuxerConfig, MuxerFactory};
-use rbs_mux_matroska::MatroskaMuxerFactory;
+use rbs_mux_matroska::{Chapter, MatroskaMuxerFactory, append_chapters};
 
 fn ffmpeg(args: &[&str]) -> std::process::Output {
     Command::new("ffmpeg")
@@ -267,6 +267,45 @@ fn run(length_prefixed: bool) {
     // edit list), so playback starts at 1 s.
     let start: f64 = fields[0].parse().unwrap();
     assert!((start - 1.0).abs() < 1e-3, "start time {start}");
+
+    // Chapters added after the stop are found through the SeekHead, from the first
+    // sample, and the file still decodes cleanly.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&out)
+        .unwrap();
+    let chapters = [
+        Chapter {
+            start_ns: 0,
+            title: "Start",
+        },
+        Chapter {
+            start_ns: 2_500_000_000,
+            title: "Marker 2",
+        },
+    ];
+    append_chapters(&mut file, &chapters).unwrap();
+    drop(file);
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-show_chapters", "-of", "csv=p=0"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout);
+    let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split(',').collect()).collect();
+    assert_eq!(rows.len(), 2, "{text}");
+    let at = |row: &[&str]| row[3].parse::<f64>().unwrap();
+    assert!((at(&rows[0]) - 1.0).abs() < 1e-3, "{text}");
+    assert!((at(&rows[1]) - 3.5).abs() < 1e-3, "{text}");
+    assert_eq!(rows[1].last().copied(), Some("Marker 2"), "{text}");
+    let decoded = ffmpeg(&["-i", &path(&out), "-f", "null", "-"]);
+    assert!(decoded.status.success());
+    assert!(
+        decoded.stderr.is_empty(),
+        "decoder errors with chapters: {}",
+        String::from_utf8_lossy(&decoded.stderr)
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

@@ -296,6 +296,9 @@ impl MatroskaMuxer {
         let segment_size = header.len();
         header.extend_from_slice(&ebml::UNKNOWN_SIZE);
         let segment_data = header.len();
+        // Room for a SeekHead to chapters added after the stop (`append_chapters`):
+        // readers skip a Void.
+        crate::chapters::reserve(&mut header);
         let info = ebml::open(&mut header, INFO);
         ebml::uint(&mut header, TIMESTAMP_SCALE, SCALE_NS);
         // Room for the Duration, known only at `finish`: readers skip a Void element,
