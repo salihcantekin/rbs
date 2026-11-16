@@ -89,3 +89,5 @@ Independent review per ADR-0014.
 - Round 3, 2026-11-16, same independent AI session: **approve**. One nit (`sync.devices` keys are objects, as in decision 7) fixed in this revision. The ADR stays Proposed until the owner approves; the audio probe and the picture probe still need the hot-path review, measurements and the owner's sign-off when implemented.
 - Owner approval: Salih, 2026-11-16 ("onaylıyorum" in the project thread). Status Accepted.
 - Implementation note, 2026-11-16 (estimator step, not a change of decision): one pair is off by up to half a frame interval, so with six claps at random phases the estimate is within half an interval always and within a quarter in about nine sessions of ten, not every time. The spec states this and the tests assert it.
+
+- 2026-11-16: decisions 4 and 5 are amended by [ADR-0130](0130-voice-filters-noise-suppression-compressor-limiter-eq.md) decision 4 (filter latency compensated by input advance; the heard alignment `h` replaces the effective offset in the suggestion and in `effective_offset_ms`).

@@ -1,6 +1,6 @@
 # ADR-0130: Voice filters: noise suppression, compressor, limiter and equaliser, with filter latency
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 - Amends: ADR-0126 (decisions 4 and 5; ADR-0126 itself is not edited beyond an appended `## Review` note pointing here, CLAUDE.md rule 9)
@@ -103,3 +103,5 @@ Round 1 (independent AI session, 2026-11-16): changes requested. Blocking: (1) c
 Round 2 (same reviewer, 2026-11-16): changes requested, nothing blocking; both round-1 blocking items confirmed resolved and the latency formula verified. Should-fix, all adopted: the limiter's indices stated exactly (minimum over `W + 1` samples, latency `W`) with a test of every impulse offset; `uncompensated_ms` uses `clamp(stored)`; reset after a gap only for latent DSPs, the second reset after a join stated; the meaning change of `effective_offset_ms` stated for the API; the amendment carried by an `Amends:` header (the wrong precedent removed), ADR-0126 not edited, owner to confirm. Nits adopted: dependency wording and transitive crates; a `mode` change resets the states.
 
 Round 3 (same reviewer, 2026-11-16): approve. All round-2 items confirmed resolved (limiter indices checked at both ends of the range). Open nit accepted as stated: a noise suppression `mode` change is silent for about 10 ms while its states re-converge, the one audible value edit, noted in the help text and in `audio-filters.md`. Owner approval pending; it also confirms the amendment of ADR-0126.
+
+Owner approval: Salih, 2026-11-16, including the amendment of ADR-0126 decisions 4 and 5.
