@@ -4,13 +4,16 @@
 //! the node is built: [`NoGate`] (the default: streams, the replay buffer) passes
 //! every block as it is and compiles to nothing; [`PauseGate`] (a recording) leaves
 //! out the samples inside a pause window, stamps later samples earlier by the time
-//! left out, and fades 5 ms out before each cut and 5 ms in after it.
+//! left out, and fades 5 ms out before each cut and 5 ms in after it. [`HoldGate`]
+//! (a stream) sends silence with the block's own timestamps while its stream is held
+//! (ADR-0124 decisions 12 and 13); a [`PauseGate`] with a hold switch does the same
+//! for a chain a recording shares with a stream.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rbs_core::media::{AudioBlock, AudioFormat, AudioSamples, MAX_CHANNELS};
-use rbs_core::pause::{PauseWindow, Window};
+use rbs_core::pause::{HoldSwitch, PauseWindow, Window};
 use rbs_core::time::Timestamp;
 
 /// Length of the fade out before a cut and the fade in after it.
@@ -57,6 +60,88 @@ pub struct PauseGate {
     frames: usize,
     /// Parts that were longer than the scratch buffer and passed without a fade.
     unfaded: u64,
+    /// The hold of a stream sharing the chain, with its silence (ADR-0124 decision
+    /// 14); `None` for a chain only recordings use.
+    hold: Option<Silence>,
+}
+
+/// A hold switch and the silence sent while it is on: `frames` zero samples, every
+/// channel's plane, reserved when the gate is built.
+#[derive(Debug)]
+struct Silence {
+    hold: Arc<HoldSwitch>,
+    zeros: Arc<[f32]>,
+    frames: usize,
+}
+
+impl Silence {
+    fn new(hold: Arc<HoldSwitch>, frames: usize) -> Self {
+        let frames = frames.max(1);
+        Self {
+            hold,
+            zeros: vec![0.0; frames].into(),
+            frames,
+        }
+    }
+
+    /// Calls `submit` with silence as long as `block`, in parts of at most the
+    /// reserved length, each stamped where its samples start.
+    fn pass<E>(
+        zeros: &[f32],
+        frames: usize,
+        block: &AudioBlock<'_>,
+        submit: &mut impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let format = block.format();
+        let channels = format.channels.channels();
+        let mut done = 0;
+        while done < block.frames() {
+            let n = (block.frames() - done).min(frames);
+            let at = block
+                .timestamp()
+                .as_nanos()
+                .saturating_add(nanos(format, done));
+            let planes: [&[f32]; MAX_CHANNELS] = [&zeros[..n]; MAX_CHANNELS];
+            match AudioBlock::planar(format, Timestamp::from_nanos(at), &planes[..channels]) {
+                Ok(part) => submit(&part)?,
+                // A format the zeros cannot carry: the block as it is, never a gap.
+                Err(_) => return submit(&block.range(done, block.frames())),
+            }
+            done += n;
+        }
+        Ok(())
+    }
+}
+
+/// Sends silence while its stream is held, and every block unchanged otherwise
+/// (ADR-0124 decisions 12 and 13). Per block it pays one relaxed load.
+#[derive(Debug)]
+pub struct HoldGate {
+    silence: Silence,
+}
+
+impl HoldGate {
+    /// A gate for `hold` whose silence covers blocks of up to `frames` sample frames
+    /// in one part (longer blocks go in several).
+    pub fn new(hold: Arc<HoldSwitch>, frames: usize) -> Self {
+        Self {
+            silence: Silence::new(hold, frames),
+        }
+    }
+}
+
+impl AudioGate for HoldGate {
+    #[inline]
+    fn pass<E>(
+        &mut self,
+        block: &AudioBlock<'_>,
+        mut submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if !self.silence.hold.is_held() {
+            return submit(block);
+        }
+        Silence::pass(&self.silence.zeros, self.silence.frames, block, &mut submit)
+    }
 }
 
 impl PauseGate {
@@ -68,7 +153,17 @@ impl PauseGate {
             scratch: vec![0.0; frames * MAX_CHANNELS],
             frames,
             unfaded: 0,
+            hold: None,
         }
+    }
+
+    /// The same gate also sending silence while `hold` is on: for a chain a
+    /// recording shares with a stream (ADR-0124 decision 14). One more relaxed load
+    /// per block.
+    #[must_use]
+    pub fn with_hold(mut self, hold: Arc<HoldSwitch>) -> Self {
+        self.hold = Some(Silence::new(hold, self.frames));
+        self
     }
 
     /// Parts passed without a fade because they were longer than the gate's blocks.
@@ -181,6 +276,26 @@ impl AudioGate for PauseGate {
         block: &AudioBlock<'_>,
         mut submit: impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
     ) -> Result<(), E> {
+        // Held: silence in place of the block, then cut and stamped as the block
+        // would have been.
+        if let Some(silence) = &self.hold
+            && silence.hold.is_held()
+        {
+            let (zeros, frames) = (Arc::clone(&silence.zeros), silence.frames);
+            return Silence::pass(&zeros, frames, block, &mut |part| {
+                self.pass_unheld(part, &mut submit)
+            });
+        }
+        self.pass_unheld(block, &mut submit)
+    }
+}
+
+impl PauseGate {
+    fn pass_unheld<E>(
+        &mut self,
+        block: &AudioBlock<'_>,
+        submit: &mut impl FnMut(&AudioBlock<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
         let w = self.window();
         let start = block.timestamp().as_nanos();
         let end = start.saturating_add(nanos(block.format(), block.frames()));
@@ -196,12 +311,12 @@ impl AudioGate for PauseGate {
             return submit(&block.with_timestamp(t));
         }
         let cut = w.cut_block(start, block.frames(), block.format().sample_rate);
-        self.submit_part(&w, &block.range(0, cut.head), cut.head_shift, &mut submit)?;
+        self.submit_part(&w, &block.range(0, cut.head), cut.head_shift, submit)?;
         self.submit_part(
             &w,
             &block.range(cut.tail, block.frames()),
             cut.tail_shift,
-            &mut submit,
+            submit,
         )
     }
 }
@@ -355,5 +470,81 @@ mod tests {
             }
         });
         assert_eq!(counted.count_total, 0);
+    }
+
+    /// Runs `blocks` blocks of ones and twos through any gate.
+    fn run_any<G: AudioGate>(gate: &mut G, blocks: u64, mut between: impl FnMut(u64)) -> Vec<Part> {
+        let left = [1.0_f32; FRAMES];
+        let right = [2.0_f32; FRAMES];
+        let mut parts = Vec::new();
+        for k in 0..blocks {
+            between(k);
+            let block = AudioBlock::planar(
+                AudioFormat::STEREO_48K,
+                Timestamp::from_nanos(k * BLOCK),
+                &[&left, &right],
+            )
+            .unwrap();
+            gate.pass(&block, |part| {
+                assert_eq!(part.frames(), part.channel(1).unwrap().len());
+                assert!(
+                    part.channel(1)
+                        .unwrap()
+                        .iter()
+                        .all(|s| *s == 0.0 || *s == 2.0)
+                );
+                parts.push(Part {
+                    at: part.timestamp().as_nanos(),
+                    left: part.channel(0).unwrap().to_vec(),
+                });
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        }
+        parts
+    }
+
+    #[test]
+    fn a_held_stream_sends_silence_with_running_timestamps() {
+        use rbs_core::pause::{HoldPicture, HoldSwitch};
+        let hold = Arc::new(HoldSwitch::default());
+        // Half the block length: a held block goes in two silent parts.
+        let mut gate = HoldGate::new(Arc::clone(&hold), FRAMES / 2);
+        let parts = run_any(&mut gate, 6, |k| match k {
+            2 => hold.hold(HoldPicture::Freeze),
+            4 => hold.release(),
+            _ => {}
+        });
+        assert_continuous(&parts);
+        let silent: Vec<bool> = parts
+            .iter()
+            .map(|p| p.left.iter().all(|s| *s == 0.0))
+            .collect();
+        assert_eq!(silent, [false, false, true, true, true, true, false, false]);
+        assert_eq!(parts.last().unwrap().at, 5 * BLOCK);
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.left.iter().all(|s| *s == 0.0 || *s == 1.0))
+        );
+    }
+
+    #[test]
+    fn a_recording_chain_held_by_a_stream_sharing_it_sends_silence() {
+        use rbs_core::pause::{HoldPicture, HoldSwitch};
+        let hold = Arc::new(HoldSwitch::default());
+        let mut gate =
+            PauseGate::new(Arc::new(PauseWindow::default()), FRAMES).with_hold(Arc::clone(&hold));
+        let parts = run_any(&mut gate, 4, |k| match k {
+            1 => hold.hold(HoldPicture::Black),
+            3 => hold.release(),
+            _ => {}
+        });
+        assert_continuous(&parts);
+        let silent: Vec<bool> = parts
+            .iter()
+            .map(|p| p.left.iter().all(|s| *s == 0.0))
+            .collect();
+        assert_eq!(silent, [false, true, true, false]);
     }
 }
