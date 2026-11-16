@@ -15,9 +15,10 @@ use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{
-    AUDIO_KBPS, Delivery, Encoding, Format, OutputSize, RateMode, RecordProfile,
-    SEPARATE_FILES_SECTION, SeparateFiles, VIDEO_KBPS, VideoCodec, audio_fact, fit_output_size,
-    output_choice_copy, output_size_options, recommended_video_kbps, vertical_recording_from_main,
+    AUDIO_KBPS, Delivery, EditorProject, Encoding, Format, MAX_MARKER_LEAD_MS, OutputSize,
+    RateMode, RecordProfile, SEPARATE_FILES_SECTION, SeparateFiles, VIDEO_KBPS, VideoCodec,
+    audio_fact, fit_output_size, output_choice_copy, output_size_options, recommended_video_kbps,
+    vertical_recording_from_main,
 };
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
@@ -415,6 +416,14 @@ pub struct StudioUi {
     rec_file_audio: bool,
     /// The sources the running recording writes as files of their own (ADR-0086).
     rec_separate: Vec<String>,
+    /// Markers (ADR-0089 decision 10): the running main recording's manual markers,
+    /// whether its marker controls show (it writes an editor project, or has a
+    /// marker), and the notice of the marker just added with what its Undo removes.
+    rec_markers: u32,
+    rec_markers_shown: bool,
+    pub marker_note: String,
+    marker_undo: Vec<(OutputCanvas, u32)>,
+    marker_serial: u32,
     /// The sources marked to record separately, by name, for Settings › Recording.
     separate_names: String,
     /// What they write, for Settings › Recording: "1 video · 1 image · 1 sound".
@@ -604,6 +613,11 @@ impl StudioUi {
             rec_state: rec_state::OFF,
             rec_file_audio: false,
             rec_separate: Vec::new(),
+            rec_markers: 0,
+            rec_markers_shown: false,
+            marker_note: String::new(),
+            marker_undo: Vec::new(),
+            marker_serial: 0,
             separate_names: String::new(),
             separate_counts: String::new(),
             separate_videos: 0,
@@ -810,6 +824,16 @@ impl StudioUi {
             self.rec_file_audio
         });
         g.set_out_enc(self.encoder_data(output::RECORDING));
+        let p = self.record_form();
+        g.set_rec_project(match p.editor_project {
+            None => 0,
+            Some(EditorProject::Xmeml) => 1,
+            Some(EditorProject::Fcpxml) => 2,
+        });
+        g.set_rec_marker_lead(p.markers.lead_ms as f32 / 1000.0);
+        g.set_rec_marker_scenes(p.markers.scene_changes);
+        g.set_rec_marker_stream(p.markers.stream_events);
+        g.set_rec_marker_pauses(p.markers.pause_markers);
         let canvas = self.settings_canvas_size();
         let rec_size = self.recording_output_size();
         let rec_sizes = output_size_options(canvas, rec_size);
@@ -904,6 +928,10 @@ impl StudioUi {
         g.set_deleted(self.deleted.as_str().into());
         g.set_deleted_from_scene(self.deleted_from_scene);
         g.set_deleted_generation(self.deleted_serial as i32);
+        g.set_rec_markers(self.rec_markers as i32);
+        g.set_rec_markers_shown(self.rec_markers_shown && self.rec_state == rec_state::RECORDING);
+        g.set_marker_note(self.marker_note.as_str().into());
+        g.set_marker_generation(self.marker_serial as i32);
         g.set_global_kind_names(strings(
             self.kind_codes().iter().map(|(_, l)| (*l).to_owned()),
         ));
@@ -2782,6 +2810,53 @@ impl StudioUi {
         self.vmark_buf = buf;
     }
 
+    /// Add a manual marker to every running recording (`marker.add`, Ctrl+Shift+M,
+    /// the Outputs card and the status bar).
+    pub fn add_marker(&mut self) {
+        self.send(Command::AddMarker);
+    }
+
+    /// The marker notice's Undo: removes the marker it named from each recording.
+    pub fn undo_marker(&mut self) {
+        self.marker_note.clear();
+        let placed = std::mem::take(&mut self.marker_undo);
+        if !placed.is_empty() {
+            self.send(Command::RemoveMarkers(placed));
+        }
+    }
+
+    /// The marker notice closed (its time ran out, or Dismiss).
+    pub fn dismiss_marker(&mut self) {
+        self.marker_note.clear();
+        self.marker_undo.clear();
+    }
+
+    /// [`Update::Markers`]: the counts, and a notice for a marker just added
+    /// ("Marker 3 at 0:12:31").
+    fn markers(
+        &mut self,
+        counts: [Option<u32>; 2],
+        placed: Option<rbs_app::studio_host::MarkerNote>,
+    ) {
+        let main = counts[0].or(counts[1]);
+        self.rec_markers = main.unwrap_or(0);
+        if self.rec_markers > 0 {
+            self.rec_markers_shown = true;
+        }
+        if let Some(note) = placed {
+            let s = note.t_ns / 1_000_000_000;
+            self.marker_note = format!(
+                "{} at {}:{:02}:{:02}",
+                note.label,
+                s / 3600,
+                (s / 60) % 60,
+                s % 60
+            );
+            self.marker_undo = note.placed;
+            self.marker_serial = self.marker_serial.wrapping_add(1);
+        }
+    }
+
     pub fn undo_delete(&mut self) {
         self.deleted.clear();
         self.send(Command::UndoDelete);
@@ -3266,6 +3341,43 @@ impl StudioUi {
             self.record_form_mut().bit_depth = *bits;
             self.save_profile_form();
         }
+    }
+
+    /// The editor project written when the recording stops (ADR-0089 decision 10):
+    /// 0 off, 1 FCP7 XML (DaVinci Resolve, Premiere Pro), 2 FCPXML (Final Cut Pro).
+    pub fn set_editor_project(&mut self, i: i32) {
+        let project = match i {
+            1 => Some(EditorProject::Xmeml),
+            2 => Some(EditorProject::Fcpxml),
+            _ => None,
+        };
+        self.record_form_mut().editor_project = project;
+        self.save_profile_form();
+    }
+
+    /// The marker lead in seconds (ADR-0089 decision 4), kept within 0 to 30 s.
+    pub fn set_marker_lead(&mut self, seconds: f32) {
+        if !seconds.is_finite() {
+            return;
+        }
+        let max = MAX_MARKER_LEAD_MS as f32;
+        // In range by the clamp, so the cast cannot wrap.
+        let ms = (seconds * 1000.0).round().clamp(0.0, max) as u32;
+        self.record_form_mut().markers.lead_ms = ms;
+        self.save_profile_form();
+    }
+
+    /// An automatic marker switch: 0 scene changes, 1 stream start and end, 2 pauses
+    /// in the editor project (ADR-0089 decision 3, ADR-0124 decision 10).
+    pub fn set_marker_option(&mut self, which: i32, on: bool) {
+        let m = &mut self.record_form_mut().markers;
+        match which {
+            0 => m.scene_changes = on,
+            1 => m.stream_events = on,
+            2 => m.pause_markers = on,
+            _ => return,
+        }
+        self.save_profile_form();
     }
 
     /// Why Record is refused before it asks the host. A WAV or FLAC profile does
@@ -5189,6 +5301,7 @@ impl StudioUi {
                 self.next_redo = redo;
             }
             Update::Recording(r) => self.recording(r, &mut out),
+            Update::Markers { counts, placed } => self.markers(counts, placed),
             Update::Stream(u) => self.stream_update(u, &mut out),
             // The vertical canvas's outputs start from the frame's Record and Go live
             // menus or through the control API (protocol 1.29): what went wrong is a
@@ -5342,6 +5455,8 @@ impl StudioUi {
                 self.rec_file = Some((path, Instant::now()));
                 self.rec_separate = separate;
                 self.rec_file_audio = self.profile.format.is_audio_only();
+                self.rec_markers = 0;
+                self.rec_markers_shown = self.profile.editor_project.is_some();
                 if !self.rec_file_audio {
                     self.set_note(format!("Video encoder: {video_encoder}"), false);
                 }

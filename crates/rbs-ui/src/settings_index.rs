@@ -91,6 +91,7 @@ const SOURCES_LIST: &[Place] = &[at("global_sources", "settings.sources.global-s
 const SOURCES_ADD: &[Place] = &[at("global_sources", "settings.sources.add-global")];
 const RECORDING_FILES: &[Place] = &[at("recording", "settings.recording.files")];
 const RECORDING_SEPARATE: &[Place] = &[at("recording", "settings.recording.separate")];
+const RECORDING_MARKERS: &[Place] = &[at("recording", "settings.recording.markers")];
 const RECORDING_ENCODING: &[Place] = &[at("recording", "settings.recording.encoding")];
 const RECORDING_REPLAY: &[Place] = &[at("recording", "settings.recording.replay")];
 const STREAM_DESTINATION: &[Place] = &[at("stream", "settings.stream.destination")];
@@ -392,6 +393,47 @@ pub const SETTINGS: &[Setting] = &[
         "Limit",
         "iso separate files hardware encoder sessions",
         RECORDING_SEPARATE,
+        Simple,
+    ),
+    c(
+        "settings.recording.markers",
+        "Markers and project",
+        "marker chapter editor project resolve premiere final cut fcpxml xml timeline",
+        RECORDING_MARKERS,
+    ),
+    row(
+        "recording.editor-project",
+        "Editor project",
+        "davinci resolve premiere final cut fcpxml xml xmeml timeline export",
+        RECORDING_MARKERS,
+        Simple,
+    ),
+    row(
+        "recording.marker-lead",
+        "Marker lead",
+        "marker offset reaction delay earlier seconds",
+        RECORDING_MARKERS,
+        Simple,
+    ),
+    row(
+        "recording.marker-scenes",
+        "Mark scene changes",
+        "automatic markers scene switch chapters",
+        RECORDING_MARKERS,
+        Simple,
+    ),
+    row(
+        "recording.marker-stream",
+        "Mark stream start and end",
+        "automatic markers live stream went live",
+        RECORDING_MARKERS,
+        Simple,
+    ),
+    row(
+        "recording.marker-pauses",
+        "Mark pauses",
+        "automatic markers pause resume break",
+        RECORDING_MARKERS,
         Simple,
     ),
     c(

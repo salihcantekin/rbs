@@ -1122,6 +1122,12 @@ pub enum Command {
         /// How much of the past, or `None` for all of it.
         seconds: Option<u32>,
     },
+    /// A manual marker in every running recording (`marker.add`, ADR-0089 decision
+    /// 1); answered with [`Update::Markers`], or [`Update::Error`] when refused.
+    AddMarker,
+    /// Remove these markers, each a recording's canvas and the marker's index (the
+    /// marker notice's Undo); answered with [`Update::Markers`].
+    RemoveMarkers(Vec<(OutputCanvas, u32)>),
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -2004,6 +2010,17 @@ impl PartialEq for LoudnessView {
     }
 }
 
+/// A marker just added, for the window's notice (ADR-0089 decision 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerNote {
+    /// Its label ("Marker 3").
+    pub label: String,
+    /// Its place in the recording, from the start, after the lead.
+    pub t_ns: u64,
+    /// Each recording's canvas and the marker's index there, to undo it.
+    pub placed: Vec<(OutputCanvas, u32)>,
+}
+
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
@@ -2169,6 +2186,16 @@ pub enum Update {
     Replay(replay::ReplayState),
     /// A saved clip's file, or why it could not be saved.
     ReplaySaved(Result<std::path::PathBuf, String>),
+    /// The running recordings' manual marker counts (main, vertical; `None` while
+    /// that canvas does not record), after a marker was added or removed through the
+    /// window or the control API. `placed` is the marker just added (ADR-0089
+    /// decision 10: the window's notice).
+    Markers {
+        /// Manual markers of each canvas's recording.
+        counts: [Option<u32>; 2],
+        /// The marker just added, if this update is for one.
+        placed: Option<MarkerNote>,
+    },
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -4082,6 +4109,23 @@ impl Host {
                 }
             }
             Command::DisarmReplay => self.disarm_replay(notify),
+            Command::AddMarker => {
+                self.run_ui_api(
+                    rbs_api::Command::MarkerAdd(rbs_api::request::MarkerAdd::default()),
+                    notify,
+                );
+            }
+            Command::RemoveMarkers(placed) => {
+                for (canvas, index) in placed {
+                    self.run_ui_api(
+                        rbs_api::Command::MarkerRemove(rbs_api::request::MarkerRemove {
+                            canvas,
+                            index,
+                        }),
+                        notify,
+                    );
+                }
+            }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {
                     notify(Update::ReplaySaved(Err(why)));
@@ -5732,9 +5776,6 @@ impl Host {
         Ok(c)
     }
 
-    /// `marker.add` (ADR-0089 decisions 1 and 11): a manual marker in every running
-    /// recording `p.canvas` names (absent: all). Checked on every target before any
-    /// marker is added, so a refusal adds none.
     /// The program scene canvas `c` shows: the main canvas's, which a following
     /// vertical canvas shows too, or the vertical canvas's own.
     fn program_for(&self, c: OutputCanvas) -> Option<SceneId> {
@@ -5808,6 +5849,9 @@ impl Host {
         let _ = state.log.add_auto(now, kind, label, color);
     }
 
+    /// `marker.add` (ADR-0089 decisions 1 and 11): a manual marker in every running
+    /// recording `p.canvas` names (absent: all). Checked on every target before any
+    /// marker is added, so a refusal adds none.
     fn add_marker(
         &mut self,
         p: &rbs_api::request::MarkerAdd,
@@ -5873,6 +5917,43 @@ impl Host {
                 ErrorKind::NotFound,
                 format!("the recording has no marker {index}"),
             ))
+        }
+    }
+
+    /// [`Update::Markers`]: each running recording's manual marker count and, after
+    /// an add, the marker just placed.
+    fn markers_update(&self, added: Option<&rbs_api::request::MarkersAdded>) -> Update {
+        let manual = |c: OutputCanvas| {
+            self.outs[slot(c)].markers.as_ref().map(|m| {
+                let n = m
+                    .log
+                    .markers()
+                    .iter()
+                    .filter(|k| k.kind == rbs_manifest::MarkerKind::Manual)
+                    .count();
+                u32::try_from(n).unwrap_or(u32::MAX)
+            })
+        };
+        let placed = added.and_then(|a| {
+            let first = a.markers.first()?;
+            let label = self.outs[slot(first.canvas)]
+                .markers
+                .as_ref()?
+                .log
+                .markers()
+                .iter()
+                .find(|m| m.index == first.index)?
+                .label
+                .clone();
+            Some(MarkerNote {
+                label,
+                t_ns: first.t_ns,
+                placed: a.markers.iter().map(|m| (m.canvas, m.index)).collect(),
+            })
+        });
+        Update::Markers {
+            counts: [manual(OutputCanvas::Main), manual(OutputCanvas::Vertical)],
+            placed,
         }
     }
 
@@ -11351,9 +11432,14 @@ impl ApiTarget<'_> {
             C::RecordPause(p) => self.pause_asked(p, Some(true)),
             C::RecordResume(p) => self.pause_asked(p, Some(false)),
             C::RecordPauseToggle(p) => self.pause_asked(p, None),
-            C::MarkerAdd(p) => host.add_marker(&p).map(Response::MarkersAdded),
+            C::MarkerAdd(p) => {
+                let added = host.add_marker(&p)?;
+                notify(host.markers_update(Some(&added)));
+                Ok(Response::MarkersAdded(added))
+            }
             C::MarkerRemove(p) => {
                 host.remove_marker(p.canvas, p.index)?;
+                notify(host.markers_update(None));
                 Ok(Response::Done(Empty {}))
             }
             C::ProjectExport(p) => host

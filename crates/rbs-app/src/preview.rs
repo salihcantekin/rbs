@@ -256,7 +256,11 @@ fn place_one(window: &MainWindow, which: Picture) {
             w: c.width,
             h: c.height,
         };
-        if shell.get_toast_kind() != 0 || !window.global::<Studio>().get_deleted().is_empty() {
+        let studio = window.global::<Studio>();
+        if shell.get_toast_kind() != 0
+            || !studio.get_deleted().is_empty()
+            || !studio.get_marker_note().is_empty()
+        {
             st.covers.push(toast(shell.get_bottom_toast()));
         }
         // The error bar's place also holds the first-close notice (ADR-0056).

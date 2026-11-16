@@ -734,6 +734,15 @@ impl CommandState for Shown<'_> {
                 Ok(())
             }
             "replay.toggle" => self.running(),
+            "marker.add" => {
+                self.running()?;
+                let vertical = matches!(s.vertical_rec, VerticalOut::On);
+                if s.rec_state == rec_state::RECORDING || vertical {
+                    Ok(())
+                } else {
+                    Err("Markers are added while a recording runs.".to_owned())
+                }
+            }
             "canvas.auto_layout" => {
                 self.running()?;
                 self.has_vertical()
@@ -1649,6 +1658,8 @@ pub enum Run {
     Replay(bool),
     /// Save the replay buffer's past as a clip.
     SaveReplay,
+    /// A marker in every running recording (ADR-0089 decision 1).
+    AddMarker,
 }
 
 /// The output kind an `output.with_vertical` id names.
@@ -1898,6 +1909,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "vcam.toggle" => Run::VirtualCamera(!on),
         "replay.toggle" => Run::Replay(!on),
         "replay.save" => Run::SaveReplay,
+        "marker.add" => Run::AddMarker,
         "canvas.add_vertical" => Run::AddVertical,
         "canvas.vertical_size" => {
             let (w, h) = size_of(&id)?;

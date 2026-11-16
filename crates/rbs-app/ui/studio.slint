@@ -424,6 +424,16 @@ export global Studio {
     callback vertical-nudge(int /* dx */, int /* dy */);
     callback undo-delete();
     callback dismiss-deleted();
+    // Markers (ADR-0089 decision 10): the running recording's manual markers, whether
+    // its marker controls show (it writes an editor project), and the notice of the
+    // marker just added ("Marker 3 at 0:12:31"; empty: none).
+    in property <int> rec-markers;
+    in property <bool> rec-markers-shown;
+    in property <string> marker-note;
+    in property <int> marker-generation;
+    callback add-marker();
+    callback undo-marker();
+    callback dismiss-marker();
     // What Undo and Redo would apply to the scene now: 0 nothing, 1 adding, 2 deleting,
     // 3 the layer order, 4 moving or resizing the source named `undo-name` /
     // `redo-name` (U4). Separate from the layout history (U21).
@@ -526,6 +536,17 @@ export global Studio {
     callback set-media(int);
     callback set-container(int);
     callback set-bit-depth(int);
+    // Markers and project (ADR-0089 decisions 3, 4 and 10; ADR-0124 decision 10):
+    // the editor project (0 off, 1 FCP7 XML, 2 FCPXML), the marker lead in seconds
+    // and the automatic marker switches (0 scenes, 1 stream, 2 pauses).
+    in property <int> rec-project;
+    in property <float> rec-marker-lead;
+    in property <bool> rec-marker-scenes;
+    in property <bool> rec-marker-stream;
+    in property <bool> rec-marker-pauses;
+    callback set-editor-project(int);
+    callback set-marker-lead(float);
+    callback set-marker-option(int /* which */, bool);
     // An Output size chip of an output (0 recording, 1 stream) was picked.
     callback set-output-size(int /* output */, int /* index */);
     // A long side was typed for that output. The short side follows the canvas.
@@ -4770,6 +4791,83 @@ export component RecordingSettings inherits Rectangle {
                 }
             }
         }
+        // Markers and project (ADR-0089 decisions 3, 4 and 10): the editor project
+        // first; the marker rows only while one is chosen. A sound-only recording has
+        // no editor project.
+        if !Studio.out-audio-only: SettingsCard {
+            title: @tr("Markers and project");
+            id: "settings.recording.markers";
+            SettingRow {
+                find: "recording.editor-project";
+                divider: Studio.rec-project != 0;
+                label: @tr("Editor project");
+                summary: @tr("Written when the recording stops");
+                hint: @tr("Opens the recording in your editor with its markers on the timeline. DaVinci Resolve reads the XML project.");
+                enabled: idle;
+                changed: idle && Studio.rec-project != 0;
+                default-text: @tr("Off");
+                reset => { Studio.set-editor-project(0); }
+                Select {
+                    label: @tr("Editor project");
+                    options: [@tr("Off"), @tr("DaVinci Resolve, Premiere (XML)"), @tr("Final Cut Pro (FCPXML)")];
+                    index: Studio.rec-project;
+                    enabled: idle;
+                    selected(i) => { Studio.set-editor-project(i); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-lead";
+                label: @tr("Marker lead");
+                summary: @tr("Moves your markers earlier");
+                hint: @tr("You press the key a moment after it happens. Your markers move this many seconds earlier, up to 30.");
+                enabled: idle;
+                changed: idle && Studio.rec-marker-lead != 0;
+                default-text: @tr("0 s");
+                reset => { Studio.set-marker-lead(0); }
+                fill: false;
+                NumberField {
+                    label: @tr("Marker lead");
+                    unit: @tr("s");
+                    value: Studio.rec-marker-lead;
+                    enabled: idle;
+                    edited(v) => { Studio.set-marker-lead(v); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-scenes";
+                label: @tr("Mark scene changes");
+                help: @tr("A marker named after the scene each time the program scene changes.");
+                Toggle {
+                    label: @tr("Mark scene changes");
+                    checked: Studio.rec-marker-scenes;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-marker-option(0, on); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-stream";
+                label: @tr("Mark stream start and end");
+                help: @tr("A marker when a stream starts or ends during the recording.");
+                Toggle {
+                    label: @tr("Mark stream start and end");
+                    checked: Studio.rec-marker-stream;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-marker-option(1, on); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-pauses";
+                divider: false;
+                label: @tr("Mark pauses");
+                help: @tr("Pauses become markers in the editor project.");
+                Toggle {
+                    label: @tr("Mark pauses");
+                    checked: Studio.rec-marker-pauses;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-marker-option(2, on); }
+                }
+            }
+        }
         rec-card := SettingsCard {
             title: @tr("Encoding");
             id: "settings.recording.encoding";
@@ -5894,7 +5992,12 @@ component OutputCard inherits Rectangle {
     in property <string> where;
     in property <string> where-label;
     in property <string> action;
+    // Markers (ADR-0089 decision 10): shown while a recording that writes an editor
+    // project runs, with its manual markers so far.
+    in property <bool> markers-shown;
+    in property <int> markers;
     callback open();
+    callback add-marker();
     background: Theme.surface-sunken;
     border-width: Tokens.size-border;
     border-color: Theme.border-subtle;
@@ -5916,6 +6019,22 @@ component OutputCard inherits Rectangle {
         OutputFact { label: @tr("Audio"); value: audio; }
         if separate != "": OutputFact { label: @tr("Separate files"); value: separate; }
         OutputFact { label: where-label; value: where; }
+        if markers-shown: HorizontalLayout {
+            alignment: start;
+            spacing: Tokens.space-2;
+            Button {
+                lead: IconName.flag;
+                text: @tr("Marker");
+                accessible-name: @tr("Add marker");
+                clicked => { root.add-marker(); }
+            }
+            Text {
+                text: markers == 1 ? @tr("1 marker") : @tr("{} markers", markers);
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+            }
+        }
         HorizontalLayout {
             alignment: start;
             Button { text: action; clicked => { root.open(); } }
@@ -5946,8 +6065,11 @@ export component OutputsPanel inherits Rectangle {
                 where: Studio.out-where;
                 where-label: @tr("Folder");
                 separate: Studio.out-separate;
+                markers-shown: Studio.rec-markers-shown;
+                markers: Studio.rec-markers;
                 action: @tr("Recording settings");
                 open => { Studio.open-settings(); }
+                add-marker => { Studio.add-marker(); }
             }
             OutputCard {
                 title: Studio.st-connected ? @tr("Stream live")
