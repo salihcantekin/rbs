@@ -163,6 +163,7 @@ fn a_client_authenticates_with_the_api_server_over_websocket() {
     let token = Token::from_bytes(&[7; 32]);
     let mut tokens = TokenStore::new();
     tokens.insert(TokenEntry {
+        irreversible: true,
         name: "Deck".into(),
         scopes: ScopeSet::PANEL,
         hash: token.hash(),

@@ -50,6 +50,7 @@ impl ConnectionSender for FakeSender {
 pub fn token(seed: u8, name: &str, scopes: ScopeSet) -> (Token, TokenEntry) {
     let t = Token::from_bytes(&[seed; 32]);
     let e = TokenEntry {
+        irreversible: true,
         name: name.into(),
         scopes,
         hash: t.hash(),

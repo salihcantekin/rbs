@@ -65,6 +65,7 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 mod attributes;
+pub use attributes::{AttributeTargetView, AttributesView};
 mod calibration;
 mod device_sync;
 pub mod filters;
@@ -421,6 +422,9 @@ pub struct SourceRow {
     /// The other sources of its audio device whose sync offset differs, by name
     /// (ADR-0126 decision 9); empty for every other source.
     pub device_peers: Vec<String>,
+    /// How the latency of its running audio filters is compensated (ADR-0130 decision
+    /// 4); `None` for a source the studio does not run.
+    pub latency: Option<rbs_record::AudioLatency>,
 }
 
 impl PartialEq for SourceRow {
@@ -435,6 +439,7 @@ impl PartialEq for SourceRow {
             && self.companion_of == other.companion_of
             && self.record_separately == other.record_separately
             && self.device_peers == other.device_peers
+            && self.latency == other.latency
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -943,6 +948,38 @@ pub enum Command {
     /// Copy a scene with the same sources and layouts (one undo step). It does not go
     /// on air.
     DuplicateScene(SceneId),
+    /// Copy a scene with copies of its sources (ADR-0133 decision 4, one undo step).
+    DuplicateSceneWithCopies(SceneId),
+    /// Duplicate source (ADR-0133 decision 3, one undo step).
+    DuplicateSource(SourceId),
+    /// Copy attributes of a source (ADR-0133 decision 6): the attribute clipboard.
+    CopyAttributes(SourceId),
+    /// Ask for what the Reset source (`paste` false) or Paste attributes dialog shows
+    /// ([`Update::Attributes`]).
+    OpenAttributes {
+        /// The source right-clicked.
+        source: SourceId,
+        /// Paste attributes.
+        paste: bool,
+    },
+    /// Reset source: the chosen groups back to their defaults (one undo step plus the
+    /// live groups).
+    ResetSource {
+        /// The source.
+        source: SourceId,
+        /// The groups.
+        groups: Vec<rbs_scene::AttributeGroup>,
+    },
+    /// Paste attributes: the chosen groups of the clipboard onto the items (one undo
+    /// step plus the live groups).
+    PasteAttributes {
+        /// The items pasted onto.
+        items: Vec<ItemId>,
+        /// The groups.
+        groups: Vec<rbs_scene::AttributeGroup>,
+        /// Add the filters after the target's own instead of replacing them.
+        append: bool,
+    },
     /// Remove a scene (one undo step). Refused for the last scene the canvas may show;
     /// the scene on air is first switched away from (not undone with the removal).
     RemoveScene(SceneId),
@@ -2125,7 +2162,7 @@ struct LiveDestination {
 }
 
 impl LiveDestination {
-    /// Its row in the stream's state (control API 1.74), as of `now`.
+    /// Its row in the stream's state (control API 1.77), as of `now`.
     fn api(&self, now: Timestamp) -> api::LiveDestination {
         api::LiveDestination {
             id: self.id,
@@ -2673,6 +2710,8 @@ pub enum Update {
     SyncMeasure(Option<SyncMeasureView>),
     /// What the attribute clipboard holds (ADR-0133); `None` while it is empty.
     AttributesClipboard(Option<rbs_api::types::AttributesClipboard>),
+    /// What the Reset source or Paste attributes dialog shows (ADR-0133).
+    Attributes(AttributesView),
     /// Region-section preview grab (ADR-0103); `None` when the adapter cannot grab.
     RegionPreview {
         /// The source.
@@ -2725,7 +2764,7 @@ pub enum Update {
     /// the UI shows and saves them.
     StreamProfile(StreamProfile),
     /// A control API client turned a stream destination on or off
-    /// (`stream.destination.set_enabled`, protocol 1.74); the UI saves the section.
+    /// (`stream.destination.set_enabled`, protocol 1.77); the UI saves the section.
     StreamDestinations(Destinations),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
@@ -4526,6 +4565,56 @@ impl Host {
             Command::DuplicateScene(id) => {
                 let done = self.duplicate_scene(id).map(|_| true);
                 self.answer(done, notify);
+            }
+            Command::DuplicateSceneWithCopies(id) => {
+                let p = rbs_api::request::DuplicateScene {
+                    scene: id.get(),
+                    sources: rbs_api::types::DuplicateSources::Copied,
+                };
+                let done = self.api_scene_duplicate(p, notify);
+                self.answer_api(done, notify);
+            }
+            Command::DuplicateSource(id) => {
+                let done = self.api_source_duplicate(in_scene(id), notify);
+                self.answer_api(done, notify);
+            }
+            Command::CopyAttributes(id) => {
+                let done = self.api_copy_attributes(in_scene(id), notify);
+                self.answer_api(done, notify);
+            }
+            Command::OpenAttributes { source, paste } => {
+                match self.attributes_view(source, paste) {
+                    Ok(view) => notify(Update::Attributes(view)),
+                    Err(e) => notify(Update::Error(e.text().to_owned())),
+                }
+            }
+            Command::ResetSource { source, groups } => {
+                let p = rbs_api::request::ResetSource {
+                    source: source.get(),
+                    scene: None,
+                    canvas: OutputCanvas::default(),
+                    groups: Some(groups.iter().map(|g| g.id().to_owned()).collect()),
+                };
+                let done = self.api_source_reset(p, notify);
+                self.answer_api(done, notify);
+            }
+            Command::PasteAttributes {
+                items,
+                groups,
+                append,
+            } => {
+                let p = rbs_api::request::PasteAttributes {
+                    items: items.iter().map(|i| i.get()).collect(),
+                    groups: groups.iter().map(|g| g.id().to_owned()).collect(),
+                    filters: if append {
+                        rbs_api::types::FilterPasteMode::Append
+                    } else {
+                        rbs_api::types::FilterPasteMode::Replace
+                    },
+                    canvas: OutputCanvas::default(),
+                };
+                let done = self.api_paste_attributes(p, notify);
+                self.answer_api(done, notify);
             }
             Command::RemoveScene(id) => {
                 let done = self.remove_scene(id).map(|()| true);
@@ -7718,7 +7807,7 @@ impl Host {
         self.destinations.of(role, &profile, &self.key_account)
     }
 
-    /// `stream.destinations` rows of `c` (control API 1.74): never a server or a key.
+    /// `stream.destinations` rows of `c` (control API 1.77): never a server or a key.
     fn api_destinations(&self, c: OutputCanvas) -> Vec<api::StreamDestination> {
         self.resolved_destinations(c)
             .into_iter()
@@ -8144,7 +8233,7 @@ impl Host {
                 s.transport_drops += d.link.transport_drops;
             }
         }
-        // Each destination's row (control API 1.74): a change of state, counters or
+        // Each destination's row (control API 1.77): a change of state, counters or
         // error is published; the time on air alone is not (never per round).
         let now = self.clock.now();
         let rows: Vec<api::LiveDestination> = self.outs[slot(c)]
@@ -11894,6 +11983,14 @@ impl Host {
         }
     }
 
+    /// The window's answer to a command run through its control API composition: a
+    /// refusal shows as the error bar (the composition published what changed).
+    fn answer_api(&mut self, done: Result<rbs_api::Response, ApiError>, notify: &dyn Fn(Update)) {
+        if let Err(e) = done {
+            notify(Update::Error(e.message));
+        }
+    }
+
     /// Like [`Host::answer`] for volume and mute, which reached the mixer already.
     fn answer_live(&mut self, done: Result<bool, Refusal>, notify: &dyn Fn(Update)) {
         match done {
@@ -12087,6 +12184,7 @@ impl Host {
                     cue_remaining_ms,
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
+                    latency: self.studio.audio_latency(s.id),
                     device_peers: self
                         .device_peers(s.id)
                         .into_iter()
@@ -12120,7 +12218,11 @@ impl Host {
                         .program_levels(self.canvas)
                         .and_then(|l| l.level(s.id))
                         .map(|l| l.over(s.audio)),
-                    filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
+                    filters: filters::rows(
+                        s,
+                        |f| self.studio.audio_filter_meter(f).cloned(),
+                        |f| self.studio.audio_filter_latency_ns(f),
+                    ),
                     status,
                     global,
                     also_in: {
@@ -12445,7 +12547,11 @@ impl ApiTarget<'_> {
             })),
             C::SourceList => Ok(Response::Sources(api::Snapshot {
                 seq: host.events.seq_map([Topic::SourceChanged]),
-                data: host.heard.iter().map(api_source).collect(),
+                data: host
+                    .heard
+                    .iter()
+                    .map(|row| with_input_counters(&host.studio, api_source(row)))
+                    .collect(),
             })),
             C::SourceTargets(p) => {
                 let kind = app_kind(p.kind);
@@ -12906,7 +13012,11 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::FilterTypes(p) => Ok(Response::FilterTypes(filters::api_types(p.domain))),
+            C::FilterTypes(p) => {
+                let graph = &host.studio.settings().audio_graph;
+                let setup = rbs_audio_filters::DspSetup::new(graph.format, graph.block_frames);
+                Ok(Response::FilterTypes(filters::api_types(p.domain, setup)))
+            }
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
                 let id = host
@@ -14500,7 +14610,7 @@ impl ApiTarget<'_> {
         self.host.api_canvas_of(Some(c))
     }
 
-    /// `stream.destination.start` (protocol 1.74, ADR-0127 decision 16).
+    /// `stream.destination.start` (protocol 1.77, ADR-0127 decision 16).
     fn destination_start(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
         let notify = self.notify;
@@ -14548,7 +14658,7 @@ impl ApiTarget<'_> {
         Ok(Response::Done(Empty {}))
     }
 
-    /// `stream.destination.stop` (protocol 1.74): the last running destination ends
+    /// `stream.destination.stop` (protocol 1.77): the last running destination ends
     /// the stream, as `stream.stop` does.
     fn destination_stop(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
@@ -14577,7 +14687,7 @@ impl ApiTarget<'_> {
     }
 
     /// `stream.start` of `c`, or `stream.destination.start` of `only` while `c` does
-    /// not stream: that canvas's stream with this destination alone (protocol 1.74).
+    /// not stream: that canvas's stream with this destination alone (protocol 1.77).
     fn stream_to(&mut self, c: OutputCanvas, only: Option<u32>) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
@@ -14820,6 +14930,21 @@ fn api_picture_form(form: VideoAs) -> api::PictureForm {
     }
 }
 
+/// Nanoseconds as milliseconds, to the microsecond (control API 1.77).
+fn ns_to_ms(ns: i64) -> f64 {
+    (ns as f64 / 1_000.0).round() / 1_000.0
+}
+
+/// `info` with the counters of its source's audio input, when one runs (`source.list`,
+/// protocol 1.77, ADR-0130 decision 9).
+fn with_input_counters(studio: &Studio, mut info: api::SourceInfo) -> api::SourceInfo {
+    if let Some(c) = studio.input_counters(SourceId::from_raw(info.id)) {
+        info.input_late_frames = Some(c.late_frames);
+        info.input_resyncs = Some(c.resyncs);
+    }
+    info
+}
+
 fn api_source(row: &SourceRow) -> api::SourceInfo {
     api::SourceInfo {
         item: Some(row.item.get()),
@@ -14861,6 +14986,13 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             volume: h.volume,
             muted: h.muted,
         }),
+        filter_latency_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.filter_latency_ns)),
+        effective_offset_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.heard_offset_ns)),
+        uncompensated_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.uncompensated_ns)),
+        // Growing counters: only `source.list` reads them (`with_input_counters`), so
+        // a row's change event is not sent on every block.
+        input_late_frames: None,
+        input_resyncs: None,
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),
@@ -15314,6 +15446,16 @@ fn add_software_fallback(reasons: &mut Vec<api::EstimateReason>, software: &[Sou
                 role: api::TrackRole::Video,
             }),
         });
+    }
+}
+
+/// The control API parameters naming a source in the scene being edited, on the main
+/// canvas: what the window's commands mean.
+fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
+    rbs_api::request::SourceInScene {
+        source: id.get(),
+        scene: None,
+        canvas: OutputCanvas::default(),
     }
 }
 

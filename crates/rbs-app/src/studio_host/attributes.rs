@@ -170,6 +170,85 @@ fn default_style() -> ItemStyle {
     ItemStyle::new(Shape::Rectangle { radius: 0.0 })
 }
 
+/// Whether a source group can be written on `target`, from `from` (a paste) or to its
+/// default (a reset).
+fn source_group_applies(target: &Source, from: Option<&Source>, group: AttributeGroup) -> bool {
+    let (picture, sound) = kinds(&target.type_id);
+    let same_type = from.is_none_or(|f| f.type_id == target.type_id);
+    match group {
+        AttributeGroup::VideoFilters | AttributeGroup::Glide => picture,
+        AttributeGroup::AudioFilters | AttributeGroup::Sound | AttributeGroup::SyncOffset => {
+            sound && from.is_none_or(|f| kinds(&f.type_id).1)
+        }
+        AttributeGroup::Options => same_type && !writable_options(target).is_empty(),
+        AttributeGroup::Region => {
+            same_type
+                && matches!(
+                    SourceKind::of(&target.type_id),
+                    Some(SourceKind::Screen | SourceKind::Window)
+                )
+        }
+        AttributeGroup::RecordSeparately => true,
+        _ => false,
+    }
+}
+
+/// Whether a group can be written on `target` (placed by an item when `has_item`), from
+/// the snapshot or to its default. A locked item or an unknown picture size is found
+/// only when writing.
+fn group_applies(
+    target: &Source,
+    has_item: bool,
+    from: Option<&AttributeSnapshot>,
+    group: AttributeGroup,
+) -> bool {
+    if group.on_item() {
+        return kinds(&target.type_id).0
+            && has_item
+            && from.is_none_or(|s| s.layout.is_some() && kinds(&s.state.type_id).0);
+    }
+    source_group_applies(target, from.map(|s| &s.state), group)
+}
+
+/// What the Reset source and Paste attributes dialogs show (ADR-0133 decision 8).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttributesView {
+    /// Paste attributes (`true`) or Reset source.
+    pub paste: bool,
+    /// The source right-clicked: the one reset, or the one first chosen to paste onto.
+    pub source: SourceId,
+    /// The name in the title: the source reset, or the source copied.
+    pub name: String,
+    /// Every group in the dialogs' order, with whether its value differs from the
+    /// default (the source's for a reset, the copied one for a paste) and, for a
+    /// reset, whether it applies to the source.
+    pub groups: Vec<(AttributeGroup, bool, bool)>,
+    /// Paste only: the items that can be pasted onto.
+    pub targets: Vec<AttributeTargetView>,
+}
+
+/// One item a paste can go onto: an item of the scene being edited or a global source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttributeTargetView {
+    /// The item.
+    pub item: ItemId,
+    /// Its source.
+    pub source: SourceId,
+    /// The source's name.
+    pub name: String,
+    /// The same source type as the copied one.
+    pub same_type: bool,
+    /// The source the attributes were copied from.
+    pub copied: bool,
+    /// A global source of the canvas.
+    pub global: bool,
+    /// Its place among the items of the same source (1, 2, ...), when it is placed
+    /// more than once; else 0.
+    pub place: usize,
+    /// The groups it accepts.
+    pub applies: Vec<AttributeGroup>,
+}
+
 impl TargetReport {
     fn new(source: SourceId, item: Option<ItemId>) -> Self {
         Self {
@@ -333,6 +412,13 @@ impl Host {
         id: SourceId,
         on: OutputCanvas,
     ) -> Result<AttributeSnapshot, Refusal> {
+        let snapshot = self.snapshot_of(id, on)?;
+        self.attribute_clipboard = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    /// Every group's value of a source and its item on `on`, now.
+    fn snapshot_of(&self, id: SourceId, on: OutputCanvas) -> Result<AttributeSnapshot, Refusal> {
         let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
         let item = item.id;
         let state = self
@@ -353,8 +439,93 @@ impl Host {
             .into_iter()
             .filter(|g| self.snapshot_differs(&snapshot, *g))
             .collect();
-        self.attribute_clipboard = Some(snapshot.clone());
         Ok(snapshot)
+    }
+
+    /// What the Reset source (`paste` false) or Paste attributes dialog shows for the
+    /// source `id` (ADR-0133 decision 8).
+    pub(super) fn attributes_view(
+        &self,
+        id: SourceId,
+        paste: bool,
+    ) -> Result<AttributesView, Refusal> {
+        if !paste {
+            let source = self
+                .collection
+                .source(id)
+                .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+            let has_item = self.item_of(id).is_ok();
+            let now = self.snapshot_of(id, OutputCanvas::default()).ok();
+            let groups = AttributeGroup::ALL
+                .into_iter()
+                .map(|g| {
+                    let differs = now.as_ref().is_some_and(|s| s.groups.contains(&g));
+                    (g, differs, group_applies(source, has_item, None, g))
+                })
+                .collect();
+            return Ok(AttributesView {
+                paste,
+                source: id,
+                name: source.name.clone(),
+                groups,
+                targets: Vec::new(),
+            });
+        }
+        let snapshot = self
+            .attribute_clipboard
+            .as_ref()
+            .ok_or_else(|| Refusal::Conflict("Copy a source's attributes first.".into()))?;
+        let mut items: Vec<(ItemId, SourceId, bool)> = Vec::new();
+        let mut push = |scene: Option<SceneId>, global: bool| {
+            if let Some(s) = scene.and_then(|s| self.collection.scene(s)) {
+                for it in &s.items {
+                    if let rbs_scene::model::ItemContent::Source(src) = it.content {
+                        items.push((it.id, src, global));
+                    }
+                }
+            }
+        };
+        push(Some(self.edited()), false);
+        push(self.globals(), true);
+        let mut targets = Vec::with_capacity(items.len());
+        for (item, src, global) in &items {
+            let Some(source) = self.collection.source(*src) else {
+                continue;
+            };
+            let count = items.iter().filter(|(_, s, _)| s == src).count();
+            let place = if count > 1 {
+                items
+                    .iter()
+                    .filter(|(_, s, _)| s == src)
+                    .position(|(i, _, _)| i == item)
+                    .map_or(0, |p| p + 1)
+            } else {
+                0
+            };
+            targets.push(AttributeTargetView {
+                item: *item,
+                source: *src,
+                name: source.name.clone(),
+                same_type: source.type_id == snapshot.state.type_id,
+                copied: *src == snapshot.source,
+                global: *global,
+                place,
+                applies: AttributeGroup::ALL
+                    .into_iter()
+                    .filter(|g| group_applies(source, true, Some(snapshot), *g))
+                    .collect(),
+            });
+        }
+        Ok(AttributesView {
+            paste,
+            source: id,
+            name: snapshot.state.name.clone(),
+            groups: AttributeGroup::ALL
+                .into_iter()
+                .map(|g| (g, snapshot.groups.contains(&g), true))
+                .collect(),
+            targets,
+        })
     }
 
     /// True when the snapshot holds a value other than the default for `group`.
@@ -691,24 +862,7 @@ impl Host {
             .clone();
         let (picture, sound) = kinds(&target.type_id);
         let from = snapshot.map(|s| &s.state);
-        let same_type = from.is_none_or(|f| f.type_id == target.type_id);
-        let applies = match group {
-            AttributeGroup::VideoFilters | AttributeGroup::Glide => picture,
-            AttributeGroup::AudioFilters | AttributeGroup::Sound | AttributeGroup::SyncOffset => {
-                sound && from.is_none_or(|f| kinds(&f.type_id).1)
-            }
-            AttributeGroup::Options => same_type && !writable_options(&target).is_empty(),
-            AttributeGroup::Region => {
-                same_type
-                    && matches!(
-                        SourceKind::of(&target.type_id),
-                        Some(SourceKind::Screen | SourceKind::Window)
-                    )
-            }
-            AttributeGroup::RecordSeparately => true,
-            _ => false,
-        };
-        if !applies {
+        if !source_group_applies(&target, from, group) {
             return Ok(Err(Skip::NotApplicable));
         }
         match group {
