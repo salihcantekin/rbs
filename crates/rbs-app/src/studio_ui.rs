@@ -490,6 +490,8 @@ pub struct StudioUi {
     st_setup_note: bool,
     /// Saved keys survive a restart (else `key_saved` is reset when a profile loads).
     keys_persistent: bool,
+    /// Where stream keys are kept ("the macOS Keychain"), for Import from OBS.
+    pub key_place: &'static str,
     /// The Output profile menu's entries.
     profile_rows: Rc<VecModel<EntryRow>>,
     /// The Scene collection menu's entries.
@@ -710,6 +712,7 @@ impl StudioUi {
             st_bad: false,
             st_setup_note: false,
             keys_persistent: keys.persistent(),
+            key_place: keys.place(),
             profile_rows: Rc::new(VecModel::default()),
             collection_rows: Rc::new(VecModel::default()),
             switch_seq: 0,

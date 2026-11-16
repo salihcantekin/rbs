@@ -1224,6 +1224,9 @@ pub enum Command {
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
+    /// Save an imported stream key under a new output profile's account (ADR-0131
+    /// decision 5). A failure is reported with [`Update::Error`].
+    SaveImportedKey(String, Secret),
     /// Run another scene collection (Scene collection menu): the studio restarts with
     /// it, as for a canvas change, and its first canvas's program scene is shown.
     /// Refused while recording or streaming. Changes are saved through `autosave` from
@@ -4876,6 +4879,14 @@ impl Host {
                 notify(Update::VerticalStreamKey(result));
             }
             Command::SetKeyAccount(account) => self.key_account = account,
+            Command::SaveImportedKey(account, key) => {
+                if let Err(e) = self.keys.write(&account, &key) {
+                    notify(Update::Error(format!(
+                        "The imported stream key could not be saved in {}: {e}. Enter it in Settings, Stream.",
+                        self.keys.place()
+                    )));
+                }
+            }
             Command::RemoveStreamKey(account) => {
                 if let Err(e) = self.keys.remove(&account) {
                     notify(Update::Error(format!(

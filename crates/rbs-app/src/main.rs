@@ -25,6 +25,7 @@ mod icons;
 mod look;
 mod measure_ui;
 mod menu_bar;
+mod obs_import_page;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -243,6 +244,8 @@ struct App {
     source_settings: Option<SourceSettingsWindow>,
     /// The Measure sync offset window (ADR-0126 step 6), open or not.
     sync_measure: Option<SyncMeasureWindow>,
+    /// The Import from OBS window while open (ADR-0131 step 3).
+    obs_import: Option<obs_import_page::ObsImport>,
     menus: MenuModels,
     /// The toolbar row's leading group (ADR-0071).
     toolbar_model: Rc<VecModel<ToolbarData>>,
@@ -2398,6 +2401,9 @@ impl Ctx {
         if let Some(w) = &app.sync_measure {
             ok &= exclude_window_from_capture(w.window(), exclude);
         }
+        if let Some(i) = &app.obs_import {
+            ok &= exclude_window_from_capture(i.window.window(), exclude);
+        }
         for f in &app.floats {
             ok &= exclude_window_from_capture(f.window.window(), exclude);
         }
@@ -2409,6 +2415,7 @@ impl Ctx {
         1 + usize::from(app.settings.is_some())
             + usize::from(app.source_settings.is_some())
             + usize::from(app.sync_measure.is_some())
+            + usize::from(app.obs_import.is_some())
             + app.floats.len()
     }
 
@@ -3561,6 +3568,17 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
+    /// An OBS scene collection; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_json(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter("OBS scene collection", &["json"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
     /// A PNG picture; `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn open_png(title: &str) -> Result<Option<PathBuf>, String> {
@@ -3611,6 +3629,11 @@ mod file_dialog {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_json(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn open_png(_title: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
@@ -3650,7 +3673,7 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 28] = [
+const SETTINGS_SECTIONS: [&str; 29] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.audio.loudness",
@@ -3659,6 +3682,7 @@ const SETTINGS_SECTIONS: [&str; 28] = [
     "settings.general.experience",
     "settings.general.closing",
     "settings.general.glide",
+    "settings.general.import",
     "settings.general.studio",
     "settings.recording.files",
     "settings.recording.separate",
@@ -3898,6 +3922,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         g.on_open_sync_measure(move |id| {
             let ctx = c.clone();
             c.update(move |app| open_sync_measure(&ctx, app, id));
+        });
+    }
+    {
+        let c = ctx.clone();
+        g.on_open_obs_import(move || {
+            entry::guard(|| {
+                let ctx = c.clone();
+                c.update(move |app| obs_import_page::open(&ctx, app));
+            });
         });
     }
     macro_rules! on {
@@ -4754,6 +4787,9 @@ fn apply_os_scheme(app: &mut App) {
     if let Some(w) = &app.sync_measure {
         look::set_os_scheme(&w.global::<Theme>());
     }
+    if let Some(i) = &app.obs_import {
+        look::set_os_scheme(&i.window.global::<Theme>());
+    }
     for f in &app.floats {
         look::set_os_scheme(&f.window.global::<Theme>());
     }
@@ -4938,6 +4974,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             settings: None,
             source_settings: None,
             sync_measure: None,
+            obs_import: None,
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
             toolbar_end_model: Rc::new(VecModel::default()),
