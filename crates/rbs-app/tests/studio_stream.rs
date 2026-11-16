@@ -162,6 +162,8 @@ struct Server {
     events: Mutex<Vec<TransportEvent>>,
     /// Sessions finished.
     finished: Mutex<u32>,
+    /// Events only the session of that URL reports next (several destinations).
+    events_for: Mutex<Vec<(String, TransportEvent)>>,
 }
 
 struct FakeRtmpFactory(Arc<Server>);
@@ -186,15 +188,21 @@ impl TransportFactory for FakeRtmpFactory {
         &self,
         config: &TransportConfig,
     ) -> Result<Box<dyn Transport>, rbs_transport::CreateError> {
+        // A server that refuses at once (a destination that fails alone).
+        if config.url.contains("refused") {
+            return Err(rbs_transport::CreateError::InvalidConfig(
+                "refused (test)".into(),
+            ));
+        }
         self.0.sessions.lock().unwrap().push((
             config.url.clone(),
             config.secret.as_ref().map(|s| s.expose().to_owned()),
         ));
-        Ok(Box::new(FakeRtmp(Arc::clone(&self.0))))
+        Ok(Box::new(FakeRtmp(Arc::clone(&self.0), config.url.clone())))
     }
 }
 
-struct FakeRtmp(Arc<Server>);
+struct FakeRtmp(Arc<Server>, String);
 
 impl Transport for FakeRtmp {
     fn start(&mut self, _: &[StreamDescriptor]) -> Result<(), TransportError> {
@@ -211,6 +219,10 @@ impl Transport for FakeRtmp {
     }
     fn poll_events(&mut self, out: &mut Vec<TransportEvent>) {
         out.append(&mut self.0.events.lock().unwrap());
+        let mut mine = self.0.events_for.lock().unwrap();
+        let (to_me, rest): (Vec<_>, Vec<_>) = mine.drain(..).partition(|(u, _)| *u == self.1);
+        *mine = rest;
+        out.extend(to_me.into_iter().map(|(_, e)| e));
     }
     fn stats(&self) -> TransportStats {
         TransportStats::default()
@@ -2142,4 +2154,126 @@ fn markers_while_paused_sit_on_the_join_and_the_manifest_lists_the_pause() {
     let _ = std::fs::remove_dir_all(&dir);
     drop(host);
     drop(api);
+}
+
+const SECOND: &str = "rtmp://second.example.com/app";
+
+/// The main canvas's stream with a second destination (its own key), a disabled third
+/// and a fourth whose server refuses at once.
+fn destinations(keys: &MemoryKeyStore) -> rbs_app::stream_destinations::Destinations {
+    use rbs_app::stream_destinations::{Canvas, Destinations};
+    let mut d = Destinations::default();
+    let second = d.add(Canvas::Main, "Second", "custom").unwrap();
+    let e = d.entry_mut(second).unwrap();
+    e.server = SECOND.into();
+    e.key_saved = true;
+    keys.write(
+        &format!("{ACCOUNT}/dest-{second}"),
+        &rbs_transport::Secret::new("second_key"),
+    )
+    .unwrap();
+    let off = d.add(Canvas::Main, "Off", "custom").unwrap();
+    let e = d.entry_mut(off).unwrap();
+    e.server = "rtmp://off.example.com/app".into();
+    e.key_saved = true;
+    d.set_enabled(off, false);
+    let refused = d.add(Canvas::Main, "Refused", "custom").unwrap();
+    let e = d.entry_mut(refused).unwrap();
+    e.server = "rtmp://refused.example.com/app".into();
+    e.key_saved = true;
+    keys.write(
+        &format!("{ACCOUNT}/dest-{refused}"),
+        &rbs_transport::Secret::new("refused_key"),
+    )
+    .unwrap();
+    d
+}
+
+#[test]
+fn go_live_sends_to_every_enabled_destination_with_its_own_key() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
+    add_display(&host, &rx);
+    host.send(Command::SetStreamDestinations(destinations(&keys)));
+    host.send(Command::StartStream(request()));
+    match stream(&rx) {
+        StreamUpdate::Started { url, .. } => assert_eq!(url, URL),
+        other => panic!("{other:?}"),
+    }
+    // The refused destination is named; the others went live.
+    let notice = next(&rx, |u| match u {
+        Update::Error(e) => Some(e),
+        _ => None,
+    });
+    assert!(notice.starts_with("Refused: "), "{notice}");
+    // Each output opens its session on its own worker: in any order.
+    let mut sessions = server.sessions.lock().unwrap().clone();
+    sessions.sort();
+    assert_eq!(
+        sessions,
+        [
+            (URL.to_owned(), Some("live_abc".to_owned())),
+            (SECOND.to_owned(), Some("second_key".to_owned())),
+        ]
+    );
+    // Connected while one is; the connects of both are summed.
+    link_where(&rx, |l| l.connected && l.connects == 2);
+    host.send(Command::EndStream);
+    next(&rx, |u| match u {
+        Update::Stream(StreamUpdate::Ended { failure, .. }) => {
+            assert_eq!(failure, None);
+            Some(())
+        }
+        _ => None,
+    });
+    // Both were finished in the one stop.
+    assert_eq!(*server.finished.lock().unwrap(), 2);
+    drop(host);
+}
+
+#[test]
+fn a_destination_that_drops_ends_alone_and_the_stream_goes_on() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
+    add_display(&host, &rx);
+    host.send(Command::SetStreamDestinations(destinations(&keys)));
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    link_where(&rx, |l| l.connected && l.connects == 2);
+
+    // The first destination (the stream's anchor) is refused by its server: it ends
+    // alone, named, and the stream goes on with the second.
+    server.events_for.lock().unwrap().push((
+        URL.to_owned(),
+        TransportEvent::Disconnected {
+            error: TransportError::Rejected("unknown stream key".into()),
+        },
+    ));
+    let notice = next(&rx, |u| match u {
+        Update::Error(e) if e.contains("unknown stream key") => Some(e),
+        Update::Stream(StreamUpdate::Ended { failure, .. }) => panic!("ended: {failure:?}"),
+        _ => None,
+    });
+    assert!(notice.starts_with("Destination 0: "), "{notice}");
+    // Then the second one: nothing is left, so the stream ends with its reason.
+    server.events_for.lock().unwrap().push((
+        SECOND.to_owned(),
+        TransportEvent::Disconnected {
+            error: TransportError::Rejected("second refused".into()),
+        },
+    ));
+    let failure = next(&rx, |u| match u {
+        Update::Stream(StreamUpdate::Ended { failure, .. }) => Some(failure),
+        _ => None,
+    });
+    assert!(failure.unwrap().contains("second refused"));
+    drop(host);
 }

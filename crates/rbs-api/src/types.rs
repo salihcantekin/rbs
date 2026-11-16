@@ -2440,3 +2440,119 @@ pub struct DeviceSyncEntry {
     /// When it was set, in seconds since the Unix epoch (UTC).
     pub set_at: u64,
 }
+
+/// `scene.duplicate`'s `sources` (protocol 1.68, ADR-0133 decision 4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateSources {
+    /// The copy places the same sources (references), as before 1.68.
+    #[default]
+    Shared,
+    /// The copy places copies of the scene's sources and their companions.
+    Copied,
+}
+
+/// How pasted filters meet the target's own (protocol 1.68, ADR-0133 decision 6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterPasteMode {
+    /// Replace the target's filters of that kind (default).
+    #[default]
+    Replace,
+    /// Add after them.
+    Append,
+}
+
+/// A source and its new item (protocol 1.68).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacedCopy {
+    /// The copy's id.
+    pub source: u32,
+    /// Its item.
+    pub item: u32,
+}
+
+/// An original and its copy (protocol 1.68).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopiedSource {
+    /// The original's id.
+    pub from: u32,
+    /// The copy's id.
+    pub to: u32,
+}
+
+/// `source.duplicate`'s answer (protocol 1.68, ADR-0133 decision 3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDuplicated {
+    /// The copy's id.
+    pub source: u32,
+    /// Its item.
+    pub item: u32,
+    /// False while the copy is in standby (a camera copy starts there).
+    pub active: bool,
+    /// Copies of the original's companions, each muted.
+    pub companions: Vec<PlacedCopy>,
+}
+
+/// `scene.duplicate`'s answer (protocol 1.43; `sources` from 1.68).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneDuplicated {
+    /// The new scene's id.
+    pub scene: u32,
+    /// With `sources: "copied"`, each original and its copy; absent otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<CopiedSource>,
+}
+
+/// A group not written for a target, and why (protocol 1.68).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedGroup {
+    /// The group's id.
+    pub group: String,
+    /// `not_applicable`, `unchanged`, `locked`, `no_picture_size` or `out_of_picture`.
+    pub reason: String,
+}
+
+/// What `source.reset` or `source.paste_attributes` did to one target (protocol 1.68).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributeTarget {
+    /// The source.
+    pub source: u32,
+    /// The item used; absent when the source has none in the scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<u32>,
+    /// Groups written in the undo step.
+    pub changed: Vec<String>,
+    /// Live groups written outside it (not undone by `edit.undo`).
+    pub live: Vec<String>,
+    /// Groups not written.
+    pub skipped: Vec<SkippedGroup>,
+}
+
+/// `source.reset`'s and `source.paste_attributes`' answer (protocol 1.68).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributesApplied {
+    /// One entry per target.
+    pub targets: Vec<AttributeTarget>,
+}
+
+/// What the attribute clipboard holds (protocol 1.68, ADR-0133 decision 6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributesClipboard {
+    /// The source copied.
+    pub source: u32,
+    /// Its name when copied.
+    pub name: String,
+    /// Its type id.
+    #[serde(rename = "type")]
+    pub type_id: String,
+    /// Groups whose copied value is not the default.
+    pub groups: Vec<String>,
+}
+
+/// The topic `source.attributes_clipboard.changed` (protocol 1.68).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributesClipboardChanged {
+    /// What it holds; `null` once cleared (a collection switch).
+    pub clipboard: Option<AttributesClipboard>,
+}

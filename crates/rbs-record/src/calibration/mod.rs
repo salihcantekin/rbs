@@ -48,9 +48,12 @@ pub const WRITE_RESERVE: Duration = Duration::from_secs(15);
 /// class); the second pass (the other candidates) gets the rest.
 pub const FIRST_PASS: Duration = Duration::from_secs(30);
 
-/// The most sessions a plan can put on one adapter of one class:
-/// `MAX_OUTPUTS + MAX_ISO_VIDEO`. A series that passes it has no session cap.
-pub const SESSION_CEILING: u32 = (crate::MAX_OUTPUTS + crate::MAX_ISO_VIDEO) as u32;
+/// The most sessions a plan can put on one adapter of one class: one per encoder
+/// chain the studio runs and one per separate video file, `MAX_CHAINS +
+/// MAX_ISO_VIDEO` (24). ADR-0087 wrote it as `MAX_OUTPUTS + MAX_ISO_VIDEO` (20) while
+/// every output had its own chain; since ADR-0127 several outputs share one chain, so
+/// the chains bound the sessions. A series that passes it has no session cap.
+pub const SESSION_CEILING: u32 = (crate::MAX_CHAINS + crate::MAX_ISO_VIDEO) as u32;
 
 /// The jitter depth of the late-round rule: a single round of up to `Q` frame
 /// periods passes.

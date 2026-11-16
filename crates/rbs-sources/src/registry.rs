@@ -315,11 +315,17 @@ pub struct StillSource {
     pub stats: Arc<CaptureNodeStats>,
 }
 
-/// A media-file node (ADR-0108). Video and audio pins are both always present.
+/// A media-file source (ADR-0108 decision 1): a picture node and a sound node fed by
+/// one decode worker.
 #[non_exhaustive]
 pub struct MediaSource {
-    /// The node. Standby holds no decoder and no queues.
-    pub node: rbs_nodes::MediaSourceNode,
+    /// The picture node: adopt into the render partition. Standby holds no decoder
+    /// and no rings.
+    pub picture: rbs_nodes::MediaPictureNode,
+    /// The sound node: adopt into the audio partition at the binder's sound node
+    /// (`BindReport::picture_sound`). Drop it when the binder has no audio partition;
+    /// the worker then decodes no sound.
+    pub sound: rbs_nodes::MediaSoundNode,
     /// Upload, drop, repeat, and underrun counters.
     pub stats: Arc<rbs_nodes::MediaStats>,
     /// The decoder factory chosen for this node.
@@ -333,6 +339,19 @@ pub struct BrowserSource {
     pub node: crate::browser::BrowserSourceNode,
 }
 
+/// A text source node (ADR-0129). It shows nothing until the worker sends a picture.
+#[non_exhaustive]
+pub struct TextSource {
+    /// The node.
+    pub node: rbs_nodes::TextSourceNode,
+    /// The node's picture channel; the text worker keeps it.
+    pub frames: ParamSender<Option<rbs_nodes::TextFrame>>,
+    /// Its counters.
+    pub stats: Arc<rbs_nodes::TextNodeStats>,
+    /// Its settings, read leniently.
+    pub settings: crate::text::TextSettings,
+}
+
 /// A node instance for a bound source.
 #[non_exhaustive]
 pub enum SourceInstance {
@@ -340,11 +359,14 @@ pub enum SourceInstance {
     Still(StillSource),
     /// Adopt into the render partition.
     Video(VideoSource),
-    /// Adopt into the render partition. Its audio pin is the ADR-0106 producer.
-    /// Boxed: the node with its queues is far larger than the other variants.
+    /// The picture node into the render partition, the sound node into the audio
+    /// partition (ADR-0106). Boxed: far larger than the other variants.
     Media(Box<MediaSource>),
     /// Adopt into the render partition. No audio pin.
     Browser(BrowserSource),
+    /// Adopt into the render partition; hand `frames` to the text worker. Boxed: it
+    /// carries its settings.
+    Text(Box<TextSource>),
     /// Adopt into the audio partition.
     Audio(AudioSource),
 }
@@ -369,6 +391,11 @@ impl fmt::Debug for SourceInstance {
                 .debug_struct("Browser")
                 .field("running", &b.node.helper_running())
                 .finish_non_exhaustive(),
+            SourceInstance::Text(t) => f
+                .debug_struct("Text")
+                .field("kind", &t.settings.kind)
+                .field("box", &t.settings.block.box_size)
+                .finish_non_exhaustive(),
             SourceInstance::Audio(a) => f
                 .debug_struct("Audio")
                 .field("adapter", &a.adapter)
@@ -383,12 +410,20 @@ impl fmt::Debug for SourceInstance {
 #[derive(Debug, Clone, Default)]
 pub struct NodeTypeTable {
     types: BTreeMap<NodeTypeId, Arc<NodeDescriptor>>,
+    /// The sound node type of each picture-and-sound source type (ADR-0106).
+    sounds: BTreeMap<NodeTypeId, NodeTypeId>,
 }
 
 impl NodeTypeTable {
     /// Adds or replaces a type (for example a plugin's node type).
     pub fn insert(&mut self, type_id: NodeTypeId, descriptor: NodeDescriptor) {
         self.types.insert(type_id, Arc::new(descriptor));
+    }
+
+    /// Names `sound` as the sound node type of the source type `picture` (ADR-0106
+    /// decision 2). `sound` must be in the table too.
+    pub fn insert_sound(&mut self, picture: NodeTypeId, sound: NodeTypeId) {
+        self.sounds.insert(picture, sound);
     }
 
     /// The type ids in the table.
@@ -401,6 +436,15 @@ impl NodeTypes for NodeTypeTable {
     fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
         self.types.get(type_id).cloned()
     }
+
+    fn sound_type(&self, picture: &NodeTypeId) -> Option<NodeTypeId> {
+        self.sounds.get(picture).cloned()
+    }
+
+    /// Text sources take every settings change in place (ADR-0129 decision 5).
+    fn live_settings(&self, type_id: &NodeTypeId) -> bool {
+        class_of(type_id) == Some(SourceClass::Text)
+    }
 }
 
 /// The capture and audio input adapters, and the source types they provide.
@@ -411,6 +455,8 @@ pub struct SourceTypes {
     capture: Registry<dyn CaptureFactory>,
     audio: Registry<dyn AudioBackend>,
     media: Registry<dyn rbs_media_decode::MediaDecoderFactory>,
+    /// Text renderers, in registration order (ADR-0129 decision 2).
+    text: Vec<Arc<dyn rbs_text::TextRenderer>>,
 }
 
 impl Default for SourceTypes {
@@ -482,6 +528,7 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::LOOP,
             keys::RESTART_WHEN_SHOWN,
         ],
+        SourceClass::Text => crate::text::TEXT_KEYS,
         SourceClass::Browser => &[
             keys::URL,
             keys::WIDTH,
@@ -492,6 +539,27 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The option keys of a source type (ADR-0133 decision 2): the settings Reset source and
+/// Paste attributes may change. Every other key a type uses is an identity key (which
+/// device, window, file, URL or picture), never pasted or reset. Empty for a type without
+/// options and for any type that is not built in (plugin types, until their manifest
+/// declares option keys). The host never resets or pastes `exclude_own_process` on a
+/// companion source (decision 2, companion rule).
+pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
+    match class_of(type_id) {
+        Some(SourceClass::Capture(TargetKind::Camera)) => &[keys::WIDTH, keys::HEIGHT, keys::FPS],
+        Some(SourceClass::Capture(_)) => &[keys::CURSOR, keys::WIDTH, keys::HEIGHT, keys::FPS],
+        Some(SourceClass::Audio(EndpointKind::OutputLoopback)) => &[keys::EXCLUDE_OWN_PROCESS],
+        Some(SourceClass::Media) => &[keys::LOOP, keys::RESTART_WHEN_SHOWN],
+        Some(SourceClass::Browser) => &[keys::WIDTH, keys::HEIGHT, keys::FPS, keys::TRANSPARENT],
+        Some(SourceClass::Audio(_) | SourceClass::Still) | None => &[],
+        // Which text keys are options (font, colour, outline) and which are identity
+        // (the text, the file) is decided with the text UI (ADR-0129 phase (f)); until
+        // then Reset source and Paste attributes leave a text's settings alone.
+        Some(SourceClass::Text) => &[],
+    }
+}
+
 /// Checks `settings` for a source of `type_id` without touching any device: only keys the
 /// type uses, each of the right kind, a size given as both sides, a sane size and rate.
 /// What the OS offers (does the target exist, does the camera have this mode) is only
@@ -499,6 +567,9 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
 pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<(), SourceError> {
     if class_of(type_id) == Some(SourceClass::Media) {
         return validate_media(settings);
+    }
+    if class_of(type_id) == Some(SourceClass::Text) {
+        return crate::text::validate_text(settings).map(|_| ());
     }
     if class_of(type_id) == Some(SourceClass::Browser) {
         return crate::browser::validate_browser(settings)
@@ -620,7 +691,28 @@ impl SourceTypes {
             capture: Registry::new(),
             audio: Registry::new(),
             media: Registry::new(),
+            text: Vec::new(),
         }
+    }
+
+    /// Registers a text renderer; the text source type is installed while one is
+    /// registered. A renderer holds no font memory until it first draws (P13).
+    pub fn register_text(&mut self, renderer: Arc<dyn rbs_text::TextRenderer>) {
+        self.text.push(renderer);
+    }
+
+    /// The renderer for `block` (ADR-0129 decision 2): the first registered one that
+    /// draws colour glyphs when the text has emoji, else the first registered.
+    pub fn text_renderer(
+        &self,
+        block: &rbs_text::TextBlock,
+    ) -> Option<Arc<dyn rbs_text::TextRenderer>> {
+        crate::text::pick_renderer(&self.text, block)
+    }
+
+    /// The registered text renderers, for the text worker.
+    pub fn text_renderers(&self) -> Vec<Arc<dyn rbs_text::TextRenderer>> {
+        self.text.clone()
     }
 
     /// Registers a capture adapter. Call [`probe`](Self::probe) afterwards.
@@ -785,7 +877,8 @@ impl SourceTypes {
             SourceClass::Audio(_)
             | SourceClass::Still
             | SourceClass::Media
-            | SourceClass::Browser => Ok(Vec::new()),
+            | SourceClass::Browser
+            | SourceClass::Text => Ok(Vec::new()),
         }
     }
 
@@ -796,6 +889,7 @@ impl SourceTypes {
             Some(SourceClass::Audio(kind)) => !self.audio_candidates(kind).is_empty(),
             Some(SourceClass::Still) | Some(SourceClass::Browser) => true,
             Some(SourceClass::Media) => !self.media_candidates(None).is_empty(),
+            Some(SourceClass::Text) => !self.text.is_empty(),
             _ => false,
         }
     }
@@ -833,8 +927,16 @@ impl SourceTypes {
             let descriptor = match class_of(&t) {
                 Some(SourceClass::Capture(_)) => rbs_nodes::capture_descriptor(),
                 Some(SourceClass::Still) => rbs_nodes::still_descriptor(),
-                Some(SourceClass::Media) => rbs_nodes::media_descriptor(),
+                Some(SourceClass::Media) => {
+                    // A media source is a picture node and a sound node (ADR-0108
+                    // decision 1).
+                    let sound = NodeTypeId::new_static(rbs_nodes::MEDIA_SOUND_NODE_TYPE);
+                    table.insert(sound.clone(), rbs_nodes::media_sound_descriptor());
+                    table.insert_sound(t.clone(), sound);
+                    rbs_nodes::media_descriptor()
+                }
                 Some(SourceClass::Browser) => crate::browser::browser_descriptor(),
+                Some(SourceClass::Text) => rbs_nodes::text_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
             table.insert(t, descriptor);
@@ -886,7 +988,7 @@ impl SourceTypes {
                     }
                 }
             }
-            SourceClass::Still | SourceClass::Media | SourceClass::Browser => {}
+            SourceClass::Still | SourceClass::Media | SourceClass::Browser | SourceClass::Text => {}
         }
         Ok(out)
     }
@@ -978,6 +1080,22 @@ impl SourceTypes {
             }
             SourceClass::Media => self.instantiate_media(source, ctx),
             SourceClass::Browser => self.instantiate_browser(source, ctx),
+            SourceClass::Text => {
+                if self.text.is_empty() {
+                    return Err(SourceError::NoAdapter(type_id.clone()));
+                }
+                // A document's settings were adjusted when it was read; what is left
+                // to clamp here is reported there, not again.
+                let (settings, _) = crate::text::read_text_lenient(settings);
+                let (node, frames) = rbs_nodes::TextSourceNode::new(None);
+                let stats = node.stats();
+                Ok(SourceInstance::Text(Box::new(TextSource {
+                    node,
+                    frames,
+                    stats,
+                    settings,
+                })))
+            }
             SourceClass::Audio(kind) => {
                 let candidates = choose(&self.audio_candidates(kind), named, type_id)?;
                 let (backend, endpoint) = match target {
@@ -1083,19 +1201,18 @@ impl SourceTypes {
         };
         let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
         let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
-        let node = rbs_nodes::MediaSourceNode::new(
+        let pair = rbs_nodes::media_pair(
             factory.clone(),
             path,
             loop_playback,
             restart,
             Arc::clone(&ctx.clock),
-            ctx.audio.format.sample_rate.hz(),
-            u16::try_from(ctx.audio.format.channels.channels()).unwrap_or(2),
-            ctx.audio.block_frames,
+            ctx.audio,
         );
-        let stats = node.stats();
+        let stats = pair.picture.stats();
         Ok(SourceInstance::Media(Box::new(MediaSource {
-            node,
+            picture: pair.picture,
+            sound: pair.sound,
             stats,
             adapter: factory.id(),
         })))
@@ -1374,5 +1491,29 @@ mod fill_tests {
         bad.insert(keys::FILLED.into(), SettingValue::Text("no".into()));
         assert!(validate_settings(&id, &bad).is_err());
         assert!(validate_settings(&id, &colour_settings(Some(false))).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod option_key_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+    use super::*;
+
+    /// Option keys are known keys, and identity keys (the rest) are never empty for a
+    /// type that has a device, file, URL or picture (ADR-0133 decision 2).
+    #[test]
+    fn option_keys_are_known_and_leave_the_identity() {
+        for name in types::ALL {
+            let ty = NodeTypeId::new(name);
+            let known = known_keys(&ty).unwrap();
+            let options = option_keys(&ty);
+            assert!(options.iter().all(|k| known.contains(k)), "{name}");
+            assert!(
+                known.iter().any(|k| !options.contains(k)),
+                "{name} keeps an identity"
+            );
+        }
+        assert!(option_keys(&NodeTypeId::new("org.example.plugin")).is_empty());
+        assert!(option_keys(&NodeTypeId::new(types::IMAGE_SOURCE)).is_empty());
     }
 }

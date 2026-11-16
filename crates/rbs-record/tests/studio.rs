@@ -1434,7 +1434,14 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
         Some(tree),
     )
     .unwrap();
-    // The file's audio pin reaches the mixer, so the node is open before any output.
+    let id = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://page", ContainerId::Matroska),
+        )
+        .unwrap();
+    // The picture node is drawn by the program compositor; its sound node (in the
+    // audio partition) is the mixer's producer (ADR-0106).
     let media = studio
         .sources()
         .into_iter()
@@ -1442,13 +1449,6 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
         .expect("media source scheduled");
     assert_eq!(media.adapter.as_str(), "org.rbs.media-decode.test");
     assert!(media.failed.is_none(), "{media:?}");
-
-    let id = studio
-        .start_output(
-            &r.adapters,
-            &OutputSettings::new("mem://page", ContainerId::Matroska),
-        )
-        .unwrap();
     let browser = studio
         .sources()
         .into_iter()
