@@ -1,6 +1,6 @@
 # ADR-0125: Projector windows
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0017](0017-flexible-panels-and-workspaces.md), [ADR-0028](0028-cross-process-preview-surfaces.md), [ADR-0034](0034-preview-as-native-layer.md), [ADR-0036](0036-windows-preview-layer.md), [ADR-0093](0093-vertical-second-canvas-from-the-same-sources.md)
@@ -108,3 +108,4 @@ How sharing apps capture a window, and what that means here:
   - N5 cap constant, scope and test. Resolved: decisions 4 and 13.
   - N6 icons and rule 16 approval. Resolved: decision 6.
 - Round 3, 2026-11-16, same independent session: N1-N6 resolved. B1 (the cap example depended on the platform's ring size, 5 on Windows and 6 on macOS at 60 fps): resolved, the cap counts 8 surfaces per projector (decision 4). M1 (a test said "closes" where decision 3 says "suspended"): resolved (decision 13). Reviewer: approve once both are fixed; both fixed.
+- Owner approval: Salih, 2026-11-16 15:00 (project thread: "onaylıyorum, merge edilebilir").
