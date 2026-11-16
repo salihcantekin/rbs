@@ -55,6 +55,6 @@ pub use studio::{
     FilterSettingsAdjusted, HoldRefused, HoldState, IsoAudioStart, IsoAudioStarted, IsoImageTrack,
     IsoSkip, IsoSkipped, IsoVideoStart, IsoVideoStarted, IsoVideoTrack, Link, MAX_CANVASES,
     MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings,
-    PauseRefused, PauseState, PlannedOutput, ReplaySettings, SharedPause, StartPlanRequest, Studio,
-    StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
+    PauseRefused, PauseState, PictureId, PlannedOutput, ReplaySettings, SharedPause,
+    StartPlanRequest, Studio, StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
 };

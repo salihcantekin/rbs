@@ -1047,6 +1047,106 @@ fn a_vertical_canvas_gets_and_loses_its_picture_while_it_runs() {
     assert!(errors.is_empty(), "{errors:?}");
 }
 
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn pictures_are_added_and_removed_on_the_main_canvas_while_it_runs() {
+    use rbs_gpu::share::PreviewDesc;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, main) = scene();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    // No projector: no picture (ADR-0125 decision 4, P13).
+    assert!(studio.pictures().is_empty());
+    let desc = PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 4,
+    };
+    // Any number of pictures may show one canvas, each with its own endpoint.
+    let (one, _) = studio
+        .add_picture(&col, &r.adapters.sources, main, desc)
+        .unwrap();
+    let (two, _) = studio
+        .add_picture(&col, &r.adapters.sources, main, desc)
+        .unwrap();
+    assert_ne!(one, two);
+    assert_eq!(studio.pictures(), vec![one, two]);
+    let reached = run_until(&mut studio, &clock, |s| {
+        s.picture(one).is_some() && s.picture(two).is_some()
+    });
+    assert!(reached, "both pictures are prepared");
+    assert_ne!(studio.picture(one), studio.picture(two));
+    assert!(studio.picture_failure(one).is_none());
+    studio
+        .remove_picture(&col, &r.adapters.sources, one)
+        .unwrap();
+    assert!(studio.picture(one).is_none());
+    assert!(studio.picture_stats(one).is_none());
+    assert_eq!(studio.pictures(), vec![two]);
+    // Removing it again changes nothing.
+    studio
+        .remove_picture(&col, &r.adapters.sources, one)
+        .unwrap();
+    studio
+        .remove_picture(&col, &r.adapters.sources, two)
+        .unwrap();
+    assert!(studio.pictures().is_empty());
+    // A canvas that does not run cannot get a picture.
+    let absent = CanvasId::from_raw(999);
+    assert!(matches!(
+        studio.add_picture(&col, &r.adapters.sources, absent, desc),
+        Err(RecordError::UnknownCanvas(c)) if c == absent
+    ));
+    assert!(studio.pictures().is_empty());
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn pictures_of_a_further_canvas_leave_with_it() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_gpu::share::PreviewDesc;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    col.set_program(tall, Some(program)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    settings.extra_canvases = vec![ExtraCanvas::new(tall)];
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let desc = PreviewDesc {
+        width: 18,
+        height: 32,
+        surfaces: 4,
+    };
+    // A projector's picture without the panel's: the canvas composes for it alone.
+    let (id, _) = studio
+        .add_picture(&col, &r.adapters.sources, tall, desc)
+        .unwrap();
+    assert!(studio.canvas_preview_stats(tall).is_none());
+    let reached = run_until(&mut studio, &clock, |s| s.picture(id).is_some());
+    assert!(reached, "the picture is prepared");
+    studio
+        .deactivate_canvas(&col, &r.adapters.sources, tall)
+        .unwrap();
+    assert!(studio.pictures().is_empty());
+    assert!(studio.picture(id).is_none());
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
 #[test]
 fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
     use rbs_core::media::video::Size;
