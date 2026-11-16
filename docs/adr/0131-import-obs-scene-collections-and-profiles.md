@@ -1,6 +1,6 @@
 # ADR-0131: Import OBS scene collections, profiles and settings
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 
@@ -112,4 +112,4 @@ Round 3: independent AI session, 2026-11-16, changes requested (small). Resoluti
 
 Round 4: independent AI session, 2026-11-16, approve with nits. Resolved: the spec's `Unknown*` row now says references are resolved in pass two and dangling ones are left out and reported; the spec says a refused server is reported by scheme only and the check's error text is never shown.
 
-Owner approval: pending.
+Owner approval: Salih accepted on 2026-11-16 (decision card in the project thread).

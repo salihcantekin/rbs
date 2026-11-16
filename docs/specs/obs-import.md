@@ -1,6 +1,6 @@
 # Spec: OBS import
 
-- Status: Draft (ADR-0131 Proposed; nothing implemented)
+- Status: Draft (ADR-0131 Accepted; step 1 in progress)
 - Owner crate(s): `rbs-import-obs` (planned), `rbs-app`, `rbs-cli`
 - Related ADRs: [0131](../adr/0131-import-obs-scene-collections-and-profiles.md), [0051](../adr/0051-user-data-profiles-and-scene-collections.md), [0065](../adr/0065-global-sources-and-safe-source-removal.md), [0077](../adr/0077-source-health-retarget-and-settings-window.md), [0103](../adr/0103-source-region.md), [0113](../adr/0113-experience-level-and-first-run.md)
 
