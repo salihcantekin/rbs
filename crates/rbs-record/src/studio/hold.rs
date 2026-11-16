@@ -334,11 +334,10 @@ impl Studio {
                 self.engine
                     .adopt::<()>(partition, bound.node, Box::new(node))?;
                 for slot in slots {
-                    // Only a stream's own chain (`HoldGate`) has the "hold" input; a
-                    // chain a recording shares stays silent while held.
+                    // Every chain built to hold has the "hold" input: a stream's own
+                    // (`HoldGate`) and one a recording shares (`PauseGate::with_hold`).
                     if let Some(chain) = self.chains.audio[slot].as_ref()
                         && chain.hold.is_some()
-                        && chain.pause.is_none()
                     {
                         self.graph
                             .connect(bound.node, "main", chain.encoder.node, "hold")?;

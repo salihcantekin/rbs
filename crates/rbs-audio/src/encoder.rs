@@ -131,10 +131,12 @@ impl EncoderNode {
 }
 
 impl EncoderNode<PauseGate> {
-    /// The same node also sending silence while `hold` is on: a recording's chain
-    /// that a stream may share (ADR-0124 decision 14).
+    /// The same node also following `hold`: a recording's chain that a stream may
+    /// share (ADR-0124 decision 14). Held, it sends silence or, with a scene, the
+    /// blocks of its host-only "hold" input (phase 2b, [`encoder_hold_descriptor`]).
     #[must_use]
     pub fn and_hold(mut self, hold: Arc<HoldSwitch>) -> Self {
+        self.desc = encoder_hold_descriptor();
         self.gate = self.gate.with_hold(hold);
         self
     }
@@ -195,8 +197,9 @@ impl<X: Runtime, G: AudioGate> Node<X> for EncoderNode<G> {
         };
         // A stream's hold scene (ADR-0124 phase 2b): its block first, so a scene block
         // and the program's block of one time are on one timeline. Compiled away for
-        // every gate but `HoldGate`.
+        // `NoGate`; a `PauseGate` without a hold skips it on one compare.
         if G::HOLDS
+            && self.gate.holds()
             && !self.ended
             && let Some(hold) = ctx.inputs().audio(HOLD_PIN, 0)
         {

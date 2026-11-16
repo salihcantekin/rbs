@@ -358,3 +358,70 @@ fn a_stream_held_with_a_scenes_sound_hears_its_sources_and_runs_on() {
     assert!(audio.windows(2).all(|w| w[0] < w[1]), "{audio:?}");
     studio.shutdown();
 }
+
+#[test]
+fn a_stream_sharing_a_recordings_chain_sends_the_scenes_sound_while_the_recording_pauses() {
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig_with_keyframes();
+    let (mut col, canvas) = scene();
+    let (brk, _) = col.add_scene("Break", SceneScope::Shared).unwrap();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    col.add_item(
+        brk,
+        ItemContent::Source(mic),
+        Layout::new([0.0, 0.0], [1.0, 1.0]),
+        None,
+    )
+    .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu().unwrap(),
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    // The recording builds the chains (`PauseGate` with a hold); the stream joins.
+    let mut out = OutputSettings::new("mem://rec", ContainerId::Matroska);
+    out.pausable = true;
+    out.video = OutputSettings::packets("x").video;
+    let rec = studio.start_output(&r.adapters, &out).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| r.log.count(1) >= 4));
+    let live = studio.start_output(&r.adapters, &stream()).unwrap();
+    let report = studio.output(live).unwrap();
+    assert!(report.video_shared && report.audio_shared, "{report:?}");
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(1) >= 10));
+
+    let pause_at = studio.pause_output(rec).unwrap();
+    assert!(run_until(&mut studio, &clock, |_| clock.now() >= pause_at));
+    let held_at = studio
+        .hold_output_scene(live, brk, HoldSound::Scene, &r.adapters.sources)
+        .unwrap();
+    let audio_at_hold = r.stream_log.count(1);
+    let after = held_at + HOLD_SCENE_TIMEOUT + Duration::from_millis(500);
+    assert!(run_until(&mut studio, &clock, |_| clock.now() >= after));
+    let state = studio.output_hold(live).unwrap();
+    assert_eq!(state.sound, Some(HoldSound::Scene));
+    assert_eq!(
+        (state.fallback, state.sound_fallback),
+        (None, None),
+        "{state:?}"
+    );
+    assert_eq!(studio.mixer_anomalies(), 0);
+    assert!(r.stream_log.count(1) > audio_at_hold + 25);
+
+    studio
+        .release_hold_scene(live, &r.adapters.sources)
+        .unwrap();
+    studio.resume_output(rec).unwrap();
+    let before = r.stream_log.count(1);
+    assert!(run_until(&mut studio, &clock, |_| r.stream_log.count(1)
+        >= before + 10));
+    let audio = pts_of(&r.stream_log, 1);
+    assert!(largest_step(&audio) <= 50_000_000, "{audio:?}");
+    assert!(audio.windows(2).all(|w| w[0] < w[1]), "{audio:?}");
+    studio.shutdown();
+}
