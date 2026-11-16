@@ -2531,3 +2531,50 @@ fn the_window_adds_and_takes_back_a_marker() {
     assert!(why.contains("no recording"), "{why}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ADR-0124: the window pauses and resumes the running recordings with
+/// `Command::PauseRecording`; each answers with every recording's pause state. With
+/// nothing recording the toggle is refused in a sentence for the toast.
+#[test]
+fn the_window_pauses_and_resumes_the_recording() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-ui-pause-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = TestClock::new();
+    let (host, rx, _display, _mic) = marked(gpu, &clock, None);
+    let paused = |rx: &Receiver<Update>| {
+        next(rx, |u| match u {
+            Update::RecordPause(states) => Some(states.map(|s| s.map(|s| s.paused))),
+            _ => None,
+        })
+    };
+
+    host.send(Command::StartRecording(request(
+        dir.join("pause.mkv"),
+        None,
+    )));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    clock.advance(Duration::from_secs(2));
+    host.send(Command::PauseRecording);
+    assert_eq!(paused(&rx), [Some(true), None]);
+    clock.advance(Duration::from_secs(1));
+    host.send(Command::PauseRecording);
+    assert_eq!(paused(&rx), [Some(false), None]);
+
+    let stopped = stop_recording(&host, &rx, &clock);
+    assert!(matches!(
+        stopped,
+        RecordingUpdate::Stopped { failure: None, .. }
+    ));
+    host.send(Command::PauseRecording);
+    let why = next(&rx, |u| match u {
+        Update::Error(e) => Some(e),
+        _ => None,
+    });
+    assert!(
+        why.starts_with("The recording could not pause or resume"),
+        "{why}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

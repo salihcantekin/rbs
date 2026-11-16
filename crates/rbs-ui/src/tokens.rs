@@ -460,8 +460,9 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64)] = &[
     // The warning mark of an unavailable source on a hovered or selected row (ADR-0077).
     ("color.state.warning", "color.surface.overlay", 3.0),
     ("color.state.warning", "color.accent.subtle", 3.0),
-    // The same mark of a ListRow in the searchable picker's well (ADR-0114).
-    ("color.state.warning", "color.surface.base", 3.0),
+    // The same mark of a ListRow in the searchable picker's well (ADR-0114), and text
+    // on the window ground: a paused recording's chip and status (ADR-0124).
+    ("color.state.warning", "color.surface.base", 4.5),
     // The brand mark: on its `surface.raised` chip in the RBS button (ADR-0118), and on
     // the overlay.
     ("color.brand", "color.surface.raised", 3.0),

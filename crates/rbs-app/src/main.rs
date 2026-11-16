@@ -701,6 +701,7 @@ impl App {
             Run::Replay(on) => replay_page::toggle(self, on),
             Run::SaveReplay => replay_page::save(self),
             Run::AddMarker => self.studio.add_marker(),
+            Run::PauseRecording => self.studio.pause_recording(),
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
             Run::SelectTheme(id) => self.select_theme = Some(id),
@@ -1465,9 +1466,22 @@ impl Ctx {
         if app.hidden {
             Self::sync_tray_text(&mut app);
         }
+        // How long the recording's pause has lasted (ADR-0124), ticking with the rest.
+        let paused: slint::SharedString = app
+            .studio
+            .paused_for()
+            .map(|d| clock_text(d.as_secs()))
+            .unwrap_or_default()
+            .into();
         app.main.global::<Shell>().set_live_duration(text.clone());
+        app.main
+            .global::<Shell>()
+            .set_rec_paused_for(paused.clone());
         for f in &app.floats {
             f.window.global::<Shell>().set_live_duration(text.clone());
+            f.window
+                .global::<Shell>()
+                .set_rec_paused_for(paused.clone());
         }
     }
 
@@ -2496,9 +2510,16 @@ impl Ctx {
         let toolbar_end = ModelRc::from(app.toolbar_end_model.clone());
         let toolbar_fixed = ModelRc::from(app.toolbar_fixed_model.clone());
         let workspaces = ModelRc::from(app.workspaces_model.clone());
+        let paused_for: slint::SharedString = app
+            .studio
+            .paused_for()
+            .map(|d| clock_text(d.as_secs()))
+            .unwrap_or_default()
+            .into();
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
+            g.set_rec_paused_for(paused_for.clone());
             g.set_live_outputs(live.outputs_text().into());
             g.set_audio_only(app.studio.record_button_audio());
             g.set_live_camera(live.camera);
@@ -4089,6 +4110,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_add_marker, |app| {
         app.studio.add_marker();
     });
+    on!(on_pause_recording, |app| {
+        app.studio.pause_recording();
+    });
     on!(on_undo_marker, |app| {
         app.studio.undo_marker();
     });
@@ -5031,4 +5055,9 @@ mod picture_area_tests {
         let area = [0.0, 0.0, 400.0, 64.0];
         assert_eq!(below_strip(area, true, 32.0), area);
     }
+}
+
+/// A pause's length as the live time shows it: "0:01:05".
+fn clock_text(secs: u64) -> String {
+    format!("{}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60)
 }
