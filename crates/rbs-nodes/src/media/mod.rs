@@ -17,10 +17,16 @@
 //! dequeue, copy, and hand buffers back on return rings: they do not allocate, free,
 //! block, resample, or read the file.
 //!
-//! Not in this step (ADR-0108 decisions 3, 5, 7, 10): the probe and the open on a
-//! worker thread instead of the control thread, the reaper, the control handle with
-//! generations, native surfaces, and NV12/P010 upload.
+//! Playback is controlled through [`MediaControl`] (ADR-0108 decision 10): play,
+//! pause, seek, and restart write records that every item's generation is checked
+//! against.
+//!
+//! Not in this step (ADR-0108 decisions 3, 5, 7, 10, 11, 12): the probe and the open
+//! on a worker thread instead of the control thread, the reaper, the pause release
+//! timer, the `cued` state, the play range, live keys, native surfaces, and NV12/P010
+//! upload.
 
+mod control;
 mod pcm;
 mod picture;
 mod player;
@@ -34,6 +40,7 @@ use std::time::Duration;
 use rbs_core::time::Timestamp;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 
+pub use control::{MediaControl, PlayState, RECORDS as MEDIA_CONTROL_RECORDS};
 pub use picture::{MediaNodeError, MediaPhase, MediaPictureNode};
 pub use sound::MediaSoundNode;
 
@@ -80,6 +87,8 @@ pub struct MediaPair {
     /// Dropped otherwise: the worker then decodes no sound. Preparing it alone plays
     /// the file too.
     pub sound: MediaSoundNode,
+    /// Play, pause, seek, and restart (ADR-0108 decision 10). For the host.
+    pub control: MediaControl,
 }
 
 /// Counters for one media source. All relaxed.
@@ -101,6 +110,12 @@ pub struct MediaStats {
     /// Sound node blocks written as silence while the file was playing sound. A file
     /// with no audio stream, a pause, and the end hold are not underruns.
     pub sound_underruns: AtomicU64,
+    /// Reads of the control records that a write tore; the node kept its previous
+    /// read for that tick or block (ADR-0108 decision 10).
+    pub torn_controls: AtomicU64,
+    /// Pictures and sound blocks skipped because a later command ended their
+    /// generation before their stamp.
+    pub superseded: AtomicU64,
 }
 
 /// One block of sound, interleaved at the graph's format, stamped at the master time
@@ -108,6 +123,7 @@ pub struct MediaStats {
 pub(crate) struct SoundBlock {
     pub(crate) stamp: Timestamp,
     pub(crate) epoch: u32,
+    pub(crate) generation: u32,
     pub(crate) samples: Box<[f32]>,
 }
 
@@ -136,16 +152,38 @@ pub(crate) struct Shared {
     /// Master time, in nanoseconds plus one, from which the sound node counts a block
     /// of silence as an underrun; 0 while no worker plays sound.
     pub(crate) sound_from: AtomicU64,
+    /// The generation of the blocks `sound_from` belongs to.
+    pub(crate) sound_gen: AtomicU32,
     /// The file has an audio stream (known after the first open).
     pub(crate) has_audio: AtomicBool,
+    /// The stated duration in nanoseconds plus one; 0 while unknown.
+    pub(crate) duration: AtomicU64,
+    /// The audio graph's block period.
+    pub(crate) block_period: Duration,
+    /// The playback control records (ADR-0108 decision 10).
+    pub(crate) controls: control::Controls,
+    /// The picture rings of a run the picture node does not hold yet, and the rings it
+    /// let go of, for the control path to free. The picture node takes them in
+    /// `dequeue` with `try_lock` when `handoff_ready` is set; it never blocks.
+    pub(crate) handoff: Mutex<Handoff>,
+    pub(crate) handoff_ready: AtomicBool,
     /// Media cursor in nanoseconds: the picture last shown, kept across Standby.
     cursor: AtomicU64,
     /// Playback. Locked on the control path only.
     player: Mutex<player::Player>,
 }
 
+/// Picture rings in transit between the player and the picture node.
+#[derive(Default)]
+pub(crate) struct Handoff {
+    /// The current run's rings and progress counters.
+    pub(crate) rings: Option<(player::Rings, Arc<worker::Progress>)>,
+    /// Rings the picture node replaced; freed on the control path.
+    pub(crate) retired: Option<(player::Rings, Arc<worker::Progress>)>,
+}
+
 impl Shared {
-    fn new(player: player::Player) -> Arc<Self> {
+    fn new(player: player::Player, block_period: Duration) -> Arc<Self> {
         Arc::new(Self {
             stats: Arc::new(MediaStats::default()),
             inlet: Mutex::new(None),
@@ -154,7 +192,13 @@ impl Shared {
             grid: AtomicU64::new(0),
             epoch: AtomicU32::new(0),
             sound_from: AtomicU64::new(0),
+            sound_gen: AtomicU32::new(0),
             has_audio: AtomicBool::new(false),
+            duration: AtomicU64::new(0),
+            block_period,
+            controls: control::Controls::new(),
+            handoff: Mutex::new(Handoff::default()),
+            handoff_ready: AtomicBool::new(false),
             cursor: AtomicU64::new(0),
             player: Mutex::new(player),
         })
@@ -177,6 +221,23 @@ impl Shared {
             u64::try_from(cursor.as_nanos()).unwrap_or(u64::MAX),
             Ordering::Relaxed,
         );
+    }
+
+    /// The handoff slot. Control path only (the picture node uses `try_lock`).
+    pub(crate) fn handoff(&self) -> MutexGuard<'_, Handoff> {
+        self.handoff
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Offers a run's picture rings to the picture node and frees rings it let go of.
+    /// Control path.
+    pub(crate) fn offer_rings(&self, rings: Option<(player::Rings, Arc<worker::Progress>)>) {
+        let mut slot = self.handoff();
+        slot.retired = None;
+        slot.rings = rings;
+        self.handoff_ready
+            .store(slot.rings.is_some(), Ordering::Release);
     }
 
     /// Takes the inlet. The lock is held only to move an `Option`.
@@ -219,16 +280,20 @@ pub fn media_pair(
     clock: Arc<dyn rbs_core::time::Clock>,
     audio: rbs_audio::AudioGraphConfig,
 ) -> MediaPair {
-    let shared = Shared::new(player::Player::new(
-        factory,
-        path,
-        loop_playback,
-        restart_when_shown,
-        clock,
-        audio,
-    ));
+    let shared = Shared::new(
+        player::Player::new(
+            factory,
+            path,
+            loop_playback,
+            restart_when_shown,
+            clock,
+            audio,
+        ),
+        audio.period(),
+    );
     MediaPair {
         picture: MediaPictureNode::new(Arc::clone(&shared)),
+        control: MediaControl::new(Arc::clone(&shared)),
         sound: MediaSoundNode::new(audio, shared),
     }
 }

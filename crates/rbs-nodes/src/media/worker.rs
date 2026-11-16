@@ -25,6 +25,7 @@ use rbs_media_decode::{
     SampleColor, refuse_picture,
 };
 
+use super::control::Record;
 use super::pcm::Converter;
 use super::picture::MediaNodeError;
 use super::{LEAD, PICTURE_SLOTS, Shared, SoundBlock, SoundInlet};
@@ -40,6 +41,8 @@ const CATCH_UP_CHUNKS: usize = 64;
 /// One picture in flight, stamped with master time.
 pub(crate) struct Pending {
     pub(crate) frame: VideoFrame,
+    /// The control generation it was decoded for (ADR-0108 decision 10).
+    pub(crate) generation: u32,
     pub(crate) start: Timestamp,
     /// Media time of the picture, for the cursor.
     pub(crate) media: Duration,
@@ -111,6 +114,17 @@ pub(crate) fn run(job: Job) {
     }
     let has_audio = decoder.has_audio();
     job.shared.has_audio.store(has_audio, Ordering::Release);
+    if let Some(duration) = decoder.duration() {
+        job.shared.duration.store(
+            u64::try_from(duration.as_nanos())
+                .unwrap_or(u64::MAX - 1)
+                .saturating_add(1),
+            Ordering::Release,
+        );
+    }
+    // The command this run follows: a run started paused shows its first picture and
+    // stops (ADR-0108 decision 10).
+    let command = job.shared.controls.newest();
     let mut pictures = PictureStream::new(job.cursor);
     let first = match pictures.first(&mut *decoder) {
         Ok(first) => first,
@@ -151,6 +165,10 @@ pub(crate) fn run(job: Job) {
     }
     let mut run = Run {
         anchor,
+        cursor: job.cursor,
+        generation: command.generation,
+        paused: command.paused,
+        paused_at: command.paused.then_some(job.cursor),
         offset: Duration::ZERO,
         pictures,
         primed: Some(first),
@@ -163,6 +181,10 @@ pub(crate) fn run(job: Job) {
         job: &job,
         decoder: &mut *decoder,
     };
+    if run.paused && run.next_picture().is_err() {
+        job.progress.failed.store(true, Ordering::Release);
+        return;
+    }
     run.loop_until_done();
     job.shared.sound_from.store(0, Ordering::Release);
     if let Some(inlet) = run.sound.inlet.take() {
@@ -175,6 +197,14 @@ struct Run<'a> {
     decoder: &'a mut dyn MediaDecoder,
     /// Master time of the cursor's picture.
     anchor: Timestamp,
+    /// Media time the run (or the last seek) started from.
+    cursor: Duration,
+    /// The control generation the items carry now.
+    generation: u32,
+    /// The newest command is a pause: decode nothing.
+    paused: bool,
+    /// Where the pause stopped, for the next play.
+    paused_at: Option<Duration>,
     /// Media time added by finished loop passes.
     offset: Duration,
     pictures: PictureStream,
@@ -194,13 +224,81 @@ struct Run<'a> {
 impl Run<'_> {
     /// Master time of media time `media` in the current pass, in nanoseconds.
     fn master(&self, media: Duration) -> i128 {
-        self.anchor.as_nanos() as i128 - self.job.cursor.as_nanos() as i128
+        self.anchor.as_nanos() as i128 - self.cursor.as_nanos() as i128
             + self.offset.as_nanos() as i128
             + media.as_nanos() as i128
     }
 
     fn base(&self) -> i128 {
-        self.anchor.as_nanos() as i128 - self.job.cursor.as_nanos() as i128
+        self.anchor.as_nanos() as i128 - self.cursor.as_nanos() as i128
+    }
+
+    /// Media time shown at master time `instant` in this run.
+    fn media_at(&self, instant: Timestamp) -> Duration {
+        let nanos = instant.as_nanos() as i128 - self.master(Duration::ZERO);
+        let media = Duration::from_nanos(u64::try_from(nanos.max(0)).unwrap_or(0));
+        let media = media.max(self.cursor);
+        // Past the end of a pass the next pass has started (with `loop`).
+        let pass = self.pass_length();
+        if !pass.is_zero() && media > pass {
+            Duration::from_nanos(u64::try_from(media.as_nanos() % pass.as_nanos()).unwrap_or(0))
+        } else {
+            media
+        }
+    }
+
+    /// Follows a new control record (ADR-0108 decision 10).
+    fn apply(&mut self, record: Record) -> Result<(), DecodeError> {
+        let job = self.job;
+        self.generation = record.generation;
+        match (record.paused, record.position) {
+            (true, None) => {
+                if !self.paused {
+                    let at = self.media_at(record.instant);
+                    job.shared.set_cursor(at);
+                    self.paused_at = Some(at);
+                    self.paused = true;
+                }
+                Ok(())
+            }
+            (true, Some(position)) => {
+                self.paused = true;
+                self.paused_at = Some(position);
+                job.shared.set_cursor(position);
+                self.restart_at(position, record.instant)?;
+                // The picture at the new position, shown from the instant and held.
+                self.next_picture()
+                    .map_err(|()| DecodeError::Failed("seek while paused".to_owned()))
+            }
+            (false, position) => {
+                let from = position
+                    .or(self.paused_at.take())
+                    .unwrap_or_else(|| job.shared.cursor());
+                self.paused = false;
+                self.paused_at = None;
+                // The new anchor is one lead after the instant: time to seek and
+                // decode, and the same whenever the worker reads the record.
+                let anchor = record.instant + LEAD;
+                self.restart_at(from, anchor)
+            }
+        }
+    }
+
+    /// Seeks to `position` and maps it to master time `anchor`: a new pass with no
+    /// offset, new picture and sound streams, nothing primed.
+    fn restart_at(&mut self, position: Duration, anchor: Timestamp) -> Result<(), DecodeError> {
+        self.decoder.seek(position)?;
+        self.anchor = anchor;
+        self.cursor = position;
+        self.offset = Duration::ZERO;
+        self.pictures = PictureStream::new(position);
+        self.primed = None;
+        self.unseen.clear();
+        self.primed_sound = None;
+        self.sound.reset(&self.job.config, position);
+        // Silence before the new generation's first block is not an underrun.
+        self.job.shared.sound_from.store(0, Ordering::Release);
+        Ok(())
     }
 
     fn loop_until_done(&mut self) {
@@ -214,6 +312,28 @@ impl Run<'_> {
             let now = job.clock.now();
             let horizon = now.as_nanos() as i128 + LEAD.as_nanos() as i128;
             let mut busy = false;
+
+            // Commands.
+            let command = job.shared.controls.newest();
+            if command.generation != self.generation {
+                busy = true;
+                if self.apply(command).is_err() {
+                    job.progress.failed.store(true, Ordering::Release);
+                    return;
+                }
+            }
+            if self.paused {
+                if !(job.shared.sound_attached.load(Ordering::Acquire)) {
+                    self.sound.inlet = None;
+                }
+                job.progress
+                    .settled_at
+                    .store(now.as_nanos().saturating_add(1), Ordering::Release);
+                if !busy {
+                    thread::park_timeout(PARK);
+                }
+                continue;
+            }
 
             // Pictures. What was decoded while nobody showed pictures (the picture due
             // now and those within the lead) goes first once the picture node is
@@ -405,6 +525,7 @@ impl Run<'_> {
         };
         let item = Pending {
             frame,
+            generation: self.generation,
             start: start_master,
             media: start,
             index,
@@ -528,6 +649,7 @@ impl Run<'_> {
             let block = SoundBlock {
                 stamp: to_timestamp(stamp),
                 epoch: job.epoch,
+                generation: self.generation,
                 samples: buffer,
             };
             let Some(inlet) = self.sound.inlet.as_mut() else {
@@ -537,6 +659,9 @@ impl Run<'_> {
             match inlet.blocks.push(block) {
                 Ok(()) => {
                     if job.shared.sound_from.load(Ordering::Relaxed) == 0 {
+                        job.shared
+                            .sound_gen
+                            .store(self.generation, Ordering::Release);
                         job.shared.sound_from.store(
                             u64::try_from(stamp.max(0)).unwrap_or(0).saturating_add(1),
                             Ordering::Release,
@@ -679,6 +804,20 @@ impl SoundStream {
         };
         stream.head = stream.frame_of(cursor, i128::from(rate));
         stream
+    }
+
+    /// Starts again at media time `position` after a seek: nothing buffered, the
+    /// inlet and the spare buffers kept.
+    fn reset(&mut self, config: &AudioGraphConfig, position: Duration) {
+        self.converter = None;
+        self.fifo.clear();
+        self.head = self.frame_of(position, i128::from(config.format.sample_rate.hz()));
+        self.next_media = position;
+        self.block = None;
+        self.skip = 0;
+        self.resync = true;
+        self.done = false;
+        self.pass_end = Duration::ZERO;
     }
 
     fn restart(&mut self) {

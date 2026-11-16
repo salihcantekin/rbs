@@ -10,6 +10,7 @@ use rbs_core::time::Timestamp;
 use rbs_graph::node::NodeDescriptor;
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 
+use super::control::{Verdict, View};
 use super::player::User;
 use super::{LEAD, SOUND_PIN, Shared, SoundBlock, SoundInlet, media_sound_descriptor};
 
@@ -24,6 +25,8 @@ pub struct MediaSoundNode {
     config: AudioGraphConfig,
     shared: Arc<Shared>,
     ring: Option<Ring>,
+    /// The control records as last read (ADR-0108 decision 10).
+    view: View,
 }
 
 struct Ring {
@@ -39,6 +42,7 @@ impl MediaSoundNode {
             config,
             shared,
             ring: None,
+            view: View::new(),
         }
     }
 
@@ -99,7 +103,8 @@ impl MediaSoundNode {
         self.shared.sound_from.store(0, Ordering::Release);
         drop(self.shared.take_inlet());
         self.ring = None;
-        self.shared.player().release(User::Sound);
+        let shared = Arc::clone(&self.shared);
+        shared.player().release(User::Sound, &shared);
     }
 
     /// Writes the block for `block_time` into `channels` (`frames` each). Returns
@@ -118,6 +123,10 @@ impl MediaSoundNode {
         let half = Duration::from_nanos(self.config.period().as_nanos() as u64 / 2);
         let epoch = self.shared.epoch.load(Ordering::Acquire);
         let stats = &self.shared.stats;
+        if !self.view.refresh(&self.shared.controls) {
+            stats.torn_controls.fetch_add(1, Ordering::Relaxed);
+        }
+        let records = *self.view.records();
         let mut written = false;
         if let Some(ring) = self.ring.as_mut() {
             // Bounded by the ring: every pass pops one block or stops.
@@ -125,7 +134,13 @@ impl MediaSoundNode {
                 let Ok(front) = ring.blocks.peek() else {
                     break;
                 };
-                let stale = front.epoch != epoch;
+                // A later command ended this block's generation before its stamp.
+                let superseded = match records.verdict(front.generation, front.stamp) {
+                    Verdict::Wait => break,
+                    Verdict::Skip => true,
+                    Verdict::Play => false,
+                };
+                let stale = front.epoch != epoch || superseded;
                 let late = (front.stamp + half) < block_time;
                 let due = !late && front.stamp <= (block_time + half);
                 if !(stale || late || due) {
@@ -151,6 +166,8 @@ impl MediaSoundNode {
                     written = true;
                 } else if late && !stale {
                     stats.late_blocks.fetch_add(1, Ordering::Relaxed);
+                } else if superseded {
+                    stats.superseded.fetch_add(1, Ordering::Relaxed);
                 }
                 // The return ring holds one more than the ring, so this never fails;
                 // the buffer is reused by the worker, never freed here.
@@ -164,8 +181,15 @@ impl MediaSoundNode {
             for dest in channels.iter_mut() {
                 dest[..frames].fill(0.0);
             }
+            // Silence is an underrun only while the record that applies plays and the
+            // worker has already played sound for it: a pause, and the gap between a
+            // command and the new generation's first block, are not underruns.
             let from = self.shared.sound_from.load(Ordering::Acquire);
-            if from != 0 && block_time.as_nanos() >= from - 1 {
+            let generation = self.shared.sound_gen.load(Ordering::Acquire);
+            let playing = records
+                .at(block_time)
+                .is_some_and(|r| !r.paused && r.generation == generation);
+            if playing && from != 0 && block_time.as_nanos() >= from - 1 {
                 stats.sound_underruns.fetch_add(1, Ordering::Relaxed);
             }
         }

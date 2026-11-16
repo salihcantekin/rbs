@@ -20,6 +20,7 @@ use rbs_graph::runtime::RestartPolicy;
 use rbs_media_decode::MediaDecoderFactory;
 
 use super::Shared;
+use super::control::Record;
 use super::picture::{MediaNodeError, MediaPhase};
 use super::worker::{self, Job, Pending, Progress};
 
@@ -52,8 +53,6 @@ pub(crate) struct Player {
     worker: Option<Worker>,
     pub(crate) ended: Arc<AtomicBool>,
     pub(crate) progress: Arc<Progress>,
-    /// The picture rings of the current run while the picture node does not hold them.
-    pub(crate) rings: Option<Rings>,
     picture_in: bool,
     sound_in: bool,
     pub(crate) queue_allocations: u32,
@@ -81,7 +80,6 @@ impl Player {
             worker: None,
             ended: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(Progress::default()),
-            rings: None,
             picture_in: false,
             sound_in: false,
             queue_allocations: 0,
@@ -106,31 +104,55 @@ impl Player {
             User::Sound => self.sound_in = true,
         }
         if self.phase == MediaPhase::Standby {
-            self.start(shared)
+            self.start_shown(shared)
         } else {
             Ok(())
         }
     }
 
+    /// Starts a worker because the source is shown: with `restart_when_shown` the
+    /// cursor goes to the start and a stored pause becomes play (ADR-0108 decision 10
+    /// table).
+    pub(crate) fn start_shown(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
+        if self.restart_when_shown {
+            shared.set_cursor(Duration::ZERO);
+            let newest = shared.controls.newest();
+            if newest.paused {
+                shared.controls.write(Record {
+                    generation: newest.generation.wrapping_add(1),
+                    instant: self.clock.now(),
+                    paused: false,
+                    position: None,
+                });
+            }
+        }
+        self.start(shared)
+    }
+
+    /// Wakes a parked worker so it reads a new control record at once.
+    pub(crate) fn unpark(&self) {
+        if let Some(worker) = &self.worker {
+            worker.join.thread().unpark();
+        }
+    }
+
     /// Marks `user` as released. With neither node prepared, stops the worker and
     /// frees the decoder and the rings.
-    pub(crate) fn release(&mut self, user: User) {
+    pub(crate) fn release(&mut self, user: User, shared: &Shared) {
         match user {
             User::Picture => self.picture_in = false,
             User::Sound => self.sound_in = false,
         }
         if !self.picture_in && !self.sound_in {
-            self.stop();
+            self.stop(shared);
         }
     }
 
-    /// Opens the file, seeks, and starts a worker. Control thread only. Blocks until
+    /// Opens the file, seeks to the cursor, and starts a worker that follows the
+    /// newest control record (paused or playing). Control thread only. Blocks until
     /// the worker holds its first picture.
     pub(crate) fn start(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
-        self.stop();
-        if self.restart_when_shown {
-            shared.set_cursor(Duration::ZERO);
-        }
+        self.stop(shared);
         let cursor = shared.cursor();
         self.ended = Arc::new(AtomicBool::new(false));
         self.progress = Arc::new(Progress::default());
@@ -169,10 +191,13 @@ impl Player {
         )));
         match ready {
             Ok(ready) => {
-                self.rings = Some(Rings {
-                    pictures: ready.pictures,
-                    returns: ready.returns,
-                });
+                shared.offer_rings(Some((
+                    Rings {
+                        pictures: ready.pictures,
+                        returns: ready.returns,
+                    },
+                    Arc::clone(&self.progress),
+                )));
                 self.queue_allocations = self.queue_allocations.saturating_add(1);
                 self.worker = Some(Worker { join, shutdown });
                 self.phase = MediaPhase::Playing;
@@ -190,10 +215,10 @@ impl Player {
 
     /// Joins the worker after it ended and moves to Hold. A fault counts towards the
     /// back-off.
-    pub(crate) fn hold(&mut self) {
+    pub(crate) fn hold(&mut self, shared: &Shared) {
         let failed = self.progress.failed.load(Ordering::Acquire);
         self.join_worker();
-        self.rings = None;
+        shared.offer_rings(None);
         if failed {
             self.attempts = self.attempts.saturating_add(1);
             self.retry_after = Some(RestartPolicy::default().delay(self.attempts));
@@ -204,9 +229,9 @@ impl Player {
     }
 
     /// Stops the worker and frees the decoder and the rings.
-    pub(crate) fn stop(&mut self) {
+    pub(crate) fn stop(&mut self, shared: &Shared) {
         self.join_worker();
-        self.rings = None;
+        shared.offer_rings(None);
         self.phase = MediaPhase::Standby;
     }
 
@@ -225,6 +250,6 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        self.stop();
+        self.join_worker();
     }
 }

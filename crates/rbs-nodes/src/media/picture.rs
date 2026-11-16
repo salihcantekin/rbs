@@ -11,6 +11,7 @@ use rbs_gpu::upload::SourceUpload;
 use rbs_graph::node::NodeDescriptor;
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 
+use super::control::{Verdict, View};
 use super::player::{Player, Rings, User};
 use super::worker::{Pending, Progress};
 use super::{MediaStats, Shared, VIDEO_PIN, media_descriptor};
@@ -59,8 +60,12 @@ pub struct MediaPictureNode {
     loop_flag: Arc<AtomicBool>,
     /// The player's phase as this node last saw it on the control path.
     phase: MediaPhase,
-    rings: Option<Rings>,
-    progress: Arc<Progress>,
+    /// The picture rings of the run this node shows, with that run's counters.
+    rings: Option<(Rings, Arc<Progress>)>,
+    /// The control records as last read (ADR-0108 decision 10).
+    view: View,
+    /// The previous render tick, for the render period the control handle uses.
+    last_tick: Option<Timestamp>,
     /// The picture shown now, or the first one before its time.
     current: Option<Pending>,
     /// The next picture, popped but not yet due.
@@ -75,17 +80,15 @@ pub struct MediaPictureNode {
 
 impl MediaPictureNode {
     pub(crate) fn new(shared: Arc<Shared>) -> Self {
-        let (loop_flag, progress) = {
-            let player = shared.player();
-            (Arc::clone(&player.loop_flag), Arc::clone(&player.progress))
-        };
+        let loop_flag = Arc::clone(&shared.player().loop_flag);
         Self {
             descriptor: media_descriptor(),
             shared,
             loop_flag,
             phase: MediaPhase::Standby,
             rings: None,
-            progress,
+            view: View::new(),
+            last_tick: None,
             current: None,
             next: None,
             held: None,
@@ -214,11 +217,11 @@ impl MediaPictureNode {
             Ok(()) if player.phase == MediaPhase::Playing => Ok(()),
             Ok(()) => {
                 self.forget();
-                player.start(&shared)
+                player.start_shown(&shared)
             }
             Err(error) => Err(error),
         };
-        self.take_rings(&mut player);
+        self.take_rings(&player);
         result
     }
 
@@ -228,18 +231,50 @@ impl MediaPictureNode {
         let mut player = shared.player();
         self.forget();
         let result = player.start(&shared);
-        self.take_rings(&mut player);
+        self.take_rings(&player);
         result
     }
 
-    /// Takes the rings of a run this node does not hold yet.
-    fn take_rings(&mut self, player: &mut Player) {
-        if let Some(rings) = player.rings.take() {
-            self.forget();
-            self.rings = Some(rings);
-            self.progress = Arc::clone(&player.progress);
+    /// Takes the rings of a run this node does not hold yet. Control path.
+    fn take_rings(&mut self, player: &Player) {
+        let mut slot = self.shared.handoff();
+        if let Some(rings) = slot.rings.take() {
+            self.shared.handoff_ready.store(false, Ordering::Release);
+            slot.retired = self.rings.replace(rings);
         }
+        drop(slot);
+        self.shared.handoff().retired = None;
         self.phase = player.phase;
+    }
+
+    /// Takes the rings of a run the control path started (a restart, a seek from the
+    /// end hold) without blocking: `try_lock`, and only when the control path has
+    /// freed the rings this node let go of last time. The old rings move into the
+    /// slot; nothing is freed here.
+    fn adopt_handoff(&mut self) {
+        if !self.shared.handoff_ready.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(mut slot) = self.shared.handoff.try_lock() else {
+            return;
+        };
+        if slot.retired.is_some() {
+            return;
+        }
+        let Some(rings) = slot.rings.take() else {
+            return;
+        };
+        self.shared.handoff_ready.store(false, Ordering::Release);
+        slot.retired = self.rings.replace(rings);
+        drop(slot);
+        // An item popped from the old ring goes back to the new worker, which frees it.
+        if let Some(item) = self.next.take() {
+            self.give_back(item);
+        }
+        if self.phase == MediaPhase::Hold {
+            // Shown until the new run's first picture.
+            self.phase = MediaPhase::Playing;
+        }
     }
 
     /// Drops this node's pictures and rings.
@@ -259,7 +294,7 @@ impl MediaPictureNode {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
         if self.rings.is_none() {
-            self.take_rings(&mut player);
+            self.take_rings(&player);
         }
         if self.phase != MediaPhase::Playing || !player.ended.load(Ordering::Acquire) {
             return;
@@ -269,12 +304,12 @@ impl MediaPictureNode {
             && self
                 .rings
                 .as_ref()
-                .is_none_or(|rings| rings.pictures.is_empty());
+                .is_none_or(|(rings, _)| rings.pictures.is_empty());
         if !failed && !drained {
             return;
         }
-        player.hold();
-        if let Some(rings) = self.rings.as_mut() {
+        player.hold(&shared);
+        if let Some((rings, _)) = self.rings.as_mut() {
             while let Ok(item) = rings.pictures.pop() {
                 self.current = Some(item);
             }
@@ -312,12 +347,19 @@ impl MediaPictureNode {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
         // A worker that plays on for the sound node keeps its picture rings for a later
-        // wake; one that holds no rings of its own takes them back.
-        if player.phase == MediaPhase::Playing && player.rings.is_none() {
-            player.rings = self.rings.take();
+        // wake.
+        if player.phase == MediaPhase::Playing {
+            let mut slot = shared.handoff();
+            if slot.rings.is_none() {
+                slot.rings = self.rings.take();
+                shared
+                    .handoff_ready
+                    .store(slot.rings.is_some(), Ordering::Release);
+            }
+            slot.retired = None;
         }
         self.forget();
-        player.release(User::Picture);
+        player.release(User::Picture, &shared);
         self.phase = MediaPhase::Standby;
     }
 
@@ -332,13 +374,36 @@ impl MediaPictureNode {
                 .fetch_add(1, Ordering::Relaxed);
             return self.held.as_ref().and_then(VideoFrame::share);
         }
+        self.adopt_handoff();
         if self.phase != MediaPhase::Playing {
             return None;
         }
-        // Bounded by the ring: every pass takes one picture or stops.
-        for _ in 0..=super::PICTURE_SLOTS {
+        if !self.view.refresh(&self.shared.controls) {
+            self.shared
+                .stats
+                .torn_controls
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        // Bounded by the ring: every pass takes or skips one picture, or stops.
+        for _ in 0..=2 * super::PICTURE_SLOTS {
             if self.next.is_none() {
                 self.next = self.pop_picture();
+            }
+            let verdict = match &self.next {
+                Some(next) => self.view.records().verdict(next.generation, next.start),
+                None => break,
+            };
+            match verdict {
+                Verdict::Play => {}
+                Verdict::Wait => break,
+                Verdict::Skip => {
+                    // A later command ended this picture's generation before it.
+                    if let Some(item) = self.next.take() {
+                        self.shared.stats.superseded.fetch_add(1, Ordering::Relaxed);
+                        self.give_back(item);
+                    }
+                    continue;
+                }
             }
             let take = match (&self.next, &self.current) {
                 (Some(next), Some(_)) => next.start <= now,
@@ -361,7 +426,10 @@ impl MediaPictureNode {
                 self.give_back(old);
             }
         }
-        let current = self.current.as_ref()?;
+        let Some(current) = self.current.as_ref() else {
+            // A new run after the end hold shows the held picture until its first.
+            return self.held.as_ref().and_then(VideoFrame::share);
+        };
         if self.published == Some(current.index) {
             self.shared
                 .stats
@@ -398,9 +466,10 @@ impl MediaPictureNode {
     }
 
     fn pop_picture(&mut self) -> Option<Pending> {
-        let item = self.rings.as_mut()?.pictures.pop().ok()?;
-        self.progress.queued_frames.fetch_sub(1, Ordering::Relaxed);
-        self.progress
+        let (rings, progress) = self.rings.as_mut()?;
+        let item = rings.pictures.pop().ok()?;
+        progress.queued_frames.fetch_sub(1, Ordering::Relaxed);
+        progress
             .queued_bytes
             .fetch_sub(item.bytes as u64, Ordering::Relaxed);
         Some(item)
@@ -409,7 +478,7 @@ impl MediaPictureNode {
     /// Hands a picture back to the worker, which frees it on its own thread. The return
     /// ring holds two more than the picture ring, so it is never full.
     fn give_back(&mut self, item: Pending) {
-        if let Some(rings) = self.rings.as_mut() {
+        if let Some((rings, _)) = self.rings.as_mut() {
             let _ = rings.returns.push(item);
         }
     }
@@ -454,6 +523,16 @@ impl Node<GpuRuntime> for MediaPictureNode {
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         let now = ctx.tick().time;
+        // The render period, for the instant of the next control command.
+        if let Some(previous) = self.last_tick.replace(now)
+            && now > previous
+        {
+            let period = now.as_nanos() - previous.as_nanos();
+            self.shared
+                .controls
+                .render_period
+                .store(period, Ordering::Relaxed);
+        }
         if let Some(frame) = self.dequeue_texture(ctx, now)? {
             let _ = ctx.outputs().set_video(VIDEO_PIN, Some(frame))?;
         }
