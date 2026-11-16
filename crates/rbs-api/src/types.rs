@@ -1219,8 +1219,11 @@ pub enum OutputOutcome {
     NotRunning,
     /// Pause: it was paused now (protocol 1.61).
     Paused,
-    /// Resume: it was resumed now (protocol 1.61).
+    /// Resume: it was resumed now (protocol 1.61); for a stream, back on the
+    /// program (protocol 1.64).
     Resumed,
+    /// Hold: the stream was put on hold now (protocol 1.64).
+    Held,
     /// Start of a vertical stream with no server saved: skipped, not an error.
     NotConfigured,
     /// Start: refused; `error` says why. Pause and resume: refused (already in the
@@ -1268,6 +1271,10 @@ impl From<&crate::error::ApiError> for OutputError {
 pub struct OutputEntry {
     /// The canvas.
     pub canvas: OutputCanvas,
+    /// Which output of the canvas, on `output.break_toggle` only (protocol 1.64),
+    /// which answers for recordings and streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<OutputKind>,
     /// What happened.
     pub outcome: OutputOutcome,
     /// On `started`: the video encoder's name.
@@ -1404,6 +1411,15 @@ pub enum StreamState {
         video_encoder: String,
         /// The audio encoder's name, when audio is sent.
         audio_encoder: Option<String>,
+        /// On hold (protocol 1.64, ADR-0124): the connection stays up and a hold
+        /// picture goes out with silence. Set from the call on, including while the
+        /// hold waits for a recording sharing the encoder to pause.
+        #[serde(default)]
+        held: bool,
+        /// Time on hold so far, in milliseconds, as of this state (an open hold
+        /// counted up to the change) (protocol 1.64).
+        #[serde(default)]
+        held_ms: u64,
     },
 }
 

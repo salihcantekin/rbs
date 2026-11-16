@@ -1759,6 +1759,86 @@ fn a_control_api_client_pauses_and_resumes_a_recording() {
     drop(api);
 }
 
+/// ADR-0124 decisions 12 and 15 through the control API (protocol 1.64): a live stream
+/// is held and resumed, its state carries `held`, a second hold or a resume of a
+/// stream not held is a conflict, and Break holds every stream and pauses every
+/// recording, then resumes them all.
+#[test]
+fn a_control_api_client_holds_a_stream_and_takes_a_break() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    let (api, mut c) = api_client(&host);
+    let sub = c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["stream.state", "record.state"]}),
+    );
+    assert!(sub["result"].is_object(), "{sub}");
+    add_display(&host, &rx);
+    let main = serde_json::json!({});
+    let none = c.call("stream.hold", main.clone());
+    assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
+    let none = c.call("output.break_toggle", main.clone());
+    assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    let live = c.event("stream.state", |d| d["state"] == "live");
+    assert_eq!(live["params"]["data"]["held"], false, "{live}");
+
+    let resume = c.call("stream.resume", main.clone());
+    assert_eq!(resume["error"]["data"]["kind"], "conflict", "{resume}");
+    assert!(resume.to_string().contains("not on hold"), "{resume}");
+    let bad = c.call("stream.hold", serde_json::json!({"picture": "scene"}));
+    assert_eq!(bad["error"]["data"]["kind"], "invalid_params", "{bad}");
+    let hold = c.call("stream.hold", serde_json::json!({"picture": "black"}));
+    assert!(hold["result"].is_object(), "{hold}");
+    c.event("stream.state", |d| d["held"] == true);
+    let again = c.call("stream.hold", serde_json::json!({"picture": "black"}));
+    assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
+    clock.advance(Duration::from_secs(2));
+    let toggle = c.call("stream.hold_toggle", main.clone());
+    assert!(toggle["result"].is_object(), "{toggle}");
+    let back = c.event("stream.state", |d| d["held"] == false);
+    assert!(
+        back["params"]["data"]["held_ms"].as_u64().unwrap() >= 2000,
+        "{back}"
+    );
+
+    // Break: the stream holds and the recording pauses; again, both resume. The
+    // recording shares the stream's encoders here, so the hold pauses it first and
+    // the stream holds once that pause has begun (decision 14).
+    host.send(Command::SetProfile(record_profile("break")));
+    let rec = c.call("record.start", serde_json::json!({"profile": "default"}));
+    assert!(rec["result"].is_object(), "{rec}");
+    c.event("record.state", |d| d["state"] == "recording");
+    let on = c.call("output.break_toggle", main.clone());
+    let entries = &on["result"]["outputs"];
+    assert_eq!(entries[0]["kind"], "stream", "{on}");
+    assert_eq!(entries[0]["outcome"], "held", "{on}");
+    assert_eq!(entries[1]["kind"], "record", "{on}");
+    assert_eq!(entries[1]["outcome"], "paused", "{on}");
+    // The recording pauses first, then the stream holds.
+    c.event("record.state", |d| d["paused"] == true);
+    c.event("stream.state", |d| d["held"] == true);
+    let resume = c.call("record.resume", main.clone());
+    assert_eq!(resume["error"]["data"]["kind"], "conflict", "{resume}");
+    let off = c.call("output.break_toggle", main.clone());
+    let entries = &off["result"]["outputs"];
+    assert_eq!(entries[0]["outcome"], "resumed", "{off}");
+    assert_eq!(entries[1]["outcome"], "resumed", "{off}");
+    c.event("record.state", |d| d["paused"] == false);
+    c.event("stream.state", |d| d["held"] == false);
+
+    assert!(c.call("record.stop", main.clone())["result"].is_object());
+    assert!(c.call("stream.stop", main)["result"].is_object());
+    drop(host);
+    drop(api);
+}
+
 /// ADR-0089 decision 3: with the profile's stream markers on, a recording that runs
 /// while a stream starts and ends gets `stream_start` and `stream_end` markers at
 /// those moments; with them off (the default) it gets none.
