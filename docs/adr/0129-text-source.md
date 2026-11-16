@@ -194,3 +194,9 @@ Concerns:
 1. `picture_only` means "no sound of its own", not "still". -> Decision 1: `picture_role` and the `video_as` test ask `is_still`; `check_class` and `picture_only` match `SourceClass::Text` by class; test with `enabled: true` on a clock.
 2. Budget reset in `end_tick` was per-tick work with no text source (P13). -> Decision 5: lazy tick-stamped state rolled over by the first text node of a tick; `end_tick` unchanged; test.
 Minor notes: `ParamReceiver<Option<TextFrame>>` and `request` named consistently; `reserve` failure rule; unknown `kind` is not still; `reserve` takes the context.
+
+Reviewer: independent AI session (round 7)
+Date: 2026-11-16
+Verdict: approve
+Concerns: none. Round 6 checked against the code: `picture_only` and `check_class` mean "no sound of its own", `picture_role` and the `video_as` test mean "still", so decision 1's split is correct and a clock text with `enabled: true` plans a video track; the lazy tick-stamped budget state is implementable with `GpuRuntime::end_tick` unchanged (P13). No contradiction found in the header, decisions 1, 5, 7 and 11, or the Consequences.
+Minor notes (for the phase specs): (1) an older build resets an image mark on a kind it does not know, once saved: state it in `scene-sources.md`; (2) phase (f) drives the Recording dropdown and the separate-files count from `is_still`; (3) keep the `RenderLocal` budget state as fixed-size scalars so the roll-over does not allocate.
