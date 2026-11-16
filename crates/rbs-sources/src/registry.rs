@@ -422,6 +422,11 @@ impl NodeTypes for NodeTypeTable {
     fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
         self.types.get(type_id).cloned()
     }
+
+    /// Text sources take every settings change in place (ADR-0129 decision 5).
+    fn live_settings(&self, type_id: &NodeTypeId) -> bool {
+        class_of(type_id) == Some(SourceClass::Text)
+    }
 }
 
 /// The capture and audio input adapters, and the source types they provide.
