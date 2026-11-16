@@ -668,3 +668,137 @@ fn a_control_api_client_drives_the_studio() {
         .expect("the host stopped while the server held its waker");
     drop(api);
 }
+
+/// Text sources through the control API (protocol 1.75, ADR-0129 decision 8): added
+/// with their text, edited with `source.set_text` and `source.set_settings`, their
+/// `file` refused, the font list read from the worker.
+#[test]
+fn a_control_api_client_adds_and_edits_a_text_source() {
+    let Some(gpu) = gpu() else { return };
+    let (tx, updates) = mpsc::channel();
+    let mut config = HostConfig::desktop();
+    config.preview = None;
+    let host = StudioHost::spawn(
+        config,
+        || {
+            let mut a = RecordAdapters::new();
+            a.sources
+                .register_text(Arc::new(rbs_text_test::FakeTextRenderer::new()));
+            (a, Vec::new())
+        },
+        move || Ok(gpu),
+        || {
+            Engine::with_clock(
+                Arc::new(TestClock::new()),
+                EngineConfig::default().swap_timeout(LIMIT),
+            )
+        },
+        move |u| {
+            let _ = tx.send(u);
+        },
+    )
+    .unwrap();
+    next(&updates, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let server = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
+    let (api, endpoint) =
+        ApiServer::start(server, TokenStore::new(), ApiOptions::new(host.api_waker())).unwrap();
+    host.attach_api(endpoint, None);
+    let (out_tx, out_rx) = mpsc::channel();
+    let handle = api
+        .inbox()
+        .connect(
+            PeerInfo::same_user_ipc(),
+            Box::new(ChannelSender(out_tx)),
+            Box::new(|| {}),
+        )
+        .unwrap();
+    let mut c = Client {
+        handle,
+        rx: out_rx,
+        next: 1,
+        events: Vec::new(),
+    };
+    c.call(
+        "session.hello",
+        json!({"protocols": ["1.0"], "client": {"name": "test", "version": "1"}}),
+    );
+
+    // Added with its text and a box: measured, or the default when the measure is late.
+    let added = c.call("source.add", json!({"kind": "text", "text": "Hello"}));
+    let id = added["result"]["source"].as_u64().expect("a source id");
+    let got = c.call("source.get_settings", json!({"source": id}));
+    let settings = &got["result"]["settings"];
+    assert_eq!(settings["text"], "Hello", "{got}");
+    assert!(settings["width"].as_u64().is_some_and(|w| w > 0), "{got}");
+    assert!(settings["height"].as_u64().is_some_and(|h| h > 0), "{got}");
+    let list = c.call("source.list", json!({}));
+    assert_eq!(list["result"]["data"][0]["kind"], "text", "{list}");
+    assert_eq!(list["result"]["data"][0]["name"], "Text", "{list}");
+
+    // `text` is only for a text source.
+    let bad = c.call(
+        "source.add",
+        json!({"kind": "screen", "adapter": "a", "target": "t", "text": "x"}),
+    );
+    assert_eq!(bad["error"]["data"]["kind"], "invalid_params", "{bad}");
+
+    // `source.set_text` replaces only the text.
+    let set = c.call("source.set_text", json!({"source": id, "text": "Bye"}));
+    assert!(set["result"].is_object(), "{set}");
+    let got = c.call("source.get_settings", json!({"source": id}));
+    assert_eq!(got["result"]["settings"]["text"], "Bye", "{got}");
+    assert_eq!(
+        got["result"]["settings"]["width"], settings["width"],
+        "{got}"
+    );
+    let missing = c.call("source.set_text", json!({"source": 999, "text": "x"}));
+    assert_eq!(missing["error"]["data"]["kind"], "not_found", "{missing}");
+
+    // Settings are checked strictly, and the API cannot point a text at a file.
+    let ok = c.call(
+        "source.set_settings",
+        json!({"source": id, "settings": {"size": 48}}),
+    );
+    assert!(ok["result"].is_object(), "{ok}");
+    let out_of_range = c.call(
+        "source.set_settings",
+        json!({"source": id, "settings": {"size": 5000}}),
+    );
+    assert_eq!(
+        out_of_range["error"]["data"]["kind"], "invalid_params",
+        "{out_of_range}"
+    );
+    let file = c.call(
+        "source.set_settings",
+        json!({"source": id, "settings": {"file": "/etc/hosts"}}),
+    );
+    assert_eq!(file["error"]["data"]["kind"], "forbidden", "{file}");
+    assert!(
+        !file["error"]["message"].as_str().unwrap().contains("/etc"),
+        "{file}"
+    );
+
+    // The font list: `not_ready` until the worker has read it, then the families.
+    let guard = std::time::Instant::now();
+    let fonts = loop {
+        let answer = c.call("text.fonts", json!({}));
+        if answer["error"]["data"]["kind"] == "not_ready" {
+            assert!(guard.elapsed() < LIMIT, "the font list never came");
+            std::thread::yield_now();
+            continue;
+        }
+        break answer;
+    };
+    assert_eq!(
+        fonts["result"]["families"],
+        json!(rbs_text_test::FAMILIES),
+        "{fonts}"
+    );
+
+    drop(host);
+    drop(api);
+}
