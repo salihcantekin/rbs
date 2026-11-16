@@ -5360,6 +5360,12 @@ export component StreamSettings inherits Rectangle {
 // A change restarts the studio with the new canvas; not while recording.
 export component VideoSettings inherits Rectangle {
     property <bool> can-change: Studio.state == 1 && Studio.rec-state == 0 && Studio.st-state == 0 && !Studio.canvas-restarting;
+    // A size outside the frames ("This display") asked about before it is used (owner,
+    // 2026-11-16): its sides and words; `ask-w` is 0 while nothing is asked.
+    property <int> ask-w: 0;
+    property <int> ask-h: 0;
+    property <string> ask-title;
+    property <string> ask-detail;
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
@@ -5389,7 +5395,14 @@ export component VideoSettings inherits Rectangle {
                     portrait: Studio.canvas-portrait;
                     value: Studio.canvas-value;
                     enabled: can-change;
-                    selected(i, w, h) => { Studio.set-canvas-sides(w, h); }
+                    ask-extras: true;
+                    selected(i, w, h) => { root.ask-w = 0; Studio.set-canvas-sides(w, h); }
+                    extra-asked(i, w, h, title, detail) => {
+                        root.ask-w = w;
+                        root.ask-h = h;
+                        root.ask-title = title;
+                        root.ask-detail = detail;
+                    }
                     HorizontalLayout {
                         spacing: Tokens.space-2;
                         NumberField {
@@ -5417,6 +5430,26 @@ export component VideoSettings inherits Rectangle {
                         checked: Studio.canvas-portrait;
                         enabled: can-change;
                         toggled(on) => { Studio.set-canvas-portrait(on); }
+                    }
+                }
+                if root.ask-w > 0: SettingsCallout {
+                    label: @tr("Set the canvas to {}?", root.ask-title);
+                    Text {
+                        text: @tr("Set the canvas to {} ({})? The studio restarts with the new canvas: the picture stops for a moment.", root.ask-title, root.ask-detail);
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    DialogActions {
+                        dense: true;
+                        confirm-text: @tr("Set canvas size");
+                        cancelled => { root.ask-w = 0; }
+                        confirmed => {
+                            let w = root.ask-w;
+                            let h = root.ask-h;
+                            root.ask-w = 0;
+                            Studio.set-canvas-sides(w, h);
+                        }
                     }
                 }
             }
