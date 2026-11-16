@@ -70,6 +70,9 @@ export global Shell {
     in property <int> live-state;
     in property <string> live-duration;
     in property <string> live-outputs;
+    // How long the recording's pause has lasted ("0:01:05"), while it is paused
+    // (ADR-0124); live-duration then holds the time recorded, which stands still.
+    in property <string> rec-paused-for;
     // The recording in progress, or the next one while idle is not what this names:
     // the running file has no picture.
     in property <bool> audio-only;
@@ -222,12 +225,21 @@ export global Shell {
 // the accessible name keeps the whole text.
 component LiveIndicator inherits Rectangle {
     property <bool> active: Shell.live-state != 0 || Shell.live-camera;
+    // A paused recording (ADR-0124): PAUSED in the warning colour, outlined, never in
+    // the live colour; while also live the chip stays live and says the recording is
+    // paused.
+    property <bool> paused: Studio.rec-paused && (Shell.live-state == 2 || Shell.live-state == 3);
+    property <bool> calm: paused && Shell.live-state == 2 && !Shell.live-camera;
     property <string> state-text: Shell.live-state == 1 ? @tr("Live")
+        : Shell.live-state == 2 && paused ? @tr("Recording paused")
         : Shell.live-state == 2 ? (Shell.audio-only ? @tr("Recording audio") : @tr("Recording"))
+        : Shell.live-state == 3 && paused ? @tr("Live, recording paused")
         : Shell.live-state == 3 ? (Shell.audio-only ? @tr("Live and recording audio") : @tr("Live and recording"))
         : @tr("Not live");
     property <string> output-text: Shell.live-state == 1 ? @tr("LIVE")
+        : Shell.live-state == 2 && paused ? @tr("PAUSED")
         : Shell.live-state == 2 ? (Shell.audio-only ? @tr("REC audio") : @tr("REC"))
+        : Shell.live-state == 3 && paused ? @tr("LIVE · PAUSED")
         : Shell.live-state == 3 ? (Shell.audio-only ? @tr("LIVE · REC audio") : @tr("LIVE · REC"))
         : "";
     property <string> short-text: !Shell.live-camera ? output-text
@@ -251,18 +263,23 @@ component LiveIndicator inherits Rectangle {
                 height: Tokens.type-caption-line + Tokens.space-1;
                 width: chip.preferred-width;
                 border-radius: Tokens.radius-sm;
-                background: Theme.state-live;
+                background: calm ? transparent : Theme.state-live;
+                border-width: calm ? Tokens.size-border : 0px;
+                border-color: Theme.state-warning;
                 chip := HorizontalLayout {
                     padding-left: Tokens.space-1;
                     padding-right: Tokens.space-2;
                     spacing: Tokens.space-1 / 2;
                     VerticalLayout {
                         alignment: center;
-                        Icon { name: IconName.dot; ink: Theme.text-on-live; }
+                        Icon {
+                            name: paused && Shell.live-state == 2 ? IconName.pause : IconName.dot;
+                            ink: calm ? Theme.state-warning : Theme.text-on-live;
+                        }
                     }
                     Text {
                         text: short-text;
-                        color: Theme.text-on-live;
+                        color: calm ? Theme.state-warning : Theme.text-on-live;
                         font-size: Tokens.type-caption-size;
                         font-weight: Tokens.type-label-weight;
                         vertical-alignment: center;
@@ -1200,6 +1217,10 @@ component ToolbarCell inherits HorizontalLayout {
     callback open-vertical(length);
     property <bool> go-live: item.id == "stream.toggle" && !item.live;
     property <bool> record: item.id == "record.toggle" && !item.live;
+    // A running recording's Stop gets Pause or Resume as its second half (ADR-0124):
+    // the pair is no wider than Stop recording was.
+    property <bool> pausable: item.id == "record.toggle" && item.live && Studio.rec-pausable;
+    property <bool> split: vertical-menu || pausable;
     // This position keeps the halo's clear zone round its button (ADR-0122 decision 8):
     // the cell pads its sides so that, with the row's `space.2`, nothing lies within
     // `Theme.halo-clear + size.focus-ring` of the button. The zone belongs to the
@@ -1223,7 +1244,7 @@ component ToolbarCell inherits HorizontalLayout {
         checked: item.checked && !item.live;
         clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
     }
-    if (item.kind == 0 || item.kind == 4) && !item.icon-only && !vertical-menu: Button {
+    if (item.kind == 0 || item.kind == 4) && !item.icon-only && !split: Button {
         text: item.title;
         lead: Icons.named(item.icon);
         // Record's dot, and the stop square of a running output, in the live colour.
@@ -1235,8 +1256,13 @@ component ToolbarCell inherits HorizontalLayout {
         halo-room: root.halo-room;
         clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
     }
-    if (item.kind == 0 || item.kind == 4) && !item.icon-only && vertical-menu: SplitButton {
-        text: item.title;
+    if (item.kind == 0 || item.kind == 4) && !item.icon-only && split: SplitButton {
+        text: pausable ? @tr("Stop") : item.title;
+        accessible-name: item.title;
+        menu: vertical-menu;
+        action-icon: !pausable ? IconName.none : Studio.rec-paused ? IconName.play : IconName.pause;
+        action-name: Studio.rec-paused ? @tr("Resume recording") : @tr("Pause recording");
+        action => { Menus.run("record.pause_toggle"); }
         lead: Icons.named(item.icon);
         lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
         lead-signal: (record || item.live) && self.enabled;
@@ -1567,7 +1593,12 @@ component StatusBar inherits Rectangle {
     // The duration and the outputs (file name, server) live here, not in the
     // frame's compact live indicator.
     property <string> outputs: Shell.live-outputs != "" ? " · " + Shell.live-outputs : "";
+    // A paused recording (ADR-0124): how long the pause has lasted and the time
+    // recorded, in the warning colour.
+    property <bool> paused: Studio.rec-paused && (Shell.live-state == 2 || Shell.live-state == 3);
     property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration) + outputs
+        : Shell.live-state == 2 && paused ? @tr("Recording paused {} · {} recorded", Shell.rec-paused-for, Shell.live-duration) + outputs
+        : Shell.live-state == 3 && paused ? @tr("Live {} · recording paused {}", Shell.live-duration, Shell.rec-paused-for) + outputs
         : Shell.live-state == 2 ? (Shell.audio-only ? @tr("Recording audio {}", Shell.live-duration) : @tr("Recording {}", Shell.live-duration)) + outputs
         : Shell.live-state == 3 ? (Shell.audio-only ? @tr("Live and recording audio {}", Shell.live-duration) : @tr("Live and recording {}", Shell.live-duration)) + outputs
         : @tr("Not live · not recording");
@@ -1593,11 +1624,14 @@ component StatusBar inherits Rectangle {
             spacing: Tokens.space-1;
             if on: VerticalLayout {
                 alignment: center;
-                Icon { name: IconName.dot; ink: Theme.state-live; }
+                Icon {
+                    name: paused ? IconName.pause : IconName.dot;
+                    ink: paused ? Theme.state-warning : Theme.state-live;
+                }
             }
             Text {
                 text: text-with-camera;
-                color: on ? Theme.text-primary : Theme.text-secondary;
+                color: paused ? Theme.state-warning : on ? Theme.text-primary : Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
                 vertical-alignment: center;
             }
@@ -1969,34 +2003,35 @@ export component MainWindow inherits Window {
             title: @tr("Output");
             MenuItem { title: Menus.titles[25]; icon: Menus.icons[25]; enabled: Menus.enabled[25]; checkable: true; checked: Menus.checked[25]; activated => { Menus.run("stream.toggle"); } }
             MenuItem { title: Menus.titles[26]; icon: Menus.icons[26]; enabled: Menus.enabled[26]; checkable: true; checked: Menus.checked[26]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[27]; icon: Menus.icons[27]; enabled: Menus.enabled[27]; activated => { Menus.run("record.pause_toggle"); } }
             Menu {
-                title: Menus.titles[27];
-                icon: Menus.icons[27];
-                enabled: Menus.enabled[27];
+                title: Menus.titles[28];
+                icon: Menus.icons[28];
+                enabled: Menus.enabled[28];
                 for c in Menus.choices[15]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[28]; icon: Menus.icons[28]; enabled: Menus.enabled[28]; checkable: true; checked: Menus.checked[28]; activated => { Menus.run("vcam.toggle"); } }
+            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("vcam.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("replay.toggle"); } }
-            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("replay.save"); } }
+            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; checkable: true; checked: Menus.checked[30]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("replay.save"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("marker.add"); } }
+            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[32];
-                icon: Menus.icons[32];
-                enabled: Menus.enabled[32];
+                title: Menus.titles[33];
+                icon: Menus.icons[33];
+                enabled: Menus.enabled[33];
                 for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -2348,34 +2383,35 @@ export component FloatWindow inherits Window {
             title: @tr("Output");
             MenuItem { title: Menus.titles[25]; icon: Menus.icons[25]; enabled: Menus.enabled[25]; checkable: true; checked: Menus.checked[25]; activated => { Menus.run("stream.toggle"); } }
             MenuItem { title: Menus.titles[26]; icon: Menus.icons[26]; enabled: Menus.enabled[26]; checkable: true; checked: Menus.checked[26]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[27]; icon: Menus.icons[27]; enabled: Menus.enabled[27]; activated => { Menus.run("record.pause_toggle"); } }
             Menu {
-                title: Menus.titles[27];
-                icon: Menus.icons[27];
-                enabled: Menus.enabled[27];
+                title: Menus.titles[28];
+                icon: Menus.icons[28];
+                enabled: Menus.enabled[28];
                 for c in Menus.choices[15]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[28]; icon: Menus.icons[28]; enabled: Menus.enabled[28]; checkable: true; checked: Menus.checked[28]; activated => { Menus.run("vcam.toggle"); } }
+            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("vcam.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("replay.toggle"); } }
-            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("replay.save"); } }
+            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; checkable: true; checked: Menus.checked[30]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("replay.save"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("marker.add"); } }
+            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[32];
-                icon: Menus.icons[32];
-                enabled: Menus.enabled[32];
+                title: Menus.titles[33];
+                icon: Menus.icons[33];
+                enabled: Menus.enabled[33];
                 for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -2624,34 +2660,35 @@ export component SettingsWindow inherits Window {
             title: @tr("Output");
             MenuItem { title: Menus.titles[25]; icon: Menus.icons[25]; enabled: Menus.enabled[25]; checkable: true; checked: Menus.checked[25]; activated => { Menus.run("stream.toggle"); } }
             MenuItem { title: Menus.titles[26]; icon: Menus.icons[26]; enabled: Menus.enabled[26]; checkable: true; checked: Menus.checked[26]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[27]; icon: Menus.icons[27]; enabled: Menus.enabled[27]; activated => { Menus.run("record.pause_toggle"); } }
             Menu {
-                title: Menus.titles[27];
-                icon: Menus.icons[27];
-                enabled: Menus.enabled[27];
+                title: Menus.titles[28];
+                icon: Menus.icons[28];
+                enabled: Menus.enabled[28];
                 for c in Menus.choices[15]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[28]; icon: Menus.icons[28]; enabled: Menus.enabled[28]; checkable: true; checked: Menus.checked[28]; activated => { Menus.run("vcam.toggle"); } }
+            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("vcam.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("replay.toggle"); } }
-            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("replay.save"); } }
+            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; checkable: true; checked: Menus.checked[30]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("replay.save"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("marker.add"); } }
+            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[32];
-                icon: Menus.icons[32];
-                enabled: Menus.enabled[32];
+                title: Menus.titles[33];
+                icon: Menus.icons[33];
+                enabled: Menus.enabled[33];
                 for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar

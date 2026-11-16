@@ -172,6 +172,8 @@ export enum IconName {
     dot,
     ring,
     stop,
+    pause,
+    play,
     plus,
     pin,
     panel-left,
@@ -263,7 +265,7 @@ export component Icon inherits Rectangle {
     in property <IconName> name;
     in property <color> ink: Theme.text-primary;
     // Filled shapes; the others are drawn as lines.
-    property <bool> filled: name == IconName.dot || name == IconName.stop || name == IconName.hourglass;
+    property <bool> filled: name == IconName.dot || name == IconName.stop || name == IconName.pause || name == IconName.play || name == IconName.hourglass;
     property <string> commands:
         name == IconName.more ? "M 3.33 8 M 2.67 8 C 2.67 8.12 2.7 8.23 2.76 8.33 C 2.81 8.43 2.9 8.52 3 8.58 C 3.1 8.64 3.22 8.67 3.33 8.67 C 3.45 8.67 3.57 8.64 3.67 8.58 C 3.77 8.52 3.85 8.43 3.91 8.33 C 3.97 8.23 4 8.12 4 8 C 4 7.88 3.97 7.77 3.91 7.67 C 3.85 7.57 3.77 7.48 3.67 7.42 C 3.57 7.36 3.45 7.33 3.33 7.33 C 3.22 7.33 3.1 7.36 3 7.42 C 2.9 7.48 2.81 7.57 2.76 7.67 C 2.7 7.77 2.67 7.88 2.67 8 M 8 8 M 7.33 8 C 7.33 8.12 7.36 8.23 7.42 8.33 C 7.48 8.43 7.57 8.52 7.67 8.58 C 7.77 8.64 7.88 8.67 8 8.67 C 8.12 8.67 8.23 8.64 8.33 8.58 C 8.43 8.52 8.52 8.43 8.58 8.33 C 8.64 8.23 8.67 8.12 8.67 8 C 8.67 7.88 8.64 7.77 8.58 7.67 C 8.52 7.57 8.43 7.48 8.33 7.42 C 8.23 7.36 8.12 7.33 8 7.33 C 7.88 7.33 7.77 7.36 7.67 7.42 C 7.57 7.48 7.48 7.57 7.42 7.67 C 7.36 7.77 7.33 7.88 7.33 8 M 12.67 8 M 12 8 C 12 8.12 12.03 8.23 12.09 8.33 C 12.15 8.43 12.23 8.52 12.33 8.58 C 12.43 8.64 12.55 8.67 12.67 8.67 C 12.78 8.67 12.9 8.64 13 8.58 C 13.1 8.52 13.19 8.43 13.24 8.33 C 13.3 8.23 13.33 8.12 13.33 8 C 13.33 7.88 13.3 7.77 13.24 7.67 C 13.19 7.57 13.1 7.48 13 7.42 C 12.9 7.36 12.78 7.33 12.67 7.33 C 12.55 7.33 12.43 7.36 12.33 7.42 C 12.23 7.48 12.15 7.57 12.09 7.67 C 12.03 7.77 12 7.88 12 8"
         : name == IconName.chevron-down ? "M 4 6 L 8 10 L 12 6"
@@ -275,6 +277,8 @@ export component Icon inherits Rectangle {
         : name == IconName.dot ? "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"
         : name == IconName.ring ? "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"
         : name == IconName.stop ? "M 4.5 4.5 L 11.5 4.5 L 11.5 11.5 L 4.5 11.5 Z"
+        : name == IconName.pause ? "M 4.5 3.5 L 7 3.5 L 7 12.5 L 4.5 12.5 Z M 9 3.5 L 11.5 3.5 L 11.5 12.5 L 9 12.5 Z"
+        : name == IconName.play ? "M 5 3.5 L 12.5 8 L 5 12.5 Z"
         : name == IconName.plus ? "M 8 3.33 L 8 12.67 M 3.33 8 L 12.67 8"
         : name == IconName.pin ? "M 10 3 L 7.33 5.67 L 4.67 6.67 L 3.67 7.67 L 8.33 12.33 L 9.33 11.33 L 10.33 8.67 L 13 6 M 6 10 L 3 13 M 9.67 2.67 L 13.33 6.33"
         : name == IconName.panel-left ? "M 2.67 2.67 M 2.67 4 C 2.67 3.77 2.73 3.54 2.85 3.33 C 2.96 3.13 3.13 2.96 3.33 2.85 C 3.54 2.73 3.77 2.67 4 2.67 L 12 2.67 C 12.23 2.67 12.46 2.73 12.67 2.85 C 12.87 2.96 13.04 3.13 13.15 3.33 C 13.27 3.54 13.33 3.77 13.33 4 L 13.33 12 C 13.33 12.23 13.27 12.46 13.15 12.67 C 13.04 12.87 12.87 13.04 12.67 13.15 C 12.46 13.27 12.23 13.33 12 13.33 L 4 13.33 C 3.77 13.33 3.54 13.27 3.33 13.15 C 3.13 13.04 2.96 12.87 2.85 12.67 C 2.73 12.46 2.67 12.23 2.67 12 Z M 6 2.67 L 6 13.33"
@@ -387,6 +391,8 @@ export global Icons {
         : name == "dot" ? IconName.dot
         : name == "ring" ? IconName.ring
         : name == "stop" ? IconName.stop
+        : name == "pause" ? IconName.pause
+        : name == "play" ? IconName.play
         : name == "plus" ? IconName.plus
         : name == "pin" ? IconName.pin
         : name == "panel-left" ? IconName.panel-left
@@ -800,9 +806,21 @@ export component SplitButton inherits Rectangle {
     in property <string> menu-text;
     // What the mark means, for screen readers (such as "The vertical canvas is on air").
     in property <string> menu-description;
+    // Whether the ▾ part shows.
+    in property <bool> menu: true;
+    // The command part's accessible name, when its text is a short form of it (Stop
+    // for Stop recording).
+    in property <string> accessible-name: text;
+    // An optional second command between the command and the ▾ part, drawn as its
+    // icon alone (ADR-0124: Pause or Resume beside Stop): its icon, and its accessible
+    // name and tooltip. No part while `action-icon` is none.
+    in property <IconName> action-icon: IconName.none;
+    in property <string> action-name;
     callback clicked();
     // The ▾ part was activated, at this window x (its left edge).
     callback open-menu(length);
+    // The second command part was activated.
+    callback action();
     // Keyboard focus on the command or on the ▾ part, as Tab gives it (its ring shows).
     public function focus-command() { main-focus.focus(); }
     public function focus-menu() { part-focus.focus(); }
@@ -831,7 +849,8 @@ export component SplitButton inherits Rectangle {
     // background. Everything outside the shape is off while either focus ring shows,
     // since the rings sit outside the shape; inside it the gloss, the rim and the inner
     // glow are off then. All off while the command is disabled.
-    property <bool> ringed: main-focus.ring || part-focus.ring;
+    property <bool> acted: action-icon != IconName.none;
+    property <bool> ringed: main-focus.ring || part-focus.ring || act-focus.ring;
     property <bool> fx-in: Theme.effects-on && root.enabled;
     property <bool> fx: fx-in && !ringed;
     property <color> fx-key: kind == "primary" ? Theme.effects-key-primary
@@ -916,6 +935,11 @@ export component SplitButton inherits Rectangle {
         width: part.width;
         background: part-touch.pressed ? root.face-pressed : root.face-hover;
     }
+    if root.fx-inner && (act-touch.pressed || act-touch.has-hover): Rectangle {
+        x: act.x;
+        width: act.width;
+        background: act-touch.pressed ? root.face-pressed : root.face-hover;
+    }
     if root.fx-inner: Rectangle {
         x: shape.border-width;
         y: shape.border-width;
@@ -935,7 +959,7 @@ export component SplitButton inherits Rectangle {
                 : main-touch.pressed ? root.face-pressed
                 : main-touch.has-hover ? root.face-hover : transparent;
             accessible-role: button;
-            accessible-label: root.text;
+            accessible-label: root.accessible-name;
             accessible-checked: root.checked;
             accessible-enabled: root.enabled;
             accessible-action-default => { if root.enabled { root.clicked(); } }
@@ -980,18 +1004,67 @@ export component SplitButton inherits Rectangle {
             }
         }
         Rectangle {
-            width: Tokens.size-border;
+            width: root.acted ? Tokens.size-border : 0px;
+            background: kind == "primary" && enabled ? Theme.accent-hover : Theme.border-subtle;
+        }
+        // The second command: its icon alone, square with the button's height, so the
+        // pair is hardly wider than one button. It follows the command's enabled state.
+        act := Rectangle {
+            width: root.acted ? root.height : 0px;
+            background: !root.acted ? transparent
+                : !root.enabled ? Theme.surface-base
+                : root.fx-inner ? transparent
+                : act-touch.pressed ? root.face-pressed
+                : act-touch.has-hover ? root.face-hover : transparent;
+            // The accessible button exists only with the part (a role is a constant).
+            if root.acted: Rectangle {
+                accessible-role: button;
+                accessible-label: root.action-name;
+                accessible-enabled: root.enabled;
+                accessible-action-default => { if root.enabled { root.action(); } }
+            }
+            property <bool> tip-wanted: root.acted && (act-touch.has-hover || act-focus.keyed);
+            changed tip-wanted => {
+                if root.action-name == "" { return; }
+                if self.tip-wanted {
+                    root.tip-owner = Overlays.tip-enter(root.action-name, self.absolute-position.x, self.absolute-position.y, self.width, self.height, act-focus.keyed && !act-touch.has-hover);
+                } else {
+                    Overlays.tip-leave(root.tip-owner);
+                }
+            }
+            if root.acted: Icon {
+                name: root.action-icon;
+                ink: root.ink;
+            }
+            act-focus := RingFocus {
+                focus-on-click: false;
+                enabled: root.acted && root.enabled;
+                key-pressed(e) => {
+                    if e.text == Key.Return || e.text == " " { root.action(); return accept; }
+                    if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
+                    reject
+                }
+            }
+            act-touch := TouchArea {
+                enabled: root.acted && root.enabled;
+                clicked => { act-focus.focus-pointer(); root.action(); }
+            }
+        }
+        Rectangle {
+            width: root.menu ? Tokens.size-border : 0px;
             background: kind == "primary" && enabled ? Theme.accent-hover : Theme.border-subtle;
         }
         part := Rectangle {
-            min-width: part-row.preferred-width + 2 * Tokens.space-1;
+            width: root.menu ? part-row.preferred-width + 2 * Tokens.space-1 : 0px;
             background: root.fx-inner ? transparent : part-touch.pressed ? root.face-pressed : part-touch.has-hover ? root.face-hover : transparent;
-            accessible-role: button;
-            accessible-label: root.menu-name;
-            accessible-description: root.menu-description;
-            accessible-expandable: true;
-            accessible-action-default => { root.open-menu(self.absolute-position.x); }
-            property <bool> tip-wanted: part-touch.has-hover || part-focus.keyed;
+            if root.menu: Rectangle {
+                accessible-role: button;
+                accessible-label: root.menu-name;
+                accessible-description: root.menu-description;
+                accessible-expandable: true;
+                accessible-action-default => { root.open-menu(part.absolute-position.x); }
+            }
+            property <bool> tip-wanted: root.menu && (part-touch.has-hover || part-focus.keyed);
             changed tip-wanted => {
                 if root.menu-name == "" { return; }
                 if self.tip-wanted {
@@ -1001,6 +1074,7 @@ export component SplitButton inherits Rectangle {
                 }
             }
             part-row := HorizontalLayout {
+                visible: root.menu;
                 alignment: center;
                 spacing: Tokens.space-1;
                 if root.menu-text != "": Text {
@@ -1017,6 +1091,7 @@ export component SplitButton inherits Rectangle {
             }
             part-focus := RingFocus {
                 focus-on-click: false;
+                enabled: root.menu;
                 key-pressed(e) => {
                     if e.text == Key.Return || e.text == " " { root.open-menu(part.absolute-position.x); return accept; }
                     if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
@@ -1024,6 +1099,7 @@ export component SplitButton inherits Rectangle {
                 }
             }
             part-touch := TouchArea {
+                enabled: root.menu;
                 clicked => { part-focus.focus-pointer(); root.open-menu(part.absolute-position.x); }
             }
         }
@@ -1035,6 +1111,14 @@ export component SplitButton inherits Rectangle {
         width: main.width + 2 * Tokens.size-focus-ring;
         height: root.height + 2 * Tokens.size-focus-ring;
         show: main-focus.ring;
+        radius: Tokens.radius-button;
+    }
+    FocusRing {
+        x: act.x - Tokens.size-focus-ring;
+        y: -Tokens.size-focus-ring;
+        width: act.width + 2 * Tokens.size-focus-ring;
+        height: root.height + 2 * Tokens.size-focus-ring;
+        show: act-focus.ring;
         radius: Tokens.radius-button;
     }
     FocusRing {

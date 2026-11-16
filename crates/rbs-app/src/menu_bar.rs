@@ -734,6 +734,15 @@ impl CommandState for Shown<'_> {
                 Ok(())
             }
             "replay.toggle" => self.running(),
+            "record.pause_toggle" => {
+                self.running()?;
+                let vertical = matches!(s.vertical_rec, VerticalOut::On);
+                if s.rec_state == rec_state::RECORDING || vertical {
+                    Ok(())
+                } else {
+                    Err("Pause works while a recording runs.".to_owned())
+                }
+            }
             "marker.add" => {
                 self.running()?;
                 let vertical = matches!(s.vertical_rec, VerticalOut::On);
@@ -1017,6 +1026,9 @@ impl CommandState for Shown<'_> {
                 }
                 .to_owned(),
             );
+        }
+        if id.base() == "record.pause_toggle" && self.studio.record_paused() {
+            return Some("Resume recording".to_owned());
         }
         if id.base() == "canvas.vertical_size"
             && let Some((w, h)) = size_of(id)
@@ -1660,6 +1672,8 @@ pub enum Run {
     SaveReplay,
     /// A marker in every running recording (ADR-0089 decision 1).
     AddMarker,
+    /// Pause the running recordings, or resume them (ADR-0124).
+    PauseRecording,
 }
 
 /// The output kind an `output.with_vertical` id names.
@@ -1910,6 +1924,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "replay.toggle" => Run::Replay(!on),
         "replay.save" => Run::SaveReplay,
         "marker.add" => Run::AddMarker,
+        "record.pause_toggle" => Run::PauseRecording,
         "canvas.add_vertical" => Run::AddVertical,
         "canvas.vertical_size" => {
             let (w, h) = size_of(&id)?;
