@@ -184,11 +184,15 @@ impl MediaSoundNode {
             // Silence is an underrun only while the record that applies plays and the
             // worker has already played sound for it: a pause, and the gap between a
             // command and the new generation's first block, are not underruns.
-            let from = self.shared.sound_from.load(Ordering::Acquire);
+            // The pair is read generation, start, generation: a change in between
+            // (the worker moving to a new generation) counts nothing.
             let generation = self.shared.sound_gen.load(Ordering::Acquire);
-            let playing = records
-                .at(block_time)
-                .is_some_and(|r| !r.paused && r.generation == generation);
+            let from = self.shared.sound_from.load(Ordering::Acquire);
+            let steady = self.shared.sound_gen.load(Ordering::Acquire) == generation;
+            let playing = steady
+                && records
+                    .at(block_time)
+                    .is_some_and(|r| !r.paused && r.generation == generation);
             if playing && from != 0 && block_time.as_nanos() >= from - 1 {
                 stats.sound_underruns.fetch_add(1, Ordering::Relaxed);
             }

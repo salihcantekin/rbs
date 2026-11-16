@@ -317,3 +317,90 @@ fn a_command_does_not_allocate_in_either_node() {
         }
     }
 }
+
+#[test]
+fn play_within_one_latency_of_pause_doubles_nothing() {
+    let mut rig = rig(false);
+    rig.run(0, 210);
+    // Both at 200 ms, instant 250 ms: the pause stops at media 100 ms, the play goes
+    // on from there one lead after the instant (400 ms).
+    rig.pair.control.pause();
+    rig.pair.control.play().unwrap();
+    rig.run(210, 700);
+    assert!(all(rig.block(240), 0.25));
+    assert!(rig.blocks.range(250..400).next().is_none());
+    assert!(all(rig.block(400), 0.5));
+    assert!(all(rig.block(500), 0.75));
+    assert!(!rig.blocks.contains_key(&600));
+    assert!(rig.blocks.range(250..).all(|(_, b)| !b.contains(&0.25)));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn seek_then_play_while_paused_plays_from_the_seek() {
+    let mut rig = rig(false);
+    rig.run(0, 210);
+    rig.pair.control.pause();
+    rig.run(210, 310);
+    // Both at 300 ms, instant 350 ms: play from media 200 ms at 500 ms.
+    rig.pair.control.seek(Duration::from_millis(200)).unwrap();
+    rig.pair.control.play().unwrap();
+    rig.run(310, 700);
+    assert!(rig.blocks.range(250..500).next().is_none());
+    assert!(all(rig.block(500), 0.75));
+    assert!(all(rig.block(590), 0.75));
+    assert!(!rig.blocks.contains_key(&600));
+    assert_eq!(rig.marks[&500], Some(3));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn pause_then_seek_within_one_latency_holds_the_new_picture() {
+    let mut rig = rig(false);
+    rig.run(0, 210);
+    rig.pair.control.pause();
+    rig.pair.control.seek(Duration::ZERO).unwrap();
+    rig.run(210, 500);
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+    assert_eq!(rig.pair.control.cursor(), Duration::ZERO);
+    assert!(rig.marks.range(250..500).all(|(_, m)| *m == Some(1)));
+    assert!(rig.blocks.range(250..).next().is_none());
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn restart_after_the_end_hold_reaches_the_picture_node() {
+    let mut rig = rig(false);
+    for t in (0..710).step_by(10) {
+        rig.run(t, t + 10);
+        rig.pair.picture.service();
+    }
+    assert_eq!(rig.pair.picture.phase(), rbs_nodes::MediaPhase::Hold);
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.pair.control.restart().unwrap();
+    rig.run(710, 1_000);
+    // After the hold no picture is current, so the new run's first picture is on air
+    // at once (the cued rule); motion and sound start one lead later (850 ms).
+    assert_eq!(rig.marks[&710], Some(1));
+    assert_eq!(rig.marks[&940], Some(1));
+    assert_eq!(rig.marks[&950], Some(2));
+    assert!(all(rig.block(850), 0.25));
+}
+
+#[test]
+fn pause_in_the_second_loop_pass_stops_at_that_pass_media_time() {
+    let mut rig = rig(true);
+    rig.run(0, 430);
+    // At 420 ms, instant 470 ms: the second pass began at 450 ms, so media 20 ms.
+    rig.pair.control.pause();
+    rig.run(430, 610);
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(20));
+    // Play at 600 ms: media 20 ms at 800 ms.
+    rig.pair.control.play().unwrap();
+    rig.run(610, 1_000);
+    assert!(rig.blocks.range(470..800).next().is_none());
+    assert!(all(rig.block(800), 0.25));
+    assert!(all(rig.block(870), 0.25));
+    assert!(all(rig.block(880), 0.5));
+    assert_eq!(rig.underruns(), 0);
+}

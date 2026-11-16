@@ -169,6 +169,8 @@ pub(crate) struct Shared {
     pub(crate) handoff_ready: AtomicBool,
     /// Media cursor in nanoseconds: the picture last shown, kept across Standby.
     cursor: AtomicU64,
+    /// Where the worker's pause stopped, in nanoseconds plus one; 0 while playing.
+    paused_cursor: AtomicU64,
     /// Playback. Locked on the control path only.
     player: Mutex<player::Player>,
 }
@@ -200,6 +202,7 @@ impl Shared {
             handoff: Mutex::new(Handoff::default()),
             handoff_ready: AtomicBool::new(false),
             cursor: AtomicU64::new(0),
+            paused_cursor: AtomicU64::new(0),
             player: Mutex::new(player),
         })
     }
@@ -212,8 +215,22 @@ impl Shared {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The cursor: where a pause stopped while paused, else the picture shown last.
     pub(crate) fn cursor(&self) -> Duration {
-        Duration::from_nanos(self.cursor.load(Ordering::Relaxed))
+        match self.paused_cursor.load(Ordering::Acquire) {
+            0 => Duration::from_nanos(self.cursor.load(Ordering::Relaxed)),
+            n => Duration::from_nanos(n - 1),
+        }
+    }
+
+    /// Records where a pause stopped (`None` when playing again). Worker only.
+    pub(crate) fn set_paused_cursor(&self, at: Option<Duration>) {
+        let nanos = at.map_or(0, |d| {
+            u64::try_from(d.as_nanos())
+                .unwrap_or(u64::MAX - 1)
+                .saturating_add(1)
+        });
+        self.paused_cursor.store(nanos, Ordering::Release);
     }
 
     pub(crate) fn set_cursor(&self, cursor: Duration) {

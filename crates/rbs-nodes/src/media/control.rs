@@ -15,6 +15,7 @@ use rbs_core::time::Timestamp;
 
 use super::Shared;
 use super::picture::{MediaNodeError, MediaPhase};
+use super::player::Player;
 
 /// Records kept in the handle.
 pub const RECORDS: usize = 4;
@@ -69,7 +70,7 @@ impl Records {
         list: [None; RECORDS],
     };
 
-    fn get(&self, generation: u32) -> Option<&Record> {
+    pub(crate) fn get(&self, generation: u32) -> Option<&Record> {
         self.list
             .iter()
             .flatten()
@@ -270,62 +271,81 @@ impl MediaControl {
     /// Plays from the cursor. From the end hold it restarts. Does nothing while
     /// playing.
     pub fn play(&self) -> Result<(), MediaNodeError> {
-        match self.state() {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        match Self::state_of(&shared, &player) {
             PlayState::Playing => Ok(()),
-            PlayState::Ended => self.restart(),
+            PlayState::Ended => Self::start_at(&shared, &mut player, Duration::ZERO, false),
             _ => {
-                self.command(false, None);
+                Self::command(&shared, &player, false, None);
                 Ok(())
             }
         }
     }
 
     /// Stops at the media time of the command's instant. Asleep, the source wakes
-    /// paused. Does nothing when paused or ended.
+    /// paused (with `restart_when_shown` false). Does nothing when paused or ended.
     pub fn pause(&self) {
-        if matches!(self.state(), PlayState::Playing | PlayState::Standby) {
-            self.command(true, None);
+        let shared = Arc::clone(&self.shared);
+        let player = shared.player();
+        if matches!(
+            Self::state_of(&shared, &player),
+            PlayState::Playing | PlayState::Standby
+        ) {
+            Self::command(&shared, &player, true, None);
         }
     }
 
     /// Moves the cursor to `position` (clamped to the stated duration). While paused,
     /// or from the end hold, the picture at the new position is shown and held.
     pub fn seek(&self, position: Duration) -> Result<(), MediaNodeError> {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
         let position = match self.duration() {
             Some(duration) => position.min(duration),
             None => position,
         };
-        let state = self.state();
-        let paused = matches!(state, PlayState::Paused | PlayState::Ended)
-            || self.shared.controls.newest().paused;
-        if state == PlayState::Ended {
-            return self.start_at(position, true);
+        match Self::state_of(&shared, &player) {
+            PlayState::Ended => Self::start_at(&shared, &mut player, position, true),
+            state => {
+                let paused = state == PlayState::Paused || shared.controls.newest().paused;
+                Self::command(&shared, &player, paused, Some(position));
+                Ok(())
+            }
         }
-        self.command(paused, Some(position));
-        Ok(())
     }
 
     /// Plays from the start of the range (0 until the play range is built).
     pub fn restart(&self) -> Result<(), MediaNodeError> {
-        if self.state() == PlayState::Ended {
-            return self.start_at(Duration::ZERO, false);
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        if Self::state_of(&shared, &player) == PlayState::Ended {
+            return Self::start_at(&shared, &mut player, Duration::ZERO, false);
         }
-        self.command(false, Some(Duration::ZERO));
+        Self::command(&shared, &player, false, Some(Duration::ZERO));
         Ok(())
     }
 
     /// The play state now.
     pub fn state(&self) -> PlayState {
         let player = self.shared.player();
-        let paused = self.shared.controls.newest().paused;
+        Self::state_of(&self.shared, &player)
+    }
+
+    fn state_of(shared: &Shared, player: &Player) -> PlayState {
+        let paused = shared.controls.newest().paused;
         if player.progress.failed.load(Ordering::Acquire) {
             return PlayState::Unavailable;
         }
         match player.phase {
+            MediaPhase::Standby if player.ended_stored => PlayState::Ended,
             MediaPhase::Standby if paused => PlayState::Paused,
             MediaPhase::Standby => PlayState::Standby,
             MediaPhase::Hold => PlayState::Ended,
             MediaPhase::Playing if player.ended.load(Ordering::Acquire) => PlayState::Ended,
+            // Woken from a stored end with `restart_when_shown` false: the last
+            // picture, still ended.
+            MediaPhase::Playing if player.ended_stored => PlayState::Ended,
             MediaPhase::Playing if paused => PlayState::Paused,
             MediaPhase::Playing => PlayState::Playing,
         }
@@ -345,18 +365,17 @@ impl MediaControl {
     }
 
     /// Writes one record whose instant is now plus the render period, on the audio
-    /// block grid, and wakes the worker.
-    fn command(&self, paused: bool, position: Option<Duration>) {
-        let player = self.shared.player();
-        let instant = self.instant(player.clock().now());
-        let generation = self.shared.controls.newest().generation.wrapping_add(1);
+    /// block grid, and wakes the worker. Under the player lock: one writer.
+    fn command(shared: &Shared, player: &Player, paused: bool, position: Option<Duration>) {
+        let instant = Self::instant(shared, player.clock().now());
+        let generation = shared.controls.newest().generation.wrapping_add(1);
         if let Some(position) = position {
             // Asleep, the next start begins here.
             if player.phase == MediaPhase::Standby {
-                self.shared.set_cursor(position);
+                shared.set_cursor(position);
             }
         }
-        self.shared.controls.write(Record {
+        shared.controls.write(Record {
             generation,
             instant,
             paused,
@@ -365,11 +384,15 @@ impl MediaControl {
         player.unpark();
     }
 
-    /// Starts a worker at `position` after the end hold, paused or playing.
-    fn start_at(&self, position: Duration, paused: bool) -> Result<(), MediaNodeError> {
-        let shared = Arc::clone(&self.shared);
-        let mut player = shared.player();
-        let instant = self.instant(player.clock().now());
+    /// Leaves the end hold at `position`, paused or playing: starts a worker when a
+    /// node is prepared, otherwise stores the state for the next start.
+    fn start_at(
+        shared: &Arc<Shared>,
+        player: &mut Player,
+        position: Duration,
+        paused: bool,
+    ) -> Result<(), MediaNodeError> {
+        let instant = Self::instant(shared, player.clock().now());
         let generation = shared.controls.newest().generation.wrapping_add(1);
         shared.controls.write(Record {
             generation,
@@ -378,19 +401,24 @@ impl MediaControl {
             position: None,
         });
         shared.set_cursor(position);
-        player.start(&shared)
+        player.ended_stored = false;
+        if player.in_use() {
+            player.start(shared)
+        } else {
+            Ok(())
+        }
     }
 
-    fn instant(&self, now: Timestamp) -> Timestamp {
-        let period = match self.shared.controls.render_period.load(Ordering::Relaxed) {
+    fn instant(shared: &Shared, now: Timestamp) -> Timestamp {
+        let period = match shared.controls.render_period.load(Ordering::Relaxed) {
             0 => DEFAULT_RENDER_PERIOD,
             n => Duration::from_nanos(n),
         };
         let t = now + period;
-        let Some(grid) = self.shared.grid() else {
+        let Some(grid) = shared.grid() else {
             return t;
         };
-        let block = self.shared.block_period.as_nanos().max(1);
+        let block = shared.block_period.as_nanos().max(1);
         let (t, g) = (u128::from(t.as_nanos()), u128::from(grid.as_nanos()));
         if t <= g {
             return Timestamp::from_nanos(u64::try_from(t).unwrap_or(u64::MAX));

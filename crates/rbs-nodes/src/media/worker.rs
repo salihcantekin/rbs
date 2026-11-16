@@ -170,6 +170,7 @@ pub(crate) fn run(job: Job) {
         paused: command.paused,
         paused_at: command.paused.then_some(job.cursor),
         offset: Duration::ZERO,
+        prev_offset: Duration::ZERO,
         pictures,
         primed: Some(first),
         pictures_tx,
@@ -181,6 +182,8 @@ pub(crate) fn run(job: Job) {
         job: &job,
         decoder: &mut *decoder,
     };
+    job.shared
+        .set_paused_cursor(run.paused.then_some(job.cursor));
     if run.paused && run.next_picture().is_err() {
         job.progress.failed.store(true, Ordering::Release);
         return;
@@ -207,6 +210,8 @@ struct Run<'a> {
     paused_at: Option<Duration>,
     /// Media time added by finished loop passes.
     offset: Duration,
+    /// `offset` before the last loop boundary.
+    prev_offset: Duration,
     pictures: PictureStream,
     primed: Option<PictureSample>,
     pictures_tx: rtrb::Producer<Pending>,
@@ -235,16 +240,42 @@ impl Run<'_> {
 
     /// Media time shown at master time `instant` in this run.
     fn media_at(&self, instant: Timestamp) -> Duration {
-        let nanos = instant.as_nanos() as i128 - self.master(Duration::ZERO);
+        let at = instant.as_nanos() as i128;
+        let mut nanos = at - self.master(Duration::ZERO);
+        if nanos < 0 && !self.offset.is_zero() {
+            // The worker decodes one lead ahead, so it may already have started the
+            // next pass: the instant is still in the previous one.
+            nanos = at - (self.base() + self.prev_offset.as_nanos() as i128);
+        }
         let media = Duration::from_nanos(u64::try_from(nanos.max(0)).unwrap_or(0));
-        let media = media.max(self.cursor);
-        // Past the end of a pass the next pass has started (with `loop`).
-        let pass = self.pass_length();
-        if !pass.is_zero() && media > pass {
-            Duration::from_nanos(u64::try_from(media.as_nanos() % pass.as_nanos()).unwrap_or(0))
+        if self.offset.is_zero() {
+            // Before the anchor of the first pass the cursor is shown.
+            media.max(self.cursor)
         } else {
             media
         }
+    }
+
+    /// Follows every control record newer than the one applied, in order, so a
+    /// command the worker has not read yet is never lost (ADR-0108 decision 10).
+    fn apply_new(&mut self) -> Result<bool, DecodeError> {
+        let records = self.job.shared.controls.read();
+        let Some(newest) = records.newest().map(|r| r.generation) else {
+            return Ok(false);
+        };
+        let mut applied = false;
+        let mut generation = self.generation;
+        while generation != newest {
+            generation = generation.wrapping_add(1);
+            // A record that already left the array (more than 4 commands in one pass)
+            // is skipped; the ones after it still apply.
+            if let Some(record) = records.get(generation).copied() {
+                self.apply(record)?;
+                applied = true;
+            }
+        }
+        self.generation = newest;
+        Ok(applied)
     }
 
     /// Follows a new control record (ADR-0108 decision 10).
@@ -256,6 +287,7 @@ impl Run<'_> {
                 if !self.paused {
                     let at = self.media_at(record.instant);
                     job.shared.set_cursor(at);
+                    job.shared.set_paused_cursor(Some(at));
                     self.paused_at = Some(at);
                     self.paused = true;
                 }
@@ -265,6 +297,7 @@ impl Run<'_> {
                 self.paused = true;
                 self.paused_at = Some(position);
                 job.shared.set_cursor(position);
+                job.shared.set_paused_cursor(Some(position));
                 self.restart_at(position, record.instant)?;
                 // The picture at the new position, shown from the instant and held.
                 self.next_picture()
@@ -276,6 +309,7 @@ impl Run<'_> {
                     .unwrap_or_else(|| job.shared.cursor());
                 self.paused = false;
                 self.paused_at = None;
+                job.shared.set_paused_cursor(None);
                 // The new anchor is one lead after the instant: time to seek and
                 // decode, and the same whenever the worker reads the record.
                 let anchor = record.instant + LEAD;
@@ -291,6 +325,7 @@ impl Run<'_> {
         self.anchor = anchor;
         self.cursor = position;
         self.offset = Duration::ZERO;
+        self.prev_offset = Duration::ZERO;
         self.pictures = PictureStream::new(position);
         self.primed = None;
         self.unseen.clear();
@@ -314,10 +349,9 @@ impl Run<'_> {
             let mut busy = false;
 
             // Commands.
-            let command = job.shared.controls.newest();
-            if command.generation != self.generation {
-                busy = true;
-                if self.apply(command).is_err() {
+            match self.apply_new() {
+                Ok(applied) => busy |= applied,
+                Err(_) => {
                     job.progress.failed.store(true, Ordering::Release);
                     return;
                 }
@@ -325,6 +359,18 @@ impl Run<'_> {
             if self.paused {
                 if !(job.shared.sound_attached.load(Ordering::Acquire)) {
                     self.sound.inlet = None;
+                }
+                // A picture decoded while the picture node was away (a seek while
+                // paused) is queued once it is back.
+                if job.shared.picture_attached.load(Ordering::Acquire) && !self.unseen.is_empty() {
+                    busy = true;
+                    let unseen = std::mem::take(&mut self.unseen);
+                    for (sample, start, master) in &unseen {
+                        if self.queue_picture(sample, *start, *master).is_err() {
+                            job.progress.failed.store(true, Ordering::Release);
+                            return;
+                        }
+                    }
                 }
                 job.progress
                     .settled_at
@@ -402,6 +448,7 @@ impl Run<'_> {
                     return;
                 }
                 // The next pass starts where this one's range ended.
+                self.prev_offset = self.offset;
                 self.offset = self.offset.saturating_add(pass);
                 self.pictures.restart();
                 self.sound.restart();
@@ -473,7 +520,7 @@ impl Run<'_> {
         // Nobody shows pictures: keep the pass timing and the latest picture, copy and
         // queue nothing.
         if !self.job.shared.picture_attached.load(Ordering::Acquire) {
-            let master = self.master(start);
+            let master = self.master(start).max(self.anchor.as_nanos() as i128);
             let now = self.job.clock.now().as_nanos() as i128;
             self.unseen.push_back((sample, start, master));
             // Keep the latest picture that is due and the ones after it.
@@ -485,7 +532,10 @@ impl Run<'_> {
             return Ok(());
         }
         self.unseen.clear();
-        self.queue_picture(&sample, start, self.master(start))
+        // A picture that starts before the position is not shown before the anchor,
+        // so it never changes before the sound (ADR-0108 decision 10).
+        let master = self.master(start).max(self.anchor.as_nanos() as i128);
+        self.queue_picture(&sample, start, master)
     }
 
     /// Copies one picture into a frame and queues it, or drops and counts it when the

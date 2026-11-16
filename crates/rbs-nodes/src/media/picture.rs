@@ -367,6 +367,8 @@ impl MediaPictureNode {
     /// or the first one before its time (the cued picture is on air at once; motion
     /// starts one lead later). Does not allocate, free, block, or read the file.
     pub fn dequeue(&mut self, now: Timestamp) -> Option<VideoFrame> {
+        // A run the control path started (a restart from the end hold) is taken first.
+        self.adopt_handoff();
         if self.phase == MediaPhase::Hold {
             self.shared
                 .stats
@@ -374,7 +376,6 @@ impl MediaPictureNode {
                 .fetch_add(1, Ordering::Relaxed);
             return self.held.as_ref().and_then(VideoFrame::share);
         }
-        self.adopt_handoff();
         if self.phase != MediaPhase::Playing {
             return None;
         }

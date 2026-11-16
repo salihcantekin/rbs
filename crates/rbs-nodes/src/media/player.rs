@@ -56,6 +56,9 @@ pub(crate) struct Player {
     picture_in: bool,
     sound_in: bool,
     pub(crate) queue_allocations: u32,
+    /// The source went to sleep from the end hold: it reports `Ended` until a
+    /// command or a shown start leaves it.
+    pub(crate) ended_stored: bool,
     pub(crate) attempts: u32,
     pub(crate) retry_after: Option<Duration>,
 }
@@ -83,6 +86,7 @@ impl Player {
             picture_in: false,
             sound_in: false,
             queue_allocations: 0,
+            ended_stored: false,
             attempts: 0,
             retry_after: None,
         }
@@ -114,7 +118,20 @@ impl Player {
     /// cursor goes to the start and a stored pause becomes play (ADR-0108 decision 10
     /// table).
     pub(crate) fn start_shown(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
+        if self.ended_stored && !self.restart_when_shown {
+            // A stored end stays ended (the table): the last picture is shown, paused.
+            let newest = shared.controls.newest();
+            if !newest.paused {
+                shared.controls.write(Record {
+                    generation: newest.generation.wrapping_add(1),
+                    instant: self.clock.now(),
+                    paused: true,
+                    position: None,
+                });
+            }
+        }
         if self.restart_when_shown {
+            self.ended_stored = false;
             shared.set_cursor(Duration::ZERO);
             let newest = shared.controls.newest();
             if newest.paused {
@@ -127,6 +144,11 @@ impl Player {
             }
         }
         self.start(shared)
+    }
+
+    /// True while a node is prepared.
+    pub(crate) fn in_use(&self) -> bool {
+        self.picture_in || self.sound_in
     }
 
     /// Wakes a parked worker so it reads a new control record at once.
@@ -152,7 +174,9 @@ impl Player {
     /// newest control record (paused or playing). Control thread only. Blocks until
     /// the worker holds its first picture.
     pub(crate) fn start(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
-        self.stop(shared);
+        self.join_worker();
+        shared.offer_rings(None);
+        self.phase = MediaPhase::Standby;
         let cursor = shared.cursor();
         self.ended = Arc::new(AtomicBool::new(false));
         self.progress = Arc::new(Progress::default());
@@ -230,6 +254,10 @@ impl Player {
 
     /// Stops the worker and frees the decoder and the rings.
     pub(crate) fn stop(&mut self, shared: &Shared) {
+        let failed = self.progress.failed.load(Ordering::Acquire);
+        let ended = self.phase == MediaPhase::Hold
+            || (self.phase == MediaPhase::Playing && self.ended.load(Ordering::Acquire));
+        self.ended_stored = ended && !failed;
         self.join_worker();
         shared.offer_rings(None);
         self.phase = MediaPhase::Standby;
