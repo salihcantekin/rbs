@@ -1487,7 +1487,11 @@ fn noise_suppression_latency_is_compensated_without_touching_the_stored_offset()
     settings.audio_offsets.insert(mic, 20 * MS);
     let (engine, clock) = engine_at_start();
     let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
-    assert!(studio.filter_problems().is_empty(), "{:?}", studio.filter_problems());
+    assert!(
+        studio.filter_problems().is_empty(),
+        "{:?}",
+        studio.filter_problems()
+    );
     assert!(run_until(&mut studio, &clock, |s| {
         s.progress().master_peak_db.is_some_and(f32::is_finite)
     }));
@@ -1497,7 +1501,10 @@ fn noise_suppression_latency_is_compensated_without_touching_the_stored_offset()
     assert_eq!(latency.uncompensated_ns, 0);
     assert_eq!(studio.settings().audio_offsets.get(&mic), Some(&(20 * MS)));
     // A source without filters is unchanged.
-    assert_eq!(studio.audio_latency(display).map(|l| l.filter_latency_ns), Some(0));
+    assert_eq!(
+        studio.audio_latency(display).map(|l| l.filter_latency_ns),
+        Some(0)
+    );
 
     // A new stored offset keeps the compensation.
     assert!(studio.set_audio_offset(mic, -30 * MS));
