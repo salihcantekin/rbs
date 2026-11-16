@@ -1,6 +1,7 @@
 //! The built-in audio filter types.
 
 use crate::AudioFilterType;
+use crate::compressor::Compressor;
 use crate::ducker::Ducker;
 use crate::gain::Gain;
 use crate::gate::NoiseGate;
@@ -8,7 +9,7 @@ use crate::noise::NoiseSuppression;
 
 /// Every built-in audio filter type, in the order the UI lists them.
 pub fn catalogue() -> &'static [&'static dyn AudioFilterType] {
-    &[&Gain, &NoiseGate, &Ducker, &NoiseSuppression]
+    &[&Gain, &NoiseGate, &Ducker, &NoiseSuppression, &Compressor]
 }
 
 /// The built-in audio filter type with this id.

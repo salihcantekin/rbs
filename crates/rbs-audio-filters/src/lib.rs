@@ -18,6 +18,7 @@ use rbs_graph::node::NodeTypeId;
 pub use rbs_params::{Field, FieldKind, ParamError, Schema, Value, Values};
 
 pub mod catalogue;
+pub mod compressor;
 pub mod conformance;
 pub mod ducker;
 pub mod gain;

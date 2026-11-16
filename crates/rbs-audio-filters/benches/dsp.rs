@@ -103,10 +103,12 @@ fn noise_benches(c: &mut Criterion) {
     use rbs_audio_filters::noise::NoiseSuppression;
     let ty = &NoiseSuppression as &dyn AudioFilterType;
     let mono = Values::defaults(ty);
-    let separate = mono
-        .with(ty, [("mode", Value::Choice(1))])
-        .expect("valid");
-    bench_one(c, "noise_suppression_mono", &mut [ty.make(setup(), &mono).expect("48 kHz")]);
+    let separate = mono.with(ty, [("mode", Value::Choice(1))]).expect("valid");
+    bench_one(
+        c,
+        "noise_suppression_mono",
+        &mut [ty.make(setup(), &mono).expect("48 kHz")],
+    );
     bench_one(
         c,
         "noise_suppression_separate",
@@ -114,5 +116,41 @@ fn noise_benches(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, dsp_benches, ducker_benches, noise_benches);
+/// The compressor (ADR-0130 decision 11, budget 5 us per block) while compressing, with
+/// each detector, and while idle below the knee.
+fn compressor_benches(c: &mut Criterion) {
+    use rbs_audio_filters::compressor::Compressor;
+    let ty = &Compressor as &dyn AudioFilterType;
+    let defaults = Values::defaults(ty);
+    let rms = defaults
+        .with(
+            ty,
+            [
+                ("threshold", Value::Number(-30.0)),
+                ("makeup", Value::Number(6.0)),
+            ],
+        )
+        .expect("valid");
+    let peak = rms
+        .with(ty, [("detector", Value::Choice(1))])
+        .expect("valid");
+    let idle = defaults
+        .with(ty, [("threshold", Value::Number(0.0))])
+        .expect("valid");
+    for (name, v) in [
+        ("compressor_rms", &rms),
+        ("compressor_peak", &peak),
+        ("compressor_idle", &idle),
+    ] {
+        bench_one(c, name, &mut [ty.make(setup(), v).expect("valid")]);
+    }
+}
+
+criterion_group!(
+    benches,
+    dsp_benches,
+    ducker_benches,
+    noise_benches,
+    compressor_benches
+);
 criterion_main!(benches);

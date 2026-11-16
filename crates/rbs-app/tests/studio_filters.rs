@@ -375,7 +375,8 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
             "org.rbs.audio-filter.gain",
             "org.rbs.audio-filter.noise-gate",
             "org.rbs.audio-filter.ducker",
-            "org.rbs.audio-filter.noise-suppression"
+            "org.rbs.audio-filter.noise-suppression",
+            "org.rbs.audio-filter.compressor"
         ]
     );
     let attack = types[1]["fields"]
