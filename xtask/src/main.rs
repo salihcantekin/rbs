@@ -207,6 +207,20 @@ fn deny(from: &str, to: &str) -> Option<String> {
             ],
             "user data sees the scene model, not an adapter or a toolkit",
         ),
+        Class::Import => deny_named(
+            to,
+            to_class,
+            &[
+                "rbs-core",
+                "rbs-graph",
+                "rbs-scene",
+                "rbs-params",
+                "rbs-ui",
+                "serde",
+                "serde_json",
+            ],
+            "an importer reads files into the scene model; only composition roots write (ADR-0131)",
+        ),
         Class::PluginSdk => deny_named(
             to,
             to_class,
@@ -266,6 +280,7 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::Import
             | Class::Tool
             | Class::Plugin
             | Class::PluginSdk,
@@ -298,6 +313,7 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::Import
             | Class::Tool
             | Class::Plugin
             | Class::PluginSdk,
@@ -356,6 +372,7 @@ enum Class {
     AppUi,
     Settings,
     UserData,
+    Import,
     App,
     Tool,
     PluginSdk,
@@ -367,7 +384,7 @@ enum Class {
 fn class(name: &str) -> Option<Class> {
     Some(match name {
         "rbs-core" | "rbs-graph" | "rbs-scene" | "rbs-capture" | "rbs-audio-io" | "rbs-codec"
-        | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" => Class::Core,
+        | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" | "rbs-text" => Class::Core,
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
         }
@@ -380,6 +397,7 @@ fn class(name: &str) -> Option<Class> {
         "rbs-app-ui" => Class::AppUi,
         "rbs-remote-settings" => Class::Settings,
         "rbs-user-data" => Class::UserData,
+        "rbs-import-obs" => Class::Import,
         "rbs-app" | "rbs-cli" | "rbs-mcp" => Class::App,
         "rbs-plugin-sdk" => Class::PluginSdk,
         "rbs-plugin-host" => Class::Plugin,
@@ -418,6 +436,8 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-vcam-mf"
         | "rbs-vcam-test"
         | "rbs-media-decode-test"
+        | "rbs-text-test"
+        | "rbs-text-parley"
         | "rbs-browser-runner" => Class::Adapter,
         other if other.starts_with("rbs-") => return None,
         _ => return None,

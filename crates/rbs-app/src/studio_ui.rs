@@ -23,13 +23,14 @@ use rbs_app::record_profile::{
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{
-    self, HoldPicture, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
+    self, HoldPicture, HoldSound, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
 };
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
-    RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
-    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate,
-    StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target, TransformOp, Update,
+    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas,
+    RecordPatch, RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList,
+    SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest,
+    StreamUpdate, StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target,
+    TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -432,6 +433,9 @@ pub struct StudioUi {
     /// Hold (ADR-0124): each live stream's hold state (main, vertical) as the studio
     /// last sent it, and when the hold began. `None`: never held since it started.
     st_hold: [Option<(StreamHold, Instant)>; 2],
+    /// The scenes a stream of each canvas (main, vertical) may hold with, by id and
+    /// name, for Settings › Stream › Hold scene (ADR-0124 phase 2b).
+    hold_scenes: [Vec<(SceneId, String)>; 2],
     pub marker_note: String,
     marker_undo: Vec<(OutputCanvas, u32)>,
     marker_serial: u32,
@@ -629,6 +633,7 @@ impl StudioUi {
             rec_markers_shown: false,
             rec_pause: [None, None],
             st_hold: [None, None],
+            hold_scenes: [Vec::new(), Vec::new()],
             marker_note: String::new(),
             marker_undo: Vec::new(),
             marker_serial: 0,
@@ -950,6 +955,7 @@ impl StudioUi {
         g.set_rec_paused(self.record_paused());
         g.set_st_holdable(self.streams_live().iter().any(|l| *l));
         g.set_st_held(self.stream_held());
+        g.set_st_hold_note(self.hold_note().into());
         g.set_rec_markers_shown(self.rec_markers_shown && self.rec_state == rec_state::RECORDING);
         g.set_marker_note(self.marker_note.as_str().into());
         g.set_marker_generation(self.marker_serial as i32);
@@ -3989,15 +3995,45 @@ impl StudioUi {
         self.save_stream_form();
     }
 
-    /// "While on hold": 0 Last frame, 1 Black. It changes the next hold, so it is
-    /// never disabled while live.
+    /// "While on hold": 0 Last frame, 1 Black, 2 A scene. It changes the next hold,
+    /// so it is never disabled while live.
     pub fn set_hold_picture(&mut self, i: i32) {
-        self.stream_form_mut().hold_picture = if i == 1 {
-            HoldPicture::Black
-        } else {
-            HoldPicture::Freeze
+        self.stream_form_mut().hold_picture = match i {
+            1 => HoldPicture::Black,
+            2 => HoldPicture::Scene,
+            _ => HoldPicture::Freeze,
         };
         self.save_stream_form();
+    }
+
+    /// "Hold scene": the `i`th scene the settings' canvas may show (ADR-0124 phase
+    /// 2b).
+    pub fn set_hold_scene(&mut self, i: i32) {
+        let c = slot_of(self.settings_canvas);
+        let Some((id, _)) = usize::try_from(i)
+            .ok()
+            .and_then(|i| self.hold_scenes[c].get(i))
+        else {
+            return;
+        };
+        let id = id.get();
+        self.stream_form_mut().hold_scene = Some(id);
+        self.save_stream_form();
+    }
+
+    /// "Sound while on hold": 0 Silence, 1 The scene's sound.
+    pub fn set_hold_sound(&mut self, i: i32) {
+        self.stream_form_mut().hold_sound = if i == 1 {
+            HoldSound::Scene
+        } else {
+            HoldSound::Silence
+        };
+        self.save_stream_form();
+    }
+
+    /// The Stream card's notice while a scene hold of the main stream fell back.
+    fn hold_note(&self) -> &'static str {
+        hold_note_text(self.st_hold[0].map(|(h, _)| h))
     }
 
     pub fn set_reconnect(&mut self, on: bool) {
@@ -4134,7 +4170,19 @@ impl StudioUi {
         g.set_st_key_serial(self.key_serial as i32);
         g.set_st_reconnect(st.reconnect);
         g.set_st_auto_record(st.auto_record);
-        g.set_st_hold_black(st.hold_picture == HoldPicture::Black);
+        g.set_st_hold_picture(match st.hold_picture {
+            HoldPicture::Black => 1,
+            HoldPicture::Scene => 2,
+            _ => 0,
+        });
+        let scenes = &self.hold_scenes[slot_of(self.settings_canvas)];
+        g.set_st_hold_scenes(strings(scenes.iter().map(|(_, n)| n.clone())));
+        g.set_st_hold_scene(
+            st.hold_scene
+                .and_then(|id| scenes.iter().position(|(s, _)| s.get() == id))
+                .map_or(-1, |i| i as i32),
+        );
+        g.set_st_hold_sound_scene(st.hold_sound == HoldSound::Scene);
         let record = self.record_form_for(self.settings_canvas).encoding();
         let same_encoder = self.encoder_id(&record) == self.encoder_id(&st.encoding);
         g.set_st_auto_record_note(
@@ -5387,6 +5435,10 @@ impl StudioUi {
                     })
                     .collect();
                 set_rows(&self.scenes, data);
+                self.hold_scenes = list
+                    .hold_scenes
+                    .clone()
+                    .map(|rows| rows.into_iter().map(|r| (r.id, r.name)).collect());
                 let studio = list.preview.is_some();
                 if studio != self.studio_mode {
                     self.studio_mode = studio;
@@ -7203,10 +7255,41 @@ fn record_form(r: &SourceRow) -> i32 {
     }
 }
 
+/// The index of `c` in per-canvas arrays (main, vertical).
+fn slot_of(c: OutputCanvas) -> usize {
+    match c {
+        OutputCanvas::Main => 0,
+        OutputCanvas::Vertical => 1,
+    }
+}
+
+/// The Stream card's notice for a held stream whose hold scene fell back.
+fn hold_note_text(hold: Option<StreamHold>) -> &'static str {
+    match hold.and_then(|h| h.note.filter(|_| h.held)) {
+        Some(HoldNote::Picture) => "The hold scene could not open: showing the last frame",
+        Some(HoldNote::Sound) => "The hold scene's sound failed: sending silence",
+        None => "",
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stream_card_names_a_hold_scene_fallback_only_while_held() {
+        let held = |note| Some(StreamHold { held: true, note });
+        assert_eq!(hold_note_text(None), "");
+        assert_eq!(hold_note_text(held(None)), "");
+        assert!(hold_note_text(held(Some(HoldNote::Picture))).contains("last frame"));
+        assert!(hold_note_text(held(Some(HoldNote::Sound))).contains("silence"));
+        let released = Some(StreamHold {
+            held: false,
+            note: Some(HoldNote::Picture),
+        });
+        assert_eq!(hold_note_text(released), "");
+    }
 
     #[test]
     fn the_outputs_card_names_the_separate_files() {
@@ -7632,7 +7715,7 @@ mod tests {
     #[test]
     fn a_held_stream_reads_resume_and_forgets_its_hold_when_it_ends() {
         let (mut ui, d) = ui("hold");
-        let hold = |held: bool| Some(StreamHold { held });
+        let hold = |held: bool| Some(StreamHold { held, note: None });
         assert!(!ui.stream_held());
         ui.apply(Update::Stream(StreamUpdate::Started {
             url: "rtmp://example.com/app".into(),

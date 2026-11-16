@@ -1,0 +1,1 @@
+{"type":"rtmp_custom","settings":{"server":"rtmp://live.example.com/app","key":"live_SECRET-KEY-42","use_auth":true,"username":"me","password":"SECRET-PASSWORD"}}
