@@ -1,0 +1,84 @@
+profile Some("Simple")
+OutputFacts {
+    mode: Simple,
+    output_size: None,
+    recording: Some(
+        RecordingFacts {
+            folder: Some(
+                "/Users/someone/Movies",
+            ),
+            format: Some(
+                Mkv,
+            ),
+            encoder: EncoderFacts {
+                encoder: Some(
+                    (
+                        H264,
+                        Software,
+                    ),
+                ),
+                rate_control: Some(
+                    ConstantQuality,
+                ),
+                video_kbps: None,
+                max_video_kbps: None,
+                quality: Some(
+                    23,
+                ),
+                keyframe_seconds: None,
+                preset: None,
+                b_frames: None,
+                audio_kbps: Some(
+                    128,
+                ),
+            },
+        },
+    ),
+    stream: Some(
+        StreamFacts {
+            server: None,
+            service: Some(
+                "Twitch",
+            ),
+            encoder: EncoderFacts {
+                encoder: Some(
+                    (
+                        H264,
+                        Hardware,
+                    ),
+                ),
+                rate_control: Some(
+                    Cbr,
+                ),
+                video_kbps: Some(
+                    4500,
+                ),
+                max_video_kbps: None,
+                quality: None,
+                keyframe_seconds: None,
+                preset: None,
+                b_frames: None,
+                audio_kbps: Some(
+                    128,
+                ),
+            },
+        },
+    ),
+    replay: Some(
+        ReplayFacts {
+            enabled: false,
+            seconds: 20,
+        },
+    ),
+    audio: Some(
+        AudioFacts {
+            sample_rate: None,
+            monitoring_device: None,
+        },
+    ),
+}
+stream key true
+profile and hotkey report
+- approximated profile "Recording quality": OBS's "Small" recording quality became constant quality 23.
+- approximated profile "Recording format": RBS does not record flv files, so the recording uses MKV. MKV keeps the recording when the computer stops suddenly.
+- skipped profile "Stream server": OBS picked the server automatically, which RBS does not do yet. Enter the server address in Settings › Stream.

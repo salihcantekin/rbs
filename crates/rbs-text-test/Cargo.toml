@@ -1,0 +1,16 @@
+[package]
+name = "rbs-text-test"
+description = "Deterministic fake text renderer for tests: every glyph is a box from fixed metrics (ADR-0129)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-text = { path = "../rbs-text" }
+
+[lints]
+workspace = true

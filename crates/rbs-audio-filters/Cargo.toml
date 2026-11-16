@@ -25,3 +25,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "node"
+harness = false
