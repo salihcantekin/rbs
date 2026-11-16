@@ -82,6 +82,9 @@ pub enum PauseRefused {
     AlreadyPaused,
     /// The recording is not paused.
     NotPaused,
+    /// A stream sharing the recording's encoder is on hold (ADR-0124 decision 14):
+    /// resuming now would put the hold picture in the file. Resume the stream first.
+    Held,
 }
 
 impl fmt::Display for PauseRefused {
@@ -96,6 +99,7 @@ impl fmt::Display for PauseRefused {
             Self::Ending => "the output is ending",
             Self::AlreadyPaused => "the recording is already paused",
             Self::NotPaused => "the recording is not paused",
+            Self::Held => "a stream sharing the recording's encoder is on hold",
         })
     }
 }
@@ -221,6 +225,9 @@ impl Studio {
             return Err(PauseRefused::Ending);
         }
         let pause = r.pause.clone().ok_or(PauseRefused::NotPausable)?;
+        if self.chains_held(r) {
+            return Err(PauseRefused::Held);
+        }
         let (targets, video, audio, cut) = (r.paused_at, r.video, r.audio, r.cut.clone());
         let w = pause.resume(at.as_nanos())?;
         let n = at.as_nanos();

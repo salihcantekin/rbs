@@ -435,6 +435,7 @@ impl RecordSettings {
             track_span: false,
             pausable: false,
             shared_pause: None,
+            holdable: false,
         }
     }
 }
@@ -724,6 +725,11 @@ pub struct Progress {
     pub paused_ns: u64,
     /// Media time it has recorded: time since its start minus `paused_ns`.
     pub recorded_ns: u64,
+    /// The stream is on hold now (ADR-0124 decision 12). Always false for an output
+    /// that is not holdable.
+    pub held: bool,
+    /// Time it has been on hold so far, an open hold counted up to now.
+    pub held_ns: u64,
 }
 
 impl Progress {

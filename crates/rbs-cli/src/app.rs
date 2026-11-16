@@ -153,6 +153,8 @@ mod tests {
             reconnect_attempts: 0,
             video_encoder: "VideoToolbox".into(),
             audio_encoder: Some("AudioToolbox AAC".into()),
+            held: false,
+            held_ms: 0,
         })
         .unwrap();
         assert_eq!(
@@ -166,6 +168,8 @@ mod tests {
             reconnect_attempts: 3,
             video_encoder: "NVENC".into(),
             audio_encoder: None,
+            held: false,
+            held_ms: 0,
         })
         .unwrap();
         assert_eq!(
@@ -231,6 +235,8 @@ mod tests {
                         reconnect_attempts: 0,
                         video_encoder: "Fake".into(),
                         audio_encoder: Some("Fake AAC".into()),
+                        held: false,
+                        held_ms: 0,
                     };
                     Ok(Response::StreamStarted(StreamStarted {
                         video_encoder: "Fake".into(),

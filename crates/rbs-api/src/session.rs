@@ -31,6 +31,9 @@ use crate::transport::{
 /// profile's `markers`, `while_paused` on `marker.add`'s answer, and marker times in
 /// file time.
 /// 1.62 adds the marker settings (ADR-0089): `markers` on a recording profile.
+/// 1.64 adds holding a stream (ADR-0124): `stream.hold`, `stream.resume`,
+/// `stream.hold_toggle`, `output.break_toggle`, `held` and `held_ms` on a live
+/// stream's state, the outcome `held` and `kind` on an `outputs` entry.
 /// 1.61 adds pausing a recording (ADR-0124): `record.pause`, `record.resume`,
 /// `record.pause_toggle`, and `paused`, `paused_ms` and `recorded_ms` on a running
 /// recording's state.
@@ -69,7 +72,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.63";
+pub const PROTOCOL_VERSION: &str = "1.64";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
