@@ -45,6 +45,13 @@ pub const MIXER_TYPE: &str = "org.rbs.audio.mixer";
 pub trait NodeTypes {
     /// The descriptor of `type_id`, or `None` if no such type is installed.
     fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>>;
+
+    /// Whether a source of `type_id` takes every settings change in place: the binder
+    /// keeps its node and reports it in [`BindReport::changed_sources`] instead of
+    /// replacing it (ADR-0129 decision 5). False unless a type says so.
+    fn live_settings(&self, _type_id: &NodeTypeId) -> bool {
+        false
+    }
 }
 
 impl<F> NodeTypes for F
@@ -225,6 +232,11 @@ pub struct BindReport {
     /// application applies break-before-make: first without the new node, then with
     /// it (scene sources spec).
     pub replaced_sources: Vec<(SourceId, NodeId, NodeId)>,
+    /// Sources whose settings changed and whose type takes settings in place
+    /// ([`NodeTypes::live_settings`]): the node was kept, and the application sends
+    /// the new settings to whatever feeds it (the text worker, ADR-0129 decision 5).
+    /// Never in `retired_sources`, `created_sources` or `replaced_sources`.
+    pub changed_sources: Vec<(SourceId, NodeId)>,
     /// Filter nodes this sync created.
     pub created_filters: Vec<(FilterId, NodeId)>,
     /// Filter nodes this sync removed, or that someone else removed.
@@ -790,6 +802,11 @@ impl State {
                 continue;
             };
             if source.settings == bound.settings {
+                continue;
+            }
+            if types.live_settings(&source.type_id) {
+                bound.settings = source.settings.clone();
+                report.changed_sources.push((*id, bound.source.node));
                 continue;
             }
             let old = bound.source.node;

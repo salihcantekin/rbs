@@ -25,9 +25,12 @@ pub const COLOR_SOURCE: &str = "org.rbs.source.color";
 pub const MEDIA_SOURCE: &str = "org.rbs.source.media";
 /// A page rendered by a helper tree (ADR-0109). Network-capable, including `file`.
 pub const BROWSER_SOURCE: &str = "org.rbs.source.browser";
+/// A text block, a clock or a timer drawn by a text renderer (ADR-0129). Installed only
+/// when a renderer is registered.
+pub const TEXT_SOURCE: &str = "org.rbs.source.text";
 
 /// Every built-in source type, in a fixed order.
-pub const ALL: [&str; 10] = [
+pub const ALL: [&str; 11] = [
     DISPLAY_SOURCE,
     WINDOW_SOURCE,
     CAMERA_SOURCE,
@@ -38,6 +41,7 @@ pub const ALL: [&str; 10] = [
     COLOR_SOURCE,
     MEDIA_SOURCE,
     BROWSER_SOURCE,
+    TEXT_SOURCE,
 ];
 
 /// Settings keys. Keys a type does not use are ignored, so a document written by a
@@ -85,6 +89,63 @@ pub mod keys {
     pub const URL: &str = "url";
     /// Bool, browser: keep straight alpha. Default false, which forces opaque alpha.
     pub const TRANSPARENT: &str = "transparent";
+
+    // Text source (ADR-0129 decisions 3 and 11; ranges in `rbs_text`). `width` and
+    // `height` are the box, `color`, `color2` and `angle` the fill, `target` a
+    // countdown's time of day.
+    /// Text, text: `text`, `clock`, `countdown`, `stopwatch`, `recording_time` or
+    /// `stream_time`. Default `text`.
+    pub const KIND: &str = "kind";
+    /// Text, text: the text; `\n` breaks a line. At most 10 000 characters.
+    pub const TEXT: &str = "text";
+    /// Text, text: a local file whose content is shown instead of `text`.
+    pub const FILE: &str = "file";
+    /// Int, text: 0 = the whole file, N = its last N lines.
+    pub const FILE_LINES: &str = "file_lines";
+    /// Text, text: font family. Absent: the system UI font.
+    pub const FONT: &str = "font";
+    /// Float, text: font size in pixels, 1 to 1024. Default 72.
+    pub const SIZE: &str = "size";
+    /// Int, text: font weight, 100 to 900. Default 400.
+    pub const WEIGHT: &str = "weight";
+    /// Bool, text: italic.
+    pub const ITALIC: &str = "italic";
+    /// Text, text: `left`, `center` or `right`. Default `center`.
+    pub const ALIGN: &str = "align";
+    /// Text, text: `top`, `middle` or `bottom`. Default `middle`.
+    pub const VALIGN: &str = "valign";
+    /// Bool, text: break lines at the box width. Default true.
+    pub const WRAP: &str = "wrap";
+    /// Text, text: `fit`, `clip` or `ellipsis`. Default `fit`.
+    pub const OVERFLOW: &str = "overflow";
+    /// Float, text: line height multiple, 0.5 to 3. Default 1.
+    pub const LINE_SPACING: &str = "line_spacing";
+    /// Float, text: extra space between letters in pixels, -50 to 200.
+    pub const LETTER_SPACING: &str = "letter_spacing";
+    /// Float, text: outline width in pixels, 0 to 64; 0 = none.
+    pub const OUTLINE_WIDTH: &str = "outline_width";
+    /// Text, text: outline colour. Default `#000000`.
+    pub const OUTLINE_COLOR: &str = "outline_color";
+    /// Text, text: shadow colour; absent = no shadow.
+    pub const SHADOW_COLOR: &str = "shadow_color";
+    /// Float, text: shadow offset right, -256 to 256.
+    pub const SHADOW_X: &str = "shadow_x";
+    /// Float, text: shadow offset down, -256 to 256.
+    pub const SHADOW_Y: &str = "shadow_y";
+    /// Float, text: shadow blur radius, 0 to 64.
+    pub const SHADOW_BLUR: &str = "shadow_blur";
+    /// Text, text: background colour of the box; absent = transparent.
+    pub const BACKGROUND: &str = "background";
+    /// Float, text: space inside the box edge, 0 to 1024.
+    pub const PADDING: &str = "padding";
+    /// Bool, text: `{time}`, `{date}`, `{scene}` ... fields in `text`. Default false.
+    pub const FIELDS: &str = "fields";
+    /// Text, text: the pattern a clock or timer is shown with.
+    pub const FORMAT: &str = "format";
+    /// Int, text: a countdown's length in milliseconds.
+    pub const DURATION_MS: &str = "duration_ms";
+    /// Text, text: shown when a countdown ends or a recording or stream is stopped.
+    pub const END_TEXT: &str = "end_text";
 }
 
 /// What a source type captures.
@@ -101,6 +162,9 @@ pub enum SourceClass {
     Media,
     /// A browser page (ADR-0109). Network-capable. Video pin only.
     Browser,
+    /// A text, clock or timer (ADR-0129). Video pin only; still or not depends on
+    /// its settings ([`crate::is_still`]).
+    Text,
 }
 
 /// The class of a built-in source type, or `None` for any other type.
@@ -115,6 +179,7 @@ pub fn class_of(type_id: &NodeTypeId) -> Option<SourceClass> {
         IMAGE_SOURCE | COLOR_SOURCE => SourceClass::Still,
         MEDIA_SOURCE => SourceClass::Media,
         BROWSER_SOURCE => SourceClass::Browser,
+        TEXT_SOURCE => SourceClass::Text,
         _ => return None,
     })
 }
