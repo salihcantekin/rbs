@@ -2310,7 +2310,11 @@ fn test_this_computer_measures_saves_and_the_estimate_uses_it() {
         .find(|e| e["adapter"] == WORKING)
         .unwrap_or_else(|| panic!("{done}"));
     assert_eq!(working["stopped_by"], "ceiling", "{done}");
-    assert_eq!(working["sessions"], 20, "{done}");
+    assert_eq!(
+        working["sessions"],
+        rbs_record::calibration::SESSION_CEILING,
+        "{done}"
+    );
     assert!(
         done["skipped"]
             .as_array()
