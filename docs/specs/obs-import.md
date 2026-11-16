@@ -77,7 +77,7 @@ Reasons are one sentence of plain English ("Only PNG pictures can be shown for n
 
 ### Transform conversion
 
-ADR-0131 decision 8 is normative (OBS 31 relative keys win, `bounds_crop`, crop filter as region plus item crop). OBS places an item at `pos` with the anchor `align` (bits: left 1, right 2, top 4, bottom 8; none is centre), size `native × scale` or, with a bounds type, the bounds box (stretch, scale inner, scale outer, to width, to height, max only) aligned by `bounds_align`, rotated by `rot` degrees about `pos`, after `crop_*`. RBS stores the box (`Layout.position`, `Layout.size`, negative for a flip) rotated about its centre. The converter computes the four corners of the OBS item and returns the RBS box with the same corners in texture order (within 0.01 px). The native size comes from `Lookup` or settings; when unknown, the canvas size is used and the item is marked approximate.
+ADR-0131 decision 8 is normative: absolute `pos`, `scale`, `bounds` are read; an item with only OBS 31 relative keys is reported until their conversion is checked against a real OBS 31 file; `bounds_crop`; crop filter as region plus item crop. OBS places an item at `pos` with the anchor `align` (bits: left 1, right 2, top 4, bottom 8; none is centre), size `native × scale` or, with a bounds type, the bounds box (stretch, scale inner, scale outer, to width, to height, max only) aligned by `bounds_align`, rotated by `rot` degrees about `pos`, after `crop_*`. RBS stores the box (`Layout.position`, `Layout.size`, negative for a flip) rotated about its centre. The converter computes the four corners of the OBS item and returns the RBS box with the same corners in texture order (within 0.01 px). The native size comes from `Lookup` or settings; when unknown, the canvas size is used and the item is marked approximate.
 
 ### Mapping table
 
@@ -87,14 +87,21 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 
 | `SceneError` | Action |
 | --- | --- |
-| name clash | "Name 2", "Name 3", ... |
-| `TooManyLayers` (`MAX_LAYERS`), `NestingTooDeep` (`MAX_NESTING_DEPTH`), nesting cycle | item left out, Skipped |
+| `DuplicateName` | "Name 2", "Name 3", ... |
+| `EmptyName` | the OBS type's readable name plus a number |
+| `TooManyLayers`, `NestingTooDeep`, `NestingCycle` | item left out, Skipped |
 | `CropOnScene`, `StyleOnScene` | crop or style dropped, item kept, Approximated |
-| `InvalidLayout`, `InvalidVolume`, `InvalidSyncOffset` | value clamped, Approximated |
-| `CanvasTooLarge`, zero canvas side, `FrameRateTooHigh`, zero frame rate or `FPSDen` 0 | 1920×1080 at 30, Profile entry |
-| `ScopeViolation`, `GlobalScene` | cannot arise (shared scopes; the importer makes the global scene) |
+| `InvalidLayout`, `InvalidVolume`, `InvalidSyncOffset`, `InvalidSetting` | value clamped or the key dropped, Approximated |
+| `CanvasTooLarge`, `EmptyCanvas`, `FrameRateTooHigh` (also a zero rate or `FPSDen` 0) | 1920×1080 at 30, Profile entry |
+| `ScopeViolation`, `GlobalScene` | cannot arise: user scenes are shared; the global scene is scoped to its canvas and made only by the importer |
+| `UnknownCanvas`, `UnknownSource`, `UnknownScene`, `UnknownItem`, `UnknownFilter`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict` | cannot arise: edit-time errors, not raised by `from_parts` |
+| `DuplicateId`, `DuplicateFilter`, `IdsExhausted` | cannot arise: the importer issues ids from one counter per kind |
+| `BadTypeId` | cannot arise: mapper type ids are checked by the `rbs-app` catalogue test |
+| `InvalidFollow`, `SharedLevels` | cannot arise: one canvas, no follow, no scene levels imported |
+| `InvalidGlide`, `InvalidShowFor` | cannot arise: default glide, no timed show imported |
+| `ChromeNotDisplay` | cannot arise: chrome is never imported |
 
-A unit test matches every `SceneError` variant against this table, so a new variant fails until it has an action. Exact variant names are taken from `rbs_scene::SceneError` in step 1.
+A unit test matches every `SceneError` variant against this table, so a new variant fails until it has an action. 
 
 ## Errors and failure behaviour
 
