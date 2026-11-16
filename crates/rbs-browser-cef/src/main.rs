@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use cef::*;
 use rbs_browser_ipc::page::{bgra_premultiplied_to_rgba, file_scope, request_allowed};
-use rbs_browser_ipc::shm::{FrameRing, RingWriter, SlotLayout};
 use rbs_browser_ipc::{Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, decode_configure};
+use rbs_browser_shm::{FrameRing, RingWriter, SlotLayout};
 
 /// Exit codes the studio may log. Any exit is Unavailable to the studio.
 mod exit {

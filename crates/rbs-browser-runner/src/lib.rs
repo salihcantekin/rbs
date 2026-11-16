@@ -16,11 +16,11 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rbs_browser_ipc::shm::{FrameRing, RingReader, SlotLayout};
 use rbs_browser_ipc::{
     Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost, restart_delay,
     startup_lost,
 };
+use rbs_browser_shm::{FrameRing, RingReader, SlotLayout};
 
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]

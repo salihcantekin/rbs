@@ -262,6 +262,11 @@ fn deny_support(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
     if from == "rbs-vcam-mf-source" && (to == "rbs-vcam-ring" || is_os_media(to)) {
         return None;
     }
+    // OS shared memory for browser frames (ADR-0109 decision 8; owner's choice
+    // 2026-11-16 to keep `rbs-browser-ipc` free of OS bindings).
+    if from == "rbs-browser-shm" && matches!(to, "libc" | "windows") {
+        return None;
+    }
     let _ = to_class;
     Some("adapter support never depends on an adapter or a vendor SDK".to_owned())
 }
@@ -388,7 +393,7 @@ fn class(name: &str) -> Option<Class> {
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
         }
-        "rbs-codec-hw" | "rbs-vcam-mf-source" => Class::Support,
+        "rbs-codec-hw" | "rbs-vcam-mf-source" | "rbs-browser-shm" => Class::Support,
         "rbs-gpu" | "rbs-audio" | "rbs-audio-filters" | "rbs-engine" | "rbs-nodes"
         | "rbs-sources" | "rbs-record" | "rbs-filters" => Class::Engine,
         "rbs-api" => Class::Control,
@@ -490,6 +495,15 @@ mod tests {
         assert!(deny("rbs-codec-nvenc", "rbs-codec-amf").is_some());
         assert!(deny("rbs-codec-nvenc", "rbs-codec-hw").is_none());
         assert!(deny("rbs-vcam-mf", "rbs-vcam-mf-source").is_none());
+    }
+
+    #[test]
+    fn browser_shared_memory_stays_out_of_the_ipc_helper() {
+        assert!(deny("rbs-browser-ipc", "libc").is_some());
+        assert!(deny("rbs-browser-ipc", "windows").is_some());
+        assert!(deny("rbs-browser-shm", "libc").is_none());
+        assert!(deny("rbs-browser-shm", "rbs-browser-runner").is_some());
+        assert!(deny("rbs-browser-runner", "rbs-browser-shm").is_none());
     }
 
     #[test]

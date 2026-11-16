@@ -6,9 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use rbs_browser_ipc::shm::SlotLayout;
 use rbs_browser_ipc::{Configure, HEARTBEAT_LIMIT, STARTUP_LIMIT};
 use rbs_browser_runner::{HelperChild, Supervisor, spawn_helper};
+use rbs_browser_shm::SlotLayout;
 
 const GUARD: Duration = Duration::from_secs(20);
 

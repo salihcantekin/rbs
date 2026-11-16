@@ -21,7 +21,6 @@
 use std::time::Duration;
 
 pub mod page;
-pub mod shm;
 
 /// Configure kind.
 pub const KIND_CONFIGURE: u8 = 1;
@@ -69,7 +68,7 @@ pub struct Configure {
     pub fps: u32,
     /// When false, alpha is forced opaque before publish.
     pub transparent: bool,
-    /// Name of the studio-allocated frame section ([`shm::FrameRing`]).
+    /// Name of the studio-allocated frame section (`rbs_browser_shm::FrameRing`).
     pub frames: String,
 }
 

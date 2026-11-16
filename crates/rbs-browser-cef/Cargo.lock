@@ -863,10 +863,15 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "rbs-browser-ipc",
+ "rbs-browser-shm",
 ]
 
 [[package]]
 name = "rbs-browser-ipc"
+version = "0.0.1"
+
+[[package]]
+name = "rbs-browser-shm"
 version = "0.0.1"
 dependencies = [
  "libc",

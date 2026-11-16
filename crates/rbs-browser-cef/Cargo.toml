@@ -29,6 +29,7 @@ helper_name = "rbs-browser-cef-helper"
 # The pin is exact: the CEF version lives in the crate version (cef-pin.toml).
 cef = { version = "=156.6.0" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+rbs-browser-shm = { path = "../rbs-browser-shm" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
