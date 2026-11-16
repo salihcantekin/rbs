@@ -22,14 +22,19 @@ pub trait MediaDecoderFactory: AdapterFactory {
 pub trait MediaDecoder: Send {
     fn seek(&mut self, cursor: Duration) -> Result<(), DecodeError>;
     fn next_picture(&mut self) -> Result<Option<PictureSample>, DecodeError>;
-    fn next_sound(&mut self) -> Result<Option<SoundSample>, DecodeError> { Ok(None) }
-    fn has_audio(&self) -> bool { false }
+    fn next_sound(&mut self) -> Result<Option<SoundSample>, DecodeError>;
+    fn has_audio(&self) -> bool;
     fn duration(&self) -> Option<Duration> { None }
 }
 
 pub struct PictureSample { pub pts: Option<Duration>, pub frame_duration: Option<Duration>, pub picture: Picture }
 pub struct SoundSample { pub pts: Option<Duration>, pub pcm: InterleavedPcm }
-pub struct Picture { pub width: u32, pub height: u32, pub data: PictureData }
+pub struct Picture { pub width: u32, pub height: u32, data: PictureData }
+impl Picture {
+    pub fn system(width: u32, height: u32, layout: PictureLayout, color: SampleColor, bytes: Vec<u8>) -> Self;
+    pub fn native(frame: VideoFrame) -> Option<Self>; // None unless the payload is a native surface
+    pub fn data(&self) -> &PictureData;
+}
 #[non_exhaustive]
 pub enum PictureData {
     System { layout: PictureLayout, color: SampleColor, bytes: Vec<u8> },
@@ -42,11 +47,12 @@ Invariants:
 1. `open` is called only with a path `accept_local_media_path` accepted (canonical, local, regular file). The port never opens a URL, a UNC path, a device, a pipe, or a directory.
 2. Streams are read separately. `next_picture` returns the picture stream in presentation order; `next_sound` returns PCM of the first audio stream as interleaved `f32`. Other audio streams are ignored. An adapter whose demuxer reads in container order keeps a skew buffer of compressed packets, at most 1 s and 8 MiB, and fails with `Failed` beyond it.
 3. `seek` moves both streams. The next picture is the first at or after the cursor, or an earlier keyframe; the caller skips pictures stamped before the cursor.
-4. Frame duration rule (`frame_duration_rule`): an animated picture's delay of 10 ms or less reads as 100 ms; a video frame of zero duration continues by the stream's nominal duration. The adapter applies it before returning.
+4. Frame duration rule (`frame_duration_rule`): an animated picture's delay of 10 ms or less reads as 100 ms; a video frame of zero duration continues by the stream's nominal duration, or, when the stream states none, is treated as unstated and continues by the previous frame's duration. The adapter applies it before returning.
 5. `System` pictures are NV12 or P010 (`check_color` accepts the colour) or straight-alpha sRGB `Rgba8`. Every other layout is converted by the adapter, or `open` fails. `Native` pictures follow the capture port's native surface rules (lease returned after the importer retires it, a handle kept open 10 s after its last reference, LUID encoding); a source holds at most 18 native surfaces (filled picture slots plus 2) against the importer's `MAX_SURFACES` of 64.
 6. A side over 8192 or a system frame over 128 MiB is refused (`refuse_picture`) before the caller allocates any buffer.
 7. `duration` is the container's stated length, read once after open, or `None`.
-8. New trait methods have defaults and the public enums are `#[non_exhaustive]`, so neither breaks an adapter.
+8. From this version on, new trait methods have defaults and the public enums are `#[non_exhaustive]`, so neither breaks an adapter. `next_sound` and `has_audio` are required, so an adapter cannot claim sound and forget to deliver it.
+10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). Until the node split lands, the probe refuses a native picture so a zero-copy adapter cannot win and then fail in the node.
 9. Capability `media.decode.pixel` is a set of `zero-copy` and `cpu-upload`. The host picks the adapter named in the source's `adapter` setting, or else `zero-copy` before `cpu-upload`, then registration order, among adapters that open the file.
 
 ## Errors and failure behaviour

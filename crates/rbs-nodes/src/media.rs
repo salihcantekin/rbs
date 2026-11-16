@@ -668,7 +668,7 @@ fn worker(
         return;
     }
     let has_audio = decoder.has_audio();
-    let mut interleave = Interleave::default();
+    let mut interleave = Interleave::new(cursor);
     let sample = match first_picture(&mut *decoder, &mut interleave) {
         Ok(sample) => sample,
         Err(error) => {
@@ -711,7 +711,7 @@ fn worker(
                     if !loop_flag.load(Ordering::Acquire) {
                         break;
                     }
-                    interleave = Interleave::default();
+                    interleave = Interleave::new(Duration::ZERO);
                     if decoder.seek(Duration::ZERO).is_err() {
                         break;
                     }
@@ -786,7 +786,7 @@ fn worker(
 }
 
 fn picture_parts(picture: &rbs_media_decode::Picture) -> Option<PictureBits<'_>> {
-    match &picture.data {
+    match picture.data() {
         rbs_media_decode::PictureData::System {
             layout,
             color,
@@ -812,23 +812,51 @@ struct MediaSample {
     pcm: Option<rbs_media_decode::InterleavedPcm>,
 }
 
-/// Pairs each picture with the sound stamped before its end.
-#[derive(Default)]
+/// Most sound frames paired with one picture (1 s at 48 kHz). More is dropped, so a
+/// file whose pictures carry no timestamp cannot pull a whole track into one picture.
+const MAX_PAIRED_SOUND_FRAMES: usize = 48_000;
+
+/// Pairs each picture with the sound stamped before its end, using the same timestamp
+/// fallback as [`stamp`]. Pictures stamped before the seek cursor are skipped (an
+/// adapter may seek to the keyframe before it).
 struct Interleave {
+    cursor: Duration,
     pending: Option<rbs_media_decode::SoundSample>,
     sound_done: bool,
     sound_end: Duration,
+    next_pts: Duration,
+    known: Option<Duration>,
 }
 
 impl Interleave {
+    fn new(cursor: Duration) -> Self {
+        Self {
+            cursor,
+            pending: None,
+            sound_done: false,
+            sound_end: cursor,
+            next_pts: cursor,
+            known: None,
+        }
+    }
+
     fn pull(&mut self, decoder: &mut dyn MediaDecoder) -> Result<Option<MediaSample>, DecodeError> {
-        let Some(picture) = decoder.next_picture()? else {
-            return Ok(None);
+        let picture = loop {
+            let Some(picture) = decoder.next_picture()? else {
+                return Ok(None);
+            };
+            let start = picture.pts.unwrap_or(self.next_pts);
+            let duration = picture.frame_duration.or(self.known);
+            self.known = duration;
+            self.next_pts = duration.map_or(start, |d| start.saturating_add(d));
+            let ends_after_cursor = duration.map_or(start >= self.cursor, |d| {
+                start.saturating_add(d) > self.cursor
+            });
+            if ends_after_cursor {
+                break picture;
+            }
         };
-        let until = picture
-            .pts
-            .zip(picture.frame_duration)
-            .map(|(pts, duration)| pts.saturating_add(duration));
+        let until = self.next_pts;
         let mut pcm: Option<rbs_media_decode::InterleavedPcm> = None;
         while !self.sound_done {
             let sound = match self.pending.take() {
@@ -842,19 +870,28 @@ impl Interleave {
                 },
             };
             let start = sound.pts.unwrap_or(self.sound_end);
-            if until.is_some_and(|until| start >= until) {
+            if start >= until {
                 self.pending = Some(sound);
                 break;
             }
+            let channels = usize::from(sound.pcm.channels.max(1));
             let rate = u64::from(sound.pcm.sample_rate.max(1));
-            let frames = sound.pcm.samples.len() as u64 / u64::from(sound.pcm.channels.max(1));
+            let frames = sound.pcm.samples.len() / channels;
             self.sound_end =
-                start.saturating_add(Duration::from_nanos(frames * 1_000_000_000 / rate));
+                start.saturating_add(Duration::from_nanos(frames as u64 * 1_000_000_000 / rate));
             match pcm.as_mut() {
-                Some(acc) if acc.channels == sound.pcm.channels => {
-                    acc.samples.extend_from_slice(&sound.pcm.samples);
+                None => pcm = Some(sound.pcm),
+                Some(acc) => {
+                    // A chunk with another channel count or rate is skipped; the node
+                    // split resamples and remaps on the worker (ADR-0108 decision 5).
+                    let held = acc.samples.len() / usize::from(acc.channels.max(1));
+                    if acc.channels == sound.pcm.channels
+                        && acc.sample_rate == sound.pcm.sample_rate
+                        && held + frames <= MAX_PAIRED_SOUND_FRAMES
+                    {
+                        acc.samples.extend_from_slice(&sound.pcm.samples);
+                    }
                 }
-                _ => pcm = Some(sound.pcm),
             }
         }
         Ok(Some(MediaSample {
@@ -985,7 +1022,8 @@ fn system_frame(
                 DecodeError::Failed(format!("colour is not decodable: {error}"))
             })?;
             Err(DecodeError::Unsupported(
-                "nv12 is checked with check_color; YUV upload on the worker is not wired yet",
+                "nv12 is checked with check_color; YUV upload on the worker is not wired yet"
+                    .to_owned(),
             ))
         }
         PictureLayout::P010 => {
@@ -993,9 +1031,11 @@ fn system_frame(
                 DecodeError::Failed(format!("colour is not decodable: {error}"))
             })?;
             Err(DecodeError::Unsupported(
-                "p010 is checked with check_color; YUV upload on the worker is not wired yet",
+                "p010 is checked with check_color; YUV upload on the worker is not wired yet"
+                    .to_owned(),
             ))
         }
+        _ => Err(DecodeError::Unsupported("picture layout".to_owned())),
     }
 }
 
@@ -1004,6 +1044,8 @@ fn map_color(color: SampleColor) -> ColorSpace {
         SampleColor::Srgb => ColorSpace::SRGB,
         SampleColor::Bt709Limited => ColorSpace::BT709_LIMITED,
         SampleColor::Bt709Full => ColorSpace::BT709_FULL,
+        // A colour this node does not know is refused by `check_color` later.
+        _ => ColorSpace::SRGB,
     }
 }
 

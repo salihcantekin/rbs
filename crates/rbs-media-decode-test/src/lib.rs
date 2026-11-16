@@ -142,8 +142,10 @@ pub struct ScriptClip {
     pub frames: Vec<ScriptFrame>,
     /// Interleaved PCM, or `None` for silence on the node's pin.
     pub audio: Option<InterleavedPcm>,
-    /// When set, `open` fails with `Media`.
+    /// When set, `open` fails with `DecodeError::Failed`.
     pub fail_open: Option<String>,
+    /// When set, `open` fails with `DecodeError::Unsupported` (a missing codec).
+    pub unsupported: Option<String>,
     /// An animated picture (GIF, APNG, WebP): short delays read as 100 ms.
     pub animated: bool,
     /// The stated duration, if any.
@@ -162,6 +164,7 @@ impl ScriptClip {
             ],
             audio: None,
             fail_open: None,
+            unsupported: None,
             animated: false,
             duration: None,
         }
@@ -180,6 +183,7 @@ impl ScriptClip {
             ],
             audio: None,
             fail_open: None,
+            unsupported: None,
             animated: false,
             duration: None,
         }
@@ -199,6 +203,7 @@ impl ScriptClip {
             }],
             audio: None,
             fail_open: None,
+            unsupported: None,
             animated: false,
             duration: None,
         }
@@ -250,6 +255,9 @@ impl MediaDecoderFactory for ScriptFactory {
         self.counts.opens.fetch_add(1, Ordering::Relaxed);
         if let Some(text) = &self.clip.fail_open {
             return Err(DecodeError::Failed(text.clone()));
+        }
+        if let Some(codec) = &self.clip.unsupported {
+            return Err(DecodeError::Unsupported(codec.clone()));
         }
         self.counts.alive.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(ScriptDecoder {

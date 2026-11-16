@@ -44,6 +44,7 @@ pub mod pixel {
 
 /// Why a picture must not be queued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PictureRefuse {
     /// A side is 0 or over [`MAX_SIDE`].
     Side,
@@ -76,6 +77,7 @@ pub fn refuse_picture(width: u32, height: u32, payload_bytes: usize) -> Option<P
 /// Pixel layout the node will enqueue. Anything else is converted by the adapter or
 /// `open` fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PictureLayout {
     /// Straight-alpha sRGB `Rgba8`, the still-source rule (GIF, APNG, animated WebP).
     Rgba8,
@@ -88,6 +90,7 @@ pub enum PictureLayout {
 /// Colour the adapter already converted to something `check_color` can accept, or sRGB
 /// for a full-frame picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SampleColor {
     /// Straight-alpha sRGB.
     Srgb,
@@ -117,15 +120,15 @@ pub enum PictureData {
     Native(rbs_core::media::VideoFrame),
 }
 
-/// One picture.
+/// One picture. Built with [`Picture::system`] or [`Picture::native`], so a native
+/// picture always carries a native surface.
 #[derive(Debug)]
 pub struct Picture {
     /// Width in pixels.
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
-    /// The pixels.
-    pub data: PictureData,
+    data: PictureData,
 }
 
 impl Picture {
@@ -148,6 +151,29 @@ impl Picture {
         }
     }
 
+    /// A native surface (`IoSurface` or `D3dSharedHandle`). Returns `None` when the
+    /// frame's payload is not a native surface (a texture or system memory), which the
+    /// port does not accept on this path.
+    pub fn native(frame: rbs_core::media::VideoFrame) -> Option<Self> {
+        if !matches!(
+            frame.payload(),
+            rbs_core::media::FramePayload::Native { .. }
+        ) {
+            return None;
+        }
+        let size = frame.format().size;
+        Some(Self {
+            width: size.width,
+            height: size.height,
+            data: PictureData::Native(frame),
+        })
+    }
+
+    /// The pixels.
+    pub fn data(&self) -> &PictureData {
+        &self.data
+    }
+
     /// System-memory payload bytes, counted against [`MAX_FRAME_BYTES`]. A native
     /// surface counts against the surface budget instead and returns 0.
     pub fn system_bytes(&self) -> usize {
@@ -155,6 +181,11 @@ impl Picture {
             PictureData::System { bytes, .. } => bytes.len(),
             PictureData::Native(_) => 0,
         }
+    }
+
+    /// True for a native surface.
+    pub fn is_native(&self) -> bool {
+        matches!(self.data, PictureData::Native(_))
     }
 }
 
@@ -214,13 +245,16 @@ pub fn frame_duration_rule(
 
 /// Why decode failed. The host maps this to `SourceError::Media`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// The file, codec, or a mid-stream fault. The text is for logs.
     Failed(String),
     /// A sample had neither a timestamp nor a frame duration to continue from.
     NoTimestamp,
-    /// The adapter will not convert this layout.
-    Unsupported(&'static str),
+    /// A layout the adapter will not convert, or a codec the adapter or the platform
+    /// lacks (for example HEVC without the Store extension). The host tries the next
+    /// adapter and tells the user what is missing.
+    Unsupported(String),
 }
 
 impl std::fmt::Display for DecodeError {
@@ -253,15 +287,11 @@ pub trait MediaDecoder: Send {
 
     /// The next PCM of the first audio stream, or `Ok(None)` at its end or when the
     /// file has no audio stream.
-    fn next_sound(&mut self) -> Result<Option<SoundSample>, DecodeError> {
-        Ok(None)
-    }
+    fn next_sound(&mut self) -> Result<Option<SoundSample>, DecodeError>;
 
     /// Whether the container has an audio stream. The source still has a sound node
     /// when this is false and writes silence (ADR-0108 decision 1).
-    fn has_audio(&self) -> bool {
-        false
-    }
+    fn has_audio(&self) -> bool;
 
     /// The container's stated length, read once after open. `None` when it states none.
     fn duration(&self) -> Option<Duration> {

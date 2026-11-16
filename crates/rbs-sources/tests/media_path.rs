@@ -179,3 +179,37 @@ fn instantiate(
         .unwrap();
     reg.instantiate(collection.source(id).unwrap(), ctx)
 }
+
+#[test]
+fn a_missing_codec_is_reported_over_a_plain_failure() {
+    let (dir, file) = temp_file("codec");
+    let mut failing = ScriptClip::silent_frames();
+    failing.fail_open = Some("broken".to_owned());
+    let mut missing = ScriptClip::silent_frames();
+    missing.unsupported = Some("HEVC".to_owned());
+    let mut reg = SourceTypes::new();
+    // The less specific failure comes first, then the missing codec.
+    reg.register_media(Arc::new(ScriptFactory::with_pixel(
+        "org.rbs.media-decode.fails",
+        failing,
+        CPU_UPLOAD,
+    )))
+    .unwrap();
+    reg.register_media(Arc::new(ScriptFactory::with_pixel(
+        "org.rbs.media-decode.no-hevc",
+        missing,
+        CPU_UPLOAD,
+    )))
+    .unwrap();
+    reg.probe();
+    let ctx = InstanceContext::new(
+        Arc::new(rbs_core::time::TestClock::new()),
+        rbs_audio::AudioGraphConfig::default(),
+    );
+    let err = instantiate(&reg, &ctx, &file.to_string_lossy()).unwrap_err();
+    assert!(
+        matches!(&err, SourceError::Media(text) if text.contains("HEVC")),
+        "{err}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
