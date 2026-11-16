@@ -137,6 +137,20 @@ Pause (ADR-0124, `with_pause(window)`, separate files of a pausable recording): 
 
 Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (`a_change_inside_a_pause_*`; an unchanged picture is taken once over 30 ticks; a change on every tick for one second at 60 fps gives one image per interval, each change in between waits and is counted, images stamped at least 100 ms apart, bytes copied as published).
 
+### Sync picture probe (ADR-0126)
+
+`rbs_nodes::SyncPictureProbeNode` (`org.rbs.sync-picture-probe`, kind `Output`, input "picture", render partition) logs the motion of a reference picture while a sync offset measurement runs. `new(window)` returns the node and its `Arc<SyncPictureLog>`, sized for `window` at `SYNC_PICTURE_MAX_FPS` (240) new pictures per second, plus one.
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Creates its `MotionProbe` (gpu-compositor spec, "Motion probe"); forgets the last picture |
+| `process` | 1. Completed values go into the log (`take`). 2. The input's `(timestamp, sequence)` equal to the last seen: nothing more (one compare), so a camera slower than the canvas gives one value per new frame. 3. Otherwise `submit` stamped with the tick's time, the time the program shows that picture at. A full ring is counted in the log's `busy`; a failed dispatch in `failed` and returns `Backend` |
+| `release` | Drops the probe; values still in flight are lost |
+
+`SyncPictureLog` is a fixed array of atomics with a published length (release/acquire), one writer, any number of readers: `capacity`, `len`, `is_empty`, `full` (values not logged because it was full; it never wraps), `busy`, `failed`, `read_from(from, &mut Vec<(i64, f32)>) -> usize` (returns the next `from`). It mirrors the audio probe's log (`rbs_audio::SyncProbeLog`); the two crates do not depend on each other.
+
+Test: `crates/rbs-nodes/tests/sync_probe_gpu.rs` (a 30 fps feed on a 60 fps cadence, alternating dark and light: one value per new picture, each stamped with the tick it arrived on, every value a full change, nothing busy or failed).
+
 ### Video export node
 
 | Call | Does |
