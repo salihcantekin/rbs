@@ -77,6 +77,7 @@ mod monitor;
 mod pause;
 mod replay;
 mod sync_measure;
+mod transition;
 pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
@@ -91,6 +92,7 @@ pub use sync_measure::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
     SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
+pub use transition::{READY_WAIT, TransitionState};
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
 const WAITING: &str = "waiting for the source it replaces to close";
@@ -1167,6 +1169,11 @@ pub struct Studio {
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
+    /// Transitions running, by canvas (ADR-0128). Empty while none runs (P13).
+    transitions: BTreeMap<CanvasId, transition::CanvasTransition>,
+    /// A transition is done since the host last asked: it calls
+    /// [`Studio::settle_transitions`].
+    transition_done: bool,
     /// The scene each following canvas showed last (the `KeepLast` fallback).
     last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
@@ -1259,6 +1266,34 @@ pub enum TextDue {
     Late,
     /// Wait for the next service.
     Wait,
+}
+
+/// The text worker, made on first use with the registered renderers.
+fn text_worker<'a>(
+    text: &'a mut Option<TextWorker>,
+    io: &(Arc<dyn FileProbe>, Arc<dyn TextClock>),
+    clock: Arc<dyn rbs_core::time::Clock>,
+    sources: &SourceTypes,
+) -> &'a mut TextWorker {
+    text.get_or_insert_with(|| {
+        TextWorker::new(
+            sources.text_renderers(),
+            Arc::clone(&io.0),
+            clock,
+            Arc::clone(&io.1),
+        )
+    })
+}
+
+/// The answer of [`Studio::text_fonts`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextFonts {
+    /// The installed families, sorted.
+    Ready(Arc<Vec<String>>),
+    /// The first list is being read; ask again shortly.
+    NotReady,
+    /// No text renderer is registered.
+    Unavailable,
 }
 
 /// Render ticks a scene change waits for its texts at most.
@@ -1555,6 +1590,8 @@ impl Studio {
             pictures: Vec::new(),
             next_picture: 0,
             glide: None,
+            transitions: BTreeMap::new(),
+            transition_done: false,
             last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
@@ -1993,6 +2030,12 @@ impl Studio {
         old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
         old_layers: BTreeMap<CanvasId, Vec<BoundLayer>>,
     ) {
+        // Only Move glides (ADR-0128 decision 2): Cut and the kinds that draw the
+        // incoming picture whole change the boxes at once.
+        if collection.transition().kind != rbs_scene::TransitionKind::Move {
+            self.glide = None;
+            return;
+        }
         let mut from = BTreeMap::new();
         let new_main = program_scene(collection, self.settings.canvas);
         if old_main.is_some() && old_main != new_main {
@@ -2052,29 +2095,30 @@ impl Studio {
     /// moving. The preview picture is not glided.
     fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {
         let now = self.engine.clock().now();
-        let main = paint_layers(
-            &self.bound,
-            plan,
-            self.glide.as_ref(),
-            now,
-            self.settings.canvas,
-        );
-        let extras: Vec<_> = self
+        let program = self.bound.clone();
+        let main = match self.transition_layers(self.settings.canvas, plan, &program) {
+            Some(layers) => layers,
+            None => paint_layers(
+                &self.bound,
+                plan,
+                self.glide.as_ref(),
+                now,
+                self.settings.canvas,
+            ),
+        };
+        let views: Vec<(CanvasId, BoundCompositor)> = self
             .extras
             .iter()
-            .map(|extra| {
-                (
-                    extra.canvas,
-                    paint_layers(
-                        &extra.view.bound,
-                        plan,
-                        self.glide.as_ref(),
-                        now,
-                        extra.canvas,
-                    ),
-                )
-            })
+            .map(|extra| (extra.canvas, extra.view.bound.clone()))
             .collect();
+        let mut extras = Vec::with_capacity(views.len());
+        for (canvas, bound) in views {
+            let layers = match self.transition_layers(canvas, plan, &bound) {
+                Some(layers) => layers,
+                None => paint_layers(&bound, plan, self.glide.as_ref(), now, canvas),
+            };
+            extras.push((canvas, layers));
+        }
         let _ = self.layers.send(main);
         if let Some(preview) = &mut self.scene_preview {
             let _ = preview.layers.send(node_layers(&preview.bound, plan));
@@ -2124,6 +2168,7 @@ impl Studio {
             }
             None => None,
         };
+        self.note_transitions(collection, old_main, &old_extra, &old_layers);
         let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
         // already ran: the update goes on so the sources it created get their entries,
@@ -2194,6 +2239,7 @@ impl Studio {
         if let Some(report) = &report {
             self.sync_scene_preview(report, &mut leaving)?;
             self.sync_hold_views(report, &mut leaving)?;
+            self.sync_incoming(report, &mut leaving)?;
         }
         let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
@@ -2473,15 +2519,8 @@ impl Studio {
                     let t = *t;
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(t.node))?;
-                    let (files, wall) = &self.text_io;
-                    let worker = self.text.get_or_insert_with(|| {
-                        TextWorker::new(
-                            sources.text_renderers(),
-                            Arc::clone(files),
-                            self.engine.clock(),
-                            Arc::clone(wall),
-                        )
-                    });
+                    let worker =
+                        text_worker(&mut self.text, &self.text_io, self.engine.clock(), sources);
                     worker.attach(entry.source, t.frames, t.settings);
                     self.text_attached.insert(entry.source);
                     entry.instance = Some(Instance {
@@ -2891,12 +2930,17 @@ impl Studio {
             .cloned()
     }
 
-    /// The installed font families (ADR-0129 decision 7): `None` until the worker has
-    /// a list or while no text renderer is in use.
-    pub fn text_families(&mut self) -> Option<Arc<Vec<String>>> {
-        match self.text.as_mut()?.families() {
-            rbs_sources::text_worker::Families::Ready(list) => Some(list),
-            _ => None,
+    /// The installed font families (ADR-0129 decision 7), from the worker's cache. The
+    /// first call starts the worker (it stops again when idle), so it never blocks:
+    /// `NotReady` until the first list exists, `Unavailable` with no text renderer.
+    pub fn text_fonts(&mut self, sources: &SourceTypes) -> TextFonts {
+        if sources.text_renderers().is_empty() {
+            return TextFonts::Unavailable;
+        }
+        let clock = self.engine.clock();
+        match text_worker(&mut self.text, &self.text_io, clock, sources).families() {
+            rbs_sources::text_worker::Families::Ready(list) => TextFonts::Ready(list),
+            _ => TextFonts::NotReady,
         }
     }
 
@@ -3252,13 +3296,20 @@ impl Studio {
         self.cues
             .retain(|id| collection.item(id).is_some_and(|(_, item)| !item.visible));
         let hold = self.hold_requests();
-        if self.cues.is_empty() && hold.is_empty() {
+        let outgoing = self.outgoing_scenes();
+        if self.cues.is_empty() && hold.is_empty() && outgoing.is_empty() {
             return self.binder.sync(collection, &mut self.graph);
         }
         let items = self.cues.items();
         let sources = collection.cued_drawn_sources(&items);
-        self.binder
-            .sync_held(collection, &mut self.graph, &items, &sources, &hold)
+        self.binder.sync_transition(
+            collection,
+            &mut self.graph,
+            &items,
+            &sources,
+            &hold,
+            &outgoing,
+        )
     }
 
     /// Starts or restarts a timed show. Does nothing when `visible` is true or
@@ -3302,6 +3353,9 @@ impl Studio {
         }
         self.service_text();
         let serviced = self.engine.service();
+        if self.step_transitions() {
+            self.transition_done = true;
+        }
         if !self.hold_scenes.is_empty() {
             let failed: BTreeSet<NodeId> = serviced
                 .events

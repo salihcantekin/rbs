@@ -4177,6 +4177,18 @@ impl StudioUi {
         }
     }
 
+    /// Saves the stream destinations section (ADR-0127) and hands it to the control
+    /// thread.
+    fn save_destinations(&mut self) {
+        if let Err(e) = self
+            .user
+            .set_section(rbs_app::stream_destinations::SECTION, &self.destinations)
+        {
+            self.stream_note = format!("The stream destinations could not be saved: {e}");
+        }
+        self.send(Command::SetStreamDestinations(self.destinations.clone()));
+    }
+
     fn save_stream(&mut self) {
         self.stream_note = match self.user.set_section(STREAM, &self.stream) {
             Ok(()) => String::new(),
@@ -5782,6 +5794,17 @@ impl StudioUi {
                 self.stream.hold_picture = p.hold_picture;
                 self.save_stream();
             }
+            Update::StreamDestinations(d) => {
+                // `stream.destination.set_enabled`. A section this version must not
+                // overwrite (written by a newer RBS) stays; the control thread gets
+                // the copy in use back.
+                if self.destinations_note.is_empty() {
+                    self.destinations = d;
+                    self.save_destinations();
+                } else {
+                    self.send(Command::SetStreamDestinations(self.destinations.clone()));
+                }
+            }
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
             Update::TokensChanged => self.read_tokens(false),
@@ -7001,6 +7024,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Color) => "palette",
         Some(SourceKind::Media) => "film",
         Some(SourceKind::Browser) => "globe",
+        // Until the text UI (ADR-0129 phase (f)) brings its own icon.
+        Some(SourceKind::Text) => "pencil",
         None => "window",
     }
 }
