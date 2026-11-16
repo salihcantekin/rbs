@@ -48,6 +48,10 @@ harness = false
 name = "encoder"
 harness = false
 
+[[bench]]
+name = "export"
+harness = false
+
 [lints]
 workspace = true
 
