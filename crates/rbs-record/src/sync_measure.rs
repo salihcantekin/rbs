@@ -202,25 +202,24 @@ pub fn picture_events(frames: &[PictureMotion]) -> Option<(Vec<i64>, i64)> {
     Some((events.into_iter().map(|(t, _)| t).collect(), interval))
 }
 
-/// Pairs sound and picture events and estimates how late the sound is
-/// (ADR-0126 decisions 4 and 5).
-///
-/// Each sound event is paired with the nearest picture event within [`SEARCH`]; a
-/// picture event serves at most one sound event (the nearest). The residual of a
-/// pair is `sound - picture`. The result is the mean of the inner half
-/// (interquartile) of the residuals, and needs at least [`MIN_PAIRS`] pairs whose
-/// interquartile range is at most the median frame interval.
-pub fn estimate(
+/// Pairs found so far (for progress while a measurement runs): 0 when the picture
+/// has no event yet.
+pub fn pair_count(energy: &[AudioEnergy], frames: &[PictureMotion]) -> usize {
+    residuals(energy, frames).map_or(0, |(r, _)| r.len())
+}
+
+/// The residuals of the pairs (unsorted) and the median frame interval.
+fn residuals(
     energy: &[AudioEnergy],
     frames: &[PictureMotion],
-) -> Result<Estimate, EstimateError> {
+) -> Result<(Vec<i64>, i64), EstimateError> {
     let (pictures, frame_interval_ns) =
         picture_events(frames).ok_or(EstimateError::NoPictureMotion)?;
     if pictures.is_empty() {
         return Err(EstimateError::NoPictureMotion);
     }
     let search = ns(SEARCH);
-    // Best (distance, residual) per picture event.
+    // Best residual per picture event.
     let mut best: Vec<Option<i64>> = vec![None; pictures.len()];
     for a in audio_onsets(energy) {
         let nearest = pictures
@@ -234,7 +233,22 @@ pub fn estimate(
             }
         }
     }
-    let mut residuals: Vec<i64> = best.into_iter().flatten().collect();
+    Ok((best.into_iter().flatten().collect(), frame_interval_ns))
+}
+
+/// Pairs sound and picture events and estimates how late the sound is
+/// (ADR-0126 decisions 4 and 5).
+///
+/// Each sound event is paired with the nearest picture event within [`SEARCH`]; a
+/// picture event serves at most one sound event (the nearest). The residual of a
+/// pair is `sound - picture`. The result is the mean of the inner half
+/// (interquartile) of the residuals, and needs at least [`MIN_PAIRS`] pairs whose
+/// interquartile range is at most the median frame interval.
+pub fn estimate(
+    energy: &[AudioEnergy],
+    frames: &[PictureMotion],
+) -> Result<Estimate, EstimateError> {
+    let (mut residuals, frame_interval_ns) = residuals(energy, frames)?;
     if residuals.len() < MIN_PAIRS {
         return Err(EstimateError::TooFewClaps);
     }

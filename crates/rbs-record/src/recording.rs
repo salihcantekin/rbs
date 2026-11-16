@@ -525,6 +525,9 @@ pub enum RecordError {
     /// The separate-file plan refused the collection, or a marked source is not in
     /// the program mix (ADR-0086).
     Iso(crate::iso::IsoError),
+    /// A sync offset measurement could not start (ADR-0126,
+    /// [`crate::Studio::start_sync_measure`]).
+    SyncMeasure(crate::SyncMeasureRefused),
 }
 
 impl fmt::Display for RecordError {
@@ -572,6 +575,7 @@ impl fmt::Display for RecordError {
             RecordError::EmptyOutput => f.write_str("the output has neither video nor audio"),
             RecordError::IsoRunning => f.write_str("separate audio files are already open"),
             RecordError::Iso(e) => write!(f, "separate files: {e}"),
+            RecordError::SyncMeasure(e) => write!(f, "sync measurement: {e}"),
             RecordError::TooManyOutputs => write!(
                 f,
                 "this canvas already feeds the most outputs at once ({}); a studio runs at most {}",
