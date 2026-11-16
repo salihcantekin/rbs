@@ -128,7 +128,7 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `DuplicateId`, `DuplicateFilter`, `IdsExhausted` | cannot arise: the importer issues ids from one counter per kind |
 | `BadTypeId` | cannot arise: mapper type ids are checked by the catalogue test in `rbs-cli` (`obs_import::tests`) |
 | `InvalidFollow`, `SharedLevels` | cannot arise: one canvas, no follow, no scene levels imported |
-| `InvalidGlide`, `InvalidShowFor` | cannot arise: default glide, no timed show imported |
+| `InvalidGlide`, `InvalidTransition`, `InvalidShowFor` | cannot arise: default glide and transition (ADR-0128), no timed show imported |
 | `ChromeNotDisplay` | cannot arise: chrome is never imported |
 
 A test (`crates/rbs-import-obs/tests/scene_errors.rs`) reads the variants of `SceneError` from its source and fails when one has no row here, so a new variant fails until it has an action. `SceneError` is `#[non_exhaustive]`, so an exhaustive `match` outside `rbs-scene` is not possible.

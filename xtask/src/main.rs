@@ -262,6 +262,11 @@ fn deny_support(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
     if from == "rbs-vcam-mf-source" && (to == "rbs-vcam-ring" || is_os_media(to)) {
         return None;
     }
+    // OS shared memory for browser frames (ADR-0109 decision 8; owner's choice
+    // 2026-11-16 to keep `rbs-browser-ipc` free of OS bindings).
+    if from == "rbs-browser-shm" && matches!(to, "libc" | "windows") {
+        return None;
+    }
     let _ = to_class;
     Some("adapter support never depends on an adapter or a vendor SDK".to_owned())
 }
@@ -285,6 +290,10 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Plugin
             | Class::PluginSdk,
         ) => Some("the engine never depends on an adapter, the control API or the UI".to_owned()),
+        // Support crates that carry OS bindings stay with their adapters.
+        Some(Class::Support) if matches!(to, "rbs-browser-shm" | "rbs-vcam-mf-source") => {
+            Some("the engine never reaches OS bindings through a support crate".to_owned())
+        }
         Some(Class::Core | Class::Helper | Class::Support | Class::Engine) => None,
         None if is_ui_toolkit(to) || is_ffmpeg(to) || is_os_media(to) && from != "rbs-gpu" => Some(
             "OS media and UI toolkits stay in adapters; wgpu stays in the GPU crates".to_owned(),
@@ -388,7 +397,7 @@ fn class(name: &str) -> Option<Class> {
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
         }
-        "rbs-codec-hw" | "rbs-vcam-mf-source" => Class::Support,
+        "rbs-codec-hw" | "rbs-vcam-mf-source" | "rbs-browser-shm" => Class::Support,
         "rbs-gpu" | "rbs-audio" | "rbs-audio-filters" | "rbs-engine" | "rbs-nodes"
         | "rbs-sources" | "rbs-record" | "rbs-filters" => Class::Engine,
         "rbs-api" => Class::Control,
@@ -438,7 +447,10 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-media-decode-test"
         | "rbs-text-test"
         | "rbs-text-parley"
-        | "rbs-browser-runner" => Class::Adapter,
+        | "rbs-browser-runner"
+        // Outside the workspace (ADR-0132 decision 1), so check-layers never walks
+        // it; `the_cef_runner_depends_only_on_its_allow_list` checks its manifest.
+        | "rbs-browser-cef" => Class::Adapter,
         other if other.starts_with("rbs-") => return None,
         _ => return None,
     })
@@ -447,6 +459,26 @@ fn class(name: &str) -> Option<Class> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0132 decision 1: no workspace command may resolve, download or build
+    /// CEF. The CEF runner is excluded and keeps its own lock file.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn the_workspace_lock_file_has_no_cef() {
+        let lock = fs::read_to_string(workspace_root().join("Cargo.lock")).expect("Cargo.lock");
+        for name in ["cef-dll-sys", "cef", "rbs-browser-cef"] {
+            let entry = format!("name = \"{name}\"\n");
+            assert!(
+                !lock.contains(&entry),
+                "{name} is in the workspace Cargo.lock"
+            );
+        }
+        let manifest = fs::read_to_string(workspace_root().join("Cargo.toml")).expect("Cargo.toml");
+        assert!(
+            manifest.contains("\"crates/rbs-browser-cef\""),
+            "crates/rbs-browser-cef must stay in the workspace exclude list"
+        );
+    }
 
     #[test]
     fn core_cannot_see_an_adapter_or_wgpu() {
@@ -469,6 +501,30 @@ mod tests {
         assert!(deny("rbs-codec-nvenc", "rbs-codec-amf").is_some());
         assert!(deny("rbs-codec-nvenc", "rbs-codec-hw").is_none());
         assert!(deny("rbs-vcam-mf", "rbs-vcam-mf-source").is_none());
+    }
+
+    #[test]
+    fn browser_shared_memory_stays_out_of_the_ipc_helper() {
+        assert!(deny("rbs-browser-ipc", "libc").is_some());
+        assert!(deny("rbs-browser-ipc", "windows").is_some());
+        assert!(deny("rbs-browser-shm", "libc").is_none());
+        assert!(deny("rbs-browser-shm", "rbs-browser-runner").is_some());
+        assert!(deny("rbs-browser-runner", "rbs-browser-shm").is_none());
+        assert!(deny("rbs-sources", "rbs-browser-shm").is_some());
+        assert!(deny("rbs-app", "rbs-browser-shm").is_none());
+    }
+
+    /// The CEF runner is outside the workspace, so check its manifest here.
+    #[test]
+    fn the_cef_runner_depends_only_on_its_allow_list() {
+        let manifest = workspace_root().join("crates/rbs-browser-cef/Cargo.toml");
+        let edges = read_edges(&manifest).unwrap_or_default();
+        assert!(!edges.is_empty(), "rbs-browser-cef has dependencies");
+        for (_, to) in edges {
+            let allowed = matches!(to.as_str(), "cef" | "rbs-browser-ipc" | "rbs-browser-shm")
+                || to.starts_with("objc2");
+            assert!(allowed, "rbs-browser-cef must not depend on {to}");
+        }
     }
 
     #[test]
