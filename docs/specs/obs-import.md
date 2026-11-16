@@ -1,7 +1,7 @@
 # Spec: OBS import
 
 - Status: Draft (ADR-0131 Accepted; step 1 in progress)
-- Owner crate(s): `rbs-import-obs` (planned), `rbs-app`, `rbs-cli`
+- Owner crate(s): `rbs-import-obs`, `rbs-app`, `rbs-cli`
 - Related ADRs: [0131](../adr/0131-import-obs-scene-collections-and-profiles.md), [0051](../adr/0051-user-data-profiles-and-scene-collections.md), [0065](../adr/0065-global-sources-and-safe-source-removal.md), [0077](../adr/0077-source-health-retarget-and-settings-window.md), [0103](../adr/0103-source-region.md), [0113](../adr/0113-experience-level-and-first-run.md)
 
 ## Purpose
@@ -23,7 +23,7 @@ pub fn scan(config_dir: &Path) -> Result<ObsInstall, ImportError>; // collection
 pub struct ObsInstall { collections: Vec<Found>, profiles: Vec<Found> }
 pub struct Found { name: String, path: PathBuf }
 
-pub trait Catalogue {                                          // implemented by rbs-app
+pub trait Catalogue {                                          // implemented by rbs-cli (step 1) and rbs-app
     fn has(&self, type_id: &NodeTypeId) -> bool;               // sources, filters, transitions
     fn fields(&self, type_id: &NodeTypeId) -> Option<&[rbs_params::Field]>; // ranges used to clamp
 }
@@ -107,12 +107,12 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `UnknownCanvas`, `UnknownSource`, `UnknownScene` | cannot arise: references are resolved in pass two (ADR-0131 decision 6); an item, nested scene or audio level whose target was skipped is left out and reported on the referring object |
 | `UnknownItem`, `UnknownFilter`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict` | cannot arise: edit-time errors, not raised by `from_parts` |
 | `DuplicateId`, `DuplicateFilter`, `IdsExhausted` | cannot arise: the importer issues ids from one counter per kind |
-| `BadTypeId` | cannot arise: mapper type ids are checked by the `rbs-app` catalogue test |
+| `BadTypeId` | cannot arise: mapper type ids are checked by the catalogue test in `rbs-cli` (`obs_import::tests`) |
 | `InvalidFollow`, `SharedLevels` | cannot arise: one canvas, no follow, no scene levels imported |
 | `InvalidGlide`, `InvalidShowFor` | cannot arise: default glide, no timed show imported |
 | `ChromeNotDisplay` | cannot arise: chrome is never imported |
 
-A unit test matches every `SceneError` variant against this table, so a new variant fails until it has an action. 
+A test (`crates/rbs-import-obs/tests/scene_errors.rs`) reads the variants of `SceneError` from its source and fails when one has no row here, so a new variant fails until it has an action. `SceneError` is `#[non_exhaustive]`, so an exhaustive `match` outside `rbs-scene` is not possible.
 
 ## Errors and failure behaviour
 
@@ -131,3 +131,8 @@ Runs on the control thread on demand only. A 200-source collection plans in unde
 - Converting non-PNG images (needs a decoder; part of the media work).
 - Mapping the Aitum vertical canvas plugin's data to the RBS vertical canvas (ADR-0093).
 - Saved projectors to projector windows (ADR-0125).
+
+## Implementation status
+
+- Step 1 (done on this branch): `rbs-import-obs` with the collection planner, the source and filter mappers in the mapping table, the report and its golden fixtures; `rbs-cli obs-import scan|check|run` (`check` prints the report and writes nothing; `run` writes a new scene collection under the writer lock with a free name). The CLI's `Lookup` reads files only (PNG sizes, file presence) and enumerates no devices, so device targets keep their OBS ids and are reported. The catalogue test (every mapper type and field key exists in this build) lives in `rbs-cli`, a composition root that links the source and filter registries; `rbs-app` gets the same test with step 2.
+- Not yet: profile facts beyond `[Video]`, credentials, hotkeys, the saved `imports/<id>.report.toml`, the desktop wizard, the control API methods.

@@ -50,6 +50,13 @@ rbs-api-ipc = { path = "../rbs-api-ipc" }
 rbs-project = { path = "../rbs-project" }
 # `remote fingerprint`: reads the stored certificate and key (ADR-0046).
 rbs-api-ws = { path = "../rbs-api-ws" }
+# `obs-import`: OBS scene collections into a new RBS collection (ADR-0131), with the
+# filter catalogues that check the importer's type ids and the user data it writes to.
+rbs-import-obs = { path = "../rbs-import-obs" }
+rbs-filters = { path = "../rbs-filters" }
+rbs-audio-filters = { path = "../rbs-audio-filters" }
+rbs-params = { path = "../rbs-params" }
+rbs-user-data = { path = "../rbs-user-data" }
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]

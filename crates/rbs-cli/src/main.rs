@@ -21,6 +21,7 @@ mod app;
 mod args;
 mod control;
 mod interrupt;
+mod obs_import;
 mod permissions;
 mod platform;
 mod remote;
@@ -123,6 +124,16 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Ok(Command::ObsImport(c)) => {
+            let config = rbs_remote_settings::config_dir();
+            match obs_import::run(&c, &config, &mut std::io::stdout()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("obs-import: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Ok(Command::RemoteFingerprint) => {
             match remote::fingerprint(&rbs_remote_settings::config_dir(), &mut std::io::stdout()) {
                 Ok(()) => ExitCode::SUCCESS,
