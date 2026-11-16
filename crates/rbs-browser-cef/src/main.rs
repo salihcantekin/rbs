@@ -575,14 +575,36 @@ fn run_browser(args: &args::Args, app: &mut App) -> i32 {
         std::ptr::null_mut(),
     ) != 1
     {
-        let _ = std::fs::remove_dir_all(&profile);
+        remove_profile(&profile);
         return exit::INIT_FAILED;
     }
 
     let code = browse(page, &config, &stop);
     shutdown();
-    let _ = std::fs::remove_dir_all(&profile);
+    remove_profile(&profile);
     code
+}
+
+/// How long [`remove_profile`] keeps trying. Below the studio's stop grace together
+/// with a normal close, so the studio does not kill the tree in the middle of it.
+const PROFILE_REMOVE_LIMIT: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// Removes the tree's profile (ADR-0109 decision 10). CEF's GPU and renderer processes
+/// can still hold files in it for a moment after `shutdown`, and Windows does not
+/// delete an open file, so a failed removal is tried again until
+/// [`PROFILE_REMOVE_LIMIT`].
+fn remove_profile(profile: &std::path::Path) {
+    let deadline = std::time::Instant::now() + PROFILE_REMOVE_LIMIT;
+    loop {
+        match std::fs::remove_dir_all(profile) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => return,
+        }
+    }
 }
 
 /// A new private directory for this tree's profile. Created here, never reused, so
