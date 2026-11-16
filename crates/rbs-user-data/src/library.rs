@@ -481,24 +481,44 @@ impl<T: Document> Library<T> {
             .name
             .or_else(|| from.file_stem().map(|s| s.to_string_lossy().into_owned()))
             .unwrap_or_default();
+        let name = self.free_name(&wanted)?;
+        let id = self.create(lock, &name, &read.document)?;
+        Ok((id, name))
+    }
+
+    /// The first free name for an entry that wants `wanted`: `wanted` itself (trimmed,
+    /// shortened to [`MAX_NAME`], `Imported` when nothing valid is left), else `Name 2`,
+    /// `Name 3`, ..., shortened so it stays within [`MAX_NAME`] characters. The rule of
+    /// [`Library::import`], for other importers (ADR-0131 decision 9).
+    pub fn free_name(&self, wanted: &str) -> Result<String, DataError> {
         let wanted: String = wanted.trim().chars().take(MAX_NAME).collect();
         let wanted = check_name(&wanted).or_else(|_| check_name("Imported"))?;
         let names: Vec<String> = self.list()?.entries.into_iter().map(|e| e.name).collect();
         let free = |n: &str| !names.iter().any(|m| same_name(m, n));
-        let name = if free(&wanted) {
-            wanted
-        } else {
-            (2..u32::MAX)
-                .map(|n| {
-                    let suffix = format!(" {n}");
-                    let keep = MAX_NAME - suffix.chars().count();
-                    let head: String = wanted.chars().take(keep).collect();
-                    format!("{}{suffix}", head.trim_end())
-                })
-                .find(|n| free(n))
-                .ok_or_else(|| DataError::Invalid("no free name".to_owned()))?
-        };
-        let id = self.create(lock, &name, &read.document)?;
+        if free(&wanted) {
+            return Ok(wanted);
+        }
+        (2..u32::MAX)
+            .map(|n| {
+                let suffix = format!(" {n}");
+                let keep = MAX_NAME - suffix.chars().count();
+                let head: String = wanted.chars().take(keep).collect();
+                format!("{}{suffix}", head.trim_end())
+            })
+            .find(|n| free(n))
+            .ok_or_else(|| DataError::Invalid("no free name".to_owned()))
+    }
+
+    /// [`Library::create`] under the first free name for `wanted`
+    /// ([`Library::free_name`]). Returns the id and the name it got.
+    pub fn create_free(
+        &self,
+        lock: &WriterLock,
+        wanted: &str,
+        document: &T,
+    ) -> Result<(EntryId, String), DataError> {
+        let name = self.free_name(wanted)?;
+        let id = self.create(lock, &name, document)?;
         Ok((id, name))
     }
 }

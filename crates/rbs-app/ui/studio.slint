@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, HScrollArea, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow } from "components.slint";
+import { DialogActions, HScrollArea, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -646,8 +646,14 @@ export global Studio {
     // "Record when the stream starts", and what it costs (shown while it is on).
     in property <bool> st-auto-record;
     in property <string> st-auto-record-note;
-    // "While on hold" is Black (else Last frame).
-    in property <bool> st-hold-black;
+    // "While on hold": 0 Last frame, 1 Black, 2 A scene (ADR-0124). With a scene, the
+    // canvas's scenes, the one chosen (-1: none yet) and whether its sound goes out.
+    in property <int> st-hold-picture;
+    in property <[string]> st-hold-scenes;
+    in property <int> st-hold-scene: -1;
+    in property <bool> st-hold-sound-scene;
+    // The Stream card's notice while a scene hold fell back ("" otherwise).
+    in property <string> st-hold-note;
     // The server is srt://: the latency field shows.
     in property <bool> st-srt;
     in property <[string]> st-latencies;
@@ -684,6 +690,8 @@ export global Studio {
     callback set-reconnect(bool);
     callback set-auto-record(bool);
     callback set-hold-picture(int);
+    callback set-hold-scene(int);
+    callback set-hold-sound(int);
     callback set-latency(int);
 
     // The canvas (Settings, Video): tiles for the current orientation, the one in
@@ -5191,7 +5199,7 @@ export component StreamSettings inherits Rectangle {
                 divider: false;
                 label: @tr("Server");
                 summary: @tr("From your streaming service");
-                hint: @tr("The address your streaming service gives you, starting with rtmp:// or srt://.");
+                hint: @tr("The address your streaming service gives you, starting with rtmp://, rtmps:// or srt://.");
                 enabled: idle;
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 server := TextField {
@@ -5313,15 +5321,43 @@ export component StreamSettings inherits Rectangle {
                 find: "stream.hold-picture";
                 label: @tr("While on hold");
                 summary: @tr("What viewers see");
-                hint: @tr("What viewers see while the stream is on hold, with silence. It applies to the next hold.");
-                changed: Studio.st-hold-black;
+                hint: @tr("What viewers see while the stream is on hold. Last frame and Black go out with silence. It applies to the next hold.");
+                changed: Studio.st-hold-picture != 0;
                 default-text: @tr("Last frame");
                 reset => { Studio.set-hold-picture(0); }
                 Select {
                     label: @tr("While on hold");
-                    options: [@tr("Last frame"), @tr("Black")];
-                    index: Studio.st-hold-black ? 1 : 0;
+                    options: [@tr("Last frame"), @tr("Black"), @tr("A scene")];
+                    index: Studio.st-hold-picture;
                     selected(i) => { Studio.set-hold-picture(i); }
+                }
+            }
+            if Studio.st-hold-picture == 2: SettingRow {
+                find: "stream.hold-scene";
+                label: @tr("Hold scene");
+                summary: @tr("Opens only while on hold");
+                hint: @tr("The scene viewers see while the stream is on hold. Its sources open only then. If it cannot open, the last frame is shown.");
+                Select {
+                    label: @tr("Hold scene");
+                    options: Studio.st-hold-scenes;
+                    index: Studio.st-hold-scene;
+                    placeholder: @tr("Choose a scene");
+                    selected(i) => { Studio.set-hold-scene(i); }
+                }
+            }
+            if Studio.st-hold-picture == 2: SettingRow {
+                find: "stream.hold-sound";
+                label: @tr("Sound while on hold");
+                summary: @tr("Silence or the scene's sound");
+                hint: @tr("The scene's sound mixes its own sources at their levels.");
+                changed: Studio.st-hold-sound-scene;
+                default-text: @tr("Silence");
+                reset => { Studio.set-hold-sound(0); }
+                Select {
+                    label: @tr("Sound while on hold");
+                    options: [@tr("Silence"), @tr("The scene's sound")];
+                    index: Studio.st-hold-sound-scene ? 1 : 0;
+                    selected(i) => { Studio.set-hold-sound(i); }
                 }
             }
         }
@@ -6244,6 +6280,8 @@ component OutputCard inherits Rectangle {
     // while it is on hold.
     in property <bool> hold-shown;
     in property <bool> held;
+    // A notice under the facts, such as a scene hold that fell back ("" for none).
+    in property <string> note;
     callback open();
     callback add-marker();
     callback pause();
@@ -6269,6 +6307,7 @@ component OutputCard inherits Rectangle {
         OutputFact { label: @tr("Audio"); value: audio; }
         if separate != "": OutputFact { label: @tr("Separate files"); value: separate; }
         OutputFact { label: where-label; value: where; }
+        if note != "": StatusLine { text: note; tone: 2; }
         if markers-shown || pause-shown || hold-shown: HorizontalLayout {
             alignment: start;
             spacing: Tokens.space-2;
@@ -6348,6 +6387,7 @@ export component OutputsPanel inherits Rectangle {
                 where-label: @tr("Server");
                 hold-shown: Studio.st-holdable;
                 held: Studio.st-held;
+                note: Studio.st-hold-note;
                 action: @tr("Stream settings");
                 open => { Studio.open-stream-settings(); }
                 hold => { Studio.hold-stream(); }

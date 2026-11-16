@@ -1,0 +1,87 @@
+collection "Evening show"
+canvas "Main" 1920x1080 layout 1920x1080 fps 60/1 program Some("Main") globals Some("Global sources")
+source "Screen" org.rbs.source.display
+  cursor = false
+source "Webcam" org.rbs.source.camera
+  fps = 30
+  height = 720
+  width = 1280
+  hint target_title = "Logitech BRIO"
+  region [40, 0, 40, 0]
+  filter org.rbs.filter.chroma-key enabled true key_color="#00ff00" similarity=0.42 smoothness=0.08 spill=0.1
+source "Alerts" org.rbs.source.browser
+  height = 300
+  transparent = true
+  url = "https://widgets.example.com/alerts?token=SECRET-TOKEN-123"
+  width = 400
+source "Badge colour" org.rbs.source.color
+  color = "#ff0000"
+  height = 100
+  width = 300
+source "Badge logo" org.rbs.source.image
+  path = "C:/Users/someone/Pictures/badge.png"
+source "Background" org.rbs.source.color
+  color = "#202020"
+  height = 1080
+  width = 1920
+source "Logo" org.rbs.source.image
+  path = "/Users/someone/logo.png"
+source "Music" org.rbs.source.media
+  loop = true
+  path = "/Users/someone/music.mp3"
+  restart_when_shown = true
+  filter org.rbs.audio-filter.ducker enabled true attack=10 key_source=11 release=3000 threshold=-30
+source "Frame" org.rbs.source.image
+  path = "/Users/someone/frame.png"
+source "Desktop Audio" org.rbs.source.audio-output
+  audio volume 0.5 muted false sync 0 monitor off hidden false
+source "Mic/Aux" org.rbs.source.audio-input
+  audio volume 1 muted false sync 50 monitor off hidden false
+  filter org.rbs.audio-filter.noise-gate enabled true attack=100 close_threshold=-36 hold=200 open_threshold=-30 release=150
+  filter org.rbs.audio-filter.gain enabled true gain=6
+scene "Main"
+  source "Screen" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked true
+  source "Webcam" pos [1580.00, 860.00] size [300.00, 180.00] rot 0.00 crop [40, 0, 40, 0] visible true locked false
+  scene "Overlay" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+  source "Alerts" pos [1520.00, 0.00] size [400.00, 300.00] rot 0.00 crop [0, 0, 0, 0] visible false locked false
+  source "Badge colour" pos [960.00, 100.00] size [300.00, 100.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+  source "Badge logo" pos [1260.00, 100.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible false locked false
+scene "Starting soon"
+  source "Background" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+  source "Logo" pos [1920.00, 0.00] size [-1920.00, 1080.00] rot 15.00 crop [0, 0, 0, 0] visible true locked false
+  source "Music" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+scene "Camera only"
+  source "Webcam" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [40, 23, 40, 23] visible true locked false
+scene "Overlay"
+  source "Frame" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+scene "Global sources"
+  source "Desktop Audio" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+  source "Mic/Aux" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+report
+Imported exactly: 4 scenes, 3 sources, 4 items, 2 filters.
+Imported, not exactly as in OBS (19):
+- approximated source "Screen" (monitor_capture) in Main: This computer's devices were not checked, so RBS uses the default one.
+- approximated filter "Webcam: Crop" (crop_filter): The crop now happens after the source's other filters.
+- approximated source "Webcam" (dshow_input) in Camera only, Main: This computer's devices were not checked, so RBS uses the default one.
+- approximated source "Alerts" (browser_source) in Main: The page size was rounded to even pixels. Custom CSS is not in RBS.
+- approximated source "Badge logo" (image_source) in Main: The picture file was not found on this computer; pick it again in the source's settings.
+- approximated source "Logo" (image_source) in Starting soon: The picture file was not found on this computer; pick it again in the source's settings.
+- approximated filter "Music: Duck" (compressor_filter): The compressor with a sidechain became a Ducker; check how far it lowers the sound. Out of RBS's range, so limited: release.
+- approximated source "Music" (ffmpeg_source) in Starting soon: The media file was not found on this computer; pick it again in the source's settings. Its volume was above 0 dB; RBS limits a source to 0 dB (use a Gain filter to boost). Left-right balance is not in RBS.
+- approximated source "Frame" (image_source) in Overlay: The picture file was not found on this computer; pick it again in the source's settings.
+- approximated filter "Mic/Aux: Gate" (noise_gate_filter): OBS fades the gate in amplitude, RBS in decibels, so it opens and closes a little differently. Out of RBS's range, so limited: attack.
+- approximated source "Mic/Aux" (wasapi_input_capture): This computer's devices were not checked, so RBS uses the default one.
+- approximated item "Screen" in Main: The source's picture size is not known here, so its size on the canvas may differ.
+- approximated item "Overlay" in Main: A crop on a nested scene is not in RBS.
+- approximated item "Alerts" in Main: Blending mode "additive" is not in RBS.
+- approximated scene "Badges" (group) in Main: The group became separate items in the scene.
+- approximated item "Badge logo" in Main: The source's picture size is not known here, so its size on the canvas may differ.
+- approximated item "Logo" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
+- approximated item "Music" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
+- approximated item "Frame" in Overlay: The source's picture size is not known here, so its size on the canvas may differ.
+Not imported (5):
+- skipped source "Lower third" (text_ft2_source_v2) in Main: Text sources are not in RBS yet. A later RBS can add it from the saved report.
+- skipped source "Old photo" (image_source) in Starting soon: Only PNG pictures can be shown for now. Save the picture as PNG and add it as an image source.
+- skipped filter "Mic/Aux: Noise suppression" (noise_suppress_filter_v2): This filter is not in RBS yet.
+- skipped filter "Main: Warm" (color_filter_v2): Filters on scenes are not in RBS.
+- skipped item "Ghost" in Starting soon: OBS 31 saved this item with relative positions only, which RBS does not read yet.

@@ -28,6 +28,8 @@ pub enum Command {
     /// `rbs-cli project ...`: an editor project from a recording manifest (ADR-0089
     /// decision 10).
     Project(ProjectArgs),
+    /// `rbs-cli obs-import ...`: an OBS scene collection into RBS (ADR-0131).
+    ObsImport(crate::obs_import::ObsImportCommand),
     /// `rbs-cli help` or `--help`.
     Help,
 }
@@ -127,7 +129,7 @@ pub enum StreamControl {
 /// line (which other users and the shell history can see).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamTarget {
-    /// `rtmp://host[:port]/app` or `srt://host:port`.
+    /// `rtmp://host[:port]/app`, `rtmps://host[:port]/app` or `srt://host:port`.
     pub url: String,
     /// Packets for RTMP, MPEG-TS chunks for SRT.
     pub input: TransportInput,
@@ -146,17 +148,18 @@ pub const DEFAULT_KEY_ENV: &str = "RBS_STREAM_KEY";
 /// 1080p60 H.264 (`record` defaults to 12000).
 pub const DEFAULT_STREAM_KBPS: u64 = 6000;
 
-/// The transport input a stream URL needs: packets for `rtmp://`, MPEG-TS for `srt://`.
+/// The transport input a stream URL needs: packets for `rtmp://` and `rtmps://`, MPEG-TS
+/// for `srt://`.
 pub fn stream_input(url: &str) -> Result<TransportInput, String> {
     let scheme = url
         .split_once("://")
         .map(|(s, _)| s.to_ascii_lowercase())
         .unwrap_or_default();
     match scheme.as_str() {
-        "rtmp" => Ok(TransportInput::Packets),
+        "rtmp" | "rtmps" => Ok(TransportInput::Packets),
         "srt" => Ok(TransportInput::Container(ContainerId::MpegTs)),
         _ => Err(format!(
-            "{url}: a stream URL starts with rtmp:// or srt:// (rtmps is not supported yet)"
+            "{url}: a stream URL starts with rtmp://, rtmps:// or srt://"
         )),
     }
 }
@@ -217,7 +220,7 @@ pub struct RecordArgs {
 pub const USAGE: &str = "\
 usage:
   rbs-cli record <file.mkv|file.mp4|file.mov> [options]
-  rbs-cli stream <rtmp://host/app|srt://host:port> [stream options] [options]
+  rbs-cli stream <rtmp[s]://host/app|srt://host:port> [stream options] [options]
   rbs-cli devices
   rbs-cli token list
   rbs-cli token create <name> [--access view|control|full]
@@ -226,6 +229,9 @@ usage:
   rbs-cli app stream start|stop|status [--json]
   rbs-cli vcam status|add|format|remove [--size WxH] [--fps N]
   rbs-cli project --manifest <recording.rbs.toml> [--format fcpxml|xmeml] [--strict]
+  rbs-cli obs-import scan
+  rbs-cli obs-import check|run <collection.json> [--profile <folder>] [--scene <name>]...
+                       [--no-global-audio] [--no-audio-filters] [--no-video-filters] [--no-canvas]
 
 record options:
   --seconds N          stop after N seconds (default: Enter or Ctrl+C)
@@ -481,6 +487,7 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
         Some("app") => app(it).map(Command::App),
         Some("vcam") => vcam(it).map(Command::Vcam),
         Some("project") => project(it).map(Command::Project),
+        Some("obs-import") => crate::obs_import::parse(it).map(Command::ObsImport),
         Some("remote") => match (it.next(), it.next()) {
             (Some("fingerprint"), None) => Ok(Command::RemoteFingerprint),
             (Some("fingerprint"), Some(extra)) => {
@@ -755,7 +762,8 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>, stream: bool) -> Result<Rec
     }
     a.vcam = vcam.then_some(vcam_format);
     if stream {
-        let url = out.ok_or("stream: the URL is missing (rtmp://host/app or srt://host:port)")?;
+        let url =
+            out.ok_or("stream: the URL is missing (rtmp[s]://host/app or srt://host:port)")?;
         let input = stream_input(url)?;
         if srt_latency_ms.is_some() && input == TransportInput::Packets {
             return Err("--srt-latency applies to srt:// URLs only".into());
@@ -1065,8 +1073,8 @@ mod tests {
     fn bad_stream_arguments_are_refused_with_a_reason() {
         for (args, want) in [
             (&[][..], "URL is missing"),
-            (&["a.mkv"][..], "rtmp:// or srt://"),
-            (&["rtmps://x/app"][..], "rtmp:// or srt://"),
+            (&["a.mkv"][..], "rtmp://, rtmps:// or srt://"),
+            (&["rtmpt://x/app"][..], "rtmp://, rtmps:// or srt://"),
             (&["rtmp://x/app", "--overwrite"][..], "unknown option"),
             (
                 &["rtmp://x/app", "--srt-latency", "100"][..],

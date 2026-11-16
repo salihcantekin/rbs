@@ -1,0 +1,24 @@
+[package]
+name = "rbs-import-obs"
+description = "Reads an OBS Studio scene collection and profile and returns an RBS import plan with a report of what did not come across exactly (ADR-0131)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Layer class Import (ADR-0131 decision 1): used only by composition roots. Reads files,
+# writes nothing. No engine, adapter, toolkit, rbs-app or rbs-user-data crate; RBS type
+# ids are strings checked against the real catalogues by a test in the composition root.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-scene = { path = "../rbs-scene" }
+rbs-params = { path = "../rbs-params" }
+rbs-ui = { path = "../rbs-ui" }
+serde_json = "1"
+
+
+[lints]
+workspace = true
