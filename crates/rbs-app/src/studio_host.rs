@@ -422,6 +422,9 @@ pub struct SourceRow {
     /// The other sources of its audio device whose sync offset differs, by name
     /// (ADR-0126 decision 9); empty for every other source.
     pub device_peers: Vec<String>,
+    /// How the latency of its running audio filters is compensated (ADR-0130 decision
+    /// 4); `None` for a source the studio does not run.
+    pub latency: Option<rbs_record::AudioLatency>,
 }
 
 impl PartialEq for SourceRow {
@@ -436,6 +439,7 @@ impl PartialEq for SourceRow {
             && self.companion_of == other.companion_of
             && self.record_separately == other.record_separately
             && self.device_peers == other.device_peers
+            && self.latency == other.latency
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -2155,7 +2159,7 @@ struct LiveDestination {
 }
 
 impl LiveDestination {
-    /// Its row in the stream's state (control API 1.74), as of `now`.
+    /// Its row in the stream's state (control API 1.77), as of `now`.
     fn api(&self, now: Timestamp) -> api::LiveDestination {
         api::LiveDestination {
             id: self.id,
@@ -2757,7 +2761,7 @@ pub enum Update {
     /// the UI shows and saves them.
     StreamProfile(StreamProfile),
     /// A control API client turned a stream destination on or off
-    /// (`stream.destination.set_enabled`, protocol 1.74); the UI saves the section.
+    /// (`stream.destination.set_enabled`, protocol 1.77); the UI saves the section.
     StreamDestinations(Destinations),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
@@ -7792,7 +7796,7 @@ impl Host {
         self.destinations.of(role, &profile, &self.key_account)
     }
 
-    /// `stream.destinations` rows of `c` (control API 1.74): never a server or a key.
+    /// `stream.destinations` rows of `c` (control API 1.77): never a server or a key.
     fn api_destinations(&self, c: OutputCanvas) -> Vec<api::StreamDestination> {
         self.resolved_destinations(c)
             .into_iter()
@@ -8218,7 +8222,7 @@ impl Host {
                 s.transport_drops += d.link.transport_drops;
             }
         }
-        // Each destination's row (control API 1.74): a change of state, counters or
+        // Each destination's row (control API 1.77): a change of state, counters or
         // error is published; the time on air alone is not (never per round).
         let now = self.clock.now();
         let rows: Vec<api::LiveDestination> = self.outs[slot(c)]
@@ -12169,6 +12173,7 @@ impl Host {
                     cue_remaining_ms,
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
+                    latency: self.studio.audio_latency(s.id),
                     device_peers: self
                         .device_peers(s.id)
                         .into_iter()
@@ -12202,7 +12207,11 @@ impl Host {
                         .program_levels(self.canvas)
                         .and_then(|l| l.level(s.id))
                         .map(|l| l.over(s.audio)),
-                    filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
+                    filters: filters::rows(
+                        s,
+                        |f| self.studio.audio_filter_meter(f).cloned(),
+                        |f| self.studio.audio_filter_latency_ns(f),
+                    ),
                     status,
                     global,
                     also_in: {
@@ -12527,7 +12536,11 @@ impl ApiTarget<'_> {
             })),
             C::SourceList => Ok(Response::Sources(api::Snapshot {
                 seq: host.events.seq_map([Topic::SourceChanged]),
-                data: host.heard.iter().map(api_source).collect(),
+                data: host
+                    .heard
+                    .iter()
+                    .map(|row| with_input_counters(&host.studio, api_source(row)))
+                    .collect(),
             })),
             C::SourceTargets(p) => {
                 let kind = app_kind(p.kind);
@@ -12988,7 +13001,11 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::FilterTypes(p) => Ok(Response::FilterTypes(filters::api_types(p.domain))),
+            C::FilterTypes(p) => {
+                let graph = &host.studio.settings().audio_graph;
+                let setup = rbs_audio_filters::DspSetup::new(graph.format, graph.block_frames);
+                Ok(Response::FilterTypes(filters::api_types(p.domain, setup)))
+            }
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
                 let id = host
@@ -14582,7 +14599,7 @@ impl ApiTarget<'_> {
         self.host.api_canvas_of(Some(c))
     }
 
-    /// `stream.destination.start` (protocol 1.74, ADR-0127 decision 16).
+    /// `stream.destination.start` (protocol 1.77, ADR-0127 decision 16).
     fn destination_start(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
         let notify = self.notify;
@@ -14630,7 +14647,7 @@ impl ApiTarget<'_> {
         Ok(Response::Done(Empty {}))
     }
 
-    /// `stream.destination.stop` (protocol 1.74): the last running destination ends
+    /// `stream.destination.stop` (protocol 1.77): the last running destination ends
     /// the stream, as `stream.stop` does.
     fn destination_stop(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
@@ -14659,7 +14676,7 @@ impl ApiTarget<'_> {
     }
 
     /// `stream.start` of `c`, or `stream.destination.start` of `only` while `c` does
-    /// not stream: that canvas's stream with this destination alone (protocol 1.74).
+    /// not stream: that canvas's stream with this destination alone (protocol 1.77).
     fn stream_to(&mut self, c: OutputCanvas, only: Option<u32>) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
@@ -14902,6 +14919,21 @@ fn api_picture_form(form: VideoAs) -> api::PictureForm {
     }
 }
 
+/// Nanoseconds as milliseconds, to the microsecond (control API 1.77).
+fn ns_to_ms(ns: i64) -> f64 {
+    (ns as f64 / 1_000.0).round() / 1_000.0
+}
+
+/// `info` with the counters of its source's audio input, when one runs (`source.list`,
+/// protocol 1.77, ADR-0130 decision 9).
+fn with_input_counters(studio: &Studio, mut info: api::SourceInfo) -> api::SourceInfo {
+    if let Some(c) = studio.input_counters(SourceId::from_raw(info.id)) {
+        info.input_late_frames = Some(c.late_frames);
+        info.input_resyncs = Some(c.resyncs);
+    }
+    info
+}
+
 fn api_source(row: &SourceRow) -> api::SourceInfo {
     api::SourceInfo {
         item: Some(row.item.get()),
@@ -14943,6 +14975,13 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             volume: h.volume,
             muted: h.muted,
         }),
+        filter_latency_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.filter_latency_ns)),
+        effective_offset_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.heard_offset_ns)),
+        uncompensated_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.uncompensated_ns)),
+        // Growing counters: only `source.list` reads them (`with_input_counters`), so
+        // a row's change event is not sent on every block.
+        input_late_frames: None,
+        input_resyncs: None,
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),

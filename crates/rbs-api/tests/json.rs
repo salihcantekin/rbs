@@ -139,6 +139,11 @@ fn source() -> SourceInfo {
             volume: 1.0,
             muted: false,
         }),
+        filter_latency_ms: 10.0,
+        effective_offset_ms: -30.0,
+        uncompensated_ms: 0.0,
+        input_late_frames: Some(96),
+        input_resyncs: Some(1),
     }
 }
 
@@ -762,6 +767,7 @@ fn every_result_and_event_type_round_trips() {
                     unit: Some("px".into()),
                     default: json!(8.0),
                 }],
+                latency_ms: None,
             },
             FilterTypeInfo {
                 type_id: "org.example.audio-filter.test".into(),
@@ -798,6 +804,7 @@ fn every_result_and_event_type_round_trips() {
                         default: json!("soft"),
                     },
                 ],
+                latency_ms: Some(10.0),
             },
         ],
     });
@@ -2821,6 +2828,55 @@ fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
     }))
     .unwrap();
     assert_eq!(entry.origin, DeviceSyncOrigin::Other);
+}
+
+#[test]
+fn filter_latency_fields_are_optional_and_round_trip() {
+    // Protocol 1.77 (ADR-0130 decision 9): a source without latent filters, offset or
+    // running input looks as it did before.
+    let plain = serde_json::to_value(SourceInfo {
+        filter_latency_ms: 0.0,
+        effective_offset_ms: 0.0,
+        uncompensated_ms: 0.0,
+        input_late_frames: None,
+        input_resyncs: None,
+        ..source()
+    })
+    .unwrap();
+    for key in [
+        "filter_latency_ms",
+        "effective_offset_ms",
+        "uncompensated_ms",
+        "input_late_frames",
+        "input_resyncs",
+    ] {
+        assert!(plain.get(key).is_none(), "{key}");
+    }
+    let row = serde_json::to_value(SourceInfo {
+        uncompensated_ms: 4.0,
+        ..source()
+    })
+    .unwrap();
+    assert_eq!(row["filter_latency_ms"], json!(10.0));
+    assert_eq!(row["effective_offset_ms"], json!(-30.0));
+    assert_eq!(row["uncompensated_ms"], json!(4.0));
+    assert_eq!(row["input_late_frames"], json!(96));
+    assert_eq!(row["input_resyncs"], json!(1));
+    let back: SourceInfo = serde_json::from_value(row).unwrap();
+    assert_eq!(back.uncompensated_ms, 4.0);
+    // An older server's row reads with zero latency and no counters.
+    let older: SourceInfo = serde_json::from_value(json!({
+        "id": 1, "name": "Mic", "kind": "audio_input", "status": {"state": "running"}, "volume": 1.0
+    }))
+    .unwrap();
+    assert_eq!(older.filter_latency_ms, 0.0);
+    assert_eq!(older.input_resyncs, None);
+    // An older server's filter type has no latency.
+    let ty: FilterTypeInfo = serde_json::from_value(
+        json!({"type": "org.rbs.filter.blur", "name": "Blur", "fields": []}),
+    )
+    .unwrap();
+    assert_eq!(ty.latency_ms, None);
 }
 
 #[test]
