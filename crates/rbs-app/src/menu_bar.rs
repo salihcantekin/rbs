@@ -744,6 +744,25 @@ impl CommandState for Shown<'_> {
                 Ok(())
             }
             "replay.toggle" => self.running(),
+            "stream.hold_toggle" => {
+                self.running()?;
+                if s.st_state == st_state::LIVE || matches!(s.vertical_st, VerticalOut::On) {
+                    Ok(())
+                } else {
+                    Err("Hold works while a stream is live.".to_owned())
+                }
+            }
+            "output.break_toggle" => {
+                self.running()?;
+                let live = s.st_state == st_state::LIVE || matches!(s.vertical_st, VerticalOut::On);
+                let recording = s.rec_state == rec_state::RECORDING
+                    || matches!(s.vertical_rec, VerticalOut::On);
+                if live || recording {
+                    Ok(())
+                } else {
+                    Err("Break works while a stream is live or a recording runs.".to_owned())
+                }
+            }
             "record.pause_toggle" => {
                 self.running()?;
                 let vertical = matches!(s.vertical_rec, VerticalOut::On);
@@ -1039,6 +1058,9 @@ impl CommandState for Shown<'_> {
                 }
                 .to_owned(),
             );
+        }
+        if id.base() == "stream.hold_toggle" && self.studio.stream_held() {
+            return Some("Resume stream".to_owned());
         }
         if id.base() == "record.pause_toggle" && self.studio.record_paused() {
             return Some("Resume recording".to_owned());
@@ -1698,6 +1720,10 @@ pub enum Run {
     AddMarker,
     /// Pause the running recordings, or resume them (ADR-0124).
     PauseRecording,
+    /// Hold the live streams, or resume them (ADR-0124).
+    HoldStream,
+    /// Break: hold every stream and pause every recording, or resume them all.
+    Break,
 }
 
 /// The output kind an `output.with_vertical` id names.
@@ -1953,6 +1979,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "replay.save" => Run::SaveReplay,
         "marker.add" => Run::AddMarker,
         "record.pause_toggle" => Run::PauseRecording,
+        "stream.hold_toggle" => Run::HoldStream,
+        "output.break_toggle" => Run::Break,
         "canvas.add_vertical" => Run::AddVertical,
         "canvas.vertical_size" => {
             let (w, h) = size_of(&id)?;
@@ -2171,13 +2199,14 @@ mod tests {
 
     #[test]
     fn refreshing_keeps_the_text_around_the_markers() {
-        let text = format!("a\n    {BEGIN}\n    old\n    {END}\nb\n");
+        // A marker no menu title contains ("old" is in "Hold stream").
+        let text = format!("a\n    {BEGIN}\n    stale-line\n    {END}\nb\n");
         let fresh = refreshed(&text).expect("markers");
         assert!(fresh.starts_with(&format!(
             "a\n    {BEGIN}\n    if Shell.native-menu-bar: MenuBar {{\n"
         )));
         assert!(fresh.ends_with(&format!("    }}\n    {END}\nb\n")));
-        assert!(!fresh.contains("old"));
+        assert!(!fresh.contains("stale-line"));
         assert_eq!(refreshed("no markers"), None);
     }
 }

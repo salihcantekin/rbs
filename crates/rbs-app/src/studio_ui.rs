@@ -26,8 +26,8 @@ use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, St
 use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, MainDisplay, OutputCanvas, RecordPatch,
     RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
-    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost,
-    Target, TransformOp, Update,
+    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate,
+    StudioHost, Target, TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -425,6 +425,9 @@ pub struct StudioUi {
     /// studio last sent it, and when it came (a pause began then, or the recorded
     /// time moves on from there). `None`: never paused since it started.
     rec_pause: [Option<(RecordPause, Instant)>; 2],
+    /// Hold (ADR-0124): each live stream's hold state (main, vertical) as the studio
+    /// last sent it, and when the hold began. `None`: never held since it started.
+    st_hold: [Option<(StreamHold, Instant)>; 2],
     pub marker_note: String,
     marker_undo: Vec<(OutputCanvas, u32)>,
     marker_serial: u32,
@@ -620,6 +623,7 @@ impl StudioUi {
             rec_markers: 0,
             rec_markers_shown: false,
             rec_pause: [None, None],
+            st_hold: [None, None],
             marker_note: String::new(),
             marker_undo: Vec::new(),
             marker_serial: 0,
@@ -938,6 +942,8 @@ impl StudioUi {
             self.rec_state == rec_state::RECORDING || self.vertical_rec == VerticalOut::On,
         );
         g.set_rec_paused(self.record_paused());
+        g.set_st_holdable(self.streams_live().iter().any(|l| *l));
+        g.set_st_held(self.stream_held());
         g.set_rec_markers_shown(self.rec_markers_shown && self.rec_state == rec_state::RECORDING);
         g.set_marker_note(self.marker_note.as_str().into());
         g.set_marker_generation(self.marker_serial as i32);
@@ -2873,6 +2879,55 @@ impl StudioUi {
         self.send(Command::PauseRecording);
     }
 
+    /// Hold every live stream, or resume them all when every one is held
+    /// (`stream.hold_toggle`, Ctrl+Shift+H, the frame's End stream button and the
+    /// Outputs card; ADR-0124).
+    pub fn hold_stream(&mut self) {
+        self.send(Command::HoldStream);
+    }
+
+    /// Break (`output.break_toggle`, Ctrl+Shift+B; ADR-0124 decision 15).
+    pub fn take_break(&mut self) {
+        self.send(Command::Break);
+    }
+
+    /// Which canvases stream now (main, vertical).
+    fn streams_live(&self) -> [bool; 2] {
+        [
+            self.st_state == st_state::LIVE,
+            self.vertical_st == VerticalOut::On,
+        ]
+    }
+
+    /// Every live stream is on hold: Hold reads Resume. False while none is live.
+    pub fn stream_held(&self) -> bool {
+        let live = self.streams_live();
+        live.iter().any(|l| *l)
+            && live
+                .iter()
+                .zip(&self.st_hold)
+                .all(|(l, h)| !l || h.is_some_and(|(h, _)| h.held))
+    }
+
+    /// How long the main stream's hold has lasted, while it is held.
+    pub fn held_for(&self) -> Option<Duration> {
+        self.st_hold[0]
+            .filter(|(h, _)| h.held)
+            .map(|(_, at)| at.elapsed())
+    }
+
+    /// [`Update::StreamHold`]: a hold that goes on keeps when it began.
+    fn stream_hold(&mut self, states: [Option<StreamHold>; 2]) {
+        for (slot, state) in self.st_hold.iter_mut().zip(states) {
+            let kept = slot.filter(|(h, _)| state.is_some_and(|s| s.held && h.held));
+            *slot = match (state, kept) {
+                (Some(s), Some((_, at))) => Some((s, at)),
+                (Some(s), None) => Some((s, Instant::now())),
+                (None, _) => None,
+            };
+        }
+    }
+
     /// Every running recording is paused: Pause reads Resume. False while none runs.
     pub fn record_paused(&self) -> bool {
         let running = [
@@ -4171,6 +4226,7 @@ impl StudioUi {
                 dropped,
                 connects,
             } => {
+                self.st_hold[0] = None;
                 let duration = self
                     .st_live
                     .take()
@@ -5409,6 +5465,7 @@ impl StudioUi {
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Markers { counts, placed } => self.markers(counts, placed),
             Update::RecordPause(states) => self.record_pause(states),
+            Update::StreamHold(states) => self.stream_hold(states),
             Update::Stream(u) => self.stream_update(u, &mut out),
             // The vertical canvas's outputs start from the frame's Record and Go live
             // menus or through the control API (protocol 1.29): what went wrong is a
@@ -5450,6 +5507,7 @@ impl StudioUi {
                         self.vertical_st_connected = false;
                     }
                     StreamUpdate::Ended { .. } => {
+                        self.st_hold[1] = None;
                         self.vertical_st = VerticalOut::Off;
                         self.vertical_st_since = None;
                         self.vertical_st_connected = false;
@@ -7418,6 +7476,47 @@ mod tests {
         ui.apply(Update::Recording(RecordingUpdate::NotStarted("no".into())));
         assert_eq!(ui.rec_state, rec_state::OFF);
         assert!(ui.rec_note_bad);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_held_stream_reads_resume_and_forgets_its_hold_when_it_ends() {
+        let (mut ui, d) = ui("hold");
+        let hold = |held: bool| Some(StreamHold { held });
+        assert!(!ui.stream_held());
+        ui.apply(Update::Stream(StreamUpdate::Started {
+            url: "rtmp://example.com/app".into(),
+            video_encoder: "x".into(),
+            audio_encoder: None,
+        }));
+        assert_eq!(ui.st_state, st_state::LIVE);
+        assert!(!ui.stream_held());
+        ui.apply(Update::StreamHold([hold(true), None]));
+        assert!(ui.stream_held());
+        assert!(ui.held_for().is_some());
+        // A state sent again while the hold goes on keeps when it began.
+        let began = ui.st_hold[0].map(|(_, at)| at);
+        ui.apply(Update::StreamHold([hold(true), None]));
+        assert_eq!(ui.st_hold[0].map(|(_, at)| at), began);
+        // A vertical stream that is not held keeps Hold.
+        ui.vertical_st = VerticalOut::On;
+        assert!(!ui.stream_held());
+        ui.apply(Update::StreamHold([hold(true), hold(true)]));
+        assert!(ui.stream_held());
+        ui.apply(Update::StreamHold([hold(false), hold(false)]));
+        assert!(!ui.stream_held());
+        assert_eq!(ui.held_for(), None);
+        // Ending forgets the hold.
+        ui.apply(Update::StreamHold([hold(true), None]));
+        ui.vertical_st = VerticalOut::Off;
+        ui.apply(Update::Stream(StreamUpdate::Ended {
+            failure: None,
+            frames: 1,
+            dropped: 0,
+            connects: 1,
+        }));
+        assert!(!ui.stream_held());
+        assert_eq!(ui.st_hold[0], None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

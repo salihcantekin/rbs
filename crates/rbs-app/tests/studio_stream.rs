@@ -1759,6 +1759,49 @@ fn a_control_api_client_pauses_and_resumes_a_recording() {
     drop(api);
 }
 
+/// ADR-0124 from the window: Hold stream (the End stream button's second half,
+/// Ctrl+Shift+H) holds the live stream and again resumes it; Break holds it too; with
+/// nothing live, Hold says why.
+#[test]
+fn the_window_holds_and_resumes_the_stream() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    add_display(&host, &rx);
+    let held = |rx: &Receiver<Update>| {
+        next(rx, |u| match u {
+            Update::StreamHold(states) => Some(states.map(|s| s.map(|s| s.held))),
+            _ => None,
+        })
+    };
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    host.send(Command::HoldStream);
+    assert_eq!(held(&rx), [Some(true), None]);
+    clock.advance(Duration::from_secs(1));
+    host.send(Command::HoldStream);
+    assert_eq!(held(&rx), [Some(false), None]);
+    host.send(Command::Break);
+    assert_eq!(held(&rx), [Some(true), None]);
+    host.send(Command::Break);
+    assert_eq!(held(&rx), [Some(false), None]);
+    host.send(Command::EndStream);
+    assert_eq!(ended(&rx), None);
+    host.send(Command::HoldStream);
+    let why = next(&rx, |u| match u {
+        Update::Error(e) => Some(e),
+        _ => None,
+    });
+    assert!(
+        why.starts_with("The stream could not hold or resume"),
+        "{why}"
+    );
+}
+
 /// ADR-0124 decisions 12 and 15 through the control API (protocol 1.64): a live stream
 /// is held and resumed, its state carries `held`, a second hold or a resume of a
 /// stream not held is a conflict, and Break holds every stream and pauses every
