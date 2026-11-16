@@ -1476,7 +1476,90 @@ pub enum StreamState {
         /// Why the hold fell back, while it does (protocol 1.67).
         #[serde(default)]
         hold_fallback_reason: Option<String>,
+        /// Each destination of the stream (protocol 1.69, ADR-0127 decision 16), in
+        /// the order Go live started them; the top-level `connected`, `connects` and
+        /// `reconnect_attempts` sum the running ones.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        destinations: Vec<LiveDestination>,
     },
+}
+
+/// One destination of a live stream (protocol 1.69, ADR-0127 decision 16). Never its
+/// server or key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDestination {
+    /// Its id in the output profile (`stream.destinations`).
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+    /// Its service preset's id, or `custom`.
+    pub service: String,
+    /// Where it stands.
+    pub state: DestinationState,
+    /// Times it connected so far.
+    pub connects: u64,
+    /// Reconnect attempts so far.
+    pub reconnect_attempts: u64,
+    /// Items its transport dropped while the connection was slow or down.
+    pub dropped: u64,
+    /// Time since it first connected, in milliseconds, as of this state; 0 before.
+    pub on_air_ms: u64,
+    /// Why it failed; never the server or the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Where one destination of a live stream stands (protocol 1.69).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationState {
+    /// Started; not connected yet.
+    Connecting,
+    /// Connected and sending.
+    Live,
+    /// The connection dropped; it tries again.
+    Reconnecting,
+    /// Refused at start, gave up, or failed; the others go on.
+    Failed,
+    /// Stopped with `stream.destination.stop` while the others go on.
+    Stopped,
+}
+
+/// One saved destination (`stream.destinations`, protocol 1.69, ADR-0127 decision 16).
+/// Never its server or key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamDestination {
+    /// Its id, unique in the output profile and never reused.
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+    /// Its service preset's id, or `custom`.
+    pub service: String,
+    /// The canvas it belongs to.
+    pub canvas: OutputCanvas,
+    /// Go live sends to it.
+    pub enabled: bool,
+    /// A server is saved for it (a key may still be missing; Go live says so).
+    pub configured: bool,
+    /// The stream's encoding, or its own.
+    pub encoding: DestinationEncodingKind,
+}
+
+/// Whether a destination shares the stream's encoding (protocol 1.69).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationEncodingKind {
+    /// The stream's encoder, shared.
+    Shared,
+    /// An encoder of its own.
+    Own,
+}
+
+/// `stream.destinations` (protocol 1.69).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamDestinations {
+    /// The asked canvas's destinations (both canvases' without `canvas`), by id.
+    pub destinations: Vec<StreamDestination>,
 }
 
 /// How a stream ended.
