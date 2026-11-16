@@ -611,6 +611,13 @@ impl super::Studio {
         self.iso_video.is_some()
     }
 
+    /// True while a running take writes a separate picture track of `source`.
+    pub fn iso_video_records(&self, source: SourceId) -> bool {
+        self.iso_video
+            .as_ref()
+            .is_some_and(|run| run.relinks.iter().any(|r| r.source == source))
+    }
+
     /// Closes separate video files and drops their nodes. False when none were open.
     /// The partitions stay, with no worker (ADR-0013).
     pub fn stop_iso_video(&mut self) -> bool {

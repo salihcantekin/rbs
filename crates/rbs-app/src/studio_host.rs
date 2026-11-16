@@ -45,7 +45,8 @@ use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_ne
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
-    RecordAdapters, RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
+    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, VideoSettings,
+    VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
@@ -3215,6 +3216,9 @@ struct Host {
     /// The next undo and redo as last sent.
     history_shown: (Option<StepInfo>, Option<StepInfo>),
     waiting: bool,
+    /// A program switch held back until its entering texts are uploaded, at most
+    /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
+    held_switch: Option<SceneId>,
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
@@ -3407,6 +3411,14 @@ fn run(
     let _ = host.studio.shutdown();
 }
 
+/// Why a text's box cannot change during a take that records its picture separately
+/// (ADR-0129 decision 5).
+const STOP_TO_CHANGE_BOX: &str =
+    "Stop recording to change the box: the separate picture track keeps one size.";
+
+/// How often the control loop looks at a program switch held back for its texts.
+const HELD_SWITCH_POLL: Duration = Duration::from_millis(4);
+
 /// Caught panics in a row after which the studio counts as failed: its recording and
 /// stream end cleanly instead of running on with a host that keeps panicking.
 const CAUGHT_LIMIT: u32 = 3;
@@ -3530,6 +3542,13 @@ fn round(
         host.apply(notify);
     }
     host.waiting = waiting;
+    if host.held_switch.is_some() {
+        host.drive_held_switch(notify);
+        if host.held_switch.is_some() {
+            // Look again within a render tick.
+            wait = wait.min(HELD_SWITCH_POLL);
+        }
+    }
     // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
     // the stream states say so.
     if host.studio.take_hold_fallback() {
@@ -3752,6 +3771,7 @@ fn start(
         history: History::new(),
         history_shown: (None, None),
         waiting: false,
+        held_switch: None,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
         iso: None,
         stats_due: None,
@@ -8430,7 +8450,14 @@ impl Host {
         let program = self.scene;
         let preview = self.preview();
         let offsets = filters::audio_offsets(&self.collection);
-        let result = self.undo_or_redo_records(back);
+        let boxes = self.recorded_text_boxes();
+        let mut result = self.undo_or_redo_records(back);
+        if result.is_ok() && self.recorded_text_boxes() != boxes {
+            // The step would change the box of a text with a separate picture track
+            // in the running take (ADR-0129 decision 5): stepped back, refused.
+            let _ = self.undo_or_redo_records(!back);
+            result = Err((false, STOP_TO_CHANGE_BOX.to_owned()));
+        }
         self.resync_audio_offsets(&offsets);
         // Undo and redo never change what is on air (ADR-0059) or the preview scene
         // (ADR-0061): a record that put a scene back on air or in preview is
@@ -8451,6 +8478,30 @@ impl Host {
             let _ = self.collection.set_preview(self.canvas, restored);
         }
         result
+    }
+
+    /// The box of every text source a running take writes a separate picture track
+    /// of; empty while no take records one.
+    fn recorded_text_boxes(&self) -> Vec<(SourceId, Option<SettingValue>, Option<SettingValue>)> {
+        if !self.studio.iso_video_running() {
+            return Vec::new();
+        }
+        self.collection
+            .sources()
+            .filter(|s| {
+                rbs_sources::types::class_of(&s.type_id)
+                    == Some(rbs_sources::types::SourceClass::Text)
+                    && self.studio.iso_video_records(s.id)
+            })
+            .map(|s| {
+                let get = |k: &str| s.settings.get(k).cloned();
+                (
+                    s.id,
+                    get(rbs_sources::types::keys::WIDTH),
+                    get(rbs_sources::types::keys::HEIGHT),
+                )
+            })
+            .collect()
     }
 
     fn undo_or_redo_records(&mut self, back: bool) -> Result<(), (bool, String)> {
@@ -9435,12 +9486,39 @@ impl Host {
         {
             return Ok(false);
         }
+        // A separate picture track keeps its size for the whole take (ADR-0129
+        // decision 4): a text's box does not change while one is written.
+        if rbs_sources::types::class_of(&type_id) == Some(rbs_sources::types::SourceClass::Text)
+            && self.studio.iso_video_records(id)
+            && self.collection.source(id).is_some_and(|s| {
+                [
+                    rbs_sources::types::keys::WIDTH,
+                    rbs_sources::types::keys::HEIGHT,
+                ]
+                .iter()
+                .any(|k| s.settings.get(*k) != settings.get(*k))
+            })
+        {
+            return Err(Refusal::Invalid(format!("{name}: {STOP_TO_CHANGE_BOX}")));
+        }
         let undo = self
             .collection
             .set_source_settings(id, settings)
             .map_err(|e| Refusal::of(&e))?;
+        let mut undos = vec![undo];
+        // Marks follow stillness (ADR-0129 decision 1): a text that starts to move
+        // loses its `video_as: image` in the same undo step.
+        if let Some(mark) = self.collection.source(id).and_then(|s| {
+            rbs_sources::mark_after_edit(&s.type_id, &s.settings, s.record_separately)
+        }) {
+            undos.push(
+                self.collection
+                    .set_source_record_separately(id, mark)
+                    .map_err(|e| Refusal::of(&e))?,
+            );
+        }
         self.history
-            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+            .record(EditKind::SourceSettings, &name, 0, undos);
         self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::SourceSettings);
         Ok(true)
     }
@@ -9612,6 +9690,7 @@ impl Host {
                 types::SourceClass::Capture(_)
                     | types::SourceClass::Still
                     | types::SourceClass::Browser
+                    | types::SourceClass::Text
             )
         );
         let sound_only = matches!(class, Some(types::SourceClass::Audio(_)));
@@ -9655,7 +9734,7 @@ impl Host {
             flag.audio = on;
         }
         if let Some(form) = patch.video_as {
-            if form == VideoAs::Image && class != Some(types::SourceClass::Still) {
+            if form == VideoAs::Image && !rbs_sources::is_still(&source.type_id, &source.settings) {
                 return Err(Refusal::Invalid(format!(
                     "{} is not a still picture, so it cannot be recorded as images.",
                     source.name
@@ -10029,14 +10108,43 @@ impl Host {
                 id.get()
             )));
         }
+        // A newer switch replaces one still held back for its texts.
+        self.held_switch = None;
         if self.scene == id {
             return Ok(false);
         }
+        if self.studio.text_prepare(self.canvas, id) {
+            // Goes on air from the control loop once its texts are uploaded.
+            self.held_switch = Some(id);
+            return Ok(false);
+        }
+        self.put_on_air(id)
+    }
+
+    fn put_on_air(&mut self, id: SceneId) -> Result<bool, Refusal> {
         self.collection
             .set_program(self.canvas, Some(id))
             .map_err(|e| Refusal::of(&e))?;
         self.scene = id;
         Ok(true)
+    }
+
+    /// Makes a held-back program switch once its texts are ready or late.
+    fn drive_held_switch(&mut self, notify: &dyn Fn(Update)) {
+        let Some(id) = self.held_switch else {
+            return;
+        };
+        if self.studio.text_due() == TextDue::Wait {
+            return;
+        }
+        self.held_switch = None;
+        // The scene may have been removed meanwhile; the refusal is then news.
+        let done = if self.listed(id) && self.scene != id {
+            self.put_on_air(id)
+        } else {
+            Ok(false)
+        };
+        self.answer(done, notify);
     }
 
     /// A scene the Scenes panel lists, by name, for the scene levels methods; a global
