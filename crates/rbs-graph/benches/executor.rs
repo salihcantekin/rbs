@@ -171,5 +171,93 @@ fn queue_crossing(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, tick, swap, param_update, queue_crossing);
+fn packet_fan_out(c: &mut Criterion) {
+    // One encoder's packets fanned out to N outputs, each in its own partition
+    // (ADR-0127 decision 11: up to 7 per canvas). The timed part is the encoder
+    // partition's tick, which writes every packet into one queue per output; the
+    // source and the outputs run untimed, so the queues never fill.
+    use rbs_core::lifecycle::Lifecycle;
+    use rbs_graph::description::{GraphDescription, PartitionId};
+    use rbs_graph::node::NodeKind;
+    use rbs_graph::partition::Lowering;
+    use rbs_graph::runtime::Node;
+
+    let mut group = c.benchmark_group("packet_fan_out");
+    for outputs in [1_u32, 3, 7] {
+        let mut graph = GraphDescription::new();
+        let mut nodes = Vec::new();
+        let mut add = |graph: &mut GraphDescription, kind, p: u32| {
+            let node = lean_nodes::Lean::new(kind);
+            let desc = Node::<()>::descriptor(&node).clone();
+            let id = graph.add_node(Arc::new(desc)).unwrap();
+            graph.set_state(id, Lifecycle::Standby).unwrap();
+            graph.set_state(id, Lifecycle::Active).unwrap();
+            graph.set_partition(id, PartitionId(p)).unwrap();
+            nodes.push((id, PartitionId(p), node));
+            id
+        };
+        let source = add(&mut graph, NodeKind::Source, 0);
+        let encoder = add(&mut graph, NodeKind::Encoder, 1);
+        graph.connect(source, "out", encoder, "in").unwrap();
+        for o in 0..outputs {
+            let out = add(&mut graph, NodeKind::Muxer, 2 + o);
+            graph.connect(encoder, "out", out, "in").unwrap();
+        }
+        let mut lowered = Lowering::new().lower(&graph);
+        let mut parts: Vec<_> = lowered
+            .parts
+            .keys()
+            .map(|p| (*p, channel::<()>(Arc::new(()), ())))
+            .collect();
+        parts.sort_by_key(|(p, _)| p.0);
+        let part = |parts: &mut Vec<(PartitionId, _)>, p: PartitionId| {
+            parts.iter().position(|(q, _)| *q == p).unwrap()
+        };
+        for (id, p, node) in nodes {
+            let i = part(&mut parts, p);
+            parts[i].1.0.adopt(id, Box::new(node)).unwrap();
+        }
+        for new in lowered.created.drain(..) {
+            let (w, r) = new.ends.writer::<()>();
+            let i = part(&mut parts, new.crossing.from);
+            parts[i].1.0.adopt(new.crossing.writer, w).unwrap();
+            let i = part(&mut parts, new.crossing.to);
+            parts[i]
+                .1
+                .0
+                .adopt(new.crossing.reader, r.into_node())
+                .unwrap();
+        }
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        for (p, (ctl, exec)) in parts.iter_mut() {
+            ctl.apply(&lowered.parts[p]).unwrap();
+            exec.run_tick(Tick::of(&cadence, 0));
+            ctl.collect().unwrap().unwrap();
+        }
+        let encoder_part = part(&mut parts, PartitionId(1));
+        let mut i = 1_u64;
+        group.bench_function(BenchmarkId::new("outputs", outputs), |b| {
+            b.iter_custom(|iters| {
+                let mut total = std::time::Duration::ZERO;
+                for _ in 0..iters {
+                    let tick = Tick::of(&cadence, i);
+                    i += 1;
+                    for (n, (_, (_, exec))) in parts.iter_mut().enumerate() {
+                        if n == encoder_part {
+                            let started = std::time::Instant::now();
+                            exec.run_tick(tick);
+                            total += started.elapsed();
+                        } else {
+                            exec.run_tick(tick);
+                        }
+                    }
+                }
+                total
+            })
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, tick, swap, param_update, queue_crossing, packet_fan_out);
 criterion_main!(benches);
