@@ -28,6 +28,7 @@ pub mod protection;
 mod recording;
 mod select;
 mod studio;
+pub mod sync_measure;
 mod timed_show;
 
 pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_clip};
@@ -57,4 +58,8 @@ pub use studio::{
     MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, MonitorState, OutputId, OutputSettings,
     PauseRefused, PauseState, PlannedOutput, ReplaySettings, SharedPause, StartPlanRequest, Studio,
     StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
+};
+pub use studio::{
+    MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
+    SyncMeasureState, SyncMeasureStatus,
 };

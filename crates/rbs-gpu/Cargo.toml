@@ -56,6 +56,10 @@ harness = false
 name = "transfer"
 harness = false
 
+[[bench]]
+name = "motion"
+harness = false
+
 [[test]]
 name = "share_layer_metal"
 required-features = ["preview-layer"]

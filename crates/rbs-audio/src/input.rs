@@ -413,6 +413,20 @@ impl InputNode {
     }
 }
 
+/// The offset an input of `config` with `max_offset` applies for `offset_ns`: a delay
+/// at most `max_offset`, an advance at most `latency - period - 5 ms` (audio graph
+/// spec, "Offset"). The studio reports it with a sync offset measurement (ADR-0126).
+/// It is the same clamp as the node's own (kept apart so the node's block path is
+/// not edited); both use `ADVANCE_MARGIN`.
+pub fn effective_offset_ns(config: &AudioGraphConfig, max_offset: Duration, offset_ns: i64) -> i64 {
+    let max = i64::try_from(max_offset.as_nanos()).unwrap_or(i64::MAX);
+    let advance = config
+        .latency
+        .saturating_sub(config.period() + ADVANCE_MARGIN);
+    let min = -i64::try_from(advance.as_nanos()).unwrap_or(i64::MAX);
+    offset_ns.clamp(min, max)
+}
+
 fn start_error(e: AudioIoError) -> NodeError {
     match e {
         AudioIoError::EndpointLost
@@ -591,5 +605,22 @@ impl<X: Runtime> Node<X> for InputNode {
         }
         out.commit(format, block_time, frames)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_effective_offset_clamps_a_delay_and_an_advance() {
+        // Default graph: 50 ms latency, 10 ms blocks, so at most 35 ms of advance.
+        let config = AudioGraphConfig::default();
+        let max = Duration::from_millis(200);
+        let ms = 1_000_000;
+        assert_eq!(effective_offset_ns(&config, max, 120 * ms), 120 * ms);
+        assert_eq!(effective_offset_ns(&config, max, 300 * ms), 200 * ms);
+        assert_eq!(effective_offset_ns(&config, max, -20 * ms), -20 * ms);
+        assert_eq!(effective_offset_ns(&config, max, -100 * ms), -35 * ms);
     }
 }
