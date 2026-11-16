@@ -33,6 +33,7 @@ pub mod preview;
 pub mod replay;
 pub mod replay_node;
 pub mod still;
+pub mod sync_probe;
 pub mod vcam;
 
 pub use capture::{CAPTURE_NODE_TYPE, CaptureSourceNode, capture_descriptor, capture_fault};
@@ -52,6 +53,10 @@ pub use media::{
 pub use output::{OUTPUT_NODE_TYPE, OutputNode, output_descriptor};
 pub use preview::{PREVIEW_NODE_TYPE, PreviewNode, PreviewNodeStats, preview_descriptor};
 pub use still::{STILL_NODE_TYPE, StillError, StillSourceNode, still_descriptor};
+pub use sync_probe::{
+    SYNC_PICTURE_MAX_FPS, SYNC_PICTURE_PROBE_NODE_TYPE, SyncPictureLog, SyncPictureProbeNode,
+    sync_picture_probe_descriptor,
+};
 pub use vcam::{
     VIRTUAL_CAMERA_NODE_TYPE, VirtualCameraNode, VirtualCameraNodeStats, virtual_camera_descriptor,
 };
