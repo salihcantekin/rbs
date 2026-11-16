@@ -10,7 +10,7 @@ use rbs_capture::{CaptureRequest, TargetId};
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{FramePayload, PixelFormat, Size, VideoFrame};
-use rbs_core::pause::PauseWindow;
+use rbs_core::pause::{HoldPicture, HoldSwitch, PauseWindow};
 use rbs_core::time::{TestClock, Timestamp};
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_gpu::node::{CompositorNode, GpuRuntime, NodeLayer, RenderLocal};
@@ -21,7 +21,7 @@ use rbs_graph::runtime::{
     Controller, Executor, Node, NodeError, PrepareCtx, ProcessCtx, Tick, channel,
 };
 use rbs_nodes::capture::CaptureNodeStats;
-use rbs_nodes::{CaptureSourceNode, ExportEnd, VideoExportNode};
+use rbs_nodes::{CaptureSourceNode, ExportEnd, ExportHold, VideoExportNode};
 
 const W: u32 = 128;
 const H: u32 = 72;
@@ -561,4 +561,205 @@ fn an_end_while_paused_ends_at_once_and_an_end_after_a_pause_still_ends() {
     }
     // Canvases 0, 1, 4..=7 (stamped 0..6).
     assert_times(&delivered(&frames), &times(0..6));
+}
+
+// ---- Hold scene (ADR-0124 phase 2b) --------------------------------------------------
+
+/// Keeps the time and the centre luma of every new frame, not the frame, so the
+/// export's buffers come back.
+struct LumaProbe {
+    desc: NodeDescriptor,
+    seen: Arc<Mutex<Vec<(Timestamp, u8)>>>,
+    last: Option<(Timestamp, u64)>,
+}
+
+impl Node<GpuRuntime> for LumaProbe {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.desc
+    }
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        Ok(())
+    }
+    fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        if let Some(frame) = ctx.inputs().video(0, 0) {
+            let key = (frame.timestamp(), frame.sequence());
+            if self.last != Some(key) {
+                self.last = Some(key);
+                let (y, _, _) = centre(frame);
+                self.seen.lock().unwrap().push((frame.timestamp(), y));
+            }
+        }
+        Ok(())
+    }
+    fn release(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) {}
+}
+
+/// A holdable pipeline, the times and lumas it sent, the export, its end and switch.
+type Holdable = (
+    Rig,
+    Arc<Mutex<Vec<(Timestamp, u8)>>>,
+    NodeId,
+    Arc<ExportEnd>,
+    Arc<HoldSwitch>,
+);
+
+/// Program: a grey window. Hold scene: an empty compositor (black). Both into one
+/// export that can be held.
+fn held_pipeline() -> Option<Holdable> {
+    let ctx = gpu()?;
+    let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
+    let clock = TestClock::new();
+    let mut rig = Rig {
+        graph: GraphDescription::new(),
+        ctl,
+        exec,
+        ctx,
+        clock: clock.clone(),
+        tick: 0,
+    };
+    let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
+        .with_frame_rate(FrameRate::FPS_30)
+        .with_pixel_formats(&[PixelFormat::Bgra8]);
+    let capture = rig.add(Box::new(CaptureSourceNode::new(
+        Arc::new(TestCaptureFactory::new()),
+        request,
+    )));
+    let canvas = CanvasDesc {
+        width: W,
+        height: H,
+    };
+    let (program, _) = CompositorNode::new(
+        canvas,
+        4,
+        vec![NodeLayer::new(capture, 0, 0.0, 0.0, W as f32, H as f32)],
+    );
+    let program = rig.add(Box::new(program));
+    let (scene, _) = CompositorNode::new(canvas, 4, vec![]);
+    let scene = rig.add(Box::new(scene));
+    let switch = Arc::new(HoldSwitch::default());
+    let export = VideoExportNode::new(YuvFormat::Nv12, W, H, W, H)
+        .with_hold(Arc::new(ExportHold::new(Arc::clone(&switch))));
+    let end = export.end();
+    let export = rig.add(Box::new(export));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let probe = rig.add(Box::new(LumaProbe {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.luma-probe"),
+            NodeKind::Output,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![],
+        ),
+        seen: Arc::clone(&seen),
+        last: None,
+    }));
+    rig.graph
+        .connect(capture, "video", program, "layers")
+        .unwrap();
+    rig.graph
+        .connect(program, "canvas", export, "canvas")
+        .unwrap();
+    rig.graph.connect(scene, "canvas", export, "hold").unwrap();
+    rig.graph.connect(export, "video", probe, "in").unwrap();
+    let report = rig.ctl.apply(&rig.graph).unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    rig.exec.swap_pending();
+    let _ = rig.ctl.collect();
+    Some((rig, seen, export, end, switch))
+}
+
+/// Black in limited range is luma 16; the test window's darkest grey is about 30.
+const DARK: u8 = 20;
+
+#[test]
+fn a_scene_hold_sends_the_scene_with_running_times_across_both_edges() {
+    let Some((mut rig, seen, export, end, switch)) = held_pipeline() else {
+        return;
+    };
+    for _ in 0..2 {
+        rig.tick();
+    }
+    // Program readbacks may still be in flight when the hold begins, and scene ones
+    // when it ends: ticks around both edges do not wait for the GPU. Whichever
+    // readback is late, the properties below hold.
+    rig.tick_without_waiting();
+    rig.tick_without_waiting();
+    switch.hold(HoldPicture::Scene);
+    end.wake_at(Timestamp::ZERO);
+    rig.tick_without_waiting();
+    rig.tick_without_waiting();
+    for _ in 0..6 {
+        rig.tick();
+    }
+    switch.release();
+    rig.tick_without_waiting();
+    rig.tick_without_waiting();
+    for _ in 0..6 {
+        rig.tick();
+    }
+    let seen = seen.lock().unwrap().clone();
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let frame = cadence.time_of(1).as_nanos() + 1;
+    // Strictly increasing, no gap: one frame per tick across both edges.
+    assert!(
+        seen.windows(2)
+            .all(|w| w[0].0 < w[1].0 && w[1].0.as_nanos() - w[0].0.as_nanos() <= frame),
+        "{seen:?}"
+    );
+    // Program, then the scene (black), then the program again: no program frame
+    // inside the scene run, no scene frame after the program is back.
+    let dark: Vec<bool> = seen.iter().map(|(_, y)| *y <= DARK).collect();
+    let first_dark = dark.iter().position(|d| *d).expect("the scene went out");
+    let last_dark = dark.iter().rposition(|d| *d).unwrap();
+    assert!(first_dark >= 4, "{seen:?}");
+    assert!(dark[first_dark..=last_dark].iter().all(|d| *d), "{seen:?}");
+    assert!(!dark[..first_dark].iter().any(|d| *d), "{seen:?}");
+    assert!(
+        last_dark + 3 < seen.len(),
+        "the program came back: {seen:?}"
+    );
+    let health = rig.exec.health(export).unwrap();
+    assert_eq!(health.errors, 0, "{health:?}");
+    // Back on the run path: nothing left from the hold path.
+    assert!(end.requested().is_none());
+}
+
+#[test]
+fn a_freeze_hold_changed_to_a_scene_keeps_its_times_and_drops_the_program() {
+    let Some((mut rig, seen, export, end, switch)) = held_pipeline() else {
+        return;
+    };
+    rig.tick();
+    rig.tick_without_waiting();
+    rig.tick_without_waiting();
+    switch.hold(HoldPicture::Freeze);
+    end.wake_at(Timestamp::ZERO);
+    rig.tick_without_waiting();
+    rig.tick_without_waiting();
+    switch.hold(HoldPicture::Scene);
+    rig.tick_without_waiting();
+    for _ in 0..5 {
+        rig.tick();
+    }
+    switch.release();
+    for _ in 0..5 {
+        rig.tick();
+    }
+    let seen = seen.lock().unwrap().clone();
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let frame = cadence.time_of(1).as_nanos() + 1;
+    assert!(
+        seen.windows(2)
+            .all(|w| w[0].0 < w[1].0 && w[1].0.as_nanos() - w[0].0.as_nanos() <= frame),
+        "{seen:?}"
+    );
+    let dark: Vec<bool> = seen.iter().map(|(_, y)| *y <= DARK).collect();
+    let first_dark = dark.iter().position(|d| *d).expect("the scene went out");
+    let last_dark = dark.iter().rposition(|d| *d).unwrap();
+    assert!(dark[first_dark..=last_dark].iter().all(|d| *d), "{seen:?}");
+    assert!(
+        last_dark + 2 < seen.len(),
+        "the program came back: {seen:?}"
+    );
+    let health = rig.exec.health(export).unwrap();
+    assert_eq!(health.errors, 0, "{health:?}");
 }
