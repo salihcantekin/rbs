@@ -16,6 +16,8 @@
 //!   device's rate and steered against its clock.
 //! - [`LoudnessTapNode`] measures loudness after BS.1770-4 / EBU R 128 on a block it
 //!   reads, while loudness is shown ([`loudness`], ADR-0092).
+//! - [`SyncProbeNode`] logs the energy of every 1 ms of a source's sound while a sync
+//!   offset measurement runs (ADR-0126).
 //! - [`MeterSinkNode`] keeps a mixer scheduled for its meters while nothing records.
 //!
 //! Every block of a partition has the graph's format and length and the timestamp
@@ -31,13 +33,18 @@ mod mixer;
 mod output;
 pub mod resample;
 mod sink;
+mod sync_probe;
 
 pub use config::{AudioGraphConfig, AudioGraphError, DEFAULT_LATENCY, MAX_LATENCY, MIN_LATENCY};
-pub use encoder::{ENCODER_NODE_TYPE, EncoderNode, encoder_descriptor};
+pub use encoder::{
+    ENCODER_NODE_TYPE, EncoderNode, HOLD_PIN as ENCODER_HOLD_PIN, encoder_descriptor,
+    encoder_hold_descriptor,
+};
 pub use gate::{AudioGate, HoldGate, NoGate, PAUSE_FADE, PauseGate};
 pub use input::{
     INPUT_NODE_TYPE, InputCounters, InputNode, InputParams, InputStats, MAP_TOLERANCE,
-    MAX_CORRECTION, MAX_PACKET, RESYNC_THRESHOLD, STEER_GAIN, input_descriptor,
+    MAX_CORRECTION, MAX_PACKET, RESYNC_THRESHOLD, STEER_GAIN, effective_offset_ns,
+    input_descriptor,
 };
 pub use loudness::{
     LOUDNESS_TAP_NODE_TYPE, Loudness, LoudnessMeter, LoudnessReadout, LoudnessTapNode,
@@ -53,3 +60,7 @@ pub use output::{
     OutputNode, OutputNodeStats, OutputParams, output_descriptor,
 };
 pub use sink::{METER_SINK_NODE_TYPE, MeterSinkNode, meter_sink_descriptor};
+pub use sync_probe::{
+    SYNC_PROBE_NODE_TYPE, SYNC_PROBE_STEP, SubBlockEnergy, SyncProbeLog, SyncProbeNode,
+    sync_probe_descriptor,
+};

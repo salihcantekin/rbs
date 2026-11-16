@@ -652,8 +652,9 @@ impl Host {
     }
 
     /// Sets the sync offset of a source's sound in milliseconds: a live control, not
-    /// an undo step (ADR-0062 decision 10), sent to the running input at once.
-    /// `Ok(false)` when it already is.
+    /// an undo step (ADR-0062 decision 10), sent to the running input at once, and
+    /// remembered with the source's audio device (ADR-0126 decision 9). `Ok(false)`
+    /// when it already is.
     pub(super) fn set_source_sync_offset(
         &mut self,
         source: SourceId,
@@ -678,6 +679,9 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.studio
             .set_audio_offset(source, i64::from(offset_ms) * 1_000_000);
+        // Every call is a committed value (the row sends on field commit or release,
+        // never per drag step), so the device remembers it (ADR-0126 decision 9).
+        self.remember_device_offset(source, offset_ms);
         Ok(true)
     }
 }

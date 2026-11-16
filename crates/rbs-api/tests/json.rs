@@ -575,6 +575,28 @@ fn every_request() -> Vec<Request> {
             source: 3,
             offset_ms: -40,
         })),
+        c(Command::SyncMeasureStart(SyncMeasureStart {
+            source: 3,
+            reference: None,
+        })),
+        c(Command::SyncMeasureStart(SyncMeasureStart {
+            source: 3,
+            reference: Some(4),
+        })),
+        c(Command::SyncMeasureCancel(SyncMeasureCancel {
+            measurement: "1".into(),
+        })),
+        c(Command::SyncDevices),
+        c(Command::SyncForgetDevice(SyncForgetDevice {
+            key: DeviceKey {
+                type_id: "org.rbs.source.audio-input".into(),
+                adapter: "org.rbs.audio.test".into(),
+                target: "a\"b".into(),
+            },
+        })),
+        c(Command::SyncApplyToDeviceSources(
+            SyncApplyToDeviceSources { source: 3 },
+        )),
         c(Command::SourceRetarget(RetargetSource {
             source: 3,
             adapter: "org.rbs.capture.test".to_owned(),
@@ -915,6 +937,33 @@ fn every_result_and_event_type_round_trips() {
         }),
         EventPayload::CalibrationState(calibration_done()),
         EventPayload::CalibrationState(CalibrationState::Idle),
+        EventPayload::SyncMeasureChanged(SyncMeasureChanged {
+            measurement: "1".into(),
+            source: 3,
+            reference: 4,
+            state: SyncMeasureState::Running { pairs: 2 },
+        }),
+        EventPayload::SyncMeasureChanged(SyncMeasureChanged {
+            measurement: "1".into(),
+            source: 3,
+            reference: 4,
+            state: SyncMeasureState::Done {
+                suggested_offset_ms: -35,
+                measured_offset_ms: -35,
+                effective_offset_ms: 0,
+                clamped: false,
+                pairs: 5,
+                spread_ms: 4.5,
+            },
+        }),
+        EventPayload::SyncMeasureChanged(SyncMeasureChanged {
+            measurement: "2".into(),
+            source: 3,
+            reference: 4,
+            state: SyncMeasureState::Failed {
+                reason: SyncMeasureFailure::TooFewClaps,
+            },
+        }),
     ] {
         round_trip(&Event {
             object: None,
@@ -2590,4 +2639,33 @@ fn a_paused_recording_reads_as_recording_and_older_states_as_not_paused() {
         .unwrap(),
         json!(["paused", "resumed"])
     );
+}
+
+#[test]
+fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
+    let changed = SyncMeasureChanged {
+        measurement: "7".into(),
+        source: 3,
+        reference: 4,
+        state: SyncMeasureState::Failed {
+            reason: SyncMeasureFailure::StudioRestarted,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&changed).unwrap(),
+        json!({"measurement": "7", "source": 3, "reference": 4, "state": "failed", "reason": "studio_restarted"})
+    );
+    let newer: SyncMeasureChanged = serde_json::from_value(
+        json!({"measurement": "7", "source": 3, "reference": 4, "state": "paused"}),
+    )
+    .unwrap();
+    assert_eq!(newer.state, SyncMeasureState::Other);
+    let reason: SyncMeasureFailure = serde_json::from_value(json!("too_loud")).unwrap();
+    assert_eq!(reason, SyncMeasureFailure::Other);
+    let entry: DeviceSyncEntry = serde_json::from_value(json!({
+        "key": {"type": "org.rbs.source.audio-input", "adapter": "a", "target": "t"},
+        "offset_ms": 40, "origin": "estimated", "set_at": 1
+    }))
+    .unwrap();
+    assert_eq!(entry.origin, DeviceSyncOrigin::Other);
 }

@@ -385,6 +385,10 @@ pub struct FaceKind {
     pub ring: bool,
     /// The colour of the kind's rim and inner glow, if it takes them (decision 7).
     pub rim: Option<&'static str>,
+    /// The face sits inside a track one `size.focus-ring` from its edge (a
+    /// SegmentedControl's chosen plate): its one height is `size.control.md` less two
+    /// rings, instead of the three button heights.
+    pub inset: bool,
 }
 
 /// Index of the primary in [`FACE_KINDS`] and every per-kind array.
@@ -395,16 +399,22 @@ pub const KIND_SECONDARY: usize = 1;
 pub const KIND_CHECKED: usize = 2;
 /// Index of a danger button with text.
 pub const KIND_DANGER: usize = 3;
+/// Index of a SegmentedControl's chosen plate.
+pub const KIND_PLATE: usize = 4;
+
+/// How many kinds of face effects shade.
+pub const KINDS: usize = 5;
 
 /// The kinds whose faces are shaded, in the order of every per-kind array: primary,
-/// secondary (and framed ghost), checked, danger with text.
-pub const FACE_KINDS: [FaceKind; 4] = [
+/// secondary (and framed ghost), checked, danger with text, the chosen plate.
+pub const FACE_KINDS: [FaceKind; KINDS] = [
     FaceKind {
         name: "primary",
         fills: ["color.accent", "color.accent.hover", "color.accent.pressed"],
         inks: &["color.text.inverse"],
         ring: false,
         rim: None,
+        inset: false,
     },
     FaceKind {
         name: "secondary",
@@ -416,6 +426,7 @@ pub const FACE_KINDS: [FaceKind; 4] = [
         inks: &["color.text.primary", "color.text.secondary"],
         ring: true,
         rim: Some("color.accent"),
+        inset: false,
     },
     FaceKind {
         name: "checked",
@@ -427,6 +438,7 @@ pub const FACE_KINDS: [FaceKind; 4] = [
         inks: &["color.text.primary", "color.text.secondary", "color.accent"],
         ring: true,
         rim: None,
+        inset: false,
     },
     FaceKind {
         name: "danger",
@@ -438,16 +450,32 @@ pub const FACE_KINDS: [FaceKind; 4] = [
         inks: &["color.state.error", "color.text.secondary"],
         ring: true,
         rim: Some("color.action.destructive"),
+        inset: false,
+    },
+    // A SegmentedControl's chosen plate (ADR-0120 decision 14, owner 2026-11-16): it
+    // neither hovers nor presses, so its three fills are one.
+    FaceKind {
+        name: "chosen plate",
+        fills: [
+            "color.surface.overlay",
+            "color.surface.overlay",
+            "color.surface.overlay",
+        ],
+        inks: &["color.text.primary"],
+        ring: true,
+        rim: None,
+        inset: true,
     },
 ];
 
 /// The resting fill of each kind of button that takes a key edge, in [`FACE_KINDS`]
 /// order.
-pub const KEY_FILLS: [&str; 4] = [
+pub const KEY_FILLS: [&str; KINDS] = [
     FACE_KINDS[0].fills[0],
     FACE_KINDS[1].fills[0],
     FACE_KINDS[2].fills[0],
     FACE_KINDS[3].fills[0],
+    FACE_KINDS[4].fills[0],
 ];
 
 fn channel(c: u8, to: u8, f: f32) -> u8 {
@@ -567,19 +595,31 @@ pub struct EffectDraw {
     /// Press offset.
     pub press: f32,
     /// Key edge colours, per [`FACE_KINDS`].
-    pub key: [Color; 4],
+    pub key: [Color; KINDS],
     /// The face shading, per [`FACE_KINDS`].
-    pub faces: [FaceDraw; 4],
+    pub faces: [FaceDraw; KINDS],
     /// The rim is drawn (the border of a secondary or danger button takes `rim`).
     pub rim_on: bool,
     /// Rim colours, per [`FACE_KINDS`]; a kind without a rim holds `color.border.subtle`.
-    pub rim: [Color; 4],
+    pub rim: [Color; KINDS],
     /// Inner glow blur radius.
     pub inner_blur: f32,
     /// Inner glow colours with their alpha, per [`FACE_KINDS`]; alpha 0 is none.
-    pub inner: [Color; 4],
+    pub inner: [Color; KINDS],
     /// The slot's extent.
     pub extent: f32,
+    /// The chosen plate's shadow blur and offset: the shadow scaled into the track's
+    /// room round the plate, one `size.focus-ring`.
+    pub plate_shadow_blur: f32,
+    /// See `plate_shadow_blur`.
+    pub plate_shadow_offset: f32,
+    /// The chosen plate's key edge, drawn inside the plate's bottom: the key edge, at
+    /// most the plate's band top, so it never reaches the ink.
+    pub plate_key_edge: f32,
+    /// The chosen plate's glow in a setting that draws a halo (Glow): the `halo` colour
+    /// with this blur, the track's room round the plate; 0 when the setting has no halo.
+    /// It takes the place of the plate's shadow.
+    pub plate_glow_blur: f32,
 }
 
 impl EffectDraw {
@@ -603,6 +643,23 @@ pub fn extent(length: &BTreeMap<String, f32>) -> f32 {
 fn control_heights(length: &BTreeMap<String, f32>) -> [f32; 3] {
     ["size.control.sm", "size.control.md", "size.control.lg"]
         .map(|n| length.get(n).copied().unwrap_or(0.0))
+}
+
+/// The heights a face of `kind` can have, after density: the three button heights, or
+/// the plate's one height for an inset kind (0 is skipped).
+pub fn kind_heights(kind: &FaceKind, length: &BTreeMap<String, f32>) -> [f32; 3] {
+    if kind.inset {
+        [plate_height(length), 0.0, 0.0]
+    } else {
+        control_heights(length)
+    }
+}
+
+/// The one height of an inset face (a SegmentedControl's chosen plate), after density:
+/// `size.control.md − 2 · size.focus-ring`.
+pub fn plate_height(length: &BTreeMap<String, f32>) -> f32 {
+    let get = |n: &str| length.get(n).copied().unwrap_or(0.0);
+    (get("size.control.md") - 2.0 * get("size.focus-ring")).max(0.0)
 }
 
 /// The top of the ink band of a button `height` tall: `(height − label line) / 2`.
@@ -786,15 +843,16 @@ pub fn draw(
     } else {
         values.shadow_alpha_light
     };
-    let heights = control_heights(length);
     let accent = colour("color.accent");
     let subtle = colour("color.border.subtle");
-    let mut faces = [FaceDraw::default(); 4];
-    let mut rim = [subtle; 4];
-    let mut inner = [with_alpha(BLACK, 0.0); 4];
+    let plate = plate_height(length);
+    let mut faces = [FaceDraw::default(); KINDS];
+    let mut rim = [subtle; KINDS];
+    let mut inner = [with_alpha(BLACK, 0.0); KINDS];
     let mut rim_on = false;
     for (i, kind) in FACE_KINDS.iter().enumerate() {
         let k = KindColours::of(kind, colors);
+        let heights = kind_heights(kind, length);
         // 1. The bottom shading: the largest value every pair of the kind allows.
         let face_dark = largest(values.face_dark, |d| {
             k.passes(0.0, d, 0.0, None, heights, label_line)
@@ -859,6 +917,18 @@ pub fn draw(
         }
     }
     let halo = values.has_halo();
+    // The plate's shadow stays inside the track's room round it.
+    let room = length
+        .get("size.focus-ring")
+        .copied()
+        .unwrap_or(0.0)
+        .max(0.0);
+    let plate_reach = (values.shadow_blur + values.shadow_offset) * scale;
+    let plate_scale = if plate_reach > room && plate_reach > 0.0 {
+        room / plate_reach
+    } else {
+        1.0
+    };
     EffectDraw {
         on: true,
         shadow_blur: values.shadow_blur * scale,
@@ -876,6 +946,10 @@ pub fn draw(
         inner_blur: values.inner_blur,
         inner,
         extent,
+        plate_shadow_blur: values.shadow_blur * scale * plate_scale,
+        plate_shadow_offset: values.shadow_offset * scale * plate_scale,
+        plate_key_edge: (values.key_edge * scale).min(band_top(plate, label_line)),
+        plate_glow_blur: if halo { room } else { 0.0 },
     }
 }
 
@@ -1263,18 +1337,18 @@ mod tests {
         let stops = |d: &EffectDraw| d.faces.map(|f| (f.dark, f.stop));
         let glass = built_in(Base::Dark, Effects::Glass, Density::Regular, 1);
         assert_eq!(
-            stops(&glass),
+            stops(&glass)[..4],
             [(0.09, 0.45), (0.3, 0.0), (0.3, 0.1), (0.3, 0.0)]
         );
         let glass = built_in(Base::Light, Effects::Glass, Density::Regular, 1);
         assert_eq!(
-            stops(&glass),
+            stops(&glass)[..4],
             [(0.3, 0.0), (0.03, 0.45), (0.03, 0.45), (0.02, 0.45)]
         );
         // Tactile has a gloss and no bottom shading.
         let tactile = built_in(Base::Dark, Effects::Tactile, Density::Regular, 1);
         assert_eq!(
-            stops(&tactile),
+            stops(&tactile)[..4],
             [(0.0, 0.45), (0.0, 0.0), (0.0, 0.14), (0.0, 0.0)]
         );
         let tactile = built_in(Base::Light, Effects::Tactile, Density::Regular, 1);
@@ -1283,6 +1357,24 @@ mod tests {
         assert_eq!(tactile.faces[KIND_DANGER].stop, 0.45);
         // Light's primary keeps its gloss within a fraction of a pixel of the band top.
         assert!(tactile.faces[KIND_PRIMARY].stop < 0.1);
+        // The chosen plate: shaded in Glass, a gloss in Tactile, flat in Glow.
+        let plate = |b, e| built_in(b, e, Density::Regular, 1).faces[KIND_PLATE];
+        assert_eq!(
+            (
+                plate(Base::Dark, Effects::Glass).dark,
+                plate(Base::Dark, Effects::Glass).stop
+            ),
+            (0.3, 0.45)
+        );
+        assert_eq!(
+            (
+                plate(Base::Light, Effects::Glass).dark,
+                plate(Base::Light, Effects::Glass).stop
+            ),
+            (0.06, 0.45)
+        );
+        assert_eq!(plate(Base::Dark, Effects::Tactile).stop, 0.45);
+        assert_eq!(plate(Base::Light, Effects::Tactile).stop, 0.45);
         // Glow shades no face.
         for base in [Base::Dark, Base::Light] {
             assert!(built_in(base, Effects::Glow, Density::Regular, 1).faces_are_flat());
@@ -1294,10 +1386,10 @@ mod tests {
         let alpha = |c: Color| (f32::from(c.a) / 255.0 * 100.0).round() / 100.0;
         // Dark: text.secondary on button.pressed and the danger pairs leave no room.
         let dark = built_in(Base::Dark, Effects::Glow, Density::Regular, 1);
-        assert_eq!(dark.inner.map(|c| c.a), [0; 4]);
+        assert_eq!(dark.inner.map(|c| c.a), [0; KINDS]);
         // Light: 0.19 for secondary and 0.05 for danger, of the token's 0.25.
         let light = built_in(Base::Light, Effects::Glow, Density::Regular, 1);
-        assert_eq!(light.inner.map(alpha), [0.0, 0.19, 0.0, 0.05]);
+        assert_eq!(light.inner.map(alpha), [0.0, 0.19, 0.0, 0.05, 0.0]);
         let t = Tokens::built_in().unwrap();
         for (base, d) in [(Base::Dark, dark), (Base::Light, light)] {
             let c = &t.built_in_theme(base).colors;
@@ -1363,7 +1455,7 @@ mod tests {
                                 face.dark,
                                 face.stop,
                                 None,
-                                control_heights(&length),
+                                kind_heights(kind, &length),
                                 20.0
                             ),
                             "{base:?} {setting:?} {density:?} {steps} {}",
@@ -1377,10 +1469,49 @@ mod tests {
                                 face.dark + 0.01,
                                 0.0,
                                 None,
-                                control_heights(&length),
+                                kind_heights(kind, &length),
                                 20.0
                             ));
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A SegmentedControl's chosen plate (ADR-0120 decision 14): its shadow stays in the
+    /// track's room of one focus ring and its key edge stays below the ink band, in
+    /// every lively setting and density; Tactile still draws an edge.
+    #[test]
+    fn the_plate_keeps_its_effects_inside_the_track() {
+        let t = Tokens::built_in().unwrap();
+        for base in [Base::Dark, Base::Light] {
+            let theme = t.built_in_theme(base);
+            for setting in Effects::LIVELY {
+                for (density, steps) in [
+                    (Density::Regular, 1),
+                    (Density::Roomy, 1),
+                    (Density::Compact, 1),
+                    (Density::Compact, 2),
+                    (Density::Compact, 3),
+                ] {
+                    let mut length = theme.length.clone();
+                    apply_density(&mut length, density, steps);
+                    let values = t.effects.unwrap().values(setting);
+                    let d = draw(&values, &theme.colors, &length, 20.0, base == Base::Dark);
+                    let why = format!("{base:?} {setting:?} {density:?} {steps}");
+                    let ring = length["size.focus-ring"];
+                    assert!(
+                        d.plate_shadow_blur + d.plate_shadow_offset <= ring + 1e-4,
+                        "{why}"
+                    );
+                    let plate = plate_height(&length);
+                    assert!(d.plate_key_edge <= band_top(plate, 20.0) + 1e-4, "{why}");
+                    assert!(d.plate_key_edge <= d.key_edge + 1e-4, "{why}");
+                    assert!(d.plate_glow_blur <= ring + 1e-4, "{why}");
+                    assert_eq!(d.plate_glow_blur > 0.0, setting == Effects::Glow, "{why}");
+                    if setting == Effects::Tactile && density == Density::Regular {
+                        assert!(d.plate_key_edge > 0.0, "{why}");
                     }
                 }
             }

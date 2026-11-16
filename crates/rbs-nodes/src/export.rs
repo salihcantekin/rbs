@@ -22,6 +22,9 @@ pub const VIDEO_EXPORT_NODE_TYPE: &str = "org.rbs.video-export";
 pub const CANVAS_PIN: usize = 0;
 /// Index of the "video" output pin.
 pub const VIDEO_PIN: usize = 0;
+/// Index of the host-only "hold" input pin of an export that can be held
+/// ([`video_export_hold_descriptor`]): the hold scene's canvas (ADR-0124 phase 2b).
+pub const HOLD_PIN: usize = 1;
 
 /// The video export's descriptor: kind `VideoFilter`, input "canvas", output "video".
 pub fn video_export_descriptor() -> NodeDescriptor {
@@ -29,6 +32,22 @@ pub fn video_export_descriptor() -> NodeDescriptor {
         NodeTypeId::new_static(VIDEO_EXPORT_NODE_TYPE),
         NodeKind::VideoFilter,
         vec![Pin::one("canvas", LinkKind::Video)],
+        vec![Pin::one("video", LinkKind::Video)],
+    )
+}
+
+/// The descriptor of an export a stream's hold can take over
+/// ([`VideoExportNode::with_hold`]): [`video_export_descriptor`] plus the host-only
+/// input "hold", which carries the hold scene's canvas while one is bound (ADR-0124
+/// phase 2b, media graph spec "Host-only inputs").
+pub fn video_export_hold_descriptor() -> NodeDescriptor {
+    NodeDescriptor::new(
+        NodeTypeId::new_static(VIDEO_EXPORT_NODE_TYPE),
+        NodeKind::VideoFilter,
+        vec![
+            Pin::one("canvas", LinkKind::Video),
+            Pin::host_only("hold", LinkKind::Video),
+        ],
         vec![Pin::one("video", LinkKind::Video)],
     )
 }
@@ -140,6 +159,9 @@ impl ExportEnd {
 pub struct ExportHold {
     switch: Arc<HoldSwitch>,
     black: Mutex<Option<VideoFrame>>,
+    /// Scene frames read back on the hold path so far (phase 2b): the control thread
+    /// compares it to tell whether a hold scene's canvas arrives.
+    scene_frames: AtomicU64,
 }
 
 impl ExportHold {
@@ -148,7 +170,13 @@ impl ExportHold {
         Self {
             switch,
             black: Mutex::new(None),
+            scene_frames: AtomicU64::new(0),
         }
+    }
+
+    /// Scene frames read back on the hold path so far (only grows).
+    pub fn scene_frames(&self) -> u64 {
+        self.scene_frames.load(Ordering::Relaxed)
     }
 
     /// The switch.
@@ -222,10 +250,18 @@ pub fn black_frame(format: VideoFormat) -> Option<VideoFrame> {
 /// A hold under way, as the export keeps it.
 struct Held {
     picture: HoldPicture,
-    /// The program's last frame, pinned when the hold began (taken out of the ring,
-    /// no copy): what `freeze` sends, kept while `black` is sent so a change back to
-    /// `freeze` has it.
+    /// The picture held, pinned (taken out of the ring, no copy): the program's last
+    /// frame when the hold began, then the newest scene frame once one is read back
+    /// (the program's buffer is released then). What `freeze` and `scene` send, kept
+    /// while `black` is sent so a change back has it.
     frozen: Option<VideoFrame>,
+    /// Program readbacks still in flight ahead of the first scene readback: the ring
+    /// completes in submission order, so the next `ahead` slots taken are the
+    /// program's and are dropped. The export tracks which pin a slot came from by
+    /// this count, with no change to `rbs-gpu` (ADR-0124 phase 2b).
+    ahead: usize,
+    /// The last hold canvas submitted, so a canvas is read back once.
+    last_scene: Option<(Timestamp, u64)>,
     /// The previous tick's time. On the run path a canvas leaves the export one tick
     /// after it was drawn, so a held frame carries the previous tick's time and the
     /// timestamps run on without a gap or a repeat on both edges of the hold.
@@ -237,9 +273,8 @@ impl Held {
     fn picture(&self, hold: Option<&ExportHold>) -> Option<VideoFrame> {
         match self.picture {
             HoldPicture::Black => hold?.black(),
-            // The scene's canvases are not read on the hold path yet (phase 2b, next
-            // step): until then a scene hold sends the frozen picture, which is also
-            // what it sends before the scene's first canvas.
+            // Freeze, and Scene: the newest scene frame, or the frozen program frame
+            // until the first one is read back.
             _ => self.frozen.as_ref()?.share(),
         }
     }
@@ -285,6 +320,10 @@ pub struct VideoExportNode {
     hold: Option<Arc<ExportHold>>,
     /// The hold under way, from its first held tick to the first tick after it.
     held: Option<Held>,
+    /// Readbacks submitted on the hold path still in flight after a release: the
+    /// next `releasing` slots taken are dropped, and the export stays on its slow path
+    /// until they are gone (ADR-0124 phase 2b). 0 on the run path.
+    releasing: usize,
 }
 
 /// How an ISO track's export differs from the master's (ADR-0086 decisions 3 and 9).
@@ -415,6 +454,7 @@ impl VideoExportNode {
             shift: 0,
             hold: None,
             held: None,
+            releasing: 0,
         }
     }
 
@@ -422,7 +462,12 @@ impl VideoExportNode {
     /// on the run path: the export looks at the hold only after
     /// [`ExportEnd::wake_at`].
     #[must_use]
+    ///
+    /// Its descriptor gains the host-only input "hold" ([`HOLD_PIN`]): while the
+    /// switch says [`HoldPicture::Scene`], the canvas there is read back in place of
+    /// the program's.
     pub fn with_hold(mut self, hold: Arc<ExportHold>) -> Self {
+        self.descriptor = video_export_hold_descriptor();
         self.hold = Some(hold);
         self
     }
@@ -557,10 +602,48 @@ impl VideoExportNode {
 }
 
 impl VideoExportNode {
-    /// One tick while held: nothing is converted; readbacks still in flight finish.
-    /// On the hold's first tick the newest frame goes out as on the run path and is
-    /// pinned as the frozen picture; from then on the hold picture goes out each
-    /// tick with the previous tick's time and a new sequence (ADR-0124 decision 13).
+    /// The take of a tick after a hold (slow path only, ADR-0124 phase 2b). Every
+    /// readback in flight when the hold ended came from the hold path (the program was
+    /// not submitted while held), so the next that many slots taken are dropped; the
+    /// export keeps its slow path until they are gone. A frame submitted from the
+    /// release tick on goes out as on the run path.
+    fn drain_take(
+        &mut self,
+        gpu: &rbs_gpu::GpuContext,
+        released: bool,
+        end: u64,
+    ) -> Result<Result<Option<VideoFrame>, rbs_gpu::GpuError>, NodeError> {
+        let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
+        let before = download.in_flight();
+        if released {
+            self.releasing = before;
+        }
+        let ready = if end == u64::MAX {
+            download.take_ready(gpu)
+        } else {
+            download.take_oldest(gpu)
+        };
+        // Slots complete in order: the newest one taken is from the hold path when no
+        // more were taken than hold-path slots were ahead.
+        let taken = before.saturating_sub(download.in_flight());
+        let stale = taken <= self.releasing;
+        self.releasing -= taken.min(self.releasing);
+        if self.releasing > 0 {
+            self.end.wake_at(Timestamp::ZERO);
+        }
+        Ok(match ready {
+            Ok(Some(_)) if stale => Ok(None),
+            other => other,
+        })
+    }
+
+    /// One tick while held: the program is not converted; readbacks still in flight
+    /// finish. On the hold's first tick the newest frame goes out as on the run path
+    /// and is pinned as the frozen picture; from then on the hold picture goes out
+    /// each tick with the previous tick's time and a new sequence (ADR-0124 decision
+    /// 13). With [`HoldPicture::Scene`] the canvas on "hold" is read back in place of
+    /// the program's, and each scene frame read back becomes the picture; program
+    /// readbacks still in flight are dropped (phase 2b).
     fn hold_tick(
         &mut self,
         ctx: &mut ProcessCtx<'_, GpuRuntime>,
@@ -569,9 +652,13 @@ impl VideoExportNode {
     ) -> Result<(), NodeError> {
         let tick = ctx.tick();
         let gpu = ctx.shared();
-        let (_, outputs, _) = ctx.parts();
+        let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
         let mut result = Ok(());
+        // Which pin a slot came from matters only while the scene is read back: the
+        // ring is counted then and only then, so a freeze or black hold pays nothing.
+        let scene = picture == HoldPicture::Scene;
+        let before = if scene { download.in_flight() } else { 0 };
         let ready = match download.take_ready(gpu) {
             Ok(frame) => frame,
             Err(_) => {
@@ -579,14 +666,34 @@ impl VideoExportNode {
                 None
             }
         };
+        let after = if scene { download.in_flight() } else { 0 };
         let send = match self.held.as_mut() {
             Some(held) => {
+                if scene && held.picture != HoldPicture::Scene {
+                    // Into the scene from freeze or black: nothing was submitted since
+                    // the hold began, so every slot in flight is the program's.
+                    held.ahead = before;
+                }
                 held.picture = picture;
+                // Slots complete in order: the newest one taken is the program's when
+                // no more were taken than program slots were ahead.
+                let taken = before.saturating_sub(after);
+                let program = taken <= held.ahead;
+                held.ahead -= taken.min(held.ahead);
+                match ready {
+                    Some(frame) if scene && !program => {
+                        // The newest scene frame; the previous picture's buffer goes back.
+                        held.frozen = Some(frame);
+                        if let Some(hold) = &self.hold {
+                            hold.scene_frames.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    // A late program readback, or a scene frame no longer wanted.
+                    other => drop(other),
+                }
                 let frame = held.picture(self.hold.as_deref());
                 let at = held.last_tick;
                 held.last_tick = tick.time;
-                // A late readback finishing now is not sent: the hold is on.
-                drop(ready);
                 frame.map(|f| f.with_timestamp(at).with_sequence(next_generation()))
             }
             None => {
@@ -598,6 +705,10 @@ impl VideoExportNode {
                 self.held = Some(Held {
                     picture,
                     frozen,
+                    // Every slot still in flight is the program's (counted only for a
+                    // scene; a later change to the scene counts them then).
+                    ahead: after,
+                    last_scene: None,
                     last_tick: tick.time,
                 });
                 ready
@@ -605,6 +716,19 @@ impl VideoExportNode {
         };
         if let Some(frame) = send {
             send_frame(outputs, frame, &self.stats)?;
+        }
+        // The hold scene's canvas, read back in place of the program's.
+        if scene
+            && let Some(held) = self.held.as_mut()
+            && let Some(canvas) = inputs.video(HOLD_PIN, 0)
+        {
+            let key = (canvas.timestamp(), canvas.sequence());
+            if held.last_scene != Some(key) {
+                held.last_scene = Some(key);
+                if download.submit(gpu, &local.pool, canvas).is_err() {
+                    result = Err(NodeError::Backend("video export conversion failed"));
+                }
+            }
         }
         if end != u64::MAX
             && tick.time.as_nanos() > end
@@ -685,6 +809,9 @@ impl Node<GpuRuntime> for VideoExportNode {
         // the end and the pause window are read (ADR-0124 decision 3).
         let next = self.end.next.load(Ordering::Acquire);
         let mut released = None;
+        let gpu = ctx.shared();
+        // A take done on the slow path while the hold path's readbacks drain.
+        let mut drained = None;
         let (end, window) = if next == u64::MAX {
             (u64::MAX, None)
         } else {
@@ -694,7 +821,7 @@ impl Node<GpuRuntime> for VideoExportNode {
                 return self.hold_tick(ctx, picture, end);
             }
             released = self.held.take();
-            if released.is_some() && self.pause.is_none() {
+            if (released.is_some() || self.releasing > 0) && self.pause.is_none() {
                 // The hold is over: back to the run path (a pause window settles in
                 // `read_window` once it is over).
                 self.end.settle(next);
@@ -704,18 +831,20 @@ impl Node<GpuRuntime> for VideoExportNode {
                     self.end.wake_at(Timestamp::ZERO);
                 }
             }
+            if released.is_some() || self.releasing > 0 {
+                drained = Some(self.drain_take(gpu, released.is_some(), end)?);
+            }
             (end, self.read_window(ctx_time, next))
         };
-        let gpu = ctx.shared();
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
 
         // Frames submitted on earlier ticks first, so their staging buffers are free.
         // Ending, every frame is passed on in order (ADR-0045); otherwise the newest.
-        let ready = if end == u64::MAX {
-            download.take_ready(gpu)
-        } else {
-            download.take_oldest(gpu)
+        let ready = match drained {
+            None if end == u64::MAX => download.take_ready(gpu),
+            None => download.take_oldest(gpu),
+            Some(taken) => taken,
         };
         let mut result = Ok(());
         match ready {
@@ -780,6 +909,7 @@ impl Node<GpuRuntime> for VideoExportNode {
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
         self.held = None;
+        self.releasing = 0;
         // Readbacks still in flight never reach the encoder (a stop without
         // `ExportEnd`, or past the studio's tail limit): counted, never silent.
         if let Some(download) = self.download.take() {

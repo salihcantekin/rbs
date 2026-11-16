@@ -73,7 +73,8 @@ mod loudness;
 mod monitor;
 mod pause;
 mod replay;
-pub use hold::{HoldRefused, HoldState};
+mod sync_measure;
+pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
     DEFAULT_GIVE_WAY_SHARE, IsoImageTrack, IsoSkip, IsoSkipped, IsoVideoStart, IsoVideoStarted,
@@ -82,6 +83,10 @@ pub use iso_video::{
 pub use monitor::MonitorState;
 pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
+pub use sync_measure::{
+    MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
+    SyncMeasureState, SyncMeasureStatus,
+};
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
 const WAITING: &str = "waiting for the source it replaces to close";
@@ -1090,6 +1095,8 @@ pub struct Studio {
     /// The preview scene's compositor and picture while the canvas is in studio mode
     /// (ADR-0061); `None` otherwise, so nothing of it runs.
     scene_preview: Option<ScenePreview>,
+    /// Hold scenes by canvas while a stream holds with one (ADR-0124 phase 2b).
+    hold_scenes: BTreeMap<CanvasId, hold::HoldRun>,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
     /// Pictures added while the studio runs (ADR-0125), in the order they were added.
@@ -1140,6 +1147,9 @@ pub struct Studio {
     /// The loudness tap while loudness is measured (ADR-0092 stage 1); `None`
     /// otherwise, so nothing of the meter runs.
     loudness: Option<loudness::LoudnessRun>,
+    /// The sync offset measurement while it runs (ADR-0126).
+    sync_measure: Option<sync_measure::SyncMeasureRun>,
+    sync_measure_next_id: u64,
     /// Separate audio files while they are open (ADR-0086). `None` adds no node and
     /// no worker. Not one of [`MAX_OUTPUTS`].
     iso_audio: Option<iso_audio::IsoAudioRun>,
@@ -1437,6 +1447,7 @@ impl Studio {
             meters: BTreeMap::new(),
             preview,
             scene_preview: None,
+            hold_scenes: BTreeMap::new(),
             extras,
             pictures: Vec::new(),
             next_picture: 0,
@@ -1462,6 +1473,8 @@ impl Studio {
             camera: None,
             monitor: None,
             loudness: None,
+            sync_measure: None,
+            sync_measure_next_id: 0,
             iso_audio: None,
             iso_video: None,
             iso_ended: Vec::new(),
@@ -1953,6 +1966,11 @@ impl Studio {
         if let Some(preview) = &mut self.scene_preview {
             let _ = preview.layers.send(node_layers(&preview.bound, plan));
         }
+        for run in self.hold_scenes.values_mut() {
+            if let Some(view) = run.view_mut() {
+                let _ = view.layers.send(node_layers(&view.bound, plan));
+            }
+        }
         for (canvas, layers) in extras {
             if let Some(extra) = self.extras.iter_mut().find(|extra| extra.canvas == canvas) {
                 let _ = extra.view.layers.send(layers);
@@ -1976,6 +1994,7 @@ impl Studio {
             .map(|extra| (extra.canvas, program_scene(&self.collection, extra.canvas)))
             .collect();
         self.check_collection(collection)?;
+        self.check_hold_scenes_in(collection);
         let fps = self.fps;
         let new = match add {
             Some(extra) => {
@@ -2061,6 +2080,7 @@ impl Studio {
         let mut leaving: Vec<Added> = Vec::new();
         if let Some(report) = &report {
             self.sync_scene_preview(report, &mut leaving)?;
+            self.sync_hold_views(report, &mut leaving)?;
         }
         let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
@@ -2428,6 +2448,9 @@ impl Studio {
             }
             self.strips = staged;
         }
+        if let Some(report) = report.as_ref() {
+            self.send_hold_strips(report, false);
+        }
 
         // Program-shown pages take a helper slot before preview-only ones (ADR-0109).
         self.browser_budget.grant(&browser_claims(&self.collection));
@@ -2436,6 +2459,7 @@ impl Studio {
             && let Some(report) = report.as_mut()
         {
             report.assign_queue_readers(self.engine.crossings());
+            self.send_hold_strips(report, true);
             self.bound_mixer = report.mixers.get(&self.settings.canvas).cloned();
             if let (Some(mixer), Some(bound)) = (&self.mixer, self.bound_mixer.as_ref()) {
                 let new: Vec<MixStrip> = bound
@@ -2622,6 +2646,7 @@ impl Studio {
                 strip.audio = *audio;
             }
         }
+        self.set_hold_mix(collection);
         let Some(mixer) = &mut self.mixer else {
             return false;
         };
@@ -2708,6 +2733,7 @@ impl Studio {
     /// input takes it on its next block: a change below 5 ms slews, a larger one
     /// resyncs once. Returns true if a running input of that source got it.
     pub fn set_audio_offset(&mut self, source: SourceId, offset_ns: i64) -> bool {
+        self.sync_measure_offset_set(source, offset_ns);
         if offset_ns == 0 {
             self.settings.audio_offsets.remove(&source);
         } else {
@@ -2825,11 +2851,13 @@ impl Studio {
         self.mixer.as_ref().map(|m| &m.master)
     }
 
-    /// Mixer inputs that had no strip or an invalid block (both should stay 0).
+    /// Mixer inputs that had no strip or an invalid block (both should stay 0), the
+    /// program mixer's and those of the hold mixers now running.
     pub fn mixer_anomalies(&self) -> u64 {
         self.mixer
             .as_ref()
             .map_or(0, |m| m.stats.invalid_inputs() + m.stats.unknown_inputs())
+            + self.hold_mixer_anomalies()
     }
 
     /// The name of a node: a source name or a role such as `"video encoder"`.
@@ -2855,13 +2883,14 @@ impl Studio {
     ) -> Result<BindReport, rbs_scene::binder::BindError> {
         self.cues
             .retain(|id| collection.item(id).is_some_and(|(_, item)| !item.visible));
-        if self.cues.is_empty() {
+        let hold = self.hold_requests();
+        if self.cues.is_empty() && hold.is_empty() {
             return self.binder.sync(collection, &mut self.graph);
         }
         let items = self.cues.items();
         let sources = collection.cued_drawn_sources(&items);
         self.binder
-            .sync_cued(collection, &mut self.graph, &items, &sources)
+            .sync_held(collection, &mut self.graph, &items, &sources, &hold)
     }
 
     /// Starts or restarts a timed show. Does nothing when `visible` is true or
@@ -2904,6 +2933,17 @@ impl Studio {
             control.control_tick();
         }
         let serviced = self.engine.service();
+        if !self.hold_scenes.is_empty() {
+            let failed: BTreeSet<NodeId> = serviced
+                .events
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    RuntimeEvent::Failed { node, .. } => Some(*node),
+                    _ => None,
+                })
+                .collect();
+            self.check_hold_scenes(&failed);
+        }
         if !self.pending_takes.is_empty() {
             let engine = &mut self.engine;
             self.pending_takes.retain(|(a, _)| !take(engine, *a));
@@ -3953,6 +3993,7 @@ impl Studio {
         self.stop_virtual_camera();
         self.stop_monitor();
         self.stop_loudness();
+        self.end_sync_measure();
         let ids = self.outputs();
         let (removed, errors) = self.detach_all(&ids, true);
         let reports = removed

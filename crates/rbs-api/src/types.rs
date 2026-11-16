@@ -2226,3 +2226,135 @@ pub struct EstimateSummary {
     #[serde(default)]
     pub reasons: Vec<EstimateReason>,
 }
+
+/// Why a sync offset measurement ended without a result (protocol 1.66, ADR-0126
+/// decision 5). A client reads an unknown reason as `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncMeasureFailure {
+    /// Fewer than three claps were heard near a movement in the picture. The source's
+    /// gate, noise suppression or ducker can remove claps.
+    TooFewClaps,
+    /// No clap was seen in the picture.
+    NoPictureMotion,
+    /// The claps disagree by more than one frame.
+    Inconsistent,
+    /// The program mix stopped hearing the source.
+    NotHeard,
+    /// The source or the reference closed.
+    SourceClosed,
+    /// The source's offset changed, or its input resynchronised.
+    OffsetChanged,
+    /// A filter of either source changed (the nodes measured were replaced).
+    ChainChanged,
+    /// The studio restarted (a canvas change, a collection switch).
+    StudioRestarted,
+    /// `sync.measure_cancel`.
+    Cancelled,
+    /// A reason this client does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// Where a sync offset measurement is (`sync.measure.changed`, protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SyncMeasureState {
+    /// Running: the user claps in view of the reference.
+    Running {
+        /// Clap pairs found so far (a sound and a picture event).
+        pairs: u32,
+    },
+    /// Ended with a result. Nothing was applied: a client applies it with
+    /// `source.set_sync_offset`.
+    Done {
+        /// The offset to set, within `-200..=200` and what the input can advance.
+        suggested_offset_ms: i32,
+        /// The offset measured, before that clamp.
+        measured_offset_ms: i32,
+        /// The offset the input applied while measuring.
+        effective_offset_ms: i32,
+        /// The suggestion differs from the measured value.
+        clamped: bool,
+        /// Pairs the result rests on.
+        pairs: u32,
+        /// How much the pairs disagree (interquartile range), in milliseconds.
+        spread_ms: f64,
+    },
+    /// Ended without a result; nothing changed.
+    Failed {
+        /// Why.
+        reason: SyncMeasureFailure,
+    },
+    /// A state this client does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// The topic `sync.measure.changed` (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncMeasureChanged {
+    /// The id `sync.measure_start` answered.
+    pub measurement: String,
+    /// The measured source.
+    pub source: u32,
+    /// The reference picture source.
+    pub reference: u32,
+    /// Where it is.
+    #[serde(flatten)]
+    pub state: SyncMeasureState,
+}
+
+/// An audio device whose offset is remembered (protocol 1.66, ADR-0126 decision 7):
+/// the source type and its `adapter` and `target` settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceKey {
+    /// Source type id.
+    #[serde(rename = "type")]
+    pub type_id: String,
+    /// Adapter id.
+    pub adapter: String,
+    /// The adapter's device id.
+    pub target: String,
+}
+
+/// How a remembered offset was set (protocol 1.66). A client reads an unknown value
+/// as `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceSyncOrigin {
+    /// Applied from a measurement.
+    Measured,
+    /// Set by hand or through `source.set_sync_offset` without a measurement.
+    Manual,
+    /// A value this client does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// What a measured offset was measured against (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSyncReference {
+    /// The reference's device, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<DeviceKey>,
+    /// The reference's name when measured.
+    pub name: String,
+}
+
+/// One entry of `sync.devices` (protocol 1.66).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSyncEntry {
+    /// The device.
+    pub key: DeviceKey,
+    /// The remembered offset in milliseconds.
+    pub offset_ms: i32,
+    /// How it was set.
+    pub origin: DeviceSyncOrigin,
+    /// For a measured value, what it was measured against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<DeviceSyncReference>,
+    /// When it was set, in seconds since the Unix epoch (UTC).
+    pub set_at: u64,
+}

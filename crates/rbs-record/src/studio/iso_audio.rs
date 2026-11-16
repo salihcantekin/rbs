@@ -460,7 +460,7 @@ impl super::Studio {
     }
 }
 
-fn audio_pin(graph: &GraphDescription, node: NodeId) -> Result<String, RecordError> {
+pub(super) fn audio_pin(graph: &GraphDescription, node: NodeId) -> Result<String, RecordError> {
     let entry = graph
         .node(node)
         .ok_or(RecordError::NotBound("audio source"))?;

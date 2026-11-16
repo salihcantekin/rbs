@@ -501,7 +501,8 @@ mod tests {
     /// The effect fields of a slot (ADR-0120, ADR-0122), listed explicitly: they are not
     /// themeable one by one, so they are not in `SLOT_TOKENS`. Per kind: the key edge,
     /// whether the face is shaded, its gloss stop and its stops per state; a secondary
-    /// and a danger button also have a rim and an inner glow.
+    /// and a danger button also have a rim and an inner glow. A SegmentedControl's chosen
+    /// plate has its rest stops, and its own shadow and key edge, scaled into its track.
     #[test]
     fn the_slot_has_the_effect_fields() {
         let mut expected: Vec<String> = [
@@ -515,6 +516,10 @@ mod tests {
             "effects-press",
             "effects-rim-on",
             "effects-inner-blur",
+            "effects-plate-shadow-blur",
+            "effects-plate-shadow-offset",
+            "effects-plate-key-edge",
+            "effects-plate-glow-blur",
         ]
         .map(str::to_owned)
         .into();
@@ -523,6 +528,7 @@ mod tests {
             ("secondary", &["rest", "hover", "pressed"]),
             ("checked", &["rest", "hover"]),
             ("danger", &["rest", "hover"]),
+            ("plate", &["rest"]),
         ] {
             for part in ["key", "shade", "stop"] {
                 expected.push(format!("effects-{part}-{kind}"));
@@ -566,6 +572,16 @@ mod tests {
         let compact = slot(&r, "").unwrap();
         assert!(compact.effects_key_edge < s.effects_key_edge);
         assert!(compact.effects_press <= compact.effects_key_edge);
+        // The chosen plate: its edge and shadow as `effect_draw` gives them, the shadow
+        // within the track's room of one focus ring.
+        assert_eq!(s.effects_plate_key_edge, fx.plate_key_edge);
+        assert_eq!(
+            s.effects_key_plate,
+            argb(fx.key[rbs_ui::tokens::KIND_PLATE])
+        );
+        assert!(s.effects_plate_key_edge > 0.0);
+        let ring = r.length["size.focus-ring"];
+        assert!(compact.effects_plate_shadow_blur + compact.effects_plate_shadow_offset <= ring);
         // Glass: the finished stops of each kind and state, and its searched stop.
         body.effects = Some("glass".into());
         let r = file.resolve(&body).unwrap();
@@ -585,6 +601,15 @@ mod tests {
             argb(fx.faces[KIND_DANGER].bottom[0])
         );
         assert!(!s.effects_rim_on);
+        assert_eq!(
+            s.effects_stop_plate,
+            fx.faces[rbs_ui::tokens::KIND_PLATE].stop
+        );
+        assert_eq!(
+            s.effects_bottom_plate_rest,
+            argb(fx.faces[rbs_ui::tokens::KIND_PLATE].bottom[0])
+        );
+        assert_eq!(s.effects_plate_shadow_blur, fx.plate_shadow_blur);
         // Glow: the halo, its clear zone, the rims and (in Light) the inner glow.
         for base in [Base::Dark, Base::Light] {
             let mut body = ThemeBody::new(base);
@@ -592,6 +617,8 @@ mod tests {
             let mut r = file.resolve(&body).unwrap();
             let (s, fx) = (slot(&r, "").unwrap(), r.effect_draw());
             assert_eq!((s.halo_clear, s.effects_halo_blur), (13.0, 12.0));
+            assert_eq!(s.effects_plate_glow_blur, fx.plate_glow_blur);
+            assert!(s.effects_plate_glow_blur > 0.0);
             assert_eq!(s.effects_halo, argb(fx.halo));
             assert!(s.effects_rim_on && !s.effects_shade_primary);
             assert_eq!(s.effects_rim_secondary, argb(fx.rim[KIND_SECONDARY]));

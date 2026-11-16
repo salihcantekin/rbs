@@ -64,11 +64,13 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 mod calibration;
+mod device_sync;
 pub mod filters;
 mod loudness;
 mod monitor;
 pub mod protection;
 pub mod replay;
+mod sync_measure;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -3051,6 +3053,13 @@ struct Host {
     calibration: crate::calibration_file::CalibrationFile,
     /// The calibration run, *Test this computer* (ADR-0087 step D1).
     calibration_run: calibration::CalibrationHost,
+    /// The sync offset remembered per audio device (`device-sync.toml`, ADR-0126
+    /// decision 7), read at start like the recent targets.
+    device_sync: crate::device_sync_file::DeviceSyncFile,
+    /// The last measurement result offered, until an offset change of any source.
+    offered: Option<device_sync::Offered>,
+    /// The sync offset measurement (ADR-0126); nothing runs without one.
+    measure: sync_measure::MeasureHost,
     /// Free space of recording folders for the estimate; `None` when the app gave no
     /// reader. Starts a thread only while a read runs (P13).
     disk_probe: Option<rbs_record::estimate::DiskProbe>,
@@ -3475,6 +3484,9 @@ fn round(
     if let Some(left) = host.drive_calibration() {
         wait = wait.min(left);
     }
+    if let Some(left) = host.drive_sync_measure() {
+        wait = wait.min(left);
+    }
     if let Some(left) = host.drive_marker_flush(now, notify) {
         wait = wait.min(left);
     }
@@ -3671,6 +3683,13 @@ fn start(
             .as_deref()
             .map(|d| crate::recent_targets::load(d).0)
             .unwrap_or_default(),
+        device_sync: config
+            .config_dir
+            .as_deref()
+            .map(|d| crate::device_sync_file::load(d).0)
+            .unwrap_or_default(),
+        offered: None,
+        measure: sync_measure::MeasureHost::default(),
         config_dir: config.config_dir,
         calibration: config.calibration,
         calibration_run: calibration::CalibrationHost::new(config.calibration_setup),
@@ -7647,6 +7666,7 @@ impl Host {
         match done {
             Ok(id) => {
                 self.history.record(EditKind::Add, &name, 0, records);
+                self.fill_device_offset(id, None, &name, EditKind::Add);
                 Ok(id)
             }
             Err(e) => {
@@ -7684,6 +7704,7 @@ impl Host {
             Ok((_, item)) => {
                 self.history
                     .record(EditKind::Add, name, 0, vec![source, item]);
+                self.fill_device_offset(id, None, name, EditKind::Add);
                 Ok(id)
             }
             Err(e) => {
@@ -7808,6 +7829,7 @@ impl Host {
                 } else {
                     self.history.record(EditKind::Add, &name, 0, records);
                 }
+                self.fill_device_offset(id, None, &name, EditKind::Add);
                 Ok(id)
             }
             Err(e) => {
@@ -8199,7 +8221,9 @@ impl Host {
     fn undo_or_redo(&mut self, back: bool) -> Result<(), (bool, String)> {
         let program = self.scene;
         let preview = self.preview();
+        let offsets = filters::audio_offsets(&self.collection);
         let result = self.undo_or_redo_records(back);
+        self.resync_audio_offsets(&offsets);
         // Undo and redo never change what is on air (ADR-0059) or the preview scene
         // (ADR-0061): a record that put a scene back on air or in preview is
         // overruled, and a removed program is replaced.
@@ -8959,6 +8983,7 @@ impl Host {
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
         let name = source.name.clone();
         let kind = SourceKind::of(&source.type_id);
+        let old_device = device_sync::device_key(source);
         let mut settings = source.settings.clone();
         let same = |key: &str, value: &str| matches!(settings.get(key), Some(SettingValue::Text(t)) if t == value);
         if same(keys::ADAPTER, &target.adapter) && same(keys::TARGET, &target.target) {
@@ -8988,6 +9013,7 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::Retarget, &name, 0, vec![undo]);
+        self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::Retarget);
         if let Some(kind) = kind {
             self.remember_target(kind, &target.adapter, &target.target, &target.name);
         }
@@ -9160,6 +9186,7 @@ impl Host {
             .source(id)
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
         let (name, type_id) = (source.name.clone(), source.type_id.clone());
+        let old_device = device_sync::device_key(source);
         let mut settings = source.settings.clone();
         for (key, value) in patch {
             match value {
@@ -9206,6 +9233,7 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+        self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::SourceSettings);
         Ok(true)
     }
 
@@ -11756,6 +11784,49 @@ impl ApiTarget<'_> {
                     host.publish(notify);
                 }
                 Ok(Response::Done(Empty {}))
+            }
+            C::SyncMeasureStart(p) => {
+                let (measurement, reference) = host.start_sync_measure(
+                    SourceId::from_raw(p.source),
+                    p.reference.map(SourceId::from_raw),
+                )?;
+                Ok(Response::SyncMeasureStarted(
+                    rbs_api::request::SyncMeasureStarted {
+                        measurement,
+                        reference: reference.get(),
+                    },
+                ))
+            }
+            C::SyncMeasureCancel(p) => {
+                host.cancel_sync_measure(&p.measurement)?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::SyncDevices => Ok(Response::SyncDevices(rbs_api::request::SyncDeviceList {
+                devices: host.api_sync_devices(),
+            })),
+            C::SyncForgetDevice(p) => {
+                if host.forget_device(&sync_measure::file_key(p.key)) {
+                    Ok(Response::Done(Empty {}))
+                } else {
+                    Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        "No offset is remembered for this device.",
+                    ))
+                }
+            }
+            C::SyncApplyToDeviceSources(p) => {
+                let source = SourceId::from_raw(p.source);
+                let peers = host.device_peers(source);
+                host.apply_to_device_sources(source)
+                    .map_err(|e| refused(&e))?;
+                if !peers.is_empty() {
+                    host.publish(notify);
+                }
+                Ok(Response::SyncAppliedToDeviceSources(
+                    rbs_api::request::SyncAppliedToDeviceSources {
+                        changed: peers.iter().map(|(id, _)| id.get()).collect(),
+                    },
+                ))
             }
             C::SourceRetarget(p) => {
                 let target = Target {

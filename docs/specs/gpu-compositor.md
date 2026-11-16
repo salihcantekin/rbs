@@ -313,6 +313,29 @@ impl RgbaDownload {
 - `take`, after `GpuContext::poll`: the completed picture as a `System` frame of its size, `Rgba8`, `ColorSpace::SRGB`, straight alpha, rows packed tightly, with the stamps given to `submit_at`. The rows are copied into a new buffer (one allocation per picture change, not per tick). Every delivered frame increments `GpuMetrics::frames_cpu_copied` (P4; ADR-0038's readback exception, widened by ADR-0117 to once per picture change for image tracks). A map failure frees the buffer and returns `GpuError::Readback` once.
 - Tests: `crates/rbs-gpu/tests/rgba_download.rs` (premultiplied to straight sRGB within one code, transparent stays zero, straight `Rgba8` copied byte for byte, growth once and reuse, other formats refused, one readback at a time).
 
+### Motion probe (ADR-0126)
+
+`rbs_gpu::MotionProbe` measures how much a picture changed since the previous one, for a sync offset measurement. It exists only while a measurement runs.
+
+```rust
+pub const MOTION_GRID_W: u32 = 64; pub const MOTION_GRID_H: u32 = 36; pub const MOTION_RING: usize = 4;
+impl MotionProbe {
+    pub fn new(ctx: &GpuContext) -> Result<Self, GpuError>;          // pipeline, grid buffer, 4 staging slots
+    pub fn submit(&mut self, ctx: &GpuContext, pool: &TexturePool, picture: &VideoFrame,
+        time_ns: u64) -> Result<bool, GpuError>;                    // false: ring full, picture dropped
+    pub fn take(&mut self, ctx: &GpuContext, emit: impl FnMut(u64, f32)); // completed, in order
+    pub fn in_flight(&self) -> usize;
+    pub fn stats(&self) -> MotionStats;                              // submitted, delivered, busy, failed
+}
+```
+
+- **Pass** (`shaders/motion.wgsl`, one compute dispatch of 8 x 9 workgroups of 8 x 4). The picture is bound with its pool bind group (`GpuContext::sampled_layout`, visible to fragment and compute stages). Each of the 64 x 36 cells averages 4 x 4 bilinear samples, takes the luma `0.2126 R + 0.7152 G + 0.0722 B` of the clamped values as sampled, adds `|luma - previous luma|` in 16.16 fixed point to one atomic sum, and keeps its luma for the next call. The previous grid starts at 0.
+- **Readback.** `submit` clears the sum, dispatches, copies the 4-byte sum into the next of `MOTION_RING` mappable slots, submits and maps it without waiting; the slot keeps `time_ns`. All slots in flight: `Ok(false)`, counted in `busy`, nothing dispatched (the next picture is compared with the last one dispatched). `take` reads completed slots oldest first and stops at the first one still mapping; it emits `sum / 65536 / 2304` (mean absolute luma change, `0..=1`) except for the first picture after `new`, which has nothing to compare with. A slot that failed to map is counted in `failed` and skipped. Each value emitted counts in `GpuMetrics::frames_cpu_copied` (4 bytes; the bounded P4 exception of ADR-0126).
+- **Errors.** A frame that is not a pool texture: `Unsupported`; a stale id: `StaleTexture`; a texture with no sampled bind group: `TargetMismatch`.
+- **Hot path** while a measurement runs, once per new picture on the render thread: RBS code does not allocate after `new`; wgpu allocates internally for the command buffer and the map callback, as for `YuvDownload`. `cargo bench -p rbs-gpu --bench motion`: `submit_1080p` (the render thread's share) at most 100 µs; measured 40 µs, and `round_trip_1080p` 340 µs, on llvmpipe in the cloud development container, 2026-11-16 (software: GPU time there is CPU time).
+
+Tests: `crates/rbs-gpu/tests/motion.rs` (mean luma change between solid pictures: 0 for the same picture, 0.5 for linear 0.25 to 0.75; the first picture gives no value; a full ring refuses the next picture and values come in submission order with their times).
+
 ### Native export
 
 Implements [ADR-0025](../adr/0025-encoder-surface-export.md): encoders get the converted frame as a native frame they are the only consumer of, and never depend on `rbs-gpu`. Lives in `rbs_gpu::export`, a marked low-level module (P11). macOS only so far.
