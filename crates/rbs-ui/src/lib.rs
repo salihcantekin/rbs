@@ -32,6 +32,7 @@ pub mod layout;
 pub mod live;
 pub mod meter;
 pub mod panel;
+pub mod projector;
 pub mod session;
 pub mod settings_index;
 pub mod shortcut;

@@ -1,0 +1,28 @@
+// A projector window (ADR-0125): the program of a canvas, and nothing else. A video
+// call captures everything in the window, so it draws no text, control or border
+// over the picture (decision 5). The picture is a native layer the shell places over
+// the whole window; around it is the canvas's own black. The menu is native
+// (decision 6): the OS draws it in its own window, outside what is shared.
+
+import { Theme, Tokens } from "tokens.slint";
+import { CommandMenu } from "context_menu.slint";
+
+export component ProjectorWindow inherits Window {
+    // What the menu's commands act on: `canvas=main` or `canvas=vertical`.
+    in property <string> menu-target;
+    // The title sharing apps list the window by; never drawn (decision 5).
+    in property <string> window-title;
+    title: root.window-title;
+    background: Theme.projector-backdrop;
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    menu := CommandMenu {
+        context: "projector";
+        target: root.menu-target;
+    }
+
+    // Opens the projector's menu at `x`, `y` (logical pixels in the window). The shell
+    // calls it on a right click, the Menu key or Shift+F10.
+    public function open-menu(x: length, y: length) {
+        menu.open({ x: x, y: y });
+    }
+}

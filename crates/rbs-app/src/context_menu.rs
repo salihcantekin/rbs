@@ -233,7 +233,8 @@ mod tests {
 
     #[test]
     fn every_context_fits_its_slots() {
-        let target = target("scene=1&source=2&item=3&id=rbs.preview").unwrap();
+        // `canvas` names a projector's canvas (the projector context needs it).
+        let target = target("scene=1&source=2&item=3&id=rbs.preview&canvas=main").unwrap();
         for c in Context::ALL {
             let items = items(c, &target, &All);
             assert!(!items.is_empty(), "{c:?}");

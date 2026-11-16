@@ -31,7 +31,7 @@ use std::rc::Rc;
 use rbs_ui::tokens::{CONTRAST_RULES, FIXED, LIVE_SURFACES, THEME_COLORS, THEME_CONTRAST_RULES};
 
 /// Every `.slint` file of the app (`every_slint_file_is_read` checks the list).
-const FILES: [(&str, &str); 13] = [
+const FILES: [(&str, &str); 14] = [
     ("app.slint", include_str!("../../ui/app.slint")),
     ("app_menu.slint", include_str!("../../ui/app_menu.slint")),
     (
@@ -51,6 +51,7 @@ const FILES: [(&str, &str); 13] = [
         "overlay_probe.slint",
         include_str!("../../ui/overlay_probe.slint"),
     ),
+    ("projector.slint", include_str!("../../ui/projector.slint")),
     ("replay.slint", include_str!("../../ui/replay.slint")),
     ("settings.slint", include_str!("../../ui/settings.slint")),
     ("shortcuts.slint", include_str!("../../ui/shortcuts.slint")),
@@ -674,6 +675,11 @@ const EDGE_RINGS: [&str; 1] = ["FocusRing"];
 
 const OPAQUE_ROOTS: [&str; 3] = ["Window", "PopupWindow", "Dialog"];
 
+/// Built-in elements whose children the window does not draw: a `ContextMenuArea`'s
+/// `Menu` holds the built-in `MenuItem`s of a menu shown in a window of its own (a
+/// native menu, ADR-0125 decision 6), not the library's `MenuItem` component.
+const OWN_WINDOW: [&str; 1] = ["Menu"];
+
 impl<'a> Expander<'a> {
     fn walk(
         &mut self,
@@ -713,6 +719,9 @@ impl<'a> Expander<'a> {
         eff.extend(over.iter().cloned());
 
         let comps = self.comps;
+        if OWN_WINDOW.contains(&elem.ty.as_str()) && !comps.contains_key(&elem.ty) {
+            return;
+        }
         if let Some(comp) = comps.get(&elem.ty) {
             let inner = self.envs.len();
             self.envs.push(Env::default());

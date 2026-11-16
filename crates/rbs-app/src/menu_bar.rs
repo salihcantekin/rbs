@@ -14,6 +14,7 @@ use rbs_scene::{CenterAxis, FitMode};
 use rbs_ui::command::{CommandId, CommandState, Kind, MenuItem, menus};
 use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
+use rbs_ui::projector::{ProjectorCanvas, ProjectorSize};
 use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 
 use crate::studio_host::{OutputCanvas, TransformOp};
@@ -234,6 +235,10 @@ pub struct Shown<'a> {
     pub can_undo: bool,
     /// The layout history has a step to redo.
     pub can_redo: bool,
+    /// The open projector windows (ADR-0125).
+    pub projectors: Vec<crate::projector::Shown>,
+    /// The connected displays by name, for a projector's Full screen.
+    pub displays: Vec<String>,
 }
 
 /// The virtual camera as `vcam.toggle` sees it (ADR-0066 decision 12).
@@ -339,6 +344,31 @@ impl Shown<'_> {
             return Err("In studio mode the vertical canvas shows the scene on air.".to_owned());
         }
         Ok(())
+    }
+
+    /// The canvas a projector command names.
+    fn projector_canvas(id: &CommandId) -> Option<ProjectorCanvas> {
+        crate::projector::parse_param(id.param("canvas")?)
+    }
+
+    /// The projector of `id`'s canvas is in the workspace (open, or waiting for its
+    /// canvas).
+    fn projector_kept(&self, id: &CommandId) -> bool {
+        Self::projector_canvas(id).is_some_and(|c| {
+            self.workspace
+                .projectors()
+                .iter()
+                .any(|(_, p)| p.canvas == c)
+        })
+    }
+
+    /// The window of the projector `id` names, while open.
+    fn projector_window(&self, id: &CommandId) -> Result<&crate::projector::Shown, String> {
+        let canvas = Self::projector_canvas(id).ok_or_else(|| "Name a canvas.".to_owned())?;
+        self.projectors
+            .iter()
+            .find(|p| p.canvas == canvas)
+            .ok_or_else(|| "The projector is not open.".to_owned())
     }
 
     fn has_vertical(&self) -> Result<(), String> {
@@ -785,6 +815,26 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.has_vertical()
             }
+            "ui.projector.shown" => {
+                if !cfg!(any(target_os = "macos", windows)) {
+                    return Err("Projectors need macOS or Windows.".to_owned());
+                }
+                if self.projector_kept(id) {
+                    return Ok(());
+                }
+                self.running()?;
+                match Self::projector_canvas(id) {
+                    Some(ProjectorCanvas::Main) => Ok(()),
+                    Some(ProjectorCanvas::Vertical) => self.has_vertical(),
+                    None => Err("Name a canvas.".to_owned()),
+                }
+            }
+            "ui.projector.size" | "ui.projector.close" => self.projector_window(id).map(|_| ()),
+            // A line that informs: never run.
+            "ui.projector.shared" => {
+                self.projector_window(id)?;
+                Err("The size a video call receives from this window.".to_owned())
+            }
             "canvas.vertical_size" => {
                 self.running()?;
                 self.has_vertical()?;
@@ -864,6 +914,7 @@ impl CommandState for Shown<'_> {
             }
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
             "canvas.vertical_preview.toggle" => self.vertical_panel_open(),
+            "ui.projector.shown" => self.projector_kept(id),
             "canvas.vertical_size" => match (self.studio.vertical, size_of(id)) {
                 (Some(v), Some((w, h))) => v.size.width == w && v.size.height == h,
                 _ => false,
@@ -1001,6 +1052,32 @@ impl CommandState for Shown<'_> {
                 ]
             }
             "scene.select" => self.studio.scene_choices(),
+            "ui.projector.size" => {
+                let Ok(p) = self.projector_window(id) else {
+                    return Vec::new();
+                };
+                let window = p.fullscreen.is_none();
+                let mut out = vec![
+                    (
+                        "Window".to_owned(),
+                        "window".to_owned(),
+                        window && p.size == ProjectorSize::Window,
+                    ),
+                    (
+                        "Exact pixels".to_owned(),
+                        "exact".to_owned(),
+                        window && p.size == ProjectorSize::Exact,
+                    ),
+                ];
+                out.extend(self.displays.iter().map(|d| {
+                    (
+                        format!("Full screen on {d}"),
+                        format!("{FULL_SCREEN_ON}{d}"),
+                        p.fullscreen.as_deref() == Some(d),
+                    )
+                }));
+                out
+            }
             "canvas.auto_layout" => vec![
                 ("Fit each source".into(), "fit".into(), false),
                 ("Fill with each source".into(), "fill".into(), false),
@@ -1069,6 +1146,24 @@ impl CommandState for Shown<'_> {
             && let Some((w, h)) = size_of(id)
         {
             return Some(format!("{w} x {h}"));
+        }
+        if id.base().starts_with("ui.projector.")
+            && let Some(canvas) = Self::projector_canvas(id)
+        {
+            let name = match canvas {
+                ProjectorCanvas::Main => "Program",
+                ProjectorCanvas::Vertical => "Vertical",
+            };
+            match id.base() {
+                "ui.projector.shown" => return Some(format!("Projector: {name}")),
+                "ui.projector.size" if id.param("size").is_none() => {
+                    return Some(format!("{name} projector size"));
+                }
+                "ui.projector.shared" => {
+                    return self.projector_window(id).ok().map(|p| p.shared.clone());
+                }
+                _ => {}
+            }
         }
         if id.base() == "ui.layout.lock" {
             return Some(
@@ -1729,7 +1824,16 @@ pub enum Run {
     HoldStream,
     /// Break: hold every stream and pause every recording, or resume them all.
     Break,
+    /// Open (`true`) or close a canvas's projector (`ui.projector.shown`,
+    /// `ui.projector.close`, ADR-0125).
+    Projector(ProjectorCanvas, bool),
+    /// A projector's size, or full screen on the display named (`ui.projector.size`).
+    ProjectorSize(ProjectorCanvas, ProjectorSize, Option<String>),
 }
+
+/// The `ui.projector.size` value that puts a projector full screen on a display; the
+/// display's name follows.
+const FULL_SCREEN_ON: &str = "display:";
 
 /// The output kind an `output.with_vertical` id names.
 fn output_kind(id: &CommandId) -> Option<OutputKind> {
@@ -1784,6 +1888,18 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
                 },
             ),
             "scene.select" => Run::Scene(value.parse().ok()?),
+            "ui.projector.size" => {
+                let canvas = Shown::projector_canvas(&id)?;
+                match value.as_str() {
+                    "window" => Run::ProjectorSize(canvas, ProjectorSize::Window, None),
+                    "exact" => Run::ProjectorSize(canvas, ProjectorSize::Exact, None),
+                    v => Run::ProjectorSize(
+                        canvas,
+                        ProjectorSize::Window,
+                        Some(v.strip_prefix(FULL_SCREEN_ON)?.to_owned()),
+                    ),
+                }
+            }
             "canvas.auto_layout" => {
                 use rbs_api::request::VerticalLayout as V;
                 Run::AutoLayoutVertical(match value.as_str() {
@@ -1987,6 +2103,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "stream.hold_toggle" => Run::HoldStream,
         "output.break_toggle" => Run::Break,
         "canvas.add_vertical" => Run::AddVertical,
+        "ui.projector.shown" => Run::Projector(Shown::projector_canvas(&id)?, !on),
+        "ui.projector.close" => Run::Projector(Shown::projector_canvas(&id)?, false),
         "canvas.vertical_size" => {
             let (w, h) = size_of(&id)?;
             Run::VerticalSize(w, h)
