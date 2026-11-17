@@ -4406,6 +4406,18 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_glide, |app, duration_ms: i32, easing: i32| {
         app.studio.set_glide(duration_ms, easing);
     });
+    on!(on_set_transition_kind, |app, index: i32| {
+        app.studio.set_transition_kind(index);
+    });
+    on!(on_set_transition_duration, |app, duration_ms: i32| {
+        app.studio.set_transition_duration(duration_ms);
+    });
+    on!(
+        on_set_fade_options,
+        |app, easing: i32, via: bool, color: slint::SharedString| {
+            app.studio.set_fade_options(easing, via, &color);
+        }
+    );
     on!(
         on_set_source_glide,
         |app, id: i32, custom: bool, duration_ms: i32, easing: i32| {

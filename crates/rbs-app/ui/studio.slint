@@ -360,6 +360,20 @@ export global Studio {
     in property <int> glide-default-duration: 400;
     in property <int> glide-default-easing: 1;
     callback set-glide(int /* duration_ms */, int /* easing */);
+    // The collection's transition (ADR-0128) as the rail shows it: 0 Cut, 1 Fade,
+    // 2 Move (Swipe and Slide join when they are drawn). Move's duration and easing
+    // are the collection glide above; Fade has its own, and may pass through an
+    // opaque colour.
+    in property <int> transition-kind: 2;
+    in property <int> fade-duration: 300;
+    in property <int> fade-easing;
+    in property <bool> fade-via;
+    in property <color> fade-via-color;
+    callback set-transition-kind(int);
+    // The duration of the current kind (Move: the glide's).
+    callback set-transition-duration(int /* ms */);
+    // `via-color` is "#rrggbb", or empty to keep the colour.
+    callback set-fade-options(int /* easing */, bool /* via */, string /* via-color */);
     // Per-source slide override (ADR-0100). `custom` false clears it.
     callback set-source-glide(int /* id */, bool /* custom */, int /* duration_ms */, int /* easing */);
     // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
