@@ -7,11 +7,14 @@
 //!   (reference 1) and hands that reference to the frame's lease; the importer and the
 //!   picture node release it. Neither `retain` nor `release` locks or frees.
 //! - Buffers of free slots are dropped on the worker thread when it decodes the next
-//!   picture. No handle grace is needed: the Metal importer's texture retains the
-//!   `IOSurface` while the importer caches it (`rbs-gpu` `interop/metal.rs`), so its
-//!   address cannot name another surface while it is a cache key.
+//!   picture; VideoToolbox reuses their surfaces in its own pool while the decoder
+//!   lives. The Metal importer's texture retains an `IOSurface` while the importer
+//!   caches it (`rbs-gpu` `interop/metal.rs`), so its address cannot name another
+//!   surface while it is a cache key.
 //! - When the decoder is dropped, the pool goes to a graveyard: kept while any lease
-//!   refers to a slot, then freed on the janitor thread, never on the render thread.
+//!   refers to a slot, then for [`HANDLE_GRACE`] (ADR-0108 decision 7: a stopped
+//!   worker's native surfaces stay 10 s after their last reference), then freed on the
+//!   janitor thread, never on the render thread.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -29,10 +32,12 @@ const JANITOR_PERIOD: Duration = Duration::from_secs(1);
 /// claim fails only when consumers keep more pictures than the source allows.
 pub(crate) const SLOTS: usize = 24;
 
-/// Pools of dropped decoders, released once no lease names a slot (no grace: see the
-/// module doc).
-static GRAVEYARD: Graveyard =
-    Graveyard::new("rbs-media-avf-janitor", Duration::ZERO, JANITOR_PERIOD);
+/// How long a stopped decoder's surfaces stay after their last reference
+/// (capture-port.md, native surface rules; ADR-0108 decision 7).
+const HANDLE_GRACE: Duration = Duration::from_secs(10);
+
+/// Pools of dropped decoders.
+static GRAVEYARD: Graveyard = Graveyard::new("rbs-media-avf-janitor", HANDLE_GRACE, JANITOR_PERIOD);
 
 /// A decoded pixel buffer moved between the worker and the janitor.
 struct SendableBuffer {
@@ -132,7 +137,7 @@ impl Drop for Surfaces {
 }
 
 /// The pool of a dropped decoder. Kept while pictures reference it, so the last lease
-/// never frees anything on the render thread.
+/// never frees anything on the render thread, and for the grace after that.
 struct PoolGrave(Arc<Pool>);
 
 impl Grave for PoolGrave {
