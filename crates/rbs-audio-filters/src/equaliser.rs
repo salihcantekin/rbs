@@ -373,6 +373,16 @@ impl EqualiserDsp {
         self.sections.get(index).is_some_and(Section::active)
     }
 
+    /// The response of every processed section together at `freq` Hz, in dB: what the
+    /// editor draws as the curve (ADR-0130 decision 10). Off the audio thread only.
+    pub fn response_db(&self, freq: f32) -> f32 {
+        self.sections
+            .iter()
+            .filter(|s| s.active())
+            .map(|s| s.coefs.magnitude_db(self.rate, freq))
+            .sum()
+    }
+
     /// One glide step for every section that glides; clears the state of a section that
     /// stops being processed, so it starts clean when it comes back.
     fn glide(&mut self) {
