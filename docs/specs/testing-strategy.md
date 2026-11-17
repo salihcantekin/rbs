@@ -46,9 +46,11 @@ Binding ([ADR-0032](../adr/0032-fast-deterministic-tests.md); procedure: `test-r
 `cargo xtask affected` diffs the working tree, untracked files included, against the merge base with `origin/main` and selects the workspace packages the change can break:
 
 - the package that owns each changed file under `crates/` or `xtask/`;
-- every package whose Rust sources name a changed file or its directory (`rbs-app-ui`'s `build.rs` compiles `../rbs-app/ui`, `rbs-import-obs` includes `docs/specs/obs-import.md`, `xtask` reads `docs/ui`);
+- every package whose Rust sources name a changed file or its directory (the `build.rs` of each `rbs-app-ui*` crate compiles `../rbs-app/ui`, `rbs-import-obs` includes `docs/specs/obs-import.md`, `xtask` reads `docs/ui`);
 - for a `Cargo.lock` change, the users of each lock entry that changed;
 - then every package that depends on a selected one (normal, build and dev dependencies, from `Cargo.lock`).
+
+When a selected package is one of the UI crates, `affected test` also runs `cargo check -p rbs-app --features ui-live-preview` with `SLINT_LIVE_PREVIEW=1` in `target/live-preview`, so a change cannot break the live preview's build unnoticed.
 
 A change to the root `Cargo.toml`, `.cargo/`, `.config/`, a toolchain file or an unknown root file selects the whole workspace. Documentation, `.claude/`, `.github/` and `prototypes/` select nothing unless a source names them. `test` runs `cargo nextest run` (`cargo test` when nextest is missing), `clippy` adds `--all-targets -- -D warnings`, and `check` adds `--all-targets`.
 
@@ -56,11 +58,17 @@ Before a pull request is pushed, `cargo fmt --all -- --check`, `cargo xtask affe
 
 ### UI live preview
 
-A UI edit does not need a Rust build. `cargo xtask ui-dev` builds and runs `rbs` with the `ui-live-preview` feature (`rbs-app`, forwarding `rbs-app-ui`'s `live-preview`) and `SLINT_LIVE_PREVIEW=1`. `rbs-app-ui` then generates small wrappers instead of the UI's Rust code, and the app interprets `crates/rbs-app/ui` at run time. Saving a `.slint` file reloads the open windows and keeps the state the Rust side set. Arguments after `ui-dev` go to `cargo run` (`cargo xtask ui-dev --features demo-sources`).
+A UI edit does not need a Rust build. `cargo xtask ui-dev` builds and runs `rbs` with the `ui-live-preview` feature (`rbs-app`, forwarding `rbs-app-ui`'s `live-preview`) and `SLINT_LIVE_PREVIEW=1`, in `target/live-preview` (under `CARGO_TARGET_DIR` when it is set) so that switching between it and a normal build never rebuilds either. The facade `rbs-app-ui` then re-exports `rbs-app-ui-single`, which compiles every window from `ui/roots/single.slint` as small wrappers, and the split crates skip their code generation (ADR-0138 decision 5; Slint's live-preview wrappers cannot import a Slint library). The app interprets `crates/rbs-app/ui` at run time. Saving a `.slint` file reloads the open windows and keeps the state the Rust side set. An editor that saves by writing a new file and renaming it over the old one may not trigger a reload; saving in place does. Arguments after `ui-dev` go to `cargo run` (`cargo xtask ui-dev --features demo-sources`).
 
 Measured on a 4-core cloud container (2026-11-17): `rbs-app-ui` builds in 8 s instead of about 330 s, a cold `rbs` build takes 3 min 17 s instead of 8 min 26 s, and a saved file reloads in about 1.5 s. The Slint compiler is optimised in dev builds (`[profile.dev.package.i-slint-compiler]`); unoptimised, a reload took about 20 s, and the normal build's code generation in `rbs-app-ui`'s build script takes 19 s instead of 11 s.
 
-The live preview is for looking at and adjusting the UI only. The interpreter is slower than the generated code, so performance measurements, tests and builds that ship use the normal build. A change made this way is still checked with `cargo xtask check-ui`, the UI review and the normal test run before it is pushed. `SLINT_LIVE_PREVIEW` without the feature fails in `rbs-app-ui`'s build script; the feature without the variable only compiles the unused interpreter (`cargo doc --all-features`).
+The live preview is for looking at and adjusting the UI only. The interpreter is slower than the generated code, so performance measurements, tests and builds that ship use the normal build. A change made this way is still checked with `cargo xtask check-ui`, the UI review and the normal test run before it is pushed. `SLINT_LIVE_PREVIEW` without the feature fails in `rbs-app-ui`'s build script; the feature without the variable uses the split crates and only compiles the unused interpreter (`cargo doc --all-features`).
+
+### UI crates (ADR-0138)
+
+The Rust code Slint generates from `crates/rbs-app/ui` is split by window group: `rbs-app-ui-base` (shared globals, structs, enums and tokens, built as the Slint library `@rbsui`), `rbs-app-ui-main` (main and floating windows), `rbs-app-ui-settings`, `rbs-app-ui-dialogs` and `rbs-app-ui-probes` (test-only windows, built for `rbs-app`'s tests). `rbs-app` names only the facade `rbs-app-ui`. Each window group has its own root (`ui/roots/<group>.slint`) that imports its windows from their own files (`main_window.slint`, `settings_window.slint`, the dialog files, `overlay_probe.slint`), never through `app.slint`, so Cargo reruns only the groups whose files changed. The Settings pages live in `studio_settings.slint`, apart from the panels in `studio.slint`. A change to a file every group uses (`components.slint`, `settings.slint`, `base/`) still rebuilds every group. `cargo xtask check-ui` enforces the name and import rules of the split.
+
+Measured on a 4-core / 15 GB cloud container (2026-11-17, `CARGO_BUILD_JOBS=4`): the UI crates build cold in about 146 s instead of 346 s; one changed text in a Settings page rebuilds only `rbs-app-ui-settings`, in 99 s with incremental compilation (138 s without) instead of 381 s; the largest rustc process peaks at 6.5 GB instead of 12.8 GB. Several groups peaking at once can still add up to about 16 GB, so use `CARGO_BUILD_JOBS=3` or less on a 16 GB machine.
 
 ## Counted UI checks (ADR-0115)
 

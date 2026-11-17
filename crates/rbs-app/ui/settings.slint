@@ -4,8 +4,8 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Experience, MoreHidden, Button, StatusLine, SettingsFind, FindMark } from "components.slint";
-import { SettingsHit, SettingsScroll } from "base/types.slint";
+import { FocusRing, RingFocus, Icon, SectionHeader, MoreHidden, Button, StatusLine, FindMark } from "components.slint";
+import { SettingsHit, SettingsScroll, IconName, Sections, Experience, SettingsFind } from "base/types.slint";
 export { SettingsHit, SettingsScroll }
 
 // One entry of the section list. The section in use has a quiet plate and the label
@@ -345,6 +345,23 @@ export component SettingsCallout inherits Rectangle {
     inner := VerticalLayout {
         padding: Tokens.space-3;
         spacing: Tokens.space-2;
+        @children
+    }
+}
+
+// Children shown only while `shown`; takes no room otherwise (layouts have no
+// `visible`, and an `if` would hide the popups' `open` from the form). The space
+// above (`lead`) is part of it, so a hidden one leaves no gap in a layout with no
+// spacing.
+export component Shown inherits Rectangle {
+    in property <bool> shown;
+    in property <length> gap: Tokens.space-1;
+    in property <length> lead: 0;
+    visible: shown;
+    height: shown ? inner.preferred-height : 0;
+    inner := VerticalLayout {
+        padding-top: root.lead;
+        spacing: root.gap;
         @children
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! Slint needs a window's `MenuBar` written out in the window itself, so the menus'
 //! shape (which menus, items, separators and choice submenus, in order) is generated
-//! from [`rbs_ui::command::MENU_LAYOUT`] by `slint_text` (tests only) and kept in `ui/app.slint`
-//! between marker lines; a test fails when that copy is out of date (run it with
+//! from [`rbs_ui::command::MENU_LAYOUT`] by `slint_text` (tests only) and kept in
+//! `ui/main_window.slint` and `ui/settings_window.slint` between marker lines; a test fails when that copy is out of date (run it with
 //! `RBS_UPDATE_MENU_BAR=1` to rewrite it). What changes at run time (titles, enabled
 //! and checked states, a picker's choices) comes from [`Values`], indexed in the same
 //! order, through the `Menus` global.
@@ -179,7 +179,7 @@ pub fn slint_text(indent: &str) -> String {
 }
 
 #[cfg(test)]
-/// The begin and end marker lines around each generated copy in `ui/app.slint`.
+/// The begin and end marker lines around each generated copy in the window files.
 pub const BEGIN: &str = "// BEGIN generated menu bar (menu_bar.rs; do not edit)";
 #[cfg(test)]
 pub const END: &str = "// END generated menu bar";
@@ -2201,25 +2201,32 @@ fn heard_source(id: &CommandId) -> Option<i32> {
 mod tests {
     use super::*;
 
-    const APP_SLINT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.slint");
+    /// The window files that declare the menu bar (ADR-0138: one file per window group).
+    const WINDOW_FILES: [&str; 2] = ["ui/main_window.slint", "ui/settings_window.slint"];
 
     #[test]
-    fn app_slint_has_the_current_menu_bar() {
-        let text = std::fs::read_to_string(APP_SLINT).expect("ui/app.slint is readable");
-        // A Windows checkout may have CRLF line ends; the generated text has LF.
-        let text = text.replace("\r\n", "\n");
-        let fresh = refreshed(&text).expect("ui/app.slint has the menu bar markers");
-        if fresh != text && std::env::var_os("RBS_UPDATE_MENU_BAR").is_some() {
-            std::fs::write(APP_SLINT, &fresh).expect("ui/app.slint is writable");
-            return;
+    fn the_window_files_have_the_current_menu_bar() {
+        let mut copies = 0;
+        for file in WINDOW_FILES {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+            let text = std::fs::read_to_string(&path).expect("the window file is readable");
+            // A Windows checkout may have CRLF line ends; the generated text has LF.
+            let text = text.replace("\r\n", "\n");
+            let fresh = refreshed(&text).expect("the window file has the menu bar markers");
+            if fresh != text && std::env::var_os("RBS_UPDATE_MENU_BAR").is_some() {
+                std::fs::write(&path, &fresh).expect("the window file is writable");
+                copies += fresh.matches(BEGIN).count();
+                continue;
+            }
+            assert!(
+                fresh == text,
+                "the menu bar in {file} is out of date: run \
+                 `RBS_UPDATE_MENU_BAR=1 cargo test -p rbs-app --bin rbs menu_bar`"
+            );
+            copies += text.matches(BEGIN).count();
         }
-        assert!(
-            fresh == text,
-            "the menu bar in ui/app.slint is out of date: run \
-             `RBS_UPDATE_MENU_BAR=1 cargo test -p rbs-app --bin rbs menu_bar`"
-        );
         // Main, floating and Settings windows each declare the menu bar (macOS).
-        assert_eq!(text.matches(BEGIN).count(), 3);
+        assert_eq!(copies, 3);
     }
 
     #[test]

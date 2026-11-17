@@ -69,7 +69,10 @@ mod tests {
     #[test]
     fn the_live_preview_builds_beside_the_normal_target() {
         let root = Path::new("/repo");
-        assert_eq!(target_dir(root, None), Path::new("/repo/target/live-preview"));
+        assert_eq!(
+            target_dir(root, None),
+            Path::new("/repo/target/live-preview")
+        );
         assert_eq!(
             target_dir(root, Some("/shared/target".as_ref())),
             Path::new("/shared/target/live-preview")

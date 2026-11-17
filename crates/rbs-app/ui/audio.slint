@@ -6,7 +6,8 @@
 import { Theme, Tokens } from "tokens.slint";
 import { NumberField, Select, Slider, Toggle, ValueReadout, SettingRow } from "components.slint";
 import { SettingsCard, SettingsStatus } from "settings.slint";
-import { Studio } from "studio.slint";
+import { Studio } from "base/types.slint";
+
 
 export component AudioSettings inherits Rectangle {
     // The fader position while a drag runs; -1 otherwise. Cleared once the host

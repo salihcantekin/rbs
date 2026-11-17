@@ -1,0 +1,2101 @@
+// The Settings pages of the studio (ADR-0138: kept apart from the panels in
+// `studio.slint`, so a change to a page rebuilds only `rbs-app-ui-settings`).
+import { Theme, Tokens } from "tokens.slint";
+import { DialogActions, Button, IconButton, NumberField, Select, SegmentedControl, SizeNest, TextField, Toggle, InfoHint, SettingRow } from "components.slint";
+import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
+import { ReplaySettings } from "replay.slint";
+import { DestinationRow, EncoderData, Studio, Experience, IconName } from "base/types.slint";
+
+// The encoder fields of one output, shared by the Recording and Stream sections, as
+// rows of a settings card: the video encoder, its bitrate or quality level, the audio
+// bitrate and, behind "Advanced settings" (U2), every other setting that changes the
+// output's quality. `set(field, value)` reports a pick; field codes (rbs-app
+// `studio_ui::enc_field`): 0 encoder, 1 video bitrate, 2 audio bitrate, 3 rate
+// control, 4 maximum bitrate, 5 quality level, 6 padding (value 0 or 1), 7 keyframe
+// interval, 8 preset, 9 profile, 10 B-frames, 11 video codec, 12 colour,
+// 13 open shadows.
+component EncoderFields inherits VerticalLayout {
+    in property <EncoderData> data;
+    // Not while the output runs.
+    in property <bool> idle;
+    // A stream: the hints speak of the stream instead of files.
+    in property <bool> stream;
+    callback set(int /* field */, int /* value */);
+    // Section levels (ADR-0113): advanced rows are drawn while `Experience.advanced`,
+    // expert rows while `Experience.expert`, and both once the user answered the
+    // card's "More options are hidden" line (`show-all`, the card's own property). The
+    // card sets `more-hidden: !Experience.expert`.
+    in property <bool> show-all;
+    property <bool> advanced: Experience.advanced || root.show-all;
+    property <bool> expert: Experience.expert || root.show-all;
+    if root.advanced: SettingRow {
+        find: "encoding.video-codec";
+        changed: root.idle && root.data.defaults[11] >= 0 && root.data.codec != root.data.defaults[11];
+        default-text: root.data.codecs[root.data.defaults[11]];
+        reset => { root.set(11, root.data.defaults[11]); }
+        label: @tr("Video codec");
+        help: root.stream
+            ? @tr("A stream uses H.264. RTMP does not carry HEVC yet.")
+            : @tr("H.264 plays everywhere. HEVC makes a smaller file and needs a newer player.");
+        enabled: root.idle && root.data.codecs.length > 1;
+        codec := Select {
+            label: @tr("Video codec");
+            options: root.data.codecs;
+            index: root.data.codec;
+            enabled: root.idle && root.data.codecs.length > 1;
+            selected(i) => { root.set(11, i); }
+        }
+    }
+    if root.advanced: SettingRow {
+        find: "encoding.colour";
+        changed: root.idle && root.data.defaults[12] >= 0 && root.data.delivery != root.data.defaults[12];
+        default-text: [@tr("Video"), @tr("Screen")][root.data.defaults[12]];
+        reset => { root.set(12, root.data.defaults[12]); }
+        label: @tr("Colour");
+        help: root.data.delivery == 0
+            ? @tr("Rec. 709 limited range, for YouTube, TV and streams.")
+            : @tr("sRGB full range. Matches the app on screen; a poor choice for YouTube.");
+        enabled: root.idle;
+        colour := Select {
+            label: @tr("Colour");
+            options: [@tr("Video"), @tr("Screen")];
+            index: root.data.delivery;
+            enabled: root.idle;
+            selected(i) => { root.set(12, i); }
+        }
+    }
+    if root.expert: Shown {
+        shown: root.data.delivery == 0;
+        gap: 0;
+        SettingRow {
+            find: "encoding.open-shadows";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.delivery == 0;
+            label: @tr("Open shadows");
+            help: root.stream
+                ? @tr("Lifts only the darkest tones so they stay visible on YouTube and TV. The stream stays Rec. 709. Off by default.")
+                : @tr("Lifts only the darkest tones so they stay visible on YouTube and TV. The file stays Rec. 709. Off by default.");
+            enabled: root.idle;
+            fill: false;
+            Toggle {
+                label: @tr("Open shadows");
+                checked: root.data.open-shadows;
+                enabled: root.idle && root.data.delivery == 0;
+                toggled(on) => { root.set(13, on ? 1 : 0); }
+            }
+        }
+    }
+    SettingRow {
+        find: "encoding.video-encoder";
+        changed: root.idle && root.data.defaults[0] >= 0 && root.data.encoder != root.data.defaults[0];
+        default-text: root.data.encoders[root.data.defaults[0]];
+        reset => { root.set(0, root.data.defaults[0]); }
+        label: @tr("Video encoder");
+        summary: @tr("Automatic picks this computer's best");
+        hint: @tr("Automatic picks the best one this computer has.");
+        enabled: root.idle;
+        encoder := Select {
+            label: @tr("Video encoder");
+            options: root.data.encoders;
+            index: root.data.encoder;
+            enabled: root.idle;
+            selected(i) => { root.set(0, i); }
+        }
+    }
+    // The bitrate (CBR, VBR) or the quality level (constant quality): one slot.
+    Shown {
+        shown: root.data.rate-kind != 2;
+        gap: 0;
+        SettingRow {
+            find: "encoding.video-bitrate";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.rate-kind != 2;
+            changed: root.idle && root.data.defaults[1] >= 0 && root.data.video-rate != root.data.defaults[1];
+            default-text: root.data.video-rates[root.data.defaults[1]];
+            reset => { root.set(1, root.data.defaults[1]); }
+            label: root.data.bitrate-label;
+            help: root.data.recommended-kbps > 0
+                ? @tr("{} kbit/s is below the {} kbit/s recommended for this output size ({} x {} at {} fps).", root.data.video-kbps, root.data.recommended-kbps, root.data.out-width, root.data.out-height, root.data.out-fps)
+                : root.stream ? @tr("Most of the picture's quality. Use what your streaming service recommends.")
+                : @tr("Most of the picture's quality; larger values make larger files.");
+            help-is-warning: root.data.recommended-kbps > 0;
+            enabled: root.idle;
+            video := Select {
+                label: root.data.recommended-kbps > 0
+                    ? @tr("{}, warning: {} kbit/s is below the {} kbit/s recommended for this output size ({} x {} at {} fps).", root.data.bitrate-label, root.data.video-kbps, root.data.recommended-kbps, root.data.out-width, root.data.out-height, root.data.out-fps)
+                    : root.data.bitrate-label;
+                options: root.data.video-rates;
+                index: root.data.video-rate;
+                enabled: root.idle && root.data.rate-kind != 2;
+                selected(i) => { root.set(1, i); }
+            }
+        }
+    }
+    Shown {
+        shown: root.data.rate-kind == 2;
+        gap: 0;
+        SettingRow {
+            find: "encoding.quality-level";
+            // Hidden with its Shown: search shows the card instead.
+            findable: root.data.rate-kind == 2;
+            changed: root.idle && root.data.defaults[5] >= 0 && root.data.quality != root.data.defaults[5];
+            default-text: root.data.qualities[root.data.defaults[5]];
+            reset => { root.set(5, root.data.defaults[5]); }
+            label: @tr("Quality level");
+            summary: @tr("Lower is better quality, larger files");
+            enabled: root.idle;
+            quality := Select {
+                label: @tr("Quality level");
+                options: root.data.qualities;
+                index: root.data.quality;
+                enabled: root.idle && root.data.rate-kind == 2;
+                selected(i) => { root.set(5, i); }
+            }
+        }
+    }
+    SettingRow {
+        find: "encoding.audio-bitrate";
+        changed: root.idle && root.data.defaults[2] >= 0 && root.data.audio-rate != root.data.defaults[2];
+        default-text: root.data.audio-rates[root.data.defaults[2]];
+        reset => { root.set(2, root.data.defaults[2]); }
+        label: @tr("Audio bitrate");
+        summary: @tr("160 kbit/s suits most voices and music");
+        hint: @tr("AAC. 160 kbit/s suits most voices and music.");
+        enabled: root.idle;
+        audio := Select {
+            label: @tr("Audio bitrate");
+            options: root.data.audio-rates;
+            index: root.data.audio-rate;
+            enabled: root.idle;
+            selected(i) => { root.set(2, i); }
+        }
+    }
+    // Advanced and expert: every other setting that changes the output's quality.
+    if root.advanced: VerticalLayout {
+        SettingRow {
+            find: "encoding.rate-control";
+            changed: root.idle && root.data.defaults[3] >= 0 && root.data.rate-mode != root.data.defaults[3];
+            default-text: root.data.rate-modes[root.data.defaults[3]];
+            reset => { root.set(3, root.data.defaults[3]); }
+            label: @tr("Rate control");
+            help: root.data.rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
+                : root.data.rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum. CBR is the default.")
+                : @tr("Constant quality: the same quality all the time; file size varies. CBR is the default.");
+            enabled: root.idle;
+            mode := Select {
+                label: @tr("Rate control");
+                options: root.data.rate-modes;
+                index: root.data.rate-mode;
+                enabled: root.idle;
+                selected(i) => { root.set(3, i); }
+            }
+        }
+        Shown {
+            shown: root.data.rate-kind == 1;
+            gap: 0;
+            SettingRow {
+                find: "encoding.max-bitrate";
+                // Hidden with its Shown: search shows the card instead.
+                findable: root.data.rate-kind == 1;
+                changed: root.idle && root.data.defaults[4] >= 0 && root.data.peak != root.data.defaults[4];
+                default-text: root.data.peaks[root.data.defaults[4]];
+                reset => { root.set(4, root.data.defaults[4]); }
+                label: @tr("Maximum bitrate");
+                summary: @tr("Short peaks above the target");
+                hint: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate.");
+                enabled: root.idle;
+                peak := Select {
+                    label: @tr("Maximum bitrate");
+                    options: root.data.peaks;
+                    index: root.data.peak;
+                    enabled: root.idle && root.data.rate-kind == 1;
+                    selected(i) => { root.set(4, i); }
+                }
+            }
+        }
+        if root.expert: Shown {
+            shown: root.data.rate-kind == 0;
+            gap: 0;
+            SettingRow {
+                find: "encoding.pad-bitrate";
+                // Hidden with its Shown: search shows the card instead.
+                findable: root.data.rate-kind == 0;
+                label: @tr("Pad to the full bitrate");
+                help: root.data.padding-available
+                    ? @tr("Adds filler data so a still picture still uses the whole bitrate. Off by default.")
+                    : @tr("This encoder cannot pad the bitrate.");
+                enabled: root.idle && root.data.padding-available;
+                fill: false;
+                Toggle {
+                    label: @tr("Pad to the full bitrate");
+                    checked: root.data.padding;
+                    enabled: root.idle && root.data.rate-kind == 0 && root.data.padding-available;
+                    toggled(on) => { root.set(6, on ? 1 : 0); }
+                }
+            }
+        }
+        SettingRow {
+            find: "encoding.keyframe-interval";
+            changed: root.idle && root.data.defaults[7] >= 0 && root.data.keyframe != root.data.defaults[7];
+            default-text: root.data.keyframes[root.data.defaults[7]];
+            reset => { root.set(7, root.data.defaults[7]); }
+            label: @tr("Keyframe interval");
+            help: root.stream
+                ? @tr("How often a full picture is sent. Most streaming services require 2 s, the default.")
+                : @tr("How often a full picture is stored. Shorter makes seeking faster and files larger.");
+            enabled: root.idle;
+            keyframe := Select {
+                label: @tr("Keyframe interval");
+                options: root.data.keyframes;
+                index: root.data.keyframe;
+                enabled: root.idle;
+                selected(i) => { root.set(7, i); }
+            }
+        }
+        SettingRow {
+            find: "encoding.encoder-preset";
+            changed: root.idle && root.data.defaults[8] >= 0 && root.data.preset != root.data.defaults[8];
+            default-text: root.data.presets[root.data.defaults[8]];
+            reset => { root.set(8, root.data.defaults[8]); }
+            label: @tr("Encoder preset");
+            summary: @tr("Quality or speed");
+            hint: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default.");
+            enabled: root.idle;
+            fill: false;
+            SegmentedControl {
+                label: @tr("Encoder preset");
+                options: root.data.presets;
+                index: root.data.preset;
+                enabled: root.idle;
+                selected(i) => { root.set(8, i); }
+            }
+        }
+        if root.expert: SettingRow {
+            find: "encoding.profile";
+            changed: root.idle && root.data.defaults[9] >= 0 && root.data.profile != root.data.defaults[9];
+            default-text: root.data.profiles[root.data.defaults[9]];
+            reset => { root.set(9, root.data.defaults[9]); }
+            label: @tr("Profile");
+            summary: @tr("Which devices can play it");
+            hint: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices.");
+            enabled: root.idle;
+            profile := Select {
+                label: @tr("Profile");
+                options: root.data.profiles;
+                index: root.data.profile;
+                enabled: root.idle;
+                selected(i) => { root.set(9, i); }
+            }
+        }
+        if root.expert: SettingRow {
+            find: "encoding.b-frames";
+            changed: root.idle && root.data.defaults[10] >= 0 && root.data.b-frame != root.data.defaults[10];
+            default-text: root.data.b-frames[root.data.defaults[10]];
+            reset => { root.set(10, root.data.defaults[10]); }
+            label: @tr("B-frames");
+            help: root.data.b-frames-note != "" ? root.data.b-frames-note
+                : @tr("More B-frames save bits and add a little delay. 0 is the default.");
+            enabled: root.idle && root.data.b-frames-note == "";
+            bframes := Select {
+                label: @tr("B-frames");
+                options: root.data.b-frames;
+                index: root.data.b-frame;
+                enabled: root.idle && root.data.b-frames-note == "";
+                selected(i) => { root.set(10, i); }
+            }
+        }
+    }
+}
+
+// Which canvas's settings the Recording and Stream sections show, while the studio has
+// a vertical canvas (ADR-0093 decision 6): one row at the top of each section.
+component SettingsCanvasPicker inherits HorizontalLayout {
+    spacing: Tokens.space-2;
+    alignment: start;
+    Text {
+        text: @tr("Settings for");
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    Select {
+        width: Tokens.size-menu-sm;
+        label: @tr("Settings for");
+        options: Studio.settings-canvases;
+        index: Studio.settings-canvas;
+        selected(i) => { Studio.set-settings-canvas(i); }
+    }
+    VerticalLayout {
+        alignment: center;
+        InfoHint {
+            label: @tr("Settings for");
+            text: @tr("Each canvas records and streams with its own settings: its own folder, encoder, server and stream key.");
+        }
+    }
+}
+
+// The recording's settings (glossary: output profile): the Recording section of the
+// Settings window (U17). They apply to the next recording and are saved at once.
+export component RecordingSettings inherits Rectangle {
+    property <bool> idle: Studio.rec-form-idle;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        if Studio.settings-canvases.length > 1: SettingsCanvasPicker { }
+        if Studio.out-uses-main: SettingsNotice { text: @tr("Uses the main recording settings until changed."); }
+        if !idle: SettingsNotice { text: @tr("Changes apply to the next recording."); }
+        if Studio.out-note != "": SettingsNotice { text: Studio.out-note; problem: true; }
+        SettingsCard {
+            title: @tr("Files");
+            id: "settings.recording.files";
+            SettingRow {
+                find: "recording.folder";
+                divider: false;
+                label: @tr("Folder");
+                summary: @tr("Where recordings are saved");
+                hint: @tr("Each recording gets a new file named by its date and time; a file is never replaced.");
+                enabled: idle;
+                control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+                folder := TextField {
+                    label: @tr("Folder");
+                    text: Studio.out-folder;
+                    enabled: idle;
+                    accepted(t) => { Studio.set-folder(t); }
+                }
+            }
+            SettingRow {
+                find: "recording.format";
+                label: @tr("Format");
+                summary: @tr("Video, or only the sound");
+                hint: @tr("Video carries the picture. Audio is the mix, with no picture. MOV opens in QuickTime and Final Cut. WAV is uncompressed. FLAC is lossless and smaller.");
+                enabled: idle;
+                fill: false;
+                control-width: Tokens.size-menu-md + Tokens.size-menu-sm;
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: center;
+                    SegmentedControl {
+                        label: @tr("Format");
+                        options: [@tr("Video"), @tr("Audio")];
+                        index: Studio.out-media;
+                        enabled: idle;
+                        selected(i) => { Studio.set-media(i); }
+                    }
+                    Select {
+                        label: @tr("Container");
+                        preferred-width: Tokens.size-menu-sm;
+                        options: Studio.out-containers;
+                        index: Studio.out-container;
+                        enabled: idle;
+                        selected(i) => { Studio.set-container(i); }
+                    }
+                }
+            }
+        }
+        // Separate files (ADR-0086 decision 4, step 3.5): the profile's switch, then
+        // what the marked sources write. Marks are set on each source in Properties.
+        SettingsCard {
+            title: @tr("Separate files");
+            id: "settings.recording.separate";
+            description: @tr("Sources marked Record separately also write their own files, in a folder with the recording.");
+            SettingRow {
+                find: "recording.separate";
+                label: @tr("Record separate files");
+                help: @tr("Off: Record writes one file even when sources are marked.");
+                Toggle {
+                    label: @tr("Record separate files");
+                    checked: Studio.rec-separate-on;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-separate-files(on); }
+                }
+            }
+            SettingRow {
+                find: "recording.separate-sources";
+                label: @tr("Sources");
+                help: Studio.rec-separate-names == "" ? @tr("None yet. Turn on Record separately in a source's Properties.") : Studio.rec-separate-names;
+                hint: @tr("Only the main canvas's recording writes them.");
+                Text {
+                    text: Studio.rec-separate-counts == "" ? @tr("None") : Studio.rec-separate-counts;
+                    color: Studio.rec-separate-counts == "" ? Theme.text-secondary : Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            SettingRow {
+                find: "recording.separate-video";
+                label: @tr("Video files");
+                help: @tr("Other encoders for these files come in a later version.");
+                Text {
+                    text: @tr("Same encoder as the recording");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            SettingRow {
+                find: "recording.separate-sound";
+                label: @tr("Sound files");
+                Text {
+                    text: @tr("WAV, 24-bit");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            SettingRow {
+                find: "recording.separate-limit";
+                divider: false;
+                label: @tr("Limit");
+                help-is-warning: Studio.rec-separate-videos > Studio.rec-separate-limit;
+                help: Studio.rec-separate-videos > Studio.rec-separate-limit
+                    ? @tr("{} video sources are marked. The rest are skipped, in source order.", Studio.rec-separate-videos)
+                    : @tr("More video files make the recording drop frames. Images and sound do not count.");
+                Text {
+                    text: @tr("Up to {} video files", Studio.rec-separate-limit);
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+        // Markers and project (ADR-0089 decisions 3, 4 and 10): the editor project
+        // first; the marker rows only while one is chosen. A sound-only recording has
+        // no editor project.
+        if !Studio.out-audio-only: SettingsCard {
+            title: @tr("Markers and project");
+            id: "settings.recording.markers";
+            SettingRow {
+                find: "recording.editor-project";
+                divider: Studio.rec-project != 0;
+                label: @tr("Editor project");
+                summary: @tr("Written when the recording stops");
+                hint: @tr("Opens the recording in your editor with its markers on the timeline. DaVinci Resolve reads the XML project.");
+                enabled: idle;
+                changed: idle && Studio.rec-project != 0;
+                default-text: @tr("Off");
+                reset => { Studio.set-editor-project(0); }
+                Select {
+                    label: @tr("Editor project");
+                    options: [@tr("Off"), @tr("DaVinci Resolve, Premiere (XML)"), @tr("Final Cut Pro (FCPXML)")];
+                    index: Studio.rec-project;
+                    enabled: idle;
+                    selected(i) => { Studio.set-editor-project(i); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-lead";
+                label: @tr("Marker lead");
+                summary: @tr("Moves your markers earlier");
+                hint: @tr("You press the key a moment after it happens. Your markers move this many seconds earlier, up to 30.");
+                enabled: idle;
+                changed: idle && Studio.rec-marker-lead != 0;
+                default-text: @tr("0 s");
+                reset => { Studio.set-marker-lead(0); }
+                fill: false;
+                NumberField {
+                    label: @tr("Marker lead");
+                    unit: @tr("s");
+                    value: Studio.rec-marker-lead;
+                    enabled: idle;
+                    edited(v) => { Studio.set-marker-lead(v); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-scenes";
+                label: @tr("Mark scene changes");
+                help: @tr("A marker named after the scene each time the program scene changes.");
+                Toggle {
+                    label: @tr("Mark scene changes");
+                    checked: Studio.rec-marker-scenes;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-marker-option(0, on); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-stream";
+                label: @tr("Mark stream start and end");
+                help: @tr("A marker when a stream starts or ends during the recording.");
+                Toggle {
+                    label: @tr("Mark stream start and end");
+                    checked: Studio.rec-marker-stream;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-marker-option(1, on); }
+                }
+            }
+            if Studio.rec-project != 0: SettingRow {
+                find: "recording.marker-pauses";
+                divider: false;
+                label: @tr("Mark pauses");
+                help: @tr("Pauses become markers in the editor project.");
+                Toggle {
+                    label: @tr("Mark pauses");
+                    checked: Studio.rec-marker-pauses;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-marker-option(2, on); }
+                }
+            }
+        }
+        rec-card := SettingsCard {
+            title: @tr("Encoding");
+            id: "settings.recording.encoding";
+            more-hidden: !Studio.out-audio-only && !Experience.expert;
+            if Studio.out-audio-only && !Studio.out-flac: SettingRow {
+                find: "recording.pcm";
+                divider: false;
+                label: @tr("PCM");
+                summary: @tr("16-bit is the usual choice");
+                hint: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording. 32-bit float does not clip.");
+                enabled: idle;
+                changed: idle && Studio.out-bit-depth != Studio.out-bit-depth-default;
+                default-text: Studio.out-pcm-widths[Studio.out-bit-depth-default];
+                reset => { Studio.set-bit-depth(Studio.out-bit-depth-default); }
+                fill: false;
+                SegmentedControl {
+                    label: @tr("PCM");
+                    options: Studio.out-pcm-widths;
+                    index: Studio.out-bit-depth;
+                    enabled: idle;
+                    selected(i) => { Studio.set-bit-depth(i); }
+                }
+            }
+            if Studio.out-flac: SettingRow {
+                find: "recording.flac-width";
+                divider: false;
+                label: @tr("Width");
+                summary: @tr("16-bit is the usual choice");
+                hint: @tr("16-bit is the usual choice. 24-bit keeps more of a quiet recording.");
+                enabled: idle;
+                changed: idle && Studio.out-bit-depth != Studio.out-bit-depth-default;
+                default-text: Studio.out-pcm-widths[Studio.out-bit-depth-default];
+                reset => { Studio.set-bit-depth(Studio.out-bit-depth-default); }
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Width");
+                    options: Studio.out-pcm-widths;
+                    index: Studio.out-bit-depth;
+                    enabled: idle;
+                    selected(i) => { Studio.set-bit-depth(i); }
+                }
+            }
+            if !Studio.out-audio-only: SettingBlock {
+                find: "encoding.output-size";
+                divider: false;
+                label: @tr("Output size");
+                help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next recording.");
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Tokens.space-3;
+                    Toggle {
+                        label: @tr("Same as canvas");
+                        text: @tr("Same as canvas");
+                        checked: Studio.out-same;
+                        enabled: idle;
+                        toggled(on) => { Studio.set-output-same(0, on); }
+                    }
+                    if Studio.out-same: Text {
+                        text: Studio.out-value;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-caption-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+                if !Studio.out-same: SizeNest {
+                    label: @tr("Output size");
+                    bands: Studio.out-bands;
+                    extras: Studio.out-extras;
+                    index: Studio.out-choice;
+                    portrait: Studio.out-portrait;
+                    value: Studio.out-value;
+                    enabled: idle;
+                    selected(i, w, h) => { Studio.set-output-size(0, i); }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Tokens.space-2;
+                        Text {
+                            text: @tr("Long side");
+                            color: idle ? Theme.text-secondary : Theme.text-disabled;
+                            font-size: Tokens.type-caption-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        NumberField {
+                            label: @tr("Long side");
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.out-long;
+                            step: 2;
+                            enabled: idle;
+                            edited(v) => { Studio.set-output-long-side(0, v); }
+                        }
+                    }
+                }
+            }
+            if !Studio.out-audio-only: fields := EncoderFields {
+                data: Studio.out-enc;
+                idle: idle;
+                show-all: rec-card.show-all;
+                set(field, value) => { Studio.set-encoding(0, field, value); }
+            }
+        }
+        // The replay buffer belongs to the main canvas (ADR-0093 decision 6).
+        if Studio.settings-canvas == 0: ReplaySettings { }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    // The field shows what Rust set last; typing in it is never overwritten by a sync.
+    property <int> folder-serial: Studio.out-folder-serial;
+    changed folder-serial => { folder.text = Studio.out-folder; }
+}
+
+// One destination in the Destinations card: Use on Go live, its name and what it is
+// (service, protocol, key, encoding), and its edit button (ADR-0127 decision 17).
+component DestinationItem inherits Rectangle {
+    in property <DestinationRow> dest;
+    in property <bool> divider: true;
+    in property <bool> editable: true;
+    min-height: Tokens.size-control-lg + Tokens.space-3;
+    if root.divider: Rectangle { y: 0; height: Tokens.size-border; background: Theme.border-subtle; }
+    HorizontalLayout {
+        spacing: Tokens.space-3;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Toggle {
+                label: @tr("Use {} on Go live", root.dest.name);
+                checked: root.dest.on;
+                enabled: root.editable;
+                horizontal-stretch: 0;
+                toggled(on) => { Studio.dest-set-enabled(root.dest.id, on); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.dest.name;
+                color: root.dest.on ? Theme.text-primary : Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                font-weight: Tokens.type-label-weight;
+                overflow: elide;
+                accessible-role: none;
+            }
+            Text {
+                text: root.dest.note;
+                color: root.dest.warn ? Theme.state-warning : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
+                accessible-role: none;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.pencil;
+                name: @tr("Edit {}", root.dest.name);
+                enabled: root.editable;
+                clicked => { Studio.dest-edit(root.dest.id); }
+            }
+        }
+    }
+}
+
+// The inline editor of one destination: a copy, written on Save (ADR-0127 decision
+// 17). The first destination's server and key are the stream settings'; its reconnect
+// is in the Connection card.
+component DestinationEditor inherits Rectangle {
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    border-radius: Tokens.radius-md;
+    background: Theme.surface-sunken;
+    accessible-role: groupbox;
+    accessible-label: Studio.st-ed-title;
+    VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: 0;
+        Text {
+            text: Studio.st-ed-title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            font-weight: Tokens.type-label-weight;
+            accessible-role: none;
+        }
+        SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            divider: false;
+            label: @tr("Service");
+            summary: @tr("Fills the server; it stays editable");
+            Select {
+                label: @tr("Service");
+                options: Studio.st-ed-services;
+                index: Studio.st-ed-service;
+                selected(i) => { Studio.dest-set-service(i); }
+            }
+        }
+        SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            label: @tr("Name");
+            name := TextField {
+                label: @tr("Name");
+                accepted(t) => { Studio.dest-set-name(t); }
+                edited(t) => { Studio.dest-set-name(t); }
+            }
+        }
+        SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            label: @tr("Server");
+            summary: Studio.st-ed-server-help == "" ? @tr("From your streaming service") : "";
+            help: Studio.st-ed-server-help;
+            hint: @tr("The address your streaming service gives you, starting with rtmp://, rtmps:// or srt://.");
+            control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+            server := TextField {
+                label: @tr("Server");
+                accepted(t) => { Studio.dest-set-server(t); }
+                edited(t) => { Studio.dest-set-server(t); }
+            }
+        }
+        SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            label: @tr("Stream key");
+            help: Studio.st-ed-key-saved ? @tr("A stream key is saved.") : Studio.st-ed-key-help;
+            control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+            key := TextField {
+                label: @tr("Stream key");
+                password: true;
+                accepted(t) => { Studio.dest-save-key(t); }
+            }
+            Button {
+                lead: IconName.save;
+                horizontal-stretch: 0;
+                text: @tr("Save key");
+                kind: "secondary";
+                enabled: key.text != "";
+                clicked => { Studio.dest-save-key(key.text); }
+            }
+        }
+        // The saved key's own row, as the Stream key row above: the field takes the width.
+        if Studio.st-ed-key-saved: SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            divider: false;
+            fill: false;
+            label: "";
+            help: "";
+            control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                lead: IconName.trash;
+                horizontal-stretch: 0;
+                text: @tr("Remove key");
+                kind: "ghost";
+                dense: true;
+                clicked => { Studio.dest-remove-key(); }
+            }
+        }
+        SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            label: @tr("Encoding");
+            help: Studio.st-ed-own ? @tr("Own settings encode the picture a second time: more CPU or GPU, and more upload.") : "";
+            help-is-warning: Studio.st-ed-own;
+            SegmentedControl {
+                label: @tr("Encoding");
+                options: [@tr("Same as the stream"), @tr("Own settings")];
+                index: Studio.st-ed-own ? 1 : 0;
+                selected(i) => { Studio.dest-set-own(i == 1); }
+            }
+        }
+        if Studio.st-ed-own: EncoderFields {
+            data: Studio.st-ed-enc;
+            idle: true;
+            stream: true;
+            set(field, value) => { Studio.set-encoding(2, field, value); }
+        }
+        if !Studio.st-ed-first: SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            label: @tr("Reconnect when the connection drops");
+            summary: @tr("Up to 10 tries");
+            fill: false;
+            Toggle {
+                label: @tr("Reconnect when the connection drops");
+                checked: Studio.st-ed-reconnect;
+                toggled(on) => { Studio.dest-set-reconnect(on); }
+            }
+        }
+        if Studio.st-ed-problem != "": SettingsNotice { text: Studio.st-ed-problem; problem: true; }
+        Rectangle { height: Tokens.space-3; }
+        DialogActions {
+            confirm-text: Studio.st-ed-new ? @tr("Add") : @tr("Save");
+            extra-text: Studio.st-ed-new || Studio.st-ed-first ? "" : @tr("Remove destination");
+            cancelled => { Studio.dest-cancel(); }
+            confirmed => { Studio.dest-set-name(name.text); Studio.dest-set-server(server.text); Studio.dest-save(); }
+            extra-clicked => { Studio.dest-remove(); }
+        }
+    }
+    init => { name.text = Studio.st-ed-name; server.text = Studio.st-ed-server; }
+    property <int> serial: Studio.st-ed-serial;
+    changed serial => { name.text = Studio.st-ed-name; server.text = Studio.st-ed-server; }
+    // A key was saved or removed: the field is emptied (the key is never shown).
+    property <int> key-serial: Studio.st-key-serial;
+    changed key-serial => { key.text = ""; }
+}
+
+// Settings, Stream: where Go live sends the program (ADR-0127 decision 17). The
+// picked canvas's destinations, its first one from the stream settings; one editor at
+// a time, inline under the list.
+component DestinationsCard inherits SettingsCard {
+    in property <bool> idle;
+    title: @tr("Destinations");
+    id: "settings.stream.destinations";
+    for row[i] in Studio.st-dests: DestinationItem {
+        dest: row;
+        divider: i > 0;
+        editable: Studio.st-dest-editable && !Studio.st-ed-open;
+    }
+    if Studio.st-ed-open: DestinationEditor { }
+    if !Studio.st-ed-open: HorizontalLayout {
+        padding-top: Tokens.space-2;
+        spacing: Tokens.space-3;
+        Button {
+            lead: IconName.plus;
+            text: @tr("Add destination");
+            kind: "secondary";
+            horizontal-stretch: 0;
+            enabled: Studio.st-dest-can-add;
+            clicked => { Studio.dest-add(); }
+        }
+        Text {
+            text: Studio.st-dest-count;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    if Studio.st-dest-upload != "": SettingsNotice { text: Studio.st-dest-upload; }
+    if Studio.st-dest-warnings != "": SettingsNotice { text: Studio.st-dest-warnings; problem: true; }
+}
+
+// Where Go live sends the program and how it is encoded: the Stream section of the
+// Settings window (U17). Changes apply to the next stream and are saved at once. The
+// stream key is never shown: it goes to the system's credential store.
+export component StreamSettings inherits Rectangle {
+    property <bool> idle: Studio.st-form-idle;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        if Studio.settings-canvases.length > 1: SettingsCanvasPicker { }
+        if !idle: SettingsNotice { text: @tr("Changes apply to the next stream."); }
+        if Studio.st-note != "": SettingsNotice { text: Studio.st-note; problem: true; }
+        DestinationsCard { idle: idle; }
+        conn-card := SettingsCard {
+            title: @tr("Connection");
+            id: "settings.stream.connection";
+            more-hidden: Studio.st-srt && !Experience.advanced;
+            SettingRow {
+                find: "stream.reconnect";
+                divider: false;
+                label: @tr("Reconnect when the connection drops");
+                summary: @tr("Up to 10 tries");
+                hint: @tr("Tries up to 10 times, waiting longer each time. On by default.");
+                enabled: idle;
+                fill: false;
+                Toggle {
+                    label: @tr("Reconnect when the connection drops");
+                    checked: Studio.st-reconnect;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-reconnect(on); }
+                }
+            }
+            if Experience.advanced || conn-card.show-all: Shown {
+                shown: Studio.st-srt;
+                gap: 0;
+                SettingRow {
+                    find: "stream.srt-latency";
+                    // Hidden with its Shown: search shows the card instead.
+                    findable: Studio.st-srt;
+                    label: @tr("SRT latency");
+                    summary: @tr("More survives a worse network");
+                    hint: @tr("More latency survives a worse network; viewers see the picture a little later.");
+                    enabled: idle;
+                    // The first choice is the protocol's own default.
+                    changed: idle && Studio.st-srt && Studio.st-latency != 0;
+                    default-text: Studio.st-latencies[0];
+                    reset => { Studio.set-latency(0); }
+                    latency := Select {
+                        label: @tr("SRT latency");
+                        options: Studio.st-latencies;
+                        index: Studio.st-latency;
+                        enabled: idle && Studio.st-srt;
+                        selected(i) => { Studio.set-latency(i); }
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("While live");
+            id: "settings.stream.while-live";
+            SettingRow {
+                find: "stream.record-on-start";
+                divider: false;
+                label: @tr("Record when the stream starts");
+                summary: @tr("Uses the Recording settings");
+                hint: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
+                enabled: idle;
+                fill: false;
+                Toggle {
+                    label: @tr("Record when the stream starts");
+                    checked: Studio.st-auto-record;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-auto-record(on); }
+                }
+            }
+            if Studio.st-auto-record: SettingsNotice { text: Studio.st-auto-record-note; }
+            SettingRow {
+                find: "stream.hold-picture";
+                label: @tr("While on hold");
+                summary: @tr("What viewers see");
+                hint: @tr("What viewers see while the stream is on hold. Last frame and Black go out with silence. It applies to the next hold.");
+                changed: Studio.st-hold-picture != 0;
+                default-text: @tr("Last frame");
+                reset => { Studio.set-hold-picture(0); }
+                Select {
+                    label: @tr("While on hold");
+                    options: [@tr("Last frame"), @tr("Black"), @tr("A scene")];
+                    index: Studio.st-hold-picture;
+                    selected(i) => { Studio.set-hold-picture(i); }
+                }
+            }
+            if Studio.st-hold-picture == 2: SettingRow {
+                find: "stream.hold-scene";
+                label: @tr("Hold scene");
+                summary: @tr("Opens only while on hold");
+                hint: @tr("The scene viewers see while the stream is on hold. Its sources open only then. If it cannot open, the last frame is shown.");
+                Select {
+                    label: @tr("Hold scene");
+                    options: Studio.st-hold-scenes;
+                    index: Studio.st-hold-scene;
+                    placeholder: @tr("Choose a scene");
+                    selected(i) => { Studio.set-hold-scene(i); }
+                }
+            }
+            if Studio.st-hold-picture == 2: SettingRow {
+                find: "stream.hold-sound";
+                label: @tr("Sound while on hold");
+                summary: @tr("Silence or the scene's sound");
+                hint: @tr("The scene's sound mixes its own sources at their levels.");
+                changed: Studio.st-hold-sound-scene;
+                default-text: @tr("Silence");
+                reset => { Studio.set-hold-sound(0); }
+                Select {
+                    label: @tr("Sound while on hold");
+                    options: [@tr("Silence"), @tr("The scene's sound")];
+                    index: Studio.st-hold-sound-scene ? 1 : 0;
+                    selected(i) => { Studio.set-hold-sound(i); }
+                }
+            }
+        }
+        enc-card := SettingsCard {
+            title: @tr("Encoding");
+            id: "settings.stream.encoding";
+            more-hidden: !Experience.expert;
+            SettingBlock {
+                find: "encoding.output-size";
+                divider: false;
+                label: @tr("Output size");
+                help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next stream.");
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Tokens.space-3;
+                    Toggle {
+                        label: @tr("Same as canvas");
+                        text: @tr("Same as canvas");
+                        checked: Studio.st-same;
+                        enabled: idle;
+                        toggled(on) => { Studio.set-output-same(1, on); }
+                    }
+                    if Studio.st-same: Text {
+                        text: Studio.st-value;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-caption-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+                if !Studio.st-same: SizeNest {
+                    label: @tr("Output size");
+                    bands: Studio.st-bands;
+                    extras: Studio.st-extras;
+                    index: Studio.st-choice;
+                    portrait: Studio.out-portrait;
+                    value: Studio.st-value;
+                    enabled: idle;
+                    selected(i, w, h) => { Studio.set-output-size(1, i); }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Tokens.space-2;
+                        Text {
+                            text: @tr("Long side");
+                            color: idle ? Theme.text-secondary : Theme.text-disabled;
+                            font-size: Tokens.type-caption-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        NumberField {
+                            label: @tr("Long side");
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.st-long;
+                            step: 2;
+                            enabled: idle;
+                            edited(v) => { Studio.set-output-long-side(1, v); }
+                        }
+                    }
+                }
+            }
+            fields := EncoderFields {
+                data: Studio.st-enc;
+                idle: idle;
+                stream: true;
+                show-all: enc-card.show-all;
+                set(field, value) => { Studio.set-encoding(1, field, value); }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    // The fields show what Rust set last; typing is never overwritten by a sync.
+}
+
+// The canvas's size and frame rate: the Video section of the Settings window (U17).
+// A change restarts the studio with the new canvas; not while recording.
+export component VideoSettings inherits Rectangle {
+    property <bool> can-change: Studio.state == 1 && Studio.rec-state == 0 && Studio.st-state == 0 && !Studio.canvas-restarting;
+    // A size outside the frames ("This display") asked about before it is used (owner,
+    // 2026-11-16): its sides and words; `ask-w` is 0 while nothing is asked.
+    property <int> ask-w: 0;
+    property <int> ask-h: 0;
+    property <string> ask-title;
+    property <string> ask-detail;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsNotice {
+            text: Studio.rec-state != 0
+                ? @tr("Stop the recording to change the canvas.")
+                : Studio.st-state != 0
+                ? @tr("End the stream to change the canvas.")
+                : Studio.canvas-restarting
+                ? @tr("The studio is restarting with the new canvas.")
+                : @tr("A change restarts the studio: the picture stops for a moment.");
+        }
+        if Studio.canvas-note != "": SettingsNotice { text: Studio.canvas-note; problem: true; }
+        SettingsCard {
+            title: @tr("Canvas");
+            id: "settings.video.canvas";
+            SettingBlock {
+                find: "video.canvas-size";
+                divider: false;
+                label: @tr("Canvas size");
+                help: @tr("720p, 1080p, 1440p and 4K share one corner. Or type a size. Portrait swaps the sides.");
+                SizeNest {
+                    label: @tr("Canvas size");
+                    bands: Studio.canvas-bands;
+                    extras: Studio.canvas-extras;
+                    index: Studio.canvas-choice;
+                    portrait: Studio.canvas-portrait;
+                    value: Studio.canvas-value;
+                    enabled: can-change;
+                    ask-extras: true;
+                    selected(i, w, h) => { root.ask-w = 0; Studio.set-canvas-sides(w, h); }
+                    extra-asked(i, w, h, title, detail) => {
+                        root.ask-w = w;
+                        root.ask-h = h;
+                        root.ask-title = title;
+                        root.ask-detail = detail;
+                    }
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        NumberField {
+                            label: @tr("Canvas width");
+                            prefix: "W";
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.canvas-width;
+                            step: 2;
+                            enabled: can-change;
+                            edited(v) => { Studio.set-canvas-sides(v, Studio.canvas-height); }
+                        }
+                        NumberField {
+                            label: @tr("Canvas height");
+                            prefix: "H";
+                            preferred-width: Tokens.size-field-compact;
+                            value: Studio.canvas-height;
+                            step: 2;
+                            enabled: can-change;
+                            edited(v) => { Studio.set-canvas-sides(Studio.canvas-width, v); }
+                        }
+                    }
+                    Toggle {
+                        label: @tr("Portrait canvas");
+                        text: @tr("Portrait");
+                        checked: Studio.canvas-portrait;
+                        enabled: can-change;
+                        toggled(on) => { Studio.set-canvas-portrait(on); }
+                    }
+                }
+                if root.ask-w > 0: SettingsCallout {
+                    label: @tr("Set the canvas to {}?", root.ask-title);
+                    Text {
+                        text: @tr("Set the canvas to {} ({})? The studio restarts with the new canvas: the picture stops for a moment.", root.ask-title, root.ask-detail);
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    DialogActions {
+                        dense: true;
+                        confirm-text: @tr("Set canvas size");
+                        cancelled => { root.ask-w = 0; }
+                        confirmed => {
+                            let w = root.ask-w;
+                            let h = root.ask-h;
+                            root.ask-w = 0;
+                            Studio.set-canvas-sides(w, h);
+                        }
+                    }
+                }
+            }
+            SettingRow {
+                find: "video.frame-rate";
+                label: @tr("Frame rate");
+                summary: @tr("Frames per second");
+                enabled: can-change;
+                changed: can-change && Studio.canvas-rate != Studio.canvas-rate-default;
+                default-text: @tr("{} fps", Studio.canvas-rates[Studio.canvas-rate-default]);
+                reset => { Studio.set-canvas-rate(Studio.canvas-rate-default); }
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Frame rate");
+                    options: Studio.canvas-rates;
+                    index: Studio.canvas-rate;
+                    enabled: can-change;
+                    selected(i) => { Studio.set-canvas-rate(i); }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}
+
+// Settings, General (ADR-0056, ADR-0098, ADR-0100): what closing the main window does,
+// screen capture, studio mode swap, and collection glide (also outside studio mode).
+export component GeneralSettings inherits Rectangle {
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        // ADR-0113 decision 2: which section levels the app draws.
+        SettingsCard {
+            title: @tr("Experience");
+            id: "settings.general.experience";
+            SettingRow {
+                find: "general.settings-shown";
+                divider: false;
+                label: @tr("Settings shown");
+                summary: @tr("How many options the app shows");
+                hint: @tr("Simple shows the settings most people need. Standard adds advanced ones, Pro shows every setting. A place that leaves options out says so and can show them. Nothing hidden stops applying.");
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Settings shown");
+                    options: [@tr("Simple"), @tr("Standard"), @tr("Pro")];
+                    index: Studio.experience;
+                    selected(i) => { Studio.set-experience(i); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Closing the main window");
+            id: "settings.general.closing";
+            SettingRow {
+                find: "general.close-window";
+                divider: false;
+                label: @tr("When I close the main window");
+                help: Studio.platform == 2 ? @tr("Not available on Linux yet. Closing the main window quits RBS.")
+                    : !Studio.way-back ? @tr("Keeping RBS running is not available on this computer yet, so closing the main window quits RBS.")
+                    : Studio.platform == 0 ? @tr("Keep RBS running: recording, streaming and remote control go on, and RBS stays in the Dock. Click its Dock icon to get the window back; quit with Cmd+Q. Default on Mac: Keep RBS running.")
+                    : @tr("Keep RBS running: recording, streaming and remote control go on, and RBS stays in the notification area. Click its icon there to get the window back, or quit from its menu. Default on Windows: Quit RBS.");
+                enabled: Studio.platform != 2;
+                fill: false;
+                SegmentedControl {
+                    label: @tr("When I close the main window");
+                    options: [@tr("Quit RBS"), @tr("Keep RBS running")];
+                    index: Studio.platform == 2 ? 0 : Studio.on-close;
+                    enabled: Studio.platform != 2;
+                    selected(i) => { Studio.set-on-close(i); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Screen capture");
+            id: "settings.general.capture";
+            SettingRow {
+                find: "general.hide-from-capture";
+                divider: false;
+                label: @tr("Leave RBS out of screen recordings");
+                help: Studio.platform == 2 ? @tr("Not available on this system yet. A screen recording can include the RBS windows.")
+                    : Studio.platform == 0 ? @tr("macOS leaves the RBS windows out of screen recordings and screen sharing. Turn this off to record the RBS window itself.")
+                    : @tr("Windows skips the RBS windows when a screen or a window is captured, including a recording RBS makes of the display. Turn this off to record the RBS window itself.");
+                enabled: Studio.platform != 2;
+                fill: false;
+                Toggle {
+                    label: @tr("Leave RBS out of screen recordings");
+                    checked: Studio.platform != 2 && Studio.exclude-own-window;
+                    enabled: Studio.platform != 2;
+                    toggled(on) => { Studio.set-exclude-own-window(on); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Studio mode");
+            id: "settings.general.studio";
+            SettingRow {
+                find: "general.swap-scenes";
+                divider: false;
+                label: @tr("Swap scenes after a transition");
+                summary: @tr("Preview shows what was on air");
+                hint: @tr("After Transition, Preview shows the scene that was on air. Off: Preview keeps the scene that went on air.");
+                fill: false;
+                Toggle {
+                    label: @tr("Swap scenes after a transition");
+                    checked: Studio.swap-after-transition;
+                    toggled(on) => { Studio.set-swap-after-transition(on); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Scene changes");
+            id: "settings.general.glide";
+            description: @tr("How shared sources move when the program scene changes, including outside studio mode.");
+            SettingRow {
+                find: "general.glide";
+                label: @tr("Glide");
+                summary: @tr("Shared sources slide between scenes");
+                hint: @tr("Shared sources slide to their new place; new sources fade in. Off: every scene change is instant.");
+                fill: false;
+                Toggle {
+                    label: @tr("Glide");
+                    checked: Studio.glide-duration > 0;
+                    toggled(on) => {
+                        Studio.set-glide(on ? (Studio.glide-duration > 0 ? Studio.glide-duration : 400) : 0, Studio.glide-easing);
+                    }
+                }
+            }
+            SettingRow {
+                find: "general.glide-duration";
+                label: @tr("Duration");
+                summary: @tr("0 turns Glide off");
+                enabled: Studio.glide-duration > 0;
+                changed: Studio.glide-duration > 0 && Studio.glide-duration != Studio.glide-default-duration;
+                default-text: @tr("{} ms", Studio.glide-default-duration);
+                reset => { Studio.set-glide(Studio.glide-default-duration, Studio.glide-easing); }
+                NumberField {
+                    label: @tr("Glide duration in milliseconds");
+                    unit: @tr("ms");
+                    value: Studio.glide-duration;
+                    enabled: Studio.glide-duration > 0;
+                    edited(v) => {
+                        Studio.set-glide(max(0, min(5000, round(v))), Studio.glide-easing);
+                    }
+                }
+            }
+            SettingRow {
+                find: "general.glide-easing";
+                divider: false;
+                label: @tr("Easing");
+                summary: @tr("How a slide starts and stops");
+                hint: @tr("How a slide eases. Fade-ins stay linear.");
+                enabled: Studio.glide-duration > 0;
+                changed: Studio.glide-duration > 0 && Studio.glide-easing != Studio.glide-default-easing;
+                default-text: Studio.glide-default-easing == 0 ? @tr("Linear") : @tr("Ease in-out");
+                reset => { Studio.set-glide(Studio.glide-duration, Studio.glide-default-easing); }
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Glide easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: Studio.glide-easing;
+                    enabled: Studio.glide-duration > 0;
+                    selected(i) => { Studio.set-glide(Studio.glide-duration, i); }
+                }
+            }
+        }
+        // ADR-0131 (owner direction): the OBS import wizard. Last on the page: it is
+        // rarely used.
+        SettingsCard {
+            title: @tr("Bring from another app");
+            id: "settings.general.import";
+            SettingRow {
+                find: "general.import-obs";
+                divider: false;
+                label: @tr("OBS Studio");
+                summary: @tr("Scenes and settings, as a new collection and output profile");
+                hint: @tr("Scenes, sources, filters, output settings and hotkeys come across as a new scene collection and output profile. Nothing you have now changes, and you see what did not come across before anything is written.");
+                fill: false;
+                Button {
+                    text: @tr("Import from OBS…");
+                    clicked => { Studio.open-obs-import(); }
+                }
+            }
+        }
+    }
+    height: form.preferred-height;
+}
+
+// Remote control (glossary): the Remote control section of the Settings window (U17).
+// Apps on this computer, such as Stream Deck or the user's scripts, control RBS through
+// the control API with an access token each. Changes apply at once.
+// Settings, Global sources (ADR-0065): sources shown and heard in every scene of the
+// canvas. The list, then Add a global source: a kind, then one of its devices or a
+// source the scenes already have. Every change is one undo step of the main window.
+export component GlobalSourcesSettings inherits Rectangle {
+    property <bool> running: Studio.state == 1;
+    property <bool> existing-picked: Studio.global-option >= Studio.global-devices;
+    // Remove asks first. -1 while it does not.
+    property <int> confirm-id: -1;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        if Studio.on-air: SettingsNotice {
+            text: @tr("On air: changes here show in the program at once.");
+        }
+        SettingsCard {
+            title: @tr("Global sources");
+            id: "settings.sources.global-sources";
+            description: @tr("Heard and shown in every scene, above the scene's own sources.");
+            if !running: SettingRow {
+                // find: none (a status line).
+                divider: false;
+                label: @tr("The studio is not running");
+                help: @tr("Global sources can be changed once it runs.");
+            }
+            if running && Studio.global-count == 0: SettingRow {
+                // find: none (an empty state).
+                divider: false;
+                label: @tr("No global sources yet");
+                help: @tr("A global source is heard and shown in every scene.");
+            }
+            for s[i] in Studio.sources: VerticalLayout {
+                if s.global: SettingRow {
+                    divider: i > 0;
+                    label: s.name;
+                    help: s.kind;
+                    fill: false;
+                    Button {
+                        lead: IconName.trash;
+                        text: @tr("Remove");
+                        accessible-name: @tr("Remove {} from global sources", s.name);
+                        dense: true;
+                        clicked => { root.confirm-id = s.id; }
+                    }
+                }
+                if s.global && root.confirm-id == s.id: SettingsCallout {
+                    label: @tr("Remove {} from global sources?", s.name);
+                    Text {
+                        text: s.places <= 1
+                            ? @tr("Remove {} from global sources? No scene has it, so it is deleted.", s.name)
+                            : @tr("Remove {} from global sources? It stays in the scenes that have it.", s.name);
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    DialogActions {
+                        dense: true;
+                        confirm-text: @tr("Remove");
+                        confirm-kind: "danger";
+                        cancelled => { root.confirm-id = -1; }
+                        confirmed => { root.confirm-id = -1; Studio.remove-global(s.id); }
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Add a global source");
+            id: "settings.sources.add-global";
+            SettingRow {
+                // find: none (part of the Add form; the card is indexed).
+                divider: false;
+                label: @tr("Kind");
+                summary: @tr("What kind of source to add");
+                enabled: running;
+                Select {
+                    label: @tr("Kind");
+                    options: Studio.global-kind-names;
+                    index: Studio.global-kind;
+                    placeholder: @tr("Choose a kind");
+                    enabled: running && Studio.global-kind-names.length > 0;
+                    selected(i) => { Studio.pick-global-kind(i); }
+                }
+            }
+            SettingRow {
+                // find: none (part of the Add form; the card is indexed).
+                label: @tr("Source");
+                help: Studio.global-kind < 0 ? @tr("Pick a kind first.")
+                    : Studio.global-options.length == 0 ? @tr("Nothing of this kind is available.")
+                    : existing-picked ? @tr("A source marked (in scenes) leaves the scenes that have it, since it is then in every scene.")
+                    : @tr("A device of this kind, or a source the scenes already have.");
+                enabled: running && Studio.global-options.length > 0;
+                Select {
+                    label: @tr("Source");
+                    options: Studio.global-options;
+                    index: Studio.global-option;
+                    placeholder: Studio.global-kind < 0 ? "" : @tr("Choose a source");
+                    enabled: running && Studio.global-options.length > 0;
+                    selected(i) => { Studio.global-option = i; }
+                }
+            }
+            SettingRow {
+                label: "";
+                fill: false;
+                Button {
+                    lead: IconName.plus;
+                    text: @tr("Add");
+                    accessible-name: @tr("Add as a global source");
+                    kind: "primary";
+                    enabled: running && Studio.global-option >= 0 && Studio.global-option < Studio.global-options.length;
+                    clicked => { Studio.add-global(Studio.global-option); }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}
+
+// AI tools (glossary): the AI tools section of the Settings window (ADR-0134). AI tools
+// on this computer, such as Claude or Cursor, start `rbs-mcp`, which controls RBS through
+// local IPC with the AI tools token. Changes apply at once.
+export component AiToolsSettings inherits Rectangle {
+    // Turning the permission on, and New token, ask first.
+    property <bool> confirm-allow;
+    property <bool> confirm-token;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            title: @tr("AI tools");
+            id: "settings.ai-tools.status";
+            description: @tr("Let AI tools such as Claude or Cursor use RBS on this computer.");
+            SettingRow {
+                find: "ai-tools.start";
+                divider: false;
+                label: Studio.ai-state == 1 ? @tr("Started") : @tr("Stopped");
+                help: Studio.ai-status;
+                help-is-problem: Studio.ai-state == 2;
+                fill: false;
+                Button {
+                    lead: Studio.ai-state == 1 ? IconName.stop : IconName.play;
+                    text: Studio.ai-state == 1 ? @tr("Stop") : @tr("Start");
+                    accessible-name: Studio.ai-state == 1 ? @tr("Stop AI tools") : @tr("Start AI tools");
+                    kind: Studio.ai-state == 1 ? "secondary" : "primary";
+                    clicked => {
+                        if Studio.ai-state == 1 { Studio.ai-stop(); } else { Studio.ai-start(); }
+                    }
+                }
+            }
+            for name[i] in Studio.ai-clients: SettingRow {
+                // find: none (a connected AI tool).
+                divider: false;
+                label: @tr("Connected");
+                help: @tr("Reported as “{}”", name);
+                fill: false;
+            }
+            SettingRow {
+                find: "ai-tools.autostart";
+                label: @tr("Start when RBS opens");
+                hint: @tr("Starts AI tools each time RBS opens. They stop when RBS closes.");
+                fill: false;
+                Toggle {
+                    label: @tr("Start when RBS opens");
+                    checked: Studio.ai-autostart;
+                    toggled(on) => { Studio.set-ai-autostart(on); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("What AI tools may do");
+            id: "settings.ai-tools.access";
+            SettingRow {
+                find: "ai-tools.access";
+                divider: false;
+                label: @tr("Access");
+                hint: @tr("View only: read the studio. Control: scenes, sources and sound. Full control: also settings and outputs.");
+                Select {
+                    label: @tr("Access");
+                    options: [@tr("View only"), @tr("Control"), @tr("Full control")];
+                    index: Studio.ai-access;
+                    selected(i) => { Studio.set-ai-access(i); }
+                }
+            }
+            SettingRow {
+                find: "ai-tools.irreversible";
+                label: @tr("Allow actions that cannot be undone");
+                summary: @tr("Record, stream, delete, reach other computers");
+                hint: @tr("Off: AI tools cannot record, stream, delete, change what is on air or reach another computer. They are told why.");
+                fill: false;
+                Toggle {
+                    label: @tr("Allow actions that cannot be undone");
+                    checked: Studio.ai-irreversible;
+                    toggled(on) => {
+                        if on { root.confirm-allow = true; } else { Studio.set-ai-irreversible(false); }
+                    }
+                }
+            }
+            if root.confirm-allow: SettingsCallout {
+                label: @tr("Allow actions that cannot be undone?");
+                Text {
+                    text: @tr("AI tools could start or stop recording and streaming, change what is on air, and delete things undo cannot bring back.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                DialogActions {
+                    dense: true;
+                    confirm-text: @tr("Allow");
+                    confirm-kind: "danger";
+                    cancelled => { root.confirm-allow = false; }
+                    confirmed => { root.confirm-allow = false; Studio.set-ai-irreversible(true); }
+                }
+            }
+            SettingRow {
+                find: "ai-tools.new-token";
+                label: @tr("Token");
+                hint: @tr("Makes a new token. Connected AI tools reconnect by themselves.");
+                fill: false;
+                Button {
+                    lead: IconName.refresh;
+                    text: @tr("New token");
+                    accessible-name: @tr("Make a new AI tools token");
+                    clicked => { root.confirm-token = true; }
+                }
+            }
+            if root.confirm-token: SettingsCallout {
+                label: @tr("Make a new token?");
+                Text {
+                    text: @tr("The old token stops working. Connected AI tools reconnect with the new one.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                DialogActions {
+                    dense: true;
+                    confirm-text: @tr("New token");
+                    cancelled => { root.confirm-token = false; }
+                    confirmed => { root.confirm-token = false; Studio.ai-new-token(); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Connect an AI tool");
+            id: "settings.ai-tools.connect";
+            SettingRow {
+                find: "ai-tools.tool";
+                divider: false;
+                label: @tr("AI tool");
+                Select {
+                    label: @tr("AI tool");
+                    options: Studio.ai-tool-names;
+                    index: Studio.ai-tool;
+                    selected(i) => { Studio.pick-ai-tool(i); }
+                }
+            }
+            if Studio.ai-line == "": SettingsNotice {
+                problem: true;
+                text: Studio.ai-line-note;
+            }
+            if Studio.ai-line != "": SettingBlock {
+                find: "ai-tools.line";
+                label: Studio.ai-where;
+                help: @tr("Copy it again after moving RBS.");
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.surface-sunken;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        min-height: line-text.preferred-height + Tokens.space-2 * 2;
+                        line-text := Text {
+                            x: Tokens.space-2;
+                            width: parent.width - Tokens.space-2 * 2;
+                            text: Studio.ai-line;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            wrap: char-wrap;
+                            vertical-alignment: center;
+                            accessible-role: AccessibleRole.text;
+                            accessible-label: @tr("Connection line: {}", Studio.ai-line);
+                        }
+                    }
+                    line := TextField {
+                        visible: false;
+                        width: 0px;
+                        label: @tr("Connection line");
+                        text: Studio.ai-line;
+                        read-only: true;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        Button {
+                            lead: IconName.copy;
+                            text: @tr("Copy");
+                            accessible-name: @tr("Copy the connection line");
+                            clicked => { line.copy-all(); }
+                        }
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Recent actions");
+            id: "settings.ai-tools.actions";
+            description: @tr("Actions that cannot be undone, and refusals. Kept until Settings closes.");
+            if Studio.ai-actions.length == 0: SettingRow {
+                // find: none (an empty state).
+                divider: false;
+                label: @tr("No actions yet");
+            }
+            for a[i] in Studio.ai-actions: SettingRow {
+                // find: none (a recent action).
+                divider: i > 0;
+                label: a.method;
+                summary: a.time;
+                help: a.allowed ? "" : a.why;
+                help-is-warning: !a.allowed;
+                fill: false;
+                Text {
+                    text: a.allowed ? @tr("Allowed") : @tr("Refused");
+                    color: a.allowed ? Theme.text-secondary : Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}
+
+export component RemoteControlSettings inherits Rectangle {
+    // The access picked for the next token: 1 Control, the default.
+    property <int> access: 1;
+    // Network access certificate: 0 the one RBS made, 1 the user's own (picked, maybe
+    // not yet in use).
+    property <bool> own-in-use: Studio.rc-own;
+    // "Your own" picked, its files not yet in use.
+    property <bool> picking-own;
+    property <int> cert-source: (own-in-use || picking-own) ? 1 : 0;
+    changed own-in-use => { picking-own = false; }
+    // "New key" asks first: every client must pin the new key.
+    property <bool> confirming;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            title: @tr("This computer");
+            id: "settings.remote.this-computer";
+            SettingRow {
+                find: "remote.allow";
+                divider: false;
+                label: @tr("Allow remote control");
+                summary: @tr("Stream Deck, panels and scripts");
+                hint: @tr("Lets apps on this computer, such as Stream Deck or your own scripts, control RBS. Off by default.");
+                fill: false;
+                Toggle {
+                    label: @tr("Allow remote control");
+                    checked: Studio.rc-enabled;
+                    toggled(on) => { Studio.set-rc-enabled(on); }
+                }
+            }
+            if Studio.rc-status != "": SettingsStatus {
+                text: Studio.rc-status;
+                tone: Studio.rc-status-bad ? 2 : Studio.rc-enabled ? 1 : 0;
+            }
+            SettingRow {
+                find: "remote.port";
+                label: @tr("Port");
+                summary: @tr("{} is the default", Studio.rc-default-port);
+                changed: Studio.rc-default-port != "" && Studio.rc-port != Studio.rc-default-port;
+                default-text: Studio.rc-default-port;
+                reset => { Studio.set-rc-port(Studio.rc-default-port); }
+                hint: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default.");
+                control-width: Tokens.size-menu-sm / 2;
+                port := TextField {
+                    label: @tr("Port");
+                    text: Studio.rc-port;
+                    accepted(t) => { Studio.set-rc-port(t); }
+                }
+            }
+        }
+        // Network access (ADR-0046): apps on other computers connect over TLS and
+        // check the key pin before they send a token.
+        SettingsCard {
+            title: @tr("Other computers");
+            id: "settings.remote.other-computers";
+            SettingRow {
+                find: "remote.allow-network";
+                divider: false;
+                label: @tr("Allow access from other computers");
+                help: @tr("Lets apps on other computers on your network connect over an encrypted connection. Turn it on only on networks you trust. Changing it disconnects connected apps. Windows and macOS ask to allow RBS through the firewall the first time; if that is refused, other computers cannot connect and RBS is not told.");
+                enabled: Studio.rc-enabled;
+                fill: false;
+                Toggle {
+                    label: @tr("Allow access from other computers");
+                    checked: Studio.rc-network;
+                    enabled: Studio.rc-enabled;
+                    toggled(on) => { Studio.set-rc-network(on); }
+                }
+            }
+            if Studio.rc-network-status != "": SettingsStatus {
+                text: Studio.rc-network-status;
+                tone: Studio.rc-network-status-bad ? 2 : Studio.rc-network ? 1 : 0;
+            }
+            if Studio.rc-network && Studio.rc-key-pin != "": SettingBlock {
+                find: "remote.key-pin";
+                label: @tr("Key pin");
+                help: @tr("Apps on other computers must check this before they send a token. It stays the same when the certificate is renewed.");
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.surface-sunken;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        min-height: pin-text.preferred-height + Tokens.space-2 * 2;
+                        pin-text := Text {
+                            x: Tokens.space-2;
+                            width: parent.width - Tokens.space-2 * 2;
+                            text: Studio.rc-key-pin;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            wrap: char-wrap;
+                            vertical-alignment: center;
+                            accessible-role: AccessibleRole.text;
+                            accessible-label: @tr("Key pin: {}", Studio.rc-key-pin);
+                        }
+                    }
+                    pin := TextField {
+                        // Holds the value for Copy only; the text beside it shows it whole.
+                        visible: false;
+                        width: 0px;
+                        label: @tr("Key pin");
+                        text: Studio.rc-key-pin;
+                        read-only: true;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        Button {
+                            lead: IconName.copy;
+                            text: @tr("Copy");
+                            accessible-name: @tr("Copy key pin");
+                            icon: IconName.copy;
+                            clicked => { pin.copy-all(); }
+                        }
+                    }
+                }
+            }
+            if Studio.rc-network && Studio.rc-fingerprint != "": SettingBlock {
+                find: "remote.fingerprint";
+                label: @tr("Certificate fingerprint (SHA-256)");
+                help: Studio.rc-cert-note;
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.surface-sunken;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        min-height: print-text.preferred-height + Tokens.space-2 * 2;
+                        print-text := Text {
+                            x: Tokens.space-2;
+                            width: parent.width - Tokens.space-2 * 2;
+                            text: Studio.rc-fingerprint;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            wrap: char-wrap;
+                            vertical-alignment: center;
+                            accessible-role: AccessibleRole.text;
+                            accessible-label: @tr("Certificate fingerprint: {}", Studio.rc-fingerprint);
+                        }
+                    }
+                    print := TextField {
+                        visible: false;
+                        width: 0px;
+                        label: @tr("Certificate fingerprint (SHA-256)");
+                        text: Studio.rc-fingerprint;
+                        read-only: true;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        Button {
+                            lead: IconName.copy;
+                            text: @tr("Copy");
+                            accessible-name: @tr("Copy certificate fingerprint");
+                            icon: IconName.copy;
+                            clicked => { print.copy-all(); }
+                        }
+                    }
+                }
+            }
+            if Studio.rc-network: SettingRow {
+                find: "remote.allow-admin";
+                label: @tr("Allow remote admin");
+                summary: @tr("Full control from other computers");
+                hint: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps.");
+                fill: false;
+                Toggle {
+                    label: @tr("Allow remote admin");
+                    checked: Studio.rc-remote-admin;
+                    toggled(on) => { Studio.set-rc-remote-admin(on); }
+                }
+            }
+            if Studio.rc-network: SettingRow {
+                find: "remote.certificate";
+                label: @tr("Certificate");
+                help: root.cert-source == 0
+                    ? @tr("RBS made a key and a certificate for this computer. Browser panels on other devices cannot check a key pin: they need your own certificate, one those devices already trust.")
+                    : @tr("A certificate chain and its key, as PEM files, for example from your own certificate authority. RBS reads them each time it starts and never copies them. Using other files disconnects connected apps.");
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Certificate");
+                    options: [@tr("Made by RBS"), @tr("Your own")];
+                    index: root.cert-source;
+                    selected(i) => {
+                        root.picking-own = i == 1;
+                        if i == 0 { Studio.rc-use-generated(); }
+                    }
+                }
+            }
+            if Studio.rc-network && root.cert-source == 1: VerticalLayout {
+                SettingRow {
+                    find: "remote.certificate-file";
+                    label: @tr("Certificate file");
+                    summary: @tr("A full path");
+                    control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+                    own-cert := TextField {
+                        label: @tr("Certificate file");
+                        text: Studio.rc-own-cert;
+                    }
+                }
+                SettingRow {
+                    find: "remote.key-file";
+                    label: @tr("Key file");
+                    summary: @tr("A full path");
+                    hint: @tr("A full path. On macOS and Linux the key file must be readable by you only.");
+                    control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+                    own-key := TextField {
+                        label: @tr("Key file");
+                        text: Studio.rc-own-key;
+                    }
+                }
+                SettingRow {
+                    divider: false;
+                    fill: false;
+                    Button {
+                        lead: IconName.check;
+                        text: @tr("Use these files");
+                        kind: "primary";
+                        clicked => { Studio.rc-use-own(own-cert.text, own-key.text); }
+                    }
+                }
+            }
+            if Studio.rc-network && Studio.rc-network-note != "": SettingsStatus {
+                text: Studio.rc-network-note;
+                tone: 2;
+            }
+            if Studio.rc-network && root.cert-source == 0 && !root.confirming: SettingRow {
+                find: "remote.new-key";
+                label: @tr("New key");
+                summary: @tr("If the key may have been copied");
+                hint: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin.");
+                fill: false;
+                Button {
+                    lead: IconName.key;
+                    text: @tr("New key…");
+                    clicked => { root.confirming = true; }
+                }
+            }
+            if Studio.rc-network && root.cert-source == 0 && root.confirming: SettingBlock {
+                RevealOnShow { }
+                SettingsCallout {
+                    label: @tr("Make a new key");
+                    Text {
+                        text: @tr("Make a new key? Apps on other computers are disconnected and connect again only after they check the new key pin. This cannot be undone.");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    DialogActions {
+                        confirm-text: @tr("Make new key");
+                        cancelled => { root.confirming = false; }
+                        confirmed => { root.confirming = false; Studio.rc-new-key(); }
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Access tokens");
+            id: "settings.remote.access-tokens";
+            description: @tr("Each app needs an access token. Make one per app, so you can revoke it alone. A token is shown only once.");
+            if Studio.rc-new-token != "": SettingBlock {
+                divider: false;
+                SettingsCallout {
+                    label: @tr("New access token for {}", Studio.rc-new-token-name);
+                    Text {
+                        text: @tr("Access token for {}. Copy it into the app now: it is not shown again.", Studio.rc-new-token-name);
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    secret := TextField {
+                        label: @tr("Access token for {}", Studio.rc-new-token-name);
+                        text: Studio.rc-new-token;
+                        read-only: true;
+                    }
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        alignment: start;
+                        Button {
+                            lead: IconName.copy;
+                            text: @tr("Copy");
+                            kind: "primary";
+                            icon: IconName.copy;
+                            clicked => { secret.copy-all(); }
+                        }
+                        Button {
+                            text: @tr("Done");
+                            clicked => { Studio.dismiss-new-token(); }
+                        }
+                    }
+                }
+            }
+            SettingRow {
+                // find: none (part of the Create form; the card is indexed).
+                label: @tr("Name");
+                summary: @tr("The app it is for, such as Stream Deck");
+                name := TextField {
+                    label: @tr("Name");
+                }
+            }
+            SettingRow {
+                // find: none (part of the Create form; the card is indexed).
+                label: @tr("Access");
+                help: Studio.rc-access-hints[root.access];
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Access");
+                    options: Studio.rc-accesses;
+                    index: root.access;
+                    selected(i) => { root.access = i; }
+                }
+            }
+            SettingRow {
+                divider: false;
+                fill: false;
+                Button {
+                    lead: IconName.key;
+                    text: @tr("Create access token");
+                    kind: "primary";
+                    icon: IconName.plus;
+                    clicked => { Studio.create-token(name.text, root.access); }
+                }
+            }
+            if Studio.rc-note != "": SettingsStatus { text: Studio.rc-note; tone: 2; }
+            if Studio.rc-revoked != "": SettingBlock {
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Text {
+                        text: @tr("{} was revoked: apps using it were disconnected.", Studio.rc-revoked);
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-body-size;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        lead: IconName.undo;
+                        horizontal-stretch: 0;
+                        text: @tr("Undo");
+                        accessible-name: @tr("Undo revoking {}", Studio.rc-revoked);
+                        clicked => { Studio.undo-revoke(); }
+                    }
+                }
+            }
+            SettingBlock {
+                // find: none (the token list; the card is indexed).
+                label: @tr("Tokens");
+                VerticalLayout {
+                    spacing: Tokens.space-1;
+                    accessible-role: list;
+                    accessible-label: @tr("Access tokens");
+                    if Studio.rc-tokens.length == 0: Text {
+                        text: @tr("No access tokens yet.");
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-body-size;
+                    }
+                    for t[i] in Studio.rc-tokens: Rectangle {
+                        background: Theme.surface-sunken;
+                        border-radius: Tokens.radius-md;
+                        accessible-role: list-item;
+                        accessible-label: @tr("{}, {}", t.name, t.access);
+                        HorizontalLayout {
+                            padding: Tokens.space-2;
+                            padding-left: Tokens.space-3;
+                            spacing: Tokens.space-2;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: t.name;
+                                    color: Theme.text-primary;
+                                    font-size: Tokens.type-label-size;
+                                    font-weight: Tokens.type-label-weight;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: t.access;
+                                    color: Theme.text-secondary;
+                                    font-size: Tokens.type-caption-size;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    lead: IconName.ban;
+                                    text: @tr("Revoke");
+                                    accessible-name: @tr("Revoke {}", t.name);
+                                    kind: "ghost";
+                                    clicked => { Studio.revoke-token(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    // The field shows what Rust set last; typing in it is never overwritten by a sync.
+    property <int> port-serial: Studio.rc-port-serial;
+    changed port-serial => { port.text = Studio.rc-port; }
+    // A token was made: the name field is ready for the next one.
+    property <string> made: Studio.rc-new-token;
+    changed made => { if made != "" { name.text = ""; } }
+}

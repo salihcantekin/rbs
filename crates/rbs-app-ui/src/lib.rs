@@ -12,10 +12,25 @@
 /// Re-exports the shared types and the windows from `$types` and the window crates.
 macro_rules! reexport {
     ($types:ident, $main:ident, $settings:ident, $dialogs:ident) => {
-        pub use $types::{FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays, LiveDestinationRow, TabData, StackData, RailData, HandleData, PanelEntry, WorkspaceEntry, ToolbarData, EdgeTabData, Cover, MenuChoice, Menus, Shell, AppMenuRow, AppMenuChip, AppMenus, ThemeOption, ThemeTokenRow, Appearance, ContextChoice, ContextItem, ContextMenus, ObsSceneChoice, ObsReportRow, ReplayBuffer, SettingsHit, SettingsScroll, ShortcutChip, ShortcutRow, Shortcuts, FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, Studio, VirtualCamera, Theme, Tokens, ThemeSlot};
-        pub use $main::{MainWindow, FloatWindow};
-        pub use $settings::{SettingsWindow};
-        pub use $dialogs::{SourceSettingsWindow, SyncMeasureWindow, ObsImportWindow, AttributesWindow, ProjectorWindow};
+        pub use $dialogs::{
+            AttributesWindow, ObsImportWindow, ProjectorWindow, SourceSettingsWindow,
+            SyncMeasureWindow,
+        };
+        pub use $main::{FloatWindow, MainWindow};
+        pub use $settings::SettingsWindow;
+        pub use $types::{
+            AiActionRow, AppMenuChip, AppMenuRow, AppMenus, Appearance, AttributeGroupRow,
+            AttributeTargetRow, AttributesData, ContextChoice, ContextItem, ContextMenus, Cover,
+            DestinationRow, EdgeTabData, EncoderData, EntryRow, Experience, FilterData,
+            FilterFieldData, FilterLevels, FocusReveal, HandleData, IconName, Icons, KindData,
+            LiveDestinationRow, LookData, LoudnessData, MarkData, MenuChoice, Menus, MeterRow,
+            ModeData, ObsReportRow, ObsSceneChoice, OverlayCover, Overlays, PanelEntry, PickerRow,
+            RailData, ReplayBuffer, SampleData, ScaleMark, SceneData, Sections, SettingsFind,
+            SettingsHit, SettingsScroll, Shell, ShortcutChip, ShortcutRow, Shortcuts, SizeBand,
+            SourceData, SourceSettingsData, SourceTargetData, StackData, StatRow, Studio,
+            SyncMeasureData, TabData, TextData, Theme, ThemeOption, ThemeSlot, ThemeTokenRow,
+            TokenRow, Tokens, ToolbarData, VirtualCamera, WorkspaceEntry,
+        };
     };
 }
 
@@ -23,17 +38,30 @@ macro_rules! reexport {
 #[cfg(feature = "probes")]
 macro_rules! reexport_probes {
     ($probes:ident) => {
-        pub use $probes::{OverlayProbe, FocusRevealProbe, SettingRowProbe, NumberFieldProbe, ExperienceProbe, EffectsProbe, SegmentProbe, PropertiesProbe, ReplayProbe};
+        pub use $probes::{
+            EffectsProbe, ExperienceProbe, FocusRevealProbe, NumberFieldProbe, OverlayProbe,
+            PropertiesProbe, ReplayProbe, SegmentProbe, SettingRowProbe,
+        };
     };
 }
 
 #[cfg(not(rbs_ui_live))]
-reexport!(rbs_app_ui_base, rbs_app_ui_main, rbs_app_ui_settings, rbs_app_ui_dialogs);
+reexport!(
+    rbs_app_ui_base,
+    rbs_app_ui_main,
+    rbs_app_ui_settings,
+    rbs_app_ui_dialogs
+);
 #[cfg(all(not(rbs_ui_live), feature = "probes"))]
 reexport_probes!(rbs_app_ui_probes);
 
 #[cfg(rbs_ui_live)]
-reexport!(rbs_app_ui_single, rbs_app_ui_single, rbs_app_ui_single, rbs_app_ui_single);
+reexport!(
+    rbs_app_ui_single,
+    rbs_app_ui_single,
+    rbs_app_ui_single,
+    rbs_app_ui_single
+);
 #[cfg(all(rbs_ui_live, feature = "probes"))]
 reexport_probes!(rbs_app_ui_single);
 

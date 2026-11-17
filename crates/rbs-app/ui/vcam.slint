@@ -3,9 +3,9 @@
 // Rust (`vcam_page`) pushes state into the `VirtualCamera` global and handles its
 // callbacks; the texts it pushes come from `rbs_app::vcam_settings::Page::view`.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, DialogActions, IconName, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
+import { Button, DialogActions, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsCallout, RevealOnShow } from "settings.slint";
-import { VirtualCamera } from "base/types.slint";
+import { VirtualCamera, IconName } from "base/types.slint";
 export { VirtualCamera }
 
 export component VirtualCameraSettings inherits Rectangle {
