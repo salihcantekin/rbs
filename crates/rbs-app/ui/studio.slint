@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine } from "components.slint";
+import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine, HintText as Hint, CaptionField as Field, MenuArea, SurfaceCard } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -526,13 +526,7 @@ export component ScenesPanel inherits Rectangle {
     changed asked => { if Studio.state == 1 { Studio.add-scene(); } }
     // A right-click outside the rows: the panel's own menu (Add scene).
     panel-menu := CommandMenu { context: "scenes"; }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                panel-menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { panel-menu.open({ x: x, y: y }); } }
     if Studio.scenes.length == 0: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -547,16 +541,14 @@ export component ScenesPanel inherits Rectangle {
         // button never arrives and the next one does. The wheel still scrolls.
         drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
-        TouchArea {
+        MenuArea {
             width: parent.width;
             height: max(rows.preferred-height, flick.view-height);
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    panel-menu.open({
-                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
-                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
-                    });
-                }
+            menu-at(x, y) => {
+                panel-menu.open({
+                    x: self.absolute-position.x - root.absolute-position.x + x,
+                    y: self.absolute-position.y - root.absolute-position.y + y,
+                });
             }
         }
         rows := VerticalLayout {
@@ -627,13 +619,7 @@ export component SourcesPanel inherits Rectangle {
     panel-menu := CommandMenu { context: "sources"; }
     // The empty state's Add source: the source types as a menu (ADR-0094 B1).
     add-menu := CommandMenu { context: "add-source"; }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                panel-menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { panel-menu.open({ x: x, y: y }); } }
     if Studio.sources.length == 0: EmptyState {
         y: header;
         width: parent.width;
@@ -652,16 +638,14 @@ export component SourcesPanel inherits Rectangle {
         // button never arrives and the next one does. The wheel still scrolls.
         drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
-        TouchArea {
+        MenuArea {
             width: parent.width;
             height: max(rows.preferred-height, flick.view-height);
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    panel-menu.open({
-                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
-                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
-                    });
-                }
+            menu-at(x, y) => {
+                panel-menu.open({
+                    x: self.absolute-position.x - root.absolute-position.x + x,
+                    y: self.absolute-position.y - root.absolute-position.y + y,
+                });
             }
         }
         rows := VerticalLayout {
@@ -1202,13 +1186,7 @@ component MeterView inherits Rectangle {
         // In Own levels the scene too, for "Use the source's level" (ADR-0091).
         target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     VerticalLayout {
         width: 100%;
         spacing: Tokens.space-1;
@@ -1293,13 +1271,7 @@ component HiddenStrip inherits Rectangle {
         context: "mixer-source";
         target: "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     HorizontalLayout {
         x: root.pad;
         y: root.pad;
@@ -1335,13 +1307,7 @@ component HiddenRow inherits Rectangle {
         context: "mixer-source";
         target: "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     HorizontalLayout {
         spacing: Tokens.space-2;
         VerticalLayout {
@@ -1413,13 +1379,7 @@ component MeterStrip inherits Rectangle {
         // In Own levels the scene too, for "Use the source's level" (ADR-0091).
         target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     HorizontalLayout {
         x: root.pad;
         y: root.pad;
@@ -1910,17 +1870,15 @@ export component MixerPanel inherits Rectangle {
         content-width: self.width;
         content-height: max(strips.preferred-height, self.height);
         mouse-drag-pan-enabled: false;
-        TouchArea {
+        MenuArea {
             width: root.width;
             height: max(strips.preferred-height, root.height);
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    // Relative to the panel, where the menu is, whatever the scroll.
-                    mixer-menu.open({
-                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
-                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
-                    });
-                }
+            menu-at(x, y) => {
+                // Relative to the panel, where the menu is, whatever the scroll.
+                mixer-menu.open({
+                    x: self.absolute-position.x - root.absolute-position.x + x,
+                    y: self.absolute-position.y - root.absolute-position.y + y,
+                });
             }
         }
         strips := VerticalLayout {
@@ -2238,13 +2196,6 @@ export component LiveControlsPanel inherits Rectangle {
     }
 }
 
-// A one-line explanation under a field (U2: every option explains itself).
-component Hint inherits Text {
-    color: Theme.text-secondary;
-    font-size: Tokens.type-caption-size;
-    wrap: word-wrap;
-}
-
 // A section title that does not collapse (ADR-0076): the same look as SectionHeader,
 // with a rule to the end of the row, but plain text for screen readers.
 component SectionTitle inherits HorizontalLayout {
@@ -2317,18 +2268,6 @@ component Section inherits VerticalLayout {
             @children
         }
     }
-}
-
-component Field inherits VerticalLayout {
-    in property <string> label;
-    spacing: Tokens.space-1;
-    Text {
-        text: root.label;
-        color: Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        accessible-role: none;
-    }
-    @children
 }
 
 // Reports its place when the Library gear asks, so Properties can scroll to it.
@@ -4492,7 +4431,6 @@ export component PropertiesPanel inherits Rectangle {
         }
     }
 }
-
 
 // One labelled fact in an output card: the name in secondary, the value in the body size.
 component OutputFact inherits HorizontalLayout {

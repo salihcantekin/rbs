@@ -53,7 +53,7 @@ Run by `Tokens::resolve` on every resolved theme and by `Tokens::parse` on the b
 
 ### Effects ([ADR-0120](../adr/0120-theme-effects.md), [ADR-0122](../adr/0122-bold-theme-effects.md))
 
-A theme chooses how lively its controls look: **Calm** (no key, the default), **Glow**, **Glass** or **Tactile**. Implemented in `rbs_ui::tokens` (`effects.rs`, `theme.rs`), `rbs_ui::tokens_slint` and the library `Button`, `IconButton` and `SplitButton`.
+A theme chooses how lively its controls look: **Calm** (no key, the default), **Glow**, **Glass** or **Tactile**. Implemented in `rbs_ui::tokens` (`effects.rs`, `theme.rs`), `rbs_ui::tokens_slint` and the library components that draw effects (the design system's "Effects": the buttons, `Toggle`, `SegmentedControl` and, from 2026-11-17, the wells, `Checkbox`, `Slider`, cards, `ChoiceCard`, `ColorPicker` and `SettingsNavItem`).
 
 - **Settings** (ADR-0122 decision 1): `"calm"`, `"glow"`, `"glass"`, `"tactile"`. `"vivid"`, ADR-0120's name for Glow, reads as Glow: `Effects::from_name("vivid")` gives `Effects::Glow`, and `Effects::name()` never returns it. A stored `"vivid"` is kept as stored until the user picks a segment of the Effects row, which writes `"glow"`.
 - **Token file format 4** has `[effects.glow]`, `[effects.glass]` and `[effects.tactile]`; calm has no table (all zero). It still needs `[font]` and needs all three tables; an unknown table (`[effects.vivid]`) or an unknown token (`effects.sheen.*`, `effects.glow.*`) is refused.
