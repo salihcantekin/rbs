@@ -1,4 +1,4 @@
-//! `rbs-cli app stream start|stop|status`: control the stream of a running RBS desktop
+//! `rbs-cli app stream start|stop|status|destinations|destination`: control the stream of a running RBS desktop
 //! app through its control API over local IPC (control API spec, "Streaming").
 //!
 //! The app goes live with the stream settings saved in its Settings, Stream and the key
@@ -11,19 +11,26 @@ use std::io::Write;
 use rbs_api_ipc::Endpoint;
 use serde_json::{Value, json};
 
-use crate::args::{AppCommand, StreamControl};
+use crate::args::{AppCommand, DestinationAction, StreamControl};
 use crate::control::{Reach, RunningApp};
 
 /// The protocol minor version that added `stream.*`.
 const STREAM_MINOR: u32 = 1;
 
+/// The protocol minor version that added `stream.destinations` and
+/// `stream.destination.*` (ADR-0127).
+const DESTINATIONS_MINOR: u32 = 74;
+
 /// Runs `command` on the RBS serving `ipc`; what it says goes to `out`.
 pub fn run(ipc: &Endpoint, command: &AppCommand, out: &mut dyn Write) -> Result<(), String> {
     let (scope, what) = match command {
         AppCommand::Stream(StreamControl::Status { .. }) => ("read", "reading the stream state"),
-        AppCommand::Stream(StreamControl::Start | StreamControl::Stop) => {
-            ("control", "stream control")
+        AppCommand::Stream(StreamControl::Destinations { .. }) => {
+            ("read", "reading the stream destinations")
         }
+        AppCommand::Stream(
+            StreamControl::Start | StreamControl::Stop | StreamControl::Destination { .. },
+        ) => ("control", "stream control"),
     };
     let mut app = match RunningApp::connect(ipc, scope, what) {
         Reach::Connected(app) => app,
@@ -45,8 +52,51 @@ pub fn run(ipc: &Endpoint, command: &AppCommand, out: &mut dyn Write) -> Result<
             );
         }
     }
+    if matches!(
+        command,
+        AppCommand::Stream(StreamControl::Destinations { .. } | StreamControl::Destination { .. })
+    ) && app.speaks(DESTINATIONS_MINOR) == Some(false)
+    {
+        return Err("the running RBS is too old to control stream destinations; update it.".into());
+    }
     let written = |e: std::io::Error| e.to_string();
     match command {
+        AppCommand::Stream(StreamControl::Destinations { json }) => {
+            let r = app
+                .call("stream.destinations", json!({}))
+                .map_err(|e| e.message)?;
+            if *json {
+                writeln!(out, "{r}").map_err(written)
+            } else {
+                write!(out, "{}", list_destinations(&r)).map_err(written)
+            }
+        }
+        AppCommand::Stream(StreamControl::Destination { action, id }) => {
+            let (method, params, done) = match action {
+                DestinationAction::Start => (
+                    "stream.destination.start",
+                    json!({"id": id}),
+                    format!("Destination {id} is starting."),
+                ),
+                DestinationAction::Stop => (
+                    "stream.destination.stop",
+                    json!({"id": id}),
+                    format!("Destination {id} was stopped."),
+                ),
+                DestinationAction::Enable => (
+                    "stream.destination.set_enabled",
+                    json!({"id": id, "enabled": true}),
+                    format!("Go live now sends to destination {id}."),
+                ),
+                DestinationAction::Disable => (
+                    "stream.destination.set_enabled",
+                    json!({"id": id, "enabled": false}),
+                    format!("Go live no longer sends to destination {id}."),
+                ),
+            };
+            app.call(method, params).map_err(|e| e.message)?;
+            writeln!(out, "{done}").map_err(written)
+        }
         AppCommand::Stream(StreamControl::Start) => {
             let r = app.call("stream.start", json!({})).map_err(|e| e.message)?;
             writeln!(
@@ -73,6 +123,34 @@ pub fn run(ipc: &Endpoint, command: &AppCommand, out: &mut dyn Write) -> Result<
             }
         }
     }
+}
+
+/// The saved destinations (`stream.destinations`) as lines: id, name, service, canvas,
+/// whether Go live sends to it, whether a server is saved and the encoding.
+fn list_destinations(r: &Value) -> String {
+    let list = r["destinations"].as_array().map_or(&[][..], Vec::as_slice);
+    if list.is_empty() {
+        return "No destinations.\n".into();
+    }
+    let mut text = String::new();
+    for d in list {
+        let name = d["name"].as_str().filter(|n| !n.is_empty());
+        text.push_str(&format!(
+            "{}  {}  {}  {}  {}  {}  {}\n",
+            d["id"].as_u64().unwrap_or(0),
+            name.unwrap_or("(unnamed)"),
+            d["service"].as_str().unwrap_or("?"),
+            d["canvas"].as_str().unwrap_or("?"),
+            if d["enabled"] == true { "on" } else { "off" },
+            if d["configured"] == true {
+                "configured"
+            } else {
+                "no server"
+            },
+            d["encoding"].as_str().unwrap_or("?"),
+        ));
+    }
+    text
 }
 
 /// `n` times, in words.
@@ -137,6 +215,25 @@ pub fn describe(state: &Value) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn destinations_list_one_line_each_without_a_server_or_key() {
+        let r = json!({"destinations": [
+            {"id": 0, "name": "Twitch", "service": "twitch", "canvas": "main",
+             "enabled": true, "configured": true, "encoding": "shared"},
+            {"id": 2, "name": "", "service": "custom", "canvas": "main",
+             "enabled": false, "configured": false, "encoding": "own"},
+        ]});
+        assert_eq!(
+            list_destinations(&r),
+            "0  Twitch  twitch  main  on  configured  shared\n\
+             2  (unnamed)  custom  main  off  no server  own\n"
+        );
+        assert_eq!(
+            list_destinations(&json!({"destinations": []})),
+            "No destinations.\n"
+        );
+    }
     use rbs_api::request::{ClientInfo, Empty, StreamStarted};
     use rbs_api::types::{Snapshot, StreamProtocol, StreamState, StreamSummary};
     use rbs_api::{

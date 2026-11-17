@@ -2458,6 +2458,8 @@ pub struct SceneRow {
     pub name: String,
     /// The scene keeps its own levels (ADR-0091).
     pub own_audio: bool,
+    /// The transition into this scene (ADR-0135); `None`: the collection's.
+    pub transition_in: Option<rbs_scene::SceneTransition>,
 }
 
 /// A source of the collection, for "Add existing source".
@@ -10892,6 +10894,32 @@ impl Host {
         self.put_transition(t)
     }
 
+    /// `scene.set_transition` (ADR-0135 decision 10) and the Scenes panel's
+    /// "Transition into this scene": sets or clears a scene's override as one undo
+    /// step; `Ok(false)` when it is already set.
+    fn set_scene_transition(
+        &mut self,
+        id: SceneId,
+        t: Option<rbs_scene::SceneTransition>,
+    ) -> Result<bool, Refusal> {
+        let scene = self
+            .collection
+            .scene(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))?;
+        let name = scene.name.clone();
+        let t = t.filter(|t| !t.is_empty());
+        if scene.transition_in == t {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_scene_transition(id, t)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::Transition, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     /// Sets the collection's transition as one undo step; `Ok(false)` when it is
     /// already set.
     fn put_transition(&mut self, t: rbs_scene::CollectionTransition) -> Result<bool, Refusal> {
@@ -11785,6 +11813,7 @@ impl Host {
                             id: s.id,
                             name: s.name.clone(),
                             own_audio: s.own_levels(),
+                            transition_in: s.transition_in,
                         })
                         .collect()
                 })
@@ -14464,6 +14493,19 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SceneSetTransition(p) => {
+                let t = p.transition.map(|t| rbs_scene::SceneTransition {
+                    kind: t.kind.map(scene_transition_kind),
+                    duration_ms: t.duration_ms,
+                });
+                let changed = host
+                    .set_scene_transition(SceneId::from_raw(p.scene), t)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::CollectionSetTransition(p) => {
                 let changed = host.set_transition(&p).map_err(|e| refused(&e))?;
                 if changed {
@@ -15652,6 +15694,10 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
                 id: s.id.get(),
                 name: s.name.clone(),
                 own_audio: s.own_audio,
+                transition_in: s.transition_in.map(|t| api::SceneTransition {
+                    kind: t.kind.map(api_transition_kind),
+                    duration_ms: t.duration_ms,
+                }),
             })
             .collect(),
         program: list.program.get(),

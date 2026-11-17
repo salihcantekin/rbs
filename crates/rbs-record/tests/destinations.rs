@@ -199,6 +199,8 @@ fn a_stalled_destination_is_aborted_without_a_drain_and_the_others_go_on() {
     for (_, report) in &reports {
         assert!(report.shutdown_errors.is_empty(), "{report:?}");
         assert_eq!(report.failure, None);
+        // Readbacks the stop cut are not drops.
+        assert_eq!(report.progress.export_drops, 0, "{report:?}");
     }
     assert_eq!(r.stream_log.finished.load(Ordering::Relaxed), finished + 2);
     assert!(studio.outputs().is_empty());

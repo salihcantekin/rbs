@@ -1,7 +1,11 @@
 //! Decodes every picture and sound chunk of a file and prints the cost per picture,
-//! for the `cpu-upload` measurements ADR-0108 decision 4 asks for (1080p60, 4K60).
+//! for the measurements ADR-0108 decision 4 asks for (1080p60, 4K60).
 //!
-//! `cargo run --release -p rbs-media-mf --example decode_bench -- <file> [seconds]`
+//! `cargo run --release -p rbs-media-mf --example decode_bench -- <file> [seconds] [copy]`
+//!
+//! Native shared D3D11 textures on the first DXGI adapter (`zero-copy`) by default;
+//! `copy` measures the `Rgba8` copy (`cpu-upload`). Each picture is dropped at once, as
+//! the picture node does after importing it.
 //!
 //! Stops after `seconds` of media (default 10). Measure CPU outside the process
 //! (`/usr/bin/time -l` on macOS, Task Manager or `Get-Process` on Windows).
@@ -11,24 +15,48 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use rbs_media_decode::MediaDecoderFactory;
+use rbs_media_decode::{DecodeTarget, MediaDecoderFactory, PictureData};
+
+/// The LUID of the first DXGI adapter, in the `GpuContext::adapter_luid` encoding.
+#[cfg(windows)]
+fn first_adapter_luid() -> Option<u64> {
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
+    // SAFETY: plain factory and adapter calls.
+    let desc = unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        factory.EnumAdapters1(0).ok()?.GetDesc1().ok()?
+    };
+    let luid = desc.AdapterLuid;
+    Some((u64::from(luid.HighPart as u32) << 32) | u64::from(luid.LowPart))
+}
+
+#[cfg(not(windows))]
+fn first_adapter_luid() -> Option<u64> {
+    None
+}
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let path = std::path::absolute(PathBuf::from(args.next().expect("a file path")))
         .expect("an absolute path");
     let limit = Duration::from_secs(args.next().map_or(10, |s| s.parse().expect("seconds")));
+    let copy = args.next().as_deref() == Some("copy");
     let path =
         rbs_media_decode::accept_local_media_path(&path.to_string_lossy()).expect("a local file");
 
     let opened = Instant::now();
+    let target = match first_adapter_luid() {
+        Some(luid) if !copy => DecodeTarget::adapter(luid),
+        _ => DecodeTarget::none(),
+    };
     let mut dec = rbs_media_mf::MfMediaFactory::new()
-        .open(&path)
+        .open_for(&path, &target)
         .expect("open");
     let open_time = opened.elapsed();
 
     let mut times = Vec::new();
     let mut size = (0, 0);
+    let mut native = 0usize;
     let mut last_pts = Duration::ZERO;
     let started = Instant::now();
     loop {
@@ -38,6 +66,7 @@ fn main() {
         };
         times.push(t.elapsed());
         size = (p.picture.width, p.picture.height);
+        native += usize::from(matches!(p.picture.data(), PictureData::Native(_)));
         last_pts = p.pts.unwrap_or(last_pts);
         if last_pts >= limit {
             break;
@@ -65,7 +94,11 @@ fn main() {
     );
     println!("picture      {}x{}", size.0, size.1);
     println!("open         {open_time:?}");
-    println!("pictures     {} over {:.2} s of media", times.len(), media);
+    println!(
+        "pictures     {} over {:.2} s of media, {native} native",
+        times.len(),
+        media
+    );
     println!(
         "wall         {pictures_wall:?} ({:.1}x real time)",
         media / pictures_wall.as_secs_f64()

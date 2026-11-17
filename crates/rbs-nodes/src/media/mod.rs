@@ -64,6 +64,15 @@ pub const LEAD: Duration = Duration::from_millis(150);
 /// stop the worker earlier.
 pub const PICTURE_SLOTS: usize = 16;
 
+/// Native pictures a source may hold, decoded and not yet imported, in `unseen` and on
+/// the ring. With the one the worker has just decoded and two the importer holds (the
+/// shown and the held picture, while their leases wait for the importer's GPU work to
+/// retire), that is the surface budget of ADR-0108 decision 5 (18), counted against the
+/// importer's shared `MAX_SURFACES` of 64. An RGB surface is aliased, so the shown and
+/// held textures are the surfaces themselves; a 4:2:0 surface is decoded into a pool
+/// texture and its lease goes back once that decode retired.
+pub const NATIVE_WAITING: u32 = PICTURE_SLOTS as u32 - 1;
+
 /// The descriptor of the picture node: one video output.
 pub fn media_descriptor() -> NodeDescriptor {
     NodeDescriptor::new(
@@ -121,6 +130,14 @@ pub struct MediaStats {
     /// Pictures and sound blocks skipped because a later command ended their
     /// generation before their stamp.
     pub superseded: AtomicU64,
+    /// Native pictures (`IoSurface`, `D3dSharedHandle`) the picture node imported
+    /// zero-copy.
+    pub imported: AtomicU64,
+    /// Native pictures the worker or the picture node holds now and has not imported
+    /// yet, at most [`NATIVE_WAITING`] (ADR-0108 decision 5).
+    pub native_waiting: AtomicU32,
+    /// Native pictures dropped because the import failed (the last texture repeats).
+    pub import_failures: AtomicU64,
 }
 
 /// One block of sound, interleaved at the graph's format, stamped at the master time
@@ -163,6 +180,9 @@ pub(crate) struct Shared {
     pub(crate) has_audio: AtomicBool,
     /// The stated duration in nanoseconds plus one; 0 while unknown.
     pub(crate) duration: AtomicU64,
+    /// The render adapter's LUID plus one, recorded by the picture node's `prepare` on
+    /// Direct3D 12; 0 when unknown. The worker opens with it (port invariant 11).
+    pub(crate) import_luid: AtomicU64,
     /// The audio graph's block period.
     pub(crate) block_period: Duration,
     /// The playback control records (ADR-0108 decision 10).
@@ -174,6 +194,10 @@ pub(crate) struct Shared {
     pub(crate) handoff_ready: AtomicBool,
     /// Media cursor in nanoseconds: the picture last shown, kept across Standby.
     cursor: AtomicU64,
+    /// Start of the play range in nanoseconds (ADR-0108 decision 11; 0 by default).
+    range_start: AtomicU64,
+    /// End of the play range in nanoseconds plus one; 0 for the end of the file.
+    range_end: AtomicU64,
     /// Where the worker's pause stopped, in nanoseconds plus one; 0 while playing.
     paused_cursor: AtomicU64,
     /// Playback. Locked on the control path only.
@@ -202,11 +226,14 @@ impl Shared {
             sound_gen: AtomicU32::new(0),
             has_audio: AtomicBool::new(false),
             duration: AtomicU64::new(0),
+            import_luid: AtomicU64::new(0),
             block_period,
             controls: control::Controls::new(),
             handoff: Mutex::new(Handoff::default()),
             handoff_ready: AtomicBool::new(false),
             cursor: AtomicU64::new(0),
+            range_start: AtomicU64::new(0),
+            range_end: AtomicU64::new(0),
             paused_cursor: AtomicU64::new(0),
             player: Mutex::new(player),
         })
@@ -243,6 +270,38 @@ impl Shared {
     pub(crate) fn move_cursor(&self, cursor: Duration) {
         self.set_paused_cursor(None);
         self.set_cursor(cursor);
+    }
+
+    /// Where the play range starts (ADR-0108 decision 11).
+    pub(crate) fn range_start(&self) -> Duration {
+        Duration::from_nanos(self.range_start.load(Ordering::Acquire))
+    }
+
+    /// Where the play range ends; `None` for the end of the file.
+    pub(crate) fn range_end(&self) -> Option<Duration> {
+        match self.range_end.load(Ordering::Acquire) {
+            0 => None,
+            end => Some(Duration::from_nanos(end - 1)),
+        }
+    }
+
+    /// Stores the play range. The caller checked `start < end`.
+    pub(crate) fn set_range(&self, start: Duration, end: Option<Duration>) {
+        let nanos = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX - 1);
+        self.range_start.store(nanos(start), Ordering::Release);
+        self.range_end
+            .store(end.map_or(0, |e| nanos(e) + 1), Ordering::Release);
+    }
+
+    /// `position` moved into the play range: before the start or at or after the end
+    /// it is the start (decision 12).
+    pub(crate) fn in_range(&self, position: Duration) -> Duration {
+        let start = self.range_start();
+        if position < start || self.range_end().is_some_and(|end| position >= end) {
+            start
+        } else {
+            position
+        }
     }
 
     pub(crate) fn set_cursor(&self, cursor: Duration) {
@@ -324,5 +383,43 @@ pub fn media_pair(
         picture: MediaPictureNode::new(Arc::clone(&shared)),
         control: MediaControl::new(Arc::clone(&shared)),
         sound: MediaSoundNode::new(audio, shared),
+    }
+}
+
+/// The render adapter's LUID as stored in `Shared::import_luid`: the LUID plus one, or
+/// 0 when there is none (not Direct3D 12, or never prepared).
+pub(crate) fn luid_slot(luid: Option<u64>) -> u64 {
+    luid.map_or(0, |l| l.wrapping_add(1))
+}
+
+/// The decode target of a stored `import_luid` value.
+fn target_of(slot: u64) -> rbs_media_decode::DecodeTarget {
+    match slot {
+        0 => rbs_media_decode::DecodeTarget::none(),
+        luid => rbs_media_decode::DecodeTarget::adapter(luid.wrapping_sub(1)),
+    }
+}
+
+impl Shared {
+    /// Where the worker's native pictures will be imported (port invariant 11).
+    pub(crate) fn decode_target(&self) -> rbs_media_decode::DecodeTarget {
+        target_of(self.import_luid.load(Ordering::Acquire))
+    }
+}
+
+#[cfg(test)]
+mod luid_tests {
+    use super::{luid_slot, target_of};
+    use rbs_media_decode::DecodeTarget;
+
+    #[test]
+    fn the_stored_luid_gives_the_decode_target() {
+        assert_eq!(target_of(luid_slot(None)), DecodeTarget::none());
+        assert_eq!(target_of(luid_slot(Some(0))), DecodeTarget::adapter(0));
+        let luid = 0x0000_0001_0000_d2a5;
+        assert_eq!(
+            target_of(luid_slot(Some(luid))),
+            DecodeTarget::adapter(luid)
+        );
     }
 }

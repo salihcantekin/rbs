@@ -52,6 +52,7 @@
 //! name = "Scene"
 //! # canvas = 0                 # only that canvas shows it; absent: shared
 //! # audio = { levels = [{ source = 0, volume = 0.5, muted = true }] }  # Own levels (format 17, ADR-0091)
+//! # transition_in = { kind = "fade", duration_ms = 800 }  # either part optional (format 20, ADR-0135)
 //!
 //! [[scenes.items]]
 //! id = 0
@@ -83,7 +84,7 @@ use rbs_scene::model::{
     SourceRegion, SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
-use rbs_scene::{IdCounters, SceneCollection};
+use rbs_scene::{IdCounters, MAX_GLIDE_MS, SceneCollection, SceneTransition};
 use serde::{Deserialize, Serialize};
 
 use crate::document::{self, Document};
@@ -598,6 +599,48 @@ struct SceneDoc {
     /// table: Own levels with no entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     audio: Option<SceneAudioDoc>,
+    /// The transition into this scene (format 20, ADR-0135). Absent: the collection's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transition_in: Option<SceneTransitionDoc>,
+}
+
+/// A scene's transition override in the document (ADR-0135 decision 9).
+#[derive(Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SceneTransitionDoc {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u32>,
+}
+
+impl SceneTransitionDoc {
+    fn of(t: SceneTransition) -> Self {
+        Self {
+            kind: t.kind.map(|k| k.as_str().to_owned()),
+            duration_ms: t.duration_ms,
+        }
+    }
+
+    fn transition(self, scene: &str) -> Result<Option<SceneTransition>, String> {
+        let kind = self
+            .kind
+            .map(|k| {
+                TransitionKind::parse(&k)
+                    .ok_or_else(|| format!("scene {scene:?}: unknown transition kind `{k}`"))
+            })
+            .transpose()?;
+        let t = SceneTransition {
+            kind,
+            duration_ms: self.duration_ms,
+        };
+        if !t.is_valid() {
+            return Err(format!(
+                "scene {scene:?}: transition duration above {MAX_GLIDE_MS} ms"
+            ));
+        }
+        Ok(Some(t).filter(|t| !t.is_empty()))
+    }
 }
 
 /// A scene's own levels in the document (ADR-0091).
@@ -895,12 +938,14 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 19;
+    const FORMAT: u32 = 20;
 
     fn write_format(&self) -> u32 {
         // Format 18 and older read a 0 ms glide as Cut, so such a collection is written
         // as 19 to keep its own transition (ADR-0128 decision 3).
-        if !self.transition().is_default() || self.glide().duration_ms == 0 {
+        if self.scenes().any(|s| s.transition_in.is_some()) {
+            20
+        } else if !self.transition().is_default() || self.glide().duration_ms == 0 {
             19
         } else if self
             .sources()
@@ -945,9 +990,24 @@ impl Document for SceneCollection {
     /// without it, and a file is written as 18 only when a source has it. Format 19
     /// adds the optional collection `transition` (ADR-0128); a format 18 or older body
     /// is a format 19 body whose transition is Move, or Cut when its glide is 0 ms, and a
-    /// file is written as 19 only when it needs it.
+    /// file is written as 19 only when it needs it. Format 20 adds the optional scene
+    /// `transition_in` (ADR-0135); a format 19 or older body is a format 20 body
+    /// without it, and a file is written as 20 only when a scene has it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        let overridden = body
+            .get("scenes")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_table)
+            .any(|s| s.contains_key("transition_in"));
+        if (1..=19).contains(&from) && overridden {
+            return Err(format!(
+                "format {from} has no scene `transition_in` (format 20)"
+            ));
+        }
         match from {
+            19 => Ok(()),
             1..=18 => {
                 if body.contains_key("transition") {
                     return Err(format!("format {from} has no `transition` (format 19)"));
@@ -1209,6 +1269,7 @@ impl Document for SceneCollection {
                     canvas,
                     items,
                     audio: s.audio.as_ref().map(SceneAudioDoc::of),
+                    transition_in: s.transition_in.map(SceneTransitionDoc::of),
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -1314,8 +1375,14 @@ impl Document for SceneCollection {
                     SceneScope::Canvas(CanvasId::from_raw(c))
                 });
                 let audio = s.audio.map(|a| a.audio(&s.name)).transpose()?;
+                let transition_in = s
+                    .transition_in
+                    .map(|t| t.transition(&s.name))
+                    .transpose()?
+                    .flatten();
                 let mut scene =
                     Scene::new(SceneId::from_raw(s.id), &s.name, scope).with_audio(audio);
+                scene.transition_in = transition_in;
                 scene.items = s
                     .items
                     .into_iter()

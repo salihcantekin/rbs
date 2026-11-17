@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use rbs_core::media::VideoFrame;
+use rbs_core::media::{FramePayload, VideoFrame};
 use rbs_core::time::Timestamp;
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::upload::SourceUpload;
@@ -317,19 +317,32 @@ impl MediaPictureNode {
             return;
         }
         player.hold(&shared);
+        // The held picture is the last one that can be shown without the GPU: a system
+        // picture, or the texture of an imported one. A native picture never imported
+        // is dropped with its slot, and the hold keeps the picture shown before it, with
+        // that picture's mark, cursor and index.
+        let mut last = self.current.take();
+        let showable = |item: &Pending| !item.frame.as_ref().is_some_and(is_native);
         if let Some((rings, _)) = self.rings.as_mut() {
             while let Ok(item) = rings.pictures.pop() {
-                self.current = Some(item);
+                if showable(&item) {
+                    last = Some(item);
+                }
             }
         }
-        if let Some(item) = self.next.take() {
-            self.current = Some(item);
+        if let Some(item) = self.next.take()
+            && showable(&item)
+        {
+            last = Some(item);
         }
-        if let Some(current) = self.current.take() {
+        if let Some(current) = last {
             self.held_mark = current.mark;
             self.shared.set_cursor(current.media);
             self.published = Some(current.index);
-            self.held = Some(current.frame);
+            self.held = match current.frame {
+                Some(frame) if !is_native(&frame) => Some(frame),
+                _ => self.shown_texture.as_ref().and_then(VideoFrame::share),
+            };
         }
         self.shown = false;
         self.rings = None;
@@ -454,26 +467,72 @@ impl MediaPictureNode {
             self.shared.set_cursor(current.media);
             self.held_mark = current.mark;
         }
-        current.frame.share()
+        // `None` for a native picture: `dequeue_texture` imports it.
+        current.frame.as_ref().and_then(VideoFrame::share)
     }
 
-    /// Chooses the picture for `now`, uploads when it changes, and returns a texture
-    /// the compositor can sample.
+    /// Chooses the picture for `now`, uploads or imports it when it changes, and
+    /// returns a texture the compositor can sample. A native picture is imported once
+    /// (zero-copy, ADR-0108 decision 4); when the import fails the last texture repeats
+    /// and the failure is counted.
     fn dequeue_texture(
         &mut self,
         ctx: &mut ProcessCtx<'_, GpuRuntime>,
         now: Timestamp,
     ) -> Result<Option<VideoFrame>, NodeError> {
-        let Some(system) = self.dequeue(now) else {
-            return Ok(None);
-        };
+        let chosen = self.dequeue(now);
         if !self.changed && self.shown_texture.is_some() {
             return Ok(self.shown_texture.as_ref().and_then(VideoFrame::share));
         }
-        let texture = self
-            .upload
-            .upload(ctx.shared(), &mut ctx.local().pool, system)
-            .map_err(|_| NodeError::Backend("media picture upload failed"))?;
+        let source = match chosen {
+            Some(frame) => frame,
+            None => {
+                let Some(current) = self.current.as_mut() else {
+                    return Ok(None);
+                };
+                if !current.frame.as_ref().is_some_and(is_native) {
+                    return Ok(None);
+                }
+                // The surface is the importer's from here; the slot is released.
+                current.native = None;
+                match current.frame.take() {
+                    Some(frame) => frame,
+                    None => return Ok(None),
+                }
+            }
+        };
+        let gpu = ctx.shared();
+        let local = ctx.local();
+        let texture = match source.payload() {
+            FramePayload::Native { .. } => {
+                match local.importer.import(gpu, &mut local.pool, source) {
+                    Ok(texture) => {
+                        self.shared.stats.imported.fetch_add(1, Ordering::Relaxed);
+                        // The current picture keeps a share of its texture, so it
+                        // repeats (paused, cued, held) after `cool` let go of the shown
+                        // texture.
+                        if let Some(current) = self.current.as_mut() {
+                            current.frame = texture.share();
+                        }
+                        texture
+                    }
+                    Err(_) => {
+                        // The frame and its lease are gone; the last texture stays.
+                        self.shared
+                            .stats
+                            .import_failures
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Ok(self.shown_texture.as_ref().and_then(VideoFrame::share));
+                    }
+                }
+            }
+            // The held texture of an imported picture.
+            FramePayload::Texture(_) => source,
+            _ => self
+                .upload
+                .upload(gpu, &mut local.pool, source)
+                .map_err(|_| NodeError::Backend("media picture upload failed"))?,
+        };
         self.shown_texture = Some(texture);
         Ok(self.shown_texture.as_ref().and_then(VideoFrame::share))
     }
@@ -490,7 +549,16 @@ impl MediaPictureNode {
 
     /// Hands a picture back to the worker, which frees it on its own thread. The return
     /// ring holds two more than the picture ring, so it is never full.
-    fn give_back(&mut self, item: Pending) {
+    fn give_back(&mut self, mut item: Pending) {
+        // An imported picture's texture belongs to this thread's pool: it is let go
+        // here, not on the worker.
+        if item
+            .frame
+            .as_ref()
+            .is_some_and(|f| matches!(f.payload(), FramePayload::Texture(_)))
+        {
+            item.frame = None;
+        }
         if let Some((rings, _)) = self.rings.as_mut() {
             let _ = rings.returns.push(item);
         }
@@ -508,7 +576,21 @@ impl Node<GpuRuntime> for MediaPictureNode {
         &self.descriptor
     }
 
-    fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+    fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        // Native pictures must be on the render adapter (port invariant 11).
+        let luid = match ctx.shared.adapter().get_info().backend {
+            wgpu::Backend::Dx12 => super::luid_slot(ctx.shared.adapter_luid()),
+            _ => super::luid_slot(None),
+        };
+        let previous = self.shared.import_luid.swap(luid, Ordering::AcqRel);
+        if previous != 0 && previous != luid && self.phase == MediaPhase::Playing {
+            // The render device moved to another adapter (a device loss): a run opened
+            // for the old one hands out surfaces the new device cannot import, so it
+            // opens again at the cursor.
+            return self
+                .restart()
+                .map_err(|error| NodeError::Failed(error.to_string()));
+        }
         let now = self.shared.player().clock().now();
         self.wake(now)
             .map_err(|error| NodeError::Failed(error.to_string()))
@@ -519,7 +601,12 @@ impl Node<GpuRuntime> for MediaPictureNode {
             .held
             .as_ref()
             .and_then(VideoFrame::share)
-            .or_else(|| self.current.as_ref().and_then(|item| item.frame.share()))
+            .or_else(|| {
+                self.current
+                    .as_ref()
+                    .and_then(|item| item.frame.as_ref().and_then(VideoFrame::share))
+            })
+            .filter(|frame| matches!(frame.payload(), FramePayload::System(_)))
         {
             let format = *system.format();
             self.upload
@@ -557,4 +644,9 @@ impl Node<GpuRuntime> for MediaPictureNode {
         self.shown_texture = None;
         self.upload = SourceUpload::new();
     }
+}
+
+/// True for a native surface the importer still has to take.
+fn is_native(frame: &VideoFrame) -> bool {
+    matches!(frame.payload(), FramePayload::Native { .. })
 }

@@ -14,22 +14,41 @@ use objc2_av_foundation::{
     AVAsset, AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack,
     AVMediaType, AVMediaTypeAudio, AVMediaTypeVideo, AVURLAsset,
 };
+use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{CFString, CFType};
 use objc2_core_media::{
-    CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer, CMTime, CMTimeFlags,
-    CMTimeRange, kCMTimePositiveInfinity,
+    CMAudioFormatDescriptionGetStreamBasicDescription, CMFormatDescription, CMSampleBuffer, CMTime,
+    CMTimeFlags, CMTimeRange, CMVideoFormatDescriptionGetDimensions,
+    kCMFormatDescriptionColorPrimaries_EBU_3213, kCMFormatDescriptionColorPrimaries_ITU_R_709_2,
+    kCMFormatDescriptionColorPrimaries_ITU_R_2020, kCMFormatDescriptionColorPrimaries_P3_D65,
+    kCMFormatDescriptionColorPrimaries_SMPTE_C, kCMFormatDescriptionExtension_ColorPrimaries,
+    kCMFormatDescriptionExtension_TransferFunction, kCMFormatDescriptionExtension_YCbCrMatrix,
+    kCMFormatDescriptionTransferFunction_ITU_R_709_2,
+    kCMFormatDescriptionTransferFunction_ITU_R_2020,
+    kCMFormatDescriptionTransferFunction_SMPTE_240M_1995,
+    kCMFormatDescriptionTransferFunction_sRGB, kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4,
+    kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2, kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
+    kCMFormatDescriptionYCbCrMatrix_SMPTE_240M_1995, kCMTimePositiveInfinity,
 };
 use objc2_core_video::{
     CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
-    CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-    CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA, kCVReturnSuccess,
+    CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA,
+    kCVReturnSuccess,
 };
 use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString, NSURL};
+use rbs_core::media::{
+    ColorPrimaries, ColorRange, ColorSpace, MatrixCoefficients, NativeSurface, PixelFormat, Size,
+    SurfaceSync, TransferFunction, VideoFormat, VideoFrame,
+};
+use rbs_core::time::Timestamp;
 
 use rbs_media_decode::{
     DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, SampleColor,
     SoundSample, frame_duration_rule, refuse_picture,
 };
 
+use crate::surfaces::Surfaces;
 use crate::{bgra_to_rgba, cm_duration, nominal_duration};
 
 /// `kAudioFormatLinearPCM` (`'lpcm'`).
@@ -62,12 +81,160 @@ fn settings(pairs: &[(&str, Retained<NSNumber>)]) -> Retained<NSDictionary<NSStr
     NSDictionary::from_retained_objects(&key_refs, &values)
 }
 
-fn video_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
-    // `kCVPixelBufferPixelFormatTypeKey` is the string "PixelFormatType".
-    settings(&[(
-        "PixelFormatType",
-        NSNumber::new_u32(kCVPixelFormatType_32BGRA),
-    )])
+/// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` ('420v'): NV12, limited range.
+const PIXEL_FORMAT_420V: u32 = 0x3432_3076;
+
+/// The picture output: `32BGRA` for the copy, or IOSurface-backed `420v` (NV12, what
+/// VideoToolbox decodes to, so it converts nothing) for native pictures.
+fn video_settings(native: bool) -> Retained<NSDictionary<NSString, AnyObject>> {
+    if !native {
+        // `kCVPixelBufferPixelFormatTypeKey` is the string "PixelFormatType".
+        return settings(&[(
+            "PixelFormatType",
+            NSNumber::new_u32(kCVPixelFormatType_32BGRA),
+        )]);
+    }
+    let format = NSString::from_str("PixelFormatType");
+    // `kCVPixelBufferIOSurfacePropertiesKey` is the string "IOSurfaceProperties"; an
+    // empty dictionary asks for IOSurface-backed buffers with default properties.
+    let surface = NSString::from_str("IOSurfaceProperties");
+    let empty: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::new();
+    let values: [Retained<AnyObject>; 2] = [
+        Retained::into_super(Retained::into_super(Retained::into_super(
+            NSNumber::new_u32(PIXEL_FORMAT_420V),
+        ))),
+        Retained::into_super(Retained::into_super(empty)),
+    ];
+    NSDictionary::from_retained_objects(&[&*format, &*surface], &values)
+}
+
+/// The colour of the track's Y'CbCr from its format description, as the importer
+/// decodes native `420v` pictures, or `None` when it cannot (an HDR or unknown transfer,
+/// an unknown matrix or primaries): such a file opens for copied pictures, which
+/// VideoToolbox converts to sRGB. A missing tag follows the common player rule: BT.601
+/// up to 576 lines, BT.709 above, and the BT.709 transfer.
+fn track_color(track: &AVAssetTrack) -> Option<ColorSpace> {
+    // SAFETY: a plain property read of a live track.
+    let descriptions = unsafe { track.formatDescriptions() };
+    let first = descriptions.firstObject()?;
+    // SAFETY: `formatDescriptions` holds `CMFormatDescription`s, which are CF objects;
+    // the reference lives as long as `first`.
+    let description: &CMFormatDescription =
+        unsafe { &*(Retained::as_ptr(&first).cast::<CMFormatDescription>()) };
+    // SAFETY: a video track's description is a video format description.
+    let lines = unsafe { CMVideoFormatDescriptionGetDimensions(description) }.height;
+    // SAFETY: framework string constants, valid for the life of the process.
+    let (keys, matrices, all_primaries, transfers) = unsafe {
+        (
+            [
+                kCMFormatDescriptionExtension_YCbCrMatrix,
+                kCMFormatDescriptionExtension_ColorPrimaries,
+                kCMFormatDescriptionExtension_TransferFunction,
+            ],
+            [
+                (
+                    kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2,
+                    MatrixCoefficients::Bt709,
+                ),
+                (
+                    kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4,
+                    MatrixCoefficients::Bt601,
+                ),
+                (
+                    kCMFormatDescriptionYCbCrMatrix_SMPTE_240M_1995,
+                    MatrixCoefficients::Bt601,
+                ),
+                (
+                    kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
+                    MatrixCoefficients::Bt2020Ncl,
+                ),
+            ],
+            [
+                (
+                    kCMFormatDescriptionColorPrimaries_ITU_R_709_2,
+                    ColorPrimaries::Bt709,
+                ),
+                (
+                    kCMFormatDescriptionColorPrimaries_EBU_3213,
+                    ColorPrimaries::Bt601Pal,
+                ),
+                (
+                    kCMFormatDescriptionColorPrimaries_SMPTE_C,
+                    ColorPrimaries::Bt601Ntsc,
+                ),
+                (
+                    kCMFormatDescriptionColorPrimaries_ITU_R_2020,
+                    ColorPrimaries::Bt2020,
+                ),
+                (
+                    kCMFormatDescriptionColorPrimaries_P3_D65,
+                    ColorPrimaries::DisplayP3,
+                ),
+            ],
+            [
+                (
+                    kCMFormatDescriptionTransferFunction_ITU_R_709_2,
+                    TransferFunction::Bt709,
+                ),
+                (
+                    kCMFormatDescriptionTransferFunction_ITU_R_2020,
+                    TransferFunction::Bt709,
+                ),
+                (
+                    kCMFormatDescriptionTransferFunction_SMPTE_240M_1995,
+                    TransferFunction::Bt709,
+                ),
+                (
+                    kCMFormatDescriptionTransferFunction_sRGB,
+                    TransferFunction::Srgb,
+                ),
+            ],
+        )
+    };
+    // The value of a tag: `Ok(None)` when missing, `Err` when the tag names a value the
+    // table does not have.
+    fn lookup<T: Copy>(
+        description: &CMFormatDescription,
+        key: &CFString,
+        table: &[(&CFString, T)],
+    ) -> Result<Option<T>, ()> {
+        // SAFETY: reads a tag of a live description.
+        let Some(value) = (unsafe { description.extension(key) }) else {
+            return Ok(None);
+        };
+        let value: &CFType = &value;
+        table
+            .iter()
+            .find(|(name, _)| *value == ***name)
+            .map(|&(_, v)| Some(v))
+            .ok_or(())
+    }
+    let [matrix_key, primaries_key, transfer_key] = keys;
+    let matrix = lookup(description, matrix_key, &matrices)
+        .ok()?
+        .unwrap_or(if lines <= 576 {
+            MatrixCoefficients::Bt601
+        } else {
+            MatrixCoefficients::Bt709
+        });
+    let primaries = lookup(description, primaries_key, &all_primaries)
+        .ok()?
+        .unwrap_or(match matrix {
+            MatrixCoefficients::Bt601 if lines == 576 => ColorPrimaries::Bt601Pal,
+            MatrixCoefficients::Bt601 => ColorPrimaries::Bt601Ntsc,
+            MatrixCoefficients::Bt2020Ncl => ColorPrimaries::Bt2020,
+            _ => ColorPrimaries::Bt709,
+        });
+    let transfer = lookup(description, transfer_key, &transfers)
+        .ok()?
+        .unwrap_or(TransferFunction::Bt709);
+    // `420v` is video range whatever the file's range: VideoToolbox converts.
+    Some(ColorSpace::new(
+        primaries,
+        transfer,
+        matrix,
+        ColorRange::Limited,
+    ))
 }
 
 fn audio_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
@@ -172,6 +339,9 @@ pub(crate) struct AvfDecoder {
     nominal: Option<Duration>,
     cursor: Duration,
     last_duration: Option<Duration>,
+    /// The slots of native pictures and their colour; `None` for the copy
+    /// (`cpu-upload`, or a colour the importer cannot decode).
+    surfaces: Option<(Surfaces, ColorSpace)>,
 }
 
 // SAFETY: AVAsset, AVAssetReader and their outputs are not bound to a thread; the
@@ -179,11 +349,11 @@ pub(crate) struct AvfDecoder {
 unsafe impl Send for AvfDecoder {}
 
 impl AvfDecoder {
-    pub(crate) fn open(path: &Path) -> Result<Self, DecodeError> {
-        autoreleasepool(|_| Self::open_in_pool(path))
+    pub(crate) fn open(path: &Path, native: bool) -> Result<Self, DecodeError> {
+        autoreleasepool(|_| Self::open_in_pool(path, native))
     }
 
-    fn open_in_pool(path: &Path) -> Result<Self, DecodeError> {
+    fn open_in_pool(path: &Path, native: bool) -> Result<Self, DecodeError> {
         let path: PathBuf = path.to_owned();
         let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
         // SAFETY: a file URL and no options.
@@ -195,8 +365,18 @@ impl AvfDecoder {
         let audio_track = first_track(&asset, audio_kind);
         // SAFETY: plain property reads of live objects.
         let (length, rate) = unsafe { (asset.duration(), video_track.nominalFrameRate()) };
-        let (reader, output) =
-            start_reader(&asset, &video_track, &video_settings(), Duration::ZERO)?;
+        let color = if native {
+            track_color(&video_track)
+        } else {
+            None
+        };
+        let native = color.is_some();
+        let (reader, output) = start_reader(
+            &asset,
+            &video_track,
+            &video_settings(native),
+            Duration::ZERO,
+        )?;
         Ok(Self {
             asset,
             video_track,
@@ -207,10 +387,13 @@ impl AvfDecoder {
             nominal: nominal_duration(rate),
             cursor: Duration::ZERO,
             last_duration: None,
+            surfaces: color.map(|c| (Surfaces::new(), c)),
         })
     }
 
-    fn picture(&mut self, sample: &CMSampleBuffer) -> Result<PictureSample, DecodeError> {
+    /// The picture of `sample`, or `None` when it is skipped because every native slot
+    /// is still referenced (the clock repeats the previous picture).
+    fn picture(&mut self, sample: &CMSampleBuffer) -> Result<Option<PictureSample>, DecodeError> {
         // SAFETY: plain reads of a live sample buffer.
         let (pts, stated, image) = unsafe {
             (
@@ -233,6 +416,38 @@ impl AvfDecoder {
                 "the picture must be {}",
                 refused.expected()
             )));
+        }
+        let frame_duration = frame_duration_rule(stated, false, self.nominal)
+            .or(self.last_duration)
+            .or(self.nominal);
+        if let Some((surfaces, color)) = self.surfaces.as_mut() {
+            self.last_duration = frame_duration;
+            if pts.is_none() && frame_duration.is_none() {
+                return Err(DecodeError::NoTimestamp);
+            }
+            if CVPixelBufferGetPixelFormatType(&image) != PIXEL_FORMAT_420V {
+                return Err(DecodeError::Failed(
+                    "the decoder gave a picture of another pixel format".into(),
+                ));
+            }
+            let Some((surface, lease)) = surfaces.hand_out(image) else {
+                return Ok(None);
+            };
+            let format = VideoFormat::new(Size::new(w, h), PixelFormat::Nv12, *color);
+            let surface = NativeSurface::io_surface(CFRetained::as_ptr(&surface).as_ptr() as usize);
+            // SAFETY: the IOSurface belongs to the pixel buffer the pool keeps in the
+            // lease's slot until every reference to that slot is released, and
+            // VideoToolbox does not write a buffer it handed out while it is retained.
+            let frame = unsafe {
+                VideoFrame::native(format, Timestamp::ZERO, surface, SurfaceSync::Ready, lease)
+            };
+            let picture = Picture::native(frame)
+                .ok_or_else(|| DecodeError::Failed("a native picture".into()))?;
+            return Ok(Some(PictureSample {
+                pts,
+                frame_duration,
+                picture,
+            }));
         }
         let mut bytes = Vec::new();
         // SAFETY: the base address is read only between lock and unlock, within the
@@ -258,18 +473,15 @@ impl AvfDecoder {
             done
         };
         copied.ok_or_else(|| DecodeError::Failed("the picture buffer is too small".into()))?;
-        let frame_duration = frame_duration_rule(stated, false, self.nominal)
-            .or(self.last_duration)
-            .or(self.nominal);
         self.last_duration = frame_duration;
         if pts.is_none() && frame_duration.is_none() {
             return Err(DecodeError::NoTimestamp);
         }
-        Ok(PictureSample {
+        Ok(Some(PictureSample {
             pts,
             frame_duration,
             picture: Picture::system(w, h, PictureLayout::Rgba8, SampleColor::Srgb, bytes),
-        })
+        }))
     }
 
     fn open_sound(&mut self) -> Result<(), DecodeError> {
@@ -337,8 +549,13 @@ impl AvfDecoder {
 impl MediaDecoder for AvfDecoder {
     fn seek(&mut self, cursor: Duration) -> Result<(), DecodeError> {
         autoreleasepool(|_| {
-            let (reader, output) =
-                start_reader(&self.asset, &self.video_track, &video_settings(), cursor)?;
+            let native = self.surfaces.is_some();
+            let (reader, output) = start_reader(
+                &self.asset,
+                &self.video_track,
+                &video_settings(native),
+                cursor,
+            )?;
             self.video = Stream { reader, output };
             self.sound = None;
             self.cursor = cursor;
@@ -349,10 +566,14 @@ impl MediaDecoder for AvfDecoder {
 
     fn next_picture(&mut self) -> Result<Option<PictureSample>, DecodeError> {
         autoreleasepool(|_| {
-            let Some(sample) = self.video.next()? else {
-                return Ok(None);
-            };
-            self.picture(&sample).map(Some)
+            loop {
+                let Some(sample) = self.video.next()? else {
+                    return Ok(None);
+                };
+                if let Some(picture) = self.picture(&sample)? {
+                    return Ok(Some(picture));
+                }
+            }
         })
     }
 

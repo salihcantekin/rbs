@@ -2082,6 +2082,93 @@ fn a_fade_through_a_colour_a_swipe_and_a_slide_run_and_settle() {
 }
 
 #[test]
+fn the_incoming_scenes_override_comes_between_a_one_off_and_the_collection() {
+    // ADR-0135 decision 8.
+    use rbs_record::{TransitionOnce, TransitionPhase};
+    use rbs_scene::{CollectionTransition, SceneTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Cut,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    col.set_scene_transition(
+        other,
+        Some(SceneTransition {
+            kind: Some(TransitionKind::Fade),
+            duration_ms: Some(120),
+        }),
+    )
+    .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition-override", ContainerId::Matroska),
+        )
+        .unwrap();
+    let run = |studio: &mut Studio, col: &mut rbs_scene::SceneCollection, to| {
+        col.set_program(canvas, Some(to)).unwrap();
+        studio.update(col, &r.adapters.sources).unwrap();
+        let mut events = Vec::new();
+        assert!(run_until(studio, &clock, |s| {
+            s.transition_state(canvas).is_none()
+                || s.transition_wait(clock.now()) == Some(Duration::ZERO)
+        }));
+        if studio.take_transition_done() {
+            studio.settle_transitions(&r.adapters.sources);
+        }
+        events.extend(studio.take_transition_events());
+        events
+            .into_iter()
+            .filter(|e| e.phase == TransitionPhase::Ended)
+            .map(|e| (e.kind, e.duration))
+            .collect::<Vec<_>>()
+    };
+    // Into the scene: its override.
+    assert_eq!(
+        run(&mut studio, &mut col, other),
+        [(TransitionKind::Fade, Duration::from_millis(120))]
+    );
+    // Out of it: the collection's Cut.
+    assert_eq!(
+        run(&mut studio, &mut col, live),
+        [(TransitionKind::Cut, Duration::ZERO)]
+    );
+    // A one-off kind wins, with that kind's collection duration (Swipe, 500 ms).
+    studio.set_transition_once(TransitionOnce::new(Some(TransitionKind::Swipe), None));
+    assert_eq!(
+        run(&mut studio, &mut col, other),
+        [(TransitionKind::Swipe, Duration::from_millis(500))]
+    );
+    // A one-off duration alone keeps the override's kind.
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let _ = studio.take_transition_events();
+    studio.set_transition_once(TransitionOnce::new(None, Some(60)));
+    assert_eq!(
+        run(&mut studio, &mut col, other),
+        [(TransitionKind::Fade, Duration::from_millis(60))]
+    );
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
 fn a_browser_page_is_heard_in_the_program_mix() {
     // ADR-0106, ADR-0109 decision 6: the page's sound reaches the sound node through
     // the feed, and the sound node is the producer of the page's strip.

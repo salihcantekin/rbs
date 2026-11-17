@@ -44,6 +44,8 @@ export struct ThemeTokenRow {
     warning: string,
     // "Fix" can clear the warnings by moving the colour's lightness.
     fixable: bool,
+    // What a length shapes, in words; empty when the label says it.
+    hint: string,
 }
 
 export global Appearance {
@@ -172,7 +174,7 @@ component Warning inherits HorizontalLayout {
         Rectangle {
             width: Tokens.space-2;
             height: Tokens.space-2;
-            border-radius: Tokens.space-1;
+            border-radius: self.width / 2;
             background: Theme.state-warning;
             accessible-role: none;
         }
@@ -434,6 +436,7 @@ component TokenEditorRow inherits Rectangle {
                 wrap: word-wrap;
                 accessible-role: none;
             }
+            if item.kind == 1 && item.hint != "": Hint { text: item.hint; }
             if item.kind == 2: Hint { text: @tr("Size, line height, weight"); }
             if item.kind == 4: Hint {
                 text: item.disabled != "" ? item.disabled : @tr("How lively buttons look: flat, glowing, glossy, or raised with a press");

@@ -538,6 +538,8 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::PATH,
             keys::LOOP,
             keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS,
         ],
         SourceClass::Text => crate::text::TEXT_KEYS,
         SourceClass::Browser => &[
@@ -561,7 +563,12 @@ pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
         Some(SourceClass::Capture(TargetKind::Camera)) => &[keys::WIDTH, keys::HEIGHT, keys::FPS],
         Some(SourceClass::Capture(_)) => &[keys::CURSOR, keys::WIDTH, keys::HEIGHT, keys::FPS],
         Some(SourceClass::Audio(EndpointKind::OutputLoopback)) => &[keys::EXCLUDE_OWN_PROCESS],
-        Some(SourceClass::Media) => &[keys::LOOP, keys::RESTART_WHEN_SHOWN],
+        Some(SourceClass::Media) => &[
+            keys::LOOP,
+            keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS,
+        ],
         Some(SourceClass::Browser) => &[keys::WIDTH, keys::HEIGHT, keys::FPS, keys::TRANSPARENT],
         Some(SourceClass::Audio(_) | SourceClass::Still) | None => &[],
         // Which text keys are options (font, colour, outline) and which are identity
@@ -1230,6 +1237,7 @@ impl SourceTypes {
         };
         let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
         let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
+        let (start, end) = media_range(&source.settings)?;
         let pair = rbs_nodes::media_pair(
             factory.clone(),
             path,
@@ -1238,6 +1246,12 @@ impl SourceTypes {
             Arc::clone(&ctx.clock),
             ctx.audio,
         );
+        pair.control
+            .set_range(start, end)
+            .map_err(|_| SourceError::InvalidSetting {
+                key: keys::END_MS,
+                expected: "greater than start_ms",
+            })?;
         let stats = pair.picture.stats();
         Ok(SourceInstance::Media(Box::new(MediaSource {
             picture: pair.picture,
@@ -1298,6 +1312,8 @@ fn validate_media(settings: &Settings) -> Result<(), SourceError> {
             keys::PATH,
             keys::LOOP,
             keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS,
         ]
         .contains(&key.as_str())
         {
@@ -1333,8 +1349,38 @@ fn validate_media(settings: &Settings) -> Result<(), SourceError> {
     }
     flag(settings, keys::LOOP)?;
     flag(settings, keys::RESTART_WHEN_SHOWN)?;
+    media_range(settings)?;
     text(settings, keys::ADAPTER)?;
     Ok(())
+}
+
+/// The play range of a media file (ADR-0108 decision 11): `start_ms` (default 0) and
+/// `end_ms` (absent for the end of the file), each a whole number of milliseconds of
+/// at least 0, and `end_ms` greater than `start_ms`. Values past the end of the file
+/// are clamped when it opens.
+fn media_range(settings: &Settings) -> Result<(Duration, Option<Duration>), SourceError> {
+    let ms = |key: &'static str| match settings.get(key) {
+        None => Ok(None),
+        Some(SettingValue::Int(value)) => u64::try_from(*value)
+            .map(|value| Some(Duration::from_millis(value)))
+            .map_err(|_| SourceError::InvalidSetting {
+                key,
+                expected: "milliseconds, 0 or more",
+            }),
+        Some(_) => Err(SourceError::InvalidSetting {
+            key,
+            expected: "an integer",
+        }),
+    };
+    let start = ms(keys::START_MS)?.unwrap_or(Duration::ZERO);
+    let end = ms(keys::END_MS)?;
+    if end.is_some_and(|end| end <= start) {
+        return Err(SourceError::InvalidSetting {
+            key: keys::END_MS,
+            expected: "greater than start_ms",
+        });
+    }
+    Ok((start, end))
 }
 
 fn raw_path_is_remote(path: &str) -> bool {
@@ -1468,15 +1514,6 @@ fn probe_media(
             expected: "a file with a picture stream",
         },
     ))?;
-    // Native surfaces are consumed only once the node split lands (ADR-0108 decision
-    // 5). Until then a zero-copy adapter must not win the probe and then fail on
-    // every file in the node.
-    if picture.is_native() {
-        return Err((
-            1,
-            SourceError::Media("native surfaces are not played yet".to_owned()),
-        ));
-    }
     if let Some(why) =
         rbs_media_decode::refuse_picture(picture.width, picture.height, picture.system_bytes())
     {

@@ -1,7 +1,10 @@
 //! Decodes every picture and sound chunk of a file and prints the cost per picture,
-//! for the `cpu-upload` measurements ADR-0108 decision 4 asks for (1080p60, 4K60).
+//! for the measurements ADR-0108 decision 4 asks for (1080p60, 4K60).
 //!
-//! `cargo run --release -p rbs-media-avf --example decode_bench -- <file> [seconds]`
+//! `cargo run --release -p rbs-media-avf --example decode_bench -- <file> [seconds] [copy]`
+//!
+//! Native `IOSurface` pictures (`zero-copy`) by default; `copy` measures the `Rgba8`
+//! copy (`cpu-upload`). Each picture is dropped at once, as the picture node does.
 //!
 //! Stops after `seconds` of media (default 10). Measure CPU outside the process
 //! (`/usr/bin/time -l` on macOS, Task Manager or `Get-Process` on Windows).
@@ -11,6 +14,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use rbs_core::registry::AdapterFactory;
 use rbs_media_decode::MediaDecoderFactory;
 
 fn main() {
@@ -18,13 +22,16 @@ fn main() {
     let path = std::path::absolute(PathBuf::from(args.next().expect("a file path")))
         .expect("an absolute path");
     let limit = Duration::from_secs(args.next().map_or(10, |s| s.parse().expect("seconds")));
+    let factory = if args.next().as_deref() == Some("copy") {
+        rbs_media_avf::AvfMediaFactory::cpu_upload()
+    } else {
+        rbs_media_avf::AvfMediaFactory::new()
+    };
     let path =
         rbs_media_decode::accept_local_media_path(&path.to_string_lossy()).expect("a local file");
 
     let opened = Instant::now();
-    let mut dec = rbs_media_avf::AvfMediaFactory::new()
-        .open(&path)
-        .expect("open");
+    let mut dec = factory.open(&path).expect("open");
     let open_time = opened.elapsed();
 
     let mut times = Vec::new();
@@ -60,8 +67,16 @@ fn main() {
     let p99 = times[(n * 99 / 100).min(n - 1)];
     let media = last_pts.as_secs_f64().max(f64::EPSILON);
     println!(
-        "adapter      {}",
-        rbs_media_avf::AvfMediaFactory::new().id_text()
+        "adapter      {} ({})",
+        factory.id_text(),
+        if factory
+            .probe()
+            .is_ok_and(|c| format!("{c:?}").contains("zero-copy"))
+        {
+            "zero-copy"
+        } else {
+            "cpu-upload"
+        }
     );
     println!("picture      {}x{}", size.0, size.1);
     println!("open         {open_time:?}");
