@@ -154,11 +154,13 @@ fn scenes() -> SceneList {
                 id: 0,
                 name: "Talk".into(),
                 own_audio: true,
+                transition_in: None,
             },
             SceneInfo {
                 id: 2,
                 name: "Game".into(),
                 own_audio: false,
+                transition_in: None,
             },
         ],
         program: 2,

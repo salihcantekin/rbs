@@ -77,6 +77,7 @@ const BY_TARGET: &[&str] = &[
     "filter.set_settings",
     "scene.remove",
     "scene.rename",
+    "scene.set_transition",
     "scene.duplicate",
     "scene.move",
     "scene.audio.set",
