@@ -28,7 +28,7 @@ use rbs_app::stream_profile::{
     self, HoldPicture, HoldSound, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
 };
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas,
+    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, MediaOp, OutputCanvas,
     RecordPatch, RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList,
     SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest,
     StreamUpdate, StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target,
@@ -75,6 +75,7 @@ pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
 pub(crate) mod monitor;
+pub(crate) mod text_props;
 
 pub mod rec_state {
     pub const OFF: i32 = 0;
@@ -246,6 +247,8 @@ pub struct StudioUi {
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
     add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
+    /// The font the font picker marks as current.
+    font_current: String,
     /// The Library's looks (set once) and sample pictures (made when the panel first
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
@@ -263,12 +266,19 @@ pub struct StudioUi {
     inspected: Cell<i32>,
     /// The Filters tab's selection and the drag in progress (ADR-0062).
     filter_ui: filters::FilterUi,
+    /// The play state of each media source (ADR-0108), from [`Update::Media`].
+    media_ticks: Vec<rbs_app::studio_host::MediaTick>,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
     /// The source just added is a plain frame: Properties opens on its border.
     reveal_shape: bool,
     /// Taken by [`Self::apply`] when a plain frame was selected.
     focus_shape: Option<i32>,
+    /// Taken by [`Self::apply`] when a text source was just added: Properties opens
+    /// on its Text tab (ADR-0129 decision 13).
+    focus_text: Option<i32>,
+    /// The stored settings of each text source in the rows, by id: the Text tab's.
+    text_settings: std::collections::BTreeMap<i32, rbs_scene::model::Settings>,
     /// Moving and resizing on the picture panel (ADR-0048).
     edit: PreviewEdit,
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
@@ -617,12 +627,16 @@ impl StudioUi {
             library_samples: Rc::new(VecModel::default()),
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
+            media_ticks: Vec::new(),
             selected: -1,
             attributes_clipboard: None,
             inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
             focus_shape: None,
+            focus_text: None,
+            font_current: String::new(),
+            text_settings: std::collections::BTreeMap::new(),
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
@@ -774,6 +788,8 @@ impl StudioUi {
             switching: None,
             api_switch: None,
         };
+        ui.load_canvas_sections();
+        ui.note_destinations();
         ui.refresh_tokens();
         ui.refresh_library();
         ui
@@ -857,7 +873,14 @@ impl StudioUi {
                 .is_some_and(|s| s.id == self.selected && s.picture)
         });
         g.set_looks_ready(looks);
-        g.set_properties_source(self.remember_properties());
+        let shown = self.remember_properties();
+        g.set_properties_source(shown);
+        g.set_text_props(
+            self.text_settings
+                .get(&shown)
+                .map(|s| text_props::text_data(shown, s))
+                .unwrap_or_default(),
+        );
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
         g.set_switching(self.switching.is_some());
@@ -2052,6 +2075,75 @@ impl StudioUi {
     }
 
     /// Adds or removes the "Capture audio too" companion of a display or window.
+    /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
+    pub fn media_play_pause(&mut self, id: i32) {
+        let playing = self
+            .media_ticks
+            .iter()
+            .any(|t| t.id.get() as i32 == id && t.state == 0);
+        let ended = self
+            .media_ticks
+            .iter()
+            .any(|t| t.id.get() as i32 == id && t.state == 3);
+        let op = if playing {
+            MediaOp::Pause
+        } else if ended {
+            MediaOp::Restart
+        } else {
+            MediaOp::Play
+        };
+        self.send(Command::Media {
+            id: SourceId::from_raw(id as u32),
+            op,
+        });
+    }
+
+    /// Play a media file from its start.
+    pub fn media_restart(&mut self, id: i32) {
+        self.send(Command::Media {
+            id: SourceId::from_raw(id as u32),
+            op: MediaOp::Restart,
+        });
+    }
+
+    /// Move a media file's cursor (the scrubber was let go).
+    pub fn media_seek(&mut self, id: i32, ms: i32) {
+        self.send(Command::Media {
+            id: SourceId::from_raw(id as u32),
+            op: MediaOp::Seek(ms.max(0) as u64),
+        });
+    }
+
+    /// One stored setting of a media file (`loop`, `restart_when_shown`, `path`): one
+    /// undo step.
+    pub fn set_media_setting(&mut self, id: i32, key: &str, value: serde_json::Value) {
+        self.deleted.clear();
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch: std::iter::once((key.to_owned(), value)).collect(),
+        });
+    }
+
+    /// Writes the newest play states into the rows that changed.
+    fn apply_media_ticks(&mut self) {
+        for i in 0..self.sources.row_count() {
+            let Some(mut row) = self.sources.row_data(i) else {
+                continue;
+            };
+            if !row.media {
+                continue;
+            }
+            let before = (row.media_state, row.media_pos_ms, row.media_len_ms);
+            let (state, pos, len) = media_tick_fields(&self.media_ticks, row.id);
+            if before != (state, pos, len) {
+                row.media_state = state;
+                row.media_pos_ms = pos;
+                row.media_len_ms = len;
+                self.sources.set_row_data(i, row);
+            }
+        }
+    }
+
     pub fn set_companion_audio(&mut self, id: i32, on: bool) {
         self.send(Command::SetCompanionAudio {
             source: SourceId::from_raw(id as u32),
@@ -2499,6 +2591,9 @@ impl StudioUi {
                 }
             }
             Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
+            Some(add_picker::Pick::Font(id, family)) => {
+                self.set_text_value(id.get() as i32, rbs_sources::types::keys::FONT, &family);
+            }
             None => return false,
         }
         self.add_picker = None;
@@ -2515,7 +2610,12 @@ impl StudioUi {
             .kind()
             .map_or("existing source".to_owned(), |k| k.label().to_lowercase());
         Some(PickerView {
-            title: format!("Add {what}"),
+            title: if p.is_fonts() {
+                "Choose a font".to_owned()
+            } else {
+                format!("Add {what}")
+            },
+            fonts: p.is_fonts(),
             status: p.status(),
             rows: p.rows(),
             offers_audio: p.offers_audio(),
@@ -4896,6 +4996,111 @@ impl StudioUi {
         });
     }
 
+    /// Adds a text source showing `text` (Add source › Text, ADR-0129 decision 13);
+    /// it is selected and Properties opens on its Text tab.
+    pub fn add_text(&mut self, text: &str) {
+        self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = false;
+        self.send(Command::AddText {
+            text: text.to_owned(),
+        });
+    }
+
+    fn patch_text(&mut self, id: i32, patch: text_props::Patch) {
+        if patch.is_empty() || !self.text_settings.contains_key(&id) {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch,
+        });
+    }
+
+    /// The Text tab's Kind (an index of [`text_props::KINDS`]).
+    pub fn set_text_kind(&mut self, id: i32, kind: i32) {
+        let Some(patch) = self
+            .text_settings
+            .get(&id)
+            .and_then(|s| text_props::kind_patch(s, kind))
+        else {
+            return;
+        };
+        self.patch_text(id, patch);
+    }
+
+    /// A text setting of the Text tab; an empty value removes the key (but `text`).
+    pub fn set_text_value(&mut self, id: i32, key: &str, value: &str) {
+        self.patch_text(id, text_props::value_patch(key, value));
+    }
+
+    pub fn set_text_number(&mut self, id: i32, key: &str, value: f32) {
+        if value.is_finite() {
+            self.patch_text(id, text_props::number_patch(key, f64::from(value)));
+        }
+    }
+
+    pub fn set_text_flag(&mut self, id: i32, key: &str, value: bool) {
+        self.patch_text(id, text_props::flag_patch(key, value));
+    }
+
+    /// Outline (0), Shadow (1) or Background (2) on or off.
+    pub fn set_text_effect(&mut self, id: i32, effect: i32, on: bool) {
+        let Some(patch) = self
+            .text_settings
+            .get(&id)
+            .map(|s| text_props::effect_patch(s, effect, on))
+        else {
+            return;
+        };
+        self.patch_text(id, patch);
+    }
+
+    pub fn set_text_countdown(&mut self, id: i32, until: bool, target: &str, seconds: i32) {
+        self.patch_text(id, text_props::countdown_patch(until, target, seconds));
+    }
+
+    /// Fit box to text.
+    pub fn fit_text_box(&mut self, id: i32) {
+        if self.text_settings.contains_key(&id) {
+            self.deleted.clear();
+            self.send(Command::FitTextBox(SourceId::from_raw(id as u32)));
+        }
+    }
+
+    /// Start (0), Pause (1) or Reset (2) of a countdown's or stopwatch's timer.
+    pub fn text_timer(&mut self, id: i32, action: i32) {
+        let action = match action {
+            0 => rbs_record::TimerAction::Start,
+            1 => rbs_record::TimerAction::Pause,
+            2 => rbs_record::TimerAction::Reset,
+            _ => return,
+        };
+        self.send(Command::TextTimer {
+            source: SourceId::from_raw(id as u32),
+            action,
+        });
+    }
+
+    /// Opens the font picker for a text source; the families are asked for.
+    pub fn open_font_picker(&mut self, id: i32) {
+        let Some(settings) = self.text_settings.get(&id) else {
+            return;
+        };
+        let current = match settings.get(rbs_sources::types::keys::FONT) {
+            Some(rbs_scene::model::SettingValue::Text(f)) => f.clone(),
+            _ => String::new(),
+        };
+        self.add_picker = Some(add_picker::AddPicker::fonts(
+            SourceId::from_raw(id as u32),
+            &current,
+        ));
+        self.font_current = current;
+        self.picker_dirty = true;
+        self.send(Command::ListTextFonts);
+    }
+
     /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
     /// changes nothing.
     pub fn set_source_fill(&mut self, id: i32, color: &str) {
@@ -5191,20 +5396,12 @@ impl StudioUi {
 
     /// Shows the output profile in use and hands its settings and stream key account
     /// to the studio.
-    fn profile_loaded(&mut self) {
-        let (profile, why) = section(
-            &self.user,
-            RECORDING,
-            RecordProfile::new,
-            RecordProfile::problem,
-        );
-        let (mut stream, stream_why) = section(
-            &self.user,
-            STREAM,
-            StreamProfile::new,
-            StreamProfile::problem,
-        );
-        stream.key_saved &= self.keys_persistent;
+    /// Reads the profile's sections beside the recording and stream ones: the
+    /// vertical canvas's (ADR-0093 decision 6), Separate files and the extra stream
+    /// destinations (ADR-0127). At start and on every profile switch, so a restart
+    /// never streams to the first destination alone or saves an empty list over the
+    /// saved one.
+    fn load_canvas_sections(&mut self) {
         // The vertical canvas's sections (ADR-0093 decision 6): one that does not load
         // counts as not saved; one that loads with a problem is kept, so a start says
         // it cannot be used.
@@ -5243,6 +5440,31 @@ impl StudioUi {
                 }
                 Err(why) => (rbs_app::stream_destinations::Destinations::default(), why),
             };
+    }
+
+    /// A destinations section that did not load is said under the stream settings,
+    /// unless they have a problem of their own.
+    fn note_destinations(&mut self) {
+        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
+            self.stream_note = format!("{}.", self.destinations_note);
+        }
+    }
+
+    fn profile_loaded(&mut self) {
+        let (profile, why) = section(
+            &self.user,
+            RECORDING,
+            RecordProfile::new,
+            RecordProfile::problem,
+        );
+        let (mut stream, stream_why) = section(
+            &self.user,
+            STREAM,
+            StreamProfile::new,
+            StreamProfile::problem,
+        );
+        stream.key_saved &= self.keys_persistent;
+        self.load_canvas_sections();
         self.profile = profile;
         self.profile_note = why
             .map(|w| format!("The saved recording settings were not used: {w}"))
@@ -5252,9 +5474,7 @@ impl StudioUi {
         self.stream_note = stream_why
             .map(|w| format!("The saved stream settings were not used: {w}"))
             .unwrap_or_default();
-        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
-            self.stream_note = format!("{}.", self.destinations_note);
-        }
+        self.note_destinations();
         self.server_draft = None;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -5718,9 +5938,14 @@ impl StudioUi {
             Update::Projector { id, picture, state } => {
                 out.projectors.push((id, picture, state));
             }
+            Update::Media(ticks) => {
+                self.media_ticks = ticks;
+                self.apply_media_ticks();
+            }
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 out.focus_shape = self.focus_shape.take();
+                out.focus_text = self.focus_text.take();
                 self.refresh_existing();
                 self.refresh_marks();
             }
@@ -5829,6 +6054,13 @@ impl StudioUi {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
             },
+            Update::TextFonts(families) => {
+                if let Some(p) = &mut self.add_picker
+                    && p.answer_fonts(&families, &self.font_current)
+                {
+                    self.picker_dirty = true;
+                }
+            }
             Update::SourceSettings(view) => {
                 let (data, choices) = source_settings_data(&view);
                 self.source_settings.set_vec(vec![data]);
@@ -6240,7 +6472,16 @@ impl StudioUi {
                 } else {
                     &scene_pictures
                 };
+                let (media_state, media_pos_ms, media_len_ms) =
+                    media_tick_fields(&self.media_ticks, r.id.get() as i32);
                 SourceData {
+                    media: r.media.is_some(),
+                    media_path: r.media.as_ref().map_or("", |m| m.path.as_str()).into(),
+                    media_loop: r.media.as_ref().is_some_and(|m| m.looped),
+                    media_restart: r.media.as_ref().is_some_and(|m| m.restart_when_shown),
+                    media_state,
+                    media_pos_ms,
+                    media_len_ms,
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
                     kind: r.kind.map_or("Unknown type", SourceKind::label).into(),
@@ -6360,10 +6601,20 @@ impl StudioUi {
                 self.focus_shape = Some(added.id);
                 self.reveal_shape = false;
             }
+            if rows
+                .iter()
+                .any(|r| r.id.get() as i32 == added.id && r.kind == Some(SourceKind::Text))
+            {
+                self.focus_text = Some(added.id);
+            }
         } else if !data.iter().any(|d| d.id == self.selected) {
             self.selected = -1;
         }
         set_rows(&self.sources, data);
+        self.text_settings = rows
+            .iter()
+            .filter_map(|r| Some((r.id.get() as i32, r.text.clone()?)))
+            .collect();
         self.rows = rows;
         // The Source tab marks the source's own target: it may have changed.
         self.refresh_source_targets();
@@ -6581,6 +6832,8 @@ fn paint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView) {
 /// The Add source dialog's content ([`StudioUi::take_picker_view`]).
 pub struct PickerView {
     pub title: String,
+    /// The picker lists font families (a text source's Font).
+    pub fonts: bool,
     pub status: add_picker::Status,
     pub rows: Vec<add_picker::Row>,
     /// Show "Capture audio too" (displays and windows) and whether it is checked.
@@ -6606,6 +6859,8 @@ pub struct Applied {
     pub studio_mode_started: bool,
     /// A plain frame was just added and selected: open Properties on its border.
     pub focus_shape: Option<i32>,
+    /// A text source was just added and selected: open Properties on its Text tab.
+    pub focus_text: Option<i32>,
     /// A control API client asked to switch: scene collections (`true`) or output
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.
@@ -7260,7 +7515,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Media) => "film",
         Some(SourceKind::Browser) => "globe",
         // Until the text UI (ADR-0129 phase (f)) brings its own icon.
-        Some(SourceKind::Text) => "pencil",
+        Some(SourceKind::Text) => "text",
         None => "window",
     }
 }
@@ -7672,6 +7927,21 @@ fn rgb_hex(s: &str) -> Option<[u8; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
+/// The play state (4 standby when the studio runs no instance), cursor and length of
+/// media source `id`, as the rows show them.
+fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32, i32, i32) {
+    ticks
+        .iter()
+        .find(|t| t.id.get() as i32 == id)
+        .map_or((4, 0, 0), |t| {
+            (
+                i32::from(t.state),
+                i32::try_from(t.cursor_ms).unwrap_or(i32::MAX),
+                i32::try_from(t.duration_ms).unwrap_or(i32::MAX),
+            )
+        })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
@@ -7964,6 +8234,33 @@ mod tests {
         // As after `Update::Started`: Go live is possible.
         ui.cannot_record = None;
         (ui, d)
+    }
+
+    #[test]
+    fn saved_destinations_are_read_again_at_start() {
+        let (mut ui, d) = ui("dest-restart");
+        let id = ui
+            .destinations
+            .add(
+                rbs_app::stream_destinations::Canvas::Main,
+                "Local B",
+                "custom",
+            )
+            .unwrap();
+        ui.save_destinations();
+        let saved = ui.destinations.clone();
+        drop(ui);
+        // As after a restart: a new session of the same folder.
+        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {}));
+        let canvas = rbs_app::user_session::first_canvas(&col);
+        let mut ui = StudioUi::new(&d, &MemoryKeyStore::new(), user, canvas);
+        assert_eq!(ui.destinations, saved);
+        // A destination added now never takes the saved one's id.
+        let next = ui
+            .destinations
+            .add(rbs_app::stream_destinations::Canvas::Main, "", "custom")
+            .unwrap();
+        assert!(next > id);
     }
 
     #[test]
@@ -8364,7 +8661,7 @@ mod tests {
         let model = |v: Vec<ToolbarData>| slint::ModelRc::new(slint::VecModel::from(v));
         i_slint_backend_testing::init_no_event_loop();
         let file = TokenFile::built_in().unwrap();
-        // Calm, and Glow: its halo's clear zone pads Go live's cell (ADR-0122 decision 8).
+        // Calm, and Glow, which no longer pads Go live's cell (ADR-0136).
         for effects in [Effects::Calm, Effects::Glow] {
             for density in [Density::Regular, Density::Compact, Density::Roomy] {
                 for base in [Base::Dark, Base::Light] {

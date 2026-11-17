@@ -1,0 +1,26 @@
+[package]
+name = "rbs-media-avf"
+description = "AVFoundation adapter for the RBS media-decode port: local video files on macOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-media-decode = { path = "../rbs-media-decode" }
+
+# Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
+# versions as rbs-capture-avf.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-media", "objc2-core-video", "AVAsset", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVMediaFormat", "AVError"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMTimeRange", "objc2-core-audio-types", "objc2-core-video"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL", "NSValue"] }
+
+[lints]
+workspace = true

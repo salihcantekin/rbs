@@ -555,3 +555,5 @@ The review is complete.
 ### Measurement note: gradient hover cost (2026-11-15)
 
 The Mac measurement of decision 9, repeated past the first-run page (main `ad0a0402`, M4 Pro, 12 runs): idle 0 frames, resize, redraw and hover within the gates, the max rise at most +0.90 ms. The gradient sweep exceeds the p95 gate of +0.5 ms for Glass (+0.63 ms) and Tactile (+0.57 ms); the worst frame is 4.15 ms against a 16.7 ms budget, drawn only when a hover state changes. Owner (Salih, 2026-11-15): "çok sorun değil bu taşmalar", so the overrun is accepted and the gate stays as written. Numbers: `docs/ui/screenshots/effects/measurements-adr-0122.md`. The AMD iGPU, skia-software and Windows runs remain open.
+
+2026-11-17: decision 8's frame-bar position, decision 10's frame-bar test lines and the frame-bar line in Consequences are superseded by [ADR-0136](0136-no-halo-in-the-frame-bar.md): the frame bar no longer opts in to the halo and keeps its height in Glow.

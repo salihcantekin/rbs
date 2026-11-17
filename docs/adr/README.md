@@ -129,7 +129,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0118](0118-tint-buttons.md) | Tint buttons: soft tinted fills, round icon-only buttons, an outline only where the fill does not separate | Accepted; decision 3 superseded in part by ADR-0122 and ADR-0123 |
 | [0119](0119-where-separate-files-are-encoded.md) | Separate files take the cheapest path per source, and the user picks where the rest is encoded | Accepted |
 | [0120](0120-theme-effects.md) | Theme effects: Calm, Vivid or Tactile chosen with the theme, drawn only by library buttons | Accepted; superseded in part by ADR-0122 and ADR-0123 (decision 3) |
-| [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Accepted; its high-contrast lines superseded by ADR-0123 |
+| [0122](0122-bold-theme-effects.md) | Bold theme effects: Glow, Glass and a deeper Tactile that read at a glance | Accepted; its high-contrast lines superseded by ADR-0123; decision 8 (frame bar) superseded in part by ADR-0136 |
 | [0123](0123-remove-the-high-contrast-theme.md) | Remove the built-in high-contrast theme; Dark and Light are the built-in themes | Accepted |
 | [0124](0124-pause-recording-and-hold-stream.md) | Pause a recording (one continuous file, cut before the encoder when owned, at the output when shared); hold a stream with a hold picture instead of pausing it | Accepted |
 | [0125](0125-projector-windows.md) | Projector windows: the program of a canvas in a chromeless window for sharing apps, its own canvas-size picture only while open, Exact pixels size, cannot be minimised | Accepted |
@@ -143,3 +143,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0133](0133-duplicate-reset-and-paste-source-attributes.md) | Duplicate a source (and a scene with new sources), reset a source, and paste chosen attribute groups onto other sources in one undo step; sound stays live | Accepted |
 | [0134](0134-ai-tools-settings-page.md) | Start AI tools (`rbs-mcp`) from a Settings page, with a start-on-open option, an RBS-made token file and a generated connection line per AI tool | Accepted |
 | [0135](0135-transitions-t-bar-scene-override-rehearse.md) | Transitions phase 3: a T-bar driving the transition by hand, a transition into a scene, and Rehearse on the Preview picture | Accepted |
+| [0136](0136-no-halo-in-the-frame-bar.md) | No halo in the frame bar, so the Glow look keeps the bar's height | Accepted |
