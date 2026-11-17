@@ -216,11 +216,12 @@ const COMMAND: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 11] = [
+pub const SETTINGS_SECTIONS: [&str; 12] = [
     "general",
     "audio",
     "appearance",
     "shortcuts",
+    "permissions",
     "video",
     "global_sources",
     "recording",

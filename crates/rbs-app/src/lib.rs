@@ -44,6 +44,7 @@ pub mod monitor_settings;
 pub mod native;
 pub mod network_access;
 pub mod obs_import;
+pub mod permission_text;
 pub mod platform;
 pub mod popups;
 pub mod recent_targets;
