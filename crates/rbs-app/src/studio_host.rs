@@ -72,6 +72,7 @@ pub mod filters;
 mod loudness;
 mod monitor;
 mod network;
+mod obs_import_api;
 mod on_air;
 pub mod protection;
 pub mod replay;
@@ -2819,6 +2820,12 @@ pub enum Update {
         seq: u64,
         /// How it went.
         result: Result<(), String>,
+    },
+    /// `import.obs.run` wrote a new scene collection and output profile (control API
+    /// 1.82): the UI reloads its libraries, and its shortcuts when `shortcuts`.
+    ObsImported {
+        /// Hotkeys were added to `shortcuts.toml`.
+        shortcuts: bool,
     },
     /// A control API client asked to switch output profiles (`collection` false) or
     /// scene collections to the entry `id` (`profile.switch`, `collection.switch`);
@@ -10477,6 +10484,65 @@ impl Host {
     /// window is found by its hints is something edited: the source is re-pointed (one
     /// "retarget" undo step) and the caller applies the collection, which replaces the
     /// node; otherwise it is no edit and no undo step.
+    /// Runs one playback command on a media-file source and reports its state
+    /// (protocol 1.74, ADR-0108 decision 10). Live actions: the document does not
+    /// change and nothing is an undo step. A source of another type is refused.
+    fn media_command(
+        &mut self,
+        raw: u32,
+        op: MediaOp,
+    ) -> Result<rbs_api::request::MediaStateInfo, Refusal> {
+        use rbs_api::request::{MediaPlayState as Wire, MediaStateInfo};
+        use rbs_record::MediaPlayState as State;
+        let id = SourceId::from_raw(raw);
+        let Some(source) = self.collection.source(id) else {
+            return Err(Refusal::NotFound(format!("There is no source {raw}.")));
+        };
+        if source.type_id.as_str() != types::MEDIA_SOURCE {
+            return Err(Refusal::Invalid(format!(
+                "Source {raw} is not a media file."
+            )));
+        }
+        let millis = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        let Some(control) = self.studio.media_control(id) else {
+            // No instance yet: the source is in no scene the studio runs.
+            if matches!(op, MediaOp::State) {
+                return Ok(MediaStateInfo {
+                    source: raw,
+                    state: Wire::Standby,
+                    cursor_ms: 0,
+                    duration_ms: None,
+                });
+            }
+            return Err(Refusal::Conflict(format!(
+                "Media source {raw} is not in a scene that is shown."
+            )));
+        };
+        let failed = |e: rbs_record::MediaNodeError| Refusal::Failed(e.to_string());
+        match op {
+            MediaOp::Play => control.play().map_err(failed)?,
+            MediaOp::Pause => control.pause().map_err(failed)?,
+            MediaOp::Seek(ms) => control.seek(Duration::from_millis(ms)).map_err(failed)?,
+            MediaOp::Restart => control.restart().map_err(failed)?,
+            MediaOp::State => {}
+        }
+        let state = match control.state() {
+            State::Playing => Wire::Playing,
+            State::Paused => Wire::Paused,
+            State::Cued => Wire::Cued,
+            State::Ended => Wire::Ended,
+            State::Standby => Wire::Standby,
+            State::Unavailable => Wire::Unavailable,
+            _ => Wire::Unknown,
+        };
+        Ok(MediaStateInfo {
+            source: raw,
+            state,
+            cursor_ms: millis(control.cursor()),
+            duration_ms: control.duration().map(millis),
+        })
+    }
+
     fn reload_source(&mut self, id: SourceId) -> Result<Reload, Refusal> {
         if self.collection.source(id).is_none() {
             return Err(Refusal::NotFound(format!(
@@ -13366,6 +13432,26 @@ impl ApiTarget<'_> {
                     "no text renderer is installed",
                 )),
             },
+            C::MediaPlay(p) => host
+                .media_command(p.source, MediaOp::Play)
+                .map(Response::MediaState)
+                .map_err(|e| refused(&e)),
+            C::MediaPause(p) => host
+                .media_command(p.source, MediaOp::Pause)
+                .map(Response::MediaState)
+                .map_err(|e| refused(&e)),
+            C::MediaSeek(p) => host
+                .media_command(p.source, MediaOp::Seek(p.position_ms))
+                .map(Response::MediaState)
+                .map_err(|e| refused(&e)),
+            C::MediaRestart(p) => host
+                .media_command(p.source, MediaOp::Restart)
+                .map(Response::MediaState)
+                .map_err(|e| refused(&e)),
+            C::MediaState(p) => host
+                .media_command(p.source, MediaOp::State)
+                .map(Response::MediaState)
+                .map_err(|e| refused(&e)),
             C::SourceReload(p) => {
                 if host
                     .reload_source(SourceId::from_raw(p.source))
@@ -14111,6 +14197,9 @@ impl ApiTarget<'_> {
             C::CollectionList => host.library_list(true),
             C::ProfileSwitch(r) => host.library_switch(false, r.id, notify),
             C::CollectionSwitch(r) => host.library_switch(true, r.id, notify),
+            C::ImportObsScan => obs_import_api::scan(),
+            C::ImportObsCheck(p) => obs_import_api::check(&p),
+            C::ImportObsRun(p) => host.import_obs(&p, notify),
             C::CollectionSetGlide(p) => {
                 let easing = match p.easing {
                     api::GlideEasing::Linear => 0,
@@ -15360,6 +15449,16 @@ fn measure_text(
         })
         .ok()?;
     rx.recv_timeout(wait).ok().flatten()
+}
+
+/// One `media.*` method (protocol 1.83).
+#[derive(Debug, Clone, Copy)]
+enum MediaOp {
+    Play,
+    Pause,
+    Seek(u64),
+    Restart,
+    State,
 }
 
 fn refused(e: &Refusal) -> ApiError {

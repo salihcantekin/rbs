@@ -499,21 +499,8 @@ impl UserSession {
         ),
         String,
     > {
-        self.run(move |data, lock, _| {
-            let key = std::cell::RefCell::new(None);
-            let written = crate::obs_import::write(
-                data,
-                lock,
-                &plan,
-                &|account, secret| {
-                    *key.borrow_mut() = Some((account.to_owned(), secret));
-                    Ok(())
-                },
-                rbs_ui::shortcut::Platform::current(),
-                &|p| p.is_dir(),
-            )?;
-            Ok((written, key.into_inner()))
-        })?
+        let saver = self.saver.as_ref().ok_or_else(read_only_note)?;
+        import_on(&saver.shared, plan)
     }
 
     /// Deletes the scene collection `id`, which must not be the one in use (its file
@@ -687,12 +674,58 @@ impl std::fmt::Debug for CollectionSaver {
 }
 
 impl CollectionSaver {
+    /// [`UserSession::import_obs`] from another thread (the control thread, for
+    /// `import.obs.run`): waits for the writer thread.
+    pub fn import_obs(
+        &self,
+        plan: rbs_import_obs::ImportPlan,
+    ) -> Result<
+        (
+            crate::obs_import::Written,
+            Option<(String, rbs_transport::Secret)>,
+        ),
+        String,
+    > {
+        import_on(&self.shared, plan)
+    }
+
     /// Asks the writer thread to save `collection` (replacing a save of it still
     /// waiting).
     pub fn save(&self, collection: &SceneCollection) {
         self.shared
             .push(Job::Collection(self.id.clone(), collection.clone()));
     }
+}
+
+/// Runs [`crate::obs_import::write`] on the writer thread and waits for it; the stream
+/// key comes back for the caller to hand to the key store's owner.
+type ImportResult = Result<
+    (
+        crate::obs_import::Written,
+        Option<(String, rbs_transport::Secret)>,
+    ),
+    String,
+>;
+
+fn import_on(shared: &Shared, plan: rbs_import_obs::ImportPlan) -> ImportResult {
+    let (tx, rx) = mpsc::channel();
+    shared.push(Job::Run(Box::new(move |data, lock, _| {
+        let key = std::cell::RefCell::new(None);
+        let written = crate::obs_import::write(
+            data,
+            lock,
+            &plan,
+            &|account, secret| {
+                *key.borrow_mut() = Some((account.to_owned(), secret));
+                Ok(())
+            },
+            rbs_ui::shortcut::Platform::current(),
+            &|p| p.is_dir(),
+        );
+        let _ = tx.send(written.map(|w| (w, key.into_inner())));
+    })));
+    rx.recv()
+        .map_err(|_| "the user data writer stopped".to_owned())?
 }
 
 fn read_only_note() -> String {

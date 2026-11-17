@@ -5841,6 +5841,10 @@ impl StudioUi {
                 self.api_switch = Some(seq);
                 out.switch = Some((collection, id));
             }
+            Update::ObsImported { shortcuts } => {
+                self.refresh_library();
+                out.obs_imported = Some(shortcuts);
+            }
             Update::VirtualCamera(status) => out.camera = Some(status),
             // The replay buffer's page in the shell takes these (ADR-0088).
             Update::Replay(_) | Update::ReplaySaved(_) => out.replay.push(u),
@@ -6401,6 +6405,9 @@ pub struct Applied {
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.
     pub switch: Option<(bool, String)>,
+    /// `import.obs.run` wrote a new collection and profile; `true`: it added hotkeys,
+    /// so the shell reloads its shortcuts.
+    pub obs_imported: Option<bool>,
     /// The virtual camera started or stopped sending (`Some(None)`: it does not send).
     pub camera: Option<Option<rbs_app::studio_host::CameraStatus>>,
     /// Replay buffer updates (ADR-0088), for the shell's replay page.
@@ -8517,6 +8524,11 @@ mod tests {
         assert_eq!(
             run("ui.collection.export", &s),
             Some(Run::Entry(EntryKind::Collection, EntryOp::Export, None))
+        );
+        // Import from OBS opens its wizard; it is not an entry operation (ADR-0131).
+        assert_eq!(
+            run("ui.collection.import_obs", &s),
+            Some(Run::OpenObsImport)
         );
         // A fresh library holds one output profile: the only one cannot be deleted.
         // The only scene collection can be deleted once the studio runs (a Default

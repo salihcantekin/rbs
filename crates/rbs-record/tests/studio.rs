@@ -1462,6 +1462,23 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
     );
     assert!(browser.failed.is_none(), "{browser:?}");
     assert_eq!(studio.picture_size(page), Some((64, 36)));
+    // On air: the program scene draws it, so it plays (ADR-0107 decision 6).
+    let control = studio.media_control(clip).expect("media handle").clone();
+    assert_eq!(control.state(), rbs_nodes::MediaPlayState::Playing);
+    // Studio mode with the clip only in the preview scene: not on air, so it does
+    // not play. Headless, nothing draws the preview, so the cued source sleeps.
+    let (empty, _) = col.add_scene("Empty", SceneScope::Shared).unwrap();
+    col.set_program(canvas, Some(empty)).unwrap();
+    col.set_preview(canvas, Some(scene)).unwrap();
+    let up = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(up.failed.is_empty(), "{:?}", up.failed);
+    assert_eq!(control.state(), rbs_nodes::MediaPlayState::Standby);
+    // The take: on air again, it plays.
+    col.set_program(canvas, Some(scene)).unwrap();
+    col.set_preview(canvas, Some(empty)).unwrap();
+    let up = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(up.failed.is_empty(), "{:?}", up.failed);
+    assert_eq!(control.state(), rbs_nodes::MediaPlayState::Playing);
     let _ = studio.stop_output(id);
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
