@@ -38,7 +38,14 @@ fn media(start_ms: i32, end_ms: i32) -> SourceData {
     }
 }
 
-fn shot(file: &TokenFile, base: Base, name: &str, data: SourceData, dir: &std::path::Path) {
+fn shot(
+    file: &TokenFile,
+    base: Base,
+    name: &str,
+    data: SourceData,
+    width: f32,
+    dir: &std::path::Path,
+) {
     let theme = file
         .resolve(&ThemeBody::new(base))
         .expect("the theme resolves");
@@ -55,7 +62,7 @@ fn shot(file: &TokenFile, base: Base, name: &str, data: SourceData, dir: &std::p
     g.set_sources(ModelRc::new(VecModel::from(vec![data])));
     g.set_properties_source(7);
     g.set_properties_tab(3);
-    w.window().set_size(slint::LogicalSize::new(380.0, 760.0));
+    w.window().set_size(slint::LogicalSize::new(width, 760.0));
     w.show().expect("show");
     let px = w.window().take_snapshot().expect("a snapshot");
     let path = dir.join(format!("{name}-{}x{}.rgba", px.width(), px.height()));
@@ -77,13 +84,15 @@ fn media_range_screenshots() {
     slint::platform::set_platform(Box::new(backend)).expect("the testing platform");
     let file = TokenFile::built_in().unwrap();
     for (base, b) in [(Base::Dark, "dark"), (Base::Light, "light")] {
+        let range = media(12_400, 65_000);
+        shot(&file, base, &format!("range-{b}"), range, 380.0, &dir);
         shot(
             &file,
             base,
-            &format!("range-{b}"),
-            media(12_400, 65_000),
+            &format!("whole-{b}"),
+            media(0, -1),
+            380.0,
             &dir,
         );
-        shot(&file, base, &format!("whole-{b}"), media(0, -1), &dir);
     }
 }

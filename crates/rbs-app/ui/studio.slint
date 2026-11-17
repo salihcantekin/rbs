@@ -4791,17 +4791,34 @@ component SourceFields inherits VerticalLayout {
             }
         }
     }
-    if data.media: Toggle {
-        text: @tr("Loop");
-        label: @tr("Loop {}", data.name);
-        checked: data.media-loop;
-        toggled(on) => { Studio.set-media-loop(data.id, on); }
-    }
-    if data.media: Toggle {
-        text: @tr("Restart when shown");
-        label: @tr("Restart {} when shown", data.name);
-        checked: data.media-restart;
-        toggled(on) => { Studio.set-media-restart-when-shown(data.id, on); }
+    // Loop and Restart when shown side by side (owner 2026-11-17); the second goes
+    // under the first when the panel is too narrow for both.
+    if data.media: Rectangle {
+        property <length> gap: Tokens.space-4;
+        property <bool> one-line: self.width >= loop.preferred-width + self.gap + restart.preferred-width;
+        min-height: self.one-line ? max(loop.preferred-height, restart.preferred-height)
+            : loop.preferred-height + Tokens.size-field-gap + restart.preferred-height;
+        max-height: self.min-height;
+        loop := Toggle {
+            x: 0px;
+            y: 0px;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            text: @tr("Loop");
+            label: @tr("Loop {}", data.name);
+            checked: data.media-loop;
+            toggled(on) => { Studio.set-media-loop(data.id, on); }
+        }
+        restart := Toggle {
+            x: parent.one-line ? loop.preferred-width + parent.gap : 0px;
+            y: parent.one-line ? 0px : loop.preferred-height + Tokens.size-field-gap;
+            width: min(self.preferred-width, parent.width - self.x);
+            height: self.preferred-height;
+            text: @tr("Restart when shown");
+            label: @tr("Restart {} when shown", data.name);
+            checked: data.media-restart;
+            toggled(on) => { Studio.set-media-restart-when-shown(data.id, on); }
+        }
     }
     // The play range (ADR-0108 decision 11): set from the playback position, as an
     // editor's in and out points (I and O on the position slider do the same). Each
