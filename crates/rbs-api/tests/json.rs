@@ -347,6 +347,15 @@ fn every_request() -> Vec<Request> {
             }),
             ..SetCollectionTransition::default()
         })),
+        c(Command::SceneSetTransition(
+            rbs_api::request::SetSceneTransition {
+                scene: 2,
+                transition: Some(rbs_api::types::SceneTransition {
+                    kind: Some(TransitionKind::Swipe),
+                    duration_ms: Some(400),
+                }),
+            },
+        )),
         c(Command::SourceRename(RenameSource {
             source: 3,
             name: "Webcam".into(),
