@@ -330,21 +330,45 @@ impl Studio {
             glide: collection.glide(),
             source_glides: true,
         };
-        if let Some(once) = self.transition_once.take() {
-            if let Some(kind) = once.kind {
-                e.transition.kind = kind;
-            }
-            if let Some(ms) = once.duration_ms {
-                match e.transition.kind {
-                    TransitionKind::Fade => e.transition.fade.duration_ms = ms,
-                    TransitionKind::Swipe => e.transition.swipe.duration_ms = ms,
-                    TransitionKind::Slide => e.transition.slide.duration_ms = ms,
-                    TransitionKind::Move => {
-                        e.glide.duration_ms = ms;
-                        e.source_glides = false;
-                    }
-                    _ => {}
+        // The incoming scene's override (ADR-0135 decision 8): the main canvas's new
+        // program scene when it changes, else the first further canvas's that does.
+        let changed = |canvas: CanvasId, old: Option<SceneId>| {
+            program_scene(collection, canvas).filter(|new| Some(*new) != old)
+        };
+        let incoming = changed(
+            self.settings.canvas,
+            program_scene(&self.collection, self.settings.canvas),
+        )
+        .or_else(|| {
+            self.extras
+                .iter()
+                .find_map(|x| changed(x.canvas, program_scene(&self.collection, x.canvas)))
+        });
+        let scene_override = incoming
+            .and_then(|id| collection.scene(id))
+            .and_then(|s| s.transition_in)
+            .unwrap_or_default();
+        let once = self.transition_once.take().unwrap_or_default();
+        // Precedence: the one-off, then the scene's override, then the collection. A
+        // one-off kind without a duration uses that kind's collection duration.
+        if let Some(kind) = once.kind.or(scene_override.kind) {
+            e.transition.kind = kind;
+        }
+        let duration = once.duration_ms.or(if once.kind.is_some() {
+            None
+        } else {
+            scene_override.duration_ms
+        });
+        if let Some(ms) = duration {
+            match e.transition.kind {
+                TransitionKind::Fade => e.transition.fade.duration_ms = ms,
+                TransitionKind::Swipe => e.transition.swipe.duration_ms = ms,
+                TransitionKind::Slide => e.transition.slide.duration_ms = ms,
+                TransitionKind::Move => {
+                    e.glide.duration_ms = ms;
+                    e.source_glides = false;
                 }
+                _ => {}
             }
         }
         e
