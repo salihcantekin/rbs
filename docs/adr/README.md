@@ -147,4 +147,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0137](0137-rbs-drawn-context-menus-and-lists.md) | Context menus and drop-down lists are drawn by RBS in the window; the macOS menu bar stays native; the projector menu stays native | Accepted |
 | [0138](0138-split-the-generated-ui-crate.md) | Split the generated UI code into a base crate (shared globals and structs) and one crate per window group, for parallel and partial UI builds | Accepted |
 | [0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md) | Remote guests: one RBS shares its program to another over peer-to-peer WebRTC, paired by an invite code and an answer code, with no server of ours | Accepted |
-| [0140](0140-stinger-transition.md) | Stinger transition: a media file played over the program change, its cut point found from the alpha | Proposed |
+| [0140](0140-stinger-transition.md) | Stinger transition: a media file played over the program change, its cut point found from the alpha | Accepted |

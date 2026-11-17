@@ -1,6 +1,6 @@
 # ADR-0140: Stinger transition: a media file played over the program change, cut point found from its alpha
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-17
 - Deciders: Salih (owner)
 - Supersedes in part: ADR-0108 decision 6 (video with alpha may be `Rgba8` with alpha kept), ADR-0108 decision 10 (an "arm" operation and its state rows), ADR-0128 decision 11 for Stinger only (followers switch at the cut)
@@ -104,3 +104,4 @@ Independent review per ADR-0014.
   2. `keep_alpha` contract: decision 2 places it on `DecodeTarget`, makes the default `open_for` refuse, makes `AlphaUnsupported` fall through to the next factory, and keeps opaque files on the native path.
   3. `AlphaMode` removed from decision 12 and from the round 1 answer.
   4. Minor: the stinger layer steps in at `A` and the primed picture is kept (decision 4); faults during the gate cut at once (decision 5); a further `scene.changed` carries a late `cut_found_ms`, `item.add` and paste refusals listed, alpha warning at choice time (decision 9); fader sends keep the ramp (decision 6).
+- Owner approval: Salih accepted the ADR after round 3, 2026-11-17 17:59 UTC.
