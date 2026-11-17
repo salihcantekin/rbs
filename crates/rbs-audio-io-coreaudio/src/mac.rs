@@ -417,8 +417,15 @@ fn microphone() -> Permission {
     match status {
         AVAuthorizationStatus::Authorized => Permission::Granted,
         AVAuthorizationStatus::NotDetermined => Permission::NotDetermined,
+        AVAuthorizationStatus::Restricted => Permission::Restricted,
         _ => Permission::Denied,
     }
+}
+
+/// Whether the microphone prompt can be shown without macOS ending the process: RBS
+/// is its own responsible app and declares `NSMicrophoneUsageDescription` (ADR-0141).
+fn prompt_is_safe() -> bool {
+    rbs_system_probe::app_identity::cached().prompt_is_safe("NSMicrophoneUsageDescription")
 }
 
 // ---------------------------------------------------------------------------------
@@ -589,6 +596,21 @@ impl AdapterFactory for CoreAudioBackend {
                 CapabilityValue::Int(MAX_CHANNELS as i64),
             )
             .with(caps::INPUT_PERMISSION, CapabilityValue::Flag(true))
+            .with(caps::PERMISSION_INPUT, CapabilityValue::Flag(true))
+            .with(
+                caps::PERMISSION_INPUT_PROMPT,
+                CapabilityValue::Flag(prompt_is_safe()),
+            )
+            // Process taps need the system audio recording permission, which has no
+            // public query or request: the OS asks on first use (ADR-0141).
+            .with(
+                caps::PERMISSION_LOOPBACK,
+                CapabilityValue::Flag(taps_supported()),
+            )
+            .with(
+                caps::PERMISSION_APPLICATION,
+                CapabilityValue::Flag(taps_supported()),
+            )
             .with(
                 caps::LOOPBACK_EXCLUDE_SELF,
                 CapabilityValue::Flag(taps_supported()),
@@ -705,12 +727,18 @@ impl AudioBackend for CoreAudioBackend {
         match kind {
             EndpointKind::Input => microphone(),
             // No public query exists for the system audio recording permission.
+            EndpointKind::OutputLoopback | EndpointKind::Application if taps_supported() => {
+                Permission::Unknown
+            }
             _ => Permission::Granted,
         }
     }
 
     fn request_permission(&self, kind: EndpointKind) -> Result<Permission, AudioIoError> {
-        if kind != EndpointKind::Input || microphone() != Permission::NotDetermined {
+        if kind != EndpointKind::Input
+            || microphone() != Permission::NotDetermined
+            || !prompt_is_safe()
+        {
             return Ok(self.permission(kind));
         }
         // SAFETY: `AVMediaTypeAudio` is a framework constant.

@@ -12,7 +12,7 @@ use rbs_audio_io::{
 };
 use rbs_capture::caps as capture_caps;
 use rbs_capture::{CaptureError, CaptureFactory, CaptureRequest, TargetId, TargetKind};
-use rbs_core::capability::{Constraint, Requirement};
+use rbs_core::capability::{CapabilitySet, CapabilityValue, Constraint, Requirement};
 use rbs_core::media::Size;
 use rbs_core::registry::{AdapterFactory, AdapterId, DuplicateAdapter, Registry};
 use rbs_core::time::Clock;
@@ -24,6 +24,7 @@ use rbs_nodes::{CaptureSourceNode, StillSourceNode};
 use rbs_scene::binder::{COMPOSITOR_TYPE, MIXER_TYPE, NodeTypes};
 use rbs_scene::model::{SettingValue, Settings, Source};
 
+use crate::permissions::{self, AdapterAnswer, PermissionInfo, PermissionKind};
 use crate::types::{self, SourceClass, class_of, keys};
 
 /// Largest sync offset an audio source may ask for, unless the context says otherwise.
@@ -499,6 +500,10 @@ impl fmt::Debug for SourceTypes {
     }
 }
 
+fn cap_flag(caps: &CapabilitySet, key: &rbs_core::capability::CapabilityKey) -> bool {
+    matches!(caps.get(key), Some(CapabilityValue::Flag(true)))
+}
+
 fn capture_requirement(kind: TargetKind) -> Requirement {
     Requirement::new().with(
         capture_caps::TARGET_KINDS,
@@ -792,6 +797,82 @@ impl SourceTypes {
     /// The audio input adapters, to set a preference order or the user's choice.
     pub fn audio_adapters(&mut self) -> &mut Registry<dyn AudioBackend> {
         &mut self.audio
+    }
+
+    /// The status of an OS permission kind across every installed adapter that
+    /// serves it (ADR-0141). Fast: calls `permission` only, never prompts.
+    pub fn permission(&self, kind: PermissionKind) -> PermissionInfo {
+        permissions::fold(&self.permission_answers(kind))
+    }
+
+    /// Asks the OS for `kind` where an adapter says "not asked" and can prompt, then
+    /// reads the status again. Blocks while a prompt is shown: call it from a thread
+    /// that is neither the UI thread nor a real-time thread (ADR-0141 decision 4).
+    pub fn request_permission(&self, kind: PermissionKind) -> PermissionInfo {
+        for &t in kind.target_kinds() {
+            for f in self.capture_candidates(t) {
+                let caps = self.capture.capabilities(&f.id());
+                let prompt = caps.is_some_and(|c| cap_flag(c, &capture_caps::permission_keys(t).2));
+                if prompt && f.permission(t) == rbs_capture::Permission::NotDetermined {
+                    let _ = f.request_permission(t);
+                }
+            }
+        }
+        for &e in kind.endpoint_kinds() {
+            let Some((_, prompt_key)) = audio_caps::permission_keys(e) else {
+                continue;
+            };
+            for b in self.audio_candidates(e) {
+                let prompt = self
+                    .audio
+                    .capabilities(&b.id())
+                    .is_some_and(|c| cap_flag(c, &prompt_key));
+                if prompt && b.permission(e) == rbs_audio_io::Permission::NotDetermined {
+                    let _ = b.request_permission(e);
+                }
+            }
+        }
+        self.permission(kind)
+    }
+
+    fn permission_answers(&self, kind: PermissionKind) -> Vec<AdapterAnswer> {
+        let mut answers = Vec::new();
+        for &t in kind.target_kinds() {
+            let (has, restart, prompt) = capture_caps::permission_keys(t);
+            for f in self.capture_candidates(t) {
+                let Some(caps) = self.capture.capabilities(&f.id()) else {
+                    continue;
+                };
+                let picked = matches!(
+                    caps.get(&capture_caps::TARGET_PICKER),
+                    Some(CapabilityValue::Set(s)) if s.iter().any(|k| k == t.as_str())
+                );
+                answers.push(AdapterAnswer {
+                    answer: f.permission(t).into(),
+                    has_permission: cap_flag(caps, &has),
+                    can_prompt: cap_flag(caps, &prompt),
+                    restart: cap_flag(caps, &restart),
+                    consent_per_pick: picked && cap_flag(caps, &capture_caps::PICK_CONSENT),
+                });
+            }
+        }
+        for &e in kind.endpoint_kinds() {
+            let Some((has, prompt)) = audio_caps::permission_keys(e) else {
+                continue;
+            };
+            for b in self.audio_candidates(e) {
+                let Some(caps) = self.audio.capabilities(&b.id()) else {
+                    continue;
+                };
+                answers.push(AdapterAnswer {
+                    answer: b.permission(e).into(),
+                    has_permission: cap_flag(caps, &has),
+                    can_prompt: cap_flag(caps, &prompt),
+                    ..AdapterAnswer::NONE
+                });
+            }
+        }
+        answers
     }
 
     /// Probes every adapter (each under 50 ms, adapter registry contract).

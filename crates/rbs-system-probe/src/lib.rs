@@ -7,12 +7,18 @@
 //!
 //! - Windows: `GetVolumePathNameW`, `GetDiskFreeSpaceExW`, `GlobalMemoryStatusEx`.
 //! - The OS version (`os_version`): `uname` on Unix, unsupported on Windows.
+//! - Which app holds the OS privacy grants (`app_identity`, ADR-0141): the parent
+//!   process chain from `proc_pidinfo` / `proc_pidpath` on macOS and `/proc` on Linux.
+//! - Windows camera and microphone privacy switches (`privacy_consent`, ADR-0141):
+//!   `RegGetValueW`.
 //! - macOS and other Unix: `statvfs` and the folder's device id; available memory is
 //!   `MemAvailable` from `/proc/meminfo` on Linux and unsupported on macOS (free pages
 //!   alone understate what macOS can give back).
 
 use std::path::Path;
 
+pub mod app_identity;
+pub mod privacy_consent;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

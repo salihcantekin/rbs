@@ -23,6 +23,7 @@ mod browser;
 mod browser_sound;
 mod filters;
 mod layers;
+pub mod permissions;
 mod registry;
 pub mod still;
 pub mod text;

@@ -1,6 +1,6 @@
 [package]
 name = "rbs-system-probe"
-description = "OS adapter for recording protection (ADR-0090): free space and volume of a folder, and available system memory."
+description = "OS adapter for recording protection (ADR-0090): free space and volume of a folder, and available system memory; which app holds the OS privacy grants (ADR-0141)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,7 +19,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # The version Slint and wgpu already build.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Registry"] }
 
 [lints]
 workspace = true

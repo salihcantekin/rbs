@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 rbs-capture = { path = "../rbs-capture" }
 rbs-core = { path = "../rbs-core" }
+# Whether a permission prompt is safe in this process (ADR-0141).
+rbs-system-probe = { path = "../rbs-system-probe" }
 
 # Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
 # versions as rbs-capture-sck and rbs-gpu.

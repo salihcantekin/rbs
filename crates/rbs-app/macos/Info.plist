@@ -14,6 +14,7 @@
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSCameraUsageDescription</key><string>RBS uses cameras as video sources.</string>
     <key>NSMicrophoneUsageDescription</key><string>RBS uses microphones as audio sources.</string>
+    <key>NSAudioCaptureUsageDescription</key><string>RBS records the sound of the computer and of applications as audio sources.</string>
     <key>NSScreenCaptureUsageDescription</key><string>RBS captures screens and windows as video sources.</string>
 </dict>
 </plist>

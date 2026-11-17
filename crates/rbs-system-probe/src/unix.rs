@@ -70,6 +70,74 @@ pub(crate) fn os_version() -> Result<String, ProbeError> {
     ))
 }
 
+/// The executables of the parent processes, nearest first, at most `max`; stops at
+/// pid 1 or the first process it cannot read (ADR-0141 decision 10).
+pub(crate) fn ancestors(max: usize) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    // SAFETY: `getppid` has no preconditions and cannot fail.
+    let mut pid = unsafe { libc::getppid() };
+    while pid > 1 && out.len() < max {
+        let Some(path) = exe_of(pid) else {
+            break;
+        };
+        out.push(path);
+        match parent_of(pid) {
+            Some(parent) if parent != pid => pid = parent,
+            _ => break,
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn exe_of(pid: libc::pid_t) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `buf` is writable for its whole length, which is passed as the size.
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(std::ffi::OsString::from_vec(buf).into())
+}
+
+#[cfg(target_os = "macos")]
+fn parent_of(pid: libc::pid_t) -> Option<libc::pid_t> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` points to writable memory of `size` bytes, the size the flavour
+    // `PROC_PIDTBSDINFO` fills.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    // SAFETY: the call filled all `size` bytes.
+    let info = unsafe { info.assume_init() };
+    libc::pid_t::try_from(info.pbi_ppid).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exe_of(pid: libc::pid_t) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn parent_of(pid: libc::pid_t) -> Option<libc::pid_t> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `pid (comm) state ppid ...`; `comm` may hold spaces and parentheses.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
