@@ -5156,6 +5156,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.system_probe = Some(studio_host::protection::SystemProbeFactory::os());
         config.config_dir = Some(ctx.app.borrow().config.clone());
         config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
+        config.media_pause_release = ctx.app.borrow().bg.pause_release();
         // The monitor device belongs to this computer (ADR-0097); a file that cannot be
         // read gives System default at full volume and is left as it is.
         let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);

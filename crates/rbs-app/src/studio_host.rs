@@ -3003,6 +3003,9 @@ pub struct HostConfig {
     /// A transition also puts the old program scene in preview (ADR-0098); false by
     /// default.
     pub swap_after_transition: bool,
+    /// How long a paused or cued media file keeps its decoder (`pause_release_s`,
+    /// ADR-0108 decision 10); 30 s by default.
+    pub media_pause_release: Duration,
     /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
     /// is opened only while a source is monitored or soloed.
     pub monitor: MonitorSettings,
@@ -3060,6 +3063,7 @@ impl HostConfig {
             virtual_camera: None,
             config_dir: None,
             swap_after_transition: false,
+            media_pause_release: rbs_record::MEDIA_PAUSE_RELEASE,
             monitor: MonitorSettings::default(),
             loudness: crate::loudness_settings::LoudnessSettings::default(),
             system_probe: None,
@@ -3416,6 +3420,8 @@ struct Host {
     disk_probe: Option<rbs_record::estimate::DiskProbe>,
     /// A transition also puts the old program scene in preview (ADR-0098).
     swap_after_transition: bool,
+    /// The media pause release the studio is started with (`pause_release_s`).
+    media_pause_release: Duration,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
     /// The generation of the region-preview grab that may still deliver (ADR-0103).
@@ -3937,6 +3943,7 @@ fn start(
     });
     settings.scene_preview = SCENE_PICTURE;
     settings.audio_offsets = filters::audio_offsets(&collection);
+    settings.media_pause_release = config.media_pause_release;
     let held = held_copy(&collection, canvas);
     let run = held.as_ref().and_then(|h| run_copy(&collection, canvas, h));
     let first = engine();
@@ -4096,6 +4103,7 @@ fn start(
             .read_free_space
             .map(|r| rbs_record::estimate::DiskProbe::new(r.0)),
         swap_after_transition: config.swap_after_transition,
+        media_pause_release: config.media_pause_release,
         thumbs: Arc::new(AtomicU64::new(0)),
         region_grabs: Arc::new(AtomicU64::new(0)),
         // A collection that had to be completed is saved at the first publish.
@@ -6022,6 +6030,7 @@ impl Host {
         settings.preview = preview;
         settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
+        settings.media_pause_release = self.media_pause_release;
         if let Some(v) = self
             .vertical
             .filter(|v| self.collection.canvas(v.canvas).is_some())

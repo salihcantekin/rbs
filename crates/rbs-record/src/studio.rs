@@ -169,6 +169,9 @@ pub struct StudioSettings {
     /// [`MAX_CANVASES`]` - 1`, each at the main canvas's frame rate. Empty: one canvas,
     /// nothing of the others runs.
     pub extra_canvases: Vec<ExtraCanvas>,
+    /// How long a paused or cued media source keeps its decoder (ADR-0108 decision 10,
+    /// the `pause_release_s` app setting); 30 s by default.
+    pub media_pause_release: Duration,
 }
 
 impl StudioSettings {
@@ -183,6 +186,7 @@ impl StudioSettings {
             scene_preview: false,
             audio_offsets: BTreeMap::new(),
             extra_canvases: Vec::new(),
+            media_pause_release: rbs_nodes::MEDIA_PAUSE_RELEASE,
         }
     }
 }
@@ -2540,6 +2544,8 @@ impl Studio {
                         entry.state.node,
                         Box::new(m.picture),
                     )?;
+                    m.control
+                        .set_pause_release(self.settings.media_pause_release);
                     self.media_controls.insert(entry.source, m.control);
                     let instance = entry.instance.insert(Instance {
                         partition: RENDER,
