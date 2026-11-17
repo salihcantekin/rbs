@@ -53,20 +53,84 @@ fn peer_uid(s: &UnixStream) -> Option<u32> {
 }
 
 pub(crate) fn default_endpoint() -> Result<PathBuf, String> {
-    let var = |name| {
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
+    let uid = current_uid();
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    Ok(endpoint_in(&Places {
+        darwin_user_temp: darwin_user_temp(),
+        xdg_runtime_dir: var("XDG_RUNTIME_DIR"),
+        tmpdir: var("TMPDIR"),
+        run_user: owned_dir(&PathBuf::from(format!("/run/user/{uid}")), uid),
+        uid,
+    }))
+}
+
+/// What the endpoint is chosen from. Every place that does not come from the
+/// environment is read from the OS, so a client started with a stripped environment
+/// (MCP hosts pass only `HOME`, `PATH` and a few others to the servers they start)
+/// finds the same endpoint as the RBS the user opened.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Places {
+    /// macOS: the per-user temporary folder from `confstr(_CS_DARWIN_USER_TEMP_DIR)`,
+    /// the folder `TMPDIR` names in a normal session.
+    pub darwin_user_temp: Option<PathBuf>,
+    /// `XDG_RUNTIME_DIR`.
+    pub xdg_runtime_dir: Option<PathBuf>,
+    /// `TMPDIR`.
+    pub tmpdir: Option<PathBuf>,
+    /// Linux: `/run/user/<uid>` when it is a directory of the current user.
+    pub run_user: Option<PathBuf>,
+    /// The effective user id.
+    pub uid: u32,
+}
+
+/// The endpoint for `places` (control API spec, "Endpoint"). macOS: the per-user
+/// temporary folder from the OS, then `TMPDIR`. Linux and others: `XDG_RUNTIME_DIR`,
+/// then `/run/user/<uid>`. Last: `/tmp/rbs-<uid>`. Relative paths are ignored.
+pub(crate) fn endpoint_in(places: &Places) -> PathBuf {
+    let absolute = |p: &Option<PathBuf>| p.clone().filter(|p| p.is_absolute());
     let base = if cfg!(target_os = "macos") {
-        var("TMPDIR")
+        absolute(&places.darwin_user_temp).or_else(|| absolute(&places.tmpdir))
     } else {
-        var("XDG_RUNTIME_DIR")
+        absolute(&places.xdg_runtime_dir).or_else(|| absolute(&places.run_user))
     };
-    Ok(match base {
+    match base {
         Some(dir) => dir.join("rbs").join("control.sock"),
-        None => PathBuf::from(format!("/tmp/rbs-{}", current_uid())).join("control.sock"),
-    })
+        None => PathBuf::from(format!("/tmp/rbs-{}", places.uid)).join("control.sock"),
+    }
+}
+
+/// `dir` when it is a real directory owned by `uid`.
+fn owned_dir(dir: &Path, uid: u32) -> Option<PathBuf> {
+    let m = std::fs::symlink_metadata(dir).ok()?;
+    (m.file_type().is_dir() && m.uid() == uid).then(|| dir.to_owned())
+}
+
+/// The per-user temporary folder macOS gives this user, read from the OS rather than
+/// from `TMPDIR`.
+#[cfg(target_vendor = "apple")]
+fn darwin_user_temp() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = [0u8; 1024];
+    // SAFETY: `buf` is valid for writes of `buf.len()` bytes; `confstr` writes at most
+    // that many, NUL included, and returns the length it needed (0 on failure).
+    let needed = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if needed == 0 || needed > buf.len() {
+        return None;
+    }
+    let text = &buf[..needed - 1];
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(text));
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn darwin_user_temp() -> Option<PathBuf> {
+    None
 }
 
 /// Makes `dir` if missing, then checks it is a real directory of the current user
@@ -374,5 +438,99 @@ impl ClientIo {
 
     pub(crate) fn shutdown_write(&self) {
         let _ = self.0.shutdown(Shutdown::Write);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn places() -> Places {
+        Places {
+            uid: 501,
+            ..Places::default()
+        }
+    }
+
+    #[test]
+    fn stripped_environment_finds_the_same_endpoint() {
+        // RBS opened from the desktop has the session's variables; an MCP host starts
+        // rbs-mcp without them. Both must name one endpoint.
+        let os = places();
+        let app = Places {
+            xdg_runtime_dir: Some("/run/user/501".into()),
+            tmpdir: Some("/var/folders/ab/xyz/T/".into()),
+            run_user: Some("/run/user/501".into()),
+            darwin_user_temp: Some("/var/folders/ab/xyz/T/".into()),
+            ..os.clone()
+        };
+        let mcp = Places {
+            xdg_runtime_dir: None,
+            tmpdir: None,
+            ..app.clone()
+        };
+        assert_eq!(endpoint_in(&app), endpoint_in(&mcp));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                endpoint_in(&mcp),
+                PathBuf::from("/var/folders/ab/xyz/T/rbs/control.sock")
+            );
+        } else {
+            assert_eq!(
+                endpoint_in(&mcp),
+                PathBuf::from("/run/user/501/rbs/control.sock")
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_known_falls_back_to_tmp() {
+        assert_eq!(
+            endpoint_in(&places()),
+            PathBuf::from("/tmp/rbs-501/control.sock")
+        );
+    }
+
+    #[test]
+    fn relative_places_are_ignored() {
+        let p = Places {
+            xdg_runtime_dir: Some("run".into()),
+            tmpdir: Some("tmp".into()),
+            darwin_user_temp: Some("T".into()),
+            ..places()
+        };
+        assert_eq!(endpoint_in(&p), PathBuf::from("/tmp/rbs-501/control.sock"));
+    }
+
+    #[test]
+    fn the_environment_wins_over_run_user_on_linux() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let p = Places {
+            xdg_runtime_dir: Some("/custom/run".into()),
+            run_user: Some("/run/user/501".into()),
+            ..places()
+        };
+        assert_eq!(
+            endpoint_in(&p),
+            PathBuf::from("/custom/run/rbs/control.sock")
+        );
+    }
+
+    #[test]
+    fn darwin_folder_wins_over_tmpdir_on_macos() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let p = Places {
+            tmpdir: Some("/elsewhere".into()),
+            darwin_user_temp: Some("/var/folders/ab/xyz/T".into()),
+            ..places()
+        };
+        assert_eq!(
+            endpoint_in(&p),
+            PathBuf::from("/var/folders/ab/xyz/T/rbs/control.sock")
+        );
     }
 }

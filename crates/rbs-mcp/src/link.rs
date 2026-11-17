@@ -399,7 +399,7 @@ impl Connect for IpcConnector {
             None => Endpoint::for_current_user().map_err(ConnectError::Unreachable)?,
         };
         let client = IpcClient::connect(&endpoint, CONNECT_TIMEOUT)
-            .map_err(|e| ConnectError::Unreachable(e.to_string()))?;
+            .map_err(|e| ConnectError::Unreachable(format!("{e}; looked at {endpoint}")))?;
         handshake(Box::new(IpcApi { client, next: 1 }), &token)
     }
 }
