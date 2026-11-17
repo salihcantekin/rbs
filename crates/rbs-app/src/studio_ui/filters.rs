@@ -70,6 +70,68 @@ fn suffix(unit: &str) -> String {
     }
 }
 
+/// The Add filter menu's value for the voice chain: noise suppression, equaliser (low
+/// cut on), compressor and limiter in one undo step.
+pub const VOICE_CHAIN: &str = "voice-chain";
+
+/// The equaliser's response as path commands in a 100 x 48 view box (x: 20 Hz to
+/// 20 kHz on a log scale, y: +24 dB at 0, the top, to -24 dB at 48, the bottom), and in words
+/// for screen readers (U16). Drawn for 48 kHz: below 20 kHz the rate barely moves it.
+fn eq_curve(values: &Values) -> (String, String) {
+    use std::fmt::Write as _;
+    let setup = rbs_audio_filters::DspSetup::new(
+        rbs_core::media::AudioFormat::STEREO_48K,
+        rbs_core::media::DEFAULT_BLOCK_FRAMES,
+    );
+    let eq = rbs_audio_filters::equaliser::EqualiserDsp::new(setup, values);
+    const POINTS: u32 = 100;
+    let mut path = String::new();
+    let (mut low, mut high) = (0.0f32, 0.0f32);
+    for i in 0..=POINTS {
+        let x = i as f32 * 100.0 / POINTS as f32;
+        let freq = 20.0 * 1000f32.powf(x / 100.0);
+        let db = eq.response_db(freq);
+        low = low.min(db);
+        high = high.max(db);
+        let y = 24.0 - db.clamp(-24.0, 24.0);
+        let _ = write!(path, "{}{x:.2} {y:.2} ", if i == 0 { "M " } else { "L " });
+    }
+    let words = if low > -0.05 && high < 0.05 {
+        "flat".to_owned()
+    } else {
+        format!("from {low:.1} dB to {high:+.1} dB")
+    };
+    (path, words)
+}
+
+/// `commands` (only `M` and `L` with x y pairs) from a `vb_w` x `vb_h` view box to
+/// `w` x `h` pixels: Slint's Path keeps the view box's aspect, and a curve must fill a
+/// box of any width.
+pub fn fit_path(commands: &str, vb_w: f32, vb_h: f32, w: f32, h: f32) -> String {
+    use std::fmt::Write as _;
+    if vb_w <= 0.0 || vb_h <= 0.0 {
+        return String::new();
+    }
+    let (sx, sy) = (w / vb_w, h / vb_h);
+    let mut out = String::with_capacity(commands.len());
+    let mut words = commands.split_whitespace();
+    while let Some(word) = words.next() {
+        match word {
+            "M" | "L" => {
+                let (Some(x), Some(y)) = (
+                    words.next().and_then(|v| v.parse::<f32>().ok()),
+                    words.next().and_then(|v| v.parse::<f32>().ok()),
+                ) else {
+                    return String::new();
+                };
+                let _ = write!(out, "{word} {:.1} {:.1} ", x * sx, y * sy);
+            }
+            _ => return String::new(),
+        }
+    }
+    out
+}
+
 /// Milliseconds from ns: whole when they are, else one decimal ("10 ms", "19.3 ms").
 fn ms_text(ns: i64) -> String {
     let tenths = (ns + 50_000) / 100_000;
@@ -309,7 +371,13 @@ impl FilterUi {
                 };
                 let (latency_text, latency_warn) =
                     latency_line(f.latency_ns, row.latency.map_or(0, |l| l.uncompensated_ns));
+                let (curve, curve_text) = match (&f.values, f.type_id.as_str()) {
+                    (Some(v), rbs_audio_filters::equaliser::EQUALISER) => eq_curve(v),
+                    _ => (String::new(), String::new()),
+                };
                 FilterData {
+                    curve: curve.into(),
+                    curve_text: curve_text.into(),
                     latency_text: latency_text.into(),
                     latency_warn,
                     gate: f.meter.is_some(),
@@ -406,6 +474,11 @@ impl StudioUi {
     /// (picture filters, or audio filters on the Audio tab) is the caller's; an id that
     /// is in neither does nothing.
     pub fn add_filter_type(&mut self, source: i32, type_id: &str) {
+        if type_id == VOICE_CHAIN {
+            self.deleted.clear();
+            self.send(Command::AddVoiceChain(SourceId::from_raw(source as u32)));
+            return;
+        }
         if filter_types(true)
             .iter()
             .chain(&filter_types(false))
@@ -605,9 +678,13 @@ impl StudioUi {
 /// Audio tab (`audio`), else the picture one (ADR-0082).
 pub fn filter_types(audio: bool) -> Vec<(String, String)> {
     if audio {
-        rbs_audio_filters::catalogue()
-            .iter()
-            .map(|t| (t.name().to_owned(), t.type_id().as_str().to_owned()))
+        // The voice chain first: four filters in one step (ADR-0130 decision 10).
+        std::iter::once(("Voice chain (4 filters)".to_owned(), VOICE_CHAIN.to_owned()))
+            .chain(
+                rbs_audio_filters::catalogue()
+                    .iter()
+                    .map(|t| (t.name().to_owned(), t.type_id().as_str().to_owned())),
+            )
             .collect()
     } else {
         rbs_filters::catalogue()
@@ -653,6 +730,24 @@ mod tests {
                 .iter()
                 .all(|(_, a)| filter_types(false).iter().all(|(_, b)| a != b))
         );
+    }
+
+    #[test]
+    fn a_path_is_stretched_to_its_box() {
+        assert_eq!(
+            fit_path("M 0 24 L 100 0", 100.0, 48.0, 200.0, 72.0),
+            "M 0.0 36.0 L 200.0 0.0 "
+        );
+        assert_eq!(fit_path("C 1 2", 100.0, 48.0, 200.0, 72.0), "");
+    }
+
+    #[test]
+    fn a_flat_equaliser_is_a_line_through_the_middle() {
+        let (path, words) = eq_curve(&Values::defaults(
+            &rbs_audio_filters::equaliser::Equaliser as &dyn rbs_audio_filters::AudioFilterType,
+        ));
+        assert_eq!(words, "flat");
+        assert!(path.starts_with("M 0.00 24.00 L "), "{path}");
     }
 
     #[test]

@@ -559,6 +559,95 @@ impl Host {
         Ok(())
     }
 
+    /// Adds the voice chain to a sound source as one undo step (ADR-0130 decision 10):
+    /// noise suppression, the equaliser with its low cut on, the compressor and the
+    /// limiter, each at its defaults otherwise. A filter of one of those types that the
+    /// source already has is kept where it is and turned on with the chain's values, as
+    /// a look does (ADR-0075); the others are added at the end in that order.
+    /// `Ok(false)` when nothing changes.
+    pub(super) fn add_voice_chain(&mut self, source: SourceId) -> Result<bool, Refusal> {
+        use rbs_audio_filters::{compressor, equaliser, limiter, noise};
+        let name = self.source_name(source)?;
+        let has_sound = self
+            .collection
+            .source(source)
+            .and_then(|s| SourceKind::of(&s.type_id))
+            .is_some_and(SourceKind::is_audio);
+        if !has_sound {
+            return Err(Refusal::Invalid(format!(
+                "{name} has a picture; the voice chain is for sound sources."
+            )));
+        }
+        let chain: [(&str, &[(&str, Value)]); 4] = [
+            (noise::NOISE_SUPPRESSION, &[]),
+            (equaliser::EQUALISER, &[("low_cut", Value::Toggle(true))]),
+            (compressor::COMPRESSOR, &[]),
+            (limiter::LIMITER, &[]),
+        ];
+        // Everything is checked before anything is changed.
+        let mut filters = Vec::new();
+        for (type_id, pairs) in chain {
+            let ty = AnyFilter::find(type_id)
+                .ok_or_else(|| Refusal::Invalid(format!("There is no filter type {type_id:?}.")))?;
+            let values = Values::from_pairs(&ty, pairs.iter().copied()).map_err(|e| invalid(&e))?;
+            filters.push((ty, filter_settings(&ty, &values)));
+        }
+        let mut records = Vec::new();
+        let mut step =
+            |host: &mut Self, ty: AnyFilter, settings: Settings| -> Result<(), Refusal> {
+                let existing = host.collection.source(source).and_then(|s| {
+                    s.filters
+                        .iter()
+                        .find(|f| f.type_id == ty.type_id())
+                        .map(|f| (f.id, f.enabled, f.settings.clone()))
+                });
+                match existing {
+                    Some((id, enabled, old)) => {
+                        if old != settings {
+                            records.push(
+                                host.collection
+                                    .set_filter_settings(source, id, settings)
+                                    .map_err(|e| Refusal::of(&e))?,
+                            );
+                        }
+                        if !enabled {
+                            records.push(
+                                host.collection
+                                    .set_filter_enabled(source, id, true)
+                                    .map_err(|e| Refusal::of(&e))?,
+                            );
+                        }
+                    }
+                    None => {
+                        let (_, undo) = host
+                            .collection
+                            .add_filter(source, ty.type_id(), settings)
+                            .map_err(|e| Refusal::of(&e))?;
+                        records.push(undo);
+                    }
+                }
+                Ok(())
+            };
+        let mut result = Ok(());
+        for (ty, settings) in filters {
+            result = step(self, ty, settings);
+            if result.is_err() {
+                break;
+            }
+        }
+        match result {
+            Ok(()) if records.is_empty() => Ok(false),
+            Ok(()) => {
+                self.history.record(EditKind::Filter, &name, 0, records);
+                Ok(true)
+            }
+            Err(e) => {
+                self.roll_back(records);
+                Err(e)
+            }
+        }
+    }
+
     /// Removes a filter (one undo step).
     pub(super) fn remove_filter(&mut self, filter: FilterId) -> Result<(), Refusal> {
         let (source, _) = self.filter_owner(filter)?;

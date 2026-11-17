@@ -184,6 +184,10 @@ format = 4
 "size.meter.loudness" = 6
 # Thickness of a slider's track (its short side), horizontal and vertical alike.
 "size.slider.track" = 4
+# Height of the equaliser's response curve in its editor (ADR-0130 decision 10).
+"size.eq.curve-h" = 72
+# Line width of that curve.
+"size.eq.curve-line" = 1.5
 # Thickness of the target mark across the loudness bar.
 "size.meter.target" = 2
 # Width of one Mixer column strip (columns): padding + meter + VSlider + control column.
