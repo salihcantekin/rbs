@@ -14,22 +14,29 @@ use objc2_av_foundation::{
     AVAsset, AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack,
     AVMediaType, AVMediaTypeAudio, AVMediaTypeVideo, AVURLAsset,
 };
+use objc2_core_foundation::CFRetained;
 use objc2_core_media::{
     CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer, CMTime, CMTimeFlags,
     CMTimeRange, kCMTimePositiveInfinity,
 };
 use objc2_core_video::{
     CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
-    CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-    CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA, kCVReturnSuccess,
+    CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA,
+    kCVReturnSuccess,
 };
 use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString, NSURL};
+use rbs_core::media::{
+    ColorSpace, NativeSurface, PixelFormat, Size, SurfaceSync, VideoFormat, VideoFrame,
+};
+use rbs_core::time::Timestamp;
 
 use rbs_media_decode::{
     DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, SampleColor,
     SoundSample, frame_duration_rule, refuse_picture,
 };
 
+use crate::surfaces::Surfaces;
 use crate::{bgra_to_rgba, cm_duration, nominal_duration};
 
 /// `kAudioFormatLinearPCM` (`'lpcm'`).
@@ -62,12 +69,31 @@ fn settings(pairs: &[(&str, Retained<NSNumber>)]) -> Retained<NSDictionary<NSStr
     NSDictionary::from_retained_objects(&key_refs, &values)
 }
 
-fn video_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
-    // `kCVPixelBufferPixelFormatTypeKey` is the string "PixelFormatType".
-    settings(&[(
-        "PixelFormatType",
-        NSNumber::new_u32(kCVPixelFormatType_32BGRA),
-    )])
+/// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` ('420v'): NV12, limited range.
+const PIXEL_FORMAT_420V: u32 = 0x3432_3076;
+
+/// The picture output: `32BGRA` for the copy, or IOSurface-backed `420v` (NV12, what
+/// VideoToolbox decodes to, so it converts nothing) for native pictures.
+fn video_settings(native: bool) -> Retained<NSDictionary<NSString, AnyObject>> {
+    if !native {
+        // `kCVPixelBufferPixelFormatTypeKey` is the string "PixelFormatType".
+        return settings(&[(
+            "PixelFormatType",
+            NSNumber::new_u32(kCVPixelFormatType_32BGRA),
+        )]);
+    }
+    let format = NSString::from_str("PixelFormatType");
+    // `kCVPixelBufferIOSurfacePropertiesKey` is the string "IOSurfaceProperties"; an
+    // empty dictionary asks for IOSurface-backed buffers with default properties.
+    let surface = NSString::from_str("IOSurfaceProperties");
+    let empty: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::new();
+    let values: [Retained<AnyObject>; 2] = [
+        Retained::into_super(Retained::into_super(Retained::into_super(
+            NSNumber::new_u32(PIXEL_FORMAT_420V),
+        ))),
+        Retained::into_super(Retained::into_super(empty)),
+    ];
+    NSDictionary::from_retained_objects(&[&*format, &*surface], &values)
 }
 
 fn audio_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
@@ -172,6 +198,8 @@ pub(crate) struct AvfDecoder {
     nominal: Option<Duration>,
     cursor: Duration,
     last_duration: Option<Duration>,
+    /// The slots of native pictures; `None` for the copy (`cpu-upload`).
+    surfaces: Option<Surfaces>,
 }
 
 // SAFETY: AVAsset, AVAssetReader and their outputs are not bound to a thread; the
@@ -179,11 +207,11 @@ pub(crate) struct AvfDecoder {
 unsafe impl Send for AvfDecoder {}
 
 impl AvfDecoder {
-    pub(crate) fn open(path: &Path) -> Result<Self, DecodeError> {
-        autoreleasepool(|_| Self::open_in_pool(path))
+    pub(crate) fn open(path: &Path, native: bool) -> Result<Self, DecodeError> {
+        autoreleasepool(|_| Self::open_in_pool(path, native))
     }
 
-    fn open_in_pool(path: &Path) -> Result<Self, DecodeError> {
+    fn open_in_pool(path: &Path, native: bool) -> Result<Self, DecodeError> {
         let path: PathBuf = path.to_owned();
         let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
         // SAFETY: a file URL and no options.
@@ -195,8 +223,12 @@ impl AvfDecoder {
         let audio_track = first_track(&asset, audio_kind);
         // SAFETY: plain property reads of live objects.
         let (length, rate) = unsafe { (asset.duration(), video_track.nominalFrameRate()) };
-        let (reader, output) =
-            start_reader(&asset, &video_track, &video_settings(), Duration::ZERO)?;
+        let (reader, output) = start_reader(
+            &asset,
+            &video_track,
+            &video_settings(native),
+            Duration::ZERO,
+        )?;
         Ok(Self {
             asset,
             video_track,
@@ -207,6 +239,7 @@ impl AvfDecoder {
             nominal: nominal_duration(rate),
             cursor: Duration::ZERO,
             last_duration: None,
+            surfaces: native.then(Surfaces::new),
         })
     }
 
@@ -234,6 +267,43 @@ impl AvfDecoder {
                 refused.expected()
             )));
         }
+        let frame_duration = frame_duration_rule(stated, false, self.nominal)
+            .or(self.last_duration)
+            .or(self.nominal);
+        if let Some(surfaces) = self.surfaces.as_mut() {
+            self.last_duration = frame_duration;
+            if pts.is_none() && frame_duration.is_none() {
+                return Err(DecodeError::NoTimestamp);
+            }
+            if CVPixelBufferGetPixelFormatType(&image) != PIXEL_FORMAT_420V {
+                return Err(DecodeError::Failed(
+                    "the decoder gave a picture of another pixel format".into(),
+                ));
+            }
+            let (surface, lease) = surfaces.hand_out(image).ok_or_else(|| {
+                DecodeError::Failed("every picture surface is still in use".into())
+            })?;
+            let format = VideoFormat::new(
+                Size::new(w, h),
+                PixelFormat::Nv12,
+                ColorSpace::BT709_LIMITED,
+            );
+            let surface = NativeSurface::io_surface(CFRetained::as_ptr(&surface).as_ptr() as usize);
+            // SAFETY: the IOSurface belongs to the pixel buffer the pool keeps in the
+            // lease's slot until every reference to that slot is released, and
+            // VideoToolbox does not write a buffer it handed out while it is retained;
+            // after that the seen list or the graveyard keeps the surface for the grace.
+            let frame = unsafe {
+                VideoFrame::native(format, Timestamp::ZERO, surface, SurfaceSync::Ready, lease)
+            };
+            let picture = Picture::native(frame)
+                .ok_or_else(|| DecodeError::Failed("a native picture".into()))?;
+            return Ok(PictureSample {
+                pts,
+                frame_duration,
+                picture,
+            });
+        }
         let mut bytes = Vec::new();
         // SAFETY: the base address is read only between lock and unlock, within the
         // rows up to the last pixel of the last row.
@@ -258,9 +328,6 @@ impl AvfDecoder {
             done
         };
         copied.ok_or_else(|| DecodeError::Failed("the picture buffer is too small".into()))?;
-        let frame_duration = frame_duration_rule(stated, false, self.nominal)
-            .or(self.last_duration)
-            .or(self.nominal);
         self.last_duration = frame_duration;
         if pts.is_none() && frame_duration.is_none() {
             return Err(DecodeError::NoTimestamp);
@@ -337,8 +404,13 @@ impl AvfDecoder {
 impl MediaDecoder for AvfDecoder {
     fn seek(&mut self, cursor: Duration) -> Result<(), DecodeError> {
         autoreleasepool(|_| {
-            let (reader, output) =
-                start_reader(&self.asset, &self.video_track, &video_settings(), cursor)?;
+            let native = self.surfaces.is_some();
+            let (reader, output) = start_reader(
+                &self.asset,
+                &self.video_track,
+                &video_settings(native),
+                cursor,
+            )?;
             self.video = Stream { reader, output };
             self.sound = None;
             self.cursor = cursor;

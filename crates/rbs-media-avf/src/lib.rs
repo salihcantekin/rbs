@@ -12,11 +12,12 @@
 //!   that is never heard starts no second reader (P13).
 //! - A reader cannot move once it reads, so `seek` replaces the readers with ones whose
 //!   time range starts at the cursor.
-//! - Each picture is copied once from the pixel buffer into a new `Rgba8` buffer.
-//!
-//! The capability is `cpu-upload`: the measured fallback of ADR-0108 decision 4. The
-//! zero-copy path (the decoder's `IOSurface` as a native picture) is a later step that
-//! needs the picture node to import native surfaces first.
+//! - Pictures are the decoder's IOSurface-backed `420v` (NV12) pixel buffers, handed
+//!   out zero-copy as native `IoSurface` pictures (`zero-copy`, ADR-0108 decision 4).
+//!   The buffer stays in a counted slot while a lease names it and the surface is kept
+//!   10 s after its last use (`surfaces`).
+//! - [`AvfMediaFactory::cpu_upload`] copies each picture once into `Rgba8` instead
+//!   (`cpu-upload`): the measured fallback, used by the conformance pixel checks.
 //!
 //! On other platforms the factory compiles and probes as unavailable, so a composition
 //! root can register it unconditionally.
@@ -33,18 +34,35 @@ use rbs_media_decode::{DecodeError, MediaDecoder, MediaDecoderFactory, caps, pix
 
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(target_os = "macos")]
+mod surfaces;
 
 /// Adapter id.
 pub const ADAPTER_ID: &str = "org.rbs.media-decode.avf";
 
-/// The factory. Holds nothing.
-#[derive(Debug, Default)]
-pub struct AvfMediaFactory;
+/// The factory. Holds nothing but its pixel path.
+#[derive(Debug)]
+pub struct AvfMediaFactory {
+    native: bool,
+}
+
+impl Default for AvfMediaFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl AvfMediaFactory {
-    /// Creates the factory. Does nothing until used.
+    /// The `zero-copy` factory: pictures are the decoder's `IOSurface`s (NV12). Does
+    /// nothing until used.
     pub fn new() -> Self {
-        Self
+        Self { native: true }
+    }
+
+    /// The `cpu-upload` factory: each picture is copied into `Rgba8`. The measured
+    /// fallback, used by the conformance pixel checks and the benchmark comparison.
+    pub fn cpu_upload() -> Self {
+        Self { native: false }
     }
 }
 
@@ -61,7 +79,14 @@ impl AdapterFactory for AvfMediaFactory {
         if cfg!(target_os = "macos") {
             Ok(CapabilitySet::new().with(
                 caps::PIXEL,
-                CapabilityValue::Set(vec![pixel::CPU_UPLOAD.to_owned()]),
+                CapabilityValue::Set(vec![
+                    if self.native {
+                        pixel::ZERO_COPY
+                    } else {
+                        pixel::CPU_UPLOAD
+                    }
+                    .to_owned(),
+                ]),
             ))
         } else {
             Err(ProbeError::new("AVFoundation needs macOS"))
@@ -72,7 +97,7 @@ impl AdapterFactory for AvfMediaFactory {
 impl MediaDecoderFactory for AvfMediaFactory {
     #[cfg(target_os = "macos")]
     fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError> {
-        Ok(Box::new(mac::AvfDecoder::open(path)?))
+        Ok(Box::new(mac::AvfDecoder::open(path, self.native)?))
     }
 
     #[cfg(not(target_os = "macos"))]
