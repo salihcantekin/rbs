@@ -7049,7 +7049,8 @@ impl StudioUi {
                 }
                 // Write the row only when it changes: every write redraws the whole
                 // window, so a silent or steady meter must not cost a frame (audit U-02).
-                if repaint(&mut row, &view, value.as_deref()) {
+                let native = crate::meter_bridge::set_view(id, &view);
+                if repaint(&mut row, &view, value.as_deref(), native) {
                     self.meters.set_row_data(i, row);
                     crate::measure_ui::count_meter_write();
                 }
@@ -7065,12 +7066,14 @@ impl StudioUi {
             let view = ballistics.view(now);
             if let Some(mut row) = self.master_meter.row_data(0) {
                 let value = report.then(|| ballistics.take_report().english());
-                if repaint(&mut row, &view, value.as_deref()) {
+                let native = crate::meter_bridge::set_view(-1, &view);
+                if repaint(&mut row, &view, value.as_deref(), native) {
                     self.master_meter.set_row_data(0, row);
                     crate::measure_ui::count_meter_write();
                 }
             }
         }
+        crate::meter_bridge::flush();
         self.tick_loudness();
     }
 }
@@ -7084,10 +7087,21 @@ fn mixer_source(r: &SourceRow) -> bool {
 }
 
 /// Paints `view` (and the readout `value`, when one is due) into `row` and says whether
-/// anything changed, so the caller writes the row back only then.
-fn repaint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView, value: Option<&str>) -> bool {
+/// anything changed, so the caller writes the row back only then. While the native
+/// meter layer draws the bar (`native`, ADR-0035) only the clip box is painted: the
+/// zones and the peak stay as they are, so a moving level writes nothing.
+fn repaint(
+    row: &mut MeterRow,
+    view: &rbs_ui::meter::MeterView,
+    value: Option<&str>,
+    native: bool,
+) -> bool {
     let before = row.clone();
-    paint(row, view);
+    if native {
+        row.clipped = view.clipped;
+    } else {
+        paint(row, view);
+    }
     if let Some(text) = value {
         row.value = text.into();
     }
@@ -8276,22 +8290,54 @@ mod tests {
         let mut meter = Meter::new();
         let now = Duration::from_millis(100);
         let mut row = MeterRow::default();
-        repaint(&mut row, &meter.view(now), None);
+        repaint(&mut row, &meter.view(now), None, false);
         assert!(
-            !repaint(&mut row, &meter.view(now), None),
+            !repaint(&mut row, &meter.view(now), None, false),
             "a silent meter painted again is no change"
         );
         meter.update(-12.0, now);
-        assert!(repaint(&mut row, &meter.view(now), None), "sound moves it");
         assert!(
-            !repaint(&mut row, &meter.view(now), None),
+            repaint(&mut row, &meter.view(now), None, false),
+            "sound moves it"
+        );
+        assert!(
+            !repaint(&mut row, &meter.view(now), None, false),
             "the same view again is no change, so the window is not redrawn"
         );
         assert!(
-            repaint(&mut row, &meter.view(now), Some("-12 dBFS")),
+            repaint(&mut row, &meter.view(now), Some("-12 dBFS"), false),
             "a new readout is"
         );
-        assert!(!repaint(&mut row, &meter.view(now), Some("-12 dBFS")));
+        assert!(!repaint(
+            &mut row,
+            &meter.view(now),
+            Some("-12 dBFS"),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_meter_drawn_by_the_native_layer_writes_only_its_clip_box() {
+        use rbs_ui::meter::MeterView;
+        let view = |level: f32, clipped: bool| MeterView {
+            level,
+            peak: level,
+            clipped,
+        };
+        let mut row = MeterRow::default();
+        assert!(
+            !repaint(&mut row, &view(0.7, false), None, true),
+            "a moving level costs no frame while the layer draws it (ADR-0035)"
+        );
+        assert_eq!(row.lo_to, 0.0, "the zones stay as they were");
+        assert!(
+            repaint(&mut row, &view(0.9, true), None, true),
+            "the clip box is Slint's"
+        );
+        assert!(
+            repaint(&mut row, &view(0.9, true), None, false),
+            "Slint draws again"
+        );
     }
 
     #[test]
@@ -8303,13 +8349,18 @@ mod tests {
             clipped: false,
         };
         let mut row = MeterRow::default();
-        assert!(repaint(&mut row, &view(0.5), None));
+        assert!(repaint(&mut row, &view(0.5), None, false));
         let tiny = 0.25 / METER_STEPS;
         assert!(
-            !repaint(&mut row, &view(0.5 + tiny), None),
+            !repaint(&mut row, &view(0.5 + tiny), None, false),
             "room noise that moves the bar by less than a pixel costs no frame"
         );
-        assert!(repaint(&mut row, &view(0.5 + 2.0 / METER_STEPS), None));
+        assert!(repaint(
+            &mut row,
+            &view(0.5 + 2.0 / METER_STEPS),
+            None,
+            false
+        ));
         assert!(snap(f32::NAN).is_nan(), "not a number stays as it is");
     }
 

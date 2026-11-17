@@ -246,104 +246,111 @@ fn place_one(window: &MainWindow, which: Picture) {
             width: f64::from(r.w * scale),
             height: f64::from(r.h * scale),
         };
-        // What Slint draws over the layer: its in-window popups, the bottom toast, the
-        // error bar and a slid-out auto-hide panel (ADR-0054 decision 2). The layer cuts them out.
-        rbs_app::popups::open_in(window.window(), &mut st.covers);
-        let shell = window.global::<Shell>();
-        let toast = |c: crate::ui::Cover| Rect {
-            x: c.x,
-            y: c.y,
-            w: c.width,
-            h: c.height,
-        };
-        let studio = window.global::<Studio>();
-        if shell.get_toast_kind() != 0
-            || !studio.get_deleted().is_empty()
-            || !studio.get_marker_note().is_empty()
-        {
-            st.covers.push(toast(shell.get_bottom_toast()));
-        }
-        // The error bar's place also holds the first-close notice (ADR-0056).
-        if shell.get_error_kind() != 0 || shell.get_background_notice() != 0 {
-            st.covers.push(toast(shell.get_top_toast()));
-        }
-        // The End stream question (U4), under Go live and Record.
-        if (shell.get_end_stream_confirm()
-            || shell.get_end_vertical_confirm()
-            || shell.get_silent_confirm() != 0)
-            && !shell.get_quit_confirm()
-        {
-            st.covers.push(toast(shell.get_confirm_cover()));
-        }
-        // A slid-out auto-hide panel (ADR-0049) is drawn over the dock area too.
-        if shell.get_flyout_open() {
-            st.covers.push(toast(shell.get_flyout()));
-        }
-        // The drop guide while a tab is dragged (ADR-0049 decision 5).
-        if shell.get_drop_open() && shell.get_drop_window() >= 0 {
-            st.covers.push(toast(shell.get_drop_cover()));
-        }
-        // The info hint popover and the tooltip are layers of the window, not popups
-        // (ADR-0094): they count themselves.
-        let overlays = window.global::<Overlays>();
-        let overlay = |c: crate::ui::OverlayCover| Rect {
-            x: c.x,
-            y: c.y,
-            w: c.width,
-            h: c.height,
-        };
-        if overlays.get_hint_open() {
-            st.covers.push(overlay(overlays.get_hint_cover()));
-        }
-        if overlays.get_name_open() {
-            st.covers.push(overlay(overlays.get_name_cover()));
-        }
-        if overlays.get_first_run_open() {
-            st.covers.push(overlay(overlays.get_first_run_cover()));
-        }
-        if overlays.get_vertical_open() {
-            st.covers.push(overlay(overlays.get_vertical_cover()));
-        }
-        if overlays.get_transition_open() {
-            st.covers.push(overlay(overlays.get_transition_cover()));
-        }
-        if overlays.get_scene_transition_open() {
-            st.covers
-                .push(overlay(overlays.get_scene_transition_cover()));
-        }
-        if overlays.get_live_open() {
-            st.covers.push(overlay(overlays.get_live_cover()));
-        }
-        if overlays.get_color_open() {
-            st.covers.push(overlay(overlays.get_color_cover()));
-        }
-        if overlays.get_select_open() {
-            st.covers.push(overlay(overlays.get_select_cover()));
-        }
-        if overlays.get_picker_open() {
-            st.covers.push(overlay(overlays.get_picker_cover()));
-        }
-        // The drawn context menu and its submenu (ADR-0137 decision 9).
-        let menus = window.global::<crate::ui::ContextMenus>();
-        if menus.get_open() {
-            st.covers.push(overlay(menus.get_cover()));
-            if menus.get_sub_open() {
-                st.covers.push(overlay(menus.get_sub_cover()));
-            }
-        }
-        let app_menu = window.global::<crate::ui::AppMenus>();
-        if app_menu.get_open() {
-            st.covers.push(overlay(app_menu.get_cover()));
-        }
-        if overlays.get_tip_shown() {
-            st.covers.push(overlay(overlays.get_tip_cover()));
-        }
+        covers(window, &mut st.covers);
         st.cutouts.clear();
         st.cutouts.extend(st.covers.iter().map(|&c| in_layer(c)));
         st.layer.set_rect(in_layer(Rect { x, y, w, h }));
         st.layer.set_cutouts(&st.cutouts);
         st.layer.set_hidden(false);
     });
+}
+
+/// What Slint draws over native layers in `window` (window logical pixels): its in-window
+/// popups, the bottom toast, the error bar, a slid-out auto-hide panel (ADR-0054 decision
+/// 2), overlays and drawn menus. Fills `out` (cleared first by `open_in`); the preview
+/// layer cuts them out and the meter bridge hides under them (ADR-0035 decision 4).
+pub fn covers(window: &MainWindow, out: &mut Vec<Rect>) {
+    // What Slint draws over the layer: its in-window popups, the bottom toast, the
+    // error bar and a slid-out auto-hide panel (ADR-0054 decision 2). The layer cuts them out.
+    rbs_app::popups::open_in(window.window(), out);
+    let shell = window.global::<Shell>();
+    let toast = |c: crate::ui::Cover| Rect {
+        x: c.x,
+        y: c.y,
+        w: c.width,
+        h: c.height,
+    };
+    let studio = window.global::<Studio>();
+    if shell.get_toast_kind() != 0
+        || !studio.get_deleted().is_empty()
+        || !studio.get_marker_note().is_empty()
+    {
+        out.push(toast(shell.get_bottom_toast()));
+    }
+    // The error bar's place also holds the first-close notice (ADR-0056).
+    if shell.get_error_kind() != 0 || shell.get_background_notice() != 0 {
+        out.push(toast(shell.get_top_toast()));
+    }
+    // The End stream question (U4), under Go live and Record.
+    if (shell.get_end_stream_confirm()
+        || shell.get_end_vertical_confirm()
+        || shell.get_silent_confirm() != 0)
+        && !shell.get_quit_confirm()
+    {
+        out.push(toast(shell.get_confirm_cover()));
+    }
+    // A slid-out auto-hide panel (ADR-0049) is drawn over the dock area too.
+    if shell.get_flyout_open() {
+        out.push(toast(shell.get_flyout()));
+    }
+    // The drop guide while a tab is dragged (ADR-0049 decision 5).
+    if shell.get_drop_open() && shell.get_drop_window() >= 0 {
+        out.push(toast(shell.get_drop_cover()));
+    }
+    // The info hint popover and the tooltip are layers of the window, not popups
+    // (ADR-0094): they count themselves.
+    let overlays = window.global::<Overlays>();
+    let overlay = |c: crate::ui::OverlayCover| Rect {
+        x: c.x,
+        y: c.y,
+        w: c.width,
+        h: c.height,
+    };
+    if overlays.get_hint_open() {
+        out.push(overlay(overlays.get_hint_cover()));
+    }
+    if overlays.get_name_open() {
+        out.push(overlay(overlays.get_name_cover()));
+    }
+    if overlays.get_first_run_open() {
+        out.push(overlay(overlays.get_first_run_cover()));
+    }
+    if overlays.get_vertical_open() {
+        out.push(overlay(overlays.get_vertical_cover()));
+    }
+    if overlays.get_transition_open() {
+        out.push(overlay(overlays.get_transition_cover()));
+    }
+    if overlays.get_scene_transition_open() {
+        out.push(overlay(overlays.get_scene_transition_cover()));
+    }
+    if overlays.get_live_open() {
+        out.push(overlay(overlays.get_live_cover()));
+    }
+    if overlays.get_color_open() {
+        out.push(overlay(overlays.get_color_cover()));
+    }
+    if overlays.get_select_open() {
+        out.push(overlay(overlays.get_select_cover()));
+    }
+    if overlays.get_picker_open() {
+        out.push(overlay(overlays.get_picker_cover()));
+    }
+    // The drawn context menu and its submenu (ADR-0137 decision 9).
+    let menus = window.global::<crate::ui::ContextMenus>();
+    if menus.get_open() {
+        out.push(overlay(menus.get_cover()));
+        if menus.get_sub_open() {
+            out.push(overlay(menus.get_sub_cover()));
+        }
+    }
+    let app_menu = window.global::<crate::ui::AppMenus>();
+    if app_menu.get_open() {
+        out.push(overlay(app_menu.get_cover()));
+    }
+    if overlays.get_tip_shown() {
+        out.push(overlay(overlays.get_tip_cover()));
+    }
 }
 
 fn show(which: Picture, frame: PreviewFrame) {

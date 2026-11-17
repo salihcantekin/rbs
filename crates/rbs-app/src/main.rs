@@ -25,6 +25,7 @@ mod icons;
 mod look;
 mod measure_ui;
 mod menu_bar;
+mod meter_bridge;
 mod obs_import_page;
 mod permissions_page;
 #[cfg(any(target_os = "macos", windows))]
@@ -2336,6 +2337,9 @@ impl Ctx {
             app.vertical_picture_sent = vertical_wanted;
         }
 
+        // The meter layer (ADR-0035) serves the Mixer in the main window only.
+        meter_bridge::set_wanted(&app.main, in_main("rbs.mixer").is_some() && !app.hidden);
+
         if mixer_shown && s.has_meters() {
             if !self.meter_timer.running() {
                 let ctx = self.clone();
@@ -4630,6 +4634,21 @@ fn open_attributes(ctx: &Ctx, app: &mut App, id: i32, paste: bool) {
     app.attributes = Some(w);
 }
 
+/// The main window's Mixer tells the meter layer where its bars are (ADR-0035).
+fn install_meter_bridge(main: &MainWindow) {
+    let g = main.global::<Studio>();
+    g.on_meter_placed(|key, x, y, w, h, vertical, shown| {
+        meter_bridge::placed(key, Rect { x, y, w, h }, vertical, shown);
+    });
+    g.on_mixer_placed(|x, y, w, h| meter_bridge::viewport(Rect { x, y, w, h }));
+    let weak = main.as_weak();
+    g.on_meters_relayout(move || {
+        if let Some(w) = weak.upgrade() {
+            meter_bridge::relayout(&w);
+        }
+    });
+}
+
 fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     if let Ok(app) = ctx.app.try_borrow() {
         app.studio.attach_models(g);
@@ -5588,6 +5607,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                     && let Some(main) = main.upgrade()
                 {
                     preview::place(&main);
+                    meter_bridge::place(&main);
                 }
             });
             if let Err(e) = set {
@@ -5954,6 +5974,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
+    install_meter_bridge(&main);
     install_sections(&main.global::<Sections>(), &ctx);
     install_experience(&main.global::<Experience>());
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));

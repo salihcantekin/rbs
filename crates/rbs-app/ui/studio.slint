@@ -1225,10 +1225,21 @@ component MeterView inherits Rectangle {
                     border-color: Theme.border-subtle;
                     border-radius: Tokens.radius-sm;
                     clip: true;
-                    Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-                    Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-                    Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-                    if data.peak > 0: Rectangle {
+                    // Where the native layer draws this bar's moving parts (ADR-0035).
+                    property <int> key: root.master ? -1 : data.id;
+                    property <int> epoch: Studio.meter-epoch;
+                    function report() {
+                        Studio.meter-placed(self.key, self.absolute-position.x, self.absolute-position.y, self.width, self.height, false, true);
+                    }
+                    init => { self.report(); }
+                    changed absolute-position => { self.report(); }
+                    changed width => { self.report(); }
+                    changed height => { self.report(); }
+                    changed epoch => { self.report(); }
+                    if !Studio.native-meters: Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+                    if !Studio.native-meters: Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+                    if !Studio.native-meters: Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+                    if data.peak > 0 && !Studio.native-meters: Rectangle {
                         x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
                         width: Tokens.size-meter-peak;
                         background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
@@ -1339,6 +1350,9 @@ component HiddenRow inherits Rectangle {
 // empty so "0 dB" lines up.
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
+    // False while the strip sits in a zero-wide cell of the other group: its bar is
+    // clipped away, so the native layer must not draw it.
+    in property <bool> shown: true;
     callback reset();
     // The master strip (ADR-0081): its own callbacks and its own menu (ADR-0092).
     in property <bool> master;
@@ -1420,10 +1434,23 @@ component MeterStrip inherits Rectangle {
         border-color: Theme.border-subtle;
         border-radius: Tokens.radius-sm;
         clip: true;
-        Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-        Rectangle { y: parent.height * (1 - data.mi-to); height: parent.height * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-        Rectangle { y: parent.height * (1 - data.hi-to); height: parent.height * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-        if data.peak > 0: Rectangle {
+        // Where the native layer draws this bar's moving parts (ADR-0035).
+        property <int> key: root.master ? -1 : data.id;
+        property <int> epoch: Studio.meter-epoch;
+        property <bool> placed: root.shown;
+        function report() {
+            Studio.meter-placed(self.key, self.absolute-position.x, self.absolute-position.y, self.width, self.height, true, root.shown);
+        }
+        init => { self.report(); }
+        changed absolute-position => { self.report(); }
+        changed width => { self.report(); }
+        changed height => { self.report(); }
+        changed epoch => { self.report(); }
+        changed placed => { self.report(); }
+        if !Studio.native-meters: Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+        if !Studio.native-meters: Rectangle { y: parent.height * (1 - data.mi-to); height: parent.height * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+        if !Studio.native-meters: Rectangle { y: parent.height * (1 - data.hi-to); height: parent.height * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+        if data.peak > 0 && !Studio.native-meters: Rectangle {
             y: min(parent.height - Tokens.size-meter-peak, parent.height * (1 - data.peak));
             height: Tokens.size-meter-peak;
             background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
@@ -1617,6 +1644,7 @@ component MixerGroupCluster inherits Rectangle {
                 x: 0;
                 y: 0;
                 height: parent.height;
+                shown: show;
                 data: m;
                 reset => { Studio.reset-clip(m.id); }
             }
@@ -1687,6 +1715,20 @@ export component MixerPanel inherits Rectangle {
     property <bool> loudness-closed: Sections.closed("mixer.loudness", Sections.rev);
     property <bool> loudness-shown: Studio.loudness.on && Studio.master-meter.length > 0;
     property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
+    // The native meter layer (ADR-0035) clips to this panel, and is told when the
+    // bars are made again.
+    property <int> epoch: Studio.meter-epoch;
+    function report() {
+        Studio.mixer-placed(self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+    }
+    init => { self.report(); }
+    changed absolute-position => { self.report(); }
+    changed width => { self.report(); }
+    changed height => { self.report(); }
+    changed epoch => { self.report(); }
+    changed wide => { Studio.meters-relayout(); }
+    changed scene-closed => { Studio.meters-relayout(); }
+    changed global-closed => { Studio.meters-relayout(); }
     if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;

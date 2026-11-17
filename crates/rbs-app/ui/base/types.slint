@@ -1498,6 +1498,20 @@ export global Studio {
     // How many of `meters` are the scene's own and how many are global (Mixer groups).
     in property <int> meter-scenes;
     in property <int> meter-globals;
+    // Native meters (ADR-0035): while true, a native layer over the Mixer draws the
+    // moving parts of its level bars (lit zones and peak line) and Slint draws only the
+    // bars' backgrounds, so a meter update redraws nothing here. Each bar tells the
+    // shell where it is (`meter-placed`), the panel where its viewport is
+    // (`mixer-placed`), and a change of `meter-epoch` asks every bar to tell again.
+    in property <bool> native-meters;
+    in property <int> meter-epoch;
+    // A level bar's place in the window (logical pixels); `key` is the source id, or
+    // -1 for the master. `shown` is false while the bar is in a zero-wide cell.
+    callback meter-placed(/* key */ int, /* x */ length, /* y */ length, /* w */ length, /* h */ length, /* vertical */ bool, /* shown */ bool);
+    // The Mixer's viewport in the window, which the native layer clips to.
+    callback mixer-placed(/* x */ length, /* y */ length, /* w */ length, /* h */ length);
+    // The Mixer's bars were made again (arrangement or a group opened or closed).
+    callback meters-relayout();
     // The program scene (the scene the Mixer hears), and its name while it is in Own
     // levels (ADR-0091): empty in Shared levels. The Mixer's "This scene" header and
     // Properties › Sound say whose level a fader edits.

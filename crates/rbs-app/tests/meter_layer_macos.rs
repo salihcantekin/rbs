@@ -449,3 +449,25 @@ fn detach_and_drop_leave_the_parent() {
     drop(bridge);
     assert_eq!(count(&parent), 0);
 }
+
+#[test]
+fn bar_ends_are_rounded_and_zone_joins_stay_square() {
+    use objc2_quartz_core::CACornerMask;
+    let mut bridge = MeterBridgeLayer::new(&colors());
+    bridge.set_meters(&[geometry(0)]);
+    bridge.set_corner_radius(4.0);
+    let subs = sublayers(&bridge);
+    assert_eq!(subs[0].cornerRadius(), 4.0, "the low zone at the start");
+    assert_eq!(
+        subs[0].maskedCorners(),
+        CACornerMask::LayerMinXMaxYCorner | CACornerMask::LayerMaxXMaxYCorner,
+        "a vertical bar starts at the bottom"
+    );
+    assert_eq!(subs[1].cornerRadius(), 0.0, "the mid zone joins square");
+    assert_eq!(subs[2].cornerRadius(), 4.0, "the high zone at the end");
+    // A meter added later gets the radius too; NaN is square.
+    bridge.set_meters(&[geometry(0), geometry(1)]);
+    assert_eq!(sublayers(&bridge)[PER_METER].cornerRadius(), 4.0);
+    bridge.set_corner_radius(f32::NAN);
+    assert_eq!(sublayers(&bridge)[0].cornerRadius(), 0.0);
+}
