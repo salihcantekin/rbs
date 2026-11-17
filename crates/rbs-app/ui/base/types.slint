@@ -1756,11 +1756,11 @@ export global Studio {
     in property <TextData> text-props;
     callback set-text-kind(int /* id */, int /* kind */);
     callback set-text-value(int /* id */, string /* key */, string /* value; "" removes it */);
-    callback set-text-number(int /* id */, string /* key */, float /* value */);
+    callback set-text-number(int /* id */, string /* key */, float /* value */, int /* gesture: a dragged field's, 0 for none */);
     callback set-text-flag(int /* id */, string /* key */, bool /* value */);
     // Outline, Shadow and Background on or off.
     callback set-text-effect(int /* id */, int /* 0 outline, 1 shadow, 2 background */, bool /* on */);
-    callback set-text-countdown(int /* id */, bool /* until a time */, string /* target */, int /* length in seconds */);
+    callback set-text-countdown(int /* id */, bool /* until a time */, string /* target */, int /* length in seconds */, int /* gesture: a dragged field's, 0 for none */);
     callback choose-text-font(int /* id */);
     callback choose-text-file(int /* id */);
     callback fit-text-box(int /* id */);
@@ -1837,11 +1837,11 @@ export global Studio {
     in-out property <int> confirm-source-kind: 0;
     in-out property <int> confirm-source-asked;
     // A video source's box on the canvas, in canvas pixels.
-    callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
+    callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */, int /* gesture: a dragged field's, 0 for none */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
     // #rrggbbaa is ignored.
     // Source pixels cut from each edge (ADR-0058); the box changes so the scale stays.
-    callback set-source-crop(int /* id */, int /* left */, int /* top */, int /* right */, int /* bottom */);
+    callback set-source-crop(int /* id */, int /* left */, int /* top */, int /* right */, int /* bottom */, int /* gesture: a dragged field's, 0 for none */);
     // 0 full picture, 1 canvas size centred, 2 left half, 3 right half.
     callback set-source-region(int /* id */, int /* region */);
     // Capture region on the source (ADR-0103), not item crop.
@@ -1859,9 +1859,10 @@ export global Studio {
     // Degrees clockwise about the box centre, wrapped into 0..360. Moves that share a
     // non-zero `gesture` are one undo step. 0 never joins.
     callback set-source-rotation(int /* id */, float /* degrees */, int /* gesture */);
-    // Bumped by a drag so each drag has its own gesture. The host never writes it.
+    // Bumped by a drag (the rotation slider, a dragged NumberField) so each drag has
+    // its own gesture; calls that share one are one undo step. The host never writes it.
     in-out property <int> gesture-serial: 1;
-    callback set-source-style(int /* id */, int /* shape */, float /* radius */, bool /* border */, float /* width */, string /* colour */);
+    callback set-source-style(int /* id */, int /* shape */, float /* radius */, bool /* border */, float /* width */, string /* colour */, int /* gesture: a dragged field's, 0 for none */);
     // The selection drawn by the toolkit where no preview layer shows the picture (the
     // layer draws it itself otherwise, ADR-0048).
     in property <[MarkData]> marks;

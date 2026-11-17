@@ -2,7 +2,7 @@
 // Every value comes from the generated tokens (rule U6). Every control is reachable
 // by keyboard, shows a focus ring and has an accessible role and name (rule U7).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays, ContextMenus, MenuRow } from "base/types.slint";
+import { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays, ContextMenus, MenuRow, Studio } from "base/types.slint";
 export { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays }
 
 // The mark of a row or card found by Settings search: a focus-coloured outline that
@@ -2652,7 +2652,8 @@ export component NumberField inherits Rectangle {
             root.edited((input.text.is-float() ? input.text.to-float() : root.value) + n * root.step);
         }
     }
-    changed value => { input.text = shown(root.value); }
+    // A drag shows its own value; answers to its live edits do not move the text.
+    changed value => { if !root.dragging { input.text = shown(root.value); } }
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
@@ -2679,30 +2680,64 @@ export component NumberField inherits Rectangle {
         vertical-alignment: center;
         accessible-role: none;
     }
-    input := TextInput {
+    // While typing, a drag past its threshold changes the value as an unfocused drag
+    // does; a click or a short press still reaches the text (caret, double-click).
+    swipe := SwipeGestureHandler {
         x: Tokens.space-2;
         width: parent.width - 2 * Tokens.space-2 - steppers.width - root.unit-room;
         height: parent.height;
-        text: shown(root.value);
-        enabled: root.enabled;
-        single-line: true;
-        vertical-alignment: center;
-        horizontal-alignment: root.prefix != "" || root.unit != "" ? right : left;
-        color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-        font-size: Tokens.type-body-size;
-        // The caret is drawn in the selection colour (Slint 1.18 on macOS): accent,
-        // two pixels wide, so it shows on the sunken field in every theme.
-        selection-background-color: Theme.accent;
-        selection-foreground-color: Theme.text-inverse;
-        text-cursor-width: Tokens.size-focus-ring;
-        accessible-role: none;
-        key-pressed(e) => {
-            if e.text == Key.UpArrow { step-by(e.modifiers.shift ? 10 : 1); return accept; }
-            if e.text == Key.DownArrow { step-by(e.modifiers.shift ? -10 : -1); return accept; }
-            reject
+        enabled: root.enabled && input.has-focus;
+        handle-swipe-left: true;
+        handle-swipe-right: true;
+        handle-swipe-up: true;
+        handle-swipe-down: true;
+        // Escape cancels the swipe itself, so a swipe that moves is always one to follow.
+        moved => {
+            if self.swiping {
+                if !root.dragging { root.begin-drag(); }
+                root.drag-by((self.current-position.x - self.pressed-position.x) - (self.current-position.y - self.pressed-position.y), root.shift-held);
+            }
         }
-        accepted => { root.commit(); }
-        edited => { root.typed(self.text); }
+        swiped => {
+            if root.dragging { root.end-drag(true); }
+        }
+        cancelled => {
+            if root.dragging { root.end-drag(false); }
+        }
+        input := TextInput {
+            x: 0;
+            width: parent.width;
+            height: parent.height;
+            text: shown(root.value);
+            enabled: root.enabled;
+            single-line: true;
+            vertical-alignment: center;
+            horizontal-alignment: root.prefix != "" || root.unit != "" ? right : left;
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-body-size;
+            // The caret is drawn in the selection colour (Slint 1.18 on macOS): accent,
+            // two pixels wide, so it shows on the sunken field in every theme.
+            selection-background-color: Theme.accent;
+            selection-foreground-color: Theme.text-inverse;
+            text-cursor-width: Tokens.size-focus-ring;
+            accessible-role: none;
+            key-pressed(e) => {
+                root.shift-held = e.modifiers.shift;
+                if e.text == Key.Escape && swipe.swiping {
+                    swipe.cancel();
+                    return accept;
+                }
+                if e.text == Key.UpArrow { step-by(e.modifiers.shift ? 10 : 1); return accept; }
+                if e.text == Key.DownArrow { step-by(e.modifiers.shift ? -10 : -1); return accept; }
+                reject
+            }
+            key-released(e) => {
+                root.shift-held = e.modifiers.shift && e.text != Key.Shift;
+                reject
+            }
+            accepted => { root.commit(); }
+            edited => { root.typed(self.text); }
+        }
     }
     post := Text {
         x: parent.width - Tokens.space-2 - steppers.width - self.width;
@@ -2715,46 +2750,88 @@ export component NumberField inherits Rectangle {
         accessible-role: none;
     }
     // Drag to change (design system NumberField): right or up raises the value, one
-    // step per `size.field.drag-step` of travel, ten with Shift. The field shows the
-    // dragged value and calls `edited` once, on release; Escape puts it back. A press
+    // step per `size.field.drag-step` of travel, ten with Shift. Unfocused, a press
     // that moves less than one step is a click: the field takes the focus to type.
+    // While typing, a click still places the caret and a drag past the swipe threshold
+    // changes the value too. With `live`, the field sends each new value as it is
+    // dragged, at most one per `delay.live-edit`, and `gesture` is the drag's number
+    // (0 outside a drag) so the edits of one drag can be one undo step; without it, the
+    // field calls `edited` once, on release. Escape puts the value back.
+    in property <bool> live: true;
+    out property <int> gesture;
     property <bool> dragging;
     property <bool> drag-cancelled;
     property <float> drag-from;
     property <float> drag-value;
-    function end-drag(apply: bool) {
+    // The last value this drag sent, so a drag sends only changes.
+    property <float> drag-sent;
+    property <bool> drag-pending: root.dragging && root.live && root.drag-value != root.drag-sent;
+    // Shift as the keys last reported it, for a drag while typing (the swipe handler
+    // does not report modifiers).
+    property <bool> shift-held;
+    function begin-drag() {
         root.dragging = false;
-        drag-keys.clear-focus();
-        if apply && root.drag-value != root.value {
+        root.drag-cancelled = false;
+        root.drag-from = input.text.is-float() ? input.text.to-float() : root.value;
+        root.drag-value = root.drag-from;
+        root.drag-sent = root.drag-from;
+    }
+    function drag-by(travel: length, shift: bool) {
+        if !root.dragging {
+            root.dragging = true;
+            Studio.gesture-serial += 1;
+            root.gesture = Studio.gesture-serial;
+        }
+        root.drag-value = root.drag-from + round(travel / Tokens.size-field-drag-step) * root.step * (shift ? 10 : 1);
+        input.text = shown(root.drag-value);
+    }
+    function send-drag() {
+        if root.drag-value != root.drag-sent {
+            root.drag-sent = root.drag-value;
             root.edited(root.drag-value);
         }
-        input.text = shown(root.value);
+    }
+    // Ends a drag: `apply` sends the last value, else a value already sent goes back to
+    // where the drag started (in the same gesture, so the undo step nets out).
+    function end-drag(apply: bool) {
+        if !apply {
+            root.drag-value = root.drag-from;
+        }
+        if apply || root.drag-sent != root.drag-from {
+            root.send-drag();
+        }
+        root.dragging = false;
+        root.gesture = 0;
+        drag-keys.clear-focus();
+        // A live drag's last value may not be back yet; on release alone, the field
+        // shows what stands until the answer arrives.
+        input.text = shown(apply && root.live ? root.drag-value : root.value);
+    }
+    Timer {
+        interval: Tokens.delay-live-edit;
+        running: root.drag-pending;
+        triggered => { root.send-drag(); }
     }
     drag := TouchArea {
         x: 0;
         width: parent.width - steppers.width;
         height: parent.height;
-        // While typing, the pointer edits the text; a drag that took the focus keeps
-        // its press.
+        // While typing, the pointer goes to the text and its swipe handler; a drag that
+        // took the focus keeps its press.
         enabled: root.enabled && (!input.has-focus || self.pressed);
         mouse-cursor: ew-resize;
         pointer-event(e) => {
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                root.dragging = false;
-                root.drag-cancelled = false;
-                root.drag-from = input.text.is-float() ? input.text.to-float() : root.value;
-                root.drag-value = root.drag-from;
+                root.begin-drag();
             } else if e.kind == PointerEventKind.move && self.pressed && !root.drag-cancelled {
                 let travel = (self.mouse-x - self.pressed-x) - (self.mouse-y - self.pressed-y);
                 if !root.dragging && abs(travel) < Tokens.size-field-drag-step {
                     return;
                 }
                 if !root.dragging {
-                    root.dragging = true;
                     drag-keys.focus();
                 }
-                root.drag-value = root.drag-from + round(travel / Tokens.size-field-drag-step) * root.step * (e.modifiers.shift ? 10 : 1);
-                input.text = shown(root.drag-value);
+                root.drag-by(travel, e.modifiers.shift);
             } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
                 if root.dragging {
                     root.end-drag(true);
@@ -2809,7 +2886,7 @@ export component NumberField inherits Rectangle {
             }
         }
     }
-    property <bool> focused: input.has-focus;
+    out property <bool> focused: input.has-focus;
     changed focused => {
         if focused {
             FocusReveal.focused(input.absolute-position.x, input.absolute-position.y);

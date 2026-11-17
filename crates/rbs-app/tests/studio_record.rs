@@ -1000,7 +1000,11 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
     let width = |w: i64| {
         let mut patch = std::collections::BTreeMap::new();
         patch.insert("width".to_owned(), serde_json::json!(w));
-        Command::SetSourceSettings { id: text.id, patch }
+        Command::SetSourceSettings {
+            id: text.id,
+            patch,
+            gesture: 0,
+        }
     };
     // A box change before the take, to undo during it.
     host.send(width(300));
@@ -1057,6 +1061,62 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A dragged field sends each value it passes (design system NumberField, live): the
+/// patches of one drag share a gesture and undo as one step.
+#[test]
+fn the_patches_of_one_field_drag_undo_as_one_step() {
+    let Some(gpu) = gpu() else { return };
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::AddText {
+        text: "Title".into(),
+    });
+    let rows = rows_where(&rx, |r| r.iter().any(|r| r.kind == Some(SourceKind::Text)));
+    let text = rows
+        .into_iter()
+        .find(|r| r.kind == Some(SourceKind::Text))
+        .unwrap();
+    let int =
+        |r: &rbs_app::studio_host::SourceRow, key: &str| match r.text.as_ref().unwrap().get(key) {
+            Some(rbs_scene::model::SettingValue::Int(i)) => *i,
+            other => panic!("{key}: {other:?}"),
+        };
+    let start = int(&text, "width");
+    let width = |w: i64, gesture: u64| {
+        let mut patch = std::collections::BTreeMap::new();
+        patch.insert("width".to_owned(), serde_json::json!(w));
+        Command::SetSourceSettings {
+            id: text.id,
+            patch,
+            gesture,
+        }
+    };
+    // A step before the drag, which must survive its undo.
+    host.send(width(start + 5, 0));
+    for w in [start + 10, start + 20, start + 30] {
+        host.send(width(w, 7));
+    }
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == text.id && int(r, "width") == start + 30)
+    });
+    host.send(Command::Undo);
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == text.id && int(r, "width") == start + 5)
+    });
+    host.send(Command::Undo);
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == text.id && int(r, "width") == start)
+    });
+}
+
 /// The Text tab's commands (ADR-0129 decision 13): a text row carries its settings,
 /// the font picker gets the families, and Fit box to text sets the box to the text's
 /// size, keeps the item's centre and scale, and undoes in one step.
@@ -1093,7 +1153,11 @@ fn fit_box_to_text_and_the_font_list_answer_the_text_tab() {
     // A wider box, then fitted again: back to the text's width, same centre.
     let mut patch = std::collections::BTreeMap::new();
     patch.insert("width".to_owned(), serde_json::json!(fitted + 200));
-    host.send(Command::SetSourceSettings { id: text.id, patch });
+    host.send(Command::SetSourceSettings {
+        id: text.id,
+        patch,
+        gesture: 0,
+    });
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == fitted + 200)

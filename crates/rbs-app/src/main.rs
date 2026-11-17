@@ -5044,22 +5044,18 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_move_source_to, |app, id: i32, to: i32| {
         app.studio.move_source_to(id, to);
     });
-    on!(on_set_source_box, |app,
-                            id: i32,
-                            x: f32,
-                            y: f32,
-                            w: f32,
-                            h: f32| {
-        app.studio.set_source_box(id, x, y, w, h);
-    });
-    on!(on_set_source_crop, |app,
-                             id: i32,
-                             l: i32,
-                             t: i32,
-                             r: i32,
-                             b: i32| {
-        app.studio.set_source_crop(id, [l, t, r, b]);
-    });
+    on!(
+        on_set_source_box,
+        |app, id: i32, x: f32, y: f32, w: f32, h: f32, gesture: i32| {
+            app.studio.set_source_box(id, x, y, w, h, gesture);
+        }
+    );
+    on!(
+        on_set_source_crop,
+        |app, id: i32, l: i32, t: i32, r: i32, b: i32, gesture: i32| {
+            app.studio.set_source_crop(id, [l, t, r, b], gesture);
+        }
+    );
     on!(on_transform_source, |app, id: i32, op: i32| {
         use rbs_scene::{CenterAxis, FitMode};
         let op = match op {
@@ -5097,8 +5093,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     );
     on!(
         on_set_text_number,
-        |app, id: i32, key: slint::SharedString, value: f32| {
-            app.studio.set_text_number(id, key.as_str(), value);
+        |app, id: i32, key: slint::SharedString, value: f32, gesture: i32| {
+            app.studio.set_text_number(id, key.as_str(), value, gesture);
         }
     );
     on!(on_set_text_flag, |app,
@@ -5112,9 +5108,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(
         on_set_text_countdown,
-        |app, id: i32, until: bool, target: slint::SharedString, seconds: i32| {
+        |app, id: i32, until: bool, target: slint::SharedString, seconds: i32, gesture: i32| {
             app.studio
-                .set_text_countdown(id, until, target.as_str(), seconds);
+                .set_text_countdown(id, until, target.as_str(), seconds, gesture);
         }
     );
     on!(on_choose_text_font, |app, id: i32| {
@@ -5165,9 +5161,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
          radius: f32,
          border: bool,
          width: f32,
-         color: slint::SharedString| {
+         color: slint::SharedString,
+         gesture: i32| {
             app.studio
-                .set_source_style(id, shape, radius, border, width, &color);
+                .set_source_style(id, shape, radius, border, width, &color, gesture);
         }
     );
     on!(on_undo_delete, |app| {

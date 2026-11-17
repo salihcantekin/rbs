@@ -250,6 +250,9 @@ format = 4
 # `delay.repeat-start`, then steps every `delay.repeat`.
 "delay.repeat-start" = 400
 "delay.repeat" = 80
+# Not motion: a NumberField being dragged sends a new value at most once per
+# `delay.live-edit` (about one frame), so a fast drag does not queue edits.
+"delay.live-edit" = 16
 # Not motion: how long the pointer rests on a control before its tooltip shows.
 "delay.tooltip" = 500
 # Not motion: how long the pointer rests on a menu row with a submenu before it opens

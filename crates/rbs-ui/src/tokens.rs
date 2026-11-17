@@ -192,6 +192,7 @@ pub const DURATIONS: &[&str] = &[
     "motion.normal",
     "delay.repeat-start",
     "delay.repeat",
+    "delay.live-edit",
     "delay.tooltip",
     "delay.submenu",
     "delay.toast",
