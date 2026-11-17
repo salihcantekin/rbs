@@ -27,6 +27,8 @@ rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-media-decode = { path = "../rbs-media-decode" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 bytes = "1.9"
+# Lock-free sound ring between the browser feed and the sound node (as rbs-nodes media).
+rtrb = "0.4"
 # PNG files for image sources (ADR-0074): pure Rust, MIT or Apache-2.0, control thread only.
 png = "0.18"
 
@@ -37,6 +39,14 @@ rbs-audio-io-test = { path = "../rbs-audio-io-test" }
 rbs-media-decode-test = { path = "../rbs-media-decode-test" }
 # Deterministic text renderer (ADR-0129) for the text worker tests.
 rbs-text-test = { path = "../rbs-text-test" }
+# Allocation guard for the browser sound node's block path (no allocation on hot paths).
+allocation-counter = "0.8"
+# Browser sound node and feed benchmark (measure-performance skill).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "browser_sound"
+harness = false
 
 [lints]
 workspace = true

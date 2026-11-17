@@ -258,3 +258,22 @@ fn processing_and_set_do_not_allocate() {
     });
     assert_eq!(info.count_total, 0);
 }
+
+#[test]
+fn the_drawn_response_matches_what_the_sound_gets() {
+    // The editor's curve (ADR-0130 decision 10): flat at the defaults, and equal to the
+    // measured gain of a sine where a band is raised.
+    let flat = EqualiserDsp::new(setup(), &values(&[]));
+    for f in [30.0, 400.0, 3_000.0, 15_000.0] {
+        assert_eq!(flat.response_db(f), 0.0);
+    }
+    let v = values(&[("band1_gain", Value::Number(6.0))]);
+    let curve = EqualiserDsp::new(setup(), &v);
+    let mut dsp = EqualiserDsp::new(setup(), &v);
+    let measured = measured_db(&mut dsp, 400.0);
+    assert!(
+        (curve.response_db(400.0) - measured).abs() < 0.2,
+        "{measured}"
+    );
+    assert!((curve.response_db(400.0) - 6.0).abs() < 0.1);
+}

@@ -45,8 +45,8 @@ use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_ne
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
-    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, VideoSettings,
-    VirtualCameraSettings,
+    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, TransitionOnce, TransitionPhase,
+    VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
@@ -71,6 +71,9 @@ mod device_sync;
 pub mod filters;
 mod loudness;
 mod monitor;
+mod network;
+mod obs_import_api;
+mod on_air;
 pub mod protection;
 pub mod replay;
 pub mod sync_measure;
@@ -422,6 +425,9 @@ pub struct SourceRow {
     /// The other sources of its audio device whose sync offset differs, by name
     /// (ADR-0126 decision 9); empty for every other source.
     pub device_peers: Vec<String>,
+    /// How the latency of its running audio filters is compensated (ADR-0130 decision
+    /// 4); `None` for a source the studio does not run.
+    pub latency: Option<rbs_record::AudioLatency>,
 }
 
 impl PartialEq for SourceRow {
@@ -436,6 +442,7 @@ impl PartialEq for SourceRow {
             && self.companion_of == other.companion_of
             && self.record_separately == other.record_separately
             && self.device_peers == other.device_peers
+            && self.latency == other.latency
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -758,6 +765,8 @@ pub enum Command {
         /// The filter type's id.
         type_id: String,
     },
+    /// Add the voice chain to a sound source (ADR-0130 decision 10; one undo step).
+    AddVoiceChain(SourceId),
     /// Apply a built-in look to a source's item and filters (ADR-0075; one undo step).
     ApplyLook {
         /// The source.
@@ -1257,6 +1266,9 @@ pub enum Command {
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
+    /// Save an imported stream key under a new output profile's account (ADR-0131
+    /// decision 5). A failure is reported with [`Update::Error`].
+    SaveImportedKey(String, Secret),
     /// Run another scene collection (Scene collection menu): the studio restarts with
     /// it, as for a canvas change, and its first canvas's program scene is shown.
     /// Refused while recording or streaming. Changes are saved through `autosave` from
@@ -2155,7 +2167,7 @@ struct LiveDestination {
 }
 
 impl LiveDestination {
-    /// Its row in the stream's state (control API 1.74), as of `now`.
+    /// Its row in the stream's state (control API 1.77), as of `now`.
     fn api(&self, now: Timestamp) -> api::LiveDestination {
         api::LiveDestination {
             id: self.id,
@@ -2393,6 +2405,8 @@ pub struct SceneList {
     pub master: MasterAudio,
     /// Collection morph defaults (ADR-0100).
     pub glide: rbs_scene::CollectionGlide,
+    /// The collection's transition (ADR-0128).
+    pub transition: rbs_scene::CollectionTransition,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -2430,6 +2444,7 @@ impl Refusal {
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
             | SceneError::InvalidShowFor
+            | SceneError::InvalidTransition
             | SceneError::ChromeNotDisplay
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
             _ => Self::Failed(edit_error(e)),
@@ -2757,7 +2772,7 @@ pub enum Update {
     /// the UI shows and saves them.
     StreamProfile(StreamProfile),
     /// A control API client turned a stream destination on or off
-    /// (`stream.destination.set_enabled`, protocol 1.74); the UI saves the section.
+    /// (`stream.destination.set_enabled`, protocol 1.77); the UI saves the section.
     StreamDestinations(Destinations),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
@@ -2798,6 +2813,12 @@ pub enum Update {
         seq: u64,
         /// How it went.
         result: Result<(), String>,
+    },
+    /// `import.obs.run` wrote a new scene collection and output profile (control API
+    /// 1.82): the UI reloads its libraries, and its shortcuts when `shortcuts`.
+    ObsImported {
+        /// Hotkeys were added to `shortcuts.toml`.
+        shortcuts: bool,
     },
     /// A control API client asked to switch output profiles (`collection` false) or
     /// scene collections to the entry `id` (`profile.switch`, `collection.switch`);
@@ -3249,6 +3270,22 @@ struct WithTokens<'a> {
 }
 
 impl ControlTarget for WithTokens<'_> {
+    fn handle_as(
+        &mut self,
+        caller: &rbs_api::Caller,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        if let Some(answer) = self.tokens.and_then(|t| t.answer(&command)) {
+            let (response, changed) = answer?;
+            if changed {
+                (self.notify)(Update::TokensChanged);
+            }
+            return Ok(response);
+        }
+        self.inner.handle_as(caller, command, events)
+    }
+
     fn handle(
         &mut self,
         command: rbs_api::Command,
@@ -3403,6 +3440,9 @@ struct Host {
     /// scene the program shows until the next transition, so edits stay off air
     /// (ADR-0063). Never saved, never listed.
     held: Option<Held>,
+    /// The scene the last held copy was taken from, so a transition away from the
+    /// copy names the real scene on `transition.state`.
+    held_was: Option<SceneId>,
     /// The preview scene's picture endpoint last sent to the UI.
     scene_preview_sent: Option<PreviewEndpoint>,
     /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
@@ -3782,6 +3822,7 @@ fn round(
     if host.studio.take_transition_done() {
         host.studio.settle_transitions(&host.adapters.sources);
     }
+    host.publish_transitions();
     if host.studio.take_hold_fallback() {
         host.studio.settle_hold_scenes(&host.adapters.sources);
         for c in OutputCanvas::ALL {
@@ -3988,6 +4029,7 @@ fn start(
         globals_shown: Vec::new(),
         into: None,
         held,
+        held_was: None,
         scene_preview_sent: None,
         vertical_picture: false,
         vertical_preview_sent: None,
@@ -4403,6 +4445,10 @@ impl Host {
                 let done = self
                     .add_filter(source, &type_id, &std::collections::BTreeMap::new())
                     .map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::AddVoiceChain(source) => {
+                let done = self.add_voice_chain(source);
                 self.answer(done, notify);
             }
             Command::AddSample { sample } => {
@@ -4961,6 +5007,14 @@ impl Host {
                 notify(Update::VerticalStreamKey(result));
             }
             Command::SetKeyAccount(account) => self.key_account = account,
+            Command::SaveImportedKey(account, key) => {
+                if let Err(e) = self.keys.write(&account, &key) {
+                    notify(Update::Error(format!(
+                        "The imported stream key could not be saved in {}: {e}. Enter it in Settings, Stream.",
+                        self.keys.place()
+                    )));
+                }
+            }
             Command::RemoveStreamKey(account) => {
                 if let Err(e) = self.keys.remove(&account) {
                     notify(Update::Error(format!(
@@ -7792,7 +7846,7 @@ impl Host {
         self.destinations.of(role, &profile, &self.key_account)
     }
 
-    /// `stream.destinations` rows of `c` (control API 1.74): never a server or a key.
+    /// `stream.destinations` rows of `c` (control API 1.77): never a server or a key.
     fn api_destinations(&self, c: OutputCanvas) -> Vec<api::StreamDestination> {
         self.resolved_destinations(c)
             .into_iter()
@@ -8218,7 +8272,7 @@ impl Host {
                 s.transport_drops += d.link.transport_drops;
             }
         }
-        // Each destination's row (control API 1.74): a change of state, counters or
+        // Each destination's row (control API 1.77): a change of state, counters or
         // error is published; the time on air alone is not (never per round).
         let now = self.clock.now();
         let rows: Vec<api::LiveDestination> = self.outs[slot(c)]
@@ -10551,6 +10605,45 @@ impl Host {
         Ok(true)
     }
 
+    /// `collection.set_transition` (ADR-0128 decision 13): merges the given parts into
+    /// the collection's transition as one undo step.
+    fn set_transition(
+        &mut self,
+        p: &rbs_api::request::SetCollectionTransition,
+    ) -> Result<bool, Refusal> {
+        let mut t = self.collection.transition();
+        if let Some(kind) = p.kind {
+            t.kind = scene_transition_kind(kind);
+        }
+        if let Some(f) = &p.fade {
+            t.fade = rbs_scene::FadeSettings {
+                duration_ms: f.duration_ms,
+                easing: scene_easing(f.easing),
+                via: match &f.via {
+                    None => None,
+                    Some(c) => Some(parse_rgb(c).ok_or_else(|| {
+                        Refusal::Invalid(format!("{c} is not a colour like #1a2b3c."))
+                    })?),
+                },
+            };
+        }
+        if let Some(s) = p.swipe {
+            t.swipe = scene_swipe(s);
+        }
+        if let Some(s) = p.slide {
+            t.slide = scene_swipe(s);
+        }
+        if self.collection.transition() == t {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_transition(t)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Transition, "", 0, vec![undo]);
+        Ok(true)
+    }
+
     fn set_source_glide(
         &mut self,
         id: SourceId,
@@ -11323,7 +11416,11 @@ impl Host {
         let program = self.scene;
         if preview == program {
             // `apply` holds the scene as it is now.
-            return Ok(self.held.take().is_some());
+            let taken = self.held.take();
+            if let Some(h) = &taken {
+                self.held_was = Some(h.from);
+            }
+            return Ok(taken.is_some());
         }
         self.collection
             .set_program(self.canvas, Some(preview))
@@ -11347,6 +11444,9 @@ impl Host {
     /// (a duplicate name, say) is taken again from the scene as it is now; if even a
     /// fresh copy does not fit, nothing is held.
     fn run_collection(&mut self) -> Option<SceneCollection> {
+        if let Some(h) = &self.held {
+            self.held_was = Some(h.from);
+        }
         self.sync_held();
         let held = self.held.as_ref()?;
         if let Some(run) = run_copy(&self.collection, self.canvas, held) {
@@ -11441,6 +11541,7 @@ impl Host {
                 .map(|c| c.master)
                 .unwrap_or_default(),
             glide: self.collection.glide(),
+            transition: self.collection.transition(),
             sources,
         }
     }
@@ -12059,7 +12160,51 @@ impl Host {
             }
             Err(e) => notify(Update::Error(e.to_string())),
         }
+        self.publish_transitions();
         self.publish(notify);
+    }
+
+    /// Publishes the transitions' starts and ends since the last call on
+    /// `transition.state` (ADR-0128 decision 13), one key per canvas. Like every state
+    /// topic the slot keeps the latest: a cut's start and end in one update reach a
+    /// slow client as `ended` with a `seq` that skipped the start.
+    fn publish_transitions(&mut self) {
+        for e in self.studio.take_transition_events() {
+            let canvas = if e.canvas == self.canvas {
+                OutputCanvas::Main
+            } else if self.vertical.map(|v| v.canvas) == Some(e.canvas) {
+                OutputCanvas::Vertical
+            } else {
+                continue;
+            };
+            // The held copy (ADR-0063) is named by its real scene.
+            let real = |id: SceneId, held: Option<SceneId>| {
+                if id.get() == HELD_IDS { held } else { Some(id) }
+            };
+            let now_held = self.held.as_ref().map(|h| h.from);
+            let (Some(from), Some(to)) = (
+                e.from.and_then(|id| real(id, self.held_was.or(now_held))),
+                e.to.and_then(|id| real(id, now_held.or(self.held_was))),
+            ) else {
+                continue;
+            };
+            let state = api::TransitionStateChanged {
+                canvas,
+                state: match e.phase {
+                    TransitionPhase::Started => api::TransitionPhase::Started,
+                    _ => api::TransitionPhase::Ended,
+                },
+                kind: api_transition_kind(e.kind),
+                duration_ms: u32::try_from(e.duration.as_millis()).unwrap_or(u32::MAX),
+                from: from.get(),
+                to: to.get(),
+                at: e.at.as_nanos(),
+            };
+            self.events
+                .changed(canvas_key(Topic::TransitionState, canvas), || {
+                    EventPayload::TransitionState(state)
+                });
+        }
     }
 
     /// Sends the rows and the undo history when they changed, and saves the collection
@@ -12228,6 +12373,7 @@ impl Host {
                     cue_remaining_ms,
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
+                    latency: self.studio.audio_latency(s.id),
                     device_peers: self
                         .device_peers(s.id)
                         .into_iter()
@@ -12261,7 +12407,11 @@ impl Host {
                         .program_levels(self.canvas)
                         .and_then(|l| l.level(s.id))
                         .map(|l| l.over(s.audio)),
-                    filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
+                    filters: filters::rows(
+                        s,
+                        |f| self.studio.audio_filter_meter(f).cloned(),
+                        |f| self.studio.audio_filter_latency_ns(f),
+                    ),
                     status,
                     global,
                     also_in: {
@@ -12410,6 +12560,17 @@ struct ApiTarget<'a> {
 }
 
 impl ControlTarget for ApiTarget<'_> {
+    fn handle_as(
+        &mut self,
+        caller: &rbs_api::Caller,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        self.host.check_on_air(caller.irreversible, &command)?;
+        self.host.check_network(caller.irreversible, &command)?;
+        self.handle(command, events)
+    }
+
     fn handle(
         &mut self,
         command: rbs_api::Command,
@@ -12586,7 +12747,11 @@ impl ApiTarget<'_> {
             })),
             C::SourceList => Ok(Response::Sources(api::Snapshot {
                 seq: host.events.seq_map([Topic::SourceChanged]),
-                data: host.heard.iter().map(api_source).collect(),
+                data: host
+                    .heard
+                    .iter()
+                    .map(|row| with_input_counters(&host.studio, api_source(row)))
+                    .collect(),
             })),
             C::SourceTargets(p) => {
                 let kind = app_kind(p.kind);
@@ -12851,18 +13016,22 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::CanvasTransition => {
+            C::CanvasTransition(p) => {
+                let once = transition_once(p).map_err(|e| refused(&e))?;
                 let changed = host.transition().map_err(|e| refused(&e))?;
                 if changed {
+                    host.studio.set_transition_once(once);
                     host.apply(notify);
                 }
                 Ok(Response::Done(Empty {}))
             }
             C::SceneSwitch(p) => {
+                let once = transition_once(p.once()).map_err(|e| refused(&e))?;
                 let changed = host
                     .switch_scene(SceneId::from_raw(p.scene))
                     .map_err(|e| refused(&e))?;
                 if changed {
+                    host.studio.set_transition_once(once);
                     host.apply(notify);
                 }
                 Ok(Response::Done(Empty {}))
@@ -13047,7 +13216,11 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::FilterTypes(p) => Ok(Response::FilterTypes(filters::api_types(p.domain))),
+            C::FilterTypes(p) => {
+                let graph = &host.studio.settings().audio_graph;
+                let setup = rbs_audio_filters::DspSetup::new(graph.format, graph.block_frames);
+                Ok(Response::FilterTypes(filters::api_types(p.domain, setup)))
+            }
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
                 let id = host
@@ -14008,6 +14181,9 @@ impl ApiTarget<'_> {
             C::CollectionList => host.library_list(true),
             C::ProfileSwitch(r) => host.library_switch(false, r.id, notify),
             C::CollectionSwitch(r) => host.library_switch(true, r.id, notify),
+            C::ImportObsScan => obs_import_api::scan(),
+            C::ImportObsCheck(p) => obs_import_api::check(&p),
+            C::ImportObsRun(p) => host.import_obs(&p, notify),
             C::CollectionSetGlide(p) => {
                 let easing = match p.easing {
                     api::GlideEasing::Linear => 0,
@@ -14016,6 +14192,13 @@ impl ApiTarget<'_> {
                 let changed = host
                     .set_glide(p.duration_ms, easing)
                     .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::CollectionSetTransition(p) => {
+                let changed = host.set_transition(&p).map_err(|e| refused(&e))?;
                 if changed {
                     host.apply(notify);
                 }
@@ -14661,7 +14844,7 @@ impl ApiTarget<'_> {
         self.host.api_canvas_of(Some(c))
     }
 
-    /// `stream.destination.start` (protocol 1.74, ADR-0127 decision 16).
+    /// `stream.destination.start` (protocol 1.77, ADR-0127 decision 16).
     fn destination_start(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
         let notify = self.notify;
@@ -14709,7 +14892,7 @@ impl ApiTarget<'_> {
         Ok(Response::Done(Empty {}))
     }
 
-    /// `stream.destination.stop` (protocol 1.74): the last running destination ends
+    /// `stream.destination.stop` (protocol 1.77): the last running destination ends
     /// the stream, as `stream.stop` does.
     fn destination_stop(&mut self, id: u32) -> Result<Response, ApiError> {
         let c = self.destination_of(id)?;
@@ -14738,7 +14921,7 @@ impl ApiTarget<'_> {
     }
 
     /// `stream.start` of `c`, or `stream.destination.start` of `only` while `c` does
-    /// not stream: that canvas's stream with this destination alone (protocol 1.74).
+    /// not stream: that canvas's stream with this destination alone (protocol 1.77).
     fn stream_to(&mut self, c: OutputCanvas, only: Option<u32>) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
@@ -14981,6 +15164,21 @@ fn api_picture_form(form: VideoAs) -> api::PictureForm {
     }
 }
 
+/// Nanoseconds as milliseconds, to the microsecond (control API 1.77).
+fn ns_to_ms(ns: i64) -> f64 {
+    (ns as f64 / 1_000.0).round() / 1_000.0
+}
+
+/// `info` with the counters of its source's audio input, when one runs (`source.list`,
+/// protocol 1.77, ADR-0130 decision 9).
+fn with_input_counters(studio: &Studio, mut info: api::SourceInfo) -> api::SourceInfo {
+    if let Some(c) = studio.input_counters(SourceId::from_raw(info.id)) {
+        info.input_late_frames = Some(c.late_frames);
+        info.input_resyncs = Some(c.resyncs);
+    }
+    info
+}
+
 fn api_source(row: &SourceRow) -> api::SourceInfo {
     api::SourceInfo {
         item: Some(row.item.get()),
@@ -15022,6 +15220,13 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             volume: h.volume,
             muted: h.muted,
         }),
+        filter_latency_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.filter_latency_ns)),
+        effective_offset_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.heard_offset_ns)),
+        uncompensated_ms: row.latency.map_or(0.0, |l| ns_to_ms(l.uncompensated_ns)),
+        // Growing counters: only `source.list` reads them (`with_input_counters`), so
+        // a row's change event is not sent on every block.
+        input_late_frames: None,
+        input_resyncs: None,
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),
@@ -15052,6 +15257,103 @@ fn api_glide_source(g: rbs_scene::SourceGlide) -> api::Glide {
         duration_ms: g.duration_ms,
         easing: api_easing(g.easing),
     }
+}
+
+/// A one-off transition of `canvas.transition` or `scene.switch` (ADR-0128 decision
+/// 13), refused when its duration is out of range.
+fn transition_once(p: rbs_api::request::TransitionOnce) -> Result<TransitionOnce, Refusal> {
+    if let Some(ms) = p.duration_ms
+        && ms > rbs_scene::MAX_GLIDE_MS
+    {
+        return Err(Refusal::Invalid(format!(
+            "duration_ms must be at most {}.",
+            rbs_scene::MAX_GLIDE_MS
+        )));
+    }
+    Ok(TransitionOnce::new(
+        p.kind.map(scene_transition_kind),
+        p.duration_ms,
+    ))
+}
+
+fn scene_transition_kind(k: api::TransitionKind) -> rbs_scene::TransitionKind {
+    match k {
+        api::TransitionKind::Cut => rbs_scene::TransitionKind::Cut,
+        api::TransitionKind::Fade => rbs_scene::TransitionKind::Fade,
+        api::TransitionKind::Move => rbs_scene::TransitionKind::Move,
+        api::TransitionKind::Swipe => rbs_scene::TransitionKind::Swipe,
+        api::TransitionKind::Slide => rbs_scene::TransitionKind::Slide,
+    }
+}
+
+fn api_transition_kind(k: rbs_scene::TransitionKind) -> api::TransitionKind {
+    match k {
+        rbs_scene::TransitionKind::Cut => api::TransitionKind::Cut,
+        rbs_scene::TransitionKind::Fade => api::TransitionKind::Fade,
+        rbs_scene::TransitionKind::Swipe => api::TransitionKind::Swipe,
+        rbs_scene::TransitionKind::Slide => api::TransitionKind::Slide,
+        _ => api::TransitionKind::Move,
+    }
+}
+
+fn scene_easing(e: api::GlideEasing) -> rbs_scene::GlideEasing {
+    match e {
+        api::GlideEasing::Linear => rbs_scene::GlideEasing::Linear,
+        api::GlideEasing::EaseInOut => rbs_scene::GlideEasing::EaseInOut,
+    }
+}
+
+fn scene_swipe(s: api::SwipeTransition) -> rbs_scene::SwipeSettings {
+    rbs_scene::SwipeSettings {
+        duration_ms: s.duration_ms,
+        easing: scene_easing(s.easing),
+        direction: match s.direction {
+            api::SwipeDirection::Left => rbs_scene::SwipeDirection::Left,
+            api::SwipeDirection::Right => rbs_scene::SwipeDirection::Right,
+            api::SwipeDirection::Up => rbs_scene::SwipeDirection::Up,
+            api::SwipeDirection::Down => rbs_scene::SwipeDirection::Down,
+        },
+    }
+}
+
+fn api_swipe(s: rbs_scene::SwipeSettings) -> api::SwipeTransition {
+    api::SwipeTransition {
+        duration_ms: s.duration_ms,
+        easing: api_easing(s.easing),
+        direction: match s.direction {
+            rbs_scene::SwipeDirection::Right => api::SwipeDirection::Right,
+            rbs_scene::SwipeDirection::Up => api::SwipeDirection::Up,
+            rbs_scene::SwipeDirection::Down => api::SwipeDirection::Down,
+            _ => api::SwipeDirection::Left,
+        },
+    }
+}
+
+/// The collection's transition as `scene.list` shows it (protocol 1.81).
+fn api_transition(t: rbs_scene::CollectionTransition) -> api::Transition {
+    api::Transition {
+        kind: api_transition_kind(t.kind),
+        fade: api::FadeTransition {
+            duration_ms: t.fade.duration_ms,
+            easing: api_easing(t.fade.easing),
+            via: t
+                .fade
+                .via
+                .map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
+        },
+        swipe: api_swipe(t.swipe),
+        slide: api_swipe(t.slide),
+    }
+}
+
+/// `#rrggbb` as bytes.
+fn parse_rgb(s: &str) -> Option<[u8; 3]> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
 fn api_easing(e: rbs_scene::GlideEasing) -> api::GlideEasing {
@@ -15092,6 +15394,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             muted: list.master.muted,
         },
         glide: api_glide(list.glide),
+        transition: api_transition(list.transition),
         sources: list
             .sources
             .iter()
@@ -15132,7 +15435,7 @@ fn measure_text(
     rx.recv_timeout(wait).ok().flatten()
 }
 
-/// One `media.*` method (protocol 1.77).
+/// One `media.*` method (protocol 1.83).
 #[derive(Debug, Clone, Copy)]
 enum MediaOp {
     Play,

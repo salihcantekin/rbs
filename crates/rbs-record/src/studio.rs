@@ -92,7 +92,9 @@ pub use sync_measure::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
     SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
-pub use transition::{READY_WAIT, TransitionState};
+pub use transition::{
+    READY_WAIT, TransitionEvent, TransitionOnce, TransitionPhase, TransitionState,
+};
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
 const WAITING: &str = "waiting for the source it replaces to close";
@@ -369,11 +371,12 @@ struct Instance {
     sound: SoundHalf,
 }
 
-/// The sound node of a media source: held until the plan schedules the binder's
-/// sound node, then adopted into the audio partition.
+/// The sound node of a picture-and-sound source (a media file, a browser page): held
+/// until the plan schedules the binder's sound node, then adopted into the audio
+/// partition.
 enum SoundHalf {
     None,
-    Held(Box<rbs_nodes::MediaSoundNode>),
+    Held(Box<dyn Node<()>>),
     Adopted(NodeId, PartitionId),
 }
 
@@ -1174,6 +1177,12 @@ pub struct Studio {
     /// A transition is done since the host last asked: it calls
     /// [`Studio::settle_transitions`].
     transition_done: bool,
+    /// The next program change's one-off kind and duration (ADR-0128 decision 13).
+    transition_once: Option<TransitionOnce>,
+    /// Starts and ends to report, oldest first ([`Studio::take_transition_events`]).
+    transition_events: Vec<TransitionEvent>,
+    /// Ends of transitions without an incoming picture (Move), due at their time.
+    transition_ends: Vec<TransitionEvent>,
     /// The scene each following canvas showed last (the `KeepLast` fallback).
     last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
@@ -1234,7 +1243,7 @@ pub struct Studio {
     /// Helper tree wired by the composition root (`rbs-app`).
     browser_tree: Option<Arc<dyn BrowserTree>>,
     /// Control-thread handles that poll helper processes (ADR-0109).
-    browser_controls: Vec<Arc<BrowserControlSidecar>>,
+    browser_controls: BTreeMap<SourceId, Arc<BrowserControlSidecar>>,
     /// The playback handle of every media instance (ADR-0108 decision 10), and the
     /// on-air set of the last sync (ADR-0107 decision 6). Empty without media
     /// sources: `service` then does nothing for them.
@@ -1597,6 +1606,9 @@ impl Studio {
             glide: None,
             transitions: BTreeMap::new(),
             transition_done: false,
+            transition_once: None,
+            transition_events: Vec::new(),
+            transition_ends: Vec::new(),
             last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
@@ -1627,7 +1639,7 @@ impl Studio {
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
             browser_tree,
-            browser_controls: Vec::new(),
+            browser_controls: BTreeMap::new(),
             media_controls: BTreeMap::new(),
             on_air: BTreeSet::new(),
             text: None,
@@ -2033,13 +2045,14 @@ impl Studio {
     fn note_scene_change(
         &mut self,
         collection: &SceneCollection,
+        effective: &transition::Effective,
         old_main: Option<SceneId>,
         old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
         old_layers: BTreeMap<CanvasId, Vec<BoundLayer>>,
     ) {
         // Only Move glides (ADR-0128 decision 2): Cut and the kinds that draw the
         // incoming picture whole change the boxes at once.
-        if collection.transition().kind != rbs_scene::TransitionKind::Move {
+        if !effective.glides() {
             self.glide = None;
             return;
         }
@@ -2062,11 +2075,16 @@ impl Studio {
         if from.is_empty() {
             return;
         }
-        let collection_glide = collection.glide();
-        let source_glide: BTreeMap<_, _> = collection
-            .sources()
-            .filter_map(|s| s.glide.map(|g| (s.id, g)))
-            .collect();
+        let collection_glide = effective.glide;
+        // A one-off duration replaces every per-source override for this change.
+        let source_glide: BTreeMap<_, _> = if effective.source_glides {
+            collection
+                .sources()
+                .filter_map(|s| s.glide.map(|g| (s.id, g)))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         let mut max_duration =
             std::time::Duration::from_millis(u64::from(collection_glide.duration_ms));
         // Current layers after the bind that triggered this note.
@@ -2175,7 +2193,8 @@ impl Studio {
             }
             None => None,
         };
-        self.note_transitions(collection, old_main, &old_extra, &old_layers);
+        let effective = self.effective_transition(collection);
+        self.note_transitions(collection, &effective, old_main, &old_extra, &old_layers);
         let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
         // already ran: the update goes on so the sources it created get their entries,
@@ -2215,7 +2234,7 @@ impl Studio {
             }
         }
         self.collection = collection.clone();
-        self.note_scene_change(collection, old_main, &old_extra, old_layers);
+        self.note_scene_change(collection, &effective, old_main, &old_extra, old_layers);
         self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
         // Separate tracks follow a source whose node the sync replaced.
@@ -2381,7 +2400,15 @@ impl Studio {
         // Instances for the sources the plan schedules (only those are opened).
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
-        self.browser_controls.clear();
+        // Sources that keep their instance keep their control; the others leave.
+        let instanced: BTreeSet<SourceId> = self
+            .entries
+            .iter()
+            .filter(|e| e.instance.is_some())
+            .map(|e| e.source)
+            .collect();
+        self.browser_controls
+            .retain(|source, _| instanced.contains(source));
         // One budget and one helper tree from the composition root (ADR-0109).
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
             .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone());
@@ -2553,12 +2580,15 @@ impl Studio {
                     });
                 }
                 SourceInstance::Browser(b) => {
-                    // Render partition (ADR-0109). Size is known from the page settings.
+                    // The picture node in the render partition (ADR-0109); size is
+                    // known from the page settings. The sound node in the audio
+                    // partition at the binder's sound node, as for a media source
+                    // (ADR-0106).
                     let size = b.node.picture_size();
-                    self.browser_controls.push(b.node.control());
+                    self.browser_controls.insert(entry.source, b.node.control());
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(b.node))?;
-                    entry.instance = Some(Instance {
+                    let instance = entry.instance.insert(Instance {
                         partition: RENDER,
                         gpu: true,
                         watch: Watch::Browser { size },
@@ -2566,6 +2596,17 @@ impl Studio {
                         sent_offset_ns: 0,
                         sound: SoundHalf::None,
                     });
+                    match self.binder.sound_node(entry.source) {
+                        Some(node) if scheduled.contains(&node) => {
+                            self.engine
+                                .adopt::<()>(audio_partition, node, Box::new(b.sound))?;
+                            instance.sound = SoundHalf::Adopted(node, audio_partition);
+                        }
+                        Some(_) => instance.sound = SoundHalf::Held(Box::new(b.sound)),
+                        // No audio partition: no sound node; the feed drops the page's
+                        // sound.
+                        None => {}
+                    }
                 }
                 _ => {
                     if strictness == Strictness::Strict {
@@ -2651,6 +2692,7 @@ impl Studio {
         // A picture-and-sound source's producer is its sound node, known at bind time
         // like any other (ADR-0106).
         let mut trimmed = None;
+        let shape = self.transition_mix();
         if let (Some(mixer), Some(bound)) = (&mut self.mixer, &self.bound_mixer) {
             let live: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
             self.meters.retain(|s, _| live.contains(s));
@@ -2661,7 +2703,11 @@ impl Studio {
                     source: input.source,
                     meter: self.meters.get(&input.source).cloned(),
                     audio: self.mix.get(&input.source).copied().unwrap_or_default(),
+                    ramp: None,
                 });
+            }
+            if let Some(shape) = &shape {
+                shape.apply(&mut staged);
             }
             let mut union = staged.clone();
             union.extend(
@@ -2696,7 +2742,7 @@ impl Studio {
             self.send_hold_strips(report, true);
             self.bound_mixer = report.mixers.get(&self.settings.canvas).cloned();
             if let (Some(mixer), Some(bound)) = (&self.mixer, self.bound_mixer.as_ref()) {
-                let new: Vec<MixStrip> = bound
+                let mut new: Vec<MixStrip> = bound
                     .inputs
                     .iter()
                     .map(|input| MixStrip {
@@ -2704,8 +2750,12 @@ impl Studio {
                         source: input.source,
                         meter: self.meters.get(&input.source).cloned(),
                         audio: self.mix.get(&input.source).copied().unwrap_or_default(),
+                        ramp: None,
                     })
                     .collect();
+                if let Some(shape) = &shape {
+                    shape.apply(&mut new);
+                }
                 let same = new.len() == self.strips.len()
                     && new.iter().zip(&self.strips).all(|(left, right)| {
                         left.producer == right.producer && left.source == right.source
@@ -2877,12 +2927,22 @@ impl Studio {
     pub fn set_mix(&mut self, collection: &SceneCollection) -> bool {
         self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
+        self.set_hold_mix(collection);
+        self.send_mix()
+    }
+
+    /// Sends the mixer the strips it has at the levels of `self.mix`, shaped by a
+    /// running transition (ADR-0128 decision 10). False without a mixer.
+    fn send_mix(&mut self) -> bool {
         for strip in &mut self.strips {
             if let Some(audio) = self.mix.get(&strip.source) {
                 strip.audio = *audio;
             }
+            strip.ramp = None;
         }
-        self.set_hold_mix(collection);
+        if let Some(shape) = self.transition_mix() {
+            shape.apply(&mut self.strips);
+        }
         let Some(mixer) = &mut self.mixer else {
             return false;
         };
@@ -3374,7 +3434,7 @@ impl Studio {
     /// [`Studio::output_failure`] of every output using it.
     /// Call it again after `wait` (at most about 100 ms).
     pub fn service(&mut self) -> Serviced {
-        for control in &self.browser_controls {
+        for control in self.browser_controls.values() {
             control.control_tick();
         }
         // The pause release of paused or cued media (ADR-0108 decision 10).
@@ -4940,6 +5000,8 @@ struct MixStrip {
     source: SourceId,
     meter: Option<Arc<LevelMeter>>,
     audio: SourceAudio,
+    /// The fader's own ramp while a transition runs (ADR-0128 decision 10).
+    ramp: Option<(Timestamp, Duration)>,
 }
 
 /// The mixer's monitor mode for a source's saved one (ADR-0097 decision 5).
@@ -4973,7 +5035,8 @@ fn mixer_params(
             let strip = Strip::new(s.producer, s.audio.volume)
                 .with_muted(s.audio.muted)
                 .with_monitor(monitor_mode(s.audio.monitor))
-                .with_solo(solo.contains(&s.source));
+                .with_solo(solo.contains(&s.source))
+                .with_ramp_override(s.ramp);
             match &s.meter {
                 Some(m) => strip.with_meter(Arc::clone(m)),
                 None => strip,

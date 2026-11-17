@@ -58,7 +58,7 @@ fn every_method_has_an_effect_and_read_scope_methods_only_read() {
     ] {
         assert_eq!(method_effect(live), Some(Effect::Live), "{live}");
     }
-    for destructive in ["tokens.create", "tokens.revoke"] {
+    for destructive in ["tokens.create", "tokens.revoke", "import.obs.run"] {
         assert_eq!(
             method_effect(destructive),
             Some(Effect::Destructive),
@@ -226,4 +226,151 @@ fn a_canvas_change_through_settings_set_is_live() {
     let before = h.forwarded.len();
     h.call(conn, "settings.set", json!({}));
     assert_eq!(h.forwarded.len(), before + 1);
+}
+
+#[test]
+fn the_caller_goes_with_the_command_and_on_air_refusals_are_audited() {
+    let mut h = harness();
+    let conn = h.login(PeerInfo::loopback_websocket(), AGENT_SEED);
+    h.call(conn, "scene.switch", json!({"scene": 1}));
+    let f = h.forwarded.pop().unwrap();
+    assert_eq!(
+        f.caller,
+        rbs_api::Caller {
+            token: Some("agent".into()),
+            irreversible: false,
+        }
+    );
+    let mut data = serde_json::Map::new();
+    data.insert("reason".into(), "on_air".into());
+    let e = rbs_api::ApiError::with_data(rbs_api::ErrorKind::NotPermitted, "on air", data);
+    h.reply(&f, Err(e));
+    assert_eq!(h.one(conn)["error"]["data"]["reason"], "on_air");
+    assert!(h.audit.contains(&AuditEvent::NotPermitted {
+        conn,
+        token: Some("agent".into()),
+        method: "scene.switch",
+        reason: "on_air",
+    }));
+}
+
+#[test]
+fn a_same_user_ipc_session_is_a_permitted_caller() {
+    let mut h = harness();
+    let conn = h.connect(PeerInfo::same_user_ipc());
+    h.call(conn, "session.hello", hello());
+    h.take(conn);
+    h.call(conn, "scene.switch", json!({"scene": 1}));
+    assert_eq!(h.forwarded[0].caller, rbs_api::Caller::local());
+}
+
+#[test]
+fn a_browser_source_reaches_the_network_and_is_refused_without_the_permission() {
+    let mut h = harness();
+    let conn = h.login(PeerInfo::loopback_websocket(), AGENT_SEED);
+    h.call(
+        conn,
+        "source.add",
+        json!({"kind": "browser", "adapter": "cef", "target": "x"}),
+    );
+    let answer = h.one(conn);
+    assert_eq!(error_kind(&answer), "not_permitted");
+    assert_eq!(answer["error"]["data"]["reason"], "network");
+    assert!(h.forwarded.is_empty());
+    h.collect();
+    assert!(h.audit.contains(&AuditEvent::NotPermitted {
+        conn,
+        token: Some("agent".into()),
+        method: "source.add",
+        reason: "network",
+    }));
+
+    // Other kinds pass to the control thread.
+    h.call(
+        conn,
+        "source.add",
+        json!({"kind": "camera", "adapter": "test", "target": "0"}),
+    );
+    assert_eq!(h.forwarded.len(), 1);
+}
+
+#[test]
+fn a_recording_folder_on_another_computer_is_refused_without_the_permission() {
+    let mut h = harness();
+    let mut tokens = TokenStore::new();
+    let mut full = token(ALL_TOKEN_SEED, "admin console", ScopeSet::ALL).1;
+    full.irreversible = false;
+    tokens.insert(full);
+    h.server.set_tokens(tokens);
+    let conn = h.login(PeerInfo::loopback_websocket(), ALL_TOKEN_SEED);
+    let profile = |folder: &str| {
+        let mut p = serde_json::to_value(json_profile()).unwrap();
+        p["folder"] = folder.into();
+        json!({ "profiles": [p] })
+    };
+    h.call(conn, "settings.set", profile("\\\\nas\\share\\rec"));
+    let answer = h.one(conn);
+    assert_eq!(error_kind(&answer), "not_permitted", "{answer}");
+    assert_eq!(answer["error"]["data"]["reason"], "network");
+    h.call(conn, "settings.set", profile("/home/me/Videos"));
+    assert_eq!(h.forwarded.len(), 1);
+}
+
+fn json_profile() -> rbs_api::types::RecordingProfile {
+    use rbs_api::types::*;
+    RecordingProfile {
+        id: "default".into(),
+        name: "Default".into(),
+        folder: String::new(),
+        container: Container::Mkv,
+        encoder: None,
+        video_codec: VideoCodec::H264,
+        rate_control: RateMode::Vbr,
+        video_kbps: 12_000,
+        max_video_kbps: None,
+        quality: 23,
+        keyframe_seconds: 2,
+        profile: None,
+        preset: Preset::Balanced,
+        b_frames: 2,
+        cbr_padding: false,
+        audio_kbps: 160,
+        bit_depth: 16,
+        delivery: Delivery::Video,
+        open_shadows: false,
+        output_size: None,
+        editor_project: None,
+        markers: Default::default(),
+    }
+}
+
+#[test]
+fn tokens_create_never_gives_more_scopes_than_the_caller_holds() {
+    let mut h = harness();
+    let mut tokens = TokenStore::new();
+    tokens.insert(
+        token(
+            ALL_TOKEN_SEED,
+            "token keeper",
+            ScopeSet::of([rbs_api::Scope::Read, rbs_api::Scope::Tokens]),
+        )
+        .1,
+    );
+    h.server.set_tokens(tokens);
+    let conn = h.login(PeerInfo::loopback_websocket(), ALL_TOKEN_SEED);
+    h.call(
+        conn,
+        "tokens.create",
+        json!({"name": "panel", "scopes": ["read", "control"]}),
+    );
+    let answer = h.one(conn);
+    assert_eq!(error_kind(&answer), "not_permitted", "{answer}");
+    assert_eq!(answer["error"]["data"]["reason"], "scopes");
+    assert!(h.forwarded.is_empty());
+    h.call(
+        conn,
+        "tokens.create",
+        json!({"name": "viewer", "scopes": ["read"], "irreversible": false}),
+    );
+    assert_eq!(h.forwarded.len(), 1);
 }

@@ -23,7 +23,7 @@ use crate::record_profile::{
     AUDIO_KBPS, Encoding, Format, MAX_B_FRAMES, OutputSize, Preset, RateMode, RecordProfile,
     VideoCodec, output_size_problem,
 };
-use crate::stream_key::{self, KeyStore};
+use crate::stream_key;
 use crate::stream_profile::{StreamProfile, parse_server};
 use crate::user_session::{RECORDING, STREAM};
 
@@ -298,7 +298,7 @@ pub fn write(
     data: &UserData,
     lock: &WriterLock,
     plan: &ImportPlan,
-    keys: &dyn KeyStore,
+    save_key: &dyn Fn(&str, Secret) -> Result<(), String>,
     platform: Platform,
     folder_exists: &dyn Fn(&Path) -> bool,
 ) -> Result<Written, String> {
@@ -330,8 +330,7 @@ pub fn write(
         }
         match (&profile_written, key) {
             (Some((id, _)), Some(k)) if stream_chosen => {
-                if let Err(e) =
-                    keys.write(&stream_key::account(id.as_str()), &Secret::new(k.expose()))
+                if let Err(e) = save_key(&stream_key::account(id.as_str()), Secret::new(k.expose()))
                 {
                     notes.push(
                         step(
@@ -388,12 +387,428 @@ pub fn write(
             }
         }
     }
+    // Last: the report beside the collection (decision 11). Losing it loses nothing
+    // that was written, so a failure is one more note.
+    let mut all = plan.report.clone();
+    all.entries.extend(notes.iter().cloned());
+    if let Err(e) = rbs_user_data::document::write_atomic(
+        &report_path(data.root(), &collection.0),
+        report_text(&plan.name, &all).as_bytes(),
+    ) {
+        notes.push(ReportEntry::new(
+            Outcome::Skipped,
+            Area::Setting,
+            "Import report",
+            "",
+            format!("The import report could not be saved: {e}. Everything above was written."),
+        ));
+    }
     Ok(Written {
         collection,
         profile: profile_written,
         shortcuts_added,
         notes,
     })
+}
+
+/// The folder of the saved import reports, in the config directory.
+pub const IMPORTS_DIR: &str = "imports";
+
+/// Where the report of the collection `id` is kept: `imports/<id>.report.toml`.
+pub fn report_path(root: &Path, id: &EntryId) -> std::path::PathBuf {
+    root.join(IMPORTS_DIR)
+        .join(format!("{}.report.toml", id.as_str()))
+}
+
+#[derive(serde::Serialize)]
+struct ReportFile<'a> {
+    format: u32,
+    kind: &'static str,
+    /// The OBS collection's name.
+    obs_collection: &'a str,
+    exact: ExactCounts,
+    entries: Vec<ReportLine<'a>>,
+    /// The kept data of each skipped object, for a later "add what is supported now".
+    /// Only `obs_type` and `obs_name` until a mapper defines the allow-list of its type
+    /// (spec `obs-import.md`).
+    skipped: Vec<Kept<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct ExactCounts {
+    scenes: usize,
+    sources: usize,
+    items: usize,
+    filters: usize,
+}
+
+#[derive(serde::Serialize)]
+struct ReportLine<'a> {
+    outcome: &'static str,
+    area: &'static str,
+    obs_name: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    obs_type: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    scenes: &'a [String],
+    reason: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'a str>,
+}
+
+#[derive(serde::Serialize)]
+struct Kept<'a> {
+    obs_type: &'a str,
+    obs_name: &'a str,
+}
+
+/// The saved report (`kind = "obs-import-report"`, format 1). Holds no credential and
+/// no full path: the report's sentences never name one (`rbs_import_obs::report`) and
+/// skipped objects keep only their type and name.
+pub fn report_text(obs_collection: &str, report: &rbs_import_obs::ImportReport) -> String {
+    let e = &report.exact;
+    let file = ReportFile {
+        format: 1,
+        kind: "obs-import-report",
+        obs_collection,
+        exact: ExactCounts {
+            scenes: e.scenes,
+            sources: e.sources,
+            items: e.items,
+            filters: e.filters,
+        },
+        entries: report
+            .entries
+            .iter()
+            .map(|r| ReportLine {
+                outcome: r.outcome.as_str(),
+                area: r.area.as_str(),
+                obs_name: &r.obs_name,
+                obs_type: &r.obs_type,
+                scenes: &r.scenes,
+                reason: &r.reason,
+                hint: r.hint.as_deref(),
+            })
+            .collect(),
+        skipped: report
+            .entries
+            .iter()
+            .filter(|r| r.outcome == Outcome::Skipped && !r.obs_type.is_empty())
+            .map(|r| Kept {
+                obs_type: &r.obs_type,
+                obs_name: &r.obs_name,
+            })
+            .collect(),
+    };
+    // Plain strings and numbers only: serialising cannot fail.
+    toml::to_string(&file).unwrap_or_default()
+}
+
+/// Files on this computer for the import: PNG sizes and file presence. Devices are not
+/// enumerated yet, so device targets keep their defaults and the report says so.
+pub struct AppLookup;
+
+impl rbs_import_obs::Lookup for AppLookup {
+    fn picture_size(&self, path: &Path) -> Option<(u32, u32)> {
+        use std::io::Read as _;
+        let mut head = [0u8; 24];
+        std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+        if head[..8] != *b"\x89PNG\r\n\x1a\n" || head[12..16] != *b"IHDR" {
+            return None;
+        }
+        let w = u32::from_be_bytes([head[16], head[17], head[18], head[19]]);
+        let h = u32::from_be_bytes([head[20], head[21], head[22], head[23]]);
+        (w > 0 && h > 0).then_some((w, h))
+    }
+    fn file_exists(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+    fn targets(&self, _: &NodeTypeId) -> Vec<rbs_import_obs::LookupTarget> {
+        Vec::new()
+    }
+}
+
+/// The OBS collections and profiles found in OBS's settings folders on this computer.
+#[derive(Debug, Clone, Default)]
+pub struct Found {
+    /// Collections: name and file.
+    pub collections: Vec<(String, std::path::PathBuf)>,
+    /// Profiles: name and folder.
+    pub profiles: Vec<(String, std::path::PathBuf)>,
+}
+
+/// Scans OBS's settings folders. Reads only the file names and each collection's
+/// `name`; an unreadable folder is left out.
+pub fn find_obs() -> Found {
+    let mut f = Found::default();
+    for dir in rbs_import_obs::discover::default_config_dirs() {
+        if let Ok(i) = rbs_import_obs::discover::scan(&dir) {
+            f.collections
+                .extend(i.collections.into_iter().map(|c| (c.name, c.path)));
+            f.profiles
+                .extend(i.profiles.into_iter().map(|p| (p.name, p.path)));
+        }
+    }
+    f
+}
+
+/// The names of a collection's scenes in OBS's order (`scene_order`, else the order of
+/// the scene sources). Empty when the file is not a collection.
+pub fn scene_names(json: &[u8]) -> Vec<String> {
+    let Ok(root) = serde_json::from_slice::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let names = |v: Option<&serde_json::Value>, pick: &dyn Fn(&serde_json::Value) -> bool| {
+        v.and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter(|x| pick(x))
+                    .filter_map(|x| x.get("name").and_then(serde_json::Value::as_str))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let order = names(root.get("scene_order"), &|_| true);
+    if !order.is_empty() {
+        return order;
+    }
+    names(root.get("sources"), &|x| {
+        x.get("id").and_then(serde_json::Value::as_str) == Some("scene")
+    })
+}
+
+/// "1920 x 1080, 60 fps" from a profile's `[Video]`, or empty.
+pub fn canvas_summary(files: &rbs_import_obs::ProfileFiles) -> String {
+    let ini = rbs_import_obs::ini::Ini::parse(&String::from_utf8_lossy(&files.basic_ini));
+    let v = rbs_import_obs::VideoFacts::read(&ini);
+    match (v.base, v.fps) {
+        (Some((w, h)), Some((n, d))) if d > 0 => {
+            let fps = f64::from(n) / f64::from(d);
+            let fps = if (fps - fps.round()).abs() < 0.005 {
+                format!("{}", fps.round())
+            } else {
+                format!("{fps:.2}")
+            };
+            format!("{w} x {h}, {fps} fps")
+        }
+        (Some((w, h)), _) => format!("{w} x {h}"),
+        _ => String::new(),
+    }
+}
+
+/// What `import.obs.check` and `import.obs.run` read, chosen by name over the control
+/// API (ADR-0131 decision 12): never a path from the caller.
+#[derive(Debug, Clone)]
+pub struct ApiSource {
+    /// The collection's bytes.
+    pub json: Vec<u8>,
+    /// The profile's files, when one was named.
+    pub profile: Option<rbs_import_obs::ProfileFiles>,
+}
+
+/// Why a named source could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiSourceError {
+    /// No OBS collection or profile has that name here.
+    NotFound(String),
+    /// It could not be read, or it leads out of OBS's settings folder.
+    Unreadable(String),
+}
+
+/// `path` resolved (links followed) when it stays inside `root`, also resolved.
+fn inside(root: &Path, path: &Path) -> Option<std::path::PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let p = path.canonicalize().ok()?;
+    p.starts_with(&root).then_some(p)
+}
+
+/// The names `import.obs.scan` answers: every collection and profile found in OBS's
+/// settings folders, deduplicated, in name order.
+pub fn api_scan() -> (Vec<String>, Vec<String>) {
+    let f = find_obs();
+    let names = |v: Vec<(String, std::path::PathBuf)>| {
+        let mut n: Vec<String> = v.into_iter().map(|(n, _)| n).collect();
+        n.sort();
+        n.dedup();
+        n
+    };
+    (names(f.collections), names(f.profiles))
+}
+
+/// Reads the collection and profile named as `import.obs.scan` found them. The first
+/// OBS settings folder that has the name wins. Every file read is resolved and must
+/// stay inside that folder, so a link leading out of it is refused.
+pub fn api_source(collection: &str, profile: Option<&str>) -> Result<ApiSource, ApiSourceError> {
+    api_source_in(
+        &rbs_import_obs::discover::default_config_dirs(),
+        collection,
+        profile,
+    )
+}
+
+/// [`api_source`] over the given OBS settings folders.
+pub fn api_source_in(
+    dirs: &[std::path::PathBuf],
+    collection: &str,
+    profile: Option<&str>,
+) -> Result<ApiSource, ApiSourceError> {
+    use rbs_import_obs::discover::{read_limited, read_profile, scan};
+    let unreadable = |what: &str| {
+        ApiSourceError::Unreadable(format!(
+            "the OBS {what} could not be read inside OBS's settings folder"
+        ))
+    };
+    let installs: Vec<_> = dirs
+        .iter()
+        .filter_map(|d| scan(d).ok().map(|i| (d, i)))
+        .collect();
+    let (root, file) = installs
+        .iter()
+        .find_map(|(d, i)| {
+            i.collections
+                .iter()
+                .find(|c| c.name == collection)
+                .map(|c| (*d, c.path.clone()))
+        })
+        .ok_or_else(|| {
+            ApiSourceError::NotFound(format!("no OBS scene collection is named {collection:?}"))
+        })?;
+    let file = inside(root, &file).ok_or_else(|| unreadable("scene collection"))?;
+    let json = read_limited(&file).map_err(|e| ApiSourceError::Unreadable(e.to_string()))?;
+    let profile = match profile {
+        None => None,
+        Some(name) => {
+            let (root, dir) = installs
+                .iter()
+                .find_map(|(d, i)| {
+                    i.profiles
+                        .iter()
+                        .find(|p| p.name == name)
+                        .map(|p| (*d, p.path.clone()))
+                })
+                .ok_or_else(|| {
+                    ApiSourceError::NotFound(format!("no OBS profile is named {name:?}"))
+                })?;
+            let dir = inside(root, &dir).ok_or_else(|| unreadable("profile"))?;
+            for f in [
+                "basic.ini",
+                "service.json",
+                "streamEncoder.json",
+                "recordEncoder.json",
+            ] {
+                let p = dir.join(f);
+                if p.exists() && inside(root, &p).is_none() {
+                    return Err(unreadable("profile"));
+                }
+            }
+            Some(read_profile(&dir).map_err(|e| ApiSourceError::Unreadable(e.to_string()))?)
+        }
+    };
+    Ok(ApiSource { json, profile })
+}
+
+/// The wizard's choices as `Options`: an absent part is on; parts that need a profile
+/// are off without one.
+pub fn api_options(
+    choose: Option<&rbs_api::request::ObsImportChoice>,
+    has_profile: bool,
+) -> rbs_import_obs::Options {
+    let c = choose.cloned().unwrap_or_default();
+    let on = |v: Option<bool>| v.unwrap_or(true);
+    rbs_import_obs::Options {
+        scenes: match c.scenes {
+            None => rbs_import_obs::SceneChoice::All,
+            Some(v) => rbs_import_obs::SceneChoice::Only(v.into_iter().collect()),
+        },
+        global_audio: on(c.global_audio),
+        audio_filters: on(c.audio_filters),
+        video_filters: on(c.video_filters),
+        hotkeys: on(c.hotkeys),
+        canvas: has_profile && on(c.canvas),
+        recording: has_profile && on(c.recording),
+        stream_server: has_profile && on(c.stream_server),
+        stream_key: has_profile && on(c.stream_server) && on(c.stream_key),
+        ..rbs_import_obs::Options::default()
+    }
+}
+
+/// A report entry as the control API answers it.
+pub fn api_entry(e: &ReportEntry) -> rbs_api::types::ObsReportEntry {
+    rbs_api::types::ObsReportEntry {
+        outcome: e.outcome.as_str().to_owned(),
+        area: e.area.as_str().to_owned(),
+        obs_name: e.obs_name.clone(),
+        obs_type: e.obs_type.clone(),
+        scenes: e.scenes.clone(),
+        reason: e.reason.clone(),
+        hint: e.hint.clone(),
+    }
+}
+
+/// `import.obs.check`'s answer for a plan.
+pub fn api_check(plan: &ImportPlan) -> rbs_api::types::ObsCheck {
+    let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+    let e = &plan.report.exact;
+    rbs_api::types::ObsCheck {
+        name: plan.name.clone(),
+        exact: rbs_api::types::ObsCounts {
+            scenes: n(e.scenes),
+            sources: n(e.sources),
+            items: n(e.items),
+            filters: n(e.filters),
+        },
+        entries: plan.report.entries.iter().map(api_entry).collect(),
+    }
+}
+
+/// Plans an import of `source` with this build's catalogue and this computer's files.
+pub fn plan_api(
+    source: &ApiSource,
+    choose: Option<&rbs_api::request::ObsImportChoice>,
+) -> Result<ImportPlan, String> {
+    rbs_import_obs::plan(
+        &source.json,
+        source.profile.as_ref(),
+        &rbs_import_obs::Mappers::builtin(),
+        &AppCatalogue,
+        &AppLookup,
+        &api_options(choose, source.profile.is_some()),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// One line of the Check page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRow {
+    /// The OBS object.
+    pub name: String,
+    /// The scenes it is in, or empty.
+    pub place: String,
+    /// Why, and what to do.
+    pub reason: String,
+}
+
+impl From<&ReportEntry> for CheckRow {
+    fn from(e: &ReportEntry) -> Self {
+        Self {
+            name: e.obs_name.clone(),
+            place: e.scenes.join(", "),
+            reason: match &e.hint {
+                Some(h) => format!("{} {h}", e.reason),
+                None => e.reason.clone(),
+            },
+        }
+    }
+}
+
+/// The Check page: "4 · 8 · 7" (scenes, sources, items as in OBS), what came across
+/// approximately and what did not. Parts the user left out are not listed.
+pub fn check_view(report: &rbs_import_obs::ImportReport) -> (String, Vec<CheckRow>, Vec<CheckRow>) {
+    let e = &report.exact;
+    let exact = format!("{} · {} · {}", e.scenes, e.sources, e.items);
+    let rows = |o: Outcome| report.with_outcome(o).map(CheckRow::from).collect();
+    (exact, rows(Outcome::Approximated), rows(Outcome::Skipped))
 }
 
 #[cfg(test)]
@@ -405,7 +820,7 @@ mod tests {
     use rbs_import_obs::{Lookup, LookupTarget, Mappers, Options, plan};
     use std::path::PathBuf;
 
-    use crate::stream_key::MemoryKeyStore;
+    use crate::stream_key::{KeyStore, MemoryKeyStore};
 
     /// ADR-0131 decision 1: every mapper's RBS type and field key exists in this build.
     #[test]
@@ -540,7 +955,15 @@ mod tests {
         let lock = data.try_lock().unwrap().unwrap();
         let keys = MemoryKeyStore::new();
         let p = the_plan("advanced", &Options::default());
-        let w = write(&data, &lock, &p, &keys, Platform::Windows, &|_| true).unwrap();
+        let w = write(
+            &data,
+            &lock,
+            &p,
+            &|a, k| keys.write(a, &k),
+            Platform::Windows,
+            &|_| true,
+        )
+        .unwrap();
         assert_eq!(w.collection.1, "Evening show");
         let (pid, pname) = w.profile.clone().unwrap();
         assert_eq!(pname, "Advanced");
@@ -554,8 +977,32 @@ mod tests {
         assert!(doc.bindings.iter().any(|b| b.command == "stream.toggle"));
         assert!(!format!("{w:?}").contains("SECRET"));
 
+        // The report is beside the collection, typed, and holds no key or full path.
+        let text = std::fs::read_to_string(report_path(data.root(), &w.collection.0)).unwrap();
+        let table: toml::Table = text.parse().unwrap();
+        assert_eq!(table["kind"].as_str(), Some("obs-import-report"));
+        assert_eq!(table["format"].as_integer(), Some(1));
+        assert_eq!(table["obs_collection"].as_str(), Some("Evening show"));
+        let entries = table["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), p.report.entries.len() + w.notes.len());
+        for skipped in table["skipped"].as_array().unwrap() {
+            let keys: Vec<&String> = skipped.as_table().unwrap().keys().collect();
+            assert_eq!(keys, ["obs_name", "obs_type"]);
+        }
+        assert!(!text.contains("SECRET"));
+        assert!(!text.contains("live_"));
+        assert!(!text.contains(dir.to_string_lossy().as_ref()));
+
         // A second import gets free names and adds no duplicate shortcut.
-        let w2 = write(&data, &lock, &p, &keys, Platform::Windows, &|_| true).unwrap();
+        let w2 = write(
+            &data,
+            &lock,
+            &p,
+            &|a, k| keys.write(a, &k),
+            Platform::Windows,
+            &|_| true,
+        )
+        .unwrap();
         assert_eq!(w2.collection.1, "Evening show 2");
         assert_eq!(w2.profile.unwrap().1, "Advanced 2");
         let (doc2, _) = data.shortcuts();
@@ -576,7 +1023,15 @@ mod tests {
             ..Options::default()
         };
         let p = the_plan("advanced", &options);
-        let w = write(&data, &lock, &p, &keys, Platform::Windows, &|_| true).unwrap();
+        let w = write(
+            &data,
+            &lock,
+            &p,
+            &|a, k| keys.write(a, &k),
+            Platform::Windows,
+            &|_| true,
+        )
+        .unwrap();
         let (pid, _) = w.profile.unwrap();
         assert!(
             keys.read(&stream_key::account(pid.as_str()))
@@ -587,5 +1042,119 @@ mod tests {
         assert!(profile.get::<StreamProfile>(STREAM).unwrap().is_none());
         drop(lock);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_wizard_helpers_read_the_fixtures() {
+        let json = std::fs::read(fixtures().join("show.json")).unwrap();
+        let names = scene_names(&json);
+        assert!(names.contains(&"Main".to_owned()), "{names:?}");
+        assert!(scene_names(b"not json").is_empty());
+        let files = read_profile(&fixtures().join("advanced")).unwrap();
+        assert_eq!(canvas_summary(&files), "2560 x 1440, 59.94 fps");
+        let p = the_plan("advanced", &Options::default());
+        let (exact, approx, skipped) = check_view(&p.report);
+        assert_eq!(exact.matches('·').count(), 2);
+        assert!(!approx.is_empty() && !skipped.is_empty());
+        assert!(skipped.iter().all(|r| !r.reason.contains("SECRET")));
+    }
+
+    /// An OBS settings folder with the fixture collection and the advanced profile.
+    fn obs_folder(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("rbs-app-obs-api-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let scenes = root.join("basic/scenes");
+        let profile = root.join("basic/profiles/Advanced");
+        std::fs::create_dir_all(&scenes).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::copy(
+            fixtures().join("show.json"),
+            scenes.join("Evening_show.json"),
+        )
+        .unwrap();
+        for f in std::fs::read_dir(fixtures().join("advanced")).unwrap() {
+            let f = f.unwrap().path();
+            std::fs::copy(&f, profile.join(f.file_name().unwrap())).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn the_api_reads_only_what_scan_found_by_name() {
+        let root = obs_folder("names");
+        let dirs = [root.clone()];
+        let s = api_source_in(&dirs, "Evening show", Some("Advanced")).unwrap();
+        assert!(!s.json.is_empty());
+        assert!(s.profile.is_some());
+        let plan = plan_api(&s, None).unwrap();
+        let check = api_check(&plan);
+        assert_eq!(check.name, "Evening show");
+        assert!(!format!("{check:?}").contains("SECRET"));
+        assert!(matches!(
+            api_source_in(&dirs, "Nope", None),
+            Err(ApiSourceError::NotFound(_))
+        ));
+        assert!(matches!(
+            api_source_in(&dirs, "Evening show", Some("Nope")),
+            Err(ApiSourceError::NotFound(_))
+        ));
+        // A path is a name like any other: it names nothing.
+        let path = root.join("basic/scenes/Evening_show.json");
+        assert!(matches!(
+            api_source_in(&dirs, &path.to_string_lossy(), None),
+            Err(ApiSourceError::NotFound(_))
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_obs_folder_is_refused() {
+        let root = obs_folder("link");
+        let outside = root.with_extension("outside.json");
+        std::fs::copy(fixtures().join("show.json"), &outside).unwrap();
+        // The file names itself "Evening show"; the link's file stem is used only
+        // when the file has no name, so give the link its own collection name.
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&outside).unwrap()).unwrap();
+        json["name"] = "Elsewhere".into();
+        std::fs::write(&outside, serde_json::to_vec(&json).unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("basic/scenes/Elsewhere.json")).unwrap();
+        let ini = root.join("basic/profiles/Advanced/basic.ini");
+        let ini_outside = root.with_extension("outside.ini");
+        std::fs::rename(&ini, &ini_outside).unwrap();
+        std::os::unix::fs::symlink(&ini_outside, &ini).unwrap();
+        let dirs = [root.clone()];
+        assert!(matches!(
+            api_source_in(&dirs, "Elsewhere", None),
+            Err(ApiSourceError::Unreadable(_))
+        ));
+        assert!(matches!(
+            api_source_in(&dirs, "Evening show", Some("Advanced")),
+            Err(ApiSourceError::Unreadable(_))
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(outside);
+        let _ = std::fs::remove_file(ini_outside);
+    }
+
+    #[test]
+    fn api_choices_map_to_options_and_need_a_profile() {
+        let none = api_options(None, false);
+        assert!(none.global_audio && none.hotkeys);
+        assert!(!none.canvas && !none.recording && !none.stream_server && !none.stream_key);
+        let c = rbs_api::request::ObsImportChoice {
+            scenes: Some(vec!["Main".into()]),
+            stream_server: Some(false),
+            ..Default::default()
+        };
+        let o = api_options(Some(&c), true);
+        assert!(o.canvas && o.recording);
+        assert!(!o.stream_server && !o.stream_key);
+        assert_eq!(
+            o.scenes,
+            rbs_import_obs::SceneChoice::Only(["Main".to_owned()].into())
+        );
     }
 }

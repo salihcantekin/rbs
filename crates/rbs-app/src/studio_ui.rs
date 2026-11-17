@@ -498,6 +498,8 @@ pub struct StudioUi {
     st_setup_note: bool,
     /// Saved keys survive a restart (else `key_saved` is reset when a profile loads).
     keys_persistent: bool,
+    /// Where stream keys are kept ("the macOS Keychain"), for Import from OBS.
+    pub key_place: &'static str,
     /// The Output profile menu's entries.
     profile_rows: Rc<VecModel<EntryRow>>,
     /// The Scene collection menu's entries.
@@ -721,6 +723,7 @@ impl StudioUi {
             st_bad: false,
             st_setup_note: false,
             keys_persistent: keys.persistent(),
+            key_place: keys.place(),
             profile_rows: Rc::new(VecModel::default()),
             collection_rows: Rc::new(VecModel::default()),
             switch_seq: 0,
@@ -5818,6 +5821,10 @@ impl StudioUi {
                 self.api_switch = Some(seq);
                 out.switch = Some((collection, id));
             }
+            Update::ObsImported { shortcuts } => {
+                self.refresh_library();
+                out.obs_imported = Some(shortcuts);
+            }
             Update::VirtualCamera(status) => out.camera = Some(status),
             // The replay buffer's page in the shell takes these (ADR-0088).
             Update::Replay(_) | Update::ReplaySaved(_) => out.replay.push(u),
@@ -6378,6 +6385,9 @@ pub struct Applied {
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.
     pub switch: Option<(bool, String)>,
+    /// `import.obs.run` wrote a new collection and profile; `true`: it added hotkeys,
+    /// so the shell reloads its shortcuts.
+    pub obs_imported: Option<bool>,
     /// The virtual camera started or stopped sending (`Some(None)`: it does not send).
     pub camera: Option<Option<rbs_app::studio_host::CameraStatus>>,
     /// Replay buffer updates (ADR-0088), for the shell's replay page.
@@ -7073,6 +7083,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Duplicate => 25,
                 EditKind::Reset => 26,
                 EditKind::PasteAttributes => 27,
+                EditKind::Transition => 28,
             },
             s.name.as_str(),
         ),
@@ -8493,6 +8504,11 @@ mod tests {
         assert_eq!(
             run("ui.collection.export", &s),
             Some(Run::Entry(EntryKind::Collection, EntryOp::Export, None))
+        );
+        // Import from OBS opens its wizard; it is not an entry operation (ADR-0131).
+        assert_eq!(
+            run("ui.collection.import_obs", &s),
+            Some(Run::OpenObsImport)
         );
         // A fresh library holds one output profile: the only one cannot be deleted.
         // The only scene collection can be deleted once the studio runs (a Default

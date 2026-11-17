@@ -94,10 +94,14 @@ fn live(
     };
     match command {
         TokenCommand::List => Ok(()),
-        TokenCommand::Create { name, access } => {
+        TokenCommand::Create {
+            name,
+            access,
+            agent,
+        } => {
             let r = match app.call(
                 "tokens.create",
-                json!({"name": name, "scopes": access.scopes()}),
+                json!({"name": name, "scopes": access.scopes(), "irreversible": !agent}),
             ) {
                 Ok(r) => r,
                 // No answer (timeout, connection lost): RBS may have made the token
@@ -111,6 +115,21 @@ fn live(
             let (Some(token), Some(name)) = (r["token"].as_str(), r["name"].as_str()) else {
                 return Err("RBS answered without a token.".into());
             };
+            // A server before protocol 1.80 ignores `irreversible` and gives the
+            // permission: an agent must not keep such a token.
+            if *agent && r["irreversible"].as_bool() != Some(false) {
+                app.call("tokens.revoke", json!({ "name": name }))
+                    .map_err(|r| {
+                        format!(
+                            "This RBS made \"{name}\" with \"Allow actions that cannot be undone\", and it could not be revoked: {}. Revoke it with: rbs-cli token revoke \"{name}\"",
+                            r.message
+                        )
+                    })?;
+                return Err(
+                    "This RBS is too old to make a token for an AI agent. Update RBS and try again."
+                        .into(),
+                );
+            }
             if let Err(e) = writeln!(out, "{token}").and_then(|()| out.flush()) {
                 // Nobody saw the token: a token nobody has must not stay valid.
                 app.call("tokens.revoke", json!({ "name": name }))
@@ -179,8 +198,12 @@ fn in_file(
                 writeln!(out, "{}\t{}", t.name, Access::describe(t.scopes)).map_err(written)?;
             }
         }
-        TokenCommand::Create { name, access } => {
-            let token = profile.create_token(name, *access)?;
+        TokenCommand::Create {
+            name,
+            access,
+            agent,
+        } => {
+            let token = profile.create_token_with(name, *access, !*agent)?;
             save(config, &profile)?;
             drop(lock);
             let name = profile
@@ -282,6 +305,24 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_token_is_made_without_the_irreversible_permission() {
+        let d = dir("agent");
+        let (out, _) = run_text(
+            &d,
+            TokenCommand::Create {
+                name: "Claude".into(),
+                access: Access::Control,
+                agent: true,
+            },
+        )
+        .unwrap();
+        let (saved, _) = settings::load(&d);
+        let entry = saved.store().verify(out.trim_end()).unwrap().clone();
+        assert!(!entry.irreversible);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn a_created_token_is_printed_once_and_verified_by_the_saved_store() {
         let d = dir("create");
         let (out, notes) = run_text(
@@ -289,6 +330,7 @@ mod tests {
             TokenCommand::Create {
                 name: "Stream Deck".into(),
                 access: Access::Control,
+                agent: false,
             },
         )
         .unwrap();
@@ -370,6 +412,7 @@ mod tests {
         let command = TokenCommand::Create {
             name: "Deck".into(),
             access: Access::View,
+            agent: false,
         };
         let err = run(&d, None, &command, &mut Broken, &mut Vec::new()).unwrap_err();
         assert!(err.contains("was not kept"), "{err}");
@@ -383,6 +426,7 @@ mod tests {
         let create = || TokenCommand::Create {
             name: "Deck".into(),
             access: Access::Full,
+            agent: false,
         };
         run_text(&d, create()).unwrap();
         let err = run_text(&d, create()).unwrap_err();
@@ -401,6 +445,7 @@ mod tests {
             TokenCommand::Create {
                 name: "Deck".into(),
                 access: Access::View,
+                agent: false,
             },
         )
         .unwrap_err();
@@ -523,6 +568,7 @@ mod tests {
             TokenCommand::Create {
                 name: "Deck".into(),
                 access: Access::Full,
+                agent: false,
             },
         )
         .unwrap();
@@ -567,6 +613,7 @@ mod tests {
             TokenCommand::Create {
                 name: "Deck".into(),
                 access: Access::View,
+                agent: false,
             },
         )
         .unwrap();

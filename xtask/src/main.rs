@@ -5,7 +5,11 @@
 //! a layer, is classified here in the same change as the overview table.
 //!
 //! `cargo xtask check-ui` runs the counted UI checks of ADR-0115 (`check_ui`).
+//!
+//! `cargo xtask affected` checks, lints or tests only the crates a change can break
+//! (`affected`, `docs/specs/testing-strategy.md`).
 
+mod affected;
 mod check_ui;
 
 use std::env;
@@ -41,8 +45,22 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("affected") => {
+            let rest: Vec<String> = args.collect();
+            match affected::run(&workspace_root(), &rest) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("affected: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         _ => {
-            eprintln!("usage: cargo xtask check-layers\n{}", check_ui::USAGE);
+            eprintln!(
+                "usage: cargo xtask check-layers\n{}\n{}",
+                check_ui::USAGE,
+                affected::USAGE
+            );
             ExitCode::from(2)
         }
     }

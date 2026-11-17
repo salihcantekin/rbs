@@ -25,6 +25,7 @@ pub mod control;
 pub mod error;
 pub mod event;
 pub mod exposure;
+pub mod location;
 pub mod request;
 pub mod scope;
 pub mod session;
@@ -35,7 +36,9 @@ pub mod types;
 pub mod wake;
 
 pub use codec::{Codec, JsonCodec, RequestId};
-pub use control::{ControlEndpoint, ControlTarget, EventLink, EventPublisher, Forwarded, Reply};
+pub use control::{
+    Caller, ControlEndpoint, ControlTarget, EventLink, EventPublisher, Forwarded, Reply,
+};
 pub use error::{ApiError, ErrorKind};
 pub use event::{Event, EventPayload, StateKey, Topic, TopicSet};
 pub use exposure::{UpgradePolicy, UpgradeRefusal};

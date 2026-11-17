@@ -345,7 +345,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
     let list = call(3, "tokens.list", json!({}));
     assert_eq!(
         list["result"]["tokens"],
-        json!([{"name": "Deck", "scopes": ["read", "control"]}])
+        json!([{"name": "Deck", "scopes": ["read", "control"], "irreversible": true}])
     );
     let taken = call(
         4,

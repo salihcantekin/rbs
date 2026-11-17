@@ -485,8 +485,27 @@ impl UserSession {
         })?
     }
 
+    /// Writes an OBS import plan (ADR-0131 decision 9) on the writer thread: a new
+    /// scene collection, output profile and shortcuts. Returns what was written and
+    /// the stream key to save under the new profile's account, if any; the caller
+    /// hands that to the studio, which owns the key store.
+    pub fn import_obs(
+        &self,
+        plan: rbs_import_obs::ImportPlan,
+    ) -> Result<
+        (
+            crate::obs_import::Written,
+            Option<(String, rbs_transport::Secret)>,
+        ),
+        String,
+    > {
+        let saver = self.saver.as_ref().ok_or_else(read_only_note)?;
+        import_on(&saver.shared, plan)
+    }
+
     /// Deletes the scene collection `id`, which must not be the one in use (its file
-    /// is moved to `deleted/`).
+    /// is moved to `deleted/`). Its OBS import report, if any, is removed with it
+    /// (ADR-0131 decision 11).
     pub fn delete_collection(&self, id: &EntryId) -> Result<(), String> {
         if *id == self.collection_id {
             return Err("the scene collection in use cannot be deleted".into());
@@ -495,8 +514,9 @@ impl UserSession {
         self.run(move |data, lock, _| {
             data.scene_collections()
                 .delete(lock, &id)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(crate::obs_import::report_path(data.root(), &id));
+            Ok(())
         })?
     }
 }
@@ -654,12 +674,58 @@ impl std::fmt::Debug for CollectionSaver {
 }
 
 impl CollectionSaver {
+    /// [`UserSession::import_obs`] from another thread (the control thread, for
+    /// `import.obs.run`): waits for the writer thread.
+    pub fn import_obs(
+        &self,
+        plan: rbs_import_obs::ImportPlan,
+    ) -> Result<
+        (
+            crate::obs_import::Written,
+            Option<(String, rbs_transport::Secret)>,
+        ),
+        String,
+    > {
+        import_on(&self.shared, plan)
+    }
+
     /// Asks the writer thread to save `collection` (replacing a save of it still
     /// waiting).
     pub fn save(&self, collection: &SceneCollection) {
         self.shared
             .push(Job::Collection(self.id.clone(), collection.clone()));
     }
+}
+
+/// Runs [`crate::obs_import::write`] on the writer thread and waits for it; the stream
+/// key comes back for the caller to hand to the key store's owner.
+type ImportResult = Result<
+    (
+        crate::obs_import::Written,
+        Option<(String, rbs_transport::Secret)>,
+    ),
+    String,
+>;
+
+fn import_on(shared: &Shared, plan: rbs_import_obs::ImportPlan) -> ImportResult {
+    let (tx, rx) = mpsc::channel();
+    shared.push(Job::Run(Box::new(move |data, lock, _| {
+        let key = std::cell::RefCell::new(None);
+        let written = crate::obs_import::write(
+            data,
+            lock,
+            &plan,
+            &|account, secret| {
+                *key.borrow_mut() = Some((account.to_owned(), secret));
+                Ok(())
+            },
+            rbs_ui::shortcut::Platform::current(),
+            &|p| p.is_dir(),
+        );
+        let _ = tx.send(written.map(|w| (w, key.into_inner())));
+    })));
+    rx.recv()
+        .map_err(|_| "the user data writer stopped".to_owned())?
 }
 
 fn read_only_note() -> String {
@@ -952,6 +1018,21 @@ mod tests {
         assert_eq!(col2, col);
         assert_eq!(s.section::<RecordProfile>(RECORDING).unwrap().unwrap(), rec);
         assert!(s.notes.is_empty(), "{:?}", s.notes);
+    }
+
+    #[test]
+    fn deleting_a_collection_removes_its_obs_import_report() {
+        let d = Dir::new("import-report");
+        let (s, _) = open(&d.0, quiet());
+        let id = s
+            .new_collection("From OBS", &CanvasProfile::new(), false)
+            .unwrap();
+        let report = crate::obs_import::report_path(&d.0, &id);
+        std::fs::create_dir_all(report.parent().unwrap()).unwrap();
+        std::fs::write(&report, "kind = \"obs-import-report\"\n").unwrap();
+        s.delete_collection(&id).unwrap();
+        assert!(!report.exists());
+        assert!(!s.collections().iter().any(|(c, _)| *c == id));
     }
 
     #[test]

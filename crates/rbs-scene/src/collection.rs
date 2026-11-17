@@ -1467,6 +1467,45 @@ impl SceneCollection {
         found
     }
 
+    /// What is on air while any output of the studio runs (ADR-0052 decision 4): for
+    /// every canvas, its program scene and, for a canvas that follows another, the
+    /// followed canvas's program scene too (a superset of what it shows), then
+    /// everything reachable from them: nested scenes, the canvas's global sources and
+    /// every source they place, hidden items included. A source placed both here and
+    /// in another scene counts, since editing it changes the picture on air.
+    pub fn on_air(&self) -> OnAir {
+        let mut on_air = OnAir::default();
+        let mut stack: Vec<SceneId> = Vec::new();
+        for c in self.canvases.values() {
+            stack.extend(c.globals);
+            stack.extend(c.program);
+            if let Some(target) = c.follow.and_then(|f| self.canvases.get(&f)) {
+                stack.extend(target.program);
+            }
+            if let Fallback::Scene(s) = c.fallback {
+                stack.push(s);
+            }
+        }
+        while let Some(id) = stack.pop() {
+            if !on_air.scenes.insert(id) {
+                continue;
+            }
+            let Some(s) = self.scenes.get(&id) else {
+                continue;
+            };
+            for item in &s.items {
+                on_air.items.insert(item.id);
+                match item.content {
+                    ItemContent::Source(src) => {
+                        on_air.sources.insert(src);
+                    }
+                    ItemContent::Scene(nested) => stack.push(nested),
+                }
+            }
+        }
+        on_air
+    }
+
     /// The levels a scene starts Own levels with (ADR-0091 decision 5): for every
     /// source it places on `canvas`, the level the scene makes heard in Shared levels,
     /// the source's own, so turning Own levels on changes nothing heard, on air or the
@@ -2607,4 +2646,15 @@ fn may_nest(parent: SceneScope, child: SceneScope) -> bool {
         (SceneScope::Canvas(p), SceneScope::Canvas(c)) => p == c,
         (SceneScope::Shared, SceneScope::Canvas(_)) => false,
     }
+}
+
+/// Scenes, items and sources on air ([`SceneCollection::on_air`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OnAir {
+    /// Program scenes and every scene they nest, global scenes included.
+    pub scenes: BTreeSet<SceneId>,
+    /// The items of those scenes.
+    pub items: BTreeSet<ItemId>,
+    /// The sources those items show.
+    pub sources: BTreeSet<SourceId>,
 }

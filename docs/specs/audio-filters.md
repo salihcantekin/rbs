@@ -1,6 +1,6 @@
 # Spec: Audio filters
 
-- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082). Latency contract and compensation (ADR-0130 step 1) and Noise suppression (step 2, `rbs-denoise`), the compressor (step 3), the limiter (step 4) and the equaliser (step 5) built; the API fields are planned.
+- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082). Latency contract and compensation (ADR-0130 step 1) and Noise suppression (step 2, `rbs-denoise`), the compressor (step 3), the limiter (step 4) and the equaliser (step 5) built; the API fields are control API 1.77 (`control-api.md`).
 - Owner crate(s): `rbs-audio-filters` (audio filter type trait, DSP trait, filter node, catalogue, conformance suite); `rbs-denoise` (RNNoise, ADR-0130); `rbs-params` (settings schema, shared with video filters)
 - Related ADRs: ADR-0130 (latency, voice filters), ADR-0082, ADR-0062, ADR-0023, ADR-0020, ADR-0013
 
@@ -98,3 +98,8 @@ Hot path (P15, `hot-paths.md`). `cargo bench -p rbs-audio-filters` measures one 
 ## Noise gate level bar (UI)
 
 The Properties editor of a noise gate starts with a `GateBar`: the input level as a bar from -80 to 0 dB (`meter.low`), the open threshold (`accent`) and the close threshold (`text.secondary`) as lines on it, and under it a thin bar for the gain reduction (`meter.mid`). The bar reads `FilterMeter` through the `filter-levels` callback from a 30 Hz timer that exists only while the gate's section is open and shown (P13); no section, no timer, no reads.
+
+## Voice chain and equaliser curve (UI, ADR-0130 decision 10)
+
+- **Voice chain.** The Add filter menu of a sound source starts with "Voice chain (4 filters)" (value `voice-chain`, `studio_host::Command::AddVoiceChain`). It puts noise suppression, the equaliser with its low cut on, the compressor and the limiter on the source as one undo step, each at its defaults otherwise. A filter of one of those types that the source already has stays where it is and is turned on with the chain's values, as a look does (ADR-0075); the others are added at the end in that order. Not in the control API yet.
+- **Equaliser curve.** The equaliser's editor draws its response from its settings above the fields: 20 Hz to 20 kHz on a log scale, -24 to +24 dB, with the 0 dB line and lines at 100 Hz, 1 kHz and 10 kHz (`EqualiserDsp::response_db`, the sum of the processed sections; drawn for 48 kHz). Its height and line width are `size.eq.curve-h` and `size.eq.curve-line`; colours `surface.sunken`, `border.subtle`, `text.secondary` and `accent`. Screen readers get "flat" or the lowest and highest gain. It is the settings, not a live measurement, so it costs nothing while the editor is closed.

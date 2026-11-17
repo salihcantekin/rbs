@@ -25,6 +25,7 @@ mod icons;
 mod look;
 mod measure_ui;
 mod menu_bar;
+mod obs_import_page;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -189,6 +190,8 @@ struct App {
     open_attributes: Option<(i32, bool)>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
+    /// `ui.collection.import_obs` ran; the next sync opens the Import from OBS window.
+    open_obs_import: bool,
     /// The Add vertical output dialog is asked for (`canvas.add_vertical`).
     open_vertical: bool,
     /// Ask for the name of a new workspace (Save as new) in the main window.
@@ -246,6 +249,8 @@ struct App {
     source_settings: Option<SourceSettingsWindow>,
     /// The Measure sync offset window (ADR-0126 step 6), open or not.
     sync_measure: Option<SyncMeasureWindow>,
+    /// The Import from OBS window while open (ADR-0131 step 3).
+    obs_import: Option<obs_import_page::ObsImport>,
     attributes: Option<AttributesWindow>,
     menus: MenuModels,
     /// The toolbar row's leading group (ADR-0071).
@@ -817,6 +822,7 @@ impl App {
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section, setting) => self.open_settings = Some((section, setting)),
             Run::OpenAppMenu => self.open_app_menu = true,
+            Run::OpenObsImport => self.open_obs_import = true,
             Run::Projector(canvas, true) => self.open_projector(canvas),
             Run::Projector(canvas, false) => self.close_projector(canvas),
             Run::ProjectorSize(canvas, size, display) => {
@@ -1729,6 +1735,9 @@ impl Ctx {
                     _ => projector::picture(canvas, picture),
                 }
             }
+            if applied.obs_imported == Some(true) {
+                shortcuts_page::load(&ctx, app);
+            }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
                     app.dismiss_source_settings();
@@ -2415,6 +2424,9 @@ impl Ctx {
         if let Some(w) = &app.sync_measure {
             ok &= exclude_window_from_capture(w.window(), exclude);
         }
+        if let Some(i) = &app.obs_import {
+            ok &= exclude_window_from_capture(i.window.window(), exclude);
+        }
         if let Some(w) = &app.attributes {
             ok &= exclude_window_from_capture(w.window(), exclude);
         }
@@ -2429,6 +2441,7 @@ impl Ctx {
         1 + usize::from(app.settings.is_some())
             + usize::from(app.source_settings.is_some())
             + usize::from(app.sync_measure.is_some())
+            + usize::from(app.obs_import.is_some())
             + usize::from(app.attributes.is_some())
             + app.floats.len()
     }
@@ -2547,6 +2560,10 @@ impl Ctx {
             self.show_all(&mut app);
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
+        }
+        if std::mem::take(&mut app.open_obs_import) {
+            self.show_all(&mut app);
+            obs_import_page::open(self, &mut app);
         }
         if std::mem::take(&mut app.open_vertical) {
             self.show_all(&mut app);
@@ -3586,6 +3603,17 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
+    /// An OBS scene collection; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_json(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter("OBS scene collection", &["json"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
     /// A PNG picture; `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn open_png(title: &str) -> Result<Option<PathBuf>, String> {
@@ -3636,6 +3664,11 @@ mod file_dialog {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_json(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn open_png(_title: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
@@ -3675,7 +3708,7 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 28] = [
+const SETTINGS_SECTIONS: [&str; 29] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.audio.loudness",
@@ -3684,6 +3717,7 @@ const SETTINGS_SECTIONS: [&str; 28] = [
     "settings.general.experience",
     "settings.general.closing",
     "settings.general.glide",
+    "settings.general.import",
     "settings.general.studio",
     "settings.recording.files",
     "settings.recording.separate",
@@ -3977,6 +4011,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         g.on_open_sync_measure(move |id| {
             let ctx = c.clone();
             c.update(move |app| open_sync_measure(&ctx, app, id));
+        });
+    }
+    {
+        let c = ctx.clone();
+        g.on_open_obs_import(move || {
+            entry::guard(|| {
+                let ctx = c.clone();
+                c.update(move |app| obs_import_page::open(&ctx, app));
+            });
         });
     }
     macro_rules! on {
@@ -4337,6 +4380,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             })
         });
     }
+    g.on_fit_path(|commands, vb_w, vb_h, w, h| {
+        entry::guard_or(slint::SharedString::default, || {
+            studio_ui::filters::fit_path(&commands, vb_w, vb_h, w, h).into()
+        })
+    });
     on!(on_reset_filter, |app, filter: i32| {
         app.studio.reset_filter(filter);
     });
@@ -4850,6 +4898,9 @@ fn apply_os_scheme(app: &mut App) {
     if let Some(w) = &app.sync_measure {
         look::set_os_scheme(&w.global::<Theme>());
     }
+    if let Some(i) = &app.obs_import {
+        look::set_os_scheme(&i.window.global::<Theme>());
+    }
     if let Some(w) = &app.attributes {
         look::set_os_scheme(&w.global::<Theme>());
     }
@@ -5012,6 +5063,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             open_source_settings: None,
             open_attributes: None,
             open_app_menu: false,
+            open_obs_import: false,
             open_vertical: false,
             ask_name: None,
             name_for: None,
@@ -5038,6 +5090,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             settings: None,
             source_settings: None,
             sync_measure: None,
+            obs_import: None,
             attributes: None,
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
