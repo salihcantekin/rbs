@@ -614,21 +614,21 @@ fn effects_keep_every_focus_ring_every_size_and_the_halo_zone() {
         every_ring_keeps_its_contrast(&file, Density::Regular);
         faces_keep_their_text_pairs(&file);
         the_probe_keeps_the_halo_zone_clear(&file);
-        the_frame_bar_keeps_the_halo_zone_and_its_neighbours_rings(&file, Density::Regular);
+        the_frame_bar_keeps_its_layout_and_its_neighbours_rings(&file, Density::Regular);
         the_caption_row_follows_the_frame_bar(&file);
         the_chosen_plate_keeps_its_ring_and_its_track(&file);
     });
 }
 
-/// The same rings and the frame bar's zone at compact density, where the spacing is
-/// tightest: as many renders again.
+/// The same rings and the frame bar at compact density, where the spacing is tightest:
+/// as many renders again.
 #[test]
 #[ignore = "slow: about 150 more renders of real windows, some 15 ms each in a debug build"]
-fn slow_effects_keep_every_focus_ring_and_the_halo_zone_at_compact_density() {
+fn slow_effects_keep_every_focus_ring_at_compact_density() {
     on_the_platform_thread(|| {
         let file = TokenFile::built_in().unwrap();
         every_ring_keeps_its_contrast(&file, Density::Compact);
-        the_frame_bar_keeps_the_halo_zone_and_its_neighbours_rings(&file, Density::Compact);
+        the_frame_bar_keeps_its_layout_and_its_neighbours_rings(&file, Density::Compact);
     });
 }
 
@@ -809,8 +809,8 @@ fn faces_keep_their_text_pairs(file: &TokenFile) {
     }
 }
 
-/// The rows of the main window the frame bar tests read: the bar at its tallest, and
-/// the rows below it that a ring or the clear zone could reach.
+/// The rows of the main window the frame bar tests read: the bar, and the rows below it
+/// that a ring could reach.
 const BAR_ROWS: usize = 96;
 
 /// The main window with a hand-made toolbar: one item before Go live, then Go live and
@@ -875,48 +875,61 @@ fn tab(w: &MainWindow) {
     w.window().dispatch_event(WindowEvent::KeyReleased { text });
 }
 
-/// The halo on the real frame bar (ADR-0122 decisions 8 and 10), as plain Buttons and as
-/// SplitButtons: nothing lies in Go live's clear zone, and each neighbour's focus ring
-/// keeps its contrast beside the lit halo.
-fn the_frame_bar_keeps_the_halo_zone_and_its_neighbours_rings(file: &TokenFile, density: Density) {
+/// The real frame bar (ADR-0136), as plain Buttons and as SplitButtons: it does not opt
+/// in to the halo, so in every setting it keeps Calm's layout and nothing of an effect
+/// lies beyond the extent of a control's box, and each neighbour of Go live keeps its
+/// focus ring's contrast beside Go live's shadow and Record's own effects.
+fn the_frame_bar_keeps_its_layout_and_its_neighbours_rings(file: &TokenFile, density: Density) {
     for base in [Base::Dark, Base::Light] {
         {
             for vertical in [false, true] {
                 let what = format!("the frame bar ({base:?}, {density:?}, vertical {vertical})");
                 let colours = file.built_in_theme(base).colors;
-                let ground = colours["color.surface.base"];
                 let ring = colours["color.border.focus"];
                 let ring = [ring.r, ring.g, ring.b, 255];
-                // 1. The zone, with every effect off: only the ground is in it. Beside a
-                // SplitButton the zone is wider by the ring that sits outside its shape.
-                let reference = zone_only(file, base, density);
-                let w = main_window(file, &reference, vertical);
+                // 1. The layout: every pixel beyond the extent of the controls' boxes is
+                // the same as in Calm, in every lively setting. So the bar keeps its
+                // height and its items their places, and Go live draws no halo.
                 let calm_theme = theme(file, base, Effects::Calm, density);
-                let focus_ring = if vertical {
-                    calm_theme.length["size.focus-ring"]
-                } else {
-                    0.0
-                };
+                let w = main_window(file, &slot(&calm_theme, "").unwrap(), vertical);
                 let calm_plain = Shot::top(w.window(), BAR_ROWS);
-                let (boxes, go) = bar_controls(&calm_plain, &calm_theme, reference.halo_clear);
+                let (boxes, go) =
+                    bar_controls(&calm_plain, &calm_theme, calm_theme.length["space.1"]);
                 assert_eq!(
                     go.3, calm_theme.length["size.control.md"],
                     "{what}: Go live's height"
                 );
-                zone_is_clear(
-                    &what,
-                    &calm_plain,
-                    go,
-                    reference.halo_clear + focus_ring,
-                    ground,
-                );
-                // 2. The neighbours' rings, in the zone-only render and with the halo
-                // lit: Tab moves the focus along the row. The neighbours are the bar's
-                // controls right beside Go live.
+                let others = Others::of(boxes.clone(), &calm_theme);
+                // The bar and its bottom border; the panels below have their own buttons.
+                let l = &calm_theme.length;
+                let bar =
+                    (l["size.control.md"] + 2.0 * l["space.1"] + l["size.border"]).ceil() as usize;
+                for e in Effects::LIVELY {
+                    let s = slot(&theme(file, base, e, density), "").unwrap();
+                    assert_eq!(s.halo_clear > 0.0, e == Effects::Glow);
+                    let lively = main_window(file, &s, vertical);
+                    let shot = Shot::top(lively.window(), BAR_ROWS);
+                    assert_ne!(calm_plain.px, shot.px, "{what}: {e:?} draws nothing");
+                    for y in 0..bar {
+                        for x in 0..shot.width {
+                            if others.reach(x, y, &boxes) {
+                                continue;
+                            }
+                            assert_eq!(
+                                shot.at(x, y),
+                                calm_plain.at(x, y),
+                                "{what}: {e:?} changes {x},{y}, beyond the extent of every control"
+                            );
+                        }
+                    }
+                    lively.hide().unwrap();
+                }
                 let glow = slot(&theme(file, base, Effects::Glow, density), "").unwrap();
                 let lit = main_window(file, &glow, vertical);
                 let lively_plain = Shot::top(lit.window(), BAR_ROWS);
-                assert_ne!(calm_plain.px, lively_plain.px, "{what}: Glow draws nothing");
+                // 2. The neighbours' rings, in Calm and in Glow: Tab moves the focus
+                // along the row. The neighbours are the bar's controls right beside Go
+                // live.
                 let at = boxes.iter().position(|b| *b == go).unwrap();
                 let wanted: Vec<Box4> = [at.checked_sub(1), Some(at + 1)]
                     .into_iter()
@@ -928,7 +941,6 @@ fn the_frame_bar_keeps_the_halo_zone_and_its_neighbours_rings(file: &TokenFile, 
                     2,
                     "{what}: a control on each side of Go live: {boxes:?}"
                 );
-                let others = Others::of(boxes.clone(), &calm_theme);
                 // A SplitButton's two parts each take the focus.
                 let rings = if vertical { 3 } else { 2 };
                 let mut seen = 0;
@@ -977,23 +989,16 @@ fn the_frame_bar_keeps_the_halo_zone_and_its_neighbours_rings(file: &TokenFile, 
 }
 
 /// On Windows the caption row reported for the hit test is the frame bar's height
-/// (ADR-0071), which grows in Glow: a switch from Glow to Calm publishes the new height
-/// (ADR-0122 decision 8).
+/// (ADR-0071). It is the same in Calm and Glow (ADR-0136), and a switch of density, which
+/// changes `size.control.md`, publishes the new height.
 fn the_caption_row_follows_the_frame_bar(file: &TokenFile) {
-    let t = theme(file, Base::Dark, Effects::Calm, Density::Regular);
-    let (md, space_1, border, ring) = (
-        t.length["size.control.md"],
-        t.length["space.1"],
-        t.length["size.border"],
-        t.length["size.focus-ring"],
-    );
-    let glow = slot(
-        &theme(file, Base::Dark, Effects::Glow, Density::Regular),
-        "",
-    )
-    .unwrap();
-    let calm = slot(&t, "").unwrap();
-    let w = main_window(file, &glow, true);
+    let row = |t: &ResolvedTheme| {
+        t.length["size.control.md"] + 2.0 * t.length["space.1"] + t.length["size.border"]
+    };
+    let regular = theme(file, Base::Dark, Effects::Calm, Density::Regular);
+    let compact = theme(file, Base::Dark, Effects::Glow, Density::Compact);
+    assert_ne!(row(&regular), row(&compact));
+    let w = main_window(file, &slot(&regular, "").unwrap(), true);
     let published = Rc::new(RefCell::new(Vec::new()));
     let shell = w.global::<Shell>();
     shell.on_caption_regions({
@@ -1006,21 +1011,31 @@ fn the_caption_row_follows_the_frame_bar(file: &TokenFile) {
     let _ = Shot::of(w.window());
     assert_eq!(
         published.borrow().last().copied(),
-        Some(md + 2.0 * (glow.halo_clear + ring) + border),
-        "the caption row in Glow"
+        Some(row(&regular)),
+        "the caption row in Calm"
     );
-    apply_tokens(
-        &w.global::<Theme>(),
-        &w.global::<Tokens>(),
-        file,
-        [calm.clone(), calm],
-    )
-    .unwrap();
-    let _ = Shot::of(w.window());
+    let switch = |t: &ResolvedTheme| {
+        let s = slot(t, "").unwrap();
+        apply_tokens(
+            &w.global::<Theme>(),
+            &w.global::<Tokens>(),
+            file,
+            [s.clone(), s],
+        )
+        .unwrap();
+        let _ = Shot::of(w.window());
+    };
+    switch(&theme(file, Base::Dark, Effects::Glow, Density::Regular));
     assert_eq!(
         published.borrow().last().copied(),
-        Some(md + 2.0 * space_1 + border),
-        "the caption row back in Calm"
+        Some(row(&regular)),
+        "the caption row in Glow"
+    );
+    switch(&compact);
+    assert_eq!(
+        published.borrow().last().copied(),
+        Some(row(&compact)),
+        "the caption row at compact density"
     );
     w.hide().unwrap();
 }

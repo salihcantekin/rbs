@@ -28,7 +28,7 @@ use rbs_app::stream_profile::{
     self, HoldPicture, HoldSound, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
 };
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas,
+    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, MediaOp, OutputCanvas,
     RecordPatch, RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList,
     SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest,
     StreamUpdate, StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target,
@@ -267,6 +267,8 @@ pub struct StudioUi {
     inspected: Cell<i32>,
     /// The Filters tab's selection and the drag in progress (ADR-0062).
     filter_ui: filters::FilterUi,
+    /// The play state of each media source (ADR-0108), from [`Update::Media`].
+    media_ticks: Vec<rbs_app::studio_host::MediaTick>,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
     /// The source just added is a plain frame: Properties opens on its border.
@@ -635,6 +637,7 @@ impl StudioUi {
             library_samples: Rc::new(VecModel::default()),
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
+            media_ticks: Vec::new(),
             selected: -1,
             attributes_clipboard: None,
             inspected: Cell::new(-1),
@@ -798,6 +801,8 @@ impl StudioUi {
             switching: None,
             api_switch: None,
         };
+        ui.load_canvas_sections();
+        ui.note_destinations();
         ui.refresh_tokens();
         ui.refresh_library();
         ui
@@ -2083,6 +2088,75 @@ impl StudioUi {
     }
 
     /// Adds or removes the "Capture audio too" companion of a display or window.
+    /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
+    pub fn media_play_pause(&mut self, id: i32) {
+        let playing = self
+            .media_ticks
+            .iter()
+            .any(|t| t.id.get() as i32 == id && t.state == 0);
+        let ended = self
+            .media_ticks
+            .iter()
+            .any(|t| t.id.get() as i32 == id && t.state == 3);
+        let op = if playing {
+            MediaOp::Pause
+        } else if ended {
+            MediaOp::Restart
+        } else {
+            MediaOp::Play
+        };
+        self.send(Command::Media {
+            id: SourceId::from_raw(id as u32),
+            op,
+        });
+    }
+
+    /// Play a media file from its start.
+    pub fn media_restart(&mut self, id: i32) {
+        self.send(Command::Media {
+            id: SourceId::from_raw(id as u32),
+            op: MediaOp::Restart,
+        });
+    }
+
+    /// Move a media file's cursor (the scrubber was let go).
+    pub fn media_seek(&mut self, id: i32, ms: i32) {
+        self.send(Command::Media {
+            id: SourceId::from_raw(id as u32),
+            op: MediaOp::Seek(ms.max(0) as u64),
+        });
+    }
+
+    /// One stored setting of a media file (`loop`, `restart_when_shown`, `path`): one
+    /// undo step.
+    pub fn set_media_setting(&mut self, id: i32, key: &str, value: serde_json::Value) {
+        self.deleted.clear();
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch: std::iter::once((key.to_owned(), value)).collect(),
+        });
+    }
+
+    /// Writes the newest play states into the rows that changed.
+    fn apply_media_ticks(&mut self) {
+        for i in 0..self.sources.row_count() {
+            let Some(mut row) = self.sources.row_data(i) else {
+                continue;
+            };
+            if !row.media {
+                continue;
+            }
+            let before = (row.media_state, row.media_pos_ms, row.media_len_ms);
+            let (state, pos, len) = media_tick_fields(&self.media_ticks, row.id);
+            if before != (state, pos, len) {
+                row.media_state = state;
+                row.media_pos_ms = pos;
+                row.media_len_ms = len;
+                self.sources.set_row_data(i, row);
+            }
+        }
+    }
+
     pub fn set_companion_audio(&mut self, id: i32, on: bool) {
         self.send(Command::SetCompanionAudio {
             source: SourceId::from_raw(id as u32),
@@ -5338,20 +5412,12 @@ impl StudioUi {
 
     /// Shows the output profile in use and hands its settings and stream key account
     /// to the studio.
-    fn profile_loaded(&mut self) {
-        let (profile, why) = section(
-            &self.user,
-            RECORDING,
-            RecordProfile::new,
-            RecordProfile::problem,
-        );
-        let (mut stream, stream_why) = section(
-            &self.user,
-            STREAM,
-            StreamProfile::new,
-            StreamProfile::problem,
-        );
-        stream.key_saved &= self.keys_persistent;
+    /// Reads the profile's sections beside the recording and stream ones: the
+    /// vertical canvas's (ADR-0093 decision 6), Separate files and the extra stream
+    /// destinations (ADR-0127). At start and on every profile switch, so a restart
+    /// never streams to the first destination alone or saves an empty list over the
+    /// saved one.
+    fn load_canvas_sections(&mut self) {
         // The vertical canvas's sections (ADR-0093 decision 6): one that does not load
         // counts as not saved; one that loads with a problem is kept, so a start says
         // it cannot be used.
@@ -5390,6 +5456,31 @@ impl StudioUi {
                 }
                 Err(why) => (rbs_app::stream_destinations::Destinations::default(), why),
             };
+    }
+
+    /// A destinations section that did not load is said under the stream settings,
+    /// unless they have a problem of their own.
+    fn note_destinations(&mut self) {
+        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
+            self.stream_note = format!("{}.", self.destinations_note);
+        }
+    }
+
+    fn profile_loaded(&mut self) {
+        let (profile, why) = section(
+            &self.user,
+            RECORDING,
+            RecordProfile::new,
+            RecordProfile::problem,
+        );
+        let (mut stream, stream_why) = section(
+            &self.user,
+            STREAM,
+            StreamProfile::new,
+            StreamProfile::problem,
+        );
+        stream.key_saved &= self.keys_persistent;
+        self.load_canvas_sections();
         self.profile = profile;
         self.profile_note = why
             .map(|w| format!("The saved recording settings were not used: {w}"))
@@ -5399,9 +5490,7 @@ impl StudioUi {
         self.stream_note = stream_why
             .map(|w| format!("The saved stream settings were not used: {w}"))
             .unwrap_or_default();
-        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
-            self.stream_note = format!("{}.", self.destinations_note);
-        }
+        self.note_destinations();
         self.server_draft = None;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -5864,6 +5953,10 @@ impl StudioUi {
             Update::VerticalPictureFailed => self.vertical_picture_failed = true,
             Update::Projector { id, picture, state } => {
                 out.projectors.push((id, picture, state));
+            }
+            Update::Media(ticks) => {
+                self.media_ticks = ticks;
+                self.apply_media_ticks();
             }
             Update::Sources(rows) => {
                 self.set_rows(rows);
@@ -6397,7 +6490,16 @@ impl StudioUi {
                 } else {
                     &scene_pictures
                 };
+                let (media_state, media_pos_ms, media_len_ms) =
+                    media_tick_fields(&self.media_ticks, r.id.get() as i32);
                 SourceData {
+                    media: r.media.is_some(),
+                    media_path: r.media.as_ref().map_or("", |m| m.path.as_str()).into(),
+                    media_loop: r.media.as_ref().is_some_and(|m| m.looped),
+                    media_restart: r.media.as_ref().is_some_and(|m| m.restart_when_shown),
+                    media_state,
+                    media_pos_ms,
+                    media_len_ms,
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
                     kind: r.kind.map_or("Unknown type", SourceKind::label).into(),
@@ -7892,6 +7994,21 @@ fn rgb_hex(s: &str) -> Option<[u8; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
+/// The play state (4 standby when the studio runs no instance), cursor and length of
+/// media source `id`, as the rows show them.
+fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32, i32, i32) {
+    ticks
+        .iter()
+        .find(|t| t.id.get() as i32 == id)
+        .map_or((4, 0, 0), |t| {
+            (
+                i32::from(t.state),
+                i32::try_from(t.cursor_ms).unwrap_or(i32::MAX),
+                i32::try_from(t.duration_ms).unwrap_or(i32::MAX),
+            )
+        })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
@@ -8184,6 +8301,33 @@ mod tests {
         // As after `Update::Started`: Go live is possible.
         ui.cannot_record = None;
         (ui, d)
+    }
+
+    #[test]
+    fn saved_destinations_are_read_again_at_start() {
+        let (mut ui, d) = ui("dest-restart");
+        let id = ui
+            .destinations
+            .add(
+                rbs_app::stream_destinations::Canvas::Main,
+                "Local B",
+                "custom",
+            )
+            .unwrap();
+        ui.save_destinations();
+        let saved = ui.destinations.clone();
+        drop(ui);
+        // As after a restart: a new session of the same folder.
+        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {}));
+        let canvas = rbs_app::user_session::first_canvas(&col);
+        let mut ui = StudioUi::new(&d, &MemoryKeyStore::new(), user, canvas);
+        assert_eq!(ui.destinations, saved);
+        // A destination added now never takes the saved one's id.
+        let next = ui
+            .destinations
+            .add(rbs_app::stream_destinations::Canvas::Main, "", "custom")
+            .unwrap();
+        assert!(next > id);
     }
 
     #[test]
@@ -8584,7 +8728,7 @@ mod tests {
         let model = |v: Vec<ToolbarData>| slint::ModelRc::new(slint::VecModel::from(v));
         i_slint_backend_testing::init_no_event_loop();
         let file = TokenFile::built_in().unwrap();
-        // Calm, and Glow: its halo's clear zone pads Go live's cell (ADR-0122 decision 8).
+        // Calm, and Glow, which no longer pads Go live's cell (ADR-0136).
         for effects in [Effects::Calm, Effects::Glow] {
             for density in [Density::Regular, Density::Compact, Density::Roomy] {
                 for base in [Base::Dark, Base::Light] {

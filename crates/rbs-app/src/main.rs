@@ -3756,6 +3756,33 @@ fn pick_text_file(id: i32) {
     }
 }
 
+/// Properties › Source › Change… of a media file: the same dialog as Add source, and
+/// the new path is one undo step.
+fn change_media_file(id: i32) {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_media("Choose a media file").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app.studio.set_media_setting(
+                id,
+                "path",
+                serde_json::Value::String(path.to_string_lossy().into_owned()),
+            ),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// The system file dialog for import and export (ADR-0051).
 mod file_dialog {
     use std::path::PathBuf;
@@ -3794,7 +3821,7 @@ mod file_dialog {
     }
 
     /// A media file for the Media source; `Ok(None)` when cancelled.
-    /// The demo decoder accepts any regular file (bytes ignored).
+    /// Images decode in pure Rust; video uses the platform decoder.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn open_media(title: &str) -> Result<Option<PathBuf>, String> {
         Ok(rfd::AsyncFileDialog::new()
@@ -3802,7 +3829,8 @@ mod file_dialog {
             .add_filter(
                 "Media",
                 &[
-                    "mp4", "mkv", "webm", "mov", "m4v", "mp3", "wav", "flac", "aac",
+                    "mp4", "mkv", "webm", "mov", "m4v", "mp3", "wav", "flac", "aac", "gif", "png",
+                    "apng", "webp",
                 ],
             )
             .add_filter("All files", &["*"])
@@ -4282,6 +4310,26 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_reload_source, |app, id: i32| {
         app.studio.reload_source(id);
+    });
+    on!(on_media_play_pause, |app, id: i32| {
+        app.studio.media_play_pause(id);
+    });
+    on!(on_media_restart, |app, id: i32| {
+        app.studio.media_restart(id);
+    });
+    on!(on_media_seek, |app, id: i32, ms: i32| {
+        app.studio.media_seek(id, ms);
+    });
+    on!(on_set_media_loop, |app, id: i32, on: bool| {
+        app.studio
+            .set_media_setting(id, "loop", serde_json::Value::Bool(on));
+    });
+    on!(on_set_media_restart_when_shown, |app, id: i32, on: bool| {
+        app.studio
+            .set_media_setting(id, "restart_when_shown", serde_json::Value::Bool(on));
+    });
+    on!(on_change_media_file, |_app, id: i32| {
+        change_media_file(id);
     });
     on!(on_set_companion_audio, |app, id: i32, on: bool| {
         app.studio.set_companion_audio(id, on);
@@ -5490,6 +5538,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.system_probe = Some(studio_host::protection::SystemProbeFactory::os());
         config.config_dir = Some(ctx.app.borrow().config.clone());
         config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
+        config.media_pause_release = ctx.app.borrow().bg.pause_release();
         // The monitor device belongs to this computer (ADR-0097); a file that cannot be
         // read gives System default at full volume and is left as it is.
         let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
