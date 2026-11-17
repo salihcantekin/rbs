@@ -61,6 +61,24 @@ mod windows {
         [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]
     }
 
+    /// A coarse view of the picture for a failure message: the colour at every 8th
+    /// pixel of every 6th row.
+    fn map(sample: &PictureSample) -> String {
+        let (w, h) = (
+            sample.picture.width as usize,
+            sample.picture.height as usize,
+        );
+        let mut out = String::new();
+        for y in (0..h).step_by(6) {
+            for x in (0..w).step_by(8) {
+                let [r, g, b, _] = pixel(sample, x, y);
+                out.push_str(&format!("{r:3},{g:3},{b:3} "));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     #[test]
     fn pictures_are_cropped_upright_rgba_with_stamps() {
         let Some(mut dec) = open() else { return };
@@ -79,8 +97,16 @@ mod windows {
             assert_eq!(p.frame_duration, Some(ms(100)), "picture {i}");
             let green = pixel(p, 4, 4);
             let red = pixel(p, 60, 32);
-            assert!(near(green, [0, 255, 0, 255]), "top-left {green:?}");
-            assert!(near(red, [255, 0, 0, 255]), "bottom-right {red:?}");
+            assert!(
+                near(green, [0, 255, 0, 255]),
+                "picture {i} top-left {green:?}\n{}",
+                map(p)
+            );
+            assert!(
+                near(red, [255, 0, 0, 255]),
+                "picture {i} bottom-right {red:?}\n{}",
+                map(p)
+            );
         }
     }
 
@@ -108,15 +134,23 @@ mod windows {
         let Some(mut dec) = open() else { return };
         let mut frames = 0usize;
         let mut chunks = 0;
+        let mut loudest = 0.0f32;
         while let Some(sound) = dec.next_sound().unwrap() {
             assert_eq!(sound.pcm.sample_rate, 48_000);
             assert_eq!(sound.pcm.channels, 2);
             assert_eq!(sound.pcm.samples.len() % 2, 0);
-            assert!(sound.pcm.samples.iter().any(|s| s.abs() > 0.1));
+            loudest = sound
+                .pcm
+                .samples
+                .iter()
+                .fold(loudest, |m, s| m.max(s.abs()));
             frames += sound.pcm.samples.len() / 2;
             chunks += 1;
             assert!(chunks < 500, "the stream must end");
         }
+        // The fixture's tone peaks near 0.1 to 0.14; a single AAC frame may stay below
+        // 0.1, so the level is checked over the whole clip.
+        assert!(loudest > 0.05, "the sound is silent: peak {loudest}");
         // 0.5 s, give or take one AAC frame of priming or padding.
         assert!(
             (24_000 - 1024..=24_000 + 1024).contains(&frames),
