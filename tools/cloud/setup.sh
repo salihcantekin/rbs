@@ -11,13 +11,15 @@ apt-get install -y -qq mesa-vulkan-drivers libpipewire-0.3-dev libspa-0.2-dev cl
   libwayland-dev libudev-dev libasound2-dev >/dev/null
 curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/.cargo/bin"
 # Prebuild third-party crates only (cargo-chef stubs the workspace), into the repo's
-# target/, so a session compiles just the workspace crates.
+# target/, so a session compiles just the workspace crates. A failure here must not stop
+# the session from starting: it then compiles the dependencies itself.
 if [ -f rbs/Cargo.toml ]; then
-  cargo install cargo-chef --locked -q
   root="$PWD/rbs"; chef=$(mktemp -d)
-  (cd "$root" && cargo chef prepare --recipe-path "$chef/recipe.json")
-  cp -r "$root/.cargo" "$root/rust-toolchain.toml" "$chef/"
-  (cd "$chef" && CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 cargo chef cook \
-    --recipe-path recipe.json --workspace --tests --examples --target-dir "$root/target")
+  cargo install cargo-chef --locked -q \
+    && (cd "$root" && cargo chef prepare --recipe-path "$chef/recipe.json") \
+    && cp -r "$root/.cargo" "$root/rust-toolchain.toml" "$chef/" \
+    && (cd "$chef" && CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 cargo chef cook \
+      --recipe-path recipe.json --workspace --tests --examples --target-dir "$root/target") \
+    || echo "rbs setup: dependency prebuild failed; sessions compile them instead"
   rm -rf "$chef"
 fi
