@@ -3190,10 +3190,11 @@ export global ContextMenus {
     pure callback find(/* rows */ [MenuRow], /* from */ int, /* letter */ string) -> int;
     // Where a menu (`beside` false) or a submenu (`beside` true) of natural size `w` x `h`
     // goes for `anchor`, in a window `win-w` x `win-h`, `margin` from its edges
-    // (`context_menu::place`).
+    // (`menu_layout::place`).
     pure callback place(/* anchor */ OverlayCover, /* w */ length, /* h */ length, /* win-w */ length, /* win-h */ length, /* margin */ length, /* beside */ bool) -> OverlayCover;
-    // Runs a command registry id.
-    callback run(string);
+    // Runs a command registry id: false when it is refused (its entry is disabled by
+    // now, ADR-0137 decision 6), so a switch row keeps its state and the menu closes.
+    callback run(string) -> bool;
     // The drawn menu closed: Rust gives the focus back to what had it.
     callback closed();
     // The drawn menu of the window: open, its rows, whether any row has a disabled
@@ -3205,21 +3206,24 @@ export global ContextMenus {
     in-out property <length> x;
     in-out property <length> y;
     in-out property <length> above;
+    in-out property <length> wide;
     in-out property <int> serial;
     // Where the menu and its submenu are, for the preview layer's cut-out (ADR-0054).
     in-out property <OverlayCover> cover;
     in-out property <bool> sub-open;
     in-out property <OverlayCover> sub-cover;
     // Opens the menu of `context` for `target` under the window point (`x`, `y`), or
-    // over it, `above` higher, when there is no room below; nothing opens when the
+    // over it, `above` higher, when there is no room below; a menu that does not fit
+    // on the right ends at `x + wide` (a button's right edge). Nothing opens when the
     // context has no items.
-    public function open-at(context: string, target: string, x: length, y: length, above: length) {
+    public function open-at(context: string, target: string, x: length, y: length, wide: length, above: length) {
         let rows = root.rows(context, target);
         if rows.length == 0 { return; }
         root.shown = rows;
         root.x = x;
         root.y = y;
         root.above = above;
+        root.wide = wide;
         root.serial += 1;
         root.open = true;
     }
@@ -4255,6 +4259,11 @@ component MenuPanel inherits MenuSurface {
     property <string> reason-text: root.current >= 0 && root.current < root.rows.length ? root.rows[root.current].reason : "";
     accessible-role: list;
     public function reveal(y: length, h: length) { area.scroll-into-view(y, h); }
+    // A press inside the menu that misses a row (a separator, the padding, the reason
+    // line), or the wheel there, stays here instead of closing the menu.
+    TouchArea {
+        scroll-event(e) => { accept }
+    }
     area := ScrollArea {
         x: root.pad;
         y: root.pad;
@@ -4335,7 +4344,7 @@ export component MenuLayer inherits Rectangle {
     property <length> sub-y;
     property <int> serial: ContextMenus.serial;
     property <OverlayCover> spot: ContextMenus.place(
-        { x: ContextMenus.x, y: ContextMenus.y - ContextMenus.above, width: 0px, height: ContextMenus.above },
+        { x: ContextMenus.x, y: ContextMenus.y - ContextMenus.above, width: ContextMenus.wide, height: ContextMenus.above },
         main.natural-w, main.natural-h, root.width, root.height, Tokens.space-1, false);
     changed serial => { root.reset(); }
     changed width => { ContextMenus.close(); }
@@ -4371,7 +4380,11 @@ export component MenuLayer inherits Rectangle {
         return root.live(rows, b) ? b : -1;
     }
     function open-sub(i: int) {
-        if !root.live(root.rows, i) || root.rows[i].kind != 3 || !root.rows[i].enabled { return; }
+        if !root.live(root.rows, i) || root.rows[i].kind != 3 || !root.rows[i].enabled {
+            // A row with no submenu to show closes the one that is open.
+            root.close-sub();
+            return;
+        }
         if root.sub != i {
             root.sub-rows = ContextMenus.submenu(i);
             root.sub = i;
@@ -4398,8 +4411,11 @@ export component MenuLayer inherits Rectangle {
         if root.rows[i].checkable {
             // A boolean setting changes in place; the menu stays open.
             root.current = i;
-            ContextMenus.run(root.rows[i].id);
-            ContextMenus.shown[i].checked = !ContextMenus.shown[i].checked;
+            if ContextMenus.run(root.rows[i].id) {
+                ContextMenus.shown[i].checked = !ContextMenus.shown[i].checked;
+            } else {
+                ContextMenus.close();
+            }
             return;
         }
         if root.rows[i].kind == 3 {
@@ -4417,8 +4433,11 @@ export component MenuLayer inherits Rectangle {
         if !root.live(root.sub-rows, i) || !root.sub-rows[i].enabled { return; }
         if root.sub-rows[i].checkable {
             root.sub-current = i;
-            ContextMenus.run(root.sub-rows[i].id);
-            root.sub-rows[i].checked = !root.sub-rows[i].checked;
+            if ContextMenus.run(root.sub-rows[i].id) {
+                root.sub-rows[i].checked = !root.sub-rows[i].checked;
+            } else {
+                ContextMenus.close();
+            }
             return;
         }
         root.run(root.sub-rows[i].id);

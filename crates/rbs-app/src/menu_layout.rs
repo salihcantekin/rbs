@@ -80,7 +80,7 @@ pub fn place(anchor: Spot, size: [f32; 2], window: [f32; 2], margin: f32, beside
 
 /// The next row after `from` (wrapping; from the start when `from` is out of range)
 /// whose title starts with `letter`, ignoring case, or `None`. Typing a letter in a
-/// drawn menu moves there (ADR-0137 decision 6).
+/// drawn menu moves there (ADR-0137 decision 7).
 pub fn find<'a>(
     titles: impl ExactSizeIterator<Item = &'a str> + Clone,
     from: i32,

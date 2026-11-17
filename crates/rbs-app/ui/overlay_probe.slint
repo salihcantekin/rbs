@@ -366,7 +366,7 @@ export component MenuProbe inherits Window {
             x: Tokens.space-2;
             y: parent.height - self.height - Tokens.space-2;
             text: "Profile";
-            clicked => { menu.open-from({ x: self.x, y: self.y + self.height }, self.height); }
+            clicked => { menu.open-from({ x: self.x, y: self.y + self.height }, self.width, self.height); }
         }
         menu := CommandMenu { context: "source"; target: "source=2"; }
     }

@@ -521,7 +521,7 @@ component StackView inherits Rectangle {
                         maximize => { Menus.run("ui.panel.maximize?id=" + t.id); }
                         open-menu => {
                             menu-panel = t.id;
-                            menu.open-from({ x: Tokens.space-2, y: bar }, bar);
+                            menu.open-from({ x: Tokens.space-2, y: bar }, 0px, bar);
                         }
                     }
                 }
@@ -542,7 +542,7 @@ component StackView inherits Rectangle {
                     icon: IconName.plus;
                     name: @tr("Add source");
                     enabled: Studio.state == 1;
-                    clicked => { add-menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, bar); }
+                    clicked => { add-menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, self.width, bar); }
                 }
                 if active-id == "rbs.preview" && !data.collapsed && !root.switch-in-rail: HorizontalLayout {
                     padding-right: Tokens.space-2;
@@ -590,7 +590,7 @@ component StackView inherits Rectangle {
                     // The menu opens under this button, as Add source's does.
                     clicked => {
                         menu-panel = active-id;
-                        menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, bar);
+                        menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, self.width, bar);
                     }
                 }
             }
@@ -1425,7 +1425,7 @@ component Flyout inherits Rectangle {
                                 menu.open-from({
                                     x: self.absolute-position.x - menu.absolute-position.x,
                                     y: self.absolute-position.y - menu.absolute-position.y + self.height,
-                                }, self.height);
+                                }, self.width, self.height);
                             }
                         }
                     }
@@ -1849,9 +1849,9 @@ component FrameBar inherits Rectangle {
                 item: item;
                 open-workspaces(x) => {
                     root.ws-menu-x = x - root.absolute-position.x;
-                    ws-menu.open-from({ x: root.ws-menu-x, y: root.height }, root.height);
+                    ws-menu.open-from({ x: root.ws-menu-x, y: root.height }, 0px, root.height);
                 }
-                open-add-source(x) => { add-source-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, root.height); }
+                open-add-source(x) => { add-source-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, 0px, root.height); }
             }
             // Closing while live ends the stream: asked first, in the frame (U4).
             if Shell.quit-confirm: HorizontalLayout {
@@ -1912,9 +1912,9 @@ component FrameBar inherits Rectangle {
                 item: item;
                 open-workspaces(x) => {
                     root.ws-menu-x = x - root.absolute-position.x;
-                    ws-menu.open-from({ x: root.ws-menu-x, y: root.height }, root.height);
+                    ws-menu.open-from({ x: root.ws-menu-x, y: root.height }, 0px, root.height);
                 }
-                open-add-source(x) => { add-source-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, root.height); }
+                open-add-source(x) => { add-source-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, 0px, root.height); }
             }
             // Go live and Record: part of the frame, not of the toolbar, so they stay
             // with the toolbar hidden or customised (U1, ADR-0073).
@@ -1924,7 +1924,7 @@ component FrameBar inherits Rectangle {
                 vertical-menu: Shell.vertical-outputs;
                 vertical-on: item.id == "stream.toggle" ? Shell.vertical-live : Shell.vertical-rec;
                 open-workspaces(x) => { }
-                open-vertical(x) => { vertical-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, root.height); }
+                open-vertical(x) => { vertical-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, 0px, root.height); }
             }
             // Each running vertical output's chip (ADR-0111 decision 6).
             if Shell.vertical-live-state != 0: VerticalChip {
@@ -2087,12 +2087,12 @@ component StatusBar inherits Rectangle {
         profile-button := StatusPicker {
             label: @tr("Output profile");
             value: Studio.profile-name;
-            clicked => { profile-menu.open-from({ x: profile-button.x, y: profile-button.y + profile-button.height }, profile-button.height); }
+            clicked => { profile-menu.open-from({ x: profile-button.x, y: profile-button.y + profile-button.height }, profile-button.width, profile-button.height); }
         }
         collection-button := StatusPicker {
             label: @tr("Scene collection");
             value: Studio.collection-name;
-            clicked => { collection-menu.open-from({ x: collection-button.x, y: collection-button.y + collection-button.height }, collection-button.height); }
+            clicked => { collection-menu.open-from({ x: collection-button.x, y: collection-button.y + collection-button.height }, collection-button.width, collection-button.height); }
         }
         if Studio.canvas-label != "": Text {
             horizontal-stretch: 0;

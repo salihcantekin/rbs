@@ -162,7 +162,10 @@ fn install(p: &Probe) -> Menu {
     });
     let ran: Rc<RefCell<Vec<String>>> = Rc::default();
     let log = ran.clone();
-    g.on_run(move |id| log.borrow_mut().push(id.to_string()));
+    g.on_run(move |id| {
+        log.borrow_mut().push(id.to_string());
+        true
+    });
     p.show().expect("show");
     Menu {
         p: p.clone_strong(),
@@ -195,7 +198,7 @@ fn press(p: &Probe, x: f32, y: f32, button: PointerEventButton) {
         .dispatch_event(WindowEvent::PointerReleased { position, button });
 }
 
-/// Runs the first-frame focus timer and the submenu delay.
+/// Runs pending timers and the submenu delay.
 fn settle() {
     slint::platform::update_timers_and_animations();
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
@@ -286,7 +289,10 @@ fn a_letter_jumps_and_escape_closes_the_submenu_then_the_menu() {
     assert!(!g.get_open());
     assert_eq!(
         m.ran.borrow().as_slice(),
-        ["item.flip?axis=horizontal&item=3", "item.reset_transform?item=3"]
+        [
+            "item.flip?axis=horizontal&item=3",
+            "item.reset_transform?item=3"
+        ]
     );
     settle();
     assert!(m.p.get_row_focused(), "back on the row after a pick too");

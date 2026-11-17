@@ -711,6 +711,11 @@ impl App {
 
     /// Runs a command registry id from the menu bar or an app-scope shortcut
     /// (ADR-0050, ADR-0060), with the menu's confirmations.
+    /// Whether `run_command` would refuse `id` now: its entry is disabled.
+    fn refuses(&self, id: &str) -> bool {
+        rbs_ui::command::CommandId::parse(id).is_ok_and(|cid| self.shown().enabled(&cid).is_err())
+    }
+
     fn run_command(&mut self, id: &str) {
         self.run_command_as(id, true);
     }
@@ -3637,12 +3642,16 @@ where
     });
     let c = ctx.clone();
     g.on_run(move |id| {
+        // A row whose entry is disabled by now is refused (`run_command` shows why);
+        // the menu then closes instead of showing a switch that did not move.
+        let refused = c.app.try_borrow().is_ok_and(|app| app.refuses(&id));
         let origin = origin.clone();
         c.update(move |app| {
             app.run_origin = origin;
             app.run_command(&id);
             app.run_origin = None;
         });
+        !refused
     });
 }
 
@@ -5987,6 +5996,58 @@ mod section_tests {
         let mut listed: Vec<String> = SETTINGS_SECTIONS.iter().map(|s| (*s).to_owned()).collect();
         listed.sort();
         assert_eq!(found, listed);
+    }
+}
+
+#[cfg(test)]
+mod menu_rows_tests {
+    use super::{context_menu, menu_rows};
+
+    fn item(kind: context_menu::Kind, checkable: bool, checked: bool) -> context_menu::Item {
+        context_menu::Item {
+            kind,
+            title: "Row".into(),
+            icon: "",
+            symbol: "eye",
+            id: "item.flip?axis=horizontal".into(),
+            enabled: true,
+            checkable,
+            checked,
+            choices: Vec::new(),
+            reason: String::new(),
+        }
+    }
+
+    /// A checkable row keeps its own icon beside its switch; a boolean setting in a
+    /// submenu becomes a switch, a picker's choice stays a check (ADR-0137 decision 3).
+    #[test]
+    fn switches_for_settings_and_checks_for_choices() {
+        let mut sub = item(context_menu::Kind::Choices, false, false);
+        sub.id = String::new();
+        sub.choices = vec![
+            ("Flip".into(), "item.flip?axis=horizontal".into(), true),
+            ("Main".into(), "profile.select?id=main".into(), true),
+        ];
+        let label = |id: &str| {
+            if id.starts_with("item.flip") {
+                "Ctrl+F".to_owned()
+            } else {
+                String::new()
+            }
+        };
+        let (rows, subs) = menu_rows(
+            vec![item(context_menu::Kind::Command, true, true), sub],
+            &label,
+        );
+        assert_eq!(rows[0].icon, "eye");
+        assert!(rows[0].checkable && rows[0].checked);
+        assert_eq!(rows[0].shortcut, "Ctrl+F");
+        assert_eq!(rows[1].shortcut, "");
+        assert_eq!(subs.len(), 2);
+        assert!(subs[0].is_empty());
+        assert!(subs[1][0].checkable, "a setting is a switch");
+        assert!(!subs[1][1].checkable, "a choice is a check");
+        assert!(subs[1][1].checked);
     }
 }
 

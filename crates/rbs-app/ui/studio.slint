@@ -1453,7 +1453,7 @@ component SceneRowView inherits Rectangle {
                         menu.open-from({
                             x: self.absolute-position.x - menu.absolute-position.x,
                             y: self.absolute-position.y - menu.absolute-position.y + self.height,
-                        }, self.height);
+                        }, self.width, self.height);
                     }
                 }
             }
@@ -2499,7 +2499,7 @@ component MeterStrip inherits Rectangle {
             menu.open-from({
                 x: self.absolute-position.x - menu.absolute-position.x,
                 y: self.absolute-position.y + self.height - menu.absolute-position.y,
-            }, self.height);
+            }, self.width, self.height);
         }
     }
 }
@@ -2900,7 +2900,7 @@ export component MixerPanel inherits Rectangle {
                         scene-menu.open-from({
                             x: self.absolute-position.x - scene-menu.absolute-position.x,
                             y: self.absolute-position.y + self.height - scene-menu.absolute-position.y,
-                        }, self.height);
+                        }, self.width, self.height);
                     }
                 }
             }
@@ -4360,7 +4360,7 @@ component AddFilterButton inherits Rectangle {
         accessible-name: @tr("Add a filter to {}", source.name);
         lead: IconName.plus;
         icon: IconName.chevron-down;
-        clicked => { menu.open-from({ x: 0px, y: root.height }, root.height); }
+        clicked => { menu.open-from({ x: 0px, y: root.height }, root.width, root.height); }
     }
     menu := CommandMenu {
         context: "add-filter";
