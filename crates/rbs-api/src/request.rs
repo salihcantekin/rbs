@@ -2626,6 +2626,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.source.settings",
     "ui.source.paste_attributes",
     "ui.source.reset",
+    "ui.scene.transition",
     "ui.properties.show",
     "ui.app_menu.open",
     "ui.command.list",

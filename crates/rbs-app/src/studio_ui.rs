@@ -2502,6 +2502,25 @@ impl StudioUi {
         }
     }
 
+    /// A scene's transition into it (ADR-0135): `kind` -1 the collection's, else the
+    /// rail's index; `duration_ms` -1 the kind's own duration.
+    pub fn set_scene_transition(&mut self, id: i32, kind: i32, duration_ms: i32) {
+        let kind = match kind {
+            0 => Some(rbs_scene::TransitionKind::Cut),
+            1 => Some(rbs_scene::TransitionKind::Fade),
+            2 => Some(rbs_scene::TransitionKind::Move),
+            3 => Some(rbs_scene::TransitionKind::Swipe),
+            4 => Some(rbs_scene::TransitionKind::Slide),
+            _ => None,
+        };
+        let duration_ms = u32::try_from(duration_ms).ok().map(|ms| ms.min(5_000));
+        let t = rbs_scene::SceneTransition { kind, duration_ms };
+        self.send(Command::SetSceneTransition {
+            id: SceneId::from_raw(id as u32),
+            transition: (!t.is_empty()).then_some(t),
+        });
+    }
+
     /// Swipe's options, or Slide's when `slide`: easing (`0` linear, `1`
     /// ease-in-out) and direction (`0` left, `1` right, `2` up, `3` down).
     pub fn set_swipe_options(&mut self, slide: bool, easing: i32, direction: i32) {
@@ -6005,6 +6024,14 @@ impl StudioUi {
                         preview: Some(s.id) == list.preview,
                         number: i as i32 + 1,
                         own_levels: s.own_audio,
+                        transition_kind: s
+                            .transition_in
+                            .and_then(|t| t.kind)
+                            .map_or(-1, transition_index),
+                        transition_ms: s
+                            .transition_in
+                            .and_then(|t| t.duration_ms)
+                            .map_or(-1, |ms| ms as i32),
                     })
                     .collect();
                 set_rows(&self.scenes, data);
@@ -9076,6 +9103,8 @@ mod tests {
             preview: false,
             number: 1,
             own_levels: false,
+            transition_kind: -1,
+            transition_ms: -1,
         }]);
         ui.selected = 1;
         ui.clear_collection_view();
