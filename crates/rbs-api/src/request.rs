@@ -179,6 +179,19 @@ pub struct SetCollectionTransition {
     /// Slide settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide: Option<crate::types::SwipeTransition>,
+    /// Stinger settings, replaced whole (protocol 1.88, ADR-0140 decision 9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stinger: Option<crate::types::StingerTransition>,
+}
+
+/// The answer to `collection.set_transition` (protocol 1.88): empty, or a warning about
+/// the stinger (ADR-0140 decision 9).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TransitionSet {
+    /// The stinger's file has transparency no decoder on this computer keeps, so
+    /// each Stinger change runs as a Cut; absent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alpha_unsupported: bool,
 }
 
 /// A transition for one program change only (protocol 1.81, ADR-0128 decision 13):
@@ -3633,6 +3646,8 @@ pub enum Response {
     BoxPlaced(BoxPlaced),
     /// `canvas.auto_layout` (protocol 1.44).
     AutoLayoutDone(AutoLayoutDone),
+    /// `collection.set_transition` (protocol 1.88): empty, or a stinger warning.
+    TransitionSet(TransitionSet),
     /// `marker.add` (protocol 1.50).
     MarkersAdded(MarkersAdded),
     /// `project.export` (protocol 1.58).

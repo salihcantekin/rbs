@@ -129,9 +129,9 @@ fn track_alpha(track: &AVAssetTrack) -> bool {
     let description: &CMFormatDescription =
         unsafe { &*(Retained::as_ptr(&first).cast::<CMFormatDescription>()) };
     // SAFETY: reads a tag of a live description; the key is a framework constant.
-    let Some(value) = (unsafe {
-        description.extension(kCMFormatDescriptionExtension_ContainsAlphaChannel)
-    }) else {
+    let Some(value) =
+        (unsafe { description.extension(kCMFormatDescriptionExtension_ContainsAlphaChannel) })
+    else {
         return false;
     };
     let value: &CFType = &value;

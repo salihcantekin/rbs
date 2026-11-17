@@ -25,6 +25,7 @@ mod filters;
 mod layers;
 mod registry;
 pub mod still;
+pub mod stinger;
 pub mod text;
 pub mod text_file;
 pub mod text_live;

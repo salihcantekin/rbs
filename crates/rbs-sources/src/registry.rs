@@ -1179,6 +1179,39 @@ impl SourceTypes {
         }
     }
 
+    /// What the stinger search needs of a media-file source (ADR-0140 decision 3): its
+    /// accepted path, its play range and the adapters to try, in the order a source
+    /// would try them. Reads no file contents.
+    #[allow(clippy::type_complexity)]
+    pub fn stinger_file(
+        &self,
+        source: &Source,
+    ) -> Result<
+        (
+            std::path::PathBuf,
+            (Duration, Option<Duration>),
+            Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>>,
+        ),
+        SourceError,
+    > {
+        validate_media(&source.settings)?;
+        let path_text = text(&source.settings, keys::PATH)?.ok_or(SourceError::InvalidSetting {
+            key: keys::PATH,
+            expected: "a local absolute path",
+        })?;
+        let path =
+            rbs_media_decode::accept_local_media_path(path_text).map_err(|error| match error {
+                rbs_media_decode::PathError::Invalid(expected) => SourceError::InvalidSetting {
+                    key: keys::PATH,
+                    expected,
+                },
+                rbs_media_decode::PathError::Media(text) => SourceError::Media(text),
+            })?;
+        let range = media_range(&source.settings)?;
+        let factories = self.media_candidates(text(&source.settings, keys::ADAPTER)?);
+        Ok((path, range, factories))
+    }
+
     fn media_candidates(
         &self,
         named: Option<&str>,

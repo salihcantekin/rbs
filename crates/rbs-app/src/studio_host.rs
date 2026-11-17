@@ -76,6 +76,7 @@ mod obs_import_api;
 mod on_air;
 pub mod protection;
 pub mod replay;
+mod stinger;
 pub mod sync_measure;
 mod text_live;
 mod text_resize;
@@ -2523,6 +2524,8 @@ pub struct SceneList {
     pub glide: rbs_scene::CollectionGlide,
     /// The collection's transition (ADR-0128).
     pub transition: rbs_scene::CollectionTransition,
+    /// The stinger's found cut point in ms (ADR-0140 decision 3); `None` until found.
+    pub stinger_cut_found_ms: Option<u32>,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -2555,7 +2558,9 @@ impl Refusal {
             | SceneError::UnknownScene(_)
             | SceneError::UnknownItem(_)
             | SceneError::UnknownFilter(_) => Self::NotFound(edit_error(e)),
-            SceneError::DuplicateName(_) => Self::Conflict(edit_error(e)),
+            SceneError::DuplicateName(_) | SceneError::StingerPlaced(_) => {
+                Self::Conflict(edit_error(e))
+            }
             SceneError::EmptyName
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
@@ -3098,6 +3103,11 @@ enum Msg {
         id: u64,
         msg: calibration::WorkerMsg,
     },
+    /// The stinger's file look finished (ADR-0140 decision 3).
+    StingerLook {
+        key: stinger::LookKey,
+        result: Result<rbs_sources::stinger::StingerLook, rbs_sources::stinger::LookError>,
+    },
 }
 
 /// How the studio starts.
@@ -3529,6 +3539,8 @@ struct Host {
     /// This thread's own queue, for results from picker threads. Weak, so dropping
     /// the [`StudioHost`] still ends the thread.
     inbox: Weak<Sender<Msg>>,
+    /// The stinger's file look (ADR-0140 decision 3).
+    stinger: stinger::StingerFile,
     /// Saves the collection after a change ([`HostConfig::autosave`]).
     autosave: Option<CollectionSaver>,
     /// The recent targets per source type and the folder they are saved in.
@@ -3774,7 +3786,8 @@ fn run(
                     | Msg::ReplayWritten(_)
                     | Msg::Thumbnail { .. }
                     | Msg::RegionPreview { .. }
-                    | Msg::Calibration { .. } => {}
+                    | Msg::Calibration { .. }
+                    | Msg::StingerLook { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -3922,6 +3935,11 @@ fn round(
             }
         }
         Some(Msg::Calibration { id, msg }) => host.calibration_msg(id, msg),
+        Some(Msg::StingerLook { key, result }) => {
+            if host.stinger_looked(key, result) {
+                host.publish(notify);
+            }
+        }
         Some(Msg::ApiWake) | None => {}
     }
     // One API request per round: a UI command that arrived meanwhile is taken by the
@@ -4336,6 +4354,7 @@ fn start(
         switch_pending: None,
         switch_seq: 0,
         inbox: Weak::new(),
+        stinger: stinger::StingerFile::default(),
         levels,
     };
     // A vertical canvas saved with the collection runs again (ADR-0093 decision 9).
@@ -10974,7 +10993,49 @@ impl Host {
         if let Some(s) = p.slide {
             t.slide = scene_swipe(s);
         }
+        if let Some(st) = p.stinger {
+            t.stinger = self.stinger_settings(st)?;
+        }
         self.put_transition(t)
+    }
+
+    /// The stinger settings `collection.set_transition` asks for, checked (ADR-0140
+    /// decision 9): the source exists and is a media file, and the cut point is within
+    /// the file's length when that is known. Placement is the model's check.
+    fn stinger_settings(
+        &self,
+        st: api::StingerTransition,
+    ) -> Result<rbs_scene::StingerSettings, Refusal> {
+        let source = match st.source {
+            None => None,
+            Some(raw) => {
+                let id = SourceId::from_raw(raw);
+                let s = self
+                    .collection
+                    .source(id)
+                    .ok_or_else(|| Refusal::NotFound(format!("There is no source {raw}.")))?;
+                if s.type_id.as_str() != types::MEDIA_SOURCE {
+                    return Err(Refusal::Invalid(format!(
+                        "Source {raw} is not a media file, so it cannot be the stinger."
+                    )));
+                }
+                Some(id)
+            }
+        };
+        if let (Some(cut), Some(id)) = (st.cut_ms, source) {
+            let length = (self.collection.transition().stinger.source == Some(id))
+                .then(|| self.stinger.duration())
+                .flatten();
+            if length.is_some_and(|l| u128::from(cut) > l.as_millis()) {
+                return Err(Refusal::Invalid(format!(
+                    "The cut point {cut} ms is past the end of the stinger's file."
+                )));
+            }
+        }
+        Ok(rbs_scene::StingerSettings {
+            source,
+            cut_ms: st.cut_ms,
+        })
     }
 
     /// `scene.set_transition` (ADR-0135 decision 10) and the Scenes panel's
@@ -11958,6 +12019,7 @@ impl Host {
                 .unwrap_or_default(),
             glide: self.collection.glide(),
             transition: self.collection.transition(),
+            stinger_cut_found_ms: self.stinger.cut_found_ms(),
             sources,
         }
     }
@@ -12578,6 +12640,7 @@ impl Host {
             Err(e) => notify(Update::Error(e.to_string())),
         }
         self.publish_transitions();
+        self.look_at_stinger();
         self.publish(notify);
     }
 
@@ -12972,6 +13035,9 @@ fn edit_error(e: &SceneError) -> String {
             "Only a display source can hide the taskbar or Dock.".to_owned()
         }
         SceneError::UnknownFilter(_) => "This filter is not there any more.".to_owned(),
+        SceneError::StingerPlaced(_) => {
+            "This source is the stinger, so it cannot be in a scene.".to_owned()
+        }
         other => format!("The scene could not be changed ({other:?}). Try again."),
     }
 }
@@ -14656,7 +14722,9 @@ impl ApiTarget<'_> {
                 if changed {
                     host.apply(notify);
                 }
-                Ok(Response::Done(Empty {}))
+                Ok(Response::TransitionSet(rbs_api::request::TransitionSet {
+                    alpha_unsupported: host.stinger_alpha_unsupported(),
+                }))
             }
             C::SourceSetGlide(p) => {
                 let (custom, duration_ms, easing) = match p.glide {
@@ -15737,6 +15805,7 @@ fn scene_transition_kind(k: api::TransitionKind) -> rbs_scene::TransitionKind {
         api::TransitionKind::Move => rbs_scene::TransitionKind::Move,
         api::TransitionKind::Swipe => rbs_scene::TransitionKind::Swipe,
         api::TransitionKind::Slide => rbs_scene::TransitionKind::Slide,
+        api::TransitionKind::Stinger => rbs_scene::TransitionKind::Stinger,
     }
 }
 
@@ -15746,6 +15815,7 @@ fn api_transition_kind(k: rbs_scene::TransitionKind) -> api::TransitionKind {
         rbs_scene::TransitionKind::Fade => api::TransitionKind::Fade,
         rbs_scene::TransitionKind::Swipe => api::TransitionKind::Swipe,
         rbs_scene::TransitionKind::Slide => api::TransitionKind::Slide,
+        rbs_scene::TransitionKind::Stinger => api::TransitionKind::Stinger,
         _ => api::TransitionKind::Move,
     }
 }
@@ -15783,8 +15853,12 @@ fn api_swipe(s: rbs_scene::SwipeSettings) -> api::SwipeTransition {
     }
 }
 
-/// The collection's transition as `scene.list` shows it (protocol 1.81).
-fn api_transition(t: rbs_scene::CollectionTransition) -> api::Transition {
+/// The collection's transition as `scene.list` shows it (protocol 1.81; the stinger
+/// since 1.88).
+fn api_transition(
+    t: rbs_scene::CollectionTransition,
+    cut_found_ms: Option<u32>,
+) -> api::Transition {
     api::Transition {
         kind: api_transition_kind(t.kind),
         fade: api::FadeTransition {
@@ -15797,6 +15871,11 @@ fn api_transition(t: rbs_scene::CollectionTransition) -> api::Transition {
         },
         swipe: api_swipe(t.swipe),
         slide: api_swipe(t.slide),
+        stinger: api::StingerTransition {
+            source: t.stinger.source.map(SourceId::get),
+            cut_ms: t.stinger.cut_ms,
+            cut_found_ms: t.stinger.source.and(cut_found_ms),
+        },
     }
 }
 
@@ -15852,7 +15931,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             muted: list.master.muted,
         },
         glide: api_glide(list.glide),
-        transition: api_transition(list.transition),
+        transition: api_transition(list.transition, list.stinger_cut_found_ms),
         sources: list
             .sources
             .iter()
