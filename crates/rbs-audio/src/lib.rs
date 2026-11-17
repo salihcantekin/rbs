@@ -42,8 +42,8 @@ pub use encoder::{
 };
 pub use gate::{AudioGate, HoldGate, NoGate, PAUSE_FADE, PauseGate};
 pub use input::{
-    INPUT_NODE_TYPE, InputCounters, InputNode, InputParams, InputStats, MAP_TOLERANCE,
-    MAX_CORRECTION, MAX_PACKET, RESYNC_THRESHOLD, STEER_GAIN, effective_offset_ns,
+    INPUT_NODE_TYPE, InputAligner, InputCounters, InputNode, InputParams, InputStats,
+    MAP_TOLERANCE, MAX_CORRECTION, MAX_PACKET, RESYNC_THRESHOLD, STEER_GAIN, effective_offset_ns,
     input_descriptor,
 };
 pub use loudness::{

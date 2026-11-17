@@ -343,3 +343,96 @@ fn mixing_does_not_allocate() {
     assert_eq!(with_update.count_total, baseline.count_total);
     let _ = meter.take();
 }
+
+/// The value at the end of each of the last `n` blocks (channel 0).
+fn block_ends(r: &Rig, n: usize) -> Vec<f32> {
+    let blocks = r.blocks.lock().unwrap();
+    blocks[blocks.len() - n..]
+        .iter()
+        .map(|b| b.1[FRAMES - 1])
+        .collect()
+}
+
+/// When the next block starts.
+fn next_block(r: &Rig) -> Timestamp {
+    r.last().0 + Duration::from_millis(10)
+}
+
+#[test]
+fn a_ramp_override_moves_the_fader_over_its_own_start_and_length() {
+    // ADR-0128 decision 10: a transition's 40 ms, not the default 10 ms.
+    let mut r = Rig::new(&[(1.0, false)], |s| {
+        MixerParams::new(vec![Strip::new(s[0], 1.0)])
+    });
+    r.run(3);
+    let s = r.sources[0];
+    let start = next_block(&r);
+    r.params.send(MixerParams::new(vec![
+        Strip::new(s, 0.0).with_ramp_override(Some((start, Duration::from_millis(40)))),
+    ]));
+    r.run(5);
+    let ends = block_ends(&r, 5);
+    for (got, want) in ends.iter().zip([0.75, 0.5, 0.25, 0.0, 0.0]) {
+        assert!(close(*got, want), "{ends:?}");
+    }
+}
+
+#[test]
+fn clearing_the_override_with_the_same_target_keeps_the_running_ramp() {
+    let mut r = Rig::new(&[(1.0, false)], |s| {
+        MixerParams::new(vec![Strip::new(s[0], 1.0)])
+    });
+    r.run(3);
+    let s = r.sources[0];
+    let start = next_block(&r);
+    r.params.send(MixerParams::new(vec![
+        Strip::new(s, 0.0).with_ramp_override(Some((start, Duration::from_millis(40)))),
+    ]));
+    r.run(1);
+    // The end of a transition sends the same level without the override.
+    r.params.send(MixerParams::new(vec![Strip::new(s, 0.0)]));
+    r.run(2);
+    let ends = block_ends(&r, 3);
+    for (got, want) in ends.iter().zip([0.75, 0.5, 0.25]) {
+        assert!(close(*got, want), "{ends:?}");
+    }
+}
+
+#[test]
+fn a_joining_input_with_an_override_fades_in_over_it() {
+    let mut r = Rig::new(&[(1.0, false)], |s| {
+        let start = Timestamp::ZERO;
+        MixerParams::new(vec![
+            Strip::new(s[0], 1.0).with_ramp_override(Some((start, Duration::from_millis(40)))),
+        ])
+    });
+    // The override starts at 0; the first block is at 0 and joins over 40 ms.
+    assert_eq!(
+        r.cadence.time_of(r.tick) - Duration::from_millis(50),
+        Timestamp::ZERO
+    );
+    r.run(5);
+    let ends = block_ends(&r, 5);
+    for (got, want) in ends.iter().zip([0.25, 0.5, 0.75, 1.0, 1.0]) {
+        assert!(close(*got, want), "{ends:?}");
+    }
+}
+
+#[test]
+fn an_override_that_started_earlier_keeps_its_end() {
+    // A start in the past is evaluated by time: only the rest of the length is left.
+    let mut r = Rig::new(&[(1.0, false)], |s| {
+        MixerParams::new(vec![Strip::new(s[0], 1.0)])
+    });
+    r.run(3);
+    let s = r.sources[0];
+    let start = next_block(&r) - Duration::from_millis(20);
+    r.params.send(MixerParams::new(vec![
+        Strip::new(s, 0.0).with_ramp_override(Some((start, Duration::from_millis(40)))),
+    ]));
+    r.run(3);
+    let ends = block_ends(&r, 3);
+    for (got, want) in ends.iter().zip([0.5, 0.0, 0.0]) {
+        assert!(close(*got, want), "{ends:?}");
+    }
+}

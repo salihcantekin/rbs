@@ -52,6 +52,10 @@ pub struct Strip {
     /// Soloed: while any strip is, the monitor plays only soloed strips (the mix is
     /// unchanged).
     pub solo: bool,
+    /// A fader ramp of its own (ADR-0128 decision 10): start and length on the engine
+    /// clock, so a scene transition's sound follows its picture. `None` uses the
+    /// mixer's default ramp. Also applies when the input joins.
+    pub ramp_override: Option<(Timestamp, Duration)>,
 }
 
 impl Strip {
@@ -64,6 +68,7 @@ impl Strip {
             meter: None,
             monitor: MonitorMode::Off,
             solo: false,
+            ramp_override: None,
         }
     }
 
@@ -88,6 +93,12 @@ impl Strip {
     /// Solos or unsolos.
     pub fn with_solo(mut self, solo: bool) -> Self {
         self.solo = solo;
+        self
+    }
+
+    /// Gives the fader its own ramp: from `start` over `length` (ADR-0128 decision 10).
+    pub fn with_ramp_override(mut self, ramp: Option<(Timestamp, Duration)>) -> Self {
+        self.ramp_override = ramp;
         self
     }
 
@@ -203,6 +214,31 @@ impl Ramp {
         self.from + (self.to - self.from) * x as f32
     }
 
+    /// A ramp to `to` that ends at `start + length` (ADR-0128 decision 10): it holds
+    /// where this one is at `t` until `start`, then moves; a start in the past leaves
+    /// only the rest of the length. This one, unchanged, when it already heads for `to`.
+    fn over(&self, to: f32, t: Timestamp, start: Timestamp, length: Duration) -> Self {
+        if to == self.to {
+            return *self;
+        }
+        let from = self.at(t);
+        if t < start {
+            Self {
+                from,
+                to,
+                start,
+                length,
+            }
+        } else {
+            Self {
+                from,
+                to,
+                start: t,
+                length: (start + length).saturating_since(t),
+            }
+        }
+    }
+
     /// A ramp to `to` starting where this one is at `t`; this one, unchanged, when it
     /// already heads for `to` (so taking the same target again does not restart it).
     fn towards(&self, to: f32, t: Timestamp, length: Duration) -> Self {
@@ -227,6 +263,8 @@ struct StripState {
     send: Ramp,
     /// Send to the monitor, 0 or 1.
     monitor: Ramp,
+    /// The strip's own ramp, also used when the input joins (ADR-0128).
+    join: Option<(Timestamp, Duration)>,
     /// The input had a block last tick (a returning input fades in).
     present: bool,
     /// The input has a block this tick.
@@ -321,7 +359,11 @@ impl MixerNode {
             let state = match old {
                 Some(old) if !self.fresh => StripState {
                     producer: strip.producer,
-                    ramp: old.ramp.towards(target, t, ramp),
+                    ramp: match strip.ramp_override {
+                        Some((start, length)) => old.ramp.over(target, t, start, length),
+                        None => old.ramp.towards(target, t, ramp),
+                    },
+                    join: strip.ramp_override,
                     send: old.send.towards(send, t, ramp),
                     monitor: old.monitor.towards(monitor, t, ramp),
                     present: old.present,
@@ -330,6 +372,7 @@ impl MixerNode {
                 Some(old) => StripState {
                     producer: strip.producer,
                     ramp: Ramp::steady(target),
+                    join: strip.ramp_override,
                     send: Ramp::steady(send),
                     monitor: Ramp::steady(monitor),
                     present: old.present,
@@ -338,6 +381,7 @@ impl MixerNode {
                 None => StripState {
                     producer: strip.producer,
                     ramp: Ramp::steady(target),
+                    join: strip.ramp_override,
                     send: Ramp::steady(send),
                     monitor: Ramp::steady(monitor),
                     present: false,
@@ -419,12 +463,18 @@ impl<X: Runtime> Node<X> for MixerNode {
                 continue;
             }
             if !strip.present {
-                // An input that (re)joins fades in from silence.
+                // An input that (re)joins fades in from silence: over the strip's own
+                // ramp when it has one (a transition, ADR-0128), else the default.
+                let (start, length) = match strip.join {
+                    Some((start, length)) if t0 < start => (start, length),
+                    Some((start, length)) => (t0, (start + length).saturating_since(t0).max(ramp)),
+                    None => (t0, ramp),
+                };
                 strip.ramp = Ramp {
                     from: 0.0,
                     to: strip.ramp.to,
-                    start: t0,
-                    length: ramp,
+                    start,
+                    length,
                 };
             }
             strip.seen = true;
