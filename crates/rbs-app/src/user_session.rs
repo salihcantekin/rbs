@@ -517,7 +517,8 @@ impl UserSession {
     }
 
     /// Deletes the scene collection `id`, which must not be the one in use (its file
-    /// is moved to `deleted/`).
+    /// is moved to `deleted/`). Its OBS import report, if any, is removed with it
+    /// (ADR-0131 decision 11).
     pub fn delete_collection(&self, id: &EntryId) -> Result<(), String> {
         if *id == self.collection_id {
             return Err("the scene collection in use cannot be deleted".into());
@@ -526,8 +527,9 @@ impl UserSession {
         self.run(move |data, lock, _| {
             data.scene_collections()
                 .delete(lock, &id)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(crate::obs_import::report_path(data.root(), &id));
+            Ok(())
         })?
     }
 }
@@ -983,6 +985,21 @@ mod tests {
         assert_eq!(col2, col);
         assert_eq!(s.section::<RecordProfile>(RECORDING).unwrap().unwrap(), rec);
         assert!(s.notes.is_empty(), "{:?}", s.notes);
+    }
+
+    #[test]
+    fn deleting_a_collection_removes_its_obs_import_report() {
+        let d = Dir::new("import-report");
+        let (s, _) = open(&d.0, quiet());
+        let id = s
+            .new_collection("From OBS", &CanvasProfile::new(), false)
+            .unwrap();
+        let report = crate::obs_import::report_path(&d.0, &id);
+        std::fs::create_dir_all(report.parent().unwrap()).unwrap();
+        std::fs::write(&report, "kind = \"obs-import-report\"\n").unwrap();
+        s.delete_collection(&id).unwrap();
+        assert!(!report.exists());
+        assert!(!s.collections().iter().any(|(c, _)| *c == id));
     }
 
     #[test]

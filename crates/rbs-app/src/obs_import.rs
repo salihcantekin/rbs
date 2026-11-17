@@ -387,12 +387,121 @@ pub fn write(
             }
         }
     }
+    // Last: the report beside the collection (decision 11). Losing it loses nothing
+    // that was written, so a failure is one more note.
+    let mut all = plan.report.clone();
+    all.entries.extend(notes.iter().cloned());
+    if let Err(e) = rbs_user_data::document::write_atomic(
+        &report_path(data.root(), &collection.0),
+        report_text(&plan.name, &all).as_bytes(),
+    ) {
+        notes.push(ReportEntry::new(
+            Outcome::Skipped,
+            Area::Setting,
+            "Import report",
+            "",
+            format!("The import report could not be saved: {e}. Everything above was written."),
+        ));
+    }
     Ok(Written {
         collection,
         profile: profile_written,
         shortcuts_added,
         notes,
     })
+}
+
+/// The folder of the saved import reports, in the config directory.
+pub const IMPORTS_DIR: &str = "imports";
+
+/// Where the report of the collection `id` is kept: `imports/<id>.report.toml`.
+pub fn report_path(root: &Path, id: &EntryId) -> std::path::PathBuf {
+    root.join(IMPORTS_DIR)
+        .join(format!("{}.report.toml", id.as_str()))
+}
+
+#[derive(serde::Serialize)]
+struct ReportFile<'a> {
+    format: u32,
+    kind: &'static str,
+    /// The OBS collection's name.
+    obs_collection: &'a str,
+    exact: ExactCounts,
+    entries: Vec<ReportLine<'a>>,
+    /// The kept data of each skipped object, for a later "add what is supported now".
+    /// Only `obs_type` and `obs_name` until a mapper defines the allow-list of its type
+    /// (spec `obs-import.md`).
+    skipped: Vec<Kept<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct ExactCounts {
+    scenes: usize,
+    sources: usize,
+    items: usize,
+    filters: usize,
+}
+
+#[derive(serde::Serialize)]
+struct ReportLine<'a> {
+    outcome: &'static str,
+    area: &'static str,
+    obs_name: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    obs_type: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    scenes: &'a [String],
+    reason: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'a str>,
+}
+
+#[derive(serde::Serialize)]
+struct Kept<'a> {
+    obs_type: &'a str,
+    obs_name: &'a str,
+}
+
+/// The saved report (`kind = "obs-import-report"`, format 1). Holds no credential and
+/// no full path: the report's sentences never name one (`rbs_import_obs::report`) and
+/// skipped objects keep only their type and name.
+pub fn report_text(obs_collection: &str, report: &rbs_import_obs::ImportReport) -> String {
+    let e = &report.exact;
+    let file = ReportFile {
+        format: 1,
+        kind: "obs-import-report",
+        obs_collection,
+        exact: ExactCounts {
+            scenes: e.scenes,
+            sources: e.sources,
+            items: e.items,
+            filters: e.filters,
+        },
+        entries: report
+            .entries
+            .iter()
+            .map(|r| ReportLine {
+                outcome: r.outcome.as_str(),
+                area: r.area.as_str(),
+                obs_name: &r.obs_name,
+                obs_type: &r.obs_type,
+                scenes: &r.scenes,
+                reason: &r.reason,
+                hint: r.hint.as_deref(),
+            })
+            .collect(),
+        skipped: report
+            .entries
+            .iter()
+            .filter(|r| r.outcome == Outcome::Skipped && !r.obs_type.is_empty())
+            .map(|r| Kept {
+                obs_type: &r.obs_type,
+                obs_name: &r.obs_name,
+            })
+            .collect(),
+    };
+    // Plain strings and numbers only: serialising cannot fail.
+    toml::to_string(&file).unwrap_or_default()
 }
 
 /// Files on this computer for the import: PNG sizes and file presence. Devices are not
@@ -686,6 +795,22 @@ mod tests {
         let (doc, _) = data.shortcuts();
         assert!(doc.bindings.iter().any(|b| b.command == "stream.toggle"));
         assert!(!format!("{w:?}").contains("SECRET"));
+
+        // The report is beside the collection, typed, and holds no key or full path.
+        let text = std::fs::read_to_string(report_path(data.root(), &w.collection.0)).unwrap();
+        let table: toml::Table = text.parse().unwrap();
+        assert_eq!(table["kind"].as_str(), Some("obs-import-report"));
+        assert_eq!(table["format"].as_integer(), Some(1));
+        assert_eq!(table["obs_collection"].as_str(), Some("Evening show"));
+        let entries = table["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), p.report.entries.len() + w.notes.len());
+        for skipped in table["skipped"].as_array().unwrap() {
+            let keys: Vec<&String> = skipped.as_table().unwrap().keys().collect();
+            assert_eq!(keys, ["obs_name", "obs_type"]);
+        }
+        assert!(!text.contains("SECRET"));
+        assert!(!text.contains("live_"));
+        assert!(!text.contains(dir.to_string_lossy().as_ref()));
 
         // A second import gets free names and adds no duplicate shortcut.
         let w2 = write(
