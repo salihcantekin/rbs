@@ -2666,12 +2666,14 @@ impl Ctx {
         };
         let on_close = i32::from(app.bg.on_close == OnClose::KeepRunning);
         let swap = app.bg.swap_after_transition;
+        let show_tbar = app.bg.show_tbar;
         let exclude = app.bg.exclude_own_window;
         let warn_silent = app.bg.warn_silent;
         let push = |g: Studio<'_>| {
             g.set_platform(platform);
             g.set_on_close(on_close);
             g.set_swap_after_transition(swap);
+            g.set_show_tbar(show_tbar);
             g.set_exclude_own_window(exclude);
             g.set_warn_silent(warn_silent);
             g.set_way_back(Self::way_back());
@@ -5442,6 +5444,24 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.bg.swap_after_transition = on;
             app.studio
                 .send(studio_host::Command::SetSwapAfterTransition(on));
+            if let Err(e) = background::save(&app.config, &app.bg) {
+                app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
+            }
+        }
+    });
+    on!(on_set_show_tbar, |app, on: bool| {
+        if app.bg.show_tbar != on {
+            app.bg.show_tbar = on;
+            let g = app.main.global::<Studio>();
+            // A T-bar held part way is cancelled with it (ADR-0135 decision 6).
+            if !on && g.get_tbar() > 0.0 {
+                g.set_tbar(0.0);
+                app.studio.transition_progress(0.0);
+            }
+            g.set_show_tbar(on);
+            if let Some(w) = &app.settings {
+                w.global::<Studio>().set_show_tbar(on);
+            }
             if let Err(e) = background::save(&app.config, &app.bg) {
                 app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
             }

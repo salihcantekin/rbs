@@ -1254,7 +1254,6 @@ export component GeneralSettings inherits Rectangle {
             id: "settings.general.studio";
             SettingRow {
                 find: "general.swap-scenes";
-                divider: false;
                 label: @tr("Swap scenes after a transition");
                 summary: @tr("Preview shows what was on air");
                 hint: @tr("After Transition, Preview shows the scene that was on air. Off: Preview keeps the scene that went on air.");
@@ -1263,6 +1262,19 @@ export component GeneralSettings inherits Rectangle {
                     label: @tr("Swap scenes after a transition");
                     checked: Studio.swap-after-transition;
                     toggled(on) => { Studio.set-swap-after-transition(on); }
+                }
+            }
+            SettingRow {
+                find: "general.show-tbar";
+                divider: false;
+                label: @tr("Show the T-bar");
+                summary: @tr("Run a transition by hand");
+                hint: @tr("The transition rail shows a T-bar for running a transition by hand. Off by default.");
+                fill: false;
+                Toggle {
+                    label: @tr("Show the T-bar");
+                    checked: Studio.show-tbar;
+                    toggled(on) => { Studio.set-show-tbar(on); }
                 }
             }
         }
