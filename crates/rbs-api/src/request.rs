@@ -116,6 +116,30 @@ pub struct SetText {
     pub text: String,
 }
 
+/// What `text.timer` does (protocol 1.84, ADR-0129 decision 11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerAction {
+    /// Runs it from its value; a countdown at zero starts over.
+    Start,
+    /// Stops it at its value.
+    Pause,
+    /// Back to zero, stopped.
+    Reset,
+}
+
+/// `text.timer` (protocol 1.84, ADR-0129 decision 11): starts, pauses or resets a
+/// countdown (by duration) or stopwatch text source. A live action: not an undo step
+/// and not in the scene collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextTimer {
+    /// The text source's id.
+    pub source: u32,
+    /// What to do.
+    pub action: TimerAction,
+}
+
 /// `source.set_companion_audio` (protocol 1.26, ADR-0096): adds or removes the "Capture
 /// audio too" companion of a display or window source. One undo step each way. Adding
 /// one that exists, or removing one that does not, changes nothing.
@@ -2004,6 +2028,8 @@ pub enum Command {
     /// `import.obs.run` (protocol 1.82): imports as a new scene collection and output
     /// profile.
     ImportObsRun(ObsImport),
+    /// `text.timer` (protocol 1.84): starts, pauses or resets a countdown or stopwatch.
+    TextTimer(TextTimer),
 }
 
 impl Command {
@@ -2162,6 +2188,7 @@ impl Command {
             Command::ImportObsScan => "import.obs.scan",
             Command::ImportObsCheck(_) => "import.obs.check",
             Command::ImportObsRun(_) => "import.obs.run",
+            Command::TextTimer(_) => "text.timer",
         }
     }
 }
@@ -2524,6 +2551,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("import.obs.scan", Some(Scope::Admin), Effect::Read),
     m("import.obs.check", Some(Scope::Admin), Effect::Read),
     m("import.obs.run", Some(Scope::Admin), Effect::Destructive),
+    m("text.timer", Some(Scope::Control), Effect::Edit),
 ];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
@@ -2937,6 +2965,8 @@ enum WireRequest {
     ImportObsCheck(ObsImport),
     #[serde(rename = "import.obs.run")]
     ImportObsRun(ObsImport),
+    #[serde(rename = "text.timer")]
+    TextTimer(TextTimer),
 }
 
 impl From<WireRequest> for Request {
@@ -3115,6 +3145,7 @@ impl From<WireRequest> for Request {
             WireRequest::ImportObsScan(_) => Request::Command(C::ImportObsScan),
             WireRequest::ImportObsCheck(p) => Request::Command(C::ImportObsCheck(p)),
             WireRequest::ImportObsRun(p) => Request::Command(C::ImportObsRun(p)),
+            WireRequest::TextTimer(p) => Request::Command(C::TextTimer(p)),
         }
     }
 }
@@ -3280,6 +3311,7 @@ impl From<Request> for WireRequest {
                 C::ImportObsScan => WireRequest::ImportObsScan(Empty {}),
                 C::ImportObsCheck(p) => WireRequest::ImportObsCheck(p),
                 C::ImportObsRun(p) => WireRequest::ImportObsRun(p),
+                C::TextTimer(p) => WireRequest::TextTimer(p),
             },
         }
     }
@@ -3543,6 +3575,8 @@ pub enum Response {
     AttributesClipboard(Option<crate::types::AttributesClipboard>),
     /// `text.fonts` (protocol 1.75).
     TextFonts(crate::types::TextFonts),
+    /// `text.timer` (protocol 1.84).
+    TextTimerState(crate::types::TextTimerState),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
     /// `canvas.auto_layout` (protocol 1.44).

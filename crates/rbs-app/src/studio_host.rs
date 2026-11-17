@@ -77,6 +77,7 @@ mod on_air;
 pub mod protection;
 pub mod replay;
 pub mod sync_measure;
+mod text_live;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -3486,6 +3487,13 @@ struct Host {
     /// A program switch held back until its entering texts are uploaded, at most
     /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
     held_switch: Option<SceneId>,
+    /// How long the main recording and stream have run, for live texts (ADR-0129
+    /// decision 11).
+    text_elapsed: text_live::TextElapsed,
+    /// `text-timers.toml` as last read or written.
+    text_timer_file: Vec<crate::text_timers::Entry>,
+    /// The collection's saved timers were handed to the studio.
+    text_timers_restored: bool,
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
@@ -3677,6 +3685,7 @@ fn run(
         host.end_stream(c, None, notify);
         host.stop_recording(c, None, notify);
     }
+    host.save_text_timers();
     let _ = host.studio.shutdown();
 }
 
@@ -3791,6 +3800,7 @@ fn round(
             calibration.unwrap_or(Duration::from_secs(3600))
         };
     }
+    host.feed_text_live();
     let serviced = host.studio.service();
     let mut wait = serviced.wait.unwrap_or(MAX_WAIT).min(MAX_WAIT);
     if served_api {
@@ -4052,6 +4062,19 @@ fn start(
         history_shown: (None, None),
         waiting: false,
         held_switch: None,
+        text_elapsed: text_live::TextElapsed::default(),
+        text_timer_file: config
+            .config_dir
+            .as_deref()
+            .map(|d| {
+                let (file, note) = crate::text_timers::load(d);
+                if let Some(why) = note {
+                    eprintln!("rbs: text timers were not read: {why}");
+                }
+                file
+            })
+            .unwrap_or_default(),
+        text_timers_restored: false,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
         iso: None,
         stats_due: None,
@@ -5358,6 +5381,7 @@ impl Host {
         };
         // Whatever the old collection's last change was, it is saved before this one.
         self.publish_save();
+        self.save_text_timers();
         let old = (
             std::mem::replace(&mut self.collection, next),
             std::mem::replace(&mut self.canvas, canvas),
@@ -5369,6 +5393,9 @@ impl Host {
         let result = match self.restart() {
             Ok(()) => {
                 self.autosave = autosave;
+                // The new collection's timers, not the old one's.
+                self.studio.set_text_timers(&[]);
+                self.text_timers_restored = false;
                 self.saved = Some(loaded);
                 self.history.clear();
                 // The attribute clipboard belongs to the old collection (ADR-0133).
@@ -6038,6 +6065,9 @@ impl Host {
             self.forget_vertical_outputs();
         }
         let run = self.run_collection();
+        // Timers and elapsed times run on across the restart (ADR-0129 decision 11).
+        let timers = self.studio.text_timers();
+        let old_now = self.clock.now();
         let engine = (self.engine)();
         let clock = engine.clock();
         let studio = Studio::start_with_tree(
@@ -6051,6 +6081,8 @@ impl Host {
         .map_err(|e| e.to_string())?;
         self.studio = studio;
         self.clock = clock;
+        self.studio.set_text_timers(&timers);
+        self.text_elapsed = self.text_elapsed.moved(old_now, self.clock.now());
         self.waiting = self.studio.waiting();
         // Pictures belonged to the old studio; the next publish adds them again with
         // the canvas's size now (ADR-0125 decision 3).
@@ -13414,6 +13446,7 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::TextTimer(p) => host.text_timer(p),
             C::TextFonts => match host.studio.text_fonts(&host.adapters.sources) {
                 rbs_record::TextFonts::Ready(families) => {
                     Ok(Response::TextFonts(rbs_api::types::TextFonts {

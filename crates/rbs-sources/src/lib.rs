@@ -27,6 +27,7 @@ mod registry;
 pub mod still;
 pub mod text;
 pub mod text_file;
+pub mod text_live;
 pub mod text_worker;
 pub mod types;
 
