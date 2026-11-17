@@ -28,13 +28,31 @@ export component SourceSettingsWindow inherits Window {
     title: @tr("{}: Source settings", d.name);
     icon: @image-url("../assets/brand/icon-win-256.png");
     preferred-width: Tokens.size-floating-w;
-    // Tall enough for Video + region/chrome cards with Cancel/Apply/OK still on screen.
-    preferred-height: Tokens.size-settings-h;
+    // The host sizes the window to `fit-height` (it opens at that size and follows
+    // the content until the user resizes it); this is only the size before that.
+    preferred-height: Tokens.size-floating-h;
     min-width: Tokens.size-menu-md;
-    min-height: Tokens.size-floating-h;
+    min-height: Tokens.size-floating-min-h;
     background: Theme.surface-base;
     // Escape or Cancel: the window closes without sending anything.
     callback dismiss();
+    // The height the content asks for changed; the host sizes the window to it.
+    callback fit-changed();
+    // True once the host answered with this source's settings.
+    out property <bool> loaded: d.id >= 0;
+    // The window height that shows everything without scrolling, between the
+    // floating window bounds. The region preview counts at its preferred height,
+    // so the value does not depend on the window's own height.
+    out property <length> fit-height: clamp(
+        Tokens.size-panel-pad * 2 + Tokens.size-section-gap + actions.preferred-height
+            + body.preferred-height
+            - (root.cap-has ? root.region-preview-h - Tokens.size-target-preview-h : 0px),
+        Tokens.size-floating-min-h,
+        Tokens.size-floating-max-h);
+    // The height the host last sized the window to; the preview takes what the user
+    // adds to (or takes from) it.
+    in property <length> fitted-height: root.height;
+    changed fit-height => { root.fit-changed(); }
     forward-focus: keys;
     // What the host answered (empty while it has not).
     property <SourceSettingsData> d: Studio.source-settings.length > 0 ? Studio.source-settings[0] : {
@@ -225,10 +243,11 @@ export component SourceSettingsWindow inherits Window {
         if b >= t && b >= r && b >= l { return 2; }
         return 3;
     }
-    // Preview box height grows with the window (layout stretch alone was ignored).
+    // The preview opens at its preferred height and takes what the user adds to the
+    // window's fitted height (layout stretch alone was ignored inside the Flickable).
     property <length> region-preview-h: max(
-        Tokens.size-transition-min-picture,
-        root.height * 0.45
+        Tokens.size-target-preview-min-h,
+        Tokens.size-target-preview-h + root.height - root.fitted-height
     );
     function chrome-edge-thickness(edge: int, t: int, r: int, b: int, l: int) -> int {
         if edge == 0 { return t; }
@@ -312,8 +331,16 @@ export component SourceSettingsWindow inherits Window {
             // that size, so a crop drag was taken as a page scroll as soon as it left
             // the preview. While a region is being edited, mouse drags do not pan;
             // wheel and trackpad scrolling stay. Touch panning stays except during the drag.
-            if d.id >= 0: Flickable {
+            // Always built, so `fit-height` can read the body; hidden while loading.
+            Flickable {
+                visible: d.id >= 0;
                 vertical-stretch: 1;
+                // The body scrolls, so the Flickable asks nothing of the window (no
+                // limit, no preferred height); `fit-height` sizes the window instead.
+                // Taking the body's sizes made a layout loop through the window's
+                // height, which sizes the region preview.
+                preferred-height: 0px;
+                max-height: 100000px;
                 interactive: !root.region-pointer-down;
                 mouse-drag-pan-enabled: !root.cap-has;
                 viewport-width: self.width;
@@ -675,7 +702,7 @@ export component SourceSettingsWindow inherits Window {
                 }
                 } // body
             } // Flickable
-            DialogActions {
+            actions := DialogActions {
                 confirm-text: @tr("OK");
                 confirm-enabled: d.id >= 0;
                 extra-text: @tr("Apply");
