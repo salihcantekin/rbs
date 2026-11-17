@@ -322,6 +322,12 @@ pub enum Permission {
     ///
     /// [`CaptureFactory::request_permission`]: crate::CaptureFactory::request_permission
     NotDetermined,
+    /// The OS or an administrator forbids it and the user cannot change it (macOS
+    /// parental controls or device management, a Windows policy). ADR-0141.
+    Restricted,
+    /// The OS has a permission for this kind but no way to read it before use; it asks
+    /// the first time the kind is captured. ADR-0141.
+    Unknown,
 }
 
 /// The largest thumbnail an adapter may return, in pixels (about 80 KiB of RGBA8).

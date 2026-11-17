@@ -2029,7 +2029,21 @@ fn global_sources_and_item_remove_have_a_stable_wire_form() {
     );
     round_trip(&ItemRemoved {
         source_deleted: true,
+        removed_items: Vec::new(),
+        deleted_sources: Vec::new(),
     });
+    let removed = ItemRemoved {
+        source_deleted: false,
+        removed_items: vec![4, 5],
+        deleted_sources: vec![2],
+    };
+    round_trip(&removed);
+    assert_eq!(
+        serde_json::to_value(&removed).unwrap(),
+        json!({"source_deleted": false, "removed_items": [4, 5], "deleted_sources": [2]})
+    );
+    let old: ItemRemoved = serde_json::from_value(json!({"source_deleted": true})).unwrap();
+    assert!(old.removed_items.is_empty() && old.deleted_sources.is_empty());
     round_trip(&GlobalSourceList {
         sources: vec![source()],
     });

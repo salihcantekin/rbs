@@ -4684,6 +4684,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "rbs-audio-io",
  "rbs-core",
+ "rbs-system-probe",
 ]
 
 [[package]]
@@ -4716,6 +4717,7 @@ dependencies = [
  "criterion 0.8.2",
  "rbs-audio-io",
  "rbs-core",
+ "rbs-system-probe",
  "windows",
  "windows-core",
 ]
@@ -4766,6 +4768,7 @@ dependencies = [
  "objc2-io-surface",
  "rbs-capture",
  "rbs-core",
+ "rbs-system-probe",
 ]
 
 [[package]]
@@ -4776,6 +4779,7 @@ dependencies = [
  "bytes",
  "rbs-capture",
  "rbs-core",
+ "rbs-system-probe",
  "windows",
  "windows-core",
 ]
@@ -4811,6 +4815,7 @@ dependencies = [
  "objc2-screen-capture-kit",
  "rbs-capture",
  "rbs-core",
+ "rbs-system-probe",
 ]
 
 [[package]]

@@ -325,6 +325,17 @@ fn permission_granted() -> bool {
     CGPreflightScreenCaptureAccess()
 }
 
+/// A request in this process was refused. `CGRequestScreenCaptureAccess` shows its
+/// alert once per app and then answers false without asking, so from here on the
+/// permission reads as denied, not "not asked" (ADR-0141 decision 5).
+static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the screen recording prompt can be shown here: RBS is its own responsible
+/// app and declares `NSScreenCaptureUsageDescription` (ADR-0141).
+fn prompt_is_safe() -> bool {
+    rbs_system_probe::app_identity::cached().prompt_is_safe("NSScreenCaptureUsageDescription")
+}
+
 /// How long a thumbnail grab may take in all (capture-port.md, `thumbnail`).
 const THUMBNAIL_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -600,7 +611,23 @@ impl AdapterFactory for SckCaptureFactory {
                 CapabilityValue::Int(FRAMES_IN_FLIGHT as i64),
             )
             .with(caps::HDR, CapabilityValue::Flag(false))
-            .with(HARDWARE, CapabilityValue::Flag(true)))
+            .with(HARDWARE, CapabilityValue::Flag(true))
+            .with(caps::PERMISSION_DISPLAY, CapabilityValue::Flag(true))
+            .with(caps::PERMISSION_WINDOW, CapabilityValue::Flag(true))
+            // A screen recording grant applies after the app restarts.
+            .with(
+                caps::PERMISSION_DISPLAY_RESTART,
+                CapabilityValue::Flag(true),
+            )
+            .with(caps::PERMISSION_WINDOW_RESTART, CapabilityValue::Flag(true))
+            .with(
+                caps::PERMISSION_DISPLAY_PROMPT,
+                CapabilityValue::Flag(prompt_is_safe()),
+            )
+            .with(
+                caps::PERMISSION_WINDOW_PROMPT,
+                CapabilityValue::Flag(prompt_is_safe()),
+            ))
     }
 }
 
@@ -720,8 +747,13 @@ impl CaptureFactory for SckCaptureFactory {
     fn permission(&self, kind: TargetKind) -> Permission {
         match kind {
             TargetKind::Display | TargetKind::Window if !permission_granted() => {
-                // macOS does not tell "not asked" from "refused"; the request answers.
-                Permission::NotDetermined
+                // macOS does not tell "not asked" from "refused"; a refused request in
+                // this process does.
+                if REFUSED.load(std::sync::atomic::Ordering::Acquire) {
+                    Permission::Denied
+                } else {
+                    Permission::NotDetermined
+                }
             }
             _ => Permission::Granted,
         }
@@ -730,9 +762,14 @@ impl CaptureFactory for SckCaptureFactory {
     fn request_permission(&self, kind: TargetKind) -> Result<Permission, CaptureError> {
         match kind {
             TargetKind::Display | TargetKind::Window => {
-                if permission_granted() || CGRequestScreenCaptureAccess() {
+                if permission_granted() {
+                    Ok(Permission::Granted)
+                } else if !prompt_is_safe() {
+                    Ok(self.permission(kind))
+                } else if CGRequestScreenCaptureAccess() {
                     Ok(Permission::Granted)
                 } else {
+                    REFUSED.store(true, std::sync::atomic::Ordering::Release);
                     Ok(Permission::Denied)
                 }
             }

@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-core = { path = "../rbs-core" }
+# Whether a permission prompt is safe in this process (ADR-0141).
+rbs-system-probe = { path = "../rbs-system-probe" }
 
 # objc2 framework bindings (MIT), as in rbs-capture-avf and rbs-codec-audiotoolbox.
 [target.'cfg(target_os = "macos")'.dependencies]

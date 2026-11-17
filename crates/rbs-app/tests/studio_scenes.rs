@@ -1758,7 +1758,7 @@ fn a_t_bar_holds_then_puts_the_preview_on_air_and_refuses_when_wrong() {
 
 #[test]
 fn a_stinger_is_chosen_listed_found_and_refused_when_wrong() {
-    // Protocol 1.88, ADR-0140 decisions 1, 3 and 9.
+    // Protocol 1.89, ADR-0140 decisions 1, 3 and 9.
     use rbs_core::media::Size;
     use rbs_core::timing::FrameRate;
     use rbs_graph::node::NodeTypeId;

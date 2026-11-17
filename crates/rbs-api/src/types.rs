@@ -559,7 +559,7 @@ pub enum TransitionKind {
     /// The new scene pushes the old one out.
     Slide,
     /// A media file plays over the change; the scenes switch at its cut point
-    /// (protocol 1.88, ADR-0140). Its duration is the file's play range.
+    /// (protocol 1.89, ADR-0140). Its duration is the file's play range.
     Stinger,
 }
 
@@ -623,7 +623,7 @@ impl Default for SwipeTransition {
     }
 }
 
-/// Stinger settings (protocol 1.88, ADR-0140).
+/// Stinger settings (protocol 1.89, ADR-0140).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StingerTransition {
@@ -660,7 +660,7 @@ pub struct Transition {
     pub swipe: SwipeTransition,
     /// Slide settings.
     pub slide: SwipeTransition,
-    /// Stinger settings (protocol 1.88, ADR-0140); absent while none is set.
+    /// Stinger settings (protocol 1.89, ADR-0140); absent while none is set.
     #[serde(default, skip_serializing_if = "StingerTransition::is_default")]
     pub stinger: StingerTransition,
 }

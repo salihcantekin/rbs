@@ -54,8 +54,8 @@ use rbs_scene::model::{
     Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
 };
 use rbs_scene::{
-    AutoLayout, CenterAxis, ChromeFill, FitMode, SceneError, SceneLevel, Undo, place_chrome,
-    recrop_keeping, visible_size,
+    AutoLayout, CenterAxis, ChromeFill, FitMode, Removed, SceneError, SceneLevel, Undo,
+    place_chrome, recrop_keeping, visible_size,
 };
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::BrowserTree;
@@ -4469,11 +4469,11 @@ impl Host {
                     .map(|(_, i)| i.id)
                     .and_then(|item| self.remove_from_scene(item));
                 match done {
-                    Ok((name, deleted)) => {
+                    Ok((name, removed)) => {
                         self.apply(notify);
                         notify(Update::Deleted {
                             name,
-                            from_scene: !deleted,
+                            from_scene: !removed.source_deleted,
                         });
                     }
                     Err(e) => notify(Update::Error(e.text().to_owned())),
@@ -8908,9 +8908,12 @@ impl Host {
         seen
     }
 
-    /// Remove from scene (ADR-0065 decision 7): the item goes; the source too when it
-    /// was its last placement. Returns the source's name and whether it was deleted.
-    fn remove_from_scene(&mut self, item: ItemId) -> Result<(String, bool), Refusal> {
+    /// Remove from scene (ADR-0065 decision 7, ADR-0142): the item goes, with the
+    /// companion items its scene no longer needs; the source too when it was its last
+    /// placement. The rule is the model's (`SceneCollection::remove_from_scene`); the
+    /// history entry carries the source's name, Delete when it was deleted, else
+    /// Remove. Returns the name and what was removed.
+    fn remove_from_scene(&mut self, item: ItemId) -> Result<(String, Removed), Refusal> {
         let gone = || Refusal::NotFound(format!("There is no item {}.", item.get()));
         let (_, it) = self.collection.item(item).ok_or_else(gone)?;
         let ItemContent::Source(source) = it.content else {
@@ -8919,15 +8922,17 @@ impl Host {
             ));
         };
         let name = self.name_of(source);
-        let last = self.collection.placements_of(source).len() <= 1;
-        let (kind, undo) = if last {
-            (EditKind::Delete, self.collection.delete_source(source))
+        let (removed, undo) = self
+            .collection
+            .remove_from_scene(item)
+            .map_err(|e| Refusal::of(&e))?;
+        let kind = if removed.source_deleted {
+            EditKind::Delete
         } else {
-            (EditKind::Remove, self.collection.remove_item(item))
+            EditKind::Remove
         };
-        let undo = undo.map_err(|e| Refusal::of(&e))?;
         self.history.record(kind, &name, 0, vec![undo]);
-        Ok((name, last))
+        Ok((name, removed))
     }
 
     /// Makes a source global on the studio's canvas (ADR-0065 decision 5): one item in
@@ -9013,9 +9018,13 @@ impl Host {
     }
 
     /// Takes a source out of the global sources: with `keep` its item moves into the
-    /// edited scene with its layout (answers the new item), else it is removed and the
-    /// source too when that was its last placement (answers `None`). One undo step.
-    fn unmake_global(&mut self, id: SourceId, keep: bool) -> Result<Option<ItemId>, Refusal> {
+    /// edited scene with its layout (answers the new item), else it is removed from the
+    /// global scene as Remove from scene does (answers what was removed). One undo step.
+    fn unmake_global(
+        &mut self,
+        id: SourceId,
+        keep: bool,
+    ) -> Result<Result<ItemId, Removed>, Refusal> {
         let name = self.name_of(id);
         let Some(item) = self.global_item(id) else {
             return Err(if self.collection.source(id).is_none() {
@@ -9025,8 +9034,8 @@ impl Host {
             });
         };
         if !keep {
-            self.remove_from_scene(item)?;
-            return Ok(None);
+            let (_, removed) = self.remove_from_scene(item)?;
+            return Ok(Err(removed));
         }
         let layout = self
             .collection
@@ -9055,7 +9064,7 @@ impl Host {
         match done {
             Ok(new) => {
                 self.history.record(EditKind::Global, &name, 0, records);
-                Ok(Some(new))
+                Ok(Ok(new))
             }
             Err(e) => {
                 self.roll_back(records);
@@ -14035,13 +14044,11 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::ItemRemove(p) => {
-                let (_, deleted) = host
+                let (_, removed) = host
                     .remove_from_scene(ItemId::from_raw(p.item))
                     .map_err(|e| refused(&e))?;
                 host.apply(notify);
-                Ok(Response::ItemRemoved(ItemRemoved {
-                    source_deleted: deleted,
-                }))
+                Ok(Response::ItemRemoved(item_removed(&removed)))
             }
             C::SceneMove(p) => match host.move_scene(SceneId::from_raw(p.scene), p.direction) {
                 Ok(true) => {
@@ -14143,13 +14150,8 @@ impl ApiTarget<'_> {
                     .map_err(|e| refused(&e))?;
                 host.apply(notify);
                 Ok(match done {
-                    Some(item) => Response::ItemAdded(ItemAdded { item: item.get() }),
-                    None => Response::ItemRemoved(ItemRemoved {
-                        source_deleted: host
-                            .collection
-                            .source(SourceId::from_raw(p.source))
-                            .is_none(),
-                    }),
+                    Ok(item) => Response::ItemAdded(ItemAdded { item: item.get() }),
+                    Err(removed) => Response::ItemRemoved(item_removed(&removed)),
                 })
             }
             C::ItemAdd(p) => {
@@ -15935,7 +15937,7 @@ fn api_swipe(s: rbs_scene::SwipeSettings) -> api::SwipeTransition {
 }
 
 /// The collection's transition as `scene.list` shows it (protocol 1.81; the stinger
-/// since 1.88).
+/// since 1.89).
 fn api_transition(
     t: rbs_scene::CollectionTransition,
     cut_found_ms: Option<u32>,
@@ -16085,6 +16087,15 @@ pub enum MediaOp {
     Restart,
     /// Read the state only.
     State,
+}
+
+/// `item.remove`'s answer (protocol 1.88, ADR-0142).
+fn item_removed(removed: &Removed) -> ItemRemoved {
+    ItemRemoved {
+        source_deleted: removed.source_deleted,
+        removed_items: removed.removed_items.iter().map(|i| i.get()).collect(),
+        deleted_sources: removed.deleted_sources.iter().map(|s| s.get()).collect(),
+    }
 }
 
 fn refused(e: &Refusal) -> ApiError {
