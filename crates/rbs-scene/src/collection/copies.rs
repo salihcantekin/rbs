@@ -230,6 +230,7 @@ impl SceneCollection {
                 scope: original.scope,
                 items,
                 audio,
+                transition_in: original.transition_in,
             },
             placements: Vec::new(),
             shown: Vec::new(),

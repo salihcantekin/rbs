@@ -955,7 +955,151 @@ pub fn panel_outline(panel: Color, ground: Color) -> bool {
     panel.contrast(ground) < PANEL_OUTLINE_BELOW
 }
 
+/// Length chains a theme keeps in order, smallest first (`check_across`).
+const LENGTH_CHAINS: &[&[&str]] = &[
+    &["size.control.sm", "size.control.md", "size.control.lg"],
+    &[
+        "space.1", "space.2", "space.3", "space.4", "space.6", "space.8",
+    ],
+    &["size.field.gap", "size.section.gap"],
+    &["size.icon.box", "size.button.chip", "size.control.sm"],
+    &["radius.sm", "radius.md", "radius.lg"],
+];
+
+/// Text size chains a theme keeps in order, smallest first (`check_across`).
+const SIZE_CHAINS: &[&[&str]] = &[
+    &["type.caption", "type.body", "type.title", "type.heading"],
+    &["type.body", "type.label", "type.title"],
+];
+
+/// Text styles whose line height must fit in `size.control.sm`.
+const LINES_IN_SMALL_CONTROL: &[&str] = &["type.caption", "type.body", "type.label"];
+
 impl Tokens {
+    /// Carries the neighbours of `edited` along so `body` keeps the order rules of
+    /// "Across tokens" (themes spec, "Editing"). `before` is the body before the edit:
+    /// when the edit raised `edited`, every token that now breaks an order is raised to
+    /// the value it must reach (the next one in its chain, `space.1` to the focus ring,
+    /// `size.control.sm` to a text line); when it lowered `edited`, every token is
+    /// lowered instead (the previous one in its chain, the focus ring to `space.1`, text
+    /// lines to `size.control.sm`, never under their size). `edited` itself never moves,
+    /// except `radius.button`, which is held at half of `size.control.sm` (a pill). A
+    /// carried token stays within its own bounds; where that is not enough the rule
+    /// still fails and `resolve` reports it. A carried value equal to the base's is
+    /// written as no override.
+    pub fn carry(&self, before: &ThemeBody, body: &mut ThemeBody, edited: &str) {
+        let base = self.built_in_theme(body.base);
+        let len = |b: &ThemeBody, n: &str| {
+            b.length
+                .get(n)
+                .or_else(|| base.length.get(n))
+                .copied()
+                .unwrap_or(0.0)
+        };
+        let style = |b: &ThemeBody, n: &str| {
+            b.type_styles
+                .get(n)
+                .or_else(|| base.type_styles.get(n))
+                .copied()
+        };
+        let set_len = |b: &mut ThemeBody, n: &str, v: f32| {
+            let v = match themeable(n).map(|t| t.kind) {
+                Some(Kind::Length { min, max }) => v.clamp(min, max),
+                _ => v,
+            };
+            if base.length.get(n) == Some(&v) {
+                b.length.remove(n);
+            } else {
+                b.length.insert(n.to_owned(), v);
+            }
+        };
+        let set_style = |b: &mut ThemeBody, n: &str, st: TypeStyle| {
+            if base.type_styles.get(n) == Some(&st) {
+                b.type_styles.remove(n);
+            } else {
+                b.type_styles.insert(n.to_owned(), st);
+            }
+        };
+        // A text size within the bounds, with its line height kept from the size to
+        // twice the size.
+        let sized = |st: TypeStyle, size: u16| {
+            let size = size.clamp(TYPE_SIZE.0, TYPE_SIZE.1);
+            TypeStyle {
+                size,
+                line: st.line.clamp(size, size.saturating_mul(2)),
+                weight: st.weight,
+            }
+        };
+        let up = match (style(before, edited), style(body, edited)) {
+            (Some(old), Some(new)) => new.size > old.size || new.line > old.line,
+            _ => len(body, edited) > len(before, edited),
+        };
+        // Each pass moves values one way only, so a few passes settle every chain.
+        for _ in 0..16 {
+            let start = body.clone();
+            for chain in LENGTH_CHAINS {
+                for w in chain.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    if len(body, a) > len(body, b) {
+                        if up {
+                            let v = len(body, a);
+                            set_len(body, b, v);
+                        } else {
+                            let v = len(body, b);
+                            set_len(body, a, v);
+                        }
+                    }
+                }
+            }
+            for chain in SIZE_CHAINS {
+                for w in chain.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let (Some(sa), Some(sb)) = (style(body, a), style(body, b)) else {
+                        continue;
+                    };
+                    if sa.size > sb.size {
+                        if up {
+                            set_style(body, b, sized(sb, sa.size));
+                        } else {
+                            set_style(body, a, sized(sa, sb.size));
+                        }
+                    }
+                }
+            }
+            // The focus ring fits in space.1.
+            let (ring, s1) = (len(body, "size.focus-ring"), len(body, "space.1"));
+            if ring > s1 {
+                if up {
+                    set_len(body, "space.1", ring);
+                } else {
+                    set_len(body, "size.focus-ring", s1);
+                }
+            }
+            // Text lines fit in a small control (a line never goes under its size).
+            let sm = len(body, "size.control.sm");
+            for n in LINES_IN_SMALL_CONTROL {
+                if let Some(st) = style(body, n)
+                    && f32::from(st.line) > sm
+                {
+                    if up {
+                        set_len(body, "size.control.sm", f32::from(st.line));
+                    } else {
+                        let line = (sm as u16).max(st.size);
+                        set_style(body, n, TypeStyle { line, ..st });
+                    }
+                }
+            }
+            // A button's corners are at most a pill: half of a small control.
+            let half = len(body, "size.control.sm") / 2.0;
+            if len(body, "radius.button") > half {
+                set_len(body, "radius.button", half);
+            }
+            if *body == start {
+                break;
+            }
+        }
+    }
+
     /// The built-in theme `base` as a resolved theme.
     pub fn built_in_theme(&self, base: Base) -> ResolvedTheme {
         ResolvedTheme {

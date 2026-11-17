@@ -34,6 +34,6 @@ pub use flatten::{Affine2, FlatLayer};
 pub use model::{
     COMPANION_OF_HINT, ChromeFill, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
     DisplayChrome, FadeSettings, GlideEasing, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, STANDBY_HINT,
-    SceneAudio, SceneLevel, SourceGlide, SourceRegion, SwipeDirection, SwipeSettings,
-    TransitionKind, show_for_is_valid,
+    SceneAudio, SceneLevel, SceneTransition, SourceGlide, SourceRegion, SwipeDirection,
+    SwipeSettings, TransitionKind, show_for_is_valid,
 };
