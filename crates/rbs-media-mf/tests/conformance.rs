@@ -331,12 +331,17 @@ mod windows {
         // Released pictures free their slots; the seek and the next reads still work.
         drop(pictures);
         dec.seek(ms(300)).unwrap();
-        let mut count = 0;
+        // The picture at or before the cursor: Media Foundation may start at the
+        // keyframe before it (invariant 3), here the first picture.
+        let mut last = None;
         while let Some(p) = dec.next_picture().unwrap() {
             assert!(matches!(p.picture.data(), PictureData::Native(_)));
-            count += 1;
+            if last.is_none() {
+                assert!(p.pts.unwrap() <= ms(300));
+            }
+            last = p.pts;
         }
-        assert!((1..=4).contains(&count), "{count}");
+        assert_eq!(last, Some(ms(400)));
     }
 
     #[test]
