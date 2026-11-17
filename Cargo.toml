@@ -48,3 +48,9 @@ opt-level = 2
 # library is 750 MB instead of 900 MB.
 [profile.dev.package.rbs-app-ui]
 debug = false
+
+# The Slint compiler runs in rbs-app-ui's build script (code generation) and, with the
+# UI live preview, inside the app on every `.slint` save. Optimised, code generation
+# takes 11 s instead of 19 s and a live reload 1.5 s instead of about 20 s (4 cores).
+[profile.dev.package.i-slint-compiler]
+opt-level = 2
