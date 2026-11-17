@@ -254,3 +254,75 @@ fn a_text_read_from_a_document_is_adjusted_and_reported() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn timers_start_pause_reset_and_carry_across_a_restart() {
+    use rbs_record::{TimerAction, TimerRefused};
+    use rbs_sources::text::TextKind;
+    use std::time::Duration;
+
+    let Some(gpu) = gpu() else { return };
+    let mut r = rig();
+    r.adapters
+        .sources
+        .register_text(Arc::new(FakeTextRenderer::new()));
+    let (mut col, canvas) = scene();
+    let mut watch = text_settings("");
+    watch.insert(keys::KIND.into(), SettingValue::Text("stopwatch".into()));
+    let (sw, _) = col
+        .add_source("Watch", NodeTypeId::new_static(types::TEXT_SOURCE), watch)
+        .unwrap();
+    let mut clock_text = text_settings("");
+    clock_text.insert(keys::KIND.into(), SettingValue::Text("clock".into()));
+    let (wall, _) = col
+        .add_source(
+            "Clock",
+            NodeTypeId::new_static(types::TEXT_SOURCE),
+            clock_text,
+        )
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    assert_eq!(
+        studio.text_timer(wall, TimerAction::Start),
+        Err(TimerRefused::NotATimer)
+    );
+    assert_eq!(
+        studio.text_timer(SourceId::from_raw(999), TimerAction::Start),
+        Err(TimerRefused::NotFound)
+    );
+    let started = studio.text_timer(sw, TimerAction::Start).unwrap();
+    assert!(started.running && started.kind == TextKind::Stopwatch);
+    clock.advance(Duration::from_millis(1500));
+    let paused = studio.text_timer(sw, TimerAction::Pause).unwrap();
+    assert_eq!(
+        (paused.running, paused.value),
+        (false, Duration::from_millis(1500))
+    );
+    clock.advance(Duration::from_secs(5));
+    let again = studio.text_timer(sw, TimerAction::Start).unwrap();
+    assert_eq!(again.value, Duration::from_millis(1500));
+    clock.advance(Duration::from_millis(500));
+    let timers = studio.text_timers();
+    assert_eq!(timers.len(), 1);
+    assert_eq!(
+        (timers[0].running, timers[0].value),
+        (true, Duration::from_secs(2))
+    );
+    // A restart hands the timers on; a running one runs on.
+    studio.set_text_timers(&[]);
+    assert!(studio.text_timers().is_empty());
+    studio.set_text_timers(&timers);
+    clock.advance(Duration::from_secs(1));
+    assert_eq!(studio.text_timers()[0].value, Duration::from_secs(3));
+    let reset = studio.text_timer(sw, TimerAction::Reset).unwrap();
+    assert_eq!((reset.running, reset.value), (false, Duration::ZERO));
+    assert!(studio.text_timers().is_empty());
+}

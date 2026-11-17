@@ -492,7 +492,12 @@ fn read(r: &mut Reader<'_>) -> Result<TextSettings, SourceError> {
     let file_lines = r.int(keys::FILE_LINES, (0, i64::from(u32::MAX)), 0, "0 or more")? as u32;
     let fields = r.flag(keys::FIELDS, false)?;
     let format = r.text(keys::FORMAT)?;
-    let target = r.text(keys::TARGET)?;
+    let target = match r.text(keys::TARGET)? {
+        Some(t) if crate::text_live::parse_target(&t).is_none() => {
+            r.bad(keys::TARGET, "a time of day HH:mm or HH:mm:ss", None)?
+        }
+        t => t,
+    };
     let duration_ms = match r.settings.get(keys::DURATION_MS) {
         None => None,
         Some(_) => Some(r.int(keys::DURATION_MS, (0, i64::MAX), 0, "0 or more")? as u64),

@@ -27,6 +27,9 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.83 adds live text kinds (ADR-0129 decision 11): `text.timer`, and the text
+/// settings `kind`, `fields`, `format`, `target`, `duration_ms` and `end_text` are
+/// drawn.
 /// 1.82 adds importing from OBS (ADR-0131 decision 12): `import.obs.scan`,
 /// `import.obs.check` and `import.obs.run`.
 /// 1.81 adds scene transitions (ADR-0128 decision 13): `collection.set_transition`,
@@ -103,7 +106,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.82";
+pub const PROTOCOL_VERSION: &str = "1.83";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

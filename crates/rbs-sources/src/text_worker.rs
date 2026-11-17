@@ -23,10 +23,11 @@ use rbs_nodes::TextFrame;
 use rbs_scene::model::SourceId;
 use rbs_text::{TextBlock, TextRenderer};
 
-use crate::text::{TextSettings, pick_renderer};
+use crate::text::{TextKind, TextSettings, pick_renderer};
 use crate::text_file::{
     FileMeta, FileProbe, FileTextError, MAX_FILE_BYTES, content_hash, decode, last_lines,
 };
+use crate::text_live::{self, Language, LiveClocks, LiveInputs, LocalTime, RunTime};
 
 /// How often on-air files are polled, by the injected master clock.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -42,11 +43,24 @@ pub const RECENT_WINDOW: Duration = Duration::from_secs(2);
 /// The font list is refreshed at most this often.
 pub const FAMILIES_REFRESH: Duration = Duration::from_secs(60);
 
-/// Local wall time, injected so tests control "now" for the recent-file window (and,
-/// from phase (d), clocks).
+/// Local wall time, injected so tests control "now" for the recent-file window, clocks
+/// and countdowns to a time of day (ADR-0129 decision 11). The composition root gives
+/// the real one with the local time zone; the defaults read UTC.
 pub trait TextClock: Send + Sync {
     /// The current wall time.
     fn now(&self) -> SystemTime;
+
+    /// The local date and time now.
+    fn local(&self) -> LocalTime {
+        LocalTime::utc(self.now())
+    }
+
+    /// Time until the next occurrence of the local time `seconds` into the day: zero
+    /// when it is now, tomorrow's when it has passed today. A time in a DST gap counts
+    /// to the first valid instant after it; a time that occurs twice to the first.
+    fn until_local(&self, seconds: u32) -> Duration {
+        text_live::until_utc(self.now(), seconds)
+    }
 }
 
 /// The system's wall clock.
@@ -160,12 +174,15 @@ enum RenderCmd {
         frames: ParamSender<Option<TextFrame>>,
         settings: Arc<TextSettings>,
         generation: u64,
+        /// What a live source shows now.
+        live: Option<String>,
         request: u64,
     },
     Settings {
         source: SourceId,
         settings: Arc<TextSettings>,
         generation: u64,
+        live: Option<String>,
         request: u64,
     },
     File {
@@ -177,6 +194,13 @@ enum RenderCmd {
     Rerender {
         source: SourceId,
         request: u64,
+    },
+    /// What a live source shows now; `front` draws it ahead of other work.
+    Live {
+        source: SourceId,
+        text: String,
+        request: u64,
+        front: bool,
     },
     Detach {
         source: SourceId,
@@ -250,6 +274,16 @@ pub struct TextWorker {
     render_hang_reported: bool,
     last_poll: Option<Timestamp>,
     last_use: Timestamp,
+    /// Timers, elapsed times, scene name and language for live sources.
+    live: LiveInputs,
+    /// What each live source last showed and when it can change next.
+    live_shown: BTreeMap<SourceId, LiveShown>,
+}
+
+/// A live source's last text and its next update on the master clock.
+struct LiveShown {
+    text: String,
+    due: Option<Timestamp>,
 }
 
 impl TextWorker {
@@ -285,6 +319,8 @@ impl TextWorker {
             render_hang_reported: false,
             last_poll: None,
             last_use: Timestamp::ZERO,
+            live: LiveInputs::default(),
+            live_shown: BTreeMap::new(),
         }
     }
 
@@ -377,11 +413,13 @@ impl TextWorker {
                 attached: true,
             },
         );
+        let live = self.live_now(source).map(|(text, _)| text);
         self.send(RenderCmd::Attach {
             source,
             frames,
             settings,
             generation,
+            live,
             request,
         });
         self.poll_now(source);
@@ -410,10 +448,12 @@ impl TextWorker {
             },
         );
         let request = self.shared.request();
+        let live = self.live_now(source).map(|(text, _)| text);
         self.send(RenderCmd::Settings {
             source,
             settings,
             generation,
+            live,
             request,
         });
         if file_changed {
@@ -433,7 +473,16 @@ impl TextWorker {
         }
         self.ensure_running();
         let request = self.shared.request();
-        self.send(RenderCmd::Rerender { source, request });
+        // A live source is drawn once, with what it shows now.
+        match self.live_now(source) {
+            Some((text, _)) => self.send(RenderCmd::Live {
+                source,
+                text,
+                request,
+                front: true,
+            }),
+            None => self.send(RenderCmd::Rerender { source, request }),
+        }
         self.poll_now(source);
         Some(request)
     }
@@ -445,6 +494,7 @@ impl TextWorker {
             k.attached = false;
         }
         self.send(RenderCmd::Detach { source });
+        self.live_shown.remove(&source);
         if let Some(p) = &self.probe {
             let _ = p.tx.send(ProbeCmd::Forget { source });
         }
@@ -455,6 +505,146 @@ impl TextWorker {
     /// (the on-air set, ADR-0129 decision 7).
     pub fn set_on_air(&mut self, sources: BTreeSet<SourceId>) {
         self.on_air = sources;
+    }
+
+    /// A countdown's or stopwatch's run state; `None` is zero and stopped.
+    pub fn set_timer(&mut self, source: SourceId, run: Option<RunTime>) {
+        let old = match run {
+            Some(run) => self.live.timers.insert(source, run),
+            None => self.live.timers.remove(&source),
+        };
+        if old != run {
+            self.live_stale(Some(source));
+        }
+    }
+
+    /// How long the main canvas's main recording and stream have run (`None` while
+    /// stopped; a paused recording is not running).
+    pub fn set_elapsed(&mut self, recording: Option<RunTime>, stream: Option<RunTime>) {
+        if self.live.recording != recording || self.live.stream != stream {
+            self.live.recording = recording;
+            self.live.stream = stream;
+            self.live_stale(None);
+        }
+    }
+
+    /// The main canvas's program scene name, for `{scene}`.
+    pub fn set_scene(&mut self, name: &str) {
+        if self.live.scene != name {
+            name.clone_into(&mut self.live.scene);
+            self.live_stale(None);
+        }
+    }
+
+    /// The language of weekday names.
+    pub fn set_language(&mut self, language: Language) {
+        if self.live.language != language {
+            self.live.language = language;
+            self.live_stale(None);
+        }
+    }
+
+    /// Every live input at once: the timers, elapsed times, scene name and language.
+    /// Only what changed is drawn again.
+    pub fn set_live(&mut self, inputs: &LiveInputs) {
+        if self.live == *inputs {
+            return;
+        }
+        let timers: BTreeSet<SourceId> = self
+            .live
+            .timers
+            .iter()
+            .chain(&inputs.timers)
+            .filter(|(s, _)| self.live.timers.get(s) != inputs.timers.get(s))
+            .map(|(s, _)| *s)
+            .collect();
+        let rest = self.live.recording != inputs.recording
+            || self.live.stream != inputs.stream
+            || self.live.scene != inputs.scene
+            || self.live.language != inputs.language;
+        self.live.clone_from(inputs);
+        if rest {
+            self.live_stale(None);
+        } else {
+            for s in timers {
+                self.live_stale(Some(s));
+            }
+        }
+    }
+
+    /// How long until an on-air live source needs drawing again, if one does: the
+    /// host's control loop sleeps no longer than this.
+    pub fn next_due(&self) -> Option<Duration> {
+        let now = self.now();
+        self.live_shown
+            .iter()
+            .filter(|(s, _)| self.on_air.contains(s))
+            .filter_map(|(_, l)| l.due)
+            .min()
+            .map(|due| due.saturating_since(now))
+    }
+
+    /// Makes the next tick recompute `source` (or every live source).
+    fn live_stale(&mut self, source: Option<SourceId>) {
+        for (s, shown) in &mut self.live_shown {
+            if source.is_none_or(|only| only == *s) {
+                shown.due = Some(Timestamp::ZERO);
+            }
+        }
+    }
+
+    /// What a live source shows now, recorded with its next update, and whether it
+    /// differs from what was last sent. `None` for a source that is not live.
+    fn live_now(&mut self, source: SourceId) -> Option<(String, bool)> {
+        let Some(k) = self.known.get(&source).filter(|k| k.attached) else {
+            self.live_shown.remove(&source);
+            return None;
+        };
+        let now = self.now();
+        let wall = Arc::clone(&self.wall);
+        let until = move |t: u32| wall.until_local(t);
+        let clocks = LiveClocks {
+            now,
+            local: self.wall.local(),
+            until_local: &until,
+        };
+        let Some(shown) = text_live::shown(source, &k.settings, &self.live, &clocks) else {
+            self.live_shown.remove(&source);
+            return None;
+        };
+        let changed = self
+            .live_shown
+            .get(&source)
+            .is_none_or(|l| l.text != shown.text);
+        self.live_shown.insert(
+            source,
+            LiveShown {
+                text: shown.text.clone(),
+                due: shown.next.map(|d| now + d),
+            },
+        );
+        Some((shown.text, changed))
+    }
+
+    /// Updates the on-air live sources whose time has come.
+    fn tick_live(&mut self, now: Timestamp) {
+        let due: Vec<SourceId> = self
+            .live_shown
+            .iter()
+            .filter(|(s, l)| self.on_air.contains(s) && l.due.is_some_and(|d| d <= now))
+            .map(|(s, _)| *s)
+            .collect();
+        for source in due {
+            if let Some((text, true)) = self.live_now(source) {
+                let request = self.shared.request();
+                self.send(RenderCmd::Live {
+                    source,
+                    text,
+                    request,
+                    front: false,
+                });
+            }
+        }
     }
 
     /// The installed font families: the cache, or `NotReady` while the first list is
@@ -501,6 +691,9 @@ impl TextWorker {
         if !k.attached {
             return;
         }
+        if k.settings.kind != TextKind::Text {
+            return;
+        }
         if let Some(path) = &k.settings.file {
             let _ = p.tx.send(ProbeCmd::Poll {
                 source,
@@ -519,6 +712,7 @@ impl TextWorker {
         }
         let now = self.now();
         self.check_hangs(now);
+        self.tick_live(now);
         let due = self
             .last_poll
             .is_none_or(|at| now.saturating_since(at) >= POLL_INTERVAL);
@@ -637,6 +831,7 @@ impl TextWorker {
             }
         }
         self.known.retain(|_, k| k.attached);
+        self.live_shown.clear();
         self.last_poll = None;
         *self
             .shared
@@ -660,6 +855,8 @@ struct Drawn {
     settings: Arc<TextSettings>,
     generation: u64,
     file_text: Option<String>,
+    /// What a live source shows now (sent by the control side).
+    live_text: Option<String>,
     last: Option<TextFrame>,
 }
 
@@ -681,6 +878,7 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
                     mut frames,
                     settings,
                     generation,
+                    live,
                     request,
                 } => {
                     let cached = sources
@@ -688,6 +886,9 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
                         .and_then(|d| d.last.clone())
                         .filter(|f| f.settings_generation == generation);
                     let file_text = sources.get(&source).and_then(|d| d.file_text.clone());
+                    let fresh =
+                        live.is_none() || sources.get(&source).is_some_and(|d| d.live_text == live);
+                    let cached = cached.filter(|_| fresh);
                     let has_cache = cached.is_some();
                     if let Some(frame) = &cached {
                         drop(frames.recycle());
@@ -700,6 +901,7 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
                             settings,
                             generation,
                             file_text,
+                            live_text: live,
                             last: cached,
                         },
                     );
@@ -711,6 +913,7 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
                     source,
                     settings,
                     generation,
+                    live,
                     request,
                 } => {
                     let d = sources.entry(source).or_insert_with(|| Drawn {
@@ -718,6 +921,7 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
                         settings: Arc::clone(&settings),
                         generation,
                         file_text: None,
+                        live_text: None,
                         last: None,
                     });
                     if d.settings.file != settings.file {
@@ -725,6 +929,7 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
                     }
                     d.settings = settings;
                     d.generation = generation;
+                    d.live_text = live;
                     queue(&mut back, source, request);
                 }
                 RenderCmd::File {
@@ -743,6 +948,17 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
                 RenderCmd::Rerender { source, request } => {
                     queue(&mut front, source, request);
                 }
+                RenderCmd::Live {
+                    source,
+                    text,
+                    request,
+                    front: first,
+                } => {
+                    if let Some(d) = sources.get_mut(&source) {
+                        d.live_text = Some(text);
+                        queue(if first { &mut front } else { &mut back }, source, request);
+                    }
+                }
                 RenderCmd::Detach { source } => {
                     if let Some(d) = sources.get_mut(&source) {
                         d.frames = None;
@@ -757,6 +973,13 @@ fn render_loop(rx: &Receiver<RenderCmd>, shared: &Shared, renderers: &[Arc<dyn T
         }
         if families {
             list_families(shared, renderers);
+        }
+        // A source drawn up front is not drawn again behind.
+        for (source, request) in std::mem::take(&mut back) {
+            match front.iter_mut().find(|(s, _)| *s == source) {
+                Some(entry) => entry.1 = entry.1.max(request),
+                None => back.push_back((source, request)),
+            }
         }
         for (source, request) in front.into_iter().chain(back) {
             if let Some(d) = sources.get_mut(&source)
@@ -804,8 +1027,11 @@ fn draw(
     request: u64,
 ) -> bool {
     let mut block: TextBlock = d.settings.block.clone();
-    if d.settings.file.is_some() {
+    let shows_file = d.settings.kind == TextKind::Text && d.settings.file.is_some();
+    if shows_file {
         block.text = d.file_text.clone().unwrap_or_default();
+    } else if !d.settings.is_still() {
+        block.text = d.live_text.clone().unwrap_or_default();
     }
     let Some(renderer) = pick_renderer(renderers, &block) else {
         shared.post((

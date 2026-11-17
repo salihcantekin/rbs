@@ -47,7 +47,9 @@ use rbs_scene::binder::{
 use rbs_scene::model::{
     CanvasId, FilterId, ItemId, MasterAudio, SceneId, SourceAudio, SourceId, SourceMonitor,
 };
+use rbs_sources::text::TextKind;
 use rbs_sources::text_file::{FileProbe, RealFileProbe};
+use rbs_sources::text_live::{Language, LiveInputs, RunTime};
 use rbs_sources::text_worker::{ProblemSlot, SystemTextClock, TextClock, TextProblem, TextWorker};
 use rbs_sources::{
     BrowserBudget, BrowserClaim, BrowserControlSidecar, BrowserTree, InstanceContext, ShowClass,
@@ -1248,13 +1250,15 @@ pub struct Studio {
     text: Option<TextWorker>,
     /// File access and wall clock of the text worker (real unless a host or test
     /// sets them before the first text source).
-    text_io: (Arc<dyn FileProbe>, Arc<dyn TextClock>),
+    text_io: (Arc<dyn FileProbe>, Option<Arc<dyn TextClock>>),
     /// Text problems by source and slot (ADR-0129 decision 7).
     text_problems: BTreeMap<(SourceId, ProblemSlot), TextProblem>,
     /// Text sources whose settings window is open: kept up to date off air.
     text_watched: BTreeSet<SourceId>,
     /// Text sources fed by the worker.
     text_attached: BTreeSet<SourceId>,
+    /// Timers, elapsed times and scene name for live texts (ADR-0129 decision 11).
+    text_live: LiveInputs,
     /// The on-air set the worker was last given.
     text_on_air: BTreeSet<SourceId>,
     /// Requests of texts that entered the on-air set, not yet uploaded.
@@ -1280,18 +1284,56 @@ pub enum TextDue {
 /// The text worker, made on first use with the registered renderers.
 fn text_worker<'a>(
     text: &'a mut Option<TextWorker>,
-    io: &(Arc<dyn FileProbe>, Arc<dyn TextClock>),
+    io: &(Arc<dyn FileProbe>, Option<Arc<dyn TextClock>>),
     clock: Arc<dyn rbs_core::time::Clock>,
     sources: &SourceTypes,
+    live: &LiveInputs,
 ) -> &'a mut TextWorker {
     text.get_or_insert_with(|| {
-        TextWorker::new(
+        let mut worker = TextWorker::new(
             sources.text_renderers(),
             Arc::clone(&io.0),
             clock,
-            Arc::clone(&io.1),
-        )
+            io.1.clone()
+                .or_else(|| sources.text_clock())
+                .unwrap_or_else(|| Arc::new(SystemTextClock)),
+        );
+        worker.set_live(live);
+        worker
     })
+}
+
+/// What `text.timer` does to a countdown or stopwatch (ADR-0129 decision 11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerAction {
+    /// Runs it from its value; a countdown that reached zero starts over.
+    Start,
+    /// Stops it at its value.
+    Pause,
+    /// Back to zero, stopped.
+    Reset,
+}
+
+/// Why [`Studio::text_timer`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerRefused {
+    /// No such source.
+    NotFound,
+    /// The source is not a countdown by duration or a stopwatch.
+    NotATimer,
+}
+
+/// A countdown's or stopwatch's run state, as saved and carried across a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextTimer {
+    /// The text source.
+    pub source: SourceId,
+    /// `Countdown` or `Stopwatch`.
+    pub kind: TextKind,
+    /// It runs.
+    pub running: bool,
+    /// Its value: time counted (a countdown's is the time gone, not the time left).
+    pub value: Duration,
 }
 
 /// The answer of [`Studio::text_fonts`].
@@ -1636,10 +1678,11 @@ impl Studio {
             browser_tree,
             browser_controls: BTreeMap::new(),
             text: None,
-            text_io: (Arc::new(RealFileProbe), Arc::new(SystemTextClock)),
+            text_io: (Arc::new(RealFileProbe), None),
             text_problems: BTreeMap::new(),
             text_watched: BTreeSet::new(),
             text_attached: BTreeSet::new(),
+            text_live: LiveInputs::default(),
             text_on_air: BTreeSet::new(),
             text_entering: Vec::new(),
             text_wait: None,
@@ -2546,8 +2589,13 @@ impl Studio {
                     let t = *t;
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(t.node))?;
-                    let worker =
-                        text_worker(&mut self.text, &self.text_io, self.engine.clock(), sources);
+                    let worker = text_worker(
+                        &mut self.text,
+                        &self.text_io,
+                        self.engine.clock(),
+                        sources,
+                        &self.text_live,
+                    );
                     worker.attach(entry.source, t.frames, t.settings);
                     self.text_attached.insert(entry.source);
                     entry.instance = Some(Instance {
@@ -2971,7 +3019,7 @@ impl Studio {
     /// Sets the text worker's file access and wall clock (tests, hosts). Takes effect
     /// for a worker made after this call.
     pub fn set_text_io(&mut self, files: Arc<dyn FileProbe>, wall: Arc<dyn TextClock>) {
-        self.text_io = (files, wall);
+        self.text_io = (files, Some(wall));
     }
 
     /// The text sources whose settings window is open: they are kept up to date even
@@ -2998,7 +3046,15 @@ impl Studio {
             return TextFonts::Unavailable;
         }
         let clock = self.engine.clock();
-        match text_worker(&mut self.text, &self.text_io, clock, sources).families() {
+        match text_worker(
+            &mut self.text,
+            &self.text_io,
+            clock,
+            sources,
+            &self.text_live,
+        )
+        .families()
+        {
             rbs_sources::text_worker::Families::Ready(list) => TextFonts::Ready(list),
             _ => TextFonts::NotReady,
         }
@@ -3019,6 +3075,137 @@ impl Studio {
             uploaded.is_some_and(|u| u < *request)
         });
         self.text_entering.is_empty()
+    }
+
+    /// Starts, pauses or resets the countdown (by duration) or stopwatch `source`
+    /// (ADR-0129 decision 11): live state, not the document. Returns its new state.
+    pub fn text_timer(
+        &mut self,
+        source: SourceId,
+        action: TimerAction,
+    ) -> Result<TextTimer, TimerRefused> {
+        let (kind, length) = self.timer_kind(source)?;
+        let now = self.engine.clock().now();
+        let run = self
+            .text_live
+            .timers
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+        let run = match action {
+            TimerAction::Start if run.since.is_some() => run,
+            TimerAction::Start => {
+                let done = length.is_some_and(|l| run.value >= l);
+                RunTime {
+                    value: if done { Duration::ZERO } else { run.value },
+                    since: Some(now),
+                }
+            }
+            TimerAction::Pause => run.paused(now),
+            TimerAction::Reset => RunTime::default(),
+        };
+        if run == RunTime::default() {
+            self.text_live.timers.remove(&source);
+        } else {
+            self.text_live.timers.insert(source, run);
+        }
+        if let Some(worker) = self.text.as_mut() {
+            worker.set_live(&self.text_live);
+        }
+        Ok(TextTimer {
+            source,
+            kind,
+            running: run.since.is_some(),
+            value: run.at(now),
+        })
+    }
+
+    /// `Countdown` or `Stopwatch` when `source` is a timer `text.timer` can run.
+    pub fn text_timer_kind(&self, source: SourceId) -> Option<TextKind> {
+        self.timer_kind(source).ok().map(|(kind, _)| kind)
+    }
+
+    /// The kind of a timer source and a countdown's length.
+    fn timer_kind(&self, source: SourceId) -> Result<(TextKind, Option<Duration>), TimerRefused> {
+        let s = self
+            .collection
+            .source(source)
+            .ok_or(TimerRefused::NotFound)?;
+        if rbs_sources::class_of(&s.type_id) != Some(rbs_sources::SourceClass::Text) {
+            return Err(TimerRefused::NotATimer);
+        }
+        let (t, _) = rbs_sources::text::read_text_lenient(&s.settings);
+        match t.kind {
+            TextKind::Stopwatch => Ok((TextKind::Stopwatch, None)),
+            TextKind::Countdown if t.target.is_none() => Ok((
+                TextKind::Countdown,
+                Some(Duration::from_millis(t.duration_ms.unwrap_or(0))),
+            )),
+            _ => Err(TimerRefused::NotATimer),
+        }
+    }
+
+    /// Every timer that is not zero and stopped, with its value now, for saving and for
+    /// carrying across a studio restart. Timers of sources that are no longer timers
+    /// are left out.
+    pub fn text_timers(&self) -> Vec<TextTimer> {
+        let now = self.engine.clock().now();
+        self.text_live
+            .timers
+            .iter()
+            .filter_map(|(source, run)| {
+                let (kind, _) = self.timer_kind(*source).ok()?;
+                Some(TextTimer {
+                    source: *source,
+                    kind,
+                    running: run.since.is_some(),
+                    value: run.at(now),
+                })
+            })
+            .collect()
+    }
+
+    /// Sets the timers (a restored file, or the timers of the studio this one
+    /// replaces): a running one runs on from its value now.
+    pub fn set_text_timers(&mut self, timers: &[TextTimer]) {
+        let now = self.engine.clock().now();
+        self.text_live.timers = timers
+            .iter()
+            .map(|t| {
+                (
+                    t.source,
+                    RunTime {
+                        value: t.value,
+                        since: t.running.then_some(now),
+                    },
+                )
+            })
+            .collect();
+        if let Some(worker) = self.text.as_mut() {
+            worker.set_live(&self.text_live);
+        }
+    }
+
+    /// What `recording_time`, `stream_time` and `{scene}` show: how long the main
+    /// canvas's main recording and stream have run on this studio's master clock
+    /// (`None` while stopped, not running while paused) and its program scene's name.
+    /// Cheap when nothing changed; the host calls it every loop.
+    pub fn set_text_outputs(
+        &mut self,
+        scene: &str,
+        recording: Option<RunTime>,
+        stream: Option<RunTime>,
+    ) {
+        if self.text_live.scene != scene {
+            scene.clone_into(&mut self.text_live.scene);
+        }
+        self.text_live.recording = recording;
+        self.text_live.stream = stream;
+    }
+
+    /// The language of weekday names in clocks.
+    pub fn set_text_language(&mut self, language: Language) {
+        self.text_live.language = language;
     }
 
     /// Prepares a change of `canvas`'s program to `scene` (ADR-0129 decision 7): the
@@ -3129,6 +3316,7 @@ impl Studio {
         let Some(worker) = self.text.as_mut() else {
             return;
         };
+        worker.set_live(&self.text_live);
         worker.tick();
         for (source, slot, problem) in worker.take_problems() {
             match problem {
@@ -3412,7 +3600,11 @@ impl Studio {
             control.control_tick();
         }
         self.service_text();
-        let serviced = self.engine.service();
+        let mut serviced = self.engine.service();
+        // A live text on air wakes the control loop on its whole second.
+        if let Some(due) = self.text.as_ref().and_then(TextWorker::next_due) {
+            serviced.wait = Some(serviced.wait.map_or(due, |w| w.min(due)));
+        }
         if self.step_transitions() {
             self.transition_done = true;
         }
