@@ -160,8 +160,11 @@ fn unreachable_lists_only_studio_summary_with_the_start_hint() {
     assert_eq!(r.tools(), ["studio_summary"]);
     let (result, _) = r.call("studio_summary", json!({}));
     assert_eq!(result["isError"], false);
-    assert_eq!(result["content"][0]["text"], HINT);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with(HINT));
     assert!(HINT.contains("press Start in Settings, AI tools"));
+    // Which step failed is said, so a wrong endpoint or token can be told apart.
+    assert!(text.ends_with("Reason: no endpoint."), "{text}");
     let (result, _) = r.call("scene_list", json!({}));
     assert_eq!(result["isError"], true);
 }
