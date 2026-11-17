@@ -2472,6 +2472,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.collection.duplicate",
     "ui.collection.rename",
     "ui.collection.import",
+    "ui.collection.import_obs",
     "ui.collection.export",
     "ui.collection.delete",
     "ui.panel.open",

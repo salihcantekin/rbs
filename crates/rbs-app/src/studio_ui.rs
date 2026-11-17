@@ -8505,6 +8505,11 @@ mod tests {
             run("ui.collection.export", &s),
             Some(Run::Entry(EntryKind::Collection, EntryOp::Export, None))
         );
+        // Import from OBS opens its wizard; it is not an entry operation (ADR-0131).
+        assert_eq!(
+            run("ui.collection.import_obs", &s),
+            Some(Run::OpenObsImport)
+        );
         // A fresh library holds one output profile: the only one cannot be deleted.
         // The only scene collection can be deleted once the studio runs (a Default
         // replacement takes its place); without a studio the switch is refused.
