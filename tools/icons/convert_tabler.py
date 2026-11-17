@@ -21,7 +21,7 @@ MAP={
 "flip-h":"flip-vertical","flip-v":"flip-horizontal","rotate-cw":"rotate-clockwise","rotate-ccw":"rotate-clockwise","fit":"aspect-ratio","fill-canvas":"maximize",
 "stretch":"arrows-horizontal","center":"focus-centered",
 "key":"key","wand":"wand","eraser":"eraser","ban":"ban","flag":"flag",
-"collapse":"chevrons-up","auto-hide":"layout-sidebar-left-collapse","move":"arrows-move","float":"picture-in-picture","dock":"picture-in-picture-off","save":"device-floppy",
+"collapse":"chevrons-up","expand-all":"chevrons-down","auto-hide":"layout-sidebar-left-collapse","move":"arrows-move","float":"picture-in-picture","dock":"picture-in-picture-off","save":"device-floppy",
 }
 S=16/24
 # The pinned SHA-256 of every SVG read (tabler-3.26.0.sha256): a changed file at the CDN
