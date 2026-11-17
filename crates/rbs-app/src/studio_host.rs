@@ -932,6 +932,9 @@ pub enum Command {
         /// `0` linear, `1` ease-in-out.
         easing: u8,
     },
+    /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
+    /// step.
+    SetTransition(rbs_scene::CollectionTransition),
     /// Per-source slide override (ADR-0100). `custom` false clears it. One undo step.
     SetSourceGlide {
         /// The source.
@@ -4575,6 +4578,10 @@ impl Host {
                 easing,
             } => {
                 let done = self.set_glide(duration_ms, easing);
+                self.answer(done, notify);
+            }
+            Command::SetTransition(t) => {
+                let done = self.put_transition(t);
                 self.answer(done, notify);
             }
             Command::SetSourceGlide {
@@ -10567,6 +10574,12 @@ impl Host {
         if let Some(s) = p.slide {
             t.slide = scene_swipe(s);
         }
+        self.put_transition(t)
+    }
+
+    /// Sets the collection's transition as one undo step; `Ok(false)` when it is
+    /// already set.
+    fn put_transition(&mut self, t: rbs_scene::CollectionTransition) -> Result<bool, Refusal> {
         if self.collection.transition() == t {
             return Ok(false);
         }

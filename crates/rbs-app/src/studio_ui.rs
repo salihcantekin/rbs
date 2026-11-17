@@ -333,6 +333,8 @@ pub struct StudioUi {
     pub studio_mode: bool,
     /// Collection glide defaults (ADR-0100).
     glide: rbs_scene::CollectionGlide,
+    /// The collection's transition (ADR-0128).
+    transition: rbs_scene::CollectionTransition,
     /// The preview scene's picture layer exists (studio mode).
     pub scene_preview_ready: bool,
     /// The preview scene's picture layer could not be made in this session.
@@ -633,6 +635,7 @@ impl StudioUi {
             preview_ready: false,
             studio_mode: false,
             glide: rbs_scene::CollectionGlide::default(),
+            transition: rbs_scene::CollectionTransition::default(),
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
@@ -788,6 +791,13 @@ impl StudioUi {
         } else {
             1
         });
+        let t = self.transition;
+        g.set_transition_kind(transition_index(t.kind));
+        g.set_fade_duration(t.fade.duration_ms as i32);
+        g.set_fade_easing(i32::from(t.fade.easing != rbs_scene::GlideEasing::Linear));
+        g.set_fade_via(t.fade.via.is_some());
+        let [r, gr, b] = t.fade.via.unwrap_or([0, 0, 0]);
+        g.set_fade_via_color(slint::Color::from_rgb_u8(r, gr, b));
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -2207,6 +2217,53 @@ impl StudioUi {
             duration_ms: duration_ms.clamp(0, 5_000) as u32,
             easing: if easing == 0 { 0 } else { 1 },
         });
+    }
+
+    /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move.
+    pub fn set_transition_kind(&mut self, index: i32) {
+        let mut t = self.transition;
+        t.kind = match index {
+            0 => rbs_scene::TransitionKind::Cut,
+            1 => rbs_scene::TransitionKind::Fade,
+            _ => rbs_scene::TransitionKind::Move,
+        };
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
+    /// The duration of the rail's kind: Fade's own, Move's is the collection glide.
+    /// Cut has none.
+    pub fn set_transition_duration(&mut self, duration_ms: i32) {
+        let ms = duration_ms.clamp(0, 5_000) as u32;
+        match self.transition.kind {
+            rbs_scene::TransitionKind::Fade => {
+                let mut t = self.transition;
+                t.fade.duration_ms = ms;
+                self.send(Command::SetTransition(t));
+            }
+            rbs_scene::TransitionKind::Cut => {}
+            _ => self.send(Command::SetGlide {
+                duration_ms: ms,
+                easing: u8::from(self.glide.easing != rbs_scene::GlideEasing::Linear),
+            }),
+        }
+    }
+
+    /// Fade's options: easing (`0` linear, `1` ease-in-out) and an opaque colour to
+    /// fade through (`"#rrggbb"`; empty keeps the colour, black when there is none).
+    pub fn set_fade_options(&mut self, easing: i32, via: bool, color: &str) {
+        let mut t = self.transition;
+        t.fade.easing = if easing == 0 {
+            rbs_scene::GlideEasing::Linear
+        } else {
+            rbs_scene::GlideEasing::EaseInOut
+        };
+        let keep = self.transition.fade.via.unwrap_or([0, 0, 0]);
+        t.fade.via = via.then(|| rgb_hex(color).unwrap_or(keep));
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
     }
 
     /// Per-source slide override (ADR-0100). `custom` false clears it.
@@ -5534,6 +5591,7 @@ impl StudioUi {
                     self.show_master();
                 }
                 self.glide = list.glide;
+                self.transition = list.transition;
                 let data: Vec<SceneData> = list
                     .scenes
                     .iter()
@@ -7407,6 +7465,26 @@ fn hold_note_text(hold: Option<StreamHold>) -> &'static str {
         Some(HoldNote::Sound) => "The hold scene's sound failed: sending silence",
         None => "",
     }
+}
+
+/// The rail's index of a transition kind (ADR-0128): Swipe and Slide run as Move until
+/// they are drawn, so the rail shows them as Move.
+fn transition_index(kind: rbs_scene::TransitionKind) -> i32 {
+    match kind {
+        rbs_scene::TransitionKind::Cut => 0,
+        rbs_scene::TransitionKind::Fade => 1,
+        _ => 2,
+    }
+}
+
+/// `#rrggbb` as bytes.
+fn rgb_hex(s: &str) -> Option<[u8; 3]> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
 #[cfg(test)]
