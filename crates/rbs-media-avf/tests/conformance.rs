@@ -35,8 +35,13 @@ mod macos {
         Duration::from_millis(v)
     }
 
+    /// The copy (`cpu-upload`) decoder, whose pixels the tests read.
     fn open() -> Option<Box<dyn MediaDecoder>> {
-        match AvfMediaFactory::new().open(&fixture("clip.mp4")) {
+        open_with(&AvfMediaFactory::cpu_upload())
+    }
+
+    fn open_with(factory: &AvfMediaFactory) -> Option<Box<dyn MediaDecoder>> {
+        match factory.open(&fixture("clip.mp4")) {
             Ok(decoder) => Some(decoder),
             Err(DecodeError::Unsupported(why)) => {
                 eprintln!("skipped: {why}");
@@ -161,5 +166,97 @@ mod macos {
     fn a_file_that_is_no_media_is_refused() {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         assert!(AvfMediaFactory::new().open(&manifest).is_err());
+    }
+
+    /// The luma at (`x`, `y`) of an NV12 `IOSurface`.
+    fn luma(surface: usize, x: usize, y: usize) -> u8 {
+        use objc2_io_surface::{IOSurfaceLockOptions, IOSurfaceRef};
+        // SAFETY: the picture's lease keeps the surface alive while the caller holds it;
+        // the plane is read between lock and unlock, inside its rows.
+        unsafe {
+            let surface = &*(surface as *const IOSurfaceRef);
+            assert_eq!(
+                surface.lock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()),
+                0
+            );
+            let base = surface.base_address_of_plane(0).as_ptr().cast::<u8>();
+            let stride = surface.bytes_per_row_of_plane(0);
+            let value = *base.add(y * stride + x);
+            surface.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut());
+            value
+        }
+    }
+
+    #[test]
+    fn native_pictures_are_nv12_io_surfaces_with_stamps() {
+        use rbs_core::media::{FramePayload, NativeSurface, PixelFormat};
+
+        let Some(mut dec) = open_with(&AvfMediaFactory::new()) else {
+            return;
+        };
+        let mut pictures = Vec::new();
+        while let Some(sample) = dec.next_picture().unwrap() {
+            pictures.push(sample);
+            assert!(pictures.len() < 50, "the stream must end");
+        }
+        assert_eq!(pictures.len(), 5);
+        for (i, p) in pictures.iter().enumerate() {
+            assert_eq!((p.picture.width, p.picture.height), (160, 90));
+            assert_eq!(p.pts, Some(ms(100 * i as u64)), "picture {i}");
+            let PictureData::Native(frame) = p.picture.data() else {
+                panic!("picture {i} is not native");
+            };
+            assert_eq!(frame.format().pixel_format, PixelFormat::Nv12);
+            let FramePayload::Native {
+                surface: NativeSurface::IoSurface { surface, .. },
+                ..
+            } = frame.payload()
+            else {
+                panic!("picture {i} is not an IOSurface");
+            };
+            // Green (luma about 173) top left, red (about 63) bottom right.
+            let (green, red) = (luma(*surface, 8, 8), luma(*surface, 150, 80));
+            assert!(
+                green > 140 && red < 100,
+                "picture {i}: luma {green} and {red}"
+            );
+        }
+        // Every picture is held at once: the pool hands each its own surface.
+        let surfaces: std::collections::HashSet<usize> = pictures
+            .iter()
+            .filter_map(|p| match p.picture.data() {
+                PictureData::Native(frame) => match frame.payload() {
+                    rbs_core::media::FramePayload::Native {
+                        surface: rbs_core::media::NativeSurface::IoSurface { surface, .. },
+                        ..
+                    } => Some(*surface),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(surfaces.len(), 5);
+        // Pictures outlive the decoder: their surfaces stay valid (the graveyard).
+        drop(dec);
+        let first = surfaces.iter().copied().next().unwrap();
+        let _ = luma(first, 8, 8);
+    }
+
+    #[test]
+    fn released_native_pictures_are_reused_and_the_seek_still_works() {
+        let Some(mut dec) = open_with(&AvfMediaFactory::new()) else {
+            return;
+        };
+        for _ in 0..3 {
+            // Each pass drops its pictures, so the slots come back.
+            dec.seek(Duration::ZERO).unwrap();
+            let mut count = 0;
+            while let Some(sample) = dec.next_picture().unwrap() {
+                assert!(sample.picture.is_native());
+                count += 1;
+                assert!(count < 50, "the stream must end");
+            }
+            assert_eq!(count, 5);
+        }
     }
 }

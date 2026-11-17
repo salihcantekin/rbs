@@ -1,7 +1,7 @@
 # Spec: Media-file decode port
 
 - Status: Draft
-- Owner crate(s): `rbs-media-decode` (port), `rbs-media-decode-test` (fake adapter); adapters `rbs-media-anim` (GIF, APNG, WebP), `rbs-media-mf` (Windows), `rbs-media-avf` (macOS); the last two are `cpu-upload` only for now
+- Owner crate(s): `rbs-media-decode` (port), `rbs-media-decode-test` (fake adapter); adapters `rbs-media-anim` (GIF, APNG, WebP), `rbs-media-mf` (Windows), `rbs-media-avf` (macOS); the last two are `zero-copy` with a `cpu-upload` factory for measurements
 - Related ADRs: [ADR-0108](../adr/0108-media-file-source.md), [ADR-0106](../adr/0106-picture-and-sound-on-one-source.md), [ADR-0007](../adr/0007-ffmpeg-as-optional-adapter.md)
 
 ## Purpose
@@ -16,8 +16,14 @@ In scope: opening a path the host accepted, seeking, per-stream reads, the state
 
 ```rust
 pub trait MediaDecoderFactory: AdapterFactory {
-    fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError>;
+    fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError>; // = open_for(path, &DecodeTarget::none())
+    // Default: ignores the target and calls `open`.
+    fn open_for(&self, path: &Path, target: &DecodeTarget) -> Result<Box<dyn MediaDecoder>, DecodeError>;
 }
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DecodeTarget { pub adapter_luid: Option<u64> } // DecodeTarget::none(), DecodeTarget::adapter(luid)
 
 pub trait MediaDecoder: Send {
     fn seek(&mut self, cursor: Duration) -> Result<(), DecodeError>;
@@ -34,6 +40,7 @@ impl Picture {
     pub fn system(width: u32, height: u32, layout: PictureLayout, color: SampleColor, bytes: Vec<u8>) -> Self;
     pub fn native(frame: VideoFrame) -> Option<Self>; // None unless the payload is a native surface
     pub fn data(&self) -> &PictureData;
+    pub fn into_data(self) -> PictureData; // a native surface moves on with its lease
 }
 #[non_exhaustive]
 pub enum PictureData {
@@ -53,7 +60,8 @@ Invariants:
 7. `duration` is the container's stated length, read once after open, or `None`.
 8. From this version on, new trait methods have defaults and the public enums are `#[non_exhaustive]`, so neither breaks an adapter. `next_sound` and `has_audio` are required, so an adapter cannot claim sound and forget to deliver it.
 9. Capability `media.decode.pixel` is a set of `zero-copy` and `cpu-upload`. The host picks the adapter named in the source's `adapter` setting, or else `zero-copy` before `cpu-upload`, then registration order, among adapters that open the file.
-10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). Until the node split lands, the probe refuses a native picture so a zero-copy adapter cannot win and then fail in the node.
+10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). The picture node imports a native picture once, when it is first shown, through the importer the capture node uses; the imported texture repeats while the clock repeats the picture, and stays as the held picture in the end hold. A source keeps at most `NATIVE_WAITING` (15) native pictures decoded and not yet imported, in the worker and on the ring; with the one the worker has just decoded and the two whose leases the importer holds (the shown and the held picture, until its GPU work on them retires) that is the budget of 18. An RGB surface is aliased, so the shown and held textures are the surfaces themselves; a 4:2:0 surface is decoded into a pool texture and its lease goes back once that decode retired. Each adapter keeps 24 slots, so a claim fails only when the importer keeps more than the budget (a GPU stall). An imported picture keeps a share of its texture while it is current, so it still repeats after the node cools (paused, cued). In the end hold, a native picture the clock never showed is dropped, and the hold keeps the picture shown before it with that picture's cursor. A picture over the budget is dropped and counted (`worker_dropped_pictures`). A failed import drops the picture, counts it (`import_failures`), and repeats the last texture. Native pictures the clock passed go back to the worker, which drops them (and their lease) off the render thread. `rbs-media-decode-test` has `ScriptFactory::native` (fake surfaces with counted leases) for the budget and lease tests (`rbs-nodes/tests/media_native.rs`).
+11. Import device. The worker opens with `open_for` and the `DecodeTarget` the picture node recorded in its `prepare` from the render device: the adapter LUID on Direct3D 12 (`GpuContext::adapter_luid`, as the capture node's `import_preferences`), `none` elsewhere. A run that starts before the picture node was ever prepared (the sound node started it), and the probe, open with `DecodeTarget::none()`. An adapter whose native pictures must be on the import device (Media Foundation's shared D3D11 texture) gives system pictures without a LUID, and never a native picture on another adapter; it does not change its stated capability. A run keeps the pixel path it opened with until its next open. When a later `prepare` finds the render device on another adapter (a device loss) while a run plays, the picture node starts the run again at the cursor, so it opens for the new adapter.
 
 ## Errors and failure behaviour
 
@@ -78,14 +86,16 @@ Pure Rust (`gif`, `png`, `image-webp`), on every platform, capability `cpu-uploa
 Platform video files: Media Foundation on Windows (`rbs-media-mf`, synchronous `IMFSourceReader`) and AVFoundation on macOS (`rbs-media-avf`, `AVAssetReader`). Both work the same way:
 
 - Each stream has its own reader on the file, with only that stream selected, so reading one stream never queues samples of the other (invariant 2 without a skew buffer). The sound reader is created on the first `next_sound`; a source that is never heard opens no second reader (P13).
-- Pictures are requested as 8-bit BGRA/BGRX (Media Foundation's advanced video processing converts and deinterlaces; VideoToolbox decodes) and copied once into `Rgba8`, cropped to the display aperture and turned upright when the rows are bottom-up. Sound is requested as interleaved 32-bit float at the track's own rate and channel count.
+- Native pictures (`zero-copy`, the factories' `new`):
+  - AVFoundation asks for IOSurface-backed `420v` (NV12, video range, the colour from the buffer's attachments) and hands out the decoded `CVPixelBuffer`'s `IOSurface`, kept in one of 24 slots while a lease names it. A free slot's buffer is released on the worker and VideoToolbox reuses its surface while the decoder lives; a dropped decoder's pool stays on the adapter's janitor while a lease names a slot and for the 10 s grace after that (ADR-0108 decision 7), then is freed there.
+  - Media Foundation, opened with `open_for` and the render adapter's LUID, decodes on a D3D11 device of that adapter (`IMFDXGIDeviceManager`, hardware transforms) and asks the video processor for `ARGB32` (`B8G8R8A8`). Each picture is copied on the GPU, cropped to the display aperture, into one of 24 shared NT-handle textures; the worker waits on a D3D11 fence, so the picture is `Ready`. A replaced texture and a dropped decoder's pool keep their handles open for the 10 s grace on the adapter's janitor. A `B8G8R8A8` picture is 4 bytes a pixel where NV12 is 1.5; importing NV12 shared textures on Direct3D 12 is a later step.
+  - A picture the platform gives in memory and a file whose device, type or colour cannot be used natively (on macOS: an HDR or unknown transfer, an unknown matrix or primaries) are copied as below. When every slot is referenced, Media Foundation copies the picture and AVFoundation skips it (the clock repeats the previous picture).
+- Copied pictures (`cpu-upload`, the factories' `cpu_upload`, and the fallback): requested as 8-bit BGRA/BGRX (Media Foundation's advanced video processing converts and deinterlaces; VideoToolbox decodes) and copied once into `Rgba8`, cropped to the display aperture and turned upright when the rows are bottom-up. Sound is requested as interleaved 32-bit float at the track's own rate and channel count.
 - `seek`: Media Foundation moves both readers (`SetCurrentPosition`). An `AVAssetReader` cannot move once it reads, so the AVFoundation adapter replaces the picture reader with one whose time range starts at the cursor, and recreates the sound reader on the next `next_sound`.
 - A missing decoder is `Unsupported` and names it (for example: HEVC needs the HEVC Video Extensions from the Microsoft Store). A file with no picture stream is `Unsupported`, so the next adapter can try it.
 - A frame of unstated or zero duration continues by the track's nominal rate, then by the previous frame (invariant 4).
 - Not handled yet: a track's rotation (`preferredTransform`, the display matrix), colour beyond sRGB conversion by the platform, HDR. Media Foundation also returns the AAC encoder priming and end padding untrimmed (about 21 ms of sound before the picture at the start); trimming by the track's edit list comes with the play range work.
 
-Capability: `cpu-upload` only. This is the measured fallback of ADR-0108 decision 4. Each adapter's PR records its numbers from `examples/decode_bench.rs`: time per picture and real-time factor at 1080p60 and 4K60, and the process CPU measured outside the process.
+Capability: `zero-copy` for `new`, `cpu-upload` for `cpu_upload` (the measured fallback of ADR-0108 decision 4). Each adapter's PR records its numbers from `examples/decode_bench.rs` (`copy` as the third argument measures the copy): time per picture and real-time factor at 1080p60 and 4K60, and the process CPU and memory measured outside the process.
 
-Exit criterion: once the picture node imports native surfaces (decision 5), each adapter adds `zero-copy`: a shared D3D11 texture on Windows (the decoder's texture-array slice copied on the GPU) and the `IOSurface` of the decoded `CVPixelBuffer` on macOS. From then on `cpu-upload` is used only for a file whose decoder gives no GPU surface.
-
-Conformance (`tests/conformance.rs`, run on its own platform; on other platforms the adapter only checks that it refuses): `fixtures/clip.mp4` (H.264 Main 160x90, coded 160x96, 10 fps, 5 frames, red with a green top-left quarter, and 0.5 s of 48 kHz stereo AAC). The tests check upright, cropped `Rgba8` pictures with 100 ms stamps and durations; a stated length near 0.5 s; a seek that moves both streams; interleaved float sound covering 0.5 s give or take one AAC frame; and the refusal of a file that is not media. A machine without the decoder skips with a reason.
+Conformance (`tests/conformance.rs`, run on its own platform; on other platforms the adapter only checks that it refuses): `fixtures/clip.mp4` (H.264 Main 160x90, coded 160x96, 10 fps, 5 frames, red with a green top-left quarter, and 0.5 s of 48 kHz stereo AAC). The tests check upright, cropped `Rgba8` pictures with 100 ms stamps and durations; a stated length near 0.5 s; a seek that moves both streams; interleaved float sound covering 0.5 s give or take one AAC frame; and the refusal of a file that is not media. The native tests check NV12 IOSurfaces (macOS) or `B8G8R8A8` shared textures on the first adapter, read back (Windows), with the same stamps, and a seek after the pictures were released. A machine without the decoder, or one that decodes the fixture off the GPU, skips with a reason.
