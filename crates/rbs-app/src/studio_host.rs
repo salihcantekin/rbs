@@ -78,6 +78,7 @@ pub mod protection;
 pub mod replay;
 pub mod sync_measure;
 mod text_live;
+mod text_resize;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -3512,6 +3513,9 @@ struct Host {
     text_timer_file: Vec<crate::text_timers::Entry>,
     /// The collection's saved timers were handed to the studio.
     text_timers_restored: bool,
+    /// A text item's drag waiting to rest before it gets its new box (ADR-0129
+    /// decision 12).
+    crisp_pending: Option<text_resize::CrispPending>,
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
@@ -3839,6 +3843,9 @@ fn round(
         host.apply(notify);
     }
     host.waiting = waiting;
+    if let Some(left) = host.drive_crisp(notify) {
+        wait = wait.min(left);
+    }
     if host.held_switch.is_some() {
         host.drive_held_switch(notify);
         if host.held_switch.is_some() {
@@ -4093,6 +4100,7 @@ fn start(
             })
             .unwrap_or_default(),
         text_timers_restored: false,
+        crisp_pending: None,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
         iso: None,
         stats_due: None,
@@ -11684,6 +11692,7 @@ impl Host {
         let name = self.name_of(id);
         self.history
             .record(EditKind::Place, &name, gesture, vec![undo]);
+        self.crisp_after_box(item, gesture, &name);
         Ok(true)
     }
 

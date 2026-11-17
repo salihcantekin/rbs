@@ -261,6 +261,7 @@ fn privileged_calls_are_audited_with_the_token_name() {
     assert!(h.audit.contains(&AuditEvent::Privileged {
         conn,
         token: Some("admin console".into()),
+        kind: Some(rbs_api::TokenKind::User),
         method: "record.start_to_file",
         detail: Some("/videos/take1.mkv".into()),
     }));

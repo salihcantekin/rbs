@@ -1,8 +1,8 @@
 # Spec: MCP server for AI agents
 
 - Status: Draft
-- Owner crate(s): `rbs-mcp` (planned)
-- Related ADRs: [0044](../adr/0044-control-api-protocol-and-security.md), [0046](../adr/0046-network-access-over-tls.md), [0051](../adr/0051-user-data-profiles-and-scene-collections.md), [0052](../adr/0052-ai-agent-control-through-mcp.md)
+- Owner crate(s): `rbs-mcp`
+- Related ADRs: [0044](../adr/0044-control-api-protocol-and-security.md), [0046](../adr/0046-network-access-over-tls.md), [0051](../adr/0051-user-data-profiles-and-scene-collections.md), [0052](../adr/0052-ai-agent-control-through-mcp.md), [0134](../adr/0134-ai-tools-settings-page.md)
 
 ## Purpose
 
@@ -19,22 +19,26 @@ Out of scope: the control API itself ([control API spec](control-api.md)), agent
 ### Process and connection
 
 - `rbs-mcp` is started by the agent application and speaks MCP over stdio. It connects to the RBS of the current user over local IPC (`rbs-api-ipc` client) and ends when stdin closes.
-- It sends `session.hello`, checks the protocol version it needs, then `session.authenticate {token}`. The token comes from the `RBS_TOKEN` environment variable when set (agent configuration files keep it in plain text, so the documented way is the file), otherwise from `--token-file <path>` (default: `agent-token` in the config directory; on Unix a file other users can read is refused; on Windows the per-user configuration folder is user-only already, as for `remote-control.toml`); there is no command-line option for the token itself. Without a token, or on `auth_failed`, it exits non-zero with a message on stderr that never contains the token.
-- The session has exactly the token's scopes and permissions, also on IPC (control API spec, "Handshake and authentication", planned addition). `rbs-mcp` fails closed: it sends nothing after `session.hello` until the `session.authenticate` answer arrives; the server's protocol minor must support narrowing and that call must succeed (an older server's "already authenticated" refusal is a failure); tools are built only from the scopes and `irreversible` in that answer. At start, a failed handshake or authentication with a reachable RBS ends `rbs-mcp` with a non-zero exit; an RBS that cannot be reached does not (below).
-- If RBS cannot be reached at start, only `studio_summary` is listed, and it answers with how to turn on remote control. `rbs-mcp` declares the `tools.listChanged` capability and tries again on each tool call. A later connection runs the same handshake: if it fails, tool calls return tool errors and no RBS tool is listed; if it succeeds, and after RBS restarts with another instance id, it reads `api.describe` again and sends `notifications/tools/list_changed`.
+- It sends `session.hello`, checks the protocol version it needs (1.73 or newer, which narrows a same-user IPC session to a token), then `session.authenticate {token}`. The token comes from `--token-file <path>` when given, otherwise from the `RBS_TOKEN` environment variable when set, otherwise from the default file `agent-token` in the config directory (ADR-0134 decision 4: an explicit file wins, so a stray environment variable cannot defeat a rotation; the line the AI tools page generates always passes `--token-file`). On Unix a file other users can read is refused; on Windows the per-user configuration folder is user-only already, as for `remote-control.toml`. There is no command-line option for the token itself. The file is opened only to read it and closed at once (on Windows shared for delete, so RBS can replace it), and read again on every connection, so "New token" needs no restart of the AI tool.
+- The session has exactly the token's scopes and permissions, also on IPC (control API spec, "Handshake and authentication"). `rbs-mcp` fails closed: it sends nothing after `session.hello` until the `session.authenticate` answer arrives; the server's protocol minor must support narrowing and that call must succeed (an older server's "already authenticated" refusal is a failure); tools are built only from the scopes and `irreversible` in that answer.
+- **Hint state** (ADR-0134 decision 6). When IPC is unreachable (RBS is not running, or AI tools are stopped while remote control is off), the token file is missing or holds no token, or authentication answers `auth_failed` or `not_permitted` with `data.reason: "ai_tools_off"`, `rbs-mcp` keeps running and lists only `studio_summary`, which answers "RBS is not connected. Open RBS and press Start in Settings, AI tools." No RBS tool is listed and nothing else is sent. It tries again on a `tools/list` or `tools/call`, at most once every 2 seconds (an injected clock in tests), so an AI tool's loop cannot flood the audit log. When a later handshake succeeds it reads `api.describe` again and sends `notifications/tools/list_changed`; a lost connection goes back to the hint state and sends it too.
+- Only a server older than narrowing ends `rbs-mcp` with a non-zero exit and the reason on stderr (protocol older than 1.73, or the "already authenticated" refusal).
+- **MCP library.** None: MCP over stdio is a handful of JSON-RPC messages, written on `serde_json`, which the workspace has. The official Rust SDK needs an async runtime, which a blocking program serving one request at a time does not. MCP versions `2025-06-18`, `2025-03-26` and `2024-11-05` are answered (the client's when it asks for one of them).
 
 ### Tools
 
-- **Generated tools.** One per method that `api.describe` lists and the session's scopes allow, except `session.*`, `tokens.*`, `events.*`, plugin methods, `edit.undo` and `edit.redo` (the undo stack is shared with the user). Only methods built into `rbs-api` are listed; their descriptions and schemas contain no text from state or plugins. Name: the method with `.` replaced by `_` (`source.add` becomes `source_add`). Description: the method's doc comment from the schema. Input schema: the method's parameters from the generated JSON Schema. Result: the method's answer as JSON (`structuredContent`), and the same JSON as text.
+- **Generated tools.** One per method that `api.describe` lists and the session's scopes allow, except `session.*`, `tokens.*`, `events.*`, plugin methods, `edit.undo` and `edit.redo` (the undo stack is shared with the user). Only methods built into `rbs-api` are listed; their descriptions and schemas contain no text from state or plugins. Name: the method with `.` replaced by `_` (`source.add` becomes `source_add`). Description and input schema: until the control API has a generated JSON Schema (ADR-0044 follow-up), both come from the control API spec compiled into `rbs-mcp`: the purpose cell of the method's table row (else the sentence of its first mention), and the parameters written after the method, `method {a, b?}`, each a property of any type, required unless marked `?`; a method written without braces gets an open object, and the API checks the parameters. Once the schema exists, the description is the method's doc comment and the input schema its parameters. Result: the method's answer as JSON (`structuredContent`, wrapped as `{result}` when it is not an object), and the same JSON as text.
 - **Annotations** from the method's `effect`: `read` sets `readOnlyHint: true`; `edit` sets `readOnlyHint: false, destructiveHint: false`; `live` and `destructive` set `destructiveHint: true`; `stream.start` and methods that add or re-address a source of a network type also set `openWorldHint: true`. A missing or unknown effect is handled as `destructive`. Tools whose effect the token's permissions do not allow (ADR-0052 decision 4) are not listed.
 - **Options.** `--tools <namespace,...>` lists only those namespaces (default: all allowed).
 - **Task tools** (fixed, written by hand, each built only from API requests the session could send itself):
-  - `studio_summary`: canvases, scenes with their items, sources, current profile and collection, recording and stream state, in one compact JSON value.
-  - `scene_build {canvas, scene, sources: [{type, name, settings, layout}]}`: creates or fills a scene through one `edit.apply`, so it is one undo step named after the scene.
+  - `studio_summary`: canvases, scenes with their items, sources, current profile and collection, recording and stream state, in one compact JSON value (the answers of `studio.get`, `scene.list`, `source.list`, `profile.list`, `collection.list`, `record.status` and `stream.status` the scopes allow; a refused one shows its error kind). In the hint state it answers the hint.
+  - `scene_build {canvas, scene, sources: [{type, name, settings, layout}]}`: creates or fills a scene through one `edit.apply`, so it is one undo step named after the scene. Not built yet.
   Each task tool names the protocol minor it needs and is not listed for an older server. More task tools are added only with a spec change.
 - **Errors.** An API error becomes a tool error (`isError: true`) with its kind (`scope_denied`, `not_permitted`, `conflict`, `invalid_params`, ...) and message, so the agent can correct itself. After a successful start, protocol failures (lost connection, a failed reconnection handshake) are tool errors, never a crash of `rbs-mcp`.
 
 ### Prompts and resources
+
+Not built yet; the server `instructions` are.
 
 - Server `instructions`: a short text (what RBS is, read `studio_summary` first, edits are undoable and live actions are not).
 - Prompts: one per documented workflow (for example "set up a vertical canvas", "prepare a recording"), from Markdown files compiled into `rbs-mcp`.
@@ -74,6 +78,5 @@ None inside RBS: `rbs-mcp` is a separate process, and RBS serves it as any API c
 
 ## Open questions
 
-- Which MCP library (the official Rust SDK is the first candidate), decided with its dependency justification.
 - MCP over HTTP and remote RBS (WebSocket with a pinned key): own reviews.
 - Mapping event subscriptions to MCP resource updates.

@@ -150,6 +150,8 @@ pub enum CloseReason {
     MessageTooLarge,
     /// The session's token was revoked.
     Revoked,
+    /// AI tools were stopped: the AI tools token's sessions end (ADR-0134).
+    AiToolsStopped,
     /// The peer does not read its answers: more than the limit wait.
     TooSlow,
 }

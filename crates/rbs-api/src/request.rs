@@ -3479,6 +3479,10 @@ pub struct TokenInfo {
     /// omits it, which reads as allowed.
     #[serde(default = "allowed")]
     pub irreversible: bool,
+    /// Who made it (protocol 1.85, ADR-0134): `user`, or `ai_tools` for the AI tools
+    /// token. An older server omits it, which reads as `user`.
+    #[serde(default)]
+    pub kind: crate::token::TokenKind,
 }
 
 /// The default of a token's permission in an answer from a server before 1.80.

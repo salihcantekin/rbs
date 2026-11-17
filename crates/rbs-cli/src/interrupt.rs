@@ -86,7 +86,7 @@ mod platform {
         // SAFETY: `on_sigint` outlives the process. `signal` installs it for SIGINT
         // and does not reset the handler after delivery on the platforms RBS runs.
         unsafe {
-            libc::signal(libc::SIGINT, on_sigint as libc::sighandler_t);
+            libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
         }
     }
 }

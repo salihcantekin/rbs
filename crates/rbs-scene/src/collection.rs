@@ -1047,6 +1047,36 @@ impl SceneCollection {
         self.replace_source(source, None)
     }
 
+    /// Changes a text source's settings and the default layout of one of its items as
+    /// one undo step (a crisp resize, ADR-0129 decision 12): an [`Op::Batch`] of a
+    /// `ReplaceSource` and a `ReplaceItem`. The item must place `source`.
+    pub fn resize_text(
+        &mut self,
+        item: ItemId,
+        settings: Settings,
+        layout: Layout,
+    ) -> Result<Undo, SceneError> {
+        let old_item = self.get_item(item)?.clone();
+        let ItemContent::Source(id) = old_item.content else {
+            return Err(SceneError::UnknownItem(item));
+        };
+        let old_source = self.get_source(id)?.clone();
+        let mut new_source = old_source.clone();
+        new_source.settings = settings;
+        let mut new_item = old_item.clone();
+        new_item.layout = layout;
+        self.apply(Op::Batch(vec![
+            Op::ReplaceSource {
+                expected: old_source,
+                new: new_source,
+            },
+            Op::ReplaceItem {
+                expected: old_item,
+                new: new_item,
+            },
+        ]))
+    }
+
     /// Replaces a source's settings and its hints in one step (a re-pick: undo restores
     /// both). The binder compares settings only, so hints alone never restart a source.
     pub fn set_source_settings_and_hints(

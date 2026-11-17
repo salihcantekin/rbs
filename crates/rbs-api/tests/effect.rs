@@ -85,6 +85,7 @@ fn a_token_without_the_permission_is_refused_live_calls_and_audited() {
     assert!(h.audit.contains(&AuditEvent::NotPermitted {
         conn,
         token: Some("agent".into()),
+        kind: Some(rbs_api::TokenKind::User),
         method: "record.start",
         reason: "irreversible",
     }));
@@ -104,6 +105,7 @@ fn a_token_with_the_permission_passes_and_is_audited() {
     assert!(h.audit.contains(&AuditEvent::Irreversible {
         conn,
         token: Some("Stream Deck".into()),
+        kind: Some(rbs_api::TokenKind::User),
         method: "record.start",
     }));
 }
@@ -249,6 +251,7 @@ fn the_caller_goes_with_the_command_and_on_air_refusals_are_audited() {
     assert!(h.audit.contains(&AuditEvent::NotPermitted {
         conn,
         token: Some("agent".into()),
+        kind: Some(rbs_api::TokenKind::User),
         method: "scene.switch",
         reason: "on_air",
     }));
@@ -281,6 +284,7 @@ fn a_browser_source_reaches_the_network_and_is_refused_without_the_permission() 
     assert!(h.audit.contains(&AuditEvent::NotPermitted {
         conn,
         token: Some("agent".into()),
+        kind: Some(rbs_api::TokenKind::User),
         method: "source.add",
         reason: "network",
     }));
