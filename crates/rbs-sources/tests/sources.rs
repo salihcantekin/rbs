@@ -206,6 +206,8 @@ fn an_empty_registry_still_has_the_compositor_the_mixer_and_the_filters() {
             "org.rbs.audio-filter.noise-gate",
             "org.rbs.audio-filter.noise-suppression",
             "org.rbs.audio.mixer",
+            // The browser page's sound node (ADR-0106).
+            "org.rbs.browser.sound",
             "org.rbs.compositor",
             "org.rbs.filter.blur",
             "org.rbs.filter.chroma-key",

@@ -14,7 +14,8 @@ fn main() {
     } else {
         HelperMode::Once
     };
-    if rbs_browser_runner::helper_main(mode).is_err() {
+    let tone = std::env::args().any(|arg| arg == "--tone");
+    if rbs_browser_runner::helper_main_with(mode, tone).is_err() {
         std::process::exit(1);
     }
 }

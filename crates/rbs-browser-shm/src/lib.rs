@@ -31,6 +31,18 @@
 use std::io;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+pub mod sound;
+
+pub use sound::{MAX_SOUND_CHANNELS, SoundPacket, SoundRing};
+
+/// The OS monotonic clock in nanoseconds (`CLOCK_MONOTONIC` on Unix,
+/// `QueryPerformanceCounter` on Windows). Every process on the machine reads the same
+/// clock, so a helper stamps page sound with it and the studio maps it to master time
+/// at the edge (ADR-0004, ADR-0109 decision 6). Not related to `Instant`'s origin.
+pub fn os_monotonic_nanos() -> u64 {
+    os::monotonic_nanos()
+}
+
 /// Header size in bytes; slots start here.
 pub const HEADER: usize = 128;
 /// Number of frame slots.
@@ -287,6 +299,22 @@ mod os {
 
     static NEXT: AtomicU32 = AtomicU32::new(0);
 
+    pub fn monotonic_nanos() -> u64 {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid, writable timespec; `CLOCK_MONOTONIC` exists on
+        // every supported Unix.
+        let ok = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) } == 0;
+        if !ok {
+            return 0;
+        }
+        let secs = u64::try_from(ts.tv_sec).unwrap_or(0);
+        let nanos = u64::try_from(ts.tv_nsec).unwrap_or(0);
+        secs.saturating_mul(1_000_000_000).saturating_add(nanos)
+    }
+
     pub struct Mapping {
         ptr: *mut u8,
         len: usize,
@@ -431,9 +459,25 @@ mod os {
         CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
         OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
     };
+    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
     use windows::core::HSTRING;
 
     static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    pub fn monotonic_nanos() -> u64 {
+        let (mut count, mut freq) = (0i64, 0i64);
+        // SAFETY: both pointers are valid, writable `i64`s; neither call fails on
+        // Windows XP or later.
+        let ok = unsafe {
+            QueryPerformanceCounter(&mut count).is_ok()
+                && QueryPerformanceFrequency(&mut freq).is_ok()
+        };
+        if !ok || freq <= 0 || count < 0 {
+            return 0;
+        }
+        let (count, freq) = (count as u128, freq as u128);
+        u64::try_from(count * 1_000_000_000 / freq).unwrap_or(u64::MAX)
+    }
 
     pub struct Mapping {
         handle: HANDLE,
