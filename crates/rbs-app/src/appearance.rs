@@ -2,6 +2,7 @@
 //! the theme editor. Toolkit-free state and rules; `main.rs` shows it in the
 //! `Appearance` global and applies the look it asks for.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use rbs_ui::tokens::{
@@ -90,6 +91,20 @@ pub struct Editor {
     /// The draft's problems: errors hold it (not applied, not saved), warnings do not
     /// (ADR-0072).
     pub problems: Vec<ThemeProblem>,
+    /// The neighbours each token's edits carried along, with the override each was
+    /// given (themes spec, "Editing"): Reset of the token returns those still holding
+    /// that value to the base. A token edited by hand leaves every list.
+    pub carried: BTreeMap<String, BTreeMap<String, Held>>,
+}
+
+/// A token's override as a carry left it: its length and its text style.
+pub type Held = (Option<f32>, Option<TypeStyle>);
+
+fn held(d: &ThemeBody, name: &str) -> Held {
+    (
+        d.length.get(name).copied(),
+        d.type_styles.get(name).copied(),
+    )
 }
 
 impl Editor {
@@ -420,6 +435,7 @@ impl AppearanceUi {
             saved: body.clone(),
             draft: body.clone(),
             problems: problems(file, body),
+            carried: BTreeMap::new(),
         });
         true
     }
@@ -461,10 +477,8 @@ impl AppearanceUi {
         match t.kind {
             // Neighbours move along so one edit always keeps the order rules
             // (themes spec, "Editing").
-            Kind::Length { .. } => self.change(file, |d| {
-                let before = d.clone();
+            Kind::Length { .. } => self.carrying(file, name, |d| {
                 d.length.insert(name.to_owned(), value);
-                file.carry(&before, d, name);
             }),
             Kind::Duration { .. } => self.change(file, |d| {
                 d.duration
@@ -488,10 +502,8 @@ impl AppearanceUi {
                 ..current
             },
         };
-        self.change(file, |d| {
-            let before = d.clone();
+        self.carrying(file, name, |d| {
             d.type_styles.insert(name.to_owned(), next);
-            file.carry(&before, d, name);
         })
     }
 
@@ -587,8 +599,25 @@ impl AppearanceUi {
         if name == EFFECTS_KEY {
             return self.change(file, |d| d.effects = None);
         }
+        // The neighbours this token's edits carried, still as carried, go back too.
+        let carried = self
+            .editor
+            .as_mut()
+            .and_then(|ed| ed.carried.remove(name))
+            .unwrap_or_default();
+        if let Some(ed) = &mut self.editor {
+            for list in ed.carried.values_mut() {
+                list.remove(name);
+            }
+        }
         self.change_looked(file, now, |d| {
             let before = d.clone();
+            for (n, h) in &carried {
+                if held(d, n) == *h {
+                    d.length.remove(n);
+                    d.type_styles.remove(n);
+                }
+            }
             d.colors.remove(name);
             d.length.remove(name);
             d.duration.remove(name);
@@ -599,6 +628,38 @@ impl AppearanceUi {
             }
             file.carry(&before, d, name);
         })
+    }
+
+    /// An edit of `name` by hand: neighbours are carried along (themes spec,
+    /// "Editing") and remembered for its Reset; `name` leaves every other list.
+    fn carrying(&mut self, file: &TokenFile, name: &str, f: impl FnOnce(&mut ThemeBody)) -> bool {
+        let Some(ed) = &mut self.editor else {
+            return false;
+        };
+        for list in ed.carried.values_mut() {
+            list.remove(name);
+        }
+        let start = ed.draft.clone();
+        let mut set = start.clone();
+        f(&mut set);
+        let mut done = set.clone();
+        file.carry(&start, &mut done, name);
+        let names: std::collections::BTreeSet<&String> = done
+            .length
+            .keys()
+            .chain(done.type_styles.keys())
+            .chain(set.length.keys())
+            .chain(set.type_styles.keys())
+            .collect();
+        let moved: Vec<(String, Held)> = names
+            .into_iter()
+            .filter(|n| n.as_str() != name && held(&set, n) != held(&done, n))
+            .map(|n| (n.clone(), held(&done, n)))
+            .collect();
+        if !moved.is_empty() {
+            ed.carried.entry(name.to_owned()).or_default().extend(moved);
+        }
+        self.change(file, |d| *d = done)
     }
 
     fn change(&mut self, file: &TokenFile, f: impl FnOnce(&mut ThemeBody)) -> bool {
@@ -1199,7 +1260,23 @@ mod tests {
         assert_eq!(slots[0].type_styles["type.body"].size, 15);
         assert_eq!(slots[0].type_styles["type.label"].size, 15);
         assert!(ui.to_save().is_some());
-        // Reset puts radius.lg back under radius.md: radius.md comes down with it.
+        // Reset of radius.md returns radius.lg, which it carried, to the base too.
+        assert!(ui.reset(&file, "radius.md", Instant::now()));
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].length["radius.md"], 6.0);
+        assert_eq!(slots[0].length["radius.lg"], 12.0);
+        // Reset of type.body likewise returns type.label.
+        assert!(ui.reset(&file, "type.body", Instant::now()));
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].type_styles["type.label"].size, 13);
+        // A neighbour edited by hand after the carry keeps its own value.
+        assert!(ui.set_number(&file, "radius.md", 16.0));
+        assert!(ui.set_number(&file, "radius.lg", 20.0));
+        assert!(ui.reset(&file, "radius.md", Instant::now()));
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].length["radius.lg"], 20.0);
+        // Reset of a carried neighbour itself: radius.md comes down with it.
+        assert!(ui.set_number(&file, "radius.md", 16.0));
         assert!(ui.reset(&file, "radius.lg", Instant::now()));
         let slots = ui.slots(&data, &file, &mut notes);
         assert_eq!(slots[0].length["radius.md"], 12.0);
