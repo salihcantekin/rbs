@@ -4370,6 +4370,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             })
         });
     }
+    g.on_fit_path(|commands, vb_w, vb_h, w, h| {
+        entry::guard_or(slint::SharedString::default, || {
+            studio_ui::filters::fit_path(&commands, vb_w, vb_h, w, h).into()
+        })
+    });
     on!(on_reset_filter, |app, filter: i32| {
         app.studio.reset_filter(filter);
     });
