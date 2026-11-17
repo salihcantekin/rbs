@@ -7083,6 +7083,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Duplicate => 25,
                 EditKind::Reset => 26,
                 EditKind::PasteAttributes => 27,
+                EditKind::Transition => 28,
             },
             s.name.as_str(),
         ),

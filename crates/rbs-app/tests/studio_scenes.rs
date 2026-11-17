@@ -1501,3 +1501,99 @@ fn a_scene_keeps_its_own_levels_and_they_are_heard_while_it_is_on_air() {
     );
     drop(host);
 }
+
+#[test]
+fn the_collection_transition_is_set_and_undone_and_a_one_off_cut_is_reported() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    ok(&c.call(
+        "events.subscribe",
+        json!({"topics": ["scene.changed", "transition.state"]}),
+    ));
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let two = ok(&c.call("scene.add", json!({"name": "Game"})))["scene"]
+        .as_u64()
+        .unwrap();
+    // The default (Move) is left out of the snapshot.
+    assert_eq!(scenes(&mut c).get("transition"), None);
+
+    // Only the given parts change, as one undo step.
+    ok(&c.call(
+        "collection.set_transition",
+        json!({"kind": "fade",
+               "fade": {"duration_ms": 800, "easing": "linear", "via": "#0a0B0c"}}),
+    ));
+    let t = scenes(&mut c)["transition"].clone();
+    assert_eq!(t["kind"], "fade", "{t}");
+    assert_eq!(t["fade"]["duration_ms"], 800);
+    assert_eq!(t["fade"]["via"], "#0a0b0c");
+    assert_eq!(
+        t["swipe"]["duration_ms"], 500,
+        "untouched parts keep theirs"
+    );
+    ok(&c.call("collection.set_transition", json!({"kind": "cut"})));
+    let t = scenes(&mut c)["transition"].clone();
+    assert_eq!(
+        (t["kind"].clone(), t["fade"]["duration_ms"].clone()),
+        (json!("cut"), json!(800))
+    );
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(scenes(&mut c)["transition"]["kind"], "fade");
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(
+        scenes(&mut c).get("transition"),
+        None,
+        "back to the default"
+    );
+
+    // Refusals change nothing.
+    for bad in [
+        json!({"fade": {"duration_ms": 300, "easing": "linear", "via": "black"}}),
+        json!({"fade": {"duration_ms": 5001, "easing": "linear"}}),
+    ] {
+        assert_eq!(
+            kind(&c.call("collection.set_transition", bad)),
+            "invalid_params"
+        );
+    }
+    assert_eq!(
+        kind(&c.call(
+            "scene.switch",
+            json!({"scene": two, "kind": "fade", "duration_ms": 5001})
+        )),
+        "invalid_params"
+    );
+    assert_eq!(scenes(&mut c)["program"], one);
+
+    // A one-off cut: reported at once, the collection's transition untouched.
+    ok(&c.call("scene.switch", json!({"scene": two, "kind": "cut"})));
+    let e = c.event("transition.state", |d| d["state"] == "ended");
+    let d = &e["params"]["data"];
+    assert_eq!(d["canvas"], "main", "{e}");
+    assert_eq!(d["kind"], "cut");
+    assert_eq!(d["duration_ms"], 0);
+    assert_eq!(
+        (d["from"].clone(), d["to"].clone()),
+        (json!(one), json!(two))
+    );
+    assert_eq!(scenes(&mut c).get("transition"), None);
+
+    // The same in studio mode through canvas.transition.
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    ok(&c.call("canvas.transition", json!({"kind": "cut"})));
+    // A slow reader may miss `started` (the latest state wins), never `ended`.
+    let e = c.event("transition.state", |d| {
+        d["to"] == one && d["state"] == "ended"
+    });
+    assert_eq!(
+        e["params"]["data"]["from"], two,
+        "the held copy is named by its scene"
+    );
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
+    drop(host);
+}

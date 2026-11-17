@@ -1,4 +1,4 @@
-//! `import.obs.scan`, `import.obs.check` and `import.obs.run` (control API 1.81,
+//! `import.obs.scan`, `import.obs.check` and `import.obs.run` (control API 1.82,
 //! ADR-0131 decision 12). Collections and profiles are named as `scan` found them,
 //! never by path; files are read only inside OBS's settings folders. `run` writes on
 //! the user data writer thread, then the stream key goes to this thread's key store
