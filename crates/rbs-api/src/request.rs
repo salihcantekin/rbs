@@ -1512,8 +1512,15 @@ pub struct CreateToken {
     /// Its name, unique; surrounding spaces are dropped.
     pub name: String,
     /// What it allows: `["read"]`, `["read", "control"]` or `["read", "control",
-    /// "admin"]` (the access levels the desktop app offers).
+    /// "admin"]` (the access levels the desktop app offers). Never more than the
+    /// caller's own scopes (`not_permitted`, protocol 1.80).
     pub scopes: ScopeSet,
+    /// "Allow actions that cannot be undone" (protocol 1.80, ADR-0052 decision 4);
+    /// absent: allowed, as tokens behave without the field. Only a caller that holds
+    /// the permission reaches `tokens.create` (it is `destructive`), so it can give
+    /// either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irreversible: Option<bool>,
 }
 
 /// `tokens.revoke`.
@@ -3192,6 +3199,15 @@ pub struct TokenInfo {
     pub name: String,
     /// What it allows.
     pub scopes: ScopeSet,
+    /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
+    /// omits it, which reads as allowed.
+    #[serde(default = "allowed")]
+    pub irreversible: bool,
+}
+
+/// The default of a token's permission in an answer from a server before 1.80.
+fn allowed() -> bool {
+    true
 }
 
 /// `tokens.list`' answer.
@@ -3208,6 +3224,10 @@ pub struct TokenCreated {
     pub name: String,
     /// What it allows.
     pub scopes: ScopeSet,
+    /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
+    /// omits it, which reads as allowed.
+    #[serde(default = "allowed")]
+    pub irreversible: bool,
     /// The token's text (`rbs1_` and 64 hex digits).
     pub token: String,
 }
@@ -3217,6 +3237,7 @@ impl std::fmt::Debug for TokenCreated {
         f.debug_struct("TokenCreated")
             .field("name", &self.name)
             .field("scopes", &self.scopes)
+            .field("irreversible", &self.irreversible)
             .field("token", &"<redacted>")
             .finish()
     }

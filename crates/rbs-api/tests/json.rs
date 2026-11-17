@@ -617,6 +617,7 @@ fn every_request() -> Vec<Request> {
         c(Command::TokensCreate(CreateToken {
             name: "Stream Deck".into(),
             scopes: ScopeSet::PANEL,
+            irreversible: Some(false),
         })),
         c(Command::TokensRevoke(TokenRef {
             name: "Stream Deck".into(),
@@ -881,11 +882,13 @@ fn every_result_and_event_type_round_trips() {
         tokens: vec![TokenInfo {
             name: "Stream Deck".into(),
             scopes: ScopeSet::PANEL,
+            irreversible: false,
         }],
     });
     let created = TokenCreated {
         name: "Stream Deck".into(),
         scopes: ScopeSet::PANEL,
+        irreversible: true,
         token: format!("rbs1_{}", "0".repeat(64)),
     };
     round_trip(&created);

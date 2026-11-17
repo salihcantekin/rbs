@@ -51,12 +51,15 @@ pub struct ProjectArgs {
 pub enum TokenCommand {
     /// `token list`.
     List,
-    /// `token create <name> [--access view|control|full]`.
+    /// `token create <name> [--access view|control|full] [--agent]`.
     Create {
         /// The token's name.
         name: String,
         /// What its app may do.
         access: Access,
+        /// For an AI agent: without "Allow actions that cannot be undone" (ADR-0052
+        /// decision 4).
+        agent: bool,
     },
     /// `token revoke <name>`.
     Revoke {
@@ -223,7 +226,7 @@ usage:
   rbs-cli stream <rtmp[s]://host/app|srt://host:port> [stream options] [options]
   rbs-cli devices
   rbs-cli token list
-  rbs-cli token create <name> [--access view|control|full]
+  rbs-cli token create <name> [--access view|control|full] [--agent]
   rbs-cli token revoke <name>
   rbs-cli remote fingerprint
   rbs-cli app stream start|stop|status [--json]
@@ -601,8 +604,10 @@ fn token<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<TokenCommand, Stri
         Some("create") => {
             let mut name = None;
             let mut access = Access::Control;
+            let mut agent = false;
             while let Some(arg) = it.next() {
                 match arg {
+                    "--agent" => agent = true,
                     "--access" => {
                         let word = value(&mut it, arg)?;
                         access = Access::parse(word).ok_or_else(|| {
@@ -617,7 +622,11 @@ fn token<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<TokenCommand, Stri
                 }
             }
             let name = name.ok_or("token create needs a name, such as \"Stream Deck\"")?;
-            return Ok(TokenCommand::Create { name, access });
+            return Ok(TokenCommand::Create {
+                name,
+                access,
+                agent,
+            });
         }
         Some("revoke") => {
             let name = it.next().ok_or("token revoke needs the token's name")?;
@@ -1142,14 +1151,24 @@ mod tests {
             parse(["token", "create", "Stream Deck"]).unwrap(),
             Command::Token(TokenCommand::Create {
                 name: "Stream Deck".into(),
-                access: Access::Control
+                access: Access::Control,
+                agent: false,
             })
         );
         assert_eq!(
             parse(["token", "create", "--access", "view", "Script"]).unwrap(),
             Command::Token(TokenCommand::Create {
                 name: "Script".into(),
-                access: Access::View
+                access: Access::View,
+                agent: false,
+            })
+        );
+        assert_eq!(
+            parse(["token", "create", "--agent", "Claude"]).unwrap(),
+            Command::Token(TokenCommand::Create {
+                name: "Claude".into(),
+                access: Access::Control,
+                agent: true,
             })
         );
         assert_eq!(
