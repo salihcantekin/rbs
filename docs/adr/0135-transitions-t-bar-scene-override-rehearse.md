@@ -183,3 +183,5 @@ What OBS does, and does badly:
     - the Rehearse relink test (Consequences);
     - the held copy's ready counter (decision 5);
     - list formatting (decision 15).
+- Round 2 confirmation (same reviewer, 2026-11-17): **approve**. Note for the T-bar PR: a T-bar move right after a cancel reuses the incoming compositor that is still bound, as a timed transition reuses it (ADR-0128 decision 9).
+- Owner: pending.
