@@ -1,27 +1,36 @@
 //! Scene transitions on a running studio (ADR-0128 decisions 5 to 12, spec
 //! `docs/specs/recording.md`, "Transitions").
 //!
-//! A program change with a kind that draws the incoming scene whole (Fade) runs in
+//! A program change with a kind that draws the incoming scene whole (Fade, Swipe,
+//! Slide) runs in
 //! three steps. While it *waits*, the binder binds an incoming compositor for the
 //! canvas (`Role::Incoming`) drawing the new program scene, and keeps the outgoing
 //! scene's sources linked to the program compositor and heard; the program compositor
 //! still draws the outgoing layers only. Once the incoming compositor has drawn every
 //! layer (its ready counter), or after [`READY_WAIT`], it *runs*: the program compositor
-//! draws the outgoing layers and, above them, the incoming canvas with a fade. When the
+//! draws the outgoing layers and, above them, the incoming canvas with a fade (Fade,
+//! through an optional colour) or sliding in from an edge (Swipe; Slide also slides
+//! the outgoing layers out). When the
 //! duration has passed it *ends* in two steps (decision 8): the program compositor gets
 //! the incoming scene's own layers, and once it took them
 //! ([`ParamSender::pending`](rbs_graph::runtime::param::ParamSender::pending) reads
 //! false), [`Studio::settle_transitions`] binds without the outgoing scene, which
 //! removes the incoming compositor and unlinks what only the outgoing scene used.
 //!
+//! A Move whose outgoing scene draws sources the incoming one does not runs without
+//! an incoming compositor: it starts at once, the program compositor draws the
+//! incoming layers with their glide (ADR-0100) and, above them, the leaving layers
+//! fading out over the glide's duration (decision 5); it ends the same two steps.
+//!
 //! Nothing of this exists while no transition runs (P13): no node, no layer, no check
 //! per frame.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rbs_gpu::node::Fade;
+use rbs_gpu::compositor::{LayerShape, LayerStyle};
+use rbs_gpu::node::{Fade, Slide};
 use rbs_scene::binder::OutgoingScene;
-use rbs_scene::{CollectionTransition, GlideEasing, TransitionKind};
+use rbs_scene::{CollectionTransition, GlideEasing, SwipeDirection, TransitionKind};
 
 use super::*;
 
@@ -81,7 +90,7 @@ pub struct TransitionEvent {
     pub canvas: CanvasId,
     /// Started or ended.
     pub phase: TransitionPhase,
-    /// The kind that runs (Swipe and Slide run as Move until they are drawn).
+    /// The kind that runs.
     pub kind: TransitionKind,
     /// Its length.
     pub duration: Duration,
@@ -103,12 +112,9 @@ pub(super) struct Effective {
 }
 
 impl Effective {
-    /// The kind that runs: Swipe and Slide are not drawn yet and run as Move.
+    /// The kind that runs.
     pub(super) fn kind(&self) -> TransitionKind {
-        match self.transition.kind {
-            TransitionKind::Swipe | TransitionKind::Slide => TransitionKind::Move,
-            k => k,
-        }
+        self.transition.kind
     }
 
     /// True when the change glides (Move).
@@ -147,6 +153,8 @@ pub(super) struct CanvasTransition {
     outgoing: OutgoingScene,
     duration: Duration,
     easing: GlideEasing,
+    /// What the blend draws (Fade, Swipe or Slide and their settings).
+    blend: Blend,
     phase: Phase,
     incoming: Option<IncomingView>,
     /// The mixer's levels before the change (main canvas; decision 10).
@@ -203,16 +211,96 @@ impl MixShape {
     }
 }
 
+/// How a running transition draws the incoming canvas over the outgoing layers
+/// (ADR-0128 decisions 2 and 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Blend {
+    /// A fade in, through an opaque sRGB colour when there is one.
+    Fade { via: Option<[u8; 3]> },
+    /// The incoming canvas slides in from the edge opposite `direction`; with `push`
+    /// (Slide) the outgoing layers move out by the same offset.
+    Swipe {
+        direction: SwipeDirection,
+        push: bool,
+    },
+    /// The program compositor draws the incoming layers (gliding) and, above them,
+    /// the outgoing-only layers fading out. No incoming compositor.
+    Move,
+}
+
+impl Blend {
+    fn kind(self) -> TransitionKind {
+        match self {
+            Blend::Fade { .. } => TransitionKind::Fade,
+            Blend::Swipe { push: false, .. } => TransitionKind::Swipe,
+            Blend::Swipe { push: true, .. } => TransitionKind::Slide,
+            Blend::Move => TransitionKind::Move,
+        }
+    }
+}
+
 /// What a program change on a canvas runs, from the collection's transition: `None`
-/// for a kind that needs no incoming picture (Cut, Move) or a duration of 0.
-fn blend_of(transition: CollectionTransition) -> Option<(Duration, GlideEasing)> {
+/// for Cut, Move (see [`move_of`]) or a duration of 0.
+fn blend_of(transition: CollectionTransition) -> Option<(Duration, GlideEasing, Blend)> {
+    let ms = |d: u32| Duration::from_millis(u64::from(d));
     match transition.kind {
         TransitionKind::Fade if transition.fade.duration_ms > 0 => Some((
-            Duration::from_millis(u64::from(transition.fade.duration_ms)),
+            ms(transition.fade.duration_ms),
             transition.fade.easing,
+            Blend::Fade {
+                via: transition.fade.via,
+            },
         )),
+        TransitionKind::Swipe | TransitionKind::Slide => {
+            let push = transition.kind == TransitionKind::Slide;
+            let s = if push {
+                transition.slide
+            } else {
+                transition.swipe
+            };
+            (s.duration_ms > 0).then(|| {
+                (
+                    ms(s.duration_ms),
+                    s.easing,
+                    Blend::Swipe {
+                        direction: s.direction,
+                        push,
+                    },
+                )
+            })
+        }
         _ => None,
     }
+}
+
+/// A Move's fade-out of the leaving layers: the glide's duration, when it has one.
+fn move_of(effective: &Effective) -> Option<(Duration, GlideEasing, Blend)> {
+    (effective.glides() && effective.glide.duration_ms > 0).then(|| {
+        (
+            Duration::from_millis(u64::from(effective.glide.duration_ms)),
+            effective.glide.easing,
+            Blend::Move,
+        )
+    })
+}
+
+/// The offset, in canvas pixels, the incoming canvas of a Swipe starts at: one canvas
+/// width or height off the edge opposite `direction`.
+fn swipe_offset(direction: SwipeDirection, (w, h): (u32, u32)) -> (f32, f32) {
+    let (w, h) = (w as f32, h as f32);
+    match direction {
+        SwipeDirection::Left => (w, 0.0),
+        SwipeDirection::Right => (-w, 0.0),
+        SwipeDirection::Up => (0.0, h),
+        _ => (0.0, -h),
+    }
+}
+
+/// `t` moved by `(dx, dy)` canvas pixels.
+fn shifted(mut t: rbs_gpu::math::Affine2, (dx, dy): (f32, f32)) -> rbs_gpu::math::Affine2 {
+    t.tx += dx;
+    t.ty += dy;
+    t
 }
 
 fn easing(e: GlideEasing) -> rbs_gpu::node::Easing {
@@ -249,7 +337,9 @@ impl Studio {
             if let Some(ms) = once.duration_ms {
                 match e.transition.kind {
                     TransitionKind::Fade => e.transition.fade.duration_ms = ms,
-                    TransitionKind::Swipe | TransitionKind::Slide | TransitionKind::Move => {
+                    TransitionKind::Swipe => e.transition.swipe.duration_ms = ms,
+                    TransitionKind::Slide => e.transition.slide.duration_ms = ms,
+                    TransitionKind::Move => {
                         e.glide.duration_ms = ms;
                         e.source_glides = false;
                     }
@@ -287,8 +377,16 @@ impl Studio {
         if changed.is_empty() {
             return;
         }
-        let blend = blend_of(effective.transition);
+        let blend = blend_of(effective.transition).or_else(|| move_of(effective));
         let now = self.engine.clock().now();
+        let cued = self.cues.items();
+        let globals_of = |canvas: CanvasId| -> BTreeSet<ItemId> {
+            collection
+                .globals_of(canvas)
+                .and_then(|g| collection.scene(g))
+                .map(|s| s.items.iter().map(|i| i.id).collect())
+                .unwrap_or_default()
+        };
         let heard: BTreeSet<SourceId> = self
             .bound_mixer
             .as_ref()
@@ -297,7 +395,21 @@ impl Studio {
         for (canvas, from_scene, to_scene) in changed {
             // A running one ends at once; its compositor is kept for the next one.
             let incoming = self.transitions.remove(&canvas).and_then(|t| t.incoming);
-            let Some((duration, easing)) = blend else {
+            let from = old_layers.get(&canvas).cloned().unwrap_or_default();
+            let to_drawn: BTreeSet<SourceId> = to_scene
+                .and_then(|scene| collection.visible_sources_cued(canvas, scene, &cued).ok())
+                .unwrap_or_default();
+            // A Move runs as a transition only when something leaves (decision 5).
+            let leaving: BTreeSet<SourceId> = {
+                let globals = globals_of(canvas);
+                from.iter()
+                    .filter(|l| !l.path.first().is_some_and(|i| globals.contains(i)))
+                    .map(|l| l.source)
+                    .filter(|s| !to_drawn.contains(s))
+                    .collect()
+            };
+            let run = blend.filter(|(_, _, b)| *b != Blend::Move || !leaving.is_empty());
+            let Some((duration, easing, kind_blend)) = run else {
                 // No incoming picture: it starts now, and a Move ends after its glide.
                 let kind = effective.kind();
                 let duration = if kind == TransitionKind::Move {
@@ -330,7 +442,6 @@ impl Studio {
                 continue;
             };
             self.transition_ends.retain(|e| e.canvas != canvas);
-            let from = old_layers.get(&canvas).cloned().unwrap_or_default();
             let drawn: BTreeSet<SourceId> = from.iter().map(|l| l.source).collect();
             let heard = if canvas == self.settings.canvas {
                 heard.clone()
@@ -342,25 +453,38 @@ impl Studio {
                 view.ready.store(0, Ordering::Release);
             }
             let (from_mix, to_heard) = if canvas == self.settings.canvas {
-                let to_heard = program_scene(collection, canvas)
-                    .and_then(|scene| {
-                        collection
-                            .visible_sources_cued(canvas, scene, &self.cues.items())
-                            .ok()
-                    })
-                    .unwrap_or_default();
-                (self.mix.clone(), to_heard)
+                (self.mix.clone(), to_drawn)
             } else {
                 (BTreeMap::new(), BTreeSet::new())
+            };
+            // A Move has no incoming picture to wait for: it starts now, with the
+            // glide (decision 5).
+            let (outgoing, phase) = if kind_blend == Blend::Move {
+                self.transition_events.push(TransitionEvent {
+                    canvas,
+                    phase: TransitionPhase::Started,
+                    kind: TransitionKind::Move,
+                    duration,
+                    from: from_scene,
+                    to: to_scene,
+                    at: now,
+                });
+                (
+                    OutgoingScene::without_incoming(leaving, heard),
+                    Phase::Running(now),
+                )
+            } else {
+                (OutgoingScene::new(drawn, heard), Phase::Waiting(now))
             };
             self.transitions.insert(
                 canvas,
                 CanvasTransition {
                     from,
-                    outgoing: OutgoingScene::new(drawn, heard),
+                    outgoing,
                     duration,
                     easing,
-                    phase: Phase::Waiting(now),
+                    blend: kind_blend,
+                    phase,
                     incoming,
                     from_mix,
                     to_heard,
@@ -462,7 +586,41 @@ impl Studio {
             .map(|s| s.items.iter().map(|i| i.id).collect())
             .unwrap_or_default();
         let is_global = |l: &BoundLayer| l.path.first().is_some_and(|i| globals.contains(i));
+        let now = self.engine.clock().now();
         let t = self.transitions.get_mut(&canvas)?;
+        if t.blend == Blend::Move {
+            let Phase::Running(start) = t.phase else {
+                return None;
+            };
+            // The incoming layers with their glide, then the leaving ones fading out
+            // above them so the fade is seen, then the globals above everything.
+            let mut current = program.clone();
+            current.layers.retain(|l| !is_global(l));
+            let drawn: BTreeSet<SourceId> = current.layers.iter().map(|l| l.source).collect();
+            let mut layers = paint_layers(&current, plan, self.glide.as_ref(), now, canvas);
+            let mut leaving = program.clone();
+            leaving.layers = t
+                .from
+                .iter()
+                .filter(|l| !is_global(l) && !drawn.contains(&l.source))
+                .cloned()
+                .collect();
+            for mut l in node_layers(&leaving, plan) {
+                l.fade = Some(Fade {
+                    from: l.opacity,
+                    start,
+                    duration: t.duration,
+                    // As the glide's fade-ins (ADR-0100).
+                    easing: rbs_gpu::node::Easing::Linear,
+                });
+                l.opacity = 0.0;
+                layers.push(l);
+            }
+            let mut above = program.clone();
+            above.layers.retain(|l| is_global(l));
+            layers.extend(node_layers(&above, plan));
+            return Some(layers);
+        }
         let running = matches!(t.phase, Phase::Running(_));
         if let Some(view) = &mut t.incoming {
             let mut incoming = view.bound.clone();
@@ -480,23 +638,84 @@ impl Studio {
                 let mut layers = node_layers(&outgoing, plan);
                 if let Some(view) = &t.incoming {
                     let (w, h) = size;
-                    let mut top = rbs_gpu::node::NodeLayer::new(
-                        view.compositor,
-                        0,
-                        0.0,
-                        0.0,
-                        w as f32,
-                        h as f32,
-                    );
+                    let full = || {
+                        rbs_gpu::node::NodeLayer::new(
+                            view.compositor,
+                            0,
+                            0.0,
+                            0.0,
+                            w as f32,
+                            h as f32,
+                        )
+                    };
+                    let mut top = full();
                     // Transparent areas are the picture over black, as encoded after
                     // the transition (decision 5).
                     top.opaque = true;
-                    top.fade = Some(Fade {
-                        from: 0.0,
-                        start,
-                        duration: t.duration,
-                        easing: easing(t.easing),
-                    });
+                    let ease = easing(t.easing);
+                    match t.blend {
+                        Blend::Fade { via: None } => {
+                            top.fade = Some(Fade {
+                                from: 0.0,
+                                start,
+                                duration: t.duration,
+                                easing: ease,
+                            });
+                        }
+                        Blend::Fade {
+                            via: Some([r, g, b]),
+                        } => {
+                            // The colour covers the outgoing scene in the first half,
+                            // the incoming scene comes in over it in the second. The
+                            // colour is a layer of the incoming canvas whose border
+                            // fills its whole box: no node of its own.
+                            let half = t.duration / 2;
+                            let mut colour = full();
+                            colour.style = LayerStyle::new(
+                                LayerShape::Box,
+                                w.max(h) as f32,
+                                [r, g, b, 255],
+                                [w as f32, h as f32],
+                            );
+                            colour.fade = Some(Fade {
+                                from: 0.0,
+                                start,
+                                duration: half,
+                                easing: ease,
+                            });
+                            layers.push(colour);
+                            top.fade = Some(Fade {
+                                from: 0.0,
+                                start: start + half,
+                                duration: t.duration - half,
+                                easing: ease,
+                            });
+                        }
+                        // Drawn above, without an incoming compositor.
+                        Blend::Move => {}
+                        Blend::Swipe { direction, push } => {
+                            let offset = swipe_offset(direction, size);
+                            top.slide = Some(Slide {
+                                from: shifted(top.transform, offset),
+                                start,
+                                duration: t.duration,
+                                easing: ease,
+                            });
+                            if push {
+                                let out = (-offset.0, -offset.1);
+                                for l in &mut layers {
+                                    let at = l.transform;
+                                    l.transform = shifted(at, out);
+                                    l.slide = Some(Slide {
+                                        from: at,
+                                        start,
+                                        duration: t.duration,
+                                        easing: ease,
+                                    });
+                                }
+                            }
+                        }
+                    }
                     layers.push(top);
                 }
                 // The globals as they are now, above everything.
@@ -530,6 +749,7 @@ impl Studio {
         let layers_pending = self.layers.pending() && !self.layers.is_closed();
         let mut events = Vec::new();
         for (&canvas, t) in &mut self.transitions {
+            let kind = t.blend.kind();
             match t.phase {
                 Phase::Waiting(since) => {
                     let ready = t
@@ -539,14 +759,14 @@ impl Studio {
                     if ready || now.saturating_since(since) >= READY_WAIT {
                         t.phase = Phase::Running(now);
                         resend = true;
-                        events.push((canvas, TransitionPhase::Started, t.duration, t.scenes));
+                        events.push((canvas, TransitionPhase::Started, kind, t.duration, t.scenes));
                     }
                 }
                 Phase::Running(start) => {
                     if now.saturating_since(start) >= t.duration {
                         t.phase = Phase::Ending(now);
                         resend = true;
-                        events.push((canvas, TransitionPhase::Ended, t.duration, t.scenes));
+                        events.push((canvas, TransitionPhase::Ended, kind, t.duration, t.scenes));
                     }
                 }
                 Phase::Ending(sent) => {
@@ -559,10 +779,10 @@ impl Studio {
             }
         }
         self.transition_events.extend(events.into_iter().map(
-            |(canvas, phase, duration, (from, to))| TransitionEvent {
+            |(canvas, phase, kind, duration, (from, to))| TransitionEvent {
                 canvas,
                 phase,
-                kind: TransitionKind::Fade,
+                kind,
                 duration,
                 from,
                 to,
@@ -664,17 +884,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_fade_with_a_duration_blends() {
+    fn fade_swipe_and_slide_with_a_duration_blend() {
         let mut t = CollectionTransition::default();
         assert_eq!(blend_of(t), None);
         t.kind = TransitionKind::Cut;
         assert_eq!(blend_of(t), None);
         t.kind = TransitionKind::Fade;
+        t.fade.via = Some([1, 2, 3]);
         assert_eq!(
             blend_of(t),
-            Some((Duration::from_millis(300), GlideEasing::Linear))
+            Some((
+                Duration::from_millis(300),
+                GlideEasing::Linear,
+                Blend::Fade {
+                    via: Some([1, 2, 3])
+                }
+            ))
         );
         t.fade.duration_ms = 0;
         assert_eq!(blend_of(t), None);
+        t.kind = TransitionKind::Swipe;
+        t.swipe.direction = SwipeDirection::Up;
+        assert_eq!(
+            blend_of(t),
+            Some((
+                Duration::from_millis(500),
+                GlideEasing::EaseInOut,
+                Blend::Swipe {
+                    direction: SwipeDirection::Up,
+                    push: false
+                }
+            ))
+        );
+        t.kind = TransitionKind::Slide;
+        t.slide.duration_ms = 0;
+        assert_eq!(blend_of(t), None);
+    }
+
+    #[test]
+    fn a_swipe_starts_one_canvas_off_the_edge_opposite_its_direction() {
+        // A 9:16 canvas swipes its own size (decision 11).
+        let size = (1080, 1920);
+        assert_eq!(swipe_offset(SwipeDirection::Left, size), (1080.0, 0.0));
+        assert_eq!(swipe_offset(SwipeDirection::Right, size), (-1080.0, 0.0));
+        assert_eq!(swipe_offset(SwipeDirection::Up, size), (0.0, 1920.0));
+        assert_eq!(swipe_offset(SwipeDirection::Down, size), (0.0, -1920.0));
     }
 }

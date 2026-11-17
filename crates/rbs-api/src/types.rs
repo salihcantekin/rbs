@@ -534,12 +534,12 @@ pub enum TransitionKind {
     /// The new scene fades in over the old one.
     Fade,
     /// Shared sources slide to their new boxes, new ones fade in (the collection
-    /// glide, ADR-0100).
+    /// glide, ADR-0100), leaving ones fade out.
     #[default]
     Move,
-    /// The new scene pushes the old one out (not yet drawn: runs as Move).
+    /// The new scene slides in over the old one from an edge.
     Swipe,
-    /// The new scene slides in over the old one (not yet drawn: runs as Move).
+    /// The new scene pushes the old one out.
     Slide,
 }
 
