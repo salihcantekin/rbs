@@ -85,6 +85,24 @@ export component AudioSettings inherits Rectangle {
             }
         }
         SettingsCard {
+            title: @tr("Silence check");
+            id: "settings.audio.silence";
+            description: @tr("Catches a recording or stream that would carry no voice.");
+            SettingRow {
+                find: "audio.warn-silent";
+                divider: false;
+                label: @tr("Warn without a microphone");
+                summary: @tr("Before Record and Go live");
+                hint: @tr("Asks first when no microphone in the scene is heard: muted, hidden or missing.");
+                fill: false;
+                Toggle {
+                    label: @tr("Warn without a microphone");
+                    checked: Studio.warn-silent;
+                    toggled(on) => { Studio.set-warn-silent(on); }
+                }
+            }
+        }
+        SettingsCard {
             title: @tr("Loudness");
             id: "settings.audio.loudness";
             description: @tr("How loud the program sounds, the way streaming sites and broadcasters measure it (LUFS).");

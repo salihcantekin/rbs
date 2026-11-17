@@ -76,6 +76,26 @@ enum UiError {
     Notice(String),
 }
 
+/// A start that asks first while no microphone is heard (UI spec, "Silent output
+/// warning"); `bool`: with the vertical canvas's output too ("Main + vertical").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SilentStart {
+    Record(bool),
+    GoLive(bool),
+    RecordVertical,
+    GoLiveVertical,
+}
+
+impl SilentStart {
+    fn stream(self) -> bool {
+        matches!(self, Self::GoLive(_) | Self::GoLiveVertical)
+    }
+
+    fn main(self) -> bool {
+        matches!(self, Self::Record(_) | Self::GoLive(_))
+    }
+}
+
 /// Row models of one window's dock area. They live as long as the window, so
 /// unchanged rows keep their view instances (and keyboard focus).
 struct DockModels {
@@ -264,6 +284,9 @@ struct App {
     confirm_end_all: bool,
     /// The same for the vertical canvas's stream (ADR-0093 decision 6).
     confirm_end_vertical: bool,
+    /// Record or Go live was pressed while no microphone is heard: the frame asks
+    /// first (UI spec, "Silent output warning"), with the reason.
+    confirm_silent: Option<(SilentStart, String)>,
     /// The main output of this kind stopped and its vertical one runs on: the notice
     /// with a Stop action (ADR-0111 decision 6), once per such stop.
     vertical_left: Option<OutputKind>,
@@ -603,6 +626,80 @@ impl App {
             .collect()
     }
 
+    /// Record or Go live was pressed. While no microphone of the program scene is heard
+    /// and the warning is on, the frame asks first (`ask`); a control surface (`ask`
+    /// false) starts at once, and the start's notice says no microphone is heard.
+    fn start_output(&mut self, start: SilentStart, ask: bool) {
+        if ask
+            && self.bg.warn_silent
+            && self.studio.would_start(start.stream(), start.main())
+            && let Some(why) = self.studio.silence()
+        {
+            self.confirm_silent = Some((start, why));
+            return;
+        }
+        if ask {
+            self.mark_silence_checked(start);
+        }
+        self.run_start(start);
+    }
+
+    /// The press checked for silence: its start shows no notice.
+    fn mark_silence_checked(&mut self, start: SilentStart) {
+        match start {
+            SilentStart::Record(_) => self.studio.silence_checked[0] = true,
+            SilentStart::GoLive(_) => {
+                self.studio.silence_checked[1] = true;
+                // Going live may start the recording too (auto-record).
+                if self.studio.stream.auto_record {
+                    self.studio.silence_checked[0] = true;
+                }
+            }
+            // The vertical outputs share the mix; their starts show no notice.
+            SilentStart::RecordVertical | SilentStart::GoLiveVertical => {}
+        }
+    }
+
+    fn run_start(&mut self, start: SilentStart) {
+        let done = match start {
+            SilentStart::Record(all) => self.studio.record_all(all),
+            SilentStart::GoLive(all) => self.studio.go_live_all(all),
+            SilentStart::RecordVertical => self.studio.record_vertical(),
+            SilentStart::GoLiveVertical => self.studio.go_live_vertical(),
+        };
+        if let Err(e) = done {
+            self.show_error(UiError::Other(e));
+        }
+    }
+
+    /// The silent output question was answered: `go` starts anyway, `stop_asking`
+    /// (with `go`) turns the warning off in `app.toml`.
+    fn answer_silent(&mut self, go: bool, stop_asking: bool) {
+        let Some((start, _)) = self.confirm_silent.take() else {
+            return;
+        };
+        if !go {
+            return;
+        }
+        if stop_asking && self.bg.warn_silent {
+            self.set_warn_silent(false);
+        }
+        self.mark_silence_checked(start);
+        self.run_start(start);
+    }
+
+    /// Settings › Audio's "Warn before a silent recording or stream", saved in `app.toml`.
+    fn set_warn_silent(&mut self, on: bool) {
+        if self.bg.warn_silent == on {
+            return;
+        }
+        self.bg.warn_silent = on;
+        self.studio.warn_silent = on;
+        if let Err(e) = background::save(&self.config, &self.bg) {
+            self.show_error(UiError::Other(format!("The setting was not saved: {e}")));
+        }
+    }
+
     /// The main output of `kind` was asked to stop; `all`: its vertical one too. When
     /// the vertical one runs on, the notice says so with a Stop action (ADR-0111).
     fn main_stopped(&mut self, kind: OutputKind, all: bool) {
@@ -759,11 +856,7 @@ impl App {
                 menu_bar::MixerBulk::HideMuted => self.studio.hide_in_mixer(true, true),
                 menu_bar::MixerBulk::ShowAll => self.studio.hide_in_mixer(false, false),
             },
-            Run::GoLive(all) => {
-                if let Err(e) = self.studio.go_live_all(all) {
-                    self.show_error(UiError::Other(e));
-                }
-            }
+            Run::GoLive(all) => self.start_output(SilentStart::GoLive(all), confirm),
             Run::AskEndStream(all) if confirm => {
                 self.confirm_end = true;
                 self.confirm_end_all = all;
@@ -772,11 +865,7 @@ impl App {
                 self.studio.end_stream_all(all);
                 self.main_stopped(OutputKind::Stream, all);
             }
-            Run::Record(all) => {
-                if let Err(e) = self.studio.record_all(all) {
-                    self.show_error(UiError::Other(e));
-                }
-            }
+            Run::Record(all) => self.start_output(SilentStart::Record(all), confirm),
             Run::StopRecording(all) => {
                 self.studio.stop_recording_all(all);
                 self.main_stopped(OutputKind::Record, all);
@@ -793,18 +882,10 @@ impl App {
             Run::VerticalSize(w, h) => self.studio.send(studio_host::Command::SetVerticalSize(
                 rbs_core::media::Size::new(w, h),
             )),
-            Run::GoLiveVertical => {
-                if let Err(e) = self.studio.go_live_vertical() {
-                    self.show_error(UiError::Other(e));
-                }
-            }
+            Run::GoLiveVertical => self.start_output(SilentStart::GoLiveVertical, confirm),
             Run::AskEndVerticalStream if confirm => self.confirm_end_vertical = true,
             Run::AskEndVerticalStream => self.studio.end_vertical_stream(),
-            Run::RecordVertical => {
-                if let Err(e) = self.studio.record_vertical() {
-                    self.show_error(UiError::Other(e));
-                }
-            }
+            Run::RecordVertical => self.start_output(SilentStart::RecordVertical, confirm),
             Run::StopVerticalRecording => self.studio.stop_vertical_recording(),
             Run::VirtualCamera(on) => vcam_page::send(self, on),
             Run::Replay(on) => replay_page::toggle(self, on),
@@ -1683,6 +1764,9 @@ impl Ctx {
                     UiError::Other(e)
                 });
             }
+            if let Some(notice) = applied.notice {
+                app.show_error(UiError::Notice(notice));
+            }
             if let Some(endpoint) = applied.preview {
                 app.preview_endpoint = Some(endpoint.clone());
                 // A hidden window connects when it shows again (ADR-0056 decision 5).
@@ -2545,11 +2629,13 @@ impl Ctx {
         let on_close = i32::from(app.bg.on_close == OnClose::KeepRunning);
         let swap = app.bg.swap_after_transition;
         let exclude = app.bg.exclude_own_window;
+        let warn_silent = app.bg.warn_silent;
         let push = |g: Studio<'_>| {
             g.set_platform(platform);
             g.set_on_close(on_close);
             g.set_swap_after_transition(swap);
             g.set_exclude_own_window(exclude);
+            g.set_warn_silent(warn_silent);
             g.set_way_back(Self::way_back());
         };
         push(app.main.global::<Studio>());
@@ -2670,6 +2756,12 @@ impl Ctx {
         if !app.studio.vertical_st.on() {
             app.confirm_end_vertical = false;
         }
+        // The silent output question goes once its output started some other way.
+        if let Some((start, _)) = app.confirm_silent
+            && !app.studio.would_start(start.stream(), start.main())
+        {
+            app.confirm_silent = None;
+        }
         // The notice goes once its vertical output stops (from anywhere).
         let still = match app.vertical_left {
             Some(OutputKind::Record) => app.studio.vertical_rec.on(),
@@ -2776,6 +2868,18 @@ impl Ctx {
             g.set_error_detail(error_detail.as_str().into());
             g.set_error_generation(app.error_generation);
             g.set_end_stream_confirm(app.confirm_end);
+            g.set_silent_confirm(match &app.confirm_silent {
+                None => 0,
+                Some((s, _)) if s.stream() => 2,
+                Some(_) => 1,
+            });
+            g.set_silent_reason(
+                app.confirm_silent
+                    .as_ref()
+                    .map(|(_, why)| why.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
             g.set_end_vertical_confirm(app.confirm_end_vertical);
             g.set_vertical_outputs(app.studio.vertical.is_some());
             g.set_vertical_live(app.studio.vertical_st.on());
@@ -3162,6 +3266,9 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     });
     on!(on_dismiss_error, |app| {
         app.error = None;
+    });
+    on!(on_silent_answer, |app, go: bool, stop_asking: bool| {
+        app.answer_silent(go, stop_asking);
     });
     on!(on_end_stream_answer, |app, end: bool| {
         app.confirm_end = false;
@@ -3649,6 +3756,33 @@ fn pick_text_file(id: i32) {
     }
 }
 
+/// Properties › Source › Change… of a media file: the same dialog as Add source, and
+/// the new path is one undo step.
+fn change_media_file(id: i32) {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_media("Choose a media file").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app.studio.set_media_setting(
+                id,
+                "path",
+                serde_json::Value::String(path.to_string_lossy().into_owned()),
+            ),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// The system file dialog for import and export (ADR-0051).
 mod file_dialog {
     use std::path::PathBuf;
@@ -3687,7 +3821,7 @@ mod file_dialog {
     }
 
     /// A media file for the Media source; `Ok(None)` when cancelled.
-    /// The demo decoder accepts any regular file (bytes ignored).
+    /// Images decode in pure Rust; video uses the platform decoder.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn open_media(title: &str) -> Result<Option<PathBuf>, String> {
         Ok(rfd::AsyncFileDialog::new()
@@ -3695,7 +3829,8 @@ mod file_dialog {
             .add_filter(
                 "Media",
                 &[
-                    "mp4", "mkv", "webm", "mov", "m4v", "mp3", "wav", "flac", "aac",
+                    "mp4", "mkv", "webm", "mov", "m4v", "mp3", "wav", "flac", "aac", "gif", "png",
+                    "apng", "webp",
                 ],
             )
             .add_filter("All files", &["*"])
@@ -3798,13 +3933,14 @@ pub(crate) const AI_TOOLS_READY: bool = true;
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 33] = [
+const SETTINGS_SECTIONS: [&str; 34] = [
     "settings.ai-tools.access",
     "settings.ai-tools.actions",
     "settings.ai-tools.connect",
     "settings.ai-tools.status",
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
+    "settings.audio.silence",
     "settings.audio.loudness",
     "settings.appearance.themes",
     "settings.general.capture",
@@ -4174,6 +4310,26 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_reload_source, |app, id: i32| {
         app.studio.reload_source(id);
+    });
+    on!(on_media_play_pause, |app, id: i32| {
+        app.studio.media_play_pause(id);
+    });
+    on!(on_media_restart, |app, id: i32| {
+        app.studio.media_restart(id);
+    });
+    on!(on_media_seek, |app, id: i32, ms: i32| {
+        app.studio.media_seek(id, ms);
+    });
+    on!(on_set_media_loop, |app, id: i32, on: bool| {
+        app.studio
+            .set_media_setting(id, "loop", serde_json::Value::Bool(on));
+    });
+    on!(on_set_media_restart_when_shown, |app, id: i32, on: bool| {
+        app.studio
+            .set_media_setting(id, "restart_when_shown", serde_json::Value::Bool(on));
+    });
+    on!(on_change_media_file, |_app, id: i32| {
+        change_media_file(id);
     });
     on!(on_set_companion_audio, |app, id: i32, on: bool| {
         app.studio.set_companion_audio(id, on);
@@ -4731,9 +4887,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     // "Main + vertical" they also act on the vertical canvas (ADR-0111).
     on!(on_record, |app| {
         let all = app.studio.with_vertical(OutputKind::Record);
-        if let Err(e) = app.studio.record_all(all) {
-            app.show_error(UiError::Other(e));
-        }
+        app.start_output(SilentStart::Record(all), true);
     });
     on!(on_stop_recording, |app| {
         let all = app.studio.with_vertical(OutputKind::Record);
@@ -4778,9 +4932,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_go_live, |app| {
         let all = app.studio.with_vertical(OutputKind::Stream);
-        if let Err(e) = app.studio.go_live_all(all) {
-            app.show_error(UiError::Other(e));
-        }
+        app.start_output(SilentStart::GoLive(all), true);
     });
     on!(on_end_stream, |app| {
         let all = app.studio.with_vertical(OutputKind::Stream);
@@ -4898,6 +5050,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             if let Some(w) = &app.settings {
                 w.global::<Studio>().set_exclude_own_window(exclude);
             }
+        }
+    });
+    // Settings › Audio, Silence check: Record and Go live ask first without a microphone.
+    on!(on_set_warn_silent, |app, on: bool| {
+        app.set_warn_silent(on);
+        let warn = app.bg.warn_silent;
+        app.main.global::<Studio>().set_warn_silent(warn);
+        if let Some(w) = &app.settings {
+            w.global::<Studio>().set_warn_silent(warn);
         }
     });
     on!(on_set_swap_after_transition, |app, on: bool| {
@@ -5315,6 +5476,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             confirm_end: false,
             confirm_end_all: false,
             confirm_end_vertical: false,
+            confirm_silent: None,
             vertical_left: None,
             vcam,
             replay,
@@ -5327,6 +5489,10 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         meter_timer: Rc::new(slint::Timer::default()),
         live_timer: Rc::new(slint::Timer::default()),
     };
+    {
+        let mut app = ctx.app.borrow_mut();
+        app.studio.warn_silent = app.bg.warn_silent;
+    }
     install(&main.global::<Shell>(), &ctx);
     replay_page::install(&main.global::<ReplayBuffer>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
@@ -5372,6 +5538,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.system_probe = Some(studio_host::protection::SystemProbeFactory::os());
         config.config_dir = Some(ctx.app.borrow().config.clone());
         config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
+        config.media_pause_release = ctx.app.borrow().bg.pause_release();
         // The monitor device belongs to this computer (ADR-0097); a file that cannot be
         // read gives System default at full volume and is left as it is.
         let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
