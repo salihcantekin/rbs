@@ -72,6 +72,7 @@ pub mod filters;
 mod loudness;
 mod monitor;
 mod network;
+mod obs_import_api;
 mod on_air;
 pub mod protection;
 pub mod replay;
@@ -2812,6 +2813,12 @@ pub enum Update {
         seq: u64,
         /// How it went.
         result: Result<(), String>,
+    },
+    /// `import.obs.run` wrote a new scene collection and output profile (control API
+    /// 1.82): the UI reloads its libraries, and its shortcuts when `shortcuts`.
+    ObsImported {
+        /// Hotkeys were added to `shortcuts.toml`.
+        shortcuts: bool,
     },
     /// A control API client asked to switch output profiles (`collection` false) or
     /// scene collections to the entry `id` (`profile.switch`, `collection.switch`);
@@ -14095,6 +14102,9 @@ impl ApiTarget<'_> {
             C::CollectionList => host.library_list(true),
             C::ProfileSwitch(r) => host.library_switch(false, r.id, notify),
             C::CollectionSwitch(r) => host.library_switch(true, r.id, notify),
+            C::ImportObsScan => obs_import_api::scan(),
+            C::ImportObsCheck(p) => obs_import_api::check(&p),
+            C::ImportObsRun(p) => host.import_obs(&p, notify),
             C::CollectionSetGlide(p) => {
                 let easing = match p.easing {
                     api::GlideEasing::Linear => 0,
