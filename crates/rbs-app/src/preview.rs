@@ -305,6 +305,9 @@ fn place_one(window: &MainWindow, which: Picture) {
         if overlays.get_transition_open() {
             st.covers.push(overlay(overlays.get_transition_cover()));
         }
+        if overlays.get_live_open() {
+            st.covers.push(overlay(overlays.get_live_cover()));
+        }
         if overlays.get_color_open() {
             st.covers.push(overlay(overlays.get_color_cover()));
         }
