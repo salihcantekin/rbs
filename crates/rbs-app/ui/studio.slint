@@ -4262,15 +4262,16 @@ component EqCurve inherits Rectangle {
         x: parent.width * mark.at;
         width: Tokens.size-border;
         background: Theme.border-subtle;
-        Text {
-            x: -self.width - Tokens.space-1;
-            y: Tokens.space-1;
-            width: self.preferred-width;
-            text: mark.text;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            accessible-role: none;
-        }
+    }
+    // The labels sit on the curve's background, left of their lines, not on the lines.
+    for mark[i] in [{ at: 0.2330, text: "100" }, { at: 0.5663, text: "1k" }, { at: 0.8997, text: "10k" }]: Text {
+        x: parent.width * mark.at - self.width - Tokens.space-1;
+        y: Tokens.space-1;
+        width: self.preferred-width;
+        text: mark.text;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
     }
     Path {
         width: parent.width;
