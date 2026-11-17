@@ -8,6 +8,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rbs_api_ws::{SUBPROTOCOL, close_code};
@@ -294,7 +295,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
     )
     .unwrap();
     assert_eq!(server.ipc_problem(), None);
-    host.attach_api(api, Some(server.api_tokens(config.clone())));
+    host.attach_api(api, Some(server.api_tokens(config.clone(), Arc::default())));
 
     let mut cli = IpcClient::connect(&endpoint, LIMIT).unwrap();
     let mut call = |id: u32, method: &str, params: Value| -> Value {

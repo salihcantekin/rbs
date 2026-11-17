@@ -67,6 +67,7 @@ fn the_ai_tools_token_works_only_on_same_user_ipc_while_started() {
         conn,
         token: Some(rbs_api::AI_TOOLS_NAME.into()),
         kind: Some(TokenKind::AiTools),
+        client: Some("test".into()),
         scopes: ScopeSet::PANEL,
     }));
     // On WebSocket it fails like an unknown token.

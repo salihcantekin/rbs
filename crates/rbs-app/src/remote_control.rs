@@ -18,11 +18,12 @@ use std::fmt;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rbs_api::request::{ClientInfo, Response};
 use rbs_api::{
     ApiError, ApiOptions, ApiServer, AuditEvent, Command, ControlEndpoint, ControlTransport,
-    ServerConfig, TokenHandle, TokenStore,
+    ServerConfig, TokenHandle, TokenSlot, TokenStore,
 };
 
 use crate::levels::{LevelFeed, LevelSampler};
@@ -128,7 +129,7 @@ impl RemoteServer {
     /// [`RemoteServer::start_ipc`] adds it). The returned endpoint goes to the control
     /// thread.
     pub fn start_api(
-        tokens: TokenStore,
+        tokens: impl Into<TokenSlot>,
         options: RemoteOptions,
     ) -> Result<(RemoteServer, ControlEndpoint), StartError> {
         let config =
@@ -248,11 +249,19 @@ impl RemoteServer {
         self.api.set_tokens(tokens);
     }
 
+    /// Replaces the token store and the AI tools flags (ADR-0134 decision 2).
+    pub fn set_slot(&self, slot: TokenSlot) {
+        self.api.set_slot(slot);
+    }
+
     /// What the control thread needs to answer `tokens.*` on the settings in `config`.
-    pub fn api_tokens(&self, config: PathBuf) -> ApiTokens {
+    /// The store it sets is the union of both settings files, with `flags` as they are
+    /// then, so a token change never stops AI tools.
+    pub fn api_tokens(&self, config: PathBuf, flags: Arc<SlotFlags>) -> ApiTokens {
         ApiTokens {
             config,
             handle: self.api.token_handle(),
+            flags,
         }
     }
 
@@ -284,6 +293,47 @@ impl RemoteServer {
 pub struct ApiTokens {
     config: PathBuf,
     handle: TokenHandle,
+    flags: Arc<SlotFlags>,
+}
+
+/// The AI tools flags of the token slot, shared by the app and the control thread's
+/// `tokens.*` answers (ADR-0134 decision 2: one composer builds every slot value).
+#[derive(Debug)]
+pub struct SlotFlags {
+    ai_tools_started: AtomicBool,
+    tokenless_ipc: AtomicBool,
+}
+
+impl Default for SlotFlags {
+    fn default() -> Self {
+        Self {
+            ai_tools_started: AtomicBool::new(false),
+            tokenless_ipc: AtomicBool::new(true),
+        }
+    }
+}
+
+impl SlotFlags {
+    /// Sets both flags.
+    pub fn set(&self, ai_tools_started: bool, tokenless_ipc: bool) {
+        self.ai_tools_started
+            .store(ai_tools_started, Ordering::Release);
+        self.tokenless_ipc.store(tokenless_ipc, Ordering::Release);
+    }
+
+    /// AI tools are started.
+    pub fn ai_tools_started(&self) -> bool {
+        self.ai_tools_started.load(Ordering::Acquire)
+    }
+
+    /// The slot value of `store` with the flags as they are now.
+    pub fn slot(&self, store: TokenStore) -> TokenSlot {
+        TokenSlot {
+            store,
+            ai_tools_started: self.ai_tools_started.load(Ordering::Acquire),
+            tokenless_ipc: self.tokenless_ipc.load(Ordering::Acquire),
+        }
+    }
 }
 
 impl ApiTokens {
@@ -292,8 +342,9 @@ impl ApiTokens {
     /// returns, so a new token works, or a revoked token's apps are disconnected,
     /// before the reply is sent. `true` with the reply when the tokens changed.
     pub fn answer(&self, command: &Command) -> Option<Result<(Response, bool), ApiError>> {
-        let answer =
-            rbs_remote_settings::token_command(&self.config, command, |s| self.handle.set(s))?;
+        let answer = rbs_remote_settings::token_command(&self.config, command, |s| {
+            self.handle.set(self.flags.slot(s));
+        })?;
         Some(answer.map(|a| (a.response, a.changed)))
     }
 }

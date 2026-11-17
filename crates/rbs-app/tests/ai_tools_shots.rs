@@ -50,33 +50,33 @@ fn shot(file: &TokenFile, base: Base, name: &str, started: bool, dir: &std::path
         "Other",
     ]));
     g.set_ai_tool(0);
-    g.set_ai_where("Add to claude_desktop_config.json, under mcpServers".into());
-    g.set_ai_line(
-        r#""rbs": {"command": "/Applications/RBS.app/Contents/MacOS/rbs-mcp", "args": ["--token-file", "/Users/me/Library/Application Support/RBS/agent-token"]}"#
-            .into(),
+    // The line as the app makes it (`rbs_app::ai_tools::line`).
+    let line = rbs_app::ai_tools::line(
+        rbs_app::ai_tools::Tool::ClaudeDesktop,
+        std::path::Path::new("/Applications/RBS.app/Contents/MacOS/rbs-mcp"),
+        std::path::Path::new("/Users/me/Library/Application Support/RBS/agent-token"),
+        rbs_app::ai_tools::Shell::Sh,
     );
+    g.set_ai_where(line.place.into());
+    g.set_ai_line(line.text.into());
+    g.set_ai_access(1);
     if started {
         g.set_ai_state(1);
-        g.set_ai_status("2 AI tools connected.".into());
-        g.set_ai_clients(strings(&["Claude Desktop", "Cursor"]));
+        g.set_ai_status("Started. 2 AI tools connected.".into());
+        g.set_ai_clients(strings(&["Claude Desktop", "cursor-vscode"]));
         g.set_ai_autostart(true);
+        let why = rbs_app::ai_tools::refusal_text;
         g.set_ai_actions(ModelRc::new(VecModel::from(vec![
-            action("21:43:30", "tokens.revoke", ""),
-            action("21:42:10", "record.start", "Cannot be undone: not allowed"),
-            action(
-                "21:41:55",
-                "item.set_visible",
-                "On air: not allowed while recording",
-            ),
-            action(
-                "21:40:02",
-                "source.set_settings",
-                "Another computer: not allowed",
-            ),
+            action("21:43:30", "scene.switch", why("on_air")),
+            action("21:42:10", "record.start", why("irreversible")),
+            action("21:40:02", "source.add", why("network")),
         ])));
     } else {
         g.set_ai_state(0);
-        g.set_ai_status("AI tools cannot reach RBS until you press Start.".into());
+        g.set_ai_status(
+            "Stopped. AI tools cannot use RBS. Stopping is not a lock against other programs of your user account."
+                .into(),
+        );
     }
     w.set_section(10);
     w.window().set_size(slint::LogicalSize::new(960.0, 1480.0));
