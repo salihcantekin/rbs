@@ -1164,6 +1164,8 @@ impl StudioUi {
 
     /// Starts or stops the control API server to match the settings: on while remote
     /// control is on and the studio's control thread runs, nothing at all otherwise.
+    /// A server whose WebSocket transport stopped (`restart_remote`) gets only that
+    /// transport again: its IPC sessions stay connected (ADR-0134 decision 2).
     pub fn sync_remote(&mut self) {
         let want = self.remote.enabled && self.host.is_some();
         if !want {
@@ -1171,52 +1173,32 @@ impl StudioUi {
             self.remote_failure = None;
             return;
         }
-        if self.remote_server.is_some() {
+        if self
+            .remote_server
+            .as_ref()
+            .is_some_and(RemoteServer::serves_ws)
+        {
             return;
         }
         if self.host.is_none() {
             return;
         }
         self.reload_tokens();
-        let Some(host) = &self.host else {
+        if self.remote_server.is_none() && !self.start_api() {
             return;
-        };
-        // Local IPC too, so `rbs-cli token` changes reach this app at once.
-        let ipc = match rbs_api_ipc::Endpoint::for_current_user() {
-            Ok(e) => Some(e),
-            Err(why) => {
-                log(&format!("remote control: no local IPC endpoint: {why}"));
-                None
-            }
-        };
-        let options = RemoteOptions {
-            control_waker: Box::new(host.api_waker()),
-            audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
-            ipc,
-            levels: Some(host.level_feed()),
-        };
-        // The settings may change on the way (a renewed certificate): `host` is taken
-        // again below.
+        }
+        // The settings may change on the way (a renewed certificate).
         let network = self.prepare_network();
-        let started = match network {
-            Some(n) => {
-                RemoteServer::start_network(self.remote.port, n, self.remote.store(), options)
-            }
-            None => RemoteServer::start_on_port(self.remote.port, self.remote.store(), options),
-        };
-        let Some(host) = &self.host else {
+        let Some(server) = self.remote_server.as_mut() else {
             return;
+        };
+        let started = match network {
+            Some(n) => server.start_ws_network(self.remote.port, n),
+            None => server.start_ws_loopback(self.remote.port),
         };
         match started {
-            Ok((server, endpoint)) => {
-                host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
+            Ok(()) => {
                 log(&format!("remote control on at {}", self.remote.address()));
-                match (server.ipc_endpoint(), server.ipc_problem()) {
-                    (Some(e), _) => log(&format!("remote control: local IPC at {e}")),
-                    (None, Some(why)) => log(&format!("remote control: no local IPC: {why}")),
-                    (None, None) => {}
-                }
-                self.remote_server = Some(server);
                 self.remote_failure = None;
             }
             Err(e) => {
@@ -1226,8 +1208,46 @@ impl StudioUi {
                     why.replace_range(..1, &first.to_uppercase());
                 }
                 self.remote_failure = Some(why);
+                // Nothing else needs the API thread: nothing keeps running.
+                self.stop_remote();
             }
         }
+    }
+
+    /// Starts the API thread and attaches it to the control thread, with local IPC
+    /// when it can be served (so `rbs-cli token` changes reach this app at once).
+    /// False (the reason in `remote_failure`) when it did not start.
+    fn start_api(&mut self) -> bool {
+        let Some(host) = &self.host else {
+            return false;
+        };
+        let options = RemoteOptions {
+            control_waker: Box::new(host.api_waker()),
+            audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
+            ipc: None,
+            levels: Some(host.level_feed()),
+        };
+        let (mut server, endpoint) = match RemoteServer::start_api(self.remote.store(), options) {
+            Ok(started) => started,
+            Err(e) => {
+                log(&format!("remote control did not start: {e}"));
+                self.remote_failure = Some(format!("Remote control did not start: {e}"));
+                return false;
+            }
+        };
+        match rbs_api_ipc::Endpoint::for_current_user() {
+            Ok(e) => {
+                let shown = e.to_string();
+                match server.start_ipc(e) {
+                    Ok(()) => log(&format!("remote control: local IPC at {shown}")),
+                    Err(why) => log(&format!("remote control: no local IPC: {why}")),
+                }
+            }
+            Err(why) => log(&format!("remote control: no local IPC endpoint: {why}")),
+        }
+        host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
+        self.remote_server = Some(server);
+        true
     }
 
     /// The TLS identity and settings for network access when it is on, made or renewed
@@ -1310,10 +1330,12 @@ impl StudioUi {
         }
     }
 
-    /// Starts the server again with the settings as they are now (connected apps are
-    /// disconnected and reconnect).
+    /// Starts the WebSocket transport again with the settings as they are now (its
+    /// apps are disconnected and reconnect; IPC sessions stay, ADR-0134 decision 2).
     fn restart_remote(&mut self) {
-        self.stop_remote();
+        if let Some(server) = self.remote_server.as_mut() {
+            server.stop_ws();
+        }
         self.remote_failure = None;
         self.sync_remote();
     }
