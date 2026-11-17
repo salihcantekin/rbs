@@ -1,7 +1,7 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, SplitButton, InfoHint, IconButton, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, SegmentedControl } from "components.slint";
+import { Button, SplitButton, InfoHint, IconButton, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, SegmentedControl, SettingValue } from "components.slint";
 import { SettingsCard } from "settings.slint";
 import { PropertiesPanel } from "studio.slint";
 import { ReplayControls } from "replay.slint";
@@ -135,6 +135,46 @@ export component SettingRowProbe inherits Window {
         Toggle { label: "Glide"; }
     }
     // literal-end
+}
+
+// A window for tests/overlays.rs: rows that leave `fill` at its default. A switch and a
+// shown value cannot grow, so the row puts them at its right edge; a drop-down fills
+// the column up to the same edge (owner decision 2026-11-17).
+export component SettingRowAlignProbe inherits Window {
+    // literal-begin: a test window; its size and the rows' place are test data
+    width: 600px;
+    height: 300px;
+    in-out property <length> row-width: 600px;
+    VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.row-width;
+        alignment: start;
+        // literal-end
+        switch-row := SettingRow {
+            divider: false;
+            label: "Record separate files";
+            switch := Toggle { label: "Record separate files"; }
+        }
+        value-row := SettingRow {
+            label: "Sound files";
+            value := SettingValue { text: "WAV, 24-bit"; muted: true; }
+        }
+        pick-row := SettingRow {
+            label: "Container";
+            pick := Select { label: "Container"; options: ["MKV", "MP4"]; }
+        }
+    }
+    out property <length> row-right: switch-row.absolute-position.x + switch-row.width;
+    out property <length> switch-left: switch.absolute-position.x;
+    out property <length> switch-right: switch.absolute-position.x + switch.width;
+    out property <length> switch-own: switch.preferred-width;
+    out property <length> value-left: value.absolute-position.x;
+    out property <length> value-right: value.absolute-position.x + value.width;
+    out property <length> value-own: value.preferred-width;
+    out property <length> pick-left: pick.absolute-position.x;
+    out property <length> pick-right: pick.absolute-position.x + pick.width;
+    out property <bool> stacked: switch-row.stacked;
 }
 
 // A window for tests/overlays.rs: drag to change on a NumberField.

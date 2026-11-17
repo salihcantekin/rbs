@@ -85,26 +85,40 @@ impl Shell {
 /// Where the line goes and the line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
-    /// Where to paste it ("Add to claude_desktop_config.json, under mcpServers").
+    /// Where to paste it ("Paste into claude_desktop_config.json").
     pub place: String,
+    /// What to do with it beside pasting, or empty.
+    pub help: String,
     /// The text to copy.
     pub text: String,
 }
 
 /// The line for `tool`, naming `mcp` and `token_file` by their absolute paths. Paths
 /// are inserted by code: JSON-escaped, or quoted for `shell`. The token never appears.
+/// A JSON line is a whole file, so it can be pasted into a new one; a file that has
+/// other servers takes only its `"rbs"` entry.
 pub fn line(tool: Tool, mcp: &Path, token_file: &Path, shell: Shell) -> Line {
     let mcp_text = mcp.to_string_lossy();
     let token_text = token_file.to_string_lossy();
     let json = |s: &str| serde_json::Value::String(s.to_owned()).to_string();
-    let entry = |vs_code: bool| {
+    let file = |servers: &str, vs_code: bool| {
         format!(
-            r#""rbs": {{{}"command": {}, "args": ["--token-file", {}]}}"#,
-            if vs_code { r#""type": "stdio", "# } else { "" },
+            "{{\n  \"{servers}\": {{\n    \"rbs\": {{\n{}      \"command\": {},\n      \"args\": [\"--token-file\", {}]\n    }}\n  }}\n}}",
+            if vs_code {
+                "      \"type\": \"stdio\",\n"
+            } else {
+                ""
+            },
             json(&mcp_text),
             json(&token_text)
         )
     };
+    let merge = |servers: &str| {
+        format!(
+            "If it lists other servers, add only \"rbs\" under {servers}. Copy again after moving RBS."
+        )
+    };
+    let again = "Copy it again after moving RBS.".to_owned();
     let command = format!(
         "{} --token-file {}",
         shell.quote(&mcp_text),
@@ -112,22 +126,26 @@ pub fn line(tool: Tool, mcp: &Path, token_file: &Path, shell: Shell) -> Line {
     );
     match tool {
         Tool::ClaudeDesktop => Line {
-            place: "Add to claude_desktop_config.json, under mcpServers".into(),
-            text: entry(false),
+            place: "Paste into claude_desktop_config.json".into(),
+            help: merge("mcpServers"),
+            text: file("mcpServers", false),
         },
         Tool::Cursor => Line {
-            place: "Add to mcp.json (in .cursor), under mcpServers".into(),
-            text: entry(false),
+            place: "Paste into mcp.json (in .cursor)".into(),
+            help: merge("mcpServers"),
+            text: file("mcpServers", false),
         },
         Tool::VsCode => Line {
-            place: "Add to .vscode/mcp.json, under servers".into(),
-            text: entry(true),
+            place: "Paste into mcp.json (VS Code user settings, or .vscode in a project)".into(),
+            help: merge("servers"),
+            text: file("servers", true),
         },
         Tool::ClaudeCode => Line {
             place: match shell {
                 Shell::Sh => "Run in a terminal".into(),
                 Shell::PowerShell => "Run in PowerShell".into(),
             },
+            help: again,
             // PowerShell drops a bare `--` before some programs: quoted, it is a word.
             text: match shell {
                 Shell::Sh => format!("claude mcp add rbs -- {command}"),
@@ -136,14 +154,68 @@ pub fn line(tool: Tool, mcp: &Path, token_file: &Path, shell: Shell) -> Line {
         },
         Tool::Other => Line {
             place: "The command that starts the MCP server (stdio)".into(),
+            help: again,
             text: command,
         },
     }
 }
 
+/// The operating system whose folders [`config_file`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    /// macOS.
+    Mac,
+    /// Windows.
+    Windows,
+    /// Linux and other Unix systems.
+    Linux,
+}
+
+impl Os {
+    /// This computer's.
+    pub fn native() -> Os {
+        if cfg!(target_os = "macos") {
+            Os::Mac
+        } else if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Linux
+        }
+    }
+}
+
+/// The user-wide configuration file `tool` reads its MCP servers from, from the
+/// environment (`HOME`, `USERPROFILE`, `APPDATA`, `XDG_CONFIG_HOME`). `None` for a tool
+/// that is set up by a command (Claude Code) or has no known file (Other), or when the
+/// environment does not name the folder. The file may not exist yet. RBS only shows
+/// it; it never writes another application's file (ADR-0134 decision 5).
+pub fn config_file(tool: Tool, os: Os, var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let var = |name: &str| var(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = || match os {
+        Os::Windows => var("USERPROFILE"),
+        Os::Mac | Os::Linux => var("HOME"),
+    };
+    // Where per-user application settings live.
+    let settings = || match os {
+        Os::Mac => home().map(|h| h.join("Library").join("Application Support")),
+        Os::Windows => var("APPDATA"),
+        Os::Linux => var("XDG_CONFIG_HOME").or_else(|| home().map(|h| h.join(".config"))),
+    };
+    match tool {
+        Tool::ClaudeDesktop => {
+            settings().map(|d| d.join("Claude").join("claude_desktop_config.json"))
+        }
+        Tool::Cursor => home().map(|h| h.join(".cursor").join("mcp.json")),
+        Tool::VsCode => settings().map(|d| d.join("Code").join("User").join("mcp.json")),
+        Tool::ClaudeCode | Tool::Other => None,
+    }
+}
+
 /// `rbs-mcp` beside `exe` (the app's own executable), or why no line can be made:
 /// missing, or RBS runs from a place other programs cannot start it from (an AppImage
-/// mount, a Flatpak or Snap sandbox).
+/// mount, a Flatpak or Snap sandbox). In a Cargo build folder a missing `rbs-mcp` was
+/// not built (`cargo run -p rbs-app` builds only `rbs`), and the note says how to
+/// build it.
 pub fn locate_mcp(exe: &Path, sandboxed: Option<&str>) -> Result<PathBuf, String> {
     if let Some(kind) = sandboxed {
         return Err(format!(
@@ -158,12 +230,27 @@ pub fn locate_mcp(exe: &Path, sandboxed: Option<&str>) -> Result<PathBuf, String
     let path = exe.with_file_name(name);
     if path.is_file() {
         Ok(path)
+    } else if in_cargo_build(exe) {
+        Err(format!(
+            "rbs-mcp is not built yet ({}). In the RBS source folder run: cargo build -p rbs-mcp",
+            path.display()
+        ))
     } else {
         Err(format!(
             "rbs-mcp is not next to RBS ({}). Reinstall RBS to connect AI tools.",
             path.display()
         ))
     }
+}
+
+/// Whether `exe` runs from a Cargo build folder: Cargo writes `CACHEDIR.TAG` at the top
+/// of every target folder, and the program is in `<target>/<profile>/` or
+/// `<target>/<triple>/<profile>/`.
+fn in_cargo_build(exe: &Path) -> bool {
+    exe.ancestors()
+        .skip(2)
+        .take(2)
+        .any(|dir| dir.join("CACHEDIR.TAG").is_file())
 }
 
 /// The package that sandboxes RBS, from the environment: AppImage, Flatpak or Snap.

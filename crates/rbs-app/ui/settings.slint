@@ -288,15 +288,28 @@ export component SettingsStatus inherits Rectangle {
         padding-top: Tokens.space-2;
         padding-bottom: Tokens.space-2;
         spacing: Tokens.space-2;
+        // The dot is centred on the first line of the words: `line` is one line of the
+        // same font, since the text's real line height is the font's, not
+        // `type.body.line` (Slint has no line height).
         VerticalLayout {
             alignment: start;
-            padding-top: (Tokens.type-body-line - Tokens.space-2) / 2;
             Rectangle {
                 width: Tokens.space-2;
-                height: Tokens.space-2;
-                border-radius: self.width / 2;
-                background: root.tone == 1 ? Theme.state-healthy
-                    : root.tone == 2 ? Theme.state-error : Theme.text-secondary;
+                height: line.preferred-height;
+                line := Text {
+                    visible: false;
+                    text: " ";
+                    font-size: Tokens.type-body-size;
+                    accessible-role: none;
+                }
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: Tokens.space-2;
+                    height: Tokens.space-2;
+                    border-radius: self.width / 2;
+                    background: root.tone == 1 ? Theme.state-healthy
+                        : root.tone == 2 ? Theme.state-error : Theme.text-secondary;
+                }
             }
         }
         Text {

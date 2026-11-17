@@ -41,7 +41,11 @@ mod macos {
     }
 
     fn open_with(factory: &AvfMediaFactory) -> Option<Box<dyn MediaDecoder>> {
-        match factory.open(&fixture("clip.mp4")) {
+        open_file(factory, "clip.mp4")
+    }
+
+    fn open_file(factory: &AvfMediaFactory, name: &str) -> Option<Box<dyn MediaDecoder>> {
+        match factory.open(&fixture(name)) {
             Ok(decoder) => Some(decoder),
             Err(DecodeError::Unsupported(why)) => {
                 eprintln!("skipped: {why}");
@@ -185,6 +189,78 @@ mod macos {
             surface.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut());
             value
         }
+    }
+
+    /// `fixtures/rotated.mp4`: `clip.mp4` with a display matrix that turns it a quarter
+    /// turn clockwise (as a phone held upright stores it), no re-encode. Upright it is
+    /// 90x160 with the green quarter top right (spec invariant 12).
+    #[test]
+    fn a_rotated_track_is_turned_upright() {
+        let Some(mut dec) = open_file(&AvfMediaFactory::cpu_upload(), "rotated.mp4") else {
+            return;
+        };
+        let mut count = 0u64;
+        while let Some(p) = dec.next_picture().unwrap() {
+            assert_eq!(
+                (p.picture.width, p.picture.height),
+                (90, 160),
+                "picture {count}"
+            );
+            assert_eq!(p.pts, Some(ms(100 * count)), "picture {count}");
+            let green = pixel(&p, 80, 8);
+            let red = pixel(&p, 8, 150);
+            assert!(
+                near(green, [0, 255, 0, 255]) && near(red, [255, 0, 0, 255]),
+                "picture {count}: top right {green:?}, bottom left {red:?}\n{}",
+                map(&p)
+            );
+            count += 1;
+            assert!(count < 50, "the stream must end");
+        }
+        assert_eq!(count, 5);
+        // After a seek the pictures are still upright.
+        dec.seek(ms(200)).unwrap();
+        let p = dec
+            .next_picture()
+            .unwrap()
+            .expect("a picture after the seek");
+        assert_eq!((p.picture.width, p.picture.height), (90, 160));
+    }
+
+    #[test]
+    fn a_rotated_track_stays_native_and_upright() {
+        use rbs_core::media::{FramePayload, NativeSurface};
+
+        let Some(mut dec) = open_file(&AvfMediaFactory::new(), "rotated.mp4") else {
+            return;
+        };
+        let mut count = 0u64;
+        while let Some(p) = dec.next_picture().unwrap() {
+            assert_eq!(
+                (p.picture.width, p.picture.height),
+                (90, 160),
+                "picture {count}"
+            );
+            let PictureData::Native(frame) = p.picture.data() else {
+                panic!("picture {count} is not native");
+            };
+            let FramePayload::Native {
+                surface: NativeSurface::IoSurface { surface, .. },
+                ..
+            } = frame.payload()
+            else {
+                panic!("picture {count} is not an IOSurface");
+            };
+            // Green (luma about 173) top right, red (about 63) bottom left.
+            let (green, red) = (luma(*surface, 80, 8), luma(*surface, 8, 150));
+            assert!(
+                green > 140 && red < 100,
+                "picture {count}: luma {green} and {red}"
+            );
+            count += 1;
+            assert!(count < 50, "the stream must end");
+        }
+        assert_eq!(count, 5);
     }
 
     #[test]

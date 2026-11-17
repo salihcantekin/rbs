@@ -31,6 +31,7 @@ mod preview;
 mod preview_edit;
 mod projector;
 mod replay_page;
+mod reveal;
 mod shortcuts_page;
 mod studio_ui;
 mod title_bar;
@@ -5200,6 +5201,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_pick_ai_tool, |app, i: i32| {
         app.studio.pick_ai_tool(i);
+    });
+    on!(on_ai_show_config, |app| {
+        app.studio.ai_show_config();
     });
     // Before every redraw of the main window: popups open, move and close with a redraw,
     // and so does a change of the window's scale; the preview layer follows them

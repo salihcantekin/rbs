@@ -1,9 +1,12 @@
 //! Counted UI checks of ADR-0115 (`cargo xtask check-ui`).
 //!
-//! The checks read the `.slint` files under `crates/rbs-app/ui` as text and count four
+//! The checks read the `.slint` files under `crates/rbs-app/ui` as text and count five
 //! things over the whole tree: raw `TouchArea`s outside the library, component names
-//! declared in more than one file, long `help:` texts, and effects drawn outside the
-//! library (`drop-shadow-*`, `inner-shadow-*`, gradients, `Theme.effects-*`; ADR-0120). Each count must equal its number in `docs/ui/baseline.toml`
+//! declared in more than one file, long `help:` texts, effects drawn outside the
+//! library (`drop-shadow-*`, `inner-shadow-*`, gradients, `Theme.effects-*`; ADR-0120),
+//! and home-made parts in a `SettingRow`'s control column (a raw `Text`, `Rectangle` or
+//! other built-in element instead of a library control; owner decision 2026-11-17).
+//! Each count must equal its number in `docs/ui/baseline.toml`
 //! plus the approved entries in `docs/ui/exceptions.toml`. `--lower` writes lower counts
 //! down, `--except` records an increase the owner approved, and `--against <commit>`
 //! compares both files with an older commit before a merge.
@@ -18,7 +21,23 @@ use toml::Value;
 use crate::ui_split;
 
 /// The checks, in the order they are printed and stored.
-pub const CHECKS: &[&str] = &["touch", "duplicate", "help", "effects"];
+pub const CHECKS: &[&str] = &["touch", "duplicate", "help", "effects", "row"];
+
+/// Built-in elements that never stand in a `SettingRow`'s control column, directly or
+/// in a `HorizontalLayout` there: the row places library controls (a value it only
+/// shows is a `SettingValue`), and a home-made part lands at the column's left edge.
+const ROW_FORBIDDEN: &[&str] = &[
+    "Text",
+    "Rectangle",
+    "VerticalLayout",
+    "GridLayout",
+    "Image",
+    "Path",
+    "TouchArea",
+    "FocusScope",
+    "Flickable",
+    "TextInput",
+];
 
 /// The rule id of a register entry that allows a new library file.
 const LIBRARY_RULE: &str = "library";
@@ -161,6 +180,11 @@ fn meaning(check: &str) -> &'static str {
         "effects" => {
             "A shadow, gradient or `Theme.effects-*` outside the library: only library \
              components draw effects (ADR-0120)."
+        }
+        "row" => {
+            "A raw `Text`, `Rectangle` or other built-in element in a `SettingRow`: the \
+             control column takes library controls, and a shown value is a `SettingValue` \
+             (design system, SettingRow)."
         }
         _ => "",
     }
@@ -506,6 +530,7 @@ pub fn count_files(files: &[(String, String)], library: &[String]) -> BTreeMap<S
     let mut touch = 0;
     let mut help = 0;
     let mut effects = 0;
+    let mut row = 0;
     let mut declared: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     let mut declarations: Vec<String> = Vec::new();
     for (name, text) in files {
@@ -520,6 +545,7 @@ pub fn count_files(files: &[(String, String)], library: &[String]) -> BTreeMap<S
         touch += code.touch_areas();
         help += code.long_help();
         effects += code.effects();
+        row += code.row_parts();
     }
     let duplicate = declarations
         .iter()
@@ -533,6 +559,7 @@ pub fn count_files(files: &[(String, String)], library: &[String]) -> BTreeMap<S
     );
     counts.insert("help".to_owned(), help);
     counts.insert("effects".to_owned(), effects);
+    counts.insert("row".to_owned(), row);
     counts
 }
 
@@ -653,6 +680,40 @@ impl Code {
         u32::try_from(found).unwrap_or(u32::MAX)
     }
 
+    /// Built-in elements (`ROW_FORBIDDEN`) that are children of a `SettingRow`, or of a
+    /// `HorizontalLayout` that is one, also under `if` and `for`. An element is a name
+    /// right before `{`; callback bodies (`=> {`) and anything deeper are not looked at.
+    fn row_parts(&self) -> u32 {
+        // One entry per open brace: whether elements right inside it are checked, and
+        // whether it is the row itself (whose `HorizontalLayout`s are checked too).
+        let mut open: Vec<(bool, bool)> = Vec::new();
+        let mut found = 0;
+        for i in 0..self.tokens.len() {
+            match self.mark(i) {
+                Some('{') => {
+                    let (checked, is_row) = open.last().copied().unwrap_or((false, false));
+                    let name = if i > 0 { self.word(i - 1) } else { None };
+                    let entry = match name {
+                        Some("SettingRow") => (true, true),
+                        Some(name) if checked => {
+                            if ROW_FORBIDDEN.contains(&name) {
+                                found += 1;
+                            }
+                            (is_row && name == "HorizontalLayout", false)
+                        }
+                        _ => (false, false),
+                    };
+                    open.push(entry);
+                }
+                Some('}') => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+        found
+    }
+
     /// `help:` statements, up to their `;`, that hold a string literal over the limit.
     fn long_help(&self) -> u32 {
         let mut found = 0;
@@ -743,6 +804,31 @@ mod tests {
             ),
         ]);
         assert_eq!(c["effects"], 4);
+    }
+
+    #[test]
+    fn row_counts_built_in_elements_in_a_setting_row() {
+        let c = counts(&[
+            (
+                "components.slint",
+                "export component SettingRow inherits Rectangle { Text { } }",
+            ),
+            (
+                "panel.slint",
+                "component B { VerticalLayout {\n\
+                 SettingRow { label: \"A\"; Toggle { } }\n\
+                 SettingRow { SettingValue { text: \"WAV\"; } }\n\
+                 SettingRow { reset => { if x { } } Text { text: \"1\"; } }\n\
+                 SettingRow { if on: Rectangle { Text { } } }\n\
+                 SettingRow { HorizontalLayout { Slider { } t := Text { } } }\n\
+                 SettingRow { HorizontalLayout { HorizontalLayout { Text { } } } }\n\
+                 SettingBlock { Text { } }\n\
+                 Text { } } }",
+            ),
+        ]);
+        // The Text of the third row, the Rectangle (not the Text inside it) and the
+        // Text in the row's own HorizontalLayout; deeper layouts are not looked at.
+        assert_eq!(c["row"], 3);
     }
 
     #[test]

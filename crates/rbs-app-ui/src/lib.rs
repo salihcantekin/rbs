@@ -40,7 +40,7 @@ macro_rules! reexport_probes {
     ($probes:ident) => {
         pub use $probes::{
             EffectsProbe, ExperienceProbe, FocusRevealProbe, NumberFieldProbe, OverlayProbe,
-            PropertiesProbe, ReplayProbe, SegmentProbe, SettingRowProbe,
+            PropertiesProbe, ReplayProbe, SegmentProbe, SettingRowAlignProbe, SettingRowProbe,
         };
     };
 }

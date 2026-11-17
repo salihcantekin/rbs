@@ -108,12 +108,19 @@ fn json_lines_parse_and_name_both_paths() {
         for token in AWKWARD {
             for tool in [Tool::ClaudeDesktop, Tool::Cursor, Tool::VsCode] {
                 let l = line(tool, Path::new(mcp), Path::new(token), Shell::native());
-                let v: serde_json::Value =
-                    serde_json::from_str(&format!("{{{}}}", l.text)).expect("JSON");
-                assert_eq!(v["rbs"]["command"], mcp, "{}", l.text);
-                assert_eq!(v["rbs"]["args"][0], "--token-file");
-                assert_eq!(v["rbs"]["args"][1], token);
-                assert_eq!(v["rbs"]["type"] == "stdio", tool == Tool::VsCode);
+                let v: serde_json::Value = serde_json::from_str(&l.text).expect("JSON");
+                let servers = if tool == Tool::VsCode {
+                    "servers"
+                } else {
+                    "mcpServers"
+                };
+                let rbs = &v[servers]["rbs"];
+                assert_eq!(rbs["command"], mcp, "{}", l.text);
+                assert_eq!(rbs["args"][0], "--token-file");
+                assert_eq!(rbs["args"][1], token);
+                assert_eq!(rbs["type"] == "stdio", tool == Tool::VsCode);
+                assert_eq!(v.as_object().map(|o| o.len()), Some(1));
+                assert!(l.help.contains(servers), "{}", l.help);
             }
         }
     }
@@ -212,6 +219,95 @@ fn a_sandboxed_or_missing_rbs_mcp_gives_a_note_and_no_line() {
     std::fs::write(&mcp, b"").unwrap();
     assert_eq!(locate_mcp(&exe, None).unwrap(), mcp);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_cargo_build_without_rbs_mcp_says_how_to_build_it() {
+    let dir = std::env::temp_dir().join(format!("rbs-app-mcp-cargo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let exe_name = if cfg!(windows) { "rbs.exe" } else { "rbs" };
+    // `<target>/<profile>/rbs` and `<target>/<triple>/<profile>/rbs`.
+    for profile in [
+        dir.join("debug"),
+        dir.join("aarch64-apple-darwin").join("release"),
+    ] {
+        std::fs::create_dir_all(&profile).unwrap();
+        let exe = profile.join(exe_name);
+        assert!(
+            locate_mcp(&exe, None)
+                .unwrap_err()
+                .contains("not next to RBS"),
+            "no CACHEDIR.TAG yet"
+        );
+        std::fs::write(dir.join("CACHEDIR.TAG"), b"").unwrap();
+        let why = locate_mcp(&exe, None).unwrap_err();
+        assert!(why.contains("cargo build -p rbs-mcp"), "{why}");
+        std::fs::remove_file(dir.join("CACHEDIR.TAG")).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_files_are_where_each_tool_reads_them() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |v: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == v)
+                .map(|(_, x)| (*x).to_owned())
+        }
+    };
+    let mac = env(&[("HOME", "/Users/z")]);
+    assert_eq!(
+        config_file(Tool::ClaudeDesktop, Os::Mac, mac),
+        Some(PathBuf::from(
+            "/Users/z/Library/Application Support/Claude/claude_desktop_config.json"
+        ))
+    );
+    assert_eq!(
+        config_file(Tool::VsCode, Os::Mac, mac),
+        Some(PathBuf::from(
+            "/Users/z/Library/Application Support/Code/User/mcp.json"
+        ))
+    );
+    assert_eq!(
+        config_file(Tool::Cursor, Os::Mac, mac),
+        Some(PathBuf::from("/Users/z/.cursor/mcp.json"))
+    );
+    let win = env(&[
+        ("USERPROFILE", "C:/Users/z"),
+        ("APPDATA", "C:/Users/z/AppData/Roaming"),
+    ]);
+    assert_eq!(
+        config_file(Tool::ClaudeDesktop, Os::Windows, win),
+        Some(
+            Path::new("C:/Users/z/AppData/Roaming")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        )
+    );
+    assert_eq!(
+        config_file(Tool::Cursor, Os::Windows, win),
+        Some(Path::new("C:/Users/z").join(".cursor").join("mcp.json"))
+    );
+    let linux = env(&[("HOME", "/home/z")]);
+    assert_eq!(
+        config_file(Tool::ClaudeDesktop, Os::Linux, linux),
+        Some(PathBuf::from(
+            "/home/z/.config/Claude/claude_desktop_config.json"
+        ))
+    );
+    let xdg = env(&[("HOME", "/home/z"), ("XDG_CONFIG_HOME", "/cfg")]);
+    assert_eq!(
+        config_file(Tool::VsCode, Os::Linux, xdg),
+        Some(PathBuf::from("/cfg/Code/User/mcp.json"))
+    );
+    for os in [Os::Mac, Os::Windows, Os::Linux] {
+        assert_eq!(config_file(Tool::ClaudeCode, os, mac), None);
+        assert_eq!(config_file(Tool::Other, os, mac), None);
+        assert_eq!(config_file(Tool::ClaudeDesktop, os, |_| None), None);
+        assert_eq!(config_file(Tool::Cursor, os, env(&[("HOME", "")])), None);
+    }
 }
 
 #[test]
