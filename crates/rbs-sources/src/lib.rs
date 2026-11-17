@@ -33,9 +33,9 @@ pub mod types;
 
 pub use browser::{
     BROWSER_CAP, BROWSER_NODE_TYPE, BrowserBudget, BrowserClaim, BrowserControlSidecar,
-    BrowserFrameSink, BrowserGrant, BrowserScheme, BrowserSession, BrowserSettings,
-    BrowserSourceNode, BrowserStartError, BrowserTree, MAX_HELPERS, NOT_PERMITTED, ShowClass,
-    SourceReach, agent_may_set_browser_url, browser_descriptor, browser_scheme,
+    BrowserFrameSink, BrowserGrant, BrowserPictureEdge, BrowserScheme, BrowserSession,
+    BrowserSettings, BrowserSourceNode, BrowserStartError, BrowserTree, MAX_HELPERS, NOT_PERMITTED,
+    ShowClass, SourceReach, agent_may_set_browser_url, browser_descriptor, browser_scheme,
     browser_url_is_network, file_directory_scope,
 };
 pub use browser_sound::{

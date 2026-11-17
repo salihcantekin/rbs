@@ -123,6 +123,12 @@ impl BrowserSound {
         self.config.format.sample_rate.hz()
     }
 
+    /// The master clock the page's sound is stamped on. The picture is stamped on the
+    /// same clock ([`crate::BrowserPictureEdge`]).
+    pub fn clock(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
+    }
+
     /// Counters.
     pub fn stats(&self) -> Arc<BrowserSoundStats> {
         Arc::clone(&self.stats)
@@ -895,5 +901,53 @@ mod tests {
         let mut r = vec![1.0; 480];
         assert!(!node.fill(Timestamp::from_nanos(0), &mut [&mut l, &mut r], 480));
         assert!(l.iter().chain(r.iter()).all(|s| *s == 0.0));
+    }
+
+    /// ADR-0109 decision 12, ADR-0106 decision 4: a picture and the sound the page
+    /// made at the same instant reach the program at the same master time, within one
+    /// audio block, though the supervisor sees each picture a few milliseconds late.
+    #[test]
+    fn a_picture_and_its_sound_reach_the_program_at_one_master_time() {
+        let mut rig = Rig::new(48_000, 2);
+        let period = rig.shared.config.period().as_nanos() as u64;
+        let mut edge = crate::BrowserPictureEdge::new(rig.shared.clock());
+        let sink = crate::BrowserFrameSink::new();
+        let rgba = [255u8; 2 * 2 * 4];
+        let mut seen = VecDeque::new();
+        let mut checked = 0;
+        for ms in 1..=1_500u64 {
+            rig.run(1);
+            let now = ms * 1_000_000;
+            // The page paints every 16 ms; the supervisor copies it 3 to 12 ms later.
+            if ms.is_multiple_of(16) {
+                seen.push_back((now, now + (3 + ms % 10) * 1_000_000));
+            }
+            while let Some(&(paint, at)) = seen.front() {
+                if at > now {
+                    break;
+                }
+                seen.pop_front();
+                let stamp = edge.stamp(OS + paint, OS + now);
+                sink.publish_at(&rgba, 2, 2, Some(stamp));
+                // Not on air before its time; on air from it.
+                assert!(sink.take_due(stamp - Duration::from_nanos(1)).is_none());
+                let shown = sink.take_due(stamp).expect("due at its stamp");
+                assert_eq!(shown.timestamp(), stamp);
+                // Once the edge has learned the clocks (one second of OS time), the
+                // picture sits in the block that plays the sound made with it.
+                if paint > 1_100_000_000 {
+                    let error = stamp.as_nanos().abs_diff(paint);
+                    assert!(error < period, "picture {paint} stamped {stamp:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10, "{checked}");
+        // The sound of those instants is in the block of the same master time.
+        let first = rig.written.iter().position(|w| *w).unwrap();
+        for (t, l) in &rig.out[first + 5..] {
+            let at = t.as_nanos();
+            assert!((l[0] - tone(at)).abs() < 2e-3, "{t:?}");
+        }
     }
 }
