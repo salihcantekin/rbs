@@ -36,9 +36,23 @@ Binding ([ADR-0032](../adr/0032-fast-deterministic-tests.md); procedure: `test-r
 | Goal | Command |
 | --- | --- |
 | The crates a change touches | `cargo test -p <crate>` (or `cargo nextest run -p <crate>`) |
+| Everything a branch can break | `cargo xtask affected test` (also `check`, `clippy`, `list`; `--base <rev>`, extra arguments after `--`) |
 | Whole fast tier | `cargo nextest run --workspace` (or `cargo test --workspace`) |
 | Slow tier | `cargo nextest run --workspace --run-ignored only -E 'test(/^slow_/)'` |
 | Stress one test binary | run it 50 times pinned to two cores (`taskset -c 0,1`) with busy loops on the others |
+
+### Which tests to run
+
+`cargo xtask affected` diffs the working tree, untracked files included, against the merge base with `origin/main` and selects the workspace packages the change can break:
+
+- the package that owns each changed file under `crates/` or `xtask/`;
+- every package whose Rust sources name a changed file or its directory (`rbs-app-ui`'s `build.rs` compiles `../rbs-app/ui`, `rbs-import-obs` includes `docs/specs/obs-import.md`, `xtask` reads `docs/ui`);
+- for a `Cargo.lock` change, the users of each lock entry that changed;
+- then every package that depends on a selected one (normal, build and dev dependencies, from `Cargo.lock`).
+
+A change to the root `Cargo.toml`, `.cargo/`, `.config/`, a toolchain file or an unknown root file selects the whole workspace. Documentation, `.claude/`, `.github/` and `prototypes/` select nothing unless a source names them. `test` runs `cargo nextest run` (`cargo test` when nextest is missing), `clippy` adds `--all-targets -- -D warnings`, and `check` adds `--all-targets`.
+
+Before a pull request is pushed, `cargo fmt --all -- --check`, `cargo xtask affected clippy` and `cargo xtask affected test` are enough. The whole workspace runs once after a batch of merges, not before each one.
 
 ## Counted UI checks (ADR-0115)
 
