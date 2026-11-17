@@ -4418,6 +4418,7 @@ dependencies = [
  "rbs-graph",
  "rbs-import-obs",
  "rbs-manifest",
+ "rbs-media-anim",
  "rbs-media-decode-test",
  "rbs-mux",
  "rbs-mux-flac",
@@ -4968,6 +4969,17 @@ name = "rbs-mcp"
 version = "0.0.1"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "rbs-media-anim"
+version = "0.0.1"
+dependencies = [
+ "gif",
+ "image-webp",
+ "png",
+ "rbs-core",
+ "rbs-media-decode",
 ]
 
 [[package]]
