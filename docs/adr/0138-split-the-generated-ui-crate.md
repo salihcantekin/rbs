@@ -1,6 +1,6 @@
 # ADR-0138: Split the generated UI code into a base crate and one crate per window group
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-17
 - Deciders: Salih (owner)
 
@@ -136,3 +136,7 @@ Round-3 resolutions confirmed: named root files, layer edges, parity with the pr
 
 1. The bracket in decision 1 ("today's exports of `app.slint`") missed 14 structs that Rust names (should fix). Resolved with the reviewer's wording: the base holds what is reachable from a window's public properties or callbacks, what Rust names, or what several window crates use, with today's extra names listed. The check tests the reachable form.
 2. Round 1 said `affected check` where decision 5 says `affected test` (nit). Resolved.
+
+### Owner approval
+
+Salih approved the plan in writing on 2026-11-17 ("tamamdır plan iyi uygulayalım").
