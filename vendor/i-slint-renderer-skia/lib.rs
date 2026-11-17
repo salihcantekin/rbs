@@ -921,7 +921,11 @@ impl SkiaRenderer {
 
     fn partial_rendering_state(&self) -> Option<&PartialRenderingState> {
         // We don't know where the application might render to, so disable partial rendering.
-        if self.rendering_notifier.borrow().is_some() {
+        // RBS experiment: its notifier draws nothing (it places native layers), so the
+        // partial renderer stays on when asked for explicitly.
+        if self.rendering_notifier.borrow().is_some()
+            && std::env::var_os("SLINT_SKIA_PARTIAL_RENDERING").is_none()
+        {
             None
         } else {
             self.partial_rendering_state.as_ref()
