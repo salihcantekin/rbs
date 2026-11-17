@@ -2967,3 +2967,45 @@ fn a_token_without_the_permission_cannot_change_what_is_on_air() {
     assert!(after.get("error").is_none(), "{after}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ADR-0052 decision 4, reason `network`: without the permission an image's path must
+/// be a local absolute path, through the real target.
+#[test]
+fn a_token_without_the_permission_cannot_point_a_source_at_another_computer() {
+    let Some(gpu) = gpu() else { return };
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let token = rbs_api::token::Token::from_bytes(&[7; 32]);
+    let mut tokens = rbs_api::TokenStore::new();
+    tokens.insert(rbs_api::token::TokenEntry {
+        irreversible: false,
+        name: "agent".into(),
+        scopes: rbs_api::ScopeSet::PANEL,
+        hash: token.hash(),
+    });
+    let mut api = ApiClient::attach_with(&host, tokens);
+    api.call(
+        "session.authenticate",
+        serde_json::json!({"token": token.expose()}),
+    );
+    let added = api.call("source.add_sample", serde_json::json!({"sample": "aurora"}));
+    let image = added["result"]["source"].as_u64().expect("an image source");
+
+    let remote = api.call(
+        "source.set_settings",
+        serde_json::json!({"source": image, "settings": {"path": "\\\\nas\\share\\a.png"}}),
+    );
+    assert_eq!(error_kind(&remote), "not_permitted", "{remote}");
+    assert_eq!(remote["error"]["data"]["reason"], "network", "{remote}");
+
+    let local = api.call(
+        "source.set_settings",
+        serde_json::json!({"source": image, "settings": {"path": "/no/such/picture.png"}}),
+    );
+    assert_ne!(error_kind(&local), "not_permitted", "{local}");
+}
