@@ -16499,11 +16499,15 @@ fn run_copy(
     let mut copy = held.scene.clone();
     copy.audio = collection.scene(held.from).and_then(|s| s.audio.clone());
     scenes.push(copy);
-    SceneCollection::from_parts(
+    // The collection's glide and transition go with it: without them a held program
+    // ran every change as the default Move.
+    SceneCollection::from_parts_with_transition(
         canvases,
         collection.sources().cloned().collect(),
         scenes,
         collection.id_counters(),
+        collection.glide(),
+        collection.transition(),
     )
     .ok()
 }
@@ -16724,6 +16728,29 @@ mod tests {
         .unwrap();
         col.set_preview(canvas, Some(scene)).unwrap();
         (col, canvas, scene, src)
+    }
+
+    #[test]
+    fn a_held_program_runs_with_the_collections_transition_and_glide() {
+        // Studio mode with the program held (ADR-0063): the run collection must keep
+        // the collection's transition, or every change runs as the default Move.
+        let (mut col, canvas, scene, _) = held_collection();
+        let mut t = rbs_scene::CollectionTransition {
+            kind: rbs_scene::TransitionKind::Swipe,
+            ..rbs_scene::CollectionTransition::default()
+        };
+        t.swipe.duration_ms = 700;
+        col.set_transition(t).unwrap();
+        let glide = rbs_scene::CollectionGlide {
+            duration_ms: 900,
+            ..col.glide()
+        };
+        col.set_glide(glide).unwrap();
+        col.set_preview(canvas, Some(scene)).unwrap();
+        let held = held_copy(&col, canvas, None).unwrap();
+        let run = run_copy(&col, canvas, &held).unwrap();
+        assert_eq!(run.transition(), t);
+        assert_eq!(run.glide(), glide);
     }
 
     #[test]
