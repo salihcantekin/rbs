@@ -19,9 +19,39 @@ mod ui_split;
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use toml::Value;
+
+/// A `cargo` command without the package variables `cargo run` set for xtask itself.
+///
+/// `cargo xtask` runs this binary through `cargo run`, which sets `CARGO_MANIFEST_DIR`
+/// and `CARGO_PKG_*` to xtask's. A child `cargo` passed them on to build scripts:
+/// `ring`'s reruns when `CARGO_MANIFEST_DIR` changes, so every switch between
+/// `cargo xtask affected test` and a plain `cargo test` rebuilt `ring`, `rustls` and
+/// every crate above them, `rbs-app` included (about 200 s on 4 cores).
+pub(crate) fn cargo_command() -> (String, Command) {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let mut command = Command::new(&cargo);
+    for (name, _) in env::vars_os() {
+        if name.to_str().is_some_and(is_package_variable) {
+            command.env_remove(name);
+        }
+    }
+    (cargo, command)
+}
+
+/// Whether `cargo run` sets this variable for the package it runs.
+fn is_package_variable(name: &str) -> bool {
+    matches!(
+        name,
+        "CARGO_MANIFEST_DIR"
+            | "CARGO_MANIFEST_PATH"
+            | "CARGO_PRIMARY_PACKAGE"
+            | "CARGO_CRATE_NAME"
+            | "CARGO_BIN_NAME"
+    ) || name.starts_with("CARGO_PKG_")
+}
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -509,6 +539,15 @@ fn class(name: &str) -> Option<Class> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn child_cargo_drops_only_the_package_variables() {
+        assert!(super::is_package_variable("CARGO_MANIFEST_DIR"));
+        assert!(super::is_package_variable("CARGO_PKG_NAME"));
+        assert!(!super::is_package_variable("CARGO_TARGET_DIR"));
+        assert!(!super::is_package_variable("CARGO_HOME"));
+        assert!(!super::is_package_variable("CARGO"));
+    }
+
     use super::*;
 
     /// ADR-0132 decision 1: no workspace command may resolve, download or build

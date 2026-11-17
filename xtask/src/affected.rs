@@ -415,6 +415,31 @@ fn selects_ui(selection: &Selection) -> bool {
     }
 }
 
+/// The package arguments for `cargo nextest run` when a selection holding `rbs-app` is
+/// better built as the whole workspace: `--workspace` plus a filter that runs only the
+/// selected packages' tests. `-p` subsets resolve features over the subset alone, so
+/// third-party crates and about 46 workspace crates are compiled a second time with
+/// other features (measured 248 s and 7 GB more for `-p rbs-app` beside a workspace
+/// build). `None` keeps `-p`: no `rbs-app`, the whole workspace already, or a filter
+/// of the caller's own (nextest joins several filters with "or").
+fn nextest_packages(selection: &Selection, extra: &[String]) -> Option<Vec<String>> {
+    let Selection::Some(set) = selection else {
+        return None;
+    };
+    let own_filter = extra
+        .iter()
+        .any(|a| a == "-E" || a.starts_with("--filterset") || a.starts_with("--filter-expr"));
+    if !set.contains("rbs-app") || own_filter {
+        return None;
+    }
+    let filter = set
+        .iter()
+        .map(|p| format!("package(={p})"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Some(vec!["--workspace".to_owned(), "-E".to_owned(), filter])
+}
+
 fn cargo(
     root: &Path,
     action: &str,
@@ -432,8 +457,7 @@ fn cargo(
             .flat_map(|p| ["-p".to_owned(), p.clone()])
             .collect(),
     };
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let mut command = Command::new(&cargo);
+    let (cargo, mut command) = crate::cargo_command();
     command.current_dir(root);
     match action {
         "check" => {
@@ -454,12 +478,16 @@ fn cargo(
             }
         }
         _ => {
-            let nextest = Command::new(&cargo)
+            let nextest = crate::cargo_command()
+                .1
                 .args(["nextest", "--version"])
                 .output()
                 .is_ok_and(|o| o.status.success());
             if nextest {
-                command.args(["nextest", "run"]).args(&packages).args(extra);
+                command
+                    .args(["nextest", "run"])
+                    .args(nextest_packages(selection, extra).unwrap_or(packages))
+                    .args(extra);
             } else {
                 eprintln!("affected: cargo-nextest is not installed; using cargo test");
                 command.arg("test").args(&packages).args(extra);
@@ -481,7 +509,8 @@ fn cargo(
         eprintln!("affected: checking the UI live preview build");
         let target =
             crate::ui_dev::target_dir(root, std::env::var_os("CARGO_TARGET_DIR").as_deref());
-        let live = Command::new(&cargo)
+        let live = crate::cargo_command()
+            .1
             .current_dir(root)
             .args(["check", "-p", "rbs-app", "--features", "ui-live-preview"])
             .env("SLINT_LIVE_PREVIEW", "1")
@@ -601,6 +630,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             .select(&changed, &old, LOCK)
             .unwrap_or(Selection::All);
         assert_eq!(selection, some(&["app", "lone"]));
+    }
+
+    #[test]
+    fn a_selection_with_the_app_builds_the_workspace_and_filters_tests() {
+        let selection = some(&["rbs-app", "rbs-gpu"]);
+        assert_eq!(
+            nextest_packages(&selection, &[]),
+            Some(vec![
+                "--workspace".to_owned(),
+                "-E".to_owned(),
+                "package(=rbs-app) | package(=rbs-gpu)".to_owned(),
+            ])
+        );
+        assert_eq!(nextest_packages(&some(&["rbs-gpu"]), &[]), None);
+        assert_eq!(nextest_packages(&Selection::All, &[]), None);
+        let own = ["-E".to_owned(), "test(x)".to_owned()];
+        assert_eq!(nextest_packages(&selection, &own), None);
     }
 
     #[test]

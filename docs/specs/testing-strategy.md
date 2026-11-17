@@ -54,6 +54,8 @@ When a selected package is one of the UI crates, `affected test` also runs `carg
 
 A change to the root `Cargo.toml`, `.cargo/`, `.config/`, a toolchain file or an unknown root file selects the whole workspace. Documentation, `.claude/`, `.github/` and `prototypes/` select nothing unless a source names them. `test` runs `cargo nextest run` (`cargo test` when nextest is missing), `clippy` adds `--all-targets -- -D warnings`, and `check` adds `--all-targets`.
 
+When the selection holds `rbs-app`, `test` builds the whole workspace and runs only the selected packages' tests (`cargo nextest run --workspace -E 'package(=a) | package(=b)'`). A `-p` subset resolves features over the subset alone, so it compiles third-party crates and about 46 workspace crates a second time with other features: `-p rbs-app` beside a workspace build took 248 s and 7 GB of disk, while the workspace build after a change in `rbs-app` takes about 70 s (4-core cloud container, 2026-11-17). A filter of the caller's own (`-- -E ...`) keeps `-p`. Every `cargo` that xtask starts drops the `CARGO_MANIFEST_DIR` and `CARGO_PKG_*` variables `cargo run` set for xtask; passed on, they made `ring`'s build script rerun, and every switch between `cargo xtask affected test` and a plain `cargo test` rebuilt `ring`, `rustls` and everything above them (about 200 s).
+
 Before a pull request is pushed, `cargo fmt --all -- --check`, `cargo xtask affected clippy` and `cargo xtask affected test` are enough. The whole workspace runs once after a batch of merges, not before each one.
 
 ### UI live preview
@@ -69,6 +71,24 @@ The live preview is for looking at and adjusting the UI only. The interpreter is
 The Rust code Slint generates from `crates/rbs-app/ui` is split by window group: `rbs-app-ui-base` (shared globals, structs, enums and tokens, built as the Slint library `@rbsui`), `rbs-app-ui-main` (main and floating windows), `rbs-app-ui-settings`, `rbs-app-ui-dialogs` and `rbs-app-ui-probes` (test-only windows, built for `rbs-app`'s tests). `rbs-app` names only the facade `rbs-app-ui`. Each window group has its own root (`ui/roots/<group>.slint`) that imports its windows from their own files (`main_window.slint`, `settings_window.slint`, the dialog files, `overlay_probe.slint`), never through `app.slint`, so Cargo reruns only the groups whose files changed. The Settings pages live in `studio_settings.slint`, apart from the panels in `studio.slint`. A change to a file every group uses (`components.slint`, `settings.slint`, `base/`) still rebuilds every group. `cargo xtask check-ui` enforces the name and import rules of the split.
 
 Measured on a 4-core / 15 GB cloud container (2026-11-17, `CARGO_BUILD_JOBS=4`): the UI crates build cold in about 146 s instead of 346 s; one changed text in a Settings page rebuilds only `rbs-app-ui-settings`, in 99 s with incremental compilation (138 s without) instead of 381 s; the largest rustc process peaks at 6.5 GB instead of 12.8 GB. Several groups peaking at once can still add up to about 16 GB, so use `CARGO_BUILD_JOBS=3` or less on a 16 GB machine.
+
+### Cloud containers
+
+Cloud sessions run on about 4 vCPUs, 16 GB of memory and 30 GB of disk. The cloud environment's setup script is a copy of `tools/cloud/setup.sh`: it installs the system packages the build needs (Vulkan through lavapipe, PipeWire, ALSA, D-Bus, xkbcommon, fontconfig, Wayland, udev, clang), `cargo-nextest`, and builds every third-party crate of the workspace into `rbs/target` with `cargo chef cook`, which compiles the dependencies against a stub of the workspace. The script takes about 3.5 minutes; the environment caches the file system when setup finishes in under about 5 minutes and rebuilds it about every 7 days or when the script changes, so a session starts with the dependencies already compiled. A `Cargo.lock` change since the cache only rebuilds the crates it changed.
+
+The environment also sets `CARGO_INCREMENTAL=0` (the incremental directory alone reached 10 GB), `CARGO_BUILD_JOBS=3` (the UI crates can peak at about 16 GB together) and `CARGO_PROFILE_DEV_DEBUG=0` (no line tables in the cloud; panic messages still name the file and line). Local builds keep the profile in `Cargo.toml`.
+
+Measured on a 4-core cloud container (main c4974cb, 2026-11-17, `cargo test --workspace --no-run`, `CARGO_BUILD_JOBS=3`, incremental off):
+
+| Setup | Time | Disk | Peak memory |
+| --- | --- | --- | --- |
+| Cold, line tables (before) | 473 s | 17 GB | about 12 GB |
+| Cold, `mold` linker | 484 s | 19 GB | about 12 GB |
+| Cold, no debug info | 450 s | 12 GB | about 12.6 GB |
+| Dependencies cooked by the setup script, no debug info | 284 s | 14 GB | about 12.7 GB |
+| Then a change in `rbs-app` (`cargo xtask affected test -- --no-run`) | about 70 s | | about 3.8 GB |
+
+The `mold` linker is not used: Rust links with `rust-lld` on this target already, and it was not faster. Of the 17 GB of the cold build, 11.7 GB are test executables (213 integration-test binaries); merging each crate's integration tests into one binary is the largest remaining saving. When the disk fills, `cargo clean` and the setup's cooked dependencies are gone too; `rm -rf target/debug/deps/*-????????????????` without an extension removes only the test executables, which the next run builds again.
 
 ## Counted UI checks (ADR-0115)
 

@@ -7,7 +7,7 @@
 //! code, so measurements and builds that ship never use it.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 pub const USAGE: &str = "\
 usage: cargo xtask ui-dev [<cargo run args>] [-- <app args>]
@@ -42,8 +42,8 @@ pub fn run(root: &Path, extra: &[String]) -> Result<ExitCode, String> {
         eprintln!("{USAGE}");
         return Ok(ExitCode::SUCCESS);
     }
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let status = Command::new(&cargo)
+    let (cargo, mut command) = crate::cargo_command();
+    let status = command
         .current_dir(root)
         .args(command_args(extra))
         .env("SLINT_LIVE_PREVIEW", "1")
