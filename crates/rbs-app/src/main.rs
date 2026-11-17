@@ -161,7 +161,13 @@ struct FloatSlot {
     models: DockModels,
 }
 
+/// View › Theme entries: label, theme id, checked.
+type ThemeChoices = Vec<(String, String, bool)>;
+
 struct App {
+    /// The View › Theme choices and the user-data revision they were read at, so a
+    /// sync reads no theme files from disk unless user data changed (audit U-01).
+    theme_choices: RefCell<Option<(u64, ThemeChoices)>>,
     session: LayoutSession,
     store: WorkspaceStore,
     config: PathBuf,
@@ -280,6 +286,10 @@ struct App {
     menus: MenuModels,
     /// The toolbar row's leading group (ADR-0071).
     toolbar_model: Rc<VecModel<ToolbarData>>,
+    /// The main window's left, right and bottom edge tabs.
+    edge_tab_models: [Rc<VecModel<EdgeTabData>>; 3],
+    /// The live chip's destinations.
+    live_dests_model: Rc<VecModel<LiveDestinationRow>>,
     /// Its end group, after the flexible space.
     toolbar_end_model: Rc<VecModel<ToolbarData>>,
     toolbar_fixed_model: Rc<VecModel<ToolbarData>>,
@@ -535,13 +545,27 @@ impl App {
         }
     }
 
+    /// The View › Theme choices, read from user data only after it changed.
+    fn theme_choices(&self) -> ThemeChoices {
+        let revision = self.studio.user.revision();
+        let mut cache = self.theme_choices.borrow_mut();
+        match cache.as_ref() {
+            Some((at, choices)) if *at == revision => choices.clone(),
+            _ => {
+                let choices = appearance_page::theme_menu_choices(&self.studio.user);
+                *cache = Some((revision, choices.clone()));
+                choices
+            }
+        }
+    }
+
     /// The shell's state as the command registry reads it.
     fn shown(&self) -> menu_bar::Shown<'_> {
         menu_bar::Shown {
             workspace: self.session.workspace(),
             workspaces: &self.workspaces,
             studio: &self.studio,
-            themes: appearance_page::theme_menu_choices(&self.studio.user),
+            themes: self.theme_choices(),
             experience: self.bg.experience(),
             density: self.density,
             maximized: self.maximized.as_ref(),
@@ -1762,8 +1786,8 @@ impl Ctx {
         app.main.global::<Shell>().set_live_duration(text.clone());
         // The live chip's list: each destination's time on air ticks too.
         if !app.studio.live_destination_count().is_empty() {
-            let dests = studio_ui::destinations::live_model(&app.studio.live_destination_rows());
-            app.main.global::<Shell>().set_live_dests(dests);
+            let rows = studio_ui::destinations::chip_rows(&app.studio.live_destination_rows());
+            set_rows(&app.live_dests_model, rows);
         }
         app.main
             .global::<Shell>()
@@ -2829,7 +2853,15 @@ impl Ctx {
             .map(|t| t.id.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let edge_models = edges.map(|v| ModelRc::new(VecModel::from(v)));
+        // The same models every sync, changed row by row: a new model would redraw the
+        // window even when the tabs are unchanged (audit U-05).
+        for (model, rows) in app.edge_tab_models.iter().zip(edges) {
+            set_rows(model, rows);
+        }
+        let edge_models = app
+            .edge_tab_models
+            .each_ref()
+            .map(|m| ModelRc::from(m.clone()));
         // Only macOS shows a menu bar (ADR-0069); elsewhere its values go unused (P13).
         if cfg!(target_os = "macos") {
             let values = menu_bar::values(&app.shown());
@@ -2885,7 +2917,11 @@ impl Ctx {
             .unwrap_or_default()
             .into();
         let dest_count: slint::SharedString = app.studio.live_destination_count().into();
-        let dests = studio_ui::destinations::live_model(&app.studio.live_destination_rows());
+        set_rows(
+            &app.live_dests_model,
+            studio_ui::destinations::chip_rows(&app.studio.live_destination_rows()),
+        );
+        let dests = ModelRc::from(app.live_dests_model.clone());
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
@@ -5811,6 +5847,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         page: Rc::default(),
         keys: Rc::default(),
         app: Rc::new(RefCell::new(App {
+            theme_choices: RefCell::new(None),
             session,
             store,
             config,
@@ -5873,6 +5910,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             attributes: None,
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
+            edge_tab_models: Default::default(),
+            live_dests_model: Rc::new(VecModel::default()),
             toolbar_end_model: Rc::new(VecModel::default()),
             toolbar_fixed_model: Rc::new(VecModel::default()),
             confirm_end: false,

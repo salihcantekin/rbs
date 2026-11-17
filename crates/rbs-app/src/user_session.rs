@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
 
@@ -240,6 +241,9 @@ pub struct UserSession {
     pub collection_name: String,
     /// What the user should know: entries that could not be read, read-only mode.
     pub notes: Vec<String>,
+    /// Counts tasks run on the writer thread, so callers can cache what they read
+    /// from user data (themes, appearance) until the next write.
+    revision: AtomicU64,
 }
 
 impl UserSession {
@@ -298,6 +302,7 @@ impl UserSession {
         task: impl FnOnce(&UserData, &WriterLock, &Names) -> R + Send + 'static,
     ) -> Result<R, String> {
         let saver = self.saver.as_ref().ok_or_else(read_only_note)?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         saver
             .shared
@@ -527,6 +532,12 @@ impl UserSession {
     /// The user data (for reading).
     pub fn data(&self) -> &UserData {
         &self.data
+    }
+
+    /// Changes whenever a task ran on the writer thread (every theme and appearance
+    /// write goes through it). Cache what you read from user data against it.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
     }
 
     /// The user themes, by name.
@@ -938,6 +949,7 @@ pub fn open(config: &Path, on_error: OnError) -> (UserSession, SceneCollection) 
             collection_id,
             collection_name,
             notes,
+            revision: AtomicU64::new(0),
         },
         collection,
     )

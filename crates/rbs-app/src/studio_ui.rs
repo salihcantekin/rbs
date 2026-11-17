@@ -6495,7 +6495,7 @@ impl StudioUi {
                         bad: l.bad,
                     })
                     .collect();
-                self.stats.set_vec(rows);
+                set_rows(&self.stats, rows);
             }
         }
         out
@@ -7047,11 +7047,12 @@ impl StudioUi {
                 if row.id != id {
                     continue;
                 }
-                paint(&mut row, &view);
-                if let Some(text) = &value {
-                    row.value = text.as_str().into();
+                // Write the row only when it changes: every write redraws the whole
+                // window, so a silent or steady meter must not cost a frame (audit U-02).
+                if repaint(&mut row, &view, value.as_deref()) {
+                    self.meters.set_row_data(i, row);
+                    crate::measure_ui::count_meter_write();
                 }
-                self.meters.set_row_data(i, row);
                 break;
             }
         }
@@ -7063,11 +7064,11 @@ impl StudioUi {
             ballistics.update(db, now);
             let view = ballistics.view(now);
             if let Some(mut row) = self.master_meter.row_data(0) {
-                paint(&mut row, &view);
-                if report {
-                    row.value = ballistics.take_report().english().into();
+                let value = report.then(|| ballistics.take_report().english());
+                if repaint(&mut row, &view, value.as_deref()) {
+                    self.master_meter.set_row_data(0, row);
+                    crate::measure_ui::count_meter_write();
                 }
-                self.master_meter.set_row_data(0, row);
             }
         }
         self.tick_loudness();
@@ -7082,16 +7083,27 @@ fn mixer_source(r: &SourceRow) -> bool {
     r.visible && (r.meter.is_some() || r.kind.is_some_and(SourceKind::is_audio))
 }
 
+/// Paints `view` (and the readout `value`, when one is due) into `row` and says whether
+/// anything changed, so the caller writes the row back only then.
+fn repaint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView, value: Option<&str>) -> bool {
+    let before = row.clone();
+    paint(row, view);
+    if let Some(text) = value {
+        row.value = text.into();
+    }
+    *row != before
+}
+
 /// Copies one meter view into a row: the zones, the peak hold and its zone, the clip.
 fn paint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView) {
     let [lo, mi, hi] = view.zones();
-    row.lo_from = lo.0;
-    row.lo_to = lo.1;
-    row.mi_from = mi.0;
-    row.mi_to = mi.1;
-    row.hi_from = hi.0;
-    row.hi_to = hi.1;
-    row.peak = view.peak;
+    row.lo_from = snap(lo.0);
+    row.lo_to = snap(lo.1);
+    row.mi_from = snap(mi.0);
+    row.mi_to = snap(mi.1);
+    row.hi_from = snap(hi.0);
+    row.hi_to = snap(hi.1);
+    row.peak = snap(view.peak);
     row.peak_zone = if view.peak >= meter::position(meter::HIGH_FROM_DB) {
         2
     } else if view.peak >= meter::position(meter::MID_FROM_DB) {
@@ -7100,6 +7112,16 @@ fn paint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView) {
         0
     };
     row.clipped = view.clipped;
+}
+
+/// Steps a bar position is rounded to: finer than a device pixel on any meter bar the
+/// Mixer draws (under 1024 device pixels long), so a level that moves less than that
+/// leaves the row unchanged and costs no frame (audit U-02).
+const METER_STEPS: f32 = 1024.0;
+
+/// Rounds a bar position (0 to 1) to [`METER_STEPS`]; not a number stays as it is.
+fn snap(position: f32) -> f32 {
+    (position * METER_STEPS).round() / METER_STEPS
 }
 
 /// What [`StudioUi::apply`] asks of the shell.
@@ -8247,6 +8269,49 @@ fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_meter_row_is_written_only_when_it_changes() {
+        use rbs_ui::meter::Meter;
+        let mut meter = Meter::new();
+        let now = Duration::from_millis(100);
+        let mut row = MeterRow::default();
+        repaint(&mut row, &meter.view(now), None);
+        assert!(
+            !repaint(&mut row, &meter.view(now), None),
+            "a silent meter painted again is no change"
+        );
+        meter.update(-12.0, now);
+        assert!(repaint(&mut row, &meter.view(now), None), "sound moves it");
+        assert!(
+            !repaint(&mut row, &meter.view(now), None),
+            "the same view again is no change, so the window is not redrawn"
+        );
+        assert!(
+            repaint(&mut row, &meter.view(now), Some("-12 dBFS")),
+            "a new readout is"
+        );
+        assert!(!repaint(&mut row, &meter.view(now), Some("-12 dBFS")));
+    }
+
+    #[test]
+    fn a_meter_that_moves_less_than_a_step_is_not_written() {
+        use rbs_ui::meter::MeterView;
+        let view = |level: f32| MeterView {
+            level,
+            peak: level,
+            clipped: false,
+        };
+        let mut row = MeterRow::default();
+        assert!(repaint(&mut row, &view(0.5), None));
+        let tiny = 0.25 / METER_STEPS;
+        assert!(
+            !repaint(&mut row, &view(0.5 + tiny), None),
+            "room noise that moves the bar by less than a pixel costs no frame"
+        );
+        assert!(repaint(&mut row, &view(0.5 + 2.0 / METER_STEPS), None));
+        assert!(snap(f32::NAN).is_nan(), "not a number stays as it is");
+    }
 
     #[test]
     fn ui_gestures_never_meet_the_picture_panels_numbers() {

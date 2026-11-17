@@ -678,21 +678,20 @@ pub(crate) fn live_count(rows: &[(LiveDestination, Instant)]) -> String {
 }
 
 /// `Shell` model rows of the live chip's list.
-pub(crate) fn live_model(rows: &[LiveRow]) -> slint::ModelRc<crate::ui::LiveDestinationRow> {
-    std::rc::Rc::new(slint::VecModel::from(
-        rows.iter()
-            .map(|r| crate::ui::LiveDestinationRow {
-                id: r.id as i32,
-                name: r.name.as_str().into(),
-                state: r.state.as_str().into(),
-                detail: r.detail.as_str().into(),
-                problem: r.problem,
-                can_stop: r.can_stop,
-                can_retry: r.can_retry,
-            })
-            .collect::<Vec<_>>(),
-    ))
-    .into()
+/// The live chip's rows. The caller keeps one model and replaces only the rows that
+/// changed, so an unchanged list does not redraw the window (audit U-05).
+pub(crate) fn chip_rows(rows: &[LiveRow]) -> Vec<crate::ui::LiveDestinationRow> {
+    rows.iter()
+        .map(|r| crate::ui::LiveDestinationRow {
+            id: r.id as i32,
+            name: r.name.as_str().into(),
+            state: r.state.as_str().into(),
+            detail: r.detail.as_str().into(),
+            problem: r.problem,
+            can_stop: r.can_stop,
+            can_retry: r.can_retry,
+        })
+        .collect()
 }
 
 /// The app log lines for what changed between two lists of running destinations: each
