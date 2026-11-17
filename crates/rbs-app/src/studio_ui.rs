@@ -358,6 +358,9 @@ pub struct StudioUi {
     pub preview_ready: bool,
     /// Studio mode (ADR-0061): the canvas has a preview scene.
     pub studio_mode: bool,
+    /// How often a held T-bar ended other than by going to 0 (ADR-0135): each change
+    /// puts the rail's T-bar back to 0.
+    tbar_resets: i32,
     /// Collection glide defaults (ADR-0100).
     glide: rbs_scene::CollectionGlide,
     /// The collection's transition (ADR-0128).
@@ -689,6 +692,7 @@ impl StudioUi {
             preview_failed: false,
             preview_ready: false,
             studio_mode: false,
+            tbar_resets: 0,
             glide: rbs_scene::CollectionGlide::default(),
             transition: rbs_scene::CollectionTransition::default(),
             scene_preview_ready: false,
@@ -848,6 +852,7 @@ impl StudioUi {
     pub fn push(&self, g: &Studio<'_>, states: PictureStates, picture_panel: &str) {
         let preview_state = states.program;
         g.set_studio_mode(self.studio_mode);
+        g.set_tbar_resets(self.tbar_resets);
         g.set_glide_duration(self.glide.duration_ms as i32);
         g.set_glide_easing(if self.glide.easing == rbs_scene::GlideEasing::Linear {
             0
@@ -2689,6 +2694,13 @@ impl StudioUi {
     /// Turns studio mode on or off (ADR-0061).
     pub fn set_studio_mode(&mut self, on: bool) {
         self.send(Command::SetStudioMode(on));
+    }
+
+    /// The T-bar moved to `t` (ADR-0135 decision 1).
+    pub fn transition_progress(&mut self, t: f32) {
+        if self.studio_mode {
+            self.send(Command::TransitionProgress(t));
+        }
     }
 
     /// The transition: the preview scene goes on air (ADR-0061).
@@ -5879,6 +5891,7 @@ impl StudioUi {
         match u {
             // Taken above.
             Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {}
+            Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::Thumbnail {
                 adapter,
                 target,

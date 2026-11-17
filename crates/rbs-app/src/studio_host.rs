@@ -2724,6 +2724,9 @@ pub enum Update {
     /// The monitor output (ADR-0097): device, volume, whether it is wanted and plays,
     /// its latency, solo and problem. Sent once at the start and when it changes.
     Monitor(api::MonitorStatus),
+    /// A held T-bar ended other than by going to 0 (ADR-0135 decision 14): the rail's
+    /// T-bar goes back to 0.
+    TBarReset,
     /// The playback devices, answering [`Command::ListMonitorDevices`].
     MonitorDevices(Vec<api::MonitorDevice>),
     /// The second canvas runs (`Some`) or does not (`None`), sent when it changes
@@ -3621,6 +3624,10 @@ struct Host {
     pending_progress: Option<f32>,
     /// A T-bar's end is making the program change: it does not cancel itself.
     taking: bool,
+    /// A manual transition held on the main canvas at the end of the last round.
+    tbar_manual: bool,
+    /// The T-bar went to 0 this round: the rail is there already.
+    tbar_zeroed: bool,
     /// How long the main recording and stream have run, for live texts (ADR-0129
     /// decision 11).
     text_elapsed: text_live::TextElapsed,
@@ -3976,17 +3983,26 @@ fn round(
             wait = wait.min(HELD_SWITCH_POLL);
         }
     }
-    // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
-    // the stream states say so.
-    // A transition ended (ADR-0128 decision 8): one update without the outgoing scene
-    // removes the incoming compositor and unlinks what only the outgoing scene used.
+    // The latest T-bar value (ADR-0135 decision 1), once per round.
     if let Some(t) = host.pending_progress.take() {
         host.drive_progress(t, notify);
     }
+    // A transition ended (ADR-0128 decision 8): one update without the outgoing scene
+    // removes the incoming compositor and unlinks what only the outgoing scene used.
     if host.studio.take_transition_done() {
         host.studio.settle_transitions(&host.adapters.sources);
     }
     host.publish_transitions();
+    // A held T-bar that ended other than by going to 0 (its take, a transition, a
+    // switch or a preview change): the rail's T-bar goes back to 0.
+    let manual = host.studio.manual_transition(host.canvas);
+    if host.tbar_manual && !manual && !host.tbar_zeroed {
+        notify(Update::TBarReset);
+    }
+    host.tbar_manual = manual;
+    host.tbar_zeroed = false;
+    // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
+    // the stream states say so.
     if host.studio.take_hold_fallback() {
         host.studio.settle_hold_scenes(&host.adapters.sources);
         for c in OutputCanvas::ALL {
@@ -4220,6 +4236,8 @@ fn start(
         waiting: false,
         held_switch: None,
         pending_progress: None,
+        tbar_manual: false,
+        tbar_zeroed: false,
         taking: false,
         text_elapsed: text_live::TextElapsed::default(),
         text_timer_file: config
@@ -11778,6 +11796,7 @@ impl Host {
         if self.preview().is_none() {
             return;
         }
+        self.tbar_zeroed = t <= 0.0;
         match self
             .studio
             .transition_progress(self.canvas, t, &self.adapters.sources)

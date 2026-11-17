@@ -3,7 +3,7 @@
 // toolkit-neutral rbs-ui crate: Slint has no recursive components, so Rust flattens
 // each window's layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions } from "components.slint";
+import { Button, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions, Slider, VSlider } from "components.slint";
 import { CommandMenu } from "context_menu.slint";
 import { AppMenu, AppMenuButton } from "app_menu.slint";
 import { ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel } from "studio.slint";
@@ -535,6 +535,98 @@ component TransitionCaption inherits Text {
     accessible-role: none;
 }
 
+// The T-bar (ADR-0135): a vertical slider on the rail between the pictures, a
+// horizontal one below them. Moved off 0 it starts a transition to the preview scene
+// that holds where it is let go; at 1 the preview scene goes on air and, once let go,
+// it is back at 0; at 0 the transition is cancelled. Escape while dragging, or a
+// double click, takes it back to 0. Arrows step it, Home and End go to 0 and 1.
+component TransitionTBar inherits Rectangle {
+    in property <bool> vertical;
+    in property <bool> can;
+    // Show the place in percent under the vertical bar.
+    in property <bool> percent: true;
+    // Taken at 1: moves are ignored until the pointer is let go.
+    property <bool> taken;
+    property <int> resets: Studio.tbar-resets;
+    changed resets => { Studio.tbar = 0; }
+    property <string> place: @tr("{}%", round(Studio.tbar * 100));
+    function move(v: float) {
+        if root.taken { return; }
+        Studio.tbar = v;
+        Studio.transition-progress(v);
+        if v >= 1 { root.taken = true; }
+    }
+    function release() {
+        if root.taken {
+            root.taken = false;
+            Studio.tbar = 0;
+        }
+    }
+    function back() {
+        root.taken = false;
+        if Studio.tbar > 0 {
+            Studio.tbar = 0;
+            Studio.transition-progress(0);
+        }
+    }
+    accessible-role: none;
+    if root.vertical: VerticalLayout {
+        spacing: Tokens.space-1;
+        Text {
+            text: @tr("T-bar");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            accessible-role: none;
+        }
+        HorizontalLayout {
+            alignment: center;
+            vertical-stretch: 1;
+            VSlider {
+                label: @tr("T-bar");
+                value: Studio.tbar;
+                value-text: root.place;
+                enabled: root.can;
+                moved(v) => { root.move(v); }
+                released => { root.release(); }
+                cancelled => { root.back(); }
+                reset => { root.back(); }
+            }
+        }
+        if root.percent: Text {
+            text: root.place;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            accessible-role: none;
+        }
+    }
+    if !root.vertical: HorizontalLayout {
+        spacing: Tokens.space-2;
+        Text {
+            text: @tr("T-bar");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Slider {
+                label: @tr("T-bar");
+                value: Studio.tbar;
+                value-text: root.place;
+                enabled: root.can;
+                moved(v) => { root.move(v); }
+                released => { root.release(); }
+                cancelled => { root.back(); }
+                reset => { root.back(); }
+            }
+        }
+    }
+}
+
 // Opens the transition options under itself (ADR-0128). On the narrow rail (`full`)
 // they include the type and the duration, which the rail has no room for.
 component TransitionOptionsButton inherits IconButton {
@@ -978,15 +1070,15 @@ component TransitionRail inherits Rectangle {
     if !below: VerticalLayout {
         padding: Tokens.space-2;
         spacing: Tokens.space-2;
-        Rectangle { }
+        // The T-bar takes the height the controls leave (ADR-0135).
+        TransitionTBar { vertical: true; can: root.can; percent: !root.icons; vertical-stretch: 1; }
         if !root.icons: TransitionChoice { }
         if !root.icons: HorizontalLayout {
             spacing: Tokens.space-1;
             TransitionDuration { horizontal-stretch: 1; }
             TransitionOptionsButton { }
         }
-        TransitionGo { can: root.can; icons: root.icons; }
-        Rectangle { }
+        TransitionGo { can: root.can; icons: root.icons; vertical-stretch: 0; }
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
         RailPlace { below: false; caption: !root.icons; }
     }
@@ -1002,7 +1094,11 @@ component TransitionRail inherits Rectangle {
         spacing: Tokens.space-2;
         VerticalLayout {
             alignment: center;
-            TransitionChoice { min-width: Tokens.size-transition-type-min; }
+            horizontal-stretch: 0;
+            TransitionChoice {
+                min-width: Tokens.size-transition-type-min;
+                preferred-width: Tokens.size-transition-type;
+            }
         }
         VerticalLayout {
             alignment: center;
@@ -1021,16 +1117,21 @@ component TransitionRail inherits Rectangle {
                 clicked => { Studio.transition(); }
             }
         }
+        TransitionTBar { vertical: false; can: root.can; horizontal-stretch: 1; }
         Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
         VerticalLayout {
             alignment: center;
             RailPlace { below: true; caption: false; }
         }
     }
+    // Below the pictures, wide: type, duration, options and Transition, then the
+    // T-bar taking the rest of the row (ADR-0135), and the position toggles at the
+    // right end behind a divider.
     if below && !compact: HorizontalLayout {
         width: root.width;
         height: root.height;
-        alignment: center;
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
         spacing: Tokens.space-2;
         VerticalLayout {
             alignment: center;
@@ -1048,26 +1149,23 @@ component TransitionRail inherits Rectangle {
             alignment: center;
             // Below the pictures the shortcut is not shown: only the accessible name
             // carries it (the owner, 2026-11-07).
-            HorizontalLayout {
-                spacing: Tokens.space-2;
-                Button {
-                    lead: IconName.transition;
-                    text: @tr("Transition");
-                    kind: "primary";
-                    enabled: root.can;
-                    accessible-name: Shell.transition-keys == ""
-                        ? @tr("Transition: put the preview scene on air")
-                        : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
-                    clicked => { Studio.transition(); }
-                }
+            Button {
+                lead: IconName.transition;
+                text: @tr("Transition");
+                kind: "primary";
+                enabled: root.can;
+                accessible-name: Shell.transition-keys == ""
+                    ? @tr("Transition: put the preview scene on air")
+                    : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
+                clicked => { Studio.transition(); }
             }
         }
-    }
-    if below && !compact: HorizontalLayout {
-        x: root.width - self.preferred-width - Tokens.space-3;
-        width: self.preferred-width;
-        height: root.height;
-        spacing: Tokens.space-2;
+        TransitionTBar {
+            vertical: false;
+            can: root.can;
+            min-width: Tokens.size-transition-tbar;
+            horizontal-stretch: 1;
+        }
         Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
         VerticalLayout {
             alignment: center;

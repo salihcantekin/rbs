@@ -4879,6 +4879,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_transition, |app| {
         app.studio.transition();
     });
+    on!(on_transition_progress, |app, t: f32| {
+        app.studio.transition_progress(t);
+    });
     on!(on_add_scene, |app| {
         app.studio.add_scene();
     });
