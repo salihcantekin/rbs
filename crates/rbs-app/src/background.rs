@@ -115,6 +115,11 @@ pub struct AppSettings {
     /// stays 1.
     #[serde(default)]
     pub swap_after_transition: bool,
+    /// The transition rail shows the T-bar (ADR-0135). Off by default: the rail keeps
+    /// its room for the other controls. Read as false when absent, so the format
+    /// stays 1.
+    #[serde(default)]
+    pub show_tbar: bool,
     /// Leave the RBS windows out of a screen capture (Windows
     /// `WDA_EXCLUDEFROMCAPTURE`, macOS `NSWindowSharingNone`). On when the key is
     /// absent: a screen recording does not include RBS. Linux ignores it.
@@ -207,6 +212,7 @@ impl Default for AppSettings {
             on_close: OnClose::platform_default(),
             background_notice_shown: false,
             swap_after_transition: false,
+            show_tbar: false,
             exclude_own_window: true,
             warn_silent: true,
             experience: None,
@@ -580,6 +586,8 @@ mod tests {
         // A file without the swap key (older builds): off (ADR-0098).
         std::fs::write(file(&d), "format_version = 1\non_close = \"quit\"\n").unwrap();
         assert!(!load(&d).0.swap_after_transition);
+        // Nor the T-bar key: hidden.
+        assert!(!load(&d).0.show_tbar);
         // Nor the silent output warning: it stays on.
         assert!(load(&d).0.warn_silent);
         let quiet = AppSettings {
