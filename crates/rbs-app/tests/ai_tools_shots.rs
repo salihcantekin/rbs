@@ -27,7 +27,14 @@ fn action(time: &str, method: &str, why: &str) -> AiActionRow {
     }
 }
 
-fn shot(file: &TokenFile, base: Base, name: &str, started: bool, dir: &std::path::Path) {
+fn shot(
+    file: &TokenFile,
+    base: Base,
+    name: &str,
+    started: bool,
+    missing: bool,
+    dir: &std::path::Path,
+) {
     let theme = file
         .resolve(&ThemeBody::new(base))
         .expect("the theme resolves");
@@ -57,8 +64,19 @@ fn shot(file: &TokenFile, base: Base, name: &str, started: bool, dir: &std::path
         std::path::Path::new("/Users/me/Library/Application Support/RBS/agent-token"),
         rbs_app::ai_tools::Shell::Sh,
     );
-    g.set_ai_where(line.place.into());
-    g.set_ai_line(line.text.into());
+    if missing {
+        g.set_ai_line_note(
+            "rbs-mcp is not built yet (/Users/me/rbs/target/debug/rbs-mcp). In the RBS source folder run: cargo build -p rbs-mcp"
+                .into(),
+        );
+    } else {
+        g.set_ai_where(line.place.into());
+        g.set_ai_line_help(line.help.into());
+        g.set_ai_line(line.text.into());
+    }
+    g.set_ai_config_name("claude_desktop_config.json".into());
+    g.set_ai_config_folder("/Users/me/Library/Application Support/Claude".into());
+    g.set_ai_config_exists(started);
     g.set_ai_access(1);
     if started {
         g.set_ai_state(1);
@@ -101,7 +119,29 @@ fn ai_tools_section_screenshots() {
     slint::platform::set_platform(Box::new(backend)).expect("the testing platform");
     let file = TokenFile::built_in().unwrap();
     for (base, b) in [(Base::Dark, "dark"), (Base::Light, "light")] {
-        shot(&file, base, &format!("ai-tools-stopped-{b}"), false, &dir);
-        shot(&file, base, &format!("ai-tools-started-{b}"), true, &dir);
+        shot(
+            &file,
+            base,
+            &format!("ai-tools-stopped-{b}"),
+            false,
+            false,
+            &dir,
+        );
+        shot(
+            &file,
+            base,
+            &format!("ai-tools-started-{b}"),
+            true,
+            false,
+            &dir,
+        );
+        shot(
+            &file,
+            base,
+            &format!("ai-tools-not-built-{b}"),
+            false,
+            true,
+            &dir,
+        );
     }
 }
