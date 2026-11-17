@@ -64,6 +64,8 @@ pub enum EditKind {
     Look,
     /// The collection glide or a source's slide override changed (ADR-0100).
     Glide,
+    /// The collection's transition changed (ADR-0128).
+    Transition,
     /// How long Show draws a hidden item changed (ADR-0105). The cue itself is not
     /// an undo step.
     ShowFor,

@@ -138,6 +138,64 @@ pub struct SetCollectionGlide {
     pub easing: crate::types::GlideEasing,
 }
 
+/// `collection.set_transition` (protocol 1.81, ADR-0128): the collection's transition.
+/// Only the given parts change; one undo step.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetCollectionTransition {
+    /// The kind a program change uses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::types::TransitionKind>,
+    /// Fade settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade: Option<crate::types::FadeTransition>,
+    /// Swipe settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swipe: Option<crate::types::SwipeTransition>,
+    /// Slide settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide: Option<crate::types::SwipeTransition>,
+}
+
+/// A transition for one program change only (protocol 1.81, ADR-0128 decision 13):
+/// `kind` and `duration_ms` replace the collection's for this change; absent ones keep
+/// it. With kind `move`, `duration_ms` replaces the glide's duration and every
+/// per-source override for this change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransitionOnce {
+    /// The kind for this change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::types::TransitionKind>,
+    /// Milliseconds in `0..=5000` for this change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+/// `scene.switch` (protocol 1.6; `kind` and `duration_ms` since 1.81).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwitchScene {
+    /// The scene's id (`scene.list`).
+    pub scene: u32,
+    /// The kind for this change only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::types::TransitionKind>,
+    /// Milliseconds for this change only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+impl SwitchScene {
+    /// The one-off transition of this switch.
+    pub fn once(&self) -> TransitionOnce {
+        TransitionOnce {
+            kind: self.kind,
+            duration_ms: self.duration_ms,
+        }
+    }
+}
+
 /// `source.set_glide` (protocol 1.35, ADR-0100): per-source slide override, or `null`
 /// to clear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1465,6 +1523,55 @@ pub struct RecordStartToFile {
     pub canvas: Option<OutputCanvas>,
 }
 
+/// What `import.obs.check` and `import.obs.run` bring (protocol 1.82, ADR-0131
+/// decision 12): the parts the desktop wizard offers. Every part is on when absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObsImportChoice {
+    /// The scenes to bring, by OBS name (and the scenes they nest); absent: all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenes: Option<Vec<String>>,
+    /// OBS's desktop audio and microphones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_audio: Option<bool>,
+    /// Audio filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_filters: Option<bool>,
+    /// Video filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_filters: Option<bool>,
+    /// The canvas size and frame rate of the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<bool>,
+    /// Recording settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<bool>,
+    /// The stream server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_server: Option<bool>,
+    /// The stream key (into the credential store only; needs `stream_server`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_key: Option<bool>,
+    /// Hotkeys (added; never replacing a shortcut of the user's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkeys: Option<bool>,
+}
+
+/// `import.obs.check` and `import.obs.run` (protocol 1.82): a collection and a
+/// profile named as `import.obs.scan` found them, never by path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObsImport {
+    /// A collection name from `import.obs.scan`.
+    pub collection: String,
+    /// A profile name from `import.obs.scan`; absent: no profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// What to bring; absent: everything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choose: Option<ObsImportChoice>,
+}
+
 /// `profile.switch` and `collection.switch` (protocol 1.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryRef {
@@ -1586,7 +1693,7 @@ pub enum Command {
     /// `text.fonts` (protocol 1.75).
     TextFonts,
     /// `scene.switch` (protocol 1.6).
-    SceneSwitch(SceneRef),
+    SceneSwitch(SwitchScene),
     /// `source.rename` (protocol 1.6).
     SourceRename(RenameSource),
     /// `source.set_volume` (protocol 1.6).
@@ -1656,7 +1763,7 @@ pub enum Command {
     /// `canvas.set_preview` (protocol 1.9).
     CanvasSetPreview(SetPreview),
     /// `canvas.transition` (protocol 1.9).
-    CanvasTransition,
+    CanvasTransition(TransitionOnce),
     /// `item.remove` (protocol 1.10).
     ItemRemove(ItemRef),
     /// `item.move` (protocol 1.32).
@@ -1779,6 +1886,8 @@ pub enum Command {
     CollectionSwitch(EntryRef),
     /// `collection.set_glide` (protocol 1.35, ADR-0100).
     CollectionSetGlide(SetCollectionGlide),
+    /// `collection.set_transition` (protocol 1.81, ADR-0128).
+    CollectionSetTransition(SetCollectionTransition),
     /// `source.set_glide` (protocol 1.35, ADR-0100).
     SourceSetGlide(SetSourceGlide),
     /// `source.set_region` (protocol 1.41, ADR-0103).
@@ -1821,6 +1930,14 @@ pub enum Command {
     TokensCreate(CreateToken),
     /// `tokens.revoke`.
     TokensRevoke(TokenRef),
+    /// `import.obs.scan` (protocol 1.82): the OBS collections and profiles on this
+    /// computer, by name.
+    ImportObsScan,
+    /// `import.obs.check` (protocol 1.82): the report of an import, nothing written.
+    ImportObsCheck(ObsImport),
+    /// `import.obs.run` (protocol 1.82): imports as a new scene collection and output
+    /// profile.
+    ImportObsRun(ObsImport),
 }
 
 impl Command {
@@ -1884,7 +2001,7 @@ impl Command {
             Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
-            Command::CanvasTransition => "canvas.transition",
+            Command::CanvasTransition(_) => "canvas.transition",
             Command::ItemRemove(_) => "item.remove",
             Command::ItemMove(_) => "item.move",
             Command::SceneMove(_) => "scene.move",
@@ -1950,6 +2067,7 @@ impl Command {
             Command::CollectionList => "collection.list",
             Command::CollectionSwitch(_) => "collection.switch",
             Command::CollectionSetGlide(_) => "collection.set_glide",
+            Command::CollectionSetTransition(_) => "collection.set_transition",
             Command::SourceSetGlide(_) => "source.set_glide",
             Command::SourceSetRegion(_) => "source.set_region",
             Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
@@ -1970,6 +2088,9 @@ impl Command {
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
             Command::TokensRevoke(_) => "tokens.revoke",
+            Command::ImportObsScan => "import.obs.scan",
+            Command::ImportObsCheck(_) => "import.obs.check",
+            Command::ImportObsRun(_) => "import.obs.run",
         }
     }
 }
@@ -2290,6 +2411,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("collection.list", Some(Scope::Read), Effect::Read),
     m("collection.switch", Some(Scope::Control), Effect::Live),
     m("collection.set_glide", Some(Scope::Control), Effect::Edit),
+    m(
+        "collection.set_transition",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
     m("source.set_glide", Some(Scope::Control), Effect::Edit),
     m("source.set_region", Some(Scope::Control), Effect::Edit),
     m(
@@ -2319,6 +2445,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("tokens.list", Some(Scope::Tokens), Effect::Read),
     m("tokens.create", Some(Scope::Tokens), Effect::Destructive),
     m("tokens.revoke", Some(Scope::Tokens), Effect::Destructive),
+    m("import.obs.scan", Some(Scope::Admin), Effect::Read),
+    m("import.obs.check", Some(Scope::Admin), Effect::Read),
+    m("import.obs.run", Some(Scope::Admin), Effect::Destructive),
 ];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
@@ -2478,7 +2607,7 @@ enum WireRequest {
     #[serde(rename = "source.paste_attributes")]
     SourcePasteAttributes(PasteAttributes),
     #[serde(rename = "scene.switch")]
-    SceneSwitch(SceneRef),
+    SceneSwitch(SwitchScene),
     #[serde(rename = "source.rename")]
     SourceRename(RenameSource),
     #[serde(rename = "source.set_volume")]
@@ -2548,7 +2677,7 @@ enum WireRequest {
     #[serde(rename = "canvas.set_preview")]
     CanvasSetPreview(SetPreview),
     #[serde(rename = "canvas.transition")]
-    CanvasTransition(Empty),
+    CanvasTransition(TransitionOnce),
     #[serde(rename = "item.remove")]
     ItemRemove(ItemRef),
     #[serde(rename = "item.move")]
@@ -2671,6 +2800,8 @@ enum WireRequest {
     CollectionSwitch(EntryRef),
     #[serde(rename = "collection.set_glide")]
     CollectionSetGlide(SetCollectionGlide),
+    #[serde(rename = "collection.set_transition")]
+    CollectionSetTransition(SetCollectionTransition),
     #[serde(rename = "source.set_glide")]
     SourceSetGlide(SetSourceGlide),
     #[serde(rename = "source.set_region")]
@@ -2713,6 +2844,12 @@ enum WireRequest {
     TokensCreate(CreateToken),
     #[serde(rename = "tokens.revoke")]
     TokensRevoke(TokenRef),
+    #[serde(rename = "import.obs.scan")]
+    ImportObsScan(Empty),
+    #[serde(rename = "import.obs.check")]
+    ImportObsCheck(ObsImport),
+    #[serde(rename = "import.obs.run")]
+    ImportObsRun(ObsImport),
 }
 
 impl From<WireRequest> for Request {
@@ -2788,7 +2925,7 @@ impl From<WireRequest> for Request {
             }
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
-            WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
+            WireRequest::CanvasTransition(p) => Request::Command(C::CanvasTransition(p)),
             WireRequest::ItemRemove(p) => Request::Command(C::ItemRemove(p)),
             WireRequest::ItemMove(p) => Request::Command(C::ItemMove(p)),
             WireRequest::SceneMove(p) => Request::Command(C::SceneMove(p)),
@@ -2858,6 +2995,9 @@ impl From<WireRequest> for Request {
             WireRequest::CollectionList(_) => Request::Command(C::CollectionList),
             WireRequest::CollectionSwitch(p) => Request::Command(C::CollectionSwitch(p)),
             WireRequest::CollectionSetGlide(p) => Request::Command(C::CollectionSetGlide(p)),
+            WireRequest::CollectionSetTransition(p) => {
+                Request::Command(C::CollectionSetTransition(p))
+            }
             WireRequest::SourceSetGlide(p) => Request::Command(C::SourceSetGlide(p)),
             WireRequest::SourceSetRegion(p) => Request::Command(C::SourceSetRegion(p)),
             WireRequest::SourceSetRecordSeparately(p) => {
@@ -2880,6 +3020,9 @@ impl From<WireRequest> for Request {
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
             WireRequest::TokensRevoke(p) => Request::Command(C::TokensRevoke(p)),
+            WireRequest::ImportObsScan(_) => Request::Command(C::ImportObsScan),
+            WireRequest::ImportObsCheck(p) => Request::Command(C::ImportObsCheck(p)),
+            WireRequest::ImportObsRun(p) => Request::Command(C::ImportObsRun(p)),
         }
     }
 }
@@ -2950,7 +3093,7 @@ impl From<Request> for WireRequest {
                 C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
-                C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),
+                C::CanvasTransition(p) => WireRequest::CanvasTransition(p),
                 C::ItemRemove(p) => WireRequest::ItemRemove(p),
                 C::ItemMove(p) => WireRequest::ItemMove(p),
                 C::SceneMove(p) => WireRequest::SceneMove(p),
@@ -3016,6 +3159,7 @@ impl From<Request> for WireRequest {
                 C::CollectionList => WireRequest::CollectionList(Empty {}),
                 C::CollectionSwitch(p) => WireRequest::CollectionSwitch(p),
                 C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
+                C::CollectionSetTransition(p) => WireRequest::CollectionSetTransition(p),
                 C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
                 C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
                 C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
@@ -3036,6 +3180,9 @@ impl From<Request> for WireRequest {
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
                 C::TokensRevoke(p) => WireRequest::TokensRevoke(p),
+                C::ImportObsScan => WireRequest::ImportObsScan(Empty {}),
+                C::ImportObsCheck(p) => WireRequest::ImportObsCheck(p),
+                C::ImportObsRun(p) => WireRequest::ImportObsRun(p),
             },
         }
     }
@@ -3355,6 +3502,12 @@ pub enum Response {
     Settings(Snapshot<Settings>),
     /// `profile.list`, `collection.list` (protocol 1.4).
     Library(Library),
+    /// `import.obs.scan` (protocol 1.82).
+    ObsScan(crate::types::ObsScan),
+    /// `import.obs.check` (protocol 1.82).
+    ObsCheck(crate::types::ObsCheck),
+    /// `import.obs.run` (protocol 1.82).
+    ObsRun(crate::types::ObsRun),
     /// `events.subscribe`.
     Subscribed(Subscribed),
     /// `tokens.list`.

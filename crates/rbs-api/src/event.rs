@@ -67,11 +67,14 @@ pub enum Topic {
     /// The attribute clipboard (state, protocol 1.68, ADR-0133).
     #[serde(rename = "source.attributes_clipboard.changed")]
     AttributesClipboardChanged,
+    /// A program change's transition started or ended (protocol 1.81, ADR-0128).
+    #[serde(rename = "transition.state")]
+    TransitionState,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 16] = [
+    pub const ALL: [Topic; 17] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -88,6 +91,7 @@ impl Topic {
         Topic::CalibrationState,
         Topic::SyncMeasureChanged,
         Topic::AttributesClipboardChanged,
+        Topic::TransitionState,
     ];
 
     /// Its name on the wire.
@@ -109,6 +113,7 @@ impl Topic {
             Topic::CalibrationState => "calibration.state",
             Topic::SyncMeasureChanged => "sync.measure.changed",
             Topic::AttributesClipboardChanged => "source.attributes_clipboard.changed",
+            Topic::TransitionState => "transition.state",
         }
     }
 
@@ -281,6 +286,9 @@ pub enum EventPayload {
     /// The attribute clipboard (protocol 1.68).
     #[serde(rename = "source.attributes_clipboard.changed")]
     AttributesClipboardChanged(crate::types::AttributesClipboardChanged),
+    /// A transition started or ended (protocol 1.81).
+    #[serde(rename = "transition.state")]
+    TransitionState(crate::types::TransitionStateChanged),
 }
 
 impl EventPayload {
@@ -303,6 +311,7 @@ impl EventPayload {
             EventPayload::CalibrationState(_) => Topic::CalibrationState,
             EventPayload::SyncMeasureChanged(_) => Topic::SyncMeasureChanged,
             EventPayload::AttributesClipboardChanged(_) => Topic::AttributesClipboardChanged,
+            EventPayload::TransitionState(_) => Topic::TransitionState,
         }
     }
 }
