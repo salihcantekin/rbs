@@ -636,6 +636,26 @@ fn apply_all(ctx: &Ctx, app: &App) {
     if let Some(w) = &app.settings {
         look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
     }
+    // Every other window that can be open while the theme changes takes it live too.
+    if let Some(w) = &app.source_settings {
+        look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
+    }
+    if let Some(w) = &app.sync_measure {
+        look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
+    }
+    if let Some(w) = &app.attributes {
+        look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
+    }
+    if let Some(o) = &app.obs_import {
+        look::apply(
+            &o.window.global::<Theme>(),
+            &o.window.global::<Tokens>(),
+            look,
+        );
+    }
+    crate::projector::each_window(|w| {
+        look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
+    });
 }
 
 /// Runs the "Keep this look?" countdown while it is asked; the timeout is Undo.
@@ -830,6 +850,7 @@ fn row(r: crate::appearance::TokenRow) -> ThemeTokenRow {
         problem: r.problem.into(),
         warning: r.warning.into(),
         fixable: r.fixable,
+        hint: rbs_app::theme_hints::shapes(r.name).into(),
         step: 1.0,
         ..Default::default()
     };
