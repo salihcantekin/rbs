@@ -36,6 +36,8 @@ use crate::transport::{
 /// profile's `markers`, `while_paused` on `marker.add`'s answer, and marker times in
 /// file time.
 /// 1.62 adds the marker settings (ADR-0089): `markers` on a recording profile.
+/// 1.83 adds playback controls of a media-file source (ADR-0108 decision 10):
+/// `media.play`, `media.pause`, `media.seek`, `media.restart` and `media.state`.
 /// 1.77 adds filter latency (ADR-0130 decision 9): `latency_ms` on audio filter types;
 /// `filter_latency_ms`, `effective_offset_ms`, `uncompensated_ms`, and in `source.list`
 /// `input_late_frames` and `input_resyncs` on a source; `effective_offset_ms` of
@@ -103,7 +105,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.82";
+pub const PROTOCOL_VERSION: &str = "1.83";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

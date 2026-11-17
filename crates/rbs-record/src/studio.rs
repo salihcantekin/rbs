@@ -1244,6 +1244,11 @@ pub struct Studio {
     browser_tree: Option<Arc<dyn BrowserTree>>,
     /// Control-thread handles that poll helper processes (ADR-0109).
     browser_controls: BTreeMap<SourceId, Arc<BrowserControlSidecar>>,
+    /// The playback handle of every media instance (ADR-0108 decision 10), and the
+    /// on-air set of the last sync (ADR-0107 decision 6). Empty without media
+    /// sources: `service` then does nothing for them.
+    media_controls: BTreeMap<SourceId, rbs_nodes::MediaControl>,
+    on_air: BTreeSet<SourceId>,
     /// Draws text sources (ADR-0129); made on the first text instance.
     text: Option<TextWorker>,
     /// File access and wall clock of the text worker (real unless a host or test
@@ -1635,6 +1640,8 @@ impl Studio {
             browser_budget: BrowserBudget::shared(),
             browser_tree,
             browser_controls: BTreeMap::new(),
+            media_controls: BTreeMap::new(),
+            on_air: BTreeSet::new(),
             text: None,
             text_io: (Arc::new(RealFileProbe), Arc::new(SystemTextClock)),
             text_problems: BTreeMap::new(),
@@ -2296,7 +2303,17 @@ impl Studio {
                 .into_iter()
                 .partition(|e| retired.contains(&e.state.node));
             self.entries = kept;
+            for e in &old {
+                self.media_controls.remove(&e.source);
+            }
             gone = old;
+            // Membership is written before the apply, so a source that wakes in this
+            // apply follows the table with it (ADR-0107 decision 6). A failure shows
+            // as the source's `Unavailable` play state.
+            self.on_air = std::mem::take(&mut report.on_air_sources);
+            for (id, control) in &self.media_controls {
+                let _ = control.set_on_air(self.on_air.contains(id));
+            }
             let retired_filters: BTreeSet<NodeId> =
                 report.retired_filters.iter().copied().collect();
             let (old_filters, kept_filters): (Vec<FilterEntry>, Vec<FilterEntry>) =
@@ -2516,11 +2533,14 @@ impl Studio {
                     // not know about.
                     let m = *m;
                     entry.state.adapter = m.adapter;
+                    // Before the apply that prepares it (ADR-0107 decision 6).
+                    let _ = m.control.set_on_air(self.on_air.contains(&entry.source));
                     self.engine.adopt::<GpuRuntime>(
                         RENDER,
                         entry.state.node,
                         Box::new(m.picture),
                     )?;
+                    self.media_controls.insert(entry.source, m.control);
                     let instance = entry.instance.insert(Instance {
                         partition: RENDER,
                         gpu: true,
@@ -3391,6 +3411,12 @@ impl Studio {
         self.cues.expire(now)
     }
 
+    /// The playback handle of a media source that has an instance: play, pause,
+    /// seek and restart (ADR-0108 decision 10).
+    pub fn media_control(&self, source: SourceId) -> Option<&crate::MediaControl> {
+        self.media_controls.get(&source)
+    }
+
     /// How long the control thread may sleep before the soonest cue ends. `None`
     /// when no cue is running, so nothing is armed (P13).
     pub fn cue_wait(&self, now: Timestamp) -> Option<Duration> {
@@ -3410,6 +3436,10 @@ impl Studio {
     pub fn service(&mut self) -> Serviced {
         for control in self.browser_controls.values() {
             control.control_tick();
+        }
+        // The pause release of paused or cued media (ADR-0108 decision 10).
+        for control in self.media_controls.values() {
+            control.service();
         }
         self.service_text();
         let serviced = self.engine.service();
