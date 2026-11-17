@@ -1,6 +1,6 @@
 # ADR-0105: Timed show draws a hidden item for a deadline without undo
 
-- Status: Proposed
+- Status: Accepted (2026-11-17)
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0059](0059-scenes-lock-and-source-audio-in-the-studio.md), [ADR-0060](0060-shortcuts-in-app-and-global.md), [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md)
@@ -63,3 +63,5 @@ Concerns:
 10. **Acceptance order with ADR-0107** — Both are Proposed; 0107 implementation explicitly omits cue branches until 0105 is accepted. Landing 0107 first without the hook named here risks a second binder churn. -> **open** (owner accepts parallel implementation with a named extension point, or sequences acceptance).
 
 Resolutions (author, 2026-11-12), written into decisions 1–10: (1) flatten takes a host cued-id set; drawn if visible or cued, on shown scenes only. (2) host passes cued source ids into sync; empty default until the map exists. (3) cue counts for audio `visible_sources` too. (4) Show only when `visible` is false; restarts mid-cue; visible item ignores Show. (5) one wake / soonest deadline; empty map means no work. (6) cues are session-only; API live parity. (7) optional item key on the next free format. (8) bounded cue-map lookup + hot-path-review. (9) shown = program and preview when set. (10) parallel OK with empty cued-set argument.
+
+Owner acceptance: Salih, 2026-11-17: "Tüm ADR'ları kabul et" ("accept all the ADRs"). The decision is built and in use; the concerns above that are still open are accepted by the owner as follow-ups for the work that touches them (ADR-0014, architecture-review skill: approve with open concerns only when the owner accepts them).
