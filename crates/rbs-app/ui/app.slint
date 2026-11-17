@@ -15,12 +15,12 @@ import { ObsImportWindow, ObsSceneChoice, ObsReportRow } from "obs_import.slint"
 import { AttributesWindow } from "attributes.slint";
 import { CommandMenu, ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
-import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
+import { Studio, AiActionRow, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { SourceSettingsWindow, ModeData, SourceSettingsData, SyncMeasureWindow, ObsImportWindow, ObsSceneChoice, ObsReportRow, AttributesWindow }
 export { ProjectorWindow } from "projector.slint";
 export { OverlayProbe, FocusRevealProbe, SettingRowProbe, NumberFieldProbe, ExperienceProbe, EffectsProbe, SegmentProbe } from "overlay_probe.slint";
-export { Sections, Experience, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
+export { Sections, Experience, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, AiActionRow, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
