@@ -33,6 +33,7 @@ use rbs_media_decode::{
     SoundSample, frame_duration_rule, refuse_picture,
 };
 
+use crate::edits::{SoundEdit, Trimmed};
 use crate::gpu::Gpu;
 use crate::{Crop, bgrx_to_rgba, f32_samples, hns, missing_codec, nominal_duration, to_hns};
 
@@ -228,6 +229,9 @@ pub(crate) struct MfDecoder {
     sound: Option<Sound>,
     has_audio: bool,
     duration: Option<Duration>,
+    /// The sound track's edit list, which Media Foundation does not apply to AAC
+    /// (`edits.rs`); `None` when it changes nothing or the file has none.
+    sound_edit: Option<SoundEdit>,
     /// The last seek target, applied to a sound reader created after it.
     cursor: Duration,
     /// The previous picture's duration, to continue an unstated one.
@@ -303,6 +307,14 @@ impl MfDecoder {
             .and_then(|value: PROPVARIANT| u64::try_from(&value).ok())
             .filter(|&v| v > 0)
             .and_then(|v| hns(i64::try_from(v).ok()?));
+        let sound_edit = if has_audio {
+            std::fs::File::open(path)
+                .ok()
+                .and_then(|mut file| crate::edits::sound_edit(&mut file))
+                .filter(|edit| !edit.is_identity())
+        } else {
+            None
+        };
         Ok(Self {
             path: path.to_owned(),
             video,
@@ -310,6 +322,7 @@ impl MfDecoder {
             sound: None,
             has_audio,
             duration,
+            sound_edit,
             cursor: Duration::ZERO,
             last_duration: None,
             gpu,
@@ -516,33 +529,46 @@ impl MediaDecoder for MfDecoder {
         if !self.has_audio {
             return Ok(None);
         }
+        let edit = self.sound_edit;
         let sound = self.open_sound()?;
-        let Some((sample, stamp, _)) = read(&sound.reader, AUDIO)? else {
-            return Ok(None);
-        };
-        let mut samples = Vec::new();
-        // SAFETY: the buffer is locked and unlocked here; the pointer is only read
-        // inside the lock.
-        unsafe {
-            let buffer = sample
-                .ConvertToContiguousBuffer()
-                .map_err(|e| failed("sound buffer", &e))?;
-            let mut data = std::ptr::null_mut();
-            let mut len = 0u32;
-            buffer
-                .Lock(&mut data, None, Some(&mut len))
-                .map_err(|e| failed("lock sound", &e))?;
-            samples.extend(f32_samples(std::slice::from_raw_parts(data, len as usize)));
-            let _ = buffer.Unlock();
+        loop {
+            let Some((sample, stamp, _)) = read(&sound.reader, AUDIO)? else {
+                return Ok(None);
+            };
+            let mut samples = Vec::new();
+            // SAFETY: the buffer is locked and unlocked here; the pointer is only read
+            // inside the lock.
+            unsafe {
+                let buffer = sample
+                    .ConvertToContiguousBuffer()
+                    .map_err(|e| failed("sound buffer", &e))?;
+                let mut data = std::ptr::null_mut();
+                let mut len = 0u32;
+                buffer
+                    .Lock(&mut data, None, Some(&mut len))
+                    .map_err(|e| failed("lock sound", &e))?;
+                samples.extend(f32_samples(std::slice::from_raw_parts(data, len as usize)));
+                let _ = buffer.Unlock();
+            }
+            let mut pts = hns(stamp);
+            // The priming before the edit and the padding after it are not played.
+            if let (Some(edit), Some(at)) = (edit.as_ref(), pts) {
+                match crate::edits::trim(edit, at, sound.sample_rate, sound.channels, &mut samples)
+                {
+                    Trimmed::Play(start) => pts = Some(start),
+                    Trimmed::Skip => continue,
+                    Trimmed::End => return Ok(None),
+                }
+            }
+            return Ok(Some(SoundSample {
+                pts,
+                pcm: InterleavedPcm {
+                    sample_rate: sound.sample_rate,
+                    channels: sound.channels,
+                    samples,
+                },
+            }));
         }
-        Ok(Some(SoundSample {
-            pts: hns(stamp),
-            pcm: InterleavedPcm {
-                sample_rate: sound.sample_rate,
-                channels: sound.channels,
-                samples,
-            },
-        }))
     }
 
     fn has_audio(&self) -> bool {
