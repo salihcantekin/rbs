@@ -209,6 +209,8 @@ export global Studio {
     callback open-source-settings(int /* source */);
     // The Measure sync offset window opens for a source with sound (ADR-0126).
     callback open-sync-measure(int /* source */);
+    // Settings › General: open the Import from OBS window (ADR-0131).
+    callback open-obs-import();
     // Start in that window, clapping in view of a picture source.
     callback start-sync-measure(int /* reference */);
     // The Measure window closes (Cancel, Apply, its close button).
@@ -5812,6 +5814,24 @@ export component GeneralSettings inherits Rectangle {
                     index: Studio.glide-easing;
                     enabled: Studio.glide-duration > 0;
                     selected(i) => { Studio.set-glide(Studio.glide-duration, i); }
+                }
+            }
+        }
+        // ADR-0131 (owner direction): the OBS import wizard. Last on the page: it is
+        // rarely used.
+        SettingsCard {
+            title: @tr("Bring from another app");
+            id: "settings.general.import";
+            SettingRow {
+                find: "general.import-obs";
+                divider: false;
+                label: @tr("OBS Studio");
+                summary: @tr("Scenes and settings, as a new collection and output profile");
+                hint: @tr("Scenes, sources, filters, output settings and hotkeys come across as a new scene collection and output profile. Nothing you have now changes, and you see what did not come across before anything is written.");
+                fill: false;
+                Button {
+                    text: @tr("Import from OBS…");
+                    clicked => { Studio.open-obs-import(); }
                 }
             }
         }

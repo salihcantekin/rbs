@@ -75,6 +75,56 @@ pub(super) struct CanvasTransition {
     easing: GlideEasing,
     phase: Phase,
     incoming: Option<IncomingView>,
+    /// The mixer's levels before the change (main canvas; decision 10).
+    from_mix: BTreeMap<SourceId, SourceAudio>,
+    /// The sources the new program scene is heard with (main canvas).
+    to_heard: BTreeSet<SourceId>,
+}
+
+/// How a running transition shapes the main mixer's strips (ADR-0128 decision 10):
+/// while it waits, the outgoing levels; while it runs, the incoming levels reached
+/// over the picture's start and duration; after it, the incoming levels. A source of
+/// the outgoing scene only goes to silence, one of the incoming scene only comes up
+/// from silence, a shared one moves from its outgoing to its incoming level.
+pub(super) struct MixShape {
+    phase: Phase,
+    duration: Duration,
+    outgoing: BTreeSet<SourceId>,
+    from_mix: BTreeMap<SourceId, SourceAudio>,
+    to_heard: BTreeSet<SourceId>,
+}
+
+impl MixShape {
+    /// Shapes strips that hold the incoming (current) levels.
+    pub(super) fn apply(&self, strips: &mut [MixStrip]) {
+        let silent = |mut a: SourceAudio| {
+            a.muted = true;
+            a
+        };
+        for s in strips {
+            match self.phase {
+                Phase::Waiting(_) => {
+                    s.audio = match self.from_mix.get(&s.source) {
+                        Some(a) if self.outgoing.contains(&s.source) => *a,
+                        _ => silent(s.audio),
+                    };
+                    s.ramp = None;
+                }
+                Phase::Running(start) => {
+                    if !self.to_heard.contains(&s.source) {
+                        s.audio = silent(s.audio);
+                    }
+                    s.ramp = Some((start, self.duration));
+                }
+                Phase::Ending(_) | Phase::Done => {
+                    if !self.to_heard.contains(&s.source) {
+                        s.audio = silent(s.audio);
+                    }
+                    s.ramp = None;
+                }
+            }
+        }
+    }
 }
 
 /// What a program change on a canvas runs, from the collection's transition: `None`
@@ -146,6 +196,18 @@ impl Studio {
                 // A reused compositor: the counter must move past its value now.
                 view.ready.store(0, Ordering::Release);
             }
+            let (from_mix, to_heard) = if canvas == self.settings.canvas {
+                let to_heard = program_scene(collection, canvas)
+                    .and_then(|scene| {
+                        collection
+                            .visible_sources_cued(canvas, scene, &self.cues.items())
+                            .ok()
+                    })
+                    .unwrap_or_default();
+                (self.mix.clone(), to_heard)
+            } else {
+                (BTreeMap::new(), BTreeSet::new())
+            };
             self.transitions.insert(
                 canvas,
                 CanvasTransition {
@@ -155,6 +217,8 @@ impl Studio {
                     easing,
                     phase: Phase::Waiting(now),
                     incoming,
+                    from_mix,
+                    to_heard,
                 },
             );
         }
@@ -341,8 +405,24 @@ impl Studio {
         if resend {
             let plan = self.graph.plan();
             self.send_program_layers(&plan);
+            if self.transitions.contains_key(&self.settings.canvas) {
+                self.send_mix();
+            }
         }
         done
+    }
+
+    /// How the main canvas's transition shapes its mixer strips, `None` while none
+    /// runs there.
+    pub(super) fn transition_mix(&self) -> Option<MixShape> {
+        let t = self.transitions.get(&self.settings.canvas)?;
+        Some(MixShape {
+            phase: t.phase,
+            duration: t.duration,
+            outgoing: t.outgoing.heard.clone(),
+            from_mix: t.from_mix.clone(),
+            to_heard: t.to_heard.clone(),
+        })
     }
 
     /// How long the control thread may sleep before a transition needs a step. `None`

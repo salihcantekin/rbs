@@ -485,8 +485,40 @@ impl UserSession {
         })?
     }
 
+    /// Writes an OBS import plan (ADR-0131 decision 9) on the writer thread: a new
+    /// scene collection, output profile and shortcuts. Returns what was written and
+    /// the stream key to save under the new profile's account, if any; the caller
+    /// hands that to the studio, which owns the key store.
+    pub fn import_obs(
+        &self,
+        plan: rbs_import_obs::ImportPlan,
+    ) -> Result<
+        (
+            crate::obs_import::Written,
+            Option<(String, rbs_transport::Secret)>,
+        ),
+        String,
+    > {
+        self.run(move |data, lock, _| {
+            let key = std::cell::RefCell::new(None);
+            let written = crate::obs_import::write(
+                data,
+                lock,
+                &plan,
+                &|account, secret| {
+                    *key.borrow_mut() = Some((account.to_owned(), secret));
+                    Ok(())
+                },
+                rbs_ui::shortcut::Platform::current(),
+                &|p| p.is_dir(),
+            )?;
+            Ok((written, key.into_inner()))
+        })?
+    }
+
     /// Deletes the scene collection `id`, which must not be the one in use (its file
-    /// is moved to `deleted/`).
+    /// is moved to `deleted/`). Its OBS import report, if any, is removed with it
+    /// (ADR-0131 decision 11).
     pub fn delete_collection(&self, id: &EntryId) -> Result<(), String> {
         if *id == self.collection_id {
             return Err("the scene collection in use cannot be deleted".into());
@@ -495,8 +527,9 @@ impl UserSession {
         self.run(move |data, lock, _| {
             data.scene_collections()
                 .delete(lock, &id)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(crate::obs_import::report_path(data.root(), &id));
+            Ok(())
         })?
     }
 }
@@ -952,6 +985,21 @@ mod tests {
         assert_eq!(col2, col);
         assert_eq!(s.section::<RecordProfile>(RECORDING).unwrap().unwrap(), rec);
         assert!(s.notes.is_empty(), "{:?}", s.notes);
+    }
+
+    #[test]
+    fn deleting_a_collection_removes_its_obs_import_report() {
+        let d = Dir::new("import-report");
+        let (s, _) = open(&d.0, quiet());
+        let id = s
+            .new_collection("From OBS", &CanvasProfile::new(), false)
+            .unwrap();
+        let report = crate::obs_import::report_path(&d.0, &id);
+        std::fs::create_dir_all(report.parent().unwrap()).unwrap();
+        std::fs::write(&report, "kind = \"obs-import-report\"\n").unwrap();
+        s.delete_collection(&id).unwrap();
+        assert!(!report.exists());
+        assert!(!s.collections().iter().any(|(c, _)| *c == id));
     }
 
     #[test]

@@ -12,18 +12,23 @@
 //! `cargo clippy --target aarch64-apple-darwin --features cef/dox` (or
 //! `x86_64-pc-windows-msvc`), after `rustup target add` for that target.
 //!
-//! Not yet: the GPU texture path, page audio into the sound node (audio is taken
-//! from the OS and dropped), CSS, reload, input and the sandbox (ADR-0132 steps).
+//! Page audio never reaches an OS device (ADR-0132 decision 7). When the studio names a
+//! sound section, each packet goes there with the OS monotonic time of its first frame
+//! (ADR-0109 decision 6); otherwise it is dropped.
+//!
+//! Not yet: the GPU texture path, CSS, reload, input and the sandbox (ADR-0132 steps).
 
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cef::*;
 use rbs_browser_ipc::page::{bgra_premultiplied_to_rgba, file_scope, request_allowed};
 use rbs_browser_ipc::{Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, decode_configure};
-use rbs_browser_shm::{FrameRing, RingWriter, SlotLayout};
+use rbs_browser_shm::{
+    FrameRing, MAX_SOUND_CHANNELS, RingWriter, SlotLayout, SoundRing, os_monotonic_nanos,
+};
 
 /// Exit codes the studio may log. Any exit is Unavailable to the studio.
 mod exit {
@@ -48,6 +53,13 @@ struct Page {
     /// Exit code chosen by the event that ended the loop.
     code: AtomicI32,
     closed: AtomicBool,
+    /// The studio's sound section; `None`: page audio is dropped.
+    sound: Option<SoundRing>,
+    /// The rate the studio asked for (0: the engine's own).
+    sample_rate: u32,
+    /// Rate and channels of the current audio stream (CEF's audio thread).
+    stream_rate: AtomicU32,
+    stream_channels: AtomicU32,
 }
 
 static PAGE: OnceLock<Page> = OnceLock::new();
@@ -146,23 +158,79 @@ wrap_render_handler! {
 wrap_audio_handler! {
     struct Sound;
     impl AudioHandler {
-        // Returning 1 routes page audio here instead of the OS output. It is
-        // dropped until the sound node lands (ADR-0106, ADR-0132 decision 7).
+        // Returning 1 routes page audio here instead of the OS output (ADR-0132
+        // decision 7). With a sound section, ask for the studio's rate in stereo,
+        // in 10 ms packets.
         fn audio_parameters(
             &self,
             _browser: Option<&mut Browser>,
-            _params: Option<&mut AudioParameters>,
+            params: Option<&mut AudioParameters>,
         ) -> ::std::os::raw::c_int {
+            if let (Some(page), Some(params)) = (page(), params)
+                && page.sound.is_some()
+                && let Ok(rate) = i32::try_from(page.sample_rate)
+                && rate > 0
+            {
+                params.sample_rate = rate;
+                params.channel_layout = ChannelLayout::LAYOUT_STEREO;
+                params.frames_per_buffer = rate / 100;
+            }
             1
+        }
+
+        fn on_audio_stream_started(
+            &self,
+            _browser: Option<&mut Browser>,
+            params: Option<&AudioParameters>,
+            channels: ::std::os::raw::c_int,
+        ) {
+            let Some(page) = page() else {
+                return;
+            };
+            let rate = params.map_or(0, |p| u32::try_from(p.sample_rate).unwrap_or(0));
+            page.stream_rate.store(rate, Ordering::Release);
+            page.stream_channels
+                .store(u32::try_from(channels).unwrap_or(0), Ordering::Release);
         }
 
         fn on_audio_stream_packet(
             &self,
             _browser: Option<&mut Browser>,
-            _data: *mut *const f32,
-            _frames: ::std::os::raw::c_int,
+            data: *mut *const f32,
+            frames: ::std::os::raw::c_int,
             _pts: i64,
         ) {
+            let Some(page) = page() else {
+                return;
+            };
+            let Some(sound) = page.sound.as_ref() else {
+                return;
+            };
+            let rate = page.stream_rate.load(Ordering::Acquire);
+            let channels = page.stream_channels.load(Ordering::Acquire) as usize;
+            let Ok(frames) = usize::try_from(frames) else {
+                return;
+            };
+            if data.is_null() || rate == 0 || channels == 0 || frames == 0 {
+                return;
+            }
+            // The packet was just made: its first frame is one packet ago.
+            let duration = frames as u64 * 1_000_000_000 / u64::from(rate);
+            let os_nanos = os_monotonic_nanos().saturating_sub(duration);
+            let mut planes: [&[f32]; MAX_SOUND_CHANNELS] = [&[]; MAX_SOUND_CHANNELS];
+            let used = channels.min(MAX_SOUND_CHANNELS);
+            for (c, plane) in planes.iter_mut().enumerate().take(used) {
+                // SAFETY: CEF passes `channels` (from `on_audio_stream_started`)
+                // plane pointers, each to `frames` floats, valid for this call;
+                // `c < channels`.
+                let ptr = unsafe { *data.add(c) };
+                if ptr.is_null() {
+                    return;
+                }
+                // SAFETY: as above; the slice lives only inside this callback.
+                *plane = unsafe { std::slice::from_raw_parts(ptr, frames) };
+            }
+            sound.write_planar(os_nanos, rate, &planes[..used], frames);
         }
     }
 }
@@ -532,6 +600,10 @@ fn run_browser(args: &args::Args, app: &mut App) -> i32 {
     };
     let writer = ring.writer();
     let scope = file_scope(&config.url).map(str::to_owned);
+    // No sound section, or one that does not open: the page is silent to the studio.
+    let sound = (!config.sound.is_empty())
+        .then(|| SoundRing::open(&config.sound).ok())
+        .flatten();
     let page = PAGE.get_or_init(|| Page {
         ring,
         writer: Mutex::new(writer),
@@ -541,6 +613,10 @@ fn run_browser(args: &args::Args, app: &mut App) -> i32 {
         quit: AtomicBool::new(false),
         code: AtomicI32::new(0),
         closed: AtomicBool::new(false),
+        sound,
+        sample_rate: config.sample_rate,
+        stream_rate: AtomicU32::new(0),
+        stream_channels: AtomicU32::new(0),
     });
 
     // Stdin closing is the studio's stop (ADR-0109 decision 8).

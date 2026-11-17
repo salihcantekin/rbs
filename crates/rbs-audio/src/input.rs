@@ -358,92 +358,66 @@ impl State {
 /// time with the sync offset, corrects drift and converts to the graph format.
 pub struct InputNode {
     desc: NodeDescriptor,
+    aligner: InputAligner,
+    params: ParamReceiver<InputParams>,
+}
+
+/// The time map, steering and conversion of one audio input stream, apart from the
+/// graph (audio graph spec, "Input node"). [`InputNode`] runs it on the audio thread;
+/// a producer whose sound arrives on its own clock (a browser page, ADR-0106 decision
+/// 3) runs it on its own thread and pushes the blocks it renders.
+///
+/// [`ingest`](Self::ingest) and [`render`](Self::render) never allocate: everything is
+/// allocated by [`start`](Self::start).
+pub struct InputAligner {
     stream: Box<dyn AudioInputStream>,
     config: AudioGraphConfig,
     max_offset: Duration,
-    params: ParamReceiver<InputParams>,
     stats: Arc<InputStats>,
     state: Option<State>,
 }
 
-/// The descriptor of input nodes.
-pub fn input_descriptor() -> NodeDescriptor {
-    NodeDescriptor::new(
-        NodeTypeId::new(INPUT_NODE_TYPE),
-        NodeKind::Source,
-        vec![],
-        vec![Pin::one("out", LinkKind::Audio)],
-    )
-}
-
-impl InputNode {
-    /// A node for `stream` (opened, Standby) in a graph of `config`. `max_offset` is
-    /// the largest delay the sync offset may ask for; the FIFO is sized for it.
+impl InputAligner {
+    /// An aligner for `stream` (opened, not started) in a graph of `config`.
+    /// `max_offset` is the largest delay the sync offset may ask for; the FIFO is
+    /// sized for it.
     pub fn new(
         stream: Box<dyn AudioInputStream>,
         config: AudioGraphConfig,
         max_offset: Duration,
-    ) -> (Self, ParamSender<InputParams>, Arc<InputStats>) {
-        let (tx, rx) = channel(InputParams::NONE);
+    ) -> (Self, Arc<InputStats>) {
         let stats = Arc::new(InputStats::default());
         (
             Self {
-                desc: input_descriptor(),
                 stream,
                 config,
                 max_offset,
-                params: rx,
                 stats: Arc::clone(&stats),
                 state: None,
             },
-            tx,
             stats,
         )
     }
 
-    /// The offset in ns, clamped to what the FIFO and the latency allow.
-    fn offset(&self) -> f64 {
+    /// The graph format and block size this aligner renders.
+    pub fn config(&self) -> &AudioGraphConfig {
+        &self.config
+    }
+
+    /// The offset in ns for `offset_ns`, clamped to what the FIFO and the latency
+    /// allow.
+    pub fn clamp_offset(&self, offset_ns: i64) -> f64 {
         let max = i64::try_from(self.max_offset.as_nanos()).unwrap_or(i64::MAX);
         let advance = self
             .config
             .latency
             .saturating_sub(self.config.period() + ADVANCE_MARGIN);
         let min = -i64::try_from(advance.as_nanos()).unwrap_or(i64::MAX);
-        self.params.get().offset_ns.clamp(min, max) as f64
-    }
-}
-
-/// The offset an input of `config` with `max_offset` applies for `offset_ns`: a delay
-/// at most `max_offset`, an advance at most `latency - period - 5 ms` (audio graph
-/// spec, "Offset"). The studio reports it with a sync offset measurement (ADR-0126).
-/// It is the same clamp as the node's own (kept apart so the node's block path is
-/// not edited); both use `ADVANCE_MARGIN`.
-pub fn effective_offset_ns(config: &AudioGraphConfig, max_offset: Duration, offset_ns: i64) -> i64 {
-    let max = i64::try_from(max_offset.as_nanos()).unwrap_or(i64::MAX);
-    let advance = config
-        .latency
-        .saturating_sub(config.period() + ADVANCE_MARGIN);
-    let min = -i64::try_from(advance.as_nanos()).unwrap_or(i64::MAX);
-    offset_ns.clamp(min, max)
-}
-
-fn start_error(e: AudioIoError) -> NodeError {
-    match e {
-        AudioIoError::EndpointLost
-        | AudioIoError::EndpointNotFound
-        | AudioIoError::PermissionDenied
-        | AudioIoError::FormatChanged
-        | AudioIoError::FormatUnsupported => NodeError::Permanent("audio input cannot start"),
-        other => NodeError::Failed(format!("audio input start failed: {other}")),
-    }
-}
-
-impl<X: Runtime> Node<X> for InputNode {
-    fn descriptor(&self) -> &NodeDescriptor {
-        &self.desc
+        offset_ns.clamp(min, max) as f64
     }
 
-    fn prepare(&mut self, _: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
+    /// Allocates the FIFO and starts the stream. Control path.
+    pub fn start(&mut self) -> Result<(), NodeError> {
         self.state = Some(State::new(
             self.stream.format(),
             &self.config,
@@ -452,19 +426,23 @@ impl<X: Runtime> Node<X> for InputNode {
         self.stream.start().map_err(start_error)
     }
 
-    fn release(&mut self, _: &mut PrepareCtx<'_, X>) {
+    /// Stops the stream and frees the FIFO. Control path.
+    pub fn stop(&mut self) {
         self.stream.stop();
         self.state = None;
     }
 
-    fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
-        self.params.update();
-        let offset = self.offset();
+    /// True between [`start`](Self::start) and [`stop`](Self::stop).
+    pub fn started(&self) -> bool {
+        self.state.is_some()
+    }
+
+    /// Reads everything the stream has into the FIFO and updates the time map.
+    pub fn ingest(&mut self) -> Result<(), NodeError> {
         let Some(st) = self.state.as_mut() else {
             return Err(NodeError::NotReady);
         };
         let stats = &*self.stats;
-
         // 1. Everything the stream has, into the FIFO.
         st.map_err = 0.0;
         st.map_n = 0;
@@ -509,25 +487,28 @@ impl<X: Runtime> Node<X> for InputNode {
             st.head += MAP_GAIN * st.map_err / f64::from(st.map_n);
         }
 
-        // 2. The block's time; ticks before the latency produce nothing.
-        let Some(block_time) = self.config.block_time(ctx.tick()) else {
-            return Ok(());
+        Ok(())
+    }
+
+    /// Writes the block of `block_time` into `chans` (the graph's channels, at least
+    /// `block_frames` each), `offset` ns (from [`clamp_offset`](Self::clamp_offset))
+    /// later than the stream's own time. Call [`ingest`](Self::ingest) first.
+    pub fn render(&mut self, block_time: Timestamp, offset: f64, chans: &mut [&mut [f32]]) {
+        let Some(st) = self.state.as_mut() else {
+            for ch in chans.iter_mut() {
+                ch.fill(0.0);
+            }
+            return;
         };
+        let stats = &*self.stats;
         let frames = self.config.block_frames as usize;
-        let format = self.config.format;
-        let n_out = format.channels.channels();
-        let mut out = ctx.outputs().audio(0)?;
-        let mut chans: [&mut [f32]; MAX_CHANNELS] = Default::default();
-        for (slot, ch) in chans.iter_mut().zip(out.channels_mut(n_out)) {
-            *slot = ch;
-        }
+        let n_out = self.config.format.channels.channels().min(chans.len());
         if !st.mapped {
             for ch in chans.iter_mut().take(n_out) {
                 ch[..frames].fill(0.0);
             }
             InputStats::add(&stats.late_frames, frames as u64);
-            out.commit(format, block_time, frames)?;
-            return Ok(());
+            return;
         }
 
         // 3. Steering: where the resampler is against where the block wants it.
@@ -603,6 +584,94 @@ impl<X: Runtime> Node<X> for InputNode {
                 st.ahead = true;
             }
         }
+    }
+}
+/// The descriptor of input nodes.
+pub fn input_descriptor() -> NodeDescriptor {
+    NodeDescriptor::new(
+        NodeTypeId::new(INPUT_NODE_TYPE),
+        NodeKind::Source,
+        vec![],
+        vec![Pin::one("out", LinkKind::Audio)],
+    )
+}
+
+impl InputNode {
+    /// A node for `stream` (opened, Standby) in a graph of `config`. `max_offset` is
+    /// the largest delay the sync offset may ask for; the FIFO is sized for it.
+    pub fn new(
+        stream: Box<dyn AudioInputStream>,
+        config: AudioGraphConfig,
+        max_offset: Duration,
+    ) -> (Self, ParamSender<InputParams>, Arc<InputStats>) {
+        let (tx, rx) = channel(InputParams::NONE);
+        let (aligner, stats) = InputAligner::new(stream, config, max_offset);
+        (
+            Self {
+                desc: input_descriptor(),
+                aligner,
+                params: rx,
+            },
+            tx,
+            stats,
+        )
+    }
+}
+
+/// The offset an input of `config` with `max_offset` applies for `offset_ns`: a delay
+/// at most `max_offset`, an advance at most `latency - period - 5 ms` (audio graph
+/// spec, "Offset"). The studio reports it with a sync offset measurement (ADR-0126).
+/// It is the same clamp as [`InputAligner::clamp_offset`]; both use `ADVANCE_MARGIN`.
+pub fn effective_offset_ns(config: &AudioGraphConfig, max_offset: Duration, offset_ns: i64) -> i64 {
+    let max = i64::try_from(max_offset.as_nanos()).unwrap_or(i64::MAX);
+    let advance = config
+        .latency
+        .saturating_sub(config.period() + ADVANCE_MARGIN);
+    let min = -i64::try_from(advance.as_nanos()).unwrap_or(i64::MAX);
+    offset_ns.clamp(min, max)
+}
+
+fn start_error(e: AudioIoError) -> NodeError {
+    match e {
+        AudioIoError::EndpointLost
+        | AudioIoError::EndpointNotFound
+        | AudioIoError::PermissionDenied
+        | AudioIoError::FormatChanged
+        | AudioIoError::FormatUnsupported => NodeError::Permanent("audio input cannot start"),
+        other => NodeError::Failed(format!("audio input start failed: {other}")),
+    }
+}
+
+impl<X: Runtime> Node<X> for InputNode {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.desc
+    }
+
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
+        self.aligner.start()
+    }
+
+    fn release(&mut self, _: &mut PrepareCtx<'_, X>) {
+        self.aligner.stop();
+    }
+
+    fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
+        self.params.update();
+        let offset = self.aligner.clamp_offset(self.params.get().offset_ns);
+        self.aligner.ingest()?;
+        // The block's time; ticks before the latency produce nothing.
+        let Some(block_time) = self.aligner.config.block_time(ctx.tick()) else {
+            return Ok(());
+        };
+        let frames = self.aligner.config.block_frames as usize;
+        let format = self.aligner.config.format;
+        let n_out = format.channels.channels();
+        let mut out = ctx.outputs().audio(0)?;
+        let mut chans: [&mut [f32]; MAX_CHANNELS] = Default::default();
+        for (slot, ch) in chans.iter_mut().zip(out.channels_mut(n_out)) {
+            *slot = ch;
+        }
+        self.aligner.render(block_time, offset, &mut chans[..n_out]);
         out.commit(format, block_time, frames)?;
         Ok(())
     }

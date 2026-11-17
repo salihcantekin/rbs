@@ -71,6 +71,8 @@ mod device_sync;
 pub mod filters;
 mod loudness;
 mod monitor;
+mod network;
+mod on_air;
 pub mod protection;
 pub mod replay;
 pub mod sync_measure;
@@ -1263,6 +1265,9 @@ pub enum Command {
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
+    /// Save an imported stream key under a new output profile's account (ADR-0131
+    /// decision 5). A failure is reported with [`Update::Error`].
+    SaveImportedKey(String, Secret),
     /// Run another scene collection (Scene collection menu): the studio restarts with
     /// it, as for a canvas change, and its first canvas's program scene is shown.
     /// Refused while recording or streaming. Changes are saved through `autosave` from
@@ -3255,6 +3260,22 @@ struct WithTokens<'a> {
 }
 
 impl ControlTarget for WithTokens<'_> {
+    fn handle_as(
+        &mut self,
+        caller: &rbs_api::Caller,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        if let Some(answer) = self.tokens.and_then(|t| t.answer(&command)) {
+            let (response, changed) = answer?;
+            if changed {
+                (self.notify)(Update::TokensChanged);
+            }
+            return Ok(response);
+        }
+        self.inner.handle_as(caller, command, events)
+    }
+
     fn handle(
         &mut self,
         command: rbs_api::Command,
@@ -4971,6 +4992,14 @@ impl Host {
                 notify(Update::VerticalStreamKey(result));
             }
             Command::SetKeyAccount(account) => self.key_account = account,
+            Command::SaveImportedKey(account, key) => {
+                if let Err(e) = self.keys.write(&account, &key) {
+                    notify(Update::Error(format!(
+                        "The imported stream key could not be saved in {}: {e}. Enter it in Settings, Stream.",
+                        self.keys.place()
+                    )));
+                }
+            }
             Command::RemoveStreamKey(account) => {
                 if let Err(e) = self.keys.remove(&account) {
                     notify(Update::Error(format!(
@@ -12366,6 +12395,17 @@ struct ApiTarget<'a> {
 }
 
 impl ControlTarget for ApiTarget<'_> {
+    fn handle_as(
+        &mut self,
+        caller: &rbs_api::Caller,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        self.host.check_on_air(caller.irreversible, &command)?;
+        self.host.check_network(caller.irreversible, &command)?;
+        self.handle(command, events)
+    }
+
     fn handle(
         &mut self,
         command: rbs_api::Command,
