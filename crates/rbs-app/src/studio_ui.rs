@@ -75,6 +75,7 @@ pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
 pub(crate) mod monitor;
+pub(crate) mod silence;
 pub(crate) mod text_props;
 
 pub mod rec_state {
@@ -326,6 +327,15 @@ pub struct StudioUi {
     heard: Vec<HeardFact>,
     /// The heard sources' names by id, for the monitor's solo line.
     heard_names: Vec<(u32, String)>,
+    /// The program scene's microphones, for the silent output question.
+    mics: Vec<silence::MicFact>,
+    /// Ask before a silent recording or stream (`app.toml` `warn_silent`); the shell
+    /// keeps it in step.
+    pub warn_silent: bool,
+    /// The press that starts the recording (`[0]`) or stream (`[1]`) already checked
+    /// for silence: its start shows no notice. A start without it (a control API
+    /// client, a global shortcut) says in a notice that no microphone is heard.
+    pub silence_checked: [bool; 2],
     /// The monitor output (ADR-0097): the Mixer's row and Settings › Audio.
     pub monitor: monitor::MonitorUi,
     /// The loudness meter (ADR-0092): the Master strip and Settings › Audio.
@@ -661,6 +671,9 @@ impl StudioUi {
             master_audio: rbs_scene::model::MasterAudio::default(),
             heard: Vec::new(),
             heard_names: Vec::new(),
+            mics: Vec::new(),
+            warn_silent: true,
+            silence_checked: [false; 2],
             monitor: monitor::MonitorUi::default(),
             loudness: loudness::LoudnessUi::default(),
             meters: Rc::new(VecModel::default()),
@@ -4610,6 +4623,7 @@ impl StudioUi {
                 if let Some((_, since)) = &mut self.st_live {
                     *since = Instant::now();
                 }
+                self.silent_start(1, out);
             }
             // A control API client went live first while Go live was on its way: the
             // stream that runs is shown already.
@@ -4617,12 +4631,14 @@ impl StudioUi {
                 log(&format!("go live refused: {why}"));
             }
             StreamUpdate::NotStarted(why) => {
+                self.silence_checked = [false; 2];
                 self.st_state = st_state::OFF;
                 self.st_live = None;
                 self.st_note = format!("The stream did not start: {why}");
                 self.st_bad = true;
             }
             StreamUpdate::NoKey => {
+                self.silence_checked = [false; 2];
                 self.st_state = st_state::OFF;
                 self.st_live = None;
                 // The store has none (removed outside RBS): the settings say so too.
@@ -6231,6 +6247,7 @@ impl StudioUi {
                 if !self.rec_file_audio {
                     self.set_note(format!("Video encoder: {video_encoder}"), false);
                 }
+                self.silent_start(0, out);
             }
             // A recording started with the stream (or by a control API client) runs
             // while Record was on its way: the recording that runs is shown already.
@@ -6238,6 +6255,7 @@ impl StudioUi {
                 log(&format!("record refused: {why}"));
             }
             RecordingUpdate::NotStarted(why) => {
+                self.silence_checked[0] = false;
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 self.rec_file_audio = false;
@@ -6539,6 +6557,7 @@ impl StudioUi {
             .filter(|r| r.meter.is_some())
             .map(|r| (r.id.get(), r.name.as_str().to_owned()))
             .collect();
+        self.mics = silence::mics(rows);
         let mut old: Vec<MeterSlot> = std::mem::take(&mut self.slots);
         for r in rows.iter().filter(|r| r.visible && !r.audio.mixer_hidden) {
             let Some(level) = &r.meter else { continue };
@@ -6597,6 +6616,51 @@ impl StudioUi {
             })
             .collect();
         set_rows(&self.hidden_meters, hidden);
+    }
+
+    /// Why a recording or stream started now would carry no voice; `None` while a
+    /// microphone of the program scene is heard.
+    pub fn silence(&self) -> Option<String> {
+        silence::reason(&self.mics, self.master_audio)
+    }
+
+    /// True when a press of Record (`stream` false) or Go live would start an output
+    /// now: it is off and nothing it already says blocks it. The silent output
+    /// question is asked only then, never before a start that would be refused.
+    pub fn would_start(&self, stream: bool, main: bool) -> bool {
+        if self.cannot_record.is_some() {
+            return false;
+        }
+        match (stream, main) {
+            (false, true) => self.rec_state == rec_state::OFF,
+            (true, true) => {
+                self.st_state == st_state::OFF
+                    && self.stream.missing().is_none()
+                    && self.stream.problem().is_none()
+            }
+            (false, false) => self.vertical.is_some() && self.vertical_rec == VerticalOut::Off,
+            (true, false) => {
+                self.vertical.is_some()
+                    && self.vertical_st == VerticalOut::Off
+                    && self.vertical_stream_set_up()
+            }
+        }
+    }
+
+    /// An output of `which` (0 recording, 1 stream) started: the notice when its
+    /// press did not check for silence and no microphone is heard.
+    fn silent_start(&mut self, which: usize, out: &mut Applied) {
+        let checked = std::mem::take(&mut self.silence_checked[which]);
+        if checked || !self.warn_silent {
+            return;
+        }
+        if let Some(why) = self.silence() {
+            out.notice = Some(if which == 0 {
+                format!("Recording without a microphone: {why}")
+            } else {
+                format!("Live without a microphone: {why}")
+            });
+        }
     }
 
     /// True while meters need refreshing.
@@ -6744,6 +6808,9 @@ pub struct PickerView {
 #[derive(Default)]
 pub struct Applied {
     pub error: Option<String>,
+    /// A notice for the error bar that is not a failure (a start without a heard
+    /// microphone).
+    pub notice: Option<String>,
     pub preview: Option<rbs_gpu::share::PreviewEndpoint>,
     /// The preview scene's picture endpoint changed (studio mode, ADR-0061): connect to
     /// it, or close that picture for `None`.

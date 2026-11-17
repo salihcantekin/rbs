@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { ScrollArea, Sections, Experience, SettingsFind, TextField, ListRow, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, Overlays, OverlayCover, PickerRow, PopoverLayer, PopoverCard } from "components.slint";
+import { ScrollArea, Sections, Experience, SettingsFind, TextField, ListRow, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, Overlays, OverlayCover, PickerRow, PopoverLayer, PopoverCard, Checkbox, DialogActions } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader, SettingsScroll, SettingsHit } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -149,6 +149,13 @@ export global Shell {
     callback caption-regions(length /* lead end */, length /* end start */, length /* max x */, length /* max width */, length /* row height */);
     // End stream from the menu bar: the frame asks first (U4).
     in property <bool> end-stream-confirm;
+    // Record (1) or Go live (2) was pressed while no microphone is heard: the frame
+    // asks first (UI spec, "Silent output warning"); 0 asks nothing. The reason in
+    // words for the question's first line.
+    in property <int> silent-confirm;
+    in property <string> silent-reason;
+    // `go` starts anyway; `stop-asking` (with `go`) turns the warning off.
+    callback silent-answer(bool /* go */, bool /* stop-asking */);
     // The same for the vertical canvas's stream (ADR-0093 decision 6).
     in property <bool> end-vertical-confirm;
     // A vertical canvas exists: Go live and Record get a ▾ with its outputs.
@@ -1526,6 +1533,62 @@ component EndStreamCard inherits Rectangle {
     }
 }
 
+// Record or Go live while no microphone is heard asks first (UI spec, "Silent output
+// warning"): the reason, what it means, "Don't ask again" and the answers. Cancel
+// has the focus, so a stray Enter does not start a silent output.
+component SilentQuestion inherits VerticalLayout {
+    property <bool> stream: Shell.silent-confirm == 2;
+    property <bool> stop-asking;
+    public function focus-cancel() { actions.focus-cancel(); }
+    spacing: Tokens.space-2;
+    Text {
+        text: root.stream ? @tr("Go live without sound?") : @tr("Record without sound?");
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+    }
+    Text {
+        text: Shell.silent-reason;
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+    }
+    Text {
+        text: root.stream ? @tr("Viewers will not hear you.") : @tr("The recording will have no voice.");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+    }
+    Checkbox {
+        text: @tr("Don't ask again");
+        checked: root.stop-asking;
+        toggled(on) => { root.stop-asking = on; }
+    }
+    actions := DialogActions {
+        confirm-text: root.stream ? @tr("Go live anyway") : @tr("Record anyway");
+        cancelled => { Shell.silent-answer(false, false); }
+        confirmed => { Shell.silent-answer(true, root.stop-asking); }
+    }
+}
+
+// The question in the main window: a card under Go live and Record, like End stream's.
+// It reports its rectangle as `Shell.confirm-cover` for the preview layer (ADR-0054).
+component SilentCard inherits Rectangle {
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    init => { Shell.confirm-cover = rect; question.focus-cancel(); }
+    changed rect => { Shell.confirm-cover = rect; }
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    accessible-role: groupbox;
+    accessible-label: Shell.silent-confirm == 2 ? @tr("Go live without sound?") : @tr("Record without sound?");
+    lay := VerticalLayout {
+        padding: Tokens.space-3;
+        question := SilentQuestion { }
+    }
+}
+
 // The workspace picker in the toolbar: "Workspace" and the current one's name, a
 // library Button in its menu form.
 component WorkspacePicker inherits Button {
@@ -2416,6 +2479,11 @@ export component MainWindow inherits Window {
                 Shell.app-menu-asked += 1;
                 return accept;
             }
+            // Escape answers the silent output question as Cancel.
+            if e.text == Key.Escape && !Shell.quit-confirm && Shell.silent-confirm != 0 {
+                Shell.silent-answer(false, false);
+                return accept;
+            }
             // Escape answers the End stream card as Keep streaming (U4, U7).
             if e.text == Key.Escape && !Shell.quit-confirm && (Shell.end-stream-confirm || Shell.end-vertical-confirm) {
                 if Shell.end-stream-confirm { Shell.end-stream-answer(false); } else { Shell.end-vertical-answer(false); }
@@ -2566,6 +2634,13 @@ export component MainWindow inherits Window {
             ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
             : frame.height + Tokens.space-1;
         vertical: !Shell.end-stream-confirm;
+    }
+    // Record or Go live without a heard microphone asks first, in the same place.
+    if Shell.silent-confirm != 0 && !Shell.end-stream-confirm && !Shell.end-vertical-confirm && !Shell.quit-confirm: SilentCard {
+        x: parent.width - self.width - Tokens.space-2;
+        y: Shell.error-kind != 0 || Shell.background-notice != 0
+            ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
+            : frame.height + Tokens.space-1;
     }
     // The first Close with Keep RBS running says once where RBS goes, in the error
     // bar's place over the window (ADR-0056); OK (or Dismiss) hides the windows.
@@ -2806,6 +2881,11 @@ export component FloatWindow inherits Window {
     edit-keys := FocusScope {
         focus-on-tab-navigation: false;
         key-pressed(e) => {
+            // Escape answers the silent output question as Cancel.
+            if e.text == Key.Escape && Shell.silent-confirm != 0 {
+                Shell.silent-answer(false, false);
+                return accept;
+            }
             if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
             reject
         }
@@ -2818,6 +2898,17 @@ export component FloatWindow inherits Window {
                     Button { lead: IconName.dock; text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
                     if Shell.end-stream-confirm: EndStreamConfirm { }
                     if Shell.end-vertical-confirm && !Shell.end-stream-confirm: EndStreamConfirm { vertical: true; }
+                }
+            }
+            // The silent output question asked from this window's menu bar.
+            if Shell.silent-confirm != 0 && !Shell.end-stream-confirm && !Shell.end-vertical-confirm: Rectangle {
+                background: Theme.surface-overlay;
+                border-color: Theme.border-strong;
+                border-width: Tokens.size-border;
+                HorizontalLayout {
+                    padding: Tokens.space-3;
+                    alignment: start;
+                    q := SilentQuestion { init => { q.focus-cancel(); } }
                 }
             }
             DockArea {
