@@ -66,3 +66,7 @@ debug = false
 # takes 11 s instead of 19 s and a live reload 1.5 s instead of about 20 s (4 cores).
 [profile.dev.package.i-slint-compiler]
 opt-level = 2
+
+# EXPERIMENT ONLY (perf audit, partial redraw on wgpu): never merge.
+[patch.crates-io]
+i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }
