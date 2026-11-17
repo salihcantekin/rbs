@@ -85,6 +85,12 @@ pub mod keys {
     /// Bool, media: seek to the start on the next wake. Default true. Read on wake,
     /// not by replacing the node.
     pub const RESTART_WHEN_SHOWN: &str = "restart_when_shown";
+    /// Int, media: where the play range starts, in milliseconds of media time.
+    /// Default 0 (ADR-0108 decision 11).
+    pub const START_MS: &str = "start_ms";
+    /// Int, media: where the play range ends, in milliseconds of media time; absent
+    /// for the end of the file. Greater than `start_ms` (ADR-0108 decision 11).
+    pub const END_MS: &str = "end_ms";
     /// Text, browser: `http`, `https`, or `file` URL. Network-capable even for `file`.
     pub const URL: &str = "url";
     /// Bool, browser: keep straight alpha. Default false, which forces opaque alpha.
