@@ -26,71 +26,109 @@ What OBS does, and does badly:
 
 ### T-bar
 
-1. **Manual progress.** A transition can be driven by hand instead of by its duration. `canvas.transition_progress { canvas?, t }` (`control`, live, not undoable) sets the progress `t` in `0.0..=1.0` (finite; else `invalid_params`). `canvas` defaults to the studio's main canvas. Studio mode only: outside it `conflict` ("not in studio mode"). The kind and its settings are the collection's (or the next scene's override, decision 6). The duration is not used.
-2. **What a manual transition is.**
-   - The first `t > 0` on a canvas with no transition running starts a manual transition from the program scene to the preview scene. Nothing changes in the collection yet: the program scene stays the program until the end.
-   - The binder binds the incoming compositor for the preview scene (as for a timed transition) and keeps the program scene bound as it is. The program compositor gets the outgoing layers and the incoming layer with the blend frozen at `t`:
-     - Fade: opacity `t` (through a colour: the colour's opacity `min(1, 2t)` and the incoming `max(0, 2t - 1)`).
-     - Swipe and Slide: the offset times `1 - t`.
-     - Move: the slides at `t` and the fade-ins and fade-outs at `t`. Move uses the incoming compositor here too: the leaving and arriving layers must be drawn at `t` without a running clock.
-   - The kind's easing maps `t`, as it maps time.
-   - Layers are sent once per `t` change, on the control thread. No `Fade` or `Slide` runs on the node, and nothing is drawn per frame that a timed transition does not draw.
-   - Sound: each strip's target is its outgoing level mixed with its incoming level at `t` (a gain lerp, ADR-0091 levels). It moves with the default mixer ramp, so a dragged T-bar sounds as smooth as a fader.
-3. **Reaching the end.** `t = 1` ends it. The program change happens then, as a `canvas.transition` would: the preview keeps or swaps its scene by the app's setting (ADR-0098). The program compositor already shows the incoming picture, so the end is the two-step end of ADR-0128 decision 8, with no running phase. `transition.state` is `started` at the first `t > 0` and `ended` at `t = 1`; `duration_ms` in both is `0` and `kind` is the kind used.
-4. **Going back.** `t = 0` cancels it: the outgoing layers alone, the strips back to their outgoing levels, the incoming compositor released with the next settle. Nothing changed in the collection, so nothing is published but `transition.state` `ended` with `to` equal to `from`. Between 0 and 1 the transition holds where it is for as long as the operator leaves it (as OBS).
-5. **Interplay.**
-   - A `canvas.transition`, `scene.switch` or preview change while a manual transition holds first cancels it (decision 4), then acts as today.
+1. **Manual progress.** A transition can be driven by hand instead of by its duration.
+   - `canvas.transition_progress { canvas?, t }` (`control`, live, not undoable, answers `{}`) sets the progress `t` in `0.0..=1.0` (finite; else `invalid_params`).
+   - `canvas` defaults to the studio's main canvas. A follower canvas is refused with `conflict`. Studio mode only: outside it `conflict` ("not in studio mode").
+   - Effect (ADR-0052): as `canvas.transition`, `edit` with the on-air check, so an agent token cannot drive a T-bar while an output runs.
+   - The kind and its settings are those a `canvas.transition` would use now (the preview scene's override, decision 6, else the collection). The duration is not used.
+   - Two drivers (the rail and a client) are last-write-wins. Values from the UI and the API are coalesced on the control thread: each service step applies the latest `t` per canvas.
+2. **Binding (a binder contract change).**
+   - The binder's per-canvas transition entry (`OutgoingScene`, ADR-0128 decision 6) gains `incoming_scene: Option<SceneId>`. `None` keeps today's meaning: the incoming compositor draws `canvas.program`. `Some(scene)` makes the incoming compositor draw that scene while the program stays as it is, and adds that scene's heard sources (`visible_sources_cued`) to the program mixer as inputs.
+   - A manual transition's entry names the preview scene, with `drawn` and `heard` empty: the program scene is bound as usual.
+   - When the program is held (ADR-0063), the incoming compositor draws the preview scene as it is now; no held copy exists until the end.
+   - Spec: scene model, "Graph binding".
+3. **What it draws.**
+   - The first `t > 0`, on a canvas with no manual transition, starts one from the program scene to the preview scene. Nothing changes in the collection until the end (decision 5).
+   - It waits for the incoming picture like a timed transition (ADR-0128 decision 7): the outgoing picture alone until the incoming compositor's ready counter moves or `READY_WAIT` passes, then the latest `t`. `transition.state` `started` is published at that moment.
+   - The program compositor then gets the outgoing layers and the incoming layer with the blend frozen at `t`:
+     - Fade: opacity `e(t)`, where `e` is the kind's easing.
+     - Fade through a colour: per half, as the timed form: the colour's opacity `e(min(1, 2t))` and the incoming opacity `e(max(0, 2t - 1))`. So the T-bar at `t` shows what the timed transition shows at `t` times its duration.
+     - Swipe and Slide: the offset times `1 - e(t)`.
+     - Move: a crossfade through the incoming compositor, as Fade with Move's easing. A per-source morph needs both scenes' layers interpolated in one compositor; that can come later as its own change.
+   - Layers are static (no `Fade` or `Slide` on the node) and sent once per applied `t`, on the control thread. Globals stay above, drawn once (ADR-0128 decision 5).
+4. **Sound.**
+   - Each program strip's target gain is the linear lerp of its outgoing and incoming gain at `e(t)`. A muted side counts as gain 0; ADR-0091 levels give each side's gain.
+   - Sources only in the preview scene are heard through decision 2's inputs, at gain 0 at `t = 0`.
+   - The strip moves with the default mixer ramp, so a dragged T-bar sounds as smooth as a fader. Master, sends and monitor are untouched.
+5. **Reaching the end.**
+   - `t = 1` applies the program change (the preview keeps or swaps its scene by the app's setting, ADR-0098). This change does not start a timed transition. The manual one goes straight to the two-step end of ADR-0128 decision 8 (`Ending`, then `settle_transitions`) with the incoming compositor it has.
+   - After the change the entry's `incoming_scene` is `None` (the incoming scene is now the program), so the same incoming node stays bound until the settle. When ADR-0063 makes a held copy at that change, the node is rebound to it within the same update.
+   - `transition.state` gets `started` once and `ended` once. Both carry `manual: true`, and `duration_ms` is the time between them.
+   - Followers (ADR-0093) cut at the end: a follower's own timed transition would trail a picture that is already over.
+   - Recording markers (ADR-0089) are placed at the end, when the program changes.
+   - A T-bar with Cut selected cuts when `t` reaches 1.
+6. **Going back, holding, observing.**
+   - `t = 0` cancels it: the outgoing layers alone, the strips back to their outgoing levels, the entry dropped and the incoming compositor released at the next settle. Nothing changed in the collection, so the only event is `transition.state` `ended` with `to` equal to `from`.
+   - Between 0 and 1 the transition holds where it is, as OBS. A client that disconnects leaves it where it is.
+   - While it holds, `transition.state` is the latest-value state `holding` with `t` (the last applied value), published at most once per service step. A second client can show the T-bar's place.
+   - A held T-bar keeps the incoming compositor (about 200 MB of canvases at 2160p, ADR-0128 decision 12) and both scenes' sources running, for as long as it holds.
+7. **Interplay.**
+   - A `canvas.transition`, `scene.switch` or change of the preview scene while a manual transition holds first cancels it (decision 6), then acts as today.
+   - Edits to the preview scene's items while it holds update the incoming picture live, as they update the preview.
    - Leaving studio mode cancels it.
-   - A timed transition running when the T-bar moves is ended at once (as ADR-0128 decision 9), then the manual one starts from what is on air.
-   - Followers (ADR-0093) and recording markers (ADR-0089) act at the end, when the program changes.
-   - Cut has no progress. A T-bar with Cut selected cuts when `t` reaches 1.
+   - A timed transition running when the T-bar first moves is ended at once (ADR-0128 decision 9), then the manual one starts from what is on air.
+   - **Preview equal to program** (the usual state after a take with "keep"): the T-bar runs from the held copy to the scene as edited, as `canvas.transition` does today. With no held copy (nothing edited) the two pictures are the same: it runs and changes nothing visible.
 
 ### A transition into a scene
 
-6. **Override.** A scene may name the transition used when it comes on air: `Scene.transition_in: Option<SceneTransition { kind, duration_ms: Option<u32> }>`. `duration_ms` absent uses the kind's own duration from the collection. The kind's other settings (easing, colour, direction) stay the collection's: one place to tune them, as OBS.
+8. **Override.** A scene may name the transition used when it comes on air: `Scene.transition_in: Option<SceneTransition { kind: Option<TransitionKind>, duration_ms: Option<u32> }>`.
+   - `kind` absent uses the collection's kind. `duration_ms` absent uses the kind's own duration from the collection. Both absent is no override (stored as `None`).
+   - The kind's other settings (easing, colour, direction) stay the collection's: one place to tune them, as OBS.
+   - An override of Move with `duration_ms` replaces the glide's duration and every per-source override for that change, as a one-off does (control API 1.81).
    - Precedence for one change: a one-off `kind` or `duration_ms` (ADR-0128 decision 13), then the incoming scene's override, then the collection. A one-off `kind` with no `duration_ms` uses that kind's collection duration, not the override's.
-   - A held program transitioned to itself (ADR-0063) uses its scene's override.
-   - A follower canvas uses the followed scene's override.
-7. **Format.** Scene document format: the next free number at merge (20 if free). The key is per scene: `transition_in = { kind, duration_ms? }`, omitted when absent. Older formats load with no overrides. An older build refuses the new format without touching the file (P9).
-8. **API.**
-   - `scene.set_transition {scene, transition: {kind, duration_ms?} | null}` (`control`, one undo step) sets or clears the override. `kind` takes the `collection.set_transition` names. `duration_ms` is in `0..=5000`.
-   - `scene.list` and `scene.changed` carry `transition_in` on a scene row that has one.
-   - Minor, the next free protocol number at merge.
+   - A held program transitioned to itself (ADR-0063) uses its scene's override. A follower canvas uses the followed scene's override, except at a T-bar's end (decision 5).
+9. **Format.** Scene document format: the next free number at merge (20 if free). The key is per scene: `transition_in = { kind?, duration_ms? }`, omitted when absent. Older formats load with no overrides. An older build refuses the new format without touching the file (P9).
+   - OBS import (ADR-0131) maps OBS's per-scene "Transition Override" to it where the kind exists.
+   - Duplicate scene (ADR-0133) copies it.
+10. **API.**
+    - `scene.set_transition {scene, transition: {kind?, duration_ms?} | null}` (`control`, one undo step) sets or clears the override. `kind` takes the `collection.set_transition` names. `duration_ms` is in `0..=5000`. `{}` clears, like `null`.
+    - Effect: as the other `scene.*` edits, `edit`, with the on-air check when it names the program scene.
+    - `scene.list` and `scene.changed` carry `transition_in` on a scene row that has one.
+    - Minor: the next free protocol number at merge.
 
 ### Rehearse
 
-9. **What it shows.** In studio mode, Rehearse plays the selected transition from the program picture to the preview picture **on the Preview picture only**. Program, outputs, recordings, the mixer, markers, followers and the control API state do not change. After the duration the Preview picture shows the preview scene again. It is for the operator's eyes: no sound is rehearsed.
-10. **How.**
-    - Rehearse binds a rehearsal compositor for the canvas, drawn only on the UI preview display, never linked to an output.
-    - It has two layers: the program compositor's canvas (a compositor output fans out, ADR-0128 Context), and the preview compositor's canvas with the blend.
-    - Move rehearses as a crossfade between the two pictures. Its per-source morph needs both scenes' layers in one compositor, which the rehearsal does not bind.
-    - The preview display shows the rehearsal compositor while it runs and the preview compositor after. The rehearsal compositor is removed at the next settle.
-    - It needs the preview compositor, so it exists only where the scene preview exists (a studio with a UI, the main canvas). No API method: it is a UI action (`ui.transition.rehearse`), as other preview-only actions are.
-11. **Interplay.** A real transition, a T-bar move or a preview change during a rehearsal ends the rehearsal at once. Rehearse is refused while a transition runs or holds on that canvas.
+11. **What it shows.** In studio mode, Rehearse plays, on the Preview picture only, the transition a `canvas.transition` would run now (the preview scene's override applies) from the program picture to the preview picture.
+    - Program, outputs, recordings, the mixer, markers, followers and the control API state do not change.
+    - After the duration the Preview picture shows the preview scene again.
+    - It is for the operator's eyes: no sound is rehearsed.
+    - Disabled for Cut and for a duration of 0.
+12. **How.**
+    - A studio-owned compositor (not a binder role, so no binder change), sized to the preview display's picture rather than the canvas, so it costs a fraction of a canvas: at a 640×360 preview, 3 `Rgba16Float` textures of about 1.8 MB each.
+    - It has two layers: the program compositor's output and the preview compositor's output. A compositor output fans out (ADR-0128 Context). The blend runs as a timed transition on the node, with the same `Fade` and `Slide` values.
+    - Both pictures already contain the global scene. In a rehearsed Swipe or Slide the global layers move with the pictures, while on air they stay still above. Stated, not hidden; drawing both scenes' layers would need the binding that decision 3 avoids.
+    - Move rehearses as a crossfade, as the T-bar draws it.
+    - The studio adds the compositor and relinks the UI preview display's producer to it in one apply, and links the display back to the preview compositor and removes the node when the rehearsal ends. This happens outside the binder's reconcile, like the incoming compositor's adoption.
+    - It needs the preview compositor, so it exists only where the scene preview exists (a studio with a UI, the main canvas). No API method: a UI action, `ui.transition.rehearse`.
+13. **Interplay.** A real transition, a T-bar move or a change of the preview scene during a rehearsal ends the rehearsal at once. Rehearse is refused while a transition runs or holds on that canvas.
 
 ### UI and cost
 
-12. **Rail and menus.** The exact layout is a UI proposal for the owner (rule 16). It must hold:
+14. **Rail and menus.** The exact layout is a UI proposal for the owner (rule 16). It must hold:
     - A T-bar on the rail: vertical between the pictures, horizontal below them. It snaps back to 0 after an end, as OBS.
     - A Rehearse command beside Transition, in the rail's overflow or its options popover.
     - "Transition into this scene…" in the Scenes panel's context menu, opening a small popover with Kind (Default, Cut, Fade, Move, Swipe, Slide) and Duration ("Default" or a value).
     - Keyboard: the T-bar is a `Slider` (arrows step it, Home and End go to 0 and 1), and End ends the transition.
-13. **Cost (P13).**
+15. **Cost (P13).**
     - A T-bar at rest, an override not used, and no rehearsal add no node, layer, timer or per-frame check.
-    - A held T-bar keeps the incoming compositor bound (as a waiting transition does) until it ends or is cancelled.
-    - A rehearsal binds one compositor for its duration plus the settle.
-    - No change to `CompositorNode::process`, the shader or the mixer's per-sample path. The T-bar adds layer sends and strip updates on the control thread, at the rate the operator moves it (at most one per UI frame, coalesced).
+     - A rehearsal adds one preview-sized compositor for its duration.
+   - A held T-bar costs what a waiting timed transition costs (decision 6), for as long as it holds.
+    - No change to `CompositorNode::process`, the shader or the mixer's per-sample path. The T-bar adds layer sends and strip updates on the control thread, at most one per service step, coalesced (decision 1).
 
 ### Phases
 
-14. 3a: per-scene override (model, format, API, Scenes menu). 3b: T-bar (studio, API, rail). 3c: Rehearse. Each is its own PR. UI parts follow rule 16.
+16. 3a: per-scene override (model, format, API, Scenes menu). 3b: T-bar (studio, API, rail). 3c: Rehearse. Each is its own PR. UI parts follow rule 16.
 
 ## Consequences
 
 - An operator can take a transition at their own pace, hold it half-way (a split screen with Slide, a superimposition with Fade), and see a transition before it goes on air. OBS does none of these with sound following, with Swipe, Slide or Move, or before air.
 - The program change of a T-bar happens at its end, not its start. Clients that watch `scene.changed` see the change when the picture is fully over. `transition.state` tells them a manual transition is running.
 - The studio gains a manual mode beside the timed one. Tests by tick index, as ADR-0128 decision 18:
-  - progress at 0, 0.5 and 1 for each kind;
+  - the binder with `incoming_scene` set: the preview scene drawn by the incoming compositor, its incoming-only sources heard, the program unchanged;
+  - the ready gate on the first `t > 0`;
+  - progress at 0, 0.5 and 1 for each kind (through a colour per half);
+  - the end: no second `started`, the same incoming node through the change, followers cut;
+  - preview equal to program;
   - cancel at 0;
   - a timed transition interrupting a held T-bar;
   - leaving studio mode while it holds;
@@ -100,9 +138,9 @@ What OBS does, and does badly:
   - the override's precedence with a one-off;
   - format round-trip and refusal by an older build.
 - Specs:
-  - scene model (`transition_in`, format)
+  - scene model (`transition_in`, format, Graph binding: `incoming_scene`)
   - user data (format)
-  - control API (`canvas.transition_progress`, `scene.set_transition`, `transition_in` on rows, `transition.state` with `duration_ms` 0)
+  - control API (`canvas.transition_progress`, `scene.set_transition`, `transition_in` on rows, `transition.state` `holding` and `manual`)
   - recording (manual transitions, Rehearse)
   - UI design system (rail T-bar, Rehearse, the Scenes menu entry)
 
@@ -116,4 +154,20 @@ What OBS does, and does badly:
 
 ## Review
 
-Pending: independent review per ADR-0014, then the owner's approval.
+- Round 1 (independent AI session, 2026-11-17): changes requested; findings in the project's review notes (4 blocking, 12 non-blocking).
+  - B1: the binder could not bind the incoming compositor to the preview scene. Resolved: `incoming_scene` on the entry, with heard sources (decision 2).
+  - B2: manual Move was incoherent. Resolved: a crossfade (decision 3).
+  - B3: the end was undefined against `note_transitions`. Resolved: no timed transition, straight to the two-step end, the same node, followers cut (decision 5).
+  - B4: no ready gate. Resolved (decision 3).
+  - Non-blocking, all resolved in the text:
+    - preview equal to program (decision 7);
+    - the sound lerp domain (decision 4);
+    - `holding` with `t` and `manual: true` (decision 6);
+    - the held cost, disconnects and last-write-wins (decisions 1 and 6);
+    - through a colour per half (decision 3);
+    - optional `kind` in the override (decision 8);
+    - Rehearse binding, globals, override, Cut, size and cost (decisions 11 and 12);
+    - effects and followers refused (decisions 1 and 10);
+    - preview item edits (decision 7);
+    - OBS import, duplicate and coalescing (decisions 1 and 9).
+- Round 2: pending.
