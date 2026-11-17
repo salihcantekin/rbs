@@ -2358,6 +2358,9 @@ pub const NOT_IN_MENU: &[&str] = &[
     // A scene's own level for a source the Mixer hears (ADR-0091): it runs from the
     // Mixer strip's menu and the control API, not from a menu bar menu.
     "scene.audio.reset_source",
+    // A scene's transition into it (ADR-0135): a card under the scene's row, so it
+    // runs from the Scene row's menu, not from a menu bar menu.
+    "ui.scene.transition",
     // The profile and collection commands run from the status bar's pickers and the
     // control API; the File menu keeps the two pickers.
     "ui.profile.new",
