@@ -184,6 +184,13 @@ pub const SETTINGS: &[Setting] = &[
         GENERAL_STUDIO,
         Simple,
     ),
+    row(
+        "general.show-tbar",
+        "Show the T-bar",
+        "studio mode transition manual slider fader",
+        GENERAL_STUDIO,
+        Simple,
+    ),
     c(
         "settings.general.glide",
         "Scene changes",

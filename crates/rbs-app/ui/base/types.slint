@@ -2234,6 +2234,10 @@ export global Studio {
     // program scene in preview. Off by default.
     in property <bool> swap-after-transition;
     callback set-swap-after-transition(bool);
+    // Studio mode (Settings, General, ADR-0135): the transition rail shows the
+    // T-bar. Off by default.
+    in property <bool> show-tbar;
+    callback set-show-tbar(bool);
 
     // Remote control (Settings, Remote control): other apps control RBS through the
     // control API. Off by default.

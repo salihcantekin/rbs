@@ -1091,8 +1091,10 @@ component TransitionRail inherits Rectangle {
     if !below: VerticalLayout {
         padding: Tokens.space-2;
         spacing: Tokens.space-2;
-        // The T-bar takes the height the controls leave (ADR-0135).
-        TransitionTBar { vertical: true; can: root.can; percent: !root.icons; vertical-stretch: 1; }
+        // The T-bar takes the height the controls leave (ADR-0135). Hidden (the
+        // default), the controls sit in the middle of that height.
+        if Studio.show-tbar: TransitionTBar { vertical: true; can: root.can; percent: !root.icons; vertical-stretch: 1; }
+        if !Studio.show-tbar: Rectangle { vertical-stretch: 1; }
         if !root.icons: TransitionChoice { }
         if !root.icons: HorizontalLayout {
             spacing: Tokens.space-1;
@@ -1100,6 +1102,7 @@ component TransitionRail inherits Rectangle {
             TransitionOptionsButton { }
         }
         TransitionGo { can: root.can; icons: root.icons; vertical-stretch: 0; }
+        if !Studio.show-tbar: Rectangle { vertical-stretch: 1; }
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
         RailPlace { below: false; caption: !root.icons; }
     }
@@ -1113,6 +1116,8 @@ component TransitionRail inherits Rectangle {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-2;
         spacing: Tokens.space-2;
+        // Without the T-bar the controls are centred before the divider.
+        if !Studio.show-tbar: Rectangle { horizontal-stretch: 1; }
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 0;
@@ -1138,7 +1143,8 @@ component TransitionRail inherits Rectangle {
                 clicked => { Studio.transition(); }
             }
         }
-        TransitionTBar { vertical: false; can: root.can; horizontal-stretch: 1; }
+        if Studio.show-tbar: TransitionTBar { vertical: false; can: root.can; horizontal-stretch: 1; }
+        if !Studio.show-tbar: Rectangle { horizontal-stretch: 1; }
         Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
         VerticalLayout {
             alignment: center;
@@ -1154,6 +1160,8 @@ component TransitionRail inherits Rectangle {
         padding-left: Tokens.space-3;
         padding-right: Tokens.space-3;
         spacing: Tokens.space-2;
+        // Without the T-bar the controls are centred before the divider.
+        if !Studio.show-tbar: Rectangle { horizontal-stretch: 1; }
         VerticalLayout {
             alignment: center;
             TransitionChoice { width: Tokens.size-transition-type; }
@@ -1181,12 +1189,13 @@ component TransitionRail inherits Rectangle {
                 clicked => { Studio.transition(); }
             }
         }
-        TransitionTBar {
+        if Studio.show-tbar: TransitionTBar {
             vertical: false;
             can: root.can;
             min-width: Tokens.size-transition-tbar;
             horizontal-stretch: 1;
         }
+        if !Studio.show-tbar: Rectangle { horizontal-stretch: 1; }
         Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
         VerticalLayout {
             alignment: center;
