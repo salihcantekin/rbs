@@ -87,11 +87,7 @@ fn note(r: &Resolved, stream: &Encoding) -> (String, bool) {
 }
 
 /// The rows of `canvas`, its first destination first.
-pub(crate) fn rows(
-    all: &Destinations,
-    canvas: Canvas,
-    stream: &StreamProfile,
-) -> Vec<Row> {
+pub(crate) fn rows(all: &Destinations, canvas: Canvas, stream: &StreamProfile) -> Vec<Row> {
     all.of(canvas, stream, "")
         .iter()
         .map(|r| {
@@ -211,7 +207,11 @@ impl Editor {
     pub fn set_service(&mut self, s: &Service) {
         let old = service_of(&self.draft).map(|o| o.name.clone());
         if self.draft.name.trim().is_empty() || old.as_deref() == Some(self.draft.name.as_str()) {
-            self.draft.name = if s.id == CUSTOM { String::new() } else { s.name.clone() };
+            self.draft.name = if s.id == CUSTOM {
+                String::new()
+            } else {
+                s.name.clone()
+            };
         }
         self.draft.service = s.id.clone();
         if let Some(server) = s.servers.first() {
@@ -320,92 +320,6 @@ pub(crate) fn count(all: &Destinations, canvas: Canvas) -> String {
     format!("{n} of {MAX_DESTINATIONS_PER_CANVAS}")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stream(server: &str) -> StreamProfile {
-        let mut s = StreamProfile::new();
-        s.server = server.into();
-        s.key_saved = true;
-        s
-    }
-
-    #[test]
-    fn rows_show_the_first_destination_then_the_others_with_what_is_missing() {
-        let mut all = Destinations::default();
-        let id = all.add(Canvas::Main, "", "kick").unwrap();
-        let s = stream("rtmp://live.twitch.tv/app");
-        let rows = rows(&all, Canvas::Main, &s);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].name, "Twitch");
-        assert_eq!(rows[0].note, "Twitch · RTMP · Key saved · Same as the stream");
-        assert!(!rows[0].warn);
-        assert_eq!(rows[1].id, id);
-        assert_eq!(rows[1].name, "Kick");
-        assert_eq!(rows[1].note, "Kick · No server yet · Same as the stream");
-        assert!(rows[1].warn);
-        assert_eq!(count(&all, Canvas::Main), "2 of 6");
-    }
-
-    #[test]
-    fn a_preset_fills_the_server_and_name_and_the_draft_saves() {
-        let mut all = Destinations::default();
-        let mut s = stream("rtmp://live.twitch.tv/app");
-        let mut e = Editor::add(Canvas::Main);
-        assert_eq!(e.draft.name, "YouTube");
-        assert!(e.draft.server.starts_with("rtmps://"));
-        e.set_service(stream_services::get("kick").unwrap());
-        assert_eq!(e.draft.name, "Kick");
-        assert_eq!(e.draft.server, "");
-        assert!(!e.server_help().is_empty());
-        e.set_server("rtmp://");
-        assert!(!e.problem.is_empty());
-        assert!(e.save(&mut all, &mut s).is_err());
-        e.set_server("rtmps://fa723fc1b171.global-contribute.live-video.net/app");
-        e.set_own(true, &s.encoding);
-        let id = e.save(&mut all, &mut s).unwrap();
-        let d = all.get(id).unwrap();
-        assert_eq!(d.name, "Kick");
-        assert!(d.encoding.is_own());
-        // Editing the first destination writes its server into the stream section.
-        let first = all
-            .of(Canvas::Main, &s, "")
-            .into_iter()
-            .next()
-            .unwrap();
-        let mut e = Editor::edit(&first, Canvas::Main);
-        e.set_server("rtmp://a.rtmp.youtube.com/live2");
-        e.draft.name = "Main".into();
-        e.save(&mut all, &mut s).unwrap();
-        assert_eq!(s.server, "rtmp://a.rtmp.youtube.com/live2");
-        assert_eq!(all.get(0).map(|d| d.name.as_str()), Some("Main"));
-        assert_eq!(all.get(0).map(|d| d.server.as_str()), Some(""));
-    }
-
-    #[test]
-    fn notes_sum_the_upload_and_warn_about_service_limits() {
-        let mut all = Destinations::default();
-        let mut s = stream("rtmp://live.twitch.tv/app");
-        s.encoding.video_kbps = 8000;
-        assert_eq!(
-            notes(&all, Canvas::Main, &s),
-            (
-                String::new(),
-                vec!["Twitch: 8000 kbit/s is above the 6000 kbit/s Twitch accepts.".to_owned()]
-            )
-        );
-        let mut e = Editor::add(Canvas::Main);
-        e.set_own(true, &s.encoding);
-        e.save(&mut all, &mut s).unwrap();
-        let (upload, _) = notes(&all, Canvas::Main, &s);
-        assert_eq!(
-            upload,
-            "Upload needed: about 25 Mbit/s for 2 destinations (one encode shared, one of its own)."
-        );
-    }
-}
-
 /// `Studio` model rows of the card.
 pub(crate) fn row_model(rows: &[Row]) -> slint::ModelRc<crate::ui::DestinationRow> {
     std::rc::Rc::new(slint::VecModel::from(
@@ -427,11 +341,6 @@ impl super::StudioUi {
     /// the saved section is one this version may write.
     pub(crate) fn destinations_editable(&self) -> bool {
         self.stream_form_idle() && self.destinations_note.is_empty()
-    }
-
-    /// The draft being edited, if any.
-    pub(crate) fn dest_editor(&self) -> Option<&Editor> {
-        self.dest_editor.as_ref()
     }
 
     /// The Use on Go live switch of `id`.
@@ -681,5 +590,91 @@ impl super::StudioUi {
         if e.draft.encoding.is_own() {
             g.set_st_ed_enc(self.encoder_data(super::output::DESTINATION));
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests fail by panicking.
+mod tests {
+    use super::*;
+
+    fn stream(server: &str) -> StreamProfile {
+        let mut s = StreamProfile::new();
+        s.server = server.into();
+        s.key_saved = true;
+        s
+    }
+
+    #[test]
+    fn rows_show_the_first_destination_then_the_others_with_what_is_missing() {
+        let mut all = Destinations::default();
+        let id = all.add(Canvas::Main, "", "kick").unwrap();
+        let s = stream("rtmp://live.twitch.tv/app");
+        let rows = rows(&all, Canvas::Main, &s);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "Twitch");
+        assert_eq!(
+            rows[0].note,
+            "Twitch · RTMP · Key saved · Same as the stream"
+        );
+        assert!(!rows[0].warn);
+        assert_eq!(rows[1].id, id);
+        assert_eq!(rows[1].name, "Kick");
+        assert_eq!(rows[1].note, "Kick · No server yet · Same as the stream");
+        assert!(rows[1].warn);
+        assert_eq!(count(&all, Canvas::Main), "2 of 6");
+    }
+
+    #[test]
+    fn a_preset_fills_the_server_and_name_and_the_draft_saves() {
+        let mut all = Destinations::default();
+        let mut s = stream("rtmp://live.twitch.tv/app");
+        let mut e = Editor::add(Canvas::Main);
+        assert_eq!(e.draft.name, "YouTube");
+        assert!(e.draft.server.starts_with("rtmps://"));
+        e.set_service(stream_services::get("kick").unwrap());
+        assert_eq!(e.draft.name, "Kick");
+        assert_eq!(e.draft.server, "");
+        assert!(!e.server_help().is_empty());
+        e.set_server("rtmp://");
+        assert!(!e.problem.is_empty());
+        assert!(e.save(&mut all, &mut s).is_err());
+        e.set_server("rtmps://fa723fc1b171.global-contribute.live-video.net/app");
+        e.set_own(true, &s.encoding);
+        let id = e.save(&mut all, &mut s).unwrap();
+        let d = all.get(id).unwrap();
+        assert_eq!(d.name, "Kick");
+        assert!(d.encoding.is_own());
+        // Editing the first destination writes its server into the stream section.
+        let first = all.of(Canvas::Main, &s, "").into_iter().next().unwrap();
+        let mut e = Editor::edit(&first, Canvas::Main);
+        e.set_server("rtmp://a.rtmp.youtube.com/live2");
+        e.draft.name = "Main".into();
+        e.save(&mut all, &mut s).unwrap();
+        assert_eq!(s.server, "rtmp://a.rtmp.youtube.com/live2");
+        assert_eq!(all.get(0).map(|d| d.name.as_str()), Some("Main"));
+        assert_eq!(all.get(0).map(|d| d.server.as_str()), Some(""));
+    }
+
+    #[test]
+    fn notes_sum_the_upload_and_warn_about_service_limits() {
+        let mut all = Destinations::default();
+        let mut s = stream("rtmp://live.twitch.tv/app");
+        s.encoding.video_kbps = 8000;
+        assert_eq!(
+            notes(&all, Canvas::Main, &s),
+            (
+                String::new(),
+                vec!["Twitch: 8000 kbit/s is above the 6000 kbit/s Twitch accepts.".to_owned()]
+            )
+        );
+        let mut e = Editor::add(Canvas::Main);
+        e.set_own(true, &s.encoding);
+        e.save(&mut all, &mut s).unwrap();
+        let (upload, _) = notes(&all, Canvas::Main, &s);
+        assert_eq!(
+            upload,
+            "Upload needed: about 25 Mbit/s for 2 destinations (one encode shared, one of its own)."
+        );
     }
 }

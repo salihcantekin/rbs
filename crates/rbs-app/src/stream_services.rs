@@ -113,6 +113,7 @@ pub fn warnings(service: &Service, encoding: &Encoding) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
 
@@ -121,10 +122,16 @@ mod tests {
         let file: File = toml::from_str(include_str!("stream_services.toml")).unwrap();
         assert_eq!(file.service, all());
         let ids: Vec<_> = all().iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["youtube", "twitch", "kick", "facebook", "x", "custom"]);
+        assert_eq!(
+            ids,
+            ["youtube", "twitch", "kick", "facebook", "x", "custom"]
+        );
         for s in all() {
             assert!(!s.key_help.is_empty(), "{}", s.id);
-            assert_eq!(s.server_from_dashboard, s.servers.is_empty() && s.id != "custom");
+            assert_eq!(
+                s.server_from_dashboard,
+                s.servers.is_empty() && s.id != "custom"
+            );
             for server in &s.servers {
                 assert!(
                     crate::stream_profile::parse_server(&server.url).is_ok(),

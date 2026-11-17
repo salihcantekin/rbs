@@ -5418,8 +5418,8 @@ component DestinationEditor inherits Rectangle {
             font-weight: Tokens.type-label-weight;
             accessible-role: none;
         }
-        // find: none (inside the destination editor, open only after Edit).
         SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
             divider: false;
             label: @tr("Service");
             summary: @tr("Fills the server; it stays editable");
@@ -5430,8 +5430,8 @@ component DestinationEditor inherits Rectangle {
                 selected(i) => { Studio.dest-set-service(i); }
             }
         }
-        // find: none (inside the destination editor, open only after Edit).
         SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
             label: @tr("Name");
             name := TextField {
                 label: @tr("Name");
@@ -5439,8 +5439,8 @@ component DestinationEditor inherits Rectangle {
                 edited(t) => { Studio.dest-set-name(t); }
             }
         }
-        // find: none (inside the destination editor, open only after Edit).
         SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
             label: @tr("Server");
             summary: Studio.st-ed-server-help == "" ? @tr("From your streaming service") : "";
             help: Studio.st-ed-server-help;
@@ -5452,8 +5452,8 @@ component DestinationEditor inherits Rectangle {
                 edited(t) => { Studio.dest-set-server(t); }
             }
         }
-        // find: none (inside the destination editor, open only after Edit).
         SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
             label: @tr("Stream key");
             help: Studio.st-ed-key-saved ? @tr("A stream key is saved.") : Studio.st-ed-key-help;
             control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
@@ -5470,7 +5470,17 @@ component DestinationEditor inherits Rectangle {
                 enabled: key.text != "";
                 clicked => { Studio.dest-save-key(key.text); }
             }
-            if Studio.st-ed-key-saved: Button {
+        }
+        // The saved key's own row, as the Stream key row above: the field takes the width.
+        if Studio.st-ed-key-saved: SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
+            divider: false;
+            fill: false;
+            label: "";
+            help: "";
+            control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
                 lead: IconName.trash;
                 horizontal-stretch: 0;
                 text: @tr("Remove key");
@@ -5479,8 +5489,8 @@ component DestinationEditor inherits Rectangle {
                 clicked => { Studio.dest-remove-key(); }
             }
         }
-        // find: none (inside the destination editor, open only after Edit).
         SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
             label: @tr("Encoding");
             help: Studio.st-ed-own ? @tr("Own settings encode the picture a second time: more CPU or GPU, and more upload.") : "";
             help-is-warning: Studio.st-ed-own;
@@ -5497,8 +5507,8 @@ component DestinationEditor inherits Rectangle {
             stream: true;
             set(field, value) => { Studio.set-encoding(2, field, value); }
         }
-        // find: none (inside the destination editor, open only after Edit).
         if !Studio.st-ed-first: SettingRow {
+            // find: none (inside the destination editor, open only after Edit).
             label: @tr("Reconnect when the connection drops");
             summary: @tr("Up to 10 tries");
             fill: false;
