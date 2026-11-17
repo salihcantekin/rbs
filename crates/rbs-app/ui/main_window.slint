@@ -495,12 +495,13 @@ component RailPlace inherits HorizontalLayout {
     }
 }
 
-// The transition to run (ADR-0128): Cut, Fade, Move, Swipe or Slide. Move's duration
-// and easing are the collection glide (ADR-0100), also in Settings › General; a
-// source's own glide is in Properties.
+// The transition to run (ADR-0128): Cut, Fade, Move, Swipe, Slide or Stinger
+// (ADR-0140). Move's duration and easing are the collection glide (ADR-0100), also in
+// Settings › General; a source's own glide is in Properties. A stinger's duration is
+// its video's.
 component TransitionChoice inherits Select {
     label: @tr("Transition type");
-    options: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+    options: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide"), @tr("Stinger")];
     index: Studio.transition-kind;
     selected(i) => { Studio.set-transition-kind(i); }
 }
@@ -512,9 +513,10 @@ component TransitionDuration inherits NumberField {
     value: Studio.transition-kind == 1 ? Studio.fade-duration
         : Studio.transition-kind == 2 ? Studio.glide-duration
         : Studio.transition-kind == 3 ? Studio.swipe-duration
-        : Studio.transition-kind == 4 ? Studio.slide-duration : 0;
+        : Studio.transition-kind == 4 ? Studio.slide-duration
+        : Studio.transition-kind == 5 ? max(0, Studio.stinger-length-ms) : 0;
     step: 50;
-    enabled: Studio.transition-kind != 0;
+    enabled: Studio.transition-kind != 0 && Studio.transition-kind != 5;
     edited(v) => { Studio.set-transition-duration(max(0, min(5000, round(v)))); }
 }
 
@@ -527,6 +529,8 @@ component TransitionCaption inherits Text {
         : Studio.transition-kind == 1 ? @tr("Fade") + "\n" + @tr("{} ms", root.ms)
         : Studio.transition-kind == 3 ? @tr("Swipe") + "\n" + @tr("{} ms", root.ms)
         : Studio.transition-kind == 4 ? @tr("Slide") + "\n" + @tr("{} ms", root.ms)
+        : Studio.transition-kind == 5 ? (Studio.stinger-length-ms >= 0
+            ? @tr("Stinger") + "\n" + @tr("{} ms", Studio.stinger-length-ms) : @tr("Stinger"))
         : @tr("Move") + "\n" + @tr("{} ms", root.ms);
     color: Theme.text-secondary;
     font-size: Tokens.type-caption-size;
@@ -786,7 +790,8 @@ component TransitionOptions inherits PopoverLayer {
                     text: Overlays.transition-full ? @tr("Transition")
                         : Studio.transition-kind == 1 ? @tr("Fade options")
                         : Studio.transition-kind == 3 ? @tr("Swipe options")
-                        : Studio.transition-kind == 4 ? @tr("Slide options") : @tr("Move options");
+                        : Studio.transition-kind == 4 ? @tr("Slide options")
+                        : Studio.transition-kind == 5 ? @tr("Stinger options") : @tr("Move options");
                     color: Theme.text-primary;
                     font-size: Tokens.type-body-size;
                     font-weight: Tokens.type-label-weight;
@@ -799,6 +804,7 @@ component TransitionOptions inherits PopoverLayer {
                         : Studio.transition-kind == 1 ? @tr("The scene coming on air fades in over the one on air.")
                         : Studio.transition-kind == 3 ? @tr("The scene coming on air slides in over the one on air.")
                         : Studio.transition-kind == 4 ? @tr("The scene coming on air pushes the one on air out.")
+                        : Studio.transition-kind == 5 ? @tr("A video plays over the change; the scenes swap under it at the cut point.")
                         : @tr("Sources in both scenes slide to their new place, new ones fade in, leaving ones fade out.");
                     detail: @tr("Sound follows the picture. A global scene stays still on top.");
                 }
@@ -872,6 +878,63 @@ component TransitionOptions inherits PopoverLayer {
                     }
                 }
             }
+            // The stinger (ADR-0140 decision 10): its video, the cut point with the
+            // found one, and a warning when its transparency cannot be kept here.
+            if Studio.transition-kind == 5: TransitionOptionRow {
+                label: @tr("Video");
+                Text {
+                    horizontal-stretch: 1;
+                    text: Studio.stinger-name != "" ? Studio.stinger-name : @tr("None");
+                    color: Studio.stinger-name != "" ? Theme.text-primary : Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Button {
+                    lead: IconName.folder;
+                    text: @tr("Choose…");
+                    kind: "secondary";
+                    accessible-name: @tr("Choose the stinger video");
+                    clicked => { Studio.choose-stinger-file(); }
+                }
+            }
+            if Studio.transition-kind == 5 && Studio.stinger-name != "": TransitionOptionRow {
+                label: @tr("Cut point");
+                NumberField {
+                    horizontal-stretch: 1;
+                    label: @tr("Cut point");
+                    unit: @tr("ms");
+                    step: 10;
+                    value: Studio.stinger-cut-ms >= 0 ? Studio.stinger-cut-ms
+                        : Studio.stinger-found-ms >= 0 ? Studio.stinger-found-ms
+                        : max(0, Studio.stinger-length-ms / 2);
+                    edited(v) => {
+                        Studio.set-stinger-cut(Studio.stinger-length-ms >= 0
+                            ? max(0, min(Studio.stinger-length-ms, round(v))) : max(0, round(v)));
+                    }
+                }
+                Button {
+                    text: @tr("Use found point");
+                    kind: "secondary";
+                    enabled: Studio.stinger-cut-ms >= 0;
+                    clicked => { Studio.set-stinger-cut(-1); }
+                }
+            }
+            if Studio.transition-kind == 5 && Studio.stinger-name != "" && !Studio.stinger-alpha-unsupported: Text {
+                text: Studio.stinger-looking ? @tr("Looking for the point where the video covers the picture…")
+                    : Studio.stinger-found-ms >= 0 ? @tr("Found point: {} ms, where the video covers the picture.", Studio.stinger-found-ms)
+                    : Studio.stinger-length-ms >= 0 ? @tr("No picture covers it fully, so the cut is at half its length.")
+                    : "";
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+            if Studio.transition-kind == 5 && Studio.stinger-alpha-unsupported: Text {
+                text: @tr("This video's transparency cannot be kept on this computer, so the change runs as a cut.");
+                color: Theme.state-warning;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
             // Rehearse at the foot (ADR-0135 decisions 11 and 14): the transition on the
             // Preview picture only. Nothing to rehearse for Cut or a duration of 0.
             Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
@@ -881,7 +944,9 @@ component TransitionOptions inherits PopoverLayer {
                     lead: IconName.play;
                     text: @tr("Rehearse on Preview");
                     kind: "secondary";
+                    // Not for a stinger (ADR-0140 decision 8).
                     enabled: Studio.studio-mode && Studio.state == 1 && Studio.transition-kind != 0
+                        && Studio.transition-kind != 5
                         && (Studio.transition-kind == 1 ? Studio.fade-duration
                             : Studio.transition-kind == 2 ? Studio.glide-duration
                             : Studio.transition-kind == 3 ? Studio.swipe-duration
@@ -908,7 +973,7 @@ component SceneTransitionCard inherits PopoverLayer {
         : root.kind == 2 ? Studio.glide-duration
         : root.kind == 3 ? Studio.swipe-duration
         : root.kind == 4 ? Studio.slide-duration : 0;
-    property <[string]> kinds: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+    property <[string]> kinds: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide"), @tr("Stinger")];
     function put(kind: int, ms: int) {
         Overlays.scene-transition-kind = kind;
         Overlays.scene-transition-ms = ms;
@@ -960,12 +1025,13 @@ component SceneTransitionCard inherits PopoverLayer {
                 Select {
                     horizontal-stretch: 1;
                     label: @tr("Type");
-                    options: [@tr("Default ({})", root.kinds[Studio.transition-kind]), @tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+                    options: [@tr("Default ({})", root.kinds[Studio.transition-kind]), @tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide"), @tr("Stinger")];
                     index: Overlays.scene-transition-kind + 1;
                     selected(i) => { root.put(i - 1, Overlays.scene-transition-ms); }
                 }
             }
-            if root.kind != 0: TransitionOptionRow {
+            // A stinger's duration is its video's (ADR-0140 decision 1).
+            if root.kind != 0 && root.kind != 5: TransitionOptionRow {
                 label: @tr("Duration");
                 Toggle {
                     label: @tr("Own duration");

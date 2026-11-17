@@ -55,6 +55,11 @@ impl StingerFile {
             .is_some_and(|f| f.alpha == StingerAlpha::Unsupported)
     }
 
+    /// True while a look runs for the stinger's file.
+    pub(super) fn looking(&self) -> bool {
+        self.key.is_some() && self.found.is_none() && self.cancel.is_some()
+    }
+
     /// What was found, once found.
     pub(super) fn found(&self) -> Option<StingerLook> {
         self.found
@@ -157,17 +162,12 @@ impl Host {
     /// the play range's length, the found cut, the picture size and whether its alpha
     /// is kept here. Unknown until the look finished; a change then runs as a Cut.
     fn push_stinger_facts(&mut self) {
+        let length = self.stinger_length();
         let facts = self.stinger.key.as_ref().map(|key| {
             let found = self.stinger.found;
-            let (start, end) = key.range;
-            let duration = found.and_then(|f| f.duration);
-            let end = match (end, duration) {
-                (Some(end), Some(d)) => Some(end.min(d)),
-                (end, d) => end.or(d),
-            };
             rbs_record::StingerFacts {
                 source: key.source,
-                length: end.map(|end| end.saturating_sub(start)),
+                length,
                 found_cut: found.and_then(|f| f.cut),
                 size: found.and_then(|f| f.size),
                 alpha_unsupported: found.is_some_and(|f| f.alpha == StingerAlpha::Unsupported),
@@ -176,6 +176,19 @@ impl Host {
         // Only once a look finished: before it, nothing is known.
         let facts = facts.filter(|_| self.stinger.found.is_some());
         self.studio.set_stinger(facts);
+    }
+
+    /// The length of the stinger's play range, once its file was looked at: the
+    /// range's end (at most the stated duration) less its start.
+    pub(super) fn stinger_length(&self) -> Option<Duration> {
+        let key = self.stinger.key.as_ref()?;
+        let duration = self.stinger.found?.duration;
+        let (start, end) = key.range;
+        let end = match (end, duration) {
+            (Some(end), Some(d)) => Some(end.min(d)),
+            (end, d) => end.or(d),
+        };
+        end.map(|end| end.saturating_sub(start))
     }
 
     /// The key of the look the collection's stinger needs now.

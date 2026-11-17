@@ -864,6 +864,9 @@ pub enum Command {
         /// A local regular file. The demo decoder ignores contents.
         path: std::path::PathBuf,
     },
+    /// Make a media file the stinger (ADR-0140): a new media source that no scene
+    /// places, and the transition set to Stinger with it, one undo step.
+    SetStingerFile(std::path::PathBuf),
     /// Add a browser page (ADR-0109), fitted to the canvas, one undo step.
     AddBrowser {
         /// `http`, `https`, or `file` URL.
@@ -2526,6 +2529,12 @@ pub struct SceneList {
     pub transition: rbs_scene::CollectionTransition,
     /// The stinger's found cut point in ms (ADR-0140 decision 3); `None` until found.
     pub stinger_cut_found_ms: Option<u32>,
+    /// The length of the stinger's play range in ms, once its file was looked at.
+    pub stinger_length_ms: Option<u32>,
+    /// The stinger's file is being looked at.
+    pub stinger_looking: bool,
+    /// The stinger's file has transparency no adapter here keeps (decision 9).
+    pub stinger_alpha_unsupported: bool,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -4707,6 +4716,10 @@ impl Host {
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
             Command::AddMedia { path } => match self.add_media_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::SetStingerFile(path) => match self.set_stinger_file(&path) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
@@ -9479,6 +9492,49 @@ impl Host {
         }
     }
 
+    /// A new media source for `path` that no scene places, made the stinger with the
+    /// transition set to Stinger (ADR-0140 decisions 1 and 10): one undo step.
+    fn set_stinger_file(&mut self, path: &std::path::Path) -> Result<SourceId, Refusal> {
+        let mut settings = Settings::new();
+        settings.insert(
+            keys::PATH.into(),
+            SettingValue::Text(path.display().to_string()),
+        );
+        rbs_sources::validate_settings(&SourceKind::Media.type_id(), &settings)
+            .map_err(|error| Refusal::Invalid(error.to_string()))?;
+        let base = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Stinger");
+        let name = unique_name(&self.collection, base);
+        let (source, undo_source) = self
+            .collection
+            .add_source(&name, SourceKind::Media.type_id(), settings)
+            .map_err(|e| Refusal::of(&e))?;
+        let mut t = self.collection.transition();
+        t.kind = rbs_scene::TransitionKind::Stinger;
+        t.stinger = rbs_scene::StingerSettings {
+            source: Some(source),
+            cut_ms: None,
+        };
+        match self.collection.set_transition(t) {
+            Ok(undo_transition) => {
+                self.history.record(
+                    EditKind::Transition,
+                    &name,
+                    0,
+                    vec![undo_source, undo_transition],
+                );
+                Ok(source)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(undo_source);
+                Err(Refusal::of(&e))
+            }
+        }
+    }
+
     /// Settings and layout of a new text source showing `text` (ADR-0129 decision 4):
     /// the box fits the text with its padding, measured by the registered renderer, or
     /// is 640 x 160 when there is none, it fails or takes longer than
@@ -12026,6 +12082,11 @@ impl Host {
             glide: self.collection.glide(),
             transition: self.collection.transition(),
             stinger_cut_found_ms: self.stinger.cut_found_ms(),
+            stinger_length_ms: self
+                .stinger_length()
+                .map(|l| u32::try_from(l.as_millis()).unwrap_or(u32::MAX)),
+            stinger_looking: self.stinger.looking(),
+            stinger_alpha_unsupported: self.stinger.alpha_unsupported(),
             sources,
         }
     }
