@@ -1409,6 +1409,7 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
             &self,
             config: &Configure,
             sink: std::sync::Arc<BrowserFrameSink>,
+            _sound: Option<std::sync::Arc<rbs_sources::BrowserSound>>,
         ) -> Result<Box<dyn BrowserSession>, String> {
             let pixels = usize::try_from(config.width)
                 .unwrap_or(0)
@@ -1692,6 +1693,332 @@ fn noise_suppression_latency_is_compensated_without_touching_the_stored_offset()
     assert!(run_until(&mut studio, &clock, |s| {
         s.progress().master_peak_db.is_some_and(f32::is_finite)
     }));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn during_a_fade_the_sound_follows_the_picture() {
+    // ADR-0128 decision 10: a source only in the outgoing scene ramps to silence over
+    // the transition, not in the mixer's default 10 ms.
+    use rbs_record::TransitionState;
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let other = camera_scene(&mut col);
+    let mut fade = CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    };
+    fade.fade.duration_ms = 1000;
+    col.set_transition(fade).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition-sound", ContainerId::Matroska),
+        )
+        .unwrap();
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let peak = |s: &Studio| s.meter(mic).unwrap().take().peak(0);
+    let window = |studio: &mut Studio| {
+        let _ = peak(studio);
+        let t = blocks(studio);
+        assert!(run_until(studio, &clock, |s| blocks(s) >= t + 5));
+        peak(studio)
+    };
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    let full = window(&mut studio);
+    assert!(full > 0.0);
+
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    // Waiting: the outgoing level holds.
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    let start = clock.now();
+    // A quarter of the way in, the microphone is between full and silent.
+    assert!(run_until(&mut studio, &clock, |_| {
+        clock.now().saturating_since(start) >= Duration::from_millis(250)
+    }));
+    let middle = window(&mut studio);
+    assert!(middle > 0.0 && middle < full * 0.9, "{middle} of {full}");
+    // After the transition it is silent and leaves at the settle.
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+    }));
+    // Audio blocks trail the clock by the audio latency; look past it.
+    assert!(run_until(&mut studio, &clock, |_| {
+        clock.now().saturating_since(start) >= Duration::from_millis(1100)
+    }));
+    assert_eq!(window(&mut studio), 0.0);
+    assert!(run_until(&mut studio, &clock, |s| s
+        .transition_wait(clock.now())
+        == Some(Duration::ZERO)));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert_eq!(studio.transition_state(canvas), None);
+    assert_eq!(studio.mixer_anomalies(), 0);
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn transitions_report_their_start_and_end_and_take_a_one_off_kind() {
+    // ADR-0128 decision 13.
+    use rbs_record::{TransitionOnce, TransitionPhase, TransitionState};
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Cut,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition-events", ContainerId::Matroska),
+        )
+        .unwrap();
+    let phases = |s: &mut Studio| -> Vec<(TransitionPhase, TransitionKind)> {
+        s.take_transition_events()
+            .into_iter()
+            .map(|e| (e.phase, e.kind))
+            .collect()
+    };
+
+    // A Cut starts and ends at once.
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let events = studio.take_transition_events();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0].phase, TransitionPhase::Started);
+    assert_eq!(events[1].phase, TransitionPhase::Ended);
+    assert_eq!(events[0].from, Some(live));
+    assert_eq!(events[0].to, Some(other));
+    assert_eq!(studio.transition_state(canvas), None);
+
+    // A one-off Fade of 100 ms over the collection's Cut: started when it runs, ended
+    // after its duration; the next change is a Cut again.
+    studio.set_transition_once(TransitionOnce::new(Some(TransitionKind::Fade), Some(100)));
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Waiting)
+    );
+    assert!(phases(&mut studio).is_empty(), "nothing while it waits");
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    assert_eq!(
+        phases(&mut studio),
+        [(TransitionPhase::Started, TransitionKind::Fade)]
+    );
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+    }));
+    assert_eq!(
+        phases(&mut studio),
+        [(TransitionPhase::Ended, TransitionKind::Fade)]
+    );
+    assert!(run_until(&mut studio, &clock, |s| s
+        .transition_wait(clock.now())
+        == Some(Duration::ZERO)));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert!(phases(&mut studio).is_empty());
+
+    // A one-off Move of 200 ms ends on the service after its glide, not at once.
+    studio.set_transition_once(TransitionOnce::new(Some(TransitionKind::Move), Some(200)));
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let started = clock.now();
+    assert_eq!(
+        phases(&mut studio),
+        [(TransitionPhase::Started, TransitionKind::Move)]
+    );
+    assert_eq!(
+        studio.transition_wait(clock.now()),
+        Some(Duration::from_millis(200))
+    );
+    let mut ended = Vec::new();
+    assert!(run_until(&mut studio, &clock, |_| {
+        clock.now().saturating_since(started) >= Duration::from_millis(250)
+    }));
+    ended.extend(phases(&mut studio));
+    assert_eq!(ended, [(TransitionPhase::Ended, TransitionKind::Move)]);
+    assert_eq!(studio.transition_wait(clock.now()), None, "nothing armed");
+
+    // The one-off was used once: back to the collection's Cut.
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        phases(&mut studio),
+        [
+            (TransitionPhase::Started, TransitionKind::Cut),
+            (TransitionPhase::Ended, TransitionKind::Cut)
+        ]
+    );
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_browser_page_is_heard_in_the_program_mix() {
+    // ADR-0106, ADR-0109 decision 6: the page's sound reaches the sound node through
+    // the feed, and the sound node is the producer of the page's strip.
+    use std::sync::{Arc, Mutex};
+
+    use rbs_browser_ipc::Configure;
+    use rbs_scene::model::SettingValue;
+    use rbs_sources::types::keys;
+    use rbs_sources::{
+        BrowserFrameSink, BrowserSession, BrowserSound, BrowserSoundFeed, BrowserTree,
+    };
+
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let scene = col.scenes().next().unwrap().id;
+    // The page is the only sound: what the master meter shows is the page.
+    for name in ["Microphone", "System audio"] {
+        let id = col.sources().find(|s| s.name == name).unwrap().id;
+        col.delete_source(id).unwrap();
+    }
+    let mut page_settings = Settings::new();
+    page_settings.insert(
+        keys::URL.to_owned(),
+        SettingValue::Text("https://example.com/tone".to_owned()),
+    );
+    page_settings.insert(keys::WIDTH.to_owned(), SettingValue::Int(64));
+    page_settings.insert(keys::HEIGHT.to_owned(), SettingValue::Int(36));
+    let (page, _) = col
+        .add_source(
+            "Page",
+            NodeTypeId::new_static(types::BROWSER_SOURCE),
+            page_settings,
+        )
+        .unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(page),
+        Layout::new([0.0, 0.0], [W as f32, H as f32]),
+        None,
+    )
+    .unwrap();
+
+    /// The OS clock of the test page runs this far ahead of master time.
+    const OS: u64 = 5_000_000_000_000;
+
+    /// A page that plays a 0.5 square wave, written on each control tick for the
+    /// master time since the last one, in 10 ms packets.
+    struct TonePage {
+        clock: rbs_core::time::TestClock,
+        feed: Option<BrowserSoundFeed>,
+        made_until: u64,
+    }
+
+    impl BrowserSession for TonePage {
+        fn poll(&mut self) -> Option<i32> {
+            let now = self.clock.now().as_nanos();
+            let feed = self.feed.as_mut()?;
+            feed.observe(OS + now);
+            if self.made_until == 0 {
+                self.made_until = now;
+            }
+            while self.made_until + 10_000_000 <= now {
+                let samples: Vec<f32> = (0..480)
+                    .flat_map(|f| {
+                        let v = if (f / 24) % 2 == 0 { 0.5 } else { -0.5 };
+                        [v, v]
+                    })
+                    .collect();
+                feed.packet(OS + self.made_until, 48_000, 2, &samples);
+                self.made_until += 10_000_000;
+            }
+            feed.pump();
+            None
+        }
+        fn stop(&mut self) {}
+    }
+
+    struct ToneTree(rbs_core::time::TestClock, Arc<Mutex<Option<u32>>>);
+
+    impl BrowserTree for ToneTree {
+        fn start(
+            &self,
+            config: &Configure,
+            _sink: Arc<BrowserFrameSink>,
+            sound: Option<Arc<BrowserSound>>,
+        ) -> Result<Box<dyn BrowserSession>, String> {
+            *self.1.lock().unwrap() = Some(config.sample_rate);
+            Ok(Box::new(TonePage {
+                clock: self.0.clone(),
+                feed: sound.map(BrowserSoundFeed::new),
+                made_until: 0,
+            }))
+        }
+    }
+
+    let (engine, clock) = engine_at_start();
+    let asked = Arc::new(Mutex::new(None));
+    let tree: Arc<dyn BrowserTree> = Arc::new(ToneTree(clock.clone(), Arc::clone(&asked)));
+    let mut studio = Studio::start_with_tree(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+        Some(tree),
+    )
+    .unwrap();
+    let id = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://tone", ContainerId::Matroska),
+        )
+        .unwrap();
+    // No level meter on picture-and-sound strips yet; the master hears only the page.
+    assert!(studio.meter(page).is_none());
+    let master = Arc::clone(studio.master_meter().expect("a program mixer"));
+    let heard = run_until(&mut studio, &clock, |_| master.observe().peak(0) > 0.4);
+    assert!(heard, "{:?}", studio.progress());
+    // The helper was asked for the graph's rate.
+    assert_eq!(*asked.lock().unwrap(), Some(48_000));
+    assert_eq!(studio.mixer_anomalies(), 0);
+    let _ = studio.stop_output(id);
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }

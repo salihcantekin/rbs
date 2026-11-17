@@ -72,13 +72,17 @@ pub struct TargetsParams {
 }
 
 /// `source.add`: a source of `kind` capturing one target, on top of the program scene.
+/// A `text` source (protocol 1.75, ADR-0129 decision 8) has no target: `adapter` and
+/// `target` may be left out and are ignored, and `text` is what it shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddSource {
     /// Its kind.
     pub kind: SourceKind,
-    /// The adapter that listed the target.
+    /// The adapter that listed the target (empty for `text`).
+    #[serde(default)]
     pub adapter: String,
-    /// The target's id for that adapter.
+    /// The target's id for that adapter (empty for `text`).
+    #[serde(default)]
     pub target: String,
     /// Its name; `null` lets the server pick one.
     #[serde(default)]
@@ -95,6 +99,21 @@ pub struct AddSource {
     /// Default false; the picture and its sound are one undo step.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub with_audio: bool,
+    /// The text a `text` source shows (protocol 1.75); absent: "Text". Not allowed for
+    /// other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// `source.set_text` (protocol 1.75, ADR-0129 decision 8): replaces a text source's
+/// `text` only. One undo step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetText {
+    /// The text source's id.
+    pub source: u32,
+    /// The new text.
+    pub text: String,
 }
 
 /// `source.set_companion_audio` (protocol 1.26, ADR-0096): adds or removes the "Capture
@@ -117,6 +136,64 @@ pub struct SetCollectionGlide {
     pub duration_ms: u32,
     /// Slide easing (`"linear"` or `"ease-in-out"`).
     pub easing: crate::types::GlideEasing,
+}
+
+/// `collection.set_transition` (protocol 1.81, ADR-0128): the collection's transition.
+/// Only the given parts change; one undo step.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetCollectionTransition {
+    /// The kind a program change uses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::types::TransitionKind>,
+    /// Fade settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade: Option<crate::types::FadeTransition>,
+    /// Swipe settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swipe: Option<crate::types::SwipeTransition>,
+    /// Slide settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide: Option<crate::types::SwipeTransition>,
+}
+
+/// A transition for one program change only (protocol 1.81, ADR-0128 decision 13):
+/// `kind` and `duration_ms` replace the collection's for this change; absent ones keep
+/// it. With kind `move`, `duration_ms` replaces the glide's duration and every
+/// per-source override for this change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransitionOnce {
+    /// The kind for this change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::types::TransitionKind>,
+    /// Milliseconds in `0..=5000` for this change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+/// `scene.switch` (protocol 1.6; `kind` and `duration_ms` since 1.81).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwitchScene {
+    /// The scene's id (`scene.list`).
+    pub scene: u32,
+    /// The kind for this change only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::types::TransitionKind>,
+    /// Milliseconds for this change only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+impl SwitchScene {
+    /// The one-off transition of this switch.
+    pub fn once(&self) -> TransitionOnce {
+        TransitionOnce {
+            kind: self.kind,
+            duration_ms: self.duration_ms,
+        }
+    }
 }
 
 /// `source.set_glide` (protocol 1.35, ADR-0100): per-source slide override, or `null`
@@ -1493,8 +1570,15 @@ pub struct CreateToken {
     /// Its name, unique; surrounding spaces are dropped.
     pub name: String,
     /// What it allows: `["read"]`, `["read", "control"]` or `["read", "control",
-    /// "admin"]` (the access levels the desktop app offers).
+    /// "admin"]` (the access levels the desktop app offers). Never more than the
+    /// caller's own scopes (`not_permitted`, protocol 1.80).
     pub scopes: ScopeSet,
+    /// "Allow actions that cannot be undone" (protocol 1.80, ADR-0052 decision 4);
+    /// absent: allowed, as tokens behave without the field. Only a caller that holds
+    /// the permission reaches `tokens.create` (it is `destructive`), so it can give
+    /// either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irreversible: Option<bool>,
 }
 
 /// `tokens.revoke`.
@@ -1555,8 +1639,12 @@ pub enum Command {
     SourceAttributesClipboard,
     /// `source.paste_attributes` (protocol 1.68).
     SourcePasteAttributes(PasteAttributes),
+    /// `source.set_text` (protocol 1.75).
+    SourceSetText(SetText),
+    /// `text.fonts` (protocol 1.75).
+    TextFonts,
     /// `scene.switch` (protocol 1.6).
-    SceneSwitch(SceneRef),
+    SceneSwitch(SwitchScene),
     /// `source.rename` (protocol 1.6).
     SourceRename(RenameSource),
     /// `source.set_volume` (protocol 1.6).
@@ -1626,7 +1714,7 @@ pub enum Command {
     /// `canvas.set_preview` (protocol 1.9).
     CanvasSetPreview(SetPreview),
     /// `canvas.transition` (protocol 1.9).
-    CanvasTransition,
+    CanvasTransition(TransitionOnce),
     /// `item.remove` (protocol 1.10).
     ItemRemove(ItemRef),
     /// `item.move` (protocol 1.32).
@@ -1749,6 +1837,8 @@ pub enum Command {
     CollectionSwitch(EntryRef),
     /// `collection.set_glide` (protocol 1.35, ADR-0100).
     CollectionSetGlide(SetCollectionGlide),
+    /// `collection.set_transition` (protocol 1.81, ADR-0128).
+    CollectionSetTransition(SetCollectionTransition),
     /// `source.set_glide` (protocol 1.35, ADR-0100).
     SourceSetGlide(SetSourceGlide),
     /// `source.set_region` (protocol 1.41, ADR-0103).
@@ -1820,6 +1910,8 @@ impl Command {
             Command::SourceReset(_) => "source.reset",
             Command::SourceCopyAttributes(_) => "source.copy_attributes",
             Command::SourceAttributesClipboard => "source.attributes_clipboard",
+            Command::SourceSetText(_) => "source.set_text",
+            Command::TextFonts => "text.fonts",
             Command::SourcePasteAttributes(_) => "source.paste_attributes",
             Command::SceneSwitch(_) => "scene.switch",
             Command::SourceRename(_) => "source.rename",
@@ -1852,7 +1944,7 @@ impl Command {
             Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
-            Command::CanvasTransition => "canvas.transition",
+            Command::CanvasTransition(_) => "canvas.transition",
             Command::ItemRemove(_) => "item.remove",
             Command::ItemMove(_) => "item.move",
             Command::SceneMove(_) => "scene.move",
@@ -1918,6 +2010,7 @@ impl Command {
             Command::CollectionList => "collection.list",
             Command::CollectionSwitch(_) => "collection.switch",
             Command::CollectionSetGlide(_) => "collection.set_glide",
+            Command::CollectionSetTransition(_) => "collection.set_transition",
             Command::SourceSetGlide(_) => "source.set_glide",
             Command::SourceSetRegion(_) => "source.set_region",
             Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
@@ -1976,6 +2069,51 @@ impl Request {
     }
 }
 
+impl Command {
+    /// What this call does (ADR-0052 decision 4): the method's effect, except that
+    /// `settings.set` with a `canvas` is `live`, because it restarts the studio,
+    /// which clears the undo history and re-arms the replay buffer empty. A method
+    /// missing from the table counts as `destructive`.
+    pub fn effect(&self) -> Effect {
+        match self {
+            Command::SettingsSet(p) if p.canvas.is_some() => Effect::Live,
+            c => method_effect(c.method()).unwrap_or(Effect::Destructive),
+        }
+    }
+
+    /// True when the call, by its parameters alone, could make RBS open a connection
+    /// to a host (ADR-0052 decision 4, protocol 1.79): a browser source, or a location
+    /// value that is not a local absolute path ([`crate::location::is_local_path`]).
+    /// Checked on the API thread; a source's settings and target, whose meaning
+    /// depends on the source's kind, are checked by the control target.
+    pub fn reaches_network(&self) -> bool {
+        use crate::location::is_local_path;
+        match self {
+            Command::SourceAdd(p) => p.kind == SourceKind::Browser,
+            Command::RecordStartToFile(p) => !is_local_path(&p.path),
+            Command::SettingsSet(p) => p.profiles.as_ref().is_some_and(|profiles| {
+                profiles
+                    .iter()
+                    .any(|r| !r.folder.is_empty() && !is_local_path(&r.folder))
+            }),
+            _ => false,
+        }
+    }
+}
+
+impl Command {
+    /// The call's parameters as on the wire (`params`), for checks that look at
+    /// which scene, item, source or filter a call names (ADR-0052 decision 4).
+    /// `null` for a method without parameters.
+    pub fn params_json(&self) -> serde_json::Value {
+        let wire = WireRequest::from(Request::Command(self.clone()));
+        serde_json::to_value(wire)
+            .ok()
+            .and_then(|mut v| v.get_mut("params").map(serde_json::Value::take))
+            .unwrap_or(serde_json::Value::Null)
+    }
+}
+
 /// A method and the scope it needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MethodInfo {
@@ -1983,155 +2121,270 @@ pub struct MethodInfo {
     pub name: &'static str,
     /// The scope it needs; `null` for the handshake.
     pub scope: Option<Scope>,
+    /// What it does to the studio (protocol 1.76, ADR-0052 decision 4).
+    pub effect: Effect,
+}
+
+/// What a method does to the studio (protocol 1.76, ADR-0052 decision 4). A client
+/// treats a missing or unknown effect as [`Effect::Destructive`]. Without the token
+/// permission "Allow actions that cannot be undone", `live` and `destructive`
+/// methods are refused with `not_permitted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effect {
+    /// Reads state; changes nothing.
+    Read,
+    /// Undoable, or reversed by another call with nothing lost, or only adds a new
+    /// file and never replaces one.
+    Edit,
+    /// Starts or stops what goes out: recordings, streams, the virtual camera, the
+    /// replay buffer, a calibration run; switches the output profile.
+    Live,
+    /// Removes something outside the undo history.
+    Destructive,
+}
+
+impl Effect {
+    /// Whether it needs the irreversible-actions permission.
+    pub fn is_irreversible(self) -> bool {
+        matches!(self, Effect::Live | Effect::Destructive)
+    }
 }
 
 /// Every method of protocol version 1 and its scope (ADR-0044 decision 10).
 pub const METHODS: &[MethodInfo] = &[
-    m("session.hello", None),
-    m("session.authenticate", None),
-    m("api.describe", Some(Scope::Read)),
-    m("studio.get", Some(Scope::Read)),
-    m("source.list", Some(Scope::Read)),
-    m("source.targets", Some(Scope::Control)),
-    m("source.add", Some(Scope::Control)),
-    m("source.delete", Some(Scope::Control)),
-    m("item.set_style", Some(Scope::Control)),
-    m("item.set_crop", Some(Scope::Control)),
-    m("item.flip", Some(Scope::Control)),
-    m("item.rotate", Some(Scope::Control)),
-    m("item.fit", Some(Scope::Control)),
-    m("item.align", Some(Scope::Control)),
-    m("item.reset_transform", Some(Scope::Control)),
-    m("scene.list", Some(Scope::Read)),
-    m("scene.add", Some(Scope::Control)),
-    m("scene.remove", Some(Scope::Control)),
-    m("scene.rename", Some(Scope::Control)),
-    m("scene.duplicate", Some(Scope::Control)),
-    m("source.duplicate", Some(Scope::Control)),
-    m("source.reset", Some(Scope::Control)),
-    m("source.copy_attributes", Some(Scope::Control)),
-    m("source.attributes_clipboard", Some(Scope::Read)),
-    m("source.paste_attributes", Some(Scope::Control)),
-    m("scene.switch", Some(Scope::Control)),
-    m("source.rename", Some(Scope::Control)),
-    m("source.set_volume", Some(Scope::Control)),
-    m("source.set_muted", Some(Scope::Control)),
-    m("source.set_mixer_hidden", Some(Scope::Control)),
-    m("canvas.set_master_volume", Some(Scope::Control)),
-    m("canvas.set_master_muted", Some(Scope::Control)),
-    m("item.add", Some(Scope::Control)),
-    m("filter.types", Some(Scope::Read)),
-    m("filter.add", Some(Scope::Control)),
-    m("filter.remove", Some(Scope::Control)),
-    m("filter.move", Some(Scope::Control)),
-    m("filter.set_enabled", Some(Scope::Control)),
-    m("filter.set_settings", Some(Scope::Control)),
-    m("source.set_sync_offset", Some(Scope::Control)),
-    m("sync.measure_start", Some(Scope::Control)),
-    m("sync.measure_cancel", Some(Scope::Control)),
-    m("sync.devices", Some(Scope::Read)),
-    m("sync.forget_device", Some(Scope::Control)),
-    m("sync.apply_to_device_sources", Some(Scope::Control)),
-    m("source.retarget", Some(Scope::Control)),
-    m("source.reload", Some(Scope::Control)),
-    m("source.get_settings", Some(Scope::Control)),
-    m("source.set_settings", Some(Scope::Control)),
-    m("source.set_companion_audio", Some(Scope::Control)),
-    m("canvas.add_vertical", Some(Scope::Control)),
-    m("canvas.auto_layout", Some(Scope::Control)),
-    m("canvas.set_vertical_size", Some(Scope::Control)),
-    m("canvas.remove_vertical", Some(Scope::Control)),
-    m("settings.recent_targets", Some(Scope::Control)),
-    m("settings.clear_recent_targets", Some(Scope::Control)),
-    m("item.set_visible", Some(Scope::Control)),
-    m("item.set_locked", Some(Scope::Control)),
-    m("item.set_show_for", Some(Scope::Control)),
-    m("item.show", Some(Scope::Control)),
-    m("scene.sources", Some(Scope::Read)),
-    m("canvas.set_preview", Some(Scope::Control)),
-    m("canvas.transition", Some(Scope::Control)),
-    m("item.remove", Some(Scope::Control)),
-    m("item.move", Some(Scope::Control)),
-    m("scene.move", Some(Scope::Control)),
-    m("source.set_active", Some(Scope::Control)),
-    m("look.list", Some(Scope::Read)),
-    m("look.apply", Some(Scope::Control)),
-    m("source.add_sample", Some(Scope::Control)),
-    m("item.set_box", Some(Scope::Control)),
-    m("global.list", Some(Scope::Read)),
-    m("global.add", Some(Scope::Control)),
-    m("global.remove", Some(Scope::Control)),
-    m("edit.undo", Some(Scope::Control)),
-    m("edit.redo", Some(Scope::Control)),
-    m("output.profiles", Some(Scope::Read)),
-    m("record.start", Some(Scope::Control)),
-    m("record.estimate", Some(Scope::Read)),
-    m("record.start_to_file", Some(Scope::Admin)),
-    m("record.stop", Some(Scope::Control)),
-    m("record.pause", Some(Scope::Control)),
-    m("record.resume", Some(Scope::Control)),
-    m("record.pause_toggle", Some(Scope::Control)),
-    m("record.status", Some(Scope::Read)),
-    m("stream.start", Some(Scope::Control)),
-    m("stream.stop", Some(Scope::Control)),
-    m("stream.hold", Some(Scope::Control)),
-    m("stream.resume", Some(Scope::Control)),
-    m("stream.hold_toggle", Some(Scope::Control)),
-    m("output.break_toggle", Some(Scope::Control)),
-    m("stream.status", Some(Scope::Read)),
-    m("stream.destinations", Some(Scope::Read)),
-    m("stream.destination.start", Some(Scope::Control)),
-    m("stream.destination.stop", Some(Scope::Control)),
-    m("stream.destination.set_enabled", Some(Scope::Control)),
-    m("output.set_with_vertical", Some(Scope::Control)),
-    m("replay.status", Some(Scope::Read)),
-    m("protection.status", Some(Scope::Read)),
-    m("calibration.run", Some(Scope::Admin)),
-    m("calibration.cancel", Some(Scope::Admin)),
-    m("calibration.status", Some(Scope::Read)),
-    m("source.set_monitor", Some(Scope::Control)),
-    m("monitor.status", Some(Scope::Read)),
-    m("monitor.devices", Some(Scope::Read)),
-    m("monitor.set_device", Some(Scope::Admin)),
-    m("monitor.set_volume", Some(Scope::Control)),
-    m("monitor.set_solo", Some(Scope::Control)),
-    m("loudness.status", Some(Scope::Read)),
-    m("loudness.set_enabled", Some(Scope::Control)),
-    m("loudness.reset", Some(Scope::Control)),
-    m("replay.arm", Some(Scope::Control)),
-    m("replay.disarm", Some(Scope::Control)),
-    m("replay.save", Some(Scope::Control)),
-    m("vcam.status", Some(Scope::Read)),
-    m("vcam.start", Some(Scope::Control)),
-    m("vcam.stop", Some(Scope::Control)),
-    m("settings.get", Some(Scope::Admin)),
-    m("settings.set", Some(Scope::Admin)),
-    m("profile.list", Some(Scope::Read)),
-    m("profile.switch", Some(Scope::Admin)),
-    m("collection.list", Some(Scope::Read)),
-    m("collection.switch", Some(Scope::Control)),
-    m("collection.set_glide", Some(Scope::Control)),
-    m("source.set_glide", Some(Scope::Control)),
-    m("source.set_region", Some(Scope::Control)),
-    m("source.set_record_separately", Some(Scope::Control)),
-    m("marker.add", Some(Scope::Control)),
-    m("marker.remove", Some(Scope::Control)),
-    m("project.export", Some(Scope::Control)),
-    m("source.get_region", Some(Scope::Control)),
-    m("source.set_chrome", Some(Scope::Control)),
-    m("source.get_chrome", Some(Scope::Control)),
-    m("source.fit_chrome", Some(Scope::Control)),
-    m("source.reset_chrome", Some(Scope::Control)),
-    m("scene.audio.get", Some(Scope::Read)),
-    m("scene.audio.set", Some(Scope::Control)),
-    m("scene.audio.own", Some(Scope::Control)),
-    m("scene.audio.shared", Some(Scope::Control)),
-    m("scene.audio.reset_source", Some(Scope::Control)),
-    m("events.subscribe", Some(Scope::Read)),
-    m("events.unsubscribe", Some(Scope::Read)),
-    m("tokens.list", Some(Scope::Tokens)),
-    m("tokens.create", Some(Scope::Tokens)),
-    m("tokens.revoke", Some(Scope::Tokens)),
+    m("session.hello", None, Effect::Read),
+    m("session.authenticate", None, Effect::Read),
+    m("api.describe", Some(Scope::Read), Effect::Read),
+    m("studio.get", Some(Scope::Read), Effect::Read),
+    m("source.list", Some(Scope::Read), Effect::Read),
+    m("source.targets", Some(Scope::Control), Effect::Read),
+    m("source.add", Some(Scope::Control), Effect::Edit),
+    m("source.delete", Some(Scope::Control), Effect::Edit),
+    m("item.set_style", Some(Scope::Control), Effect::Edit),
+    m("item.set_crop", Some(Scope::Control), Effect::Edit),
+    m("item.flip", Some(Scope::Control), Effect::Edit),
+    m("item.rotate", Some(Scope::Control), Effect::Edit),
+    m("item.fit", Some(Scope::Control), Effect::Edit),
+    m("item.align", Some(Scope::Control), Effect::Edit),
+    m("item.reset_transform", Some(Scope::Control), Effect::Edit),
+    m("scene.list", Some(Scope::Read), Effect::Read),
+    m("scene.add", Some(Scope::Control), Effect::Edit),
+    m("scene.remove", Some(Scope::Control), Effect::Edit),
+    m("scene.rename", Some(Scope::Control), Effect::Edit),
+    m("scene.duplicate", Some(Scope::Control), Effect::Edit),
+    m("source.duplicate", Some(Scope::Control), Effect::Edit),
+    m("source.reset", Some(Scope::Control), Effect::Destructive),
+    m("source.copy_attributes", Some(Scope::Control), Effect::Edit),
+    m(
+        "source.attributes_clipboard",
+        Some(Scope::Read),
+        Effect::Read,
+    ),
+    m(
+        "source.paste_attributes",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
+    m("source.set_text", Some(Scope::Control), Effect::Edit),
+    m("text.fonts", Some(Scope::Read), Effect::Read),
+    m("scene.switch", Some(Scope::Control), Effect::Edit),
+    m("source.rename", Some(Scope::Control), Effect::Edit),
+    m("source.set_volume", Some(Scope::Control), Effect::Edit),
+    m("source.set_muted", Some(Scope::Control), Effect::Edit),
+    m(
+        "source.set_mixer_hidden",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m(
+        "canvas.set_master_volume",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m(
+        "canvas.set_master_muted",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m("item.add", Some(Scope::Control), Effect::Edit),
+    m("filter.types", Some(Scope::Read), Effect::Read),
+    m("filter.add", Some(Scope::Control), Effect::Edit),
+    m("filter.remove", Some(Scope::Control), Effect::Edit),
+    m("filter.move", Some(Scope::Control), Effect::Edit),
+    m("filter.set_enabled", Some(Scope::Control), Effect::Edit),
+    m("filter.set_settings", Some(Scope::Control), Effect::Edit),
+    m(
+        "source.set_sync_offset",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
+    m("sync.measure_start", Some(Scope::Control), Effect::Edit),
+    m("sync.measure_cancel", Some(Scope::Control), Effect::Edit),
+    m("sync.devices", Some(Scope::Read), Effect::Read),
+    m(
+        "sync.forget_device",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
+    m(
+        "sync.apply_to_device_sources",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
+    m("source.retarget", Some(Scope::Control), Effect::Edit),
+    m("source.reload", Some(Scope::Control), Effect::Edit),
+    m("source.get_settings", Some(Scope::Control), Effect::Read),
+    m("source.set_settings", Some(Scope::Control), Effect::Edit),
+    m(
+        "source.set_companion_audio",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m("canvas.add_vertical", Some(Scope::Control), Effect::Edit),
+    m("canvas.auto_layout", Some(Scope::Control), Effect::Edit),
+    m(
+        "canvas.set_vertical_size",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m(
+        "canvas.remove_vertical",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
+    m(
+        "settings.recent_targets",
+        Some(Scope::Control),
+        Effect::Read,
+    ),
+    m(
+        "settings.clear_recent_targets",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
+    m("item.set_visible", Some(Scope::Control), Effect::Edit),
+    m("item.set_locked", Some(Scope::Control), Effect::Edit),
+    m("item.set_show_for", Some(Scope::Control), Effect::Edit),
+    m("item.show", Some(Scope::Control), Effect::Edit),
+    m("scene.sources", Some(Scope::Read), Effect::Read),
+    m("canvas.set_preview", Some(Scope::Control), Effect::Edit),
+    m("canvas.transition", Some(Scope::Control), Effect::Edit),
+    m("item.remove", Some(Scope::Control), Effect::Edit),
+    m("item.move", Some(Scope::Control), Effect::Edit),
+    m("scene.move", Some(Scope::Control), Effect::Edit),
+    m("source.set_active", Some(Scope::Control), Effect::Edit),
+    m("look.list", Some(Scope::Read), Effect::Read),
+    m("look.apply", Some(Scope::Control), Effect::Edit),
+    m("source.add_sample", Some(Scope::Control), Effect::Edit),
+    m("item.set_box", Some(Scope::Control), Effect::Edit),
+    m("global.list", Some(Scope::Read), Effect::Read),
+    m("global.add", Some(Scope::Control), Effect::Edit),
+    m("global.remove", Some(Scope::Control), Effect::Edit),
+    m("edit.undo", Some(Scope::Control), Effect::Edit),
+    m("edit.redo", Some(Scope::Control), Effect::Edit),
+    m("output.profiles", Some(Scope::Read), Effect::Read),
+    m("record.start", Some(Scope::Control), Effect::Live),
+    m("record.estimate", Some(Scope::Read), Effect::Read),
+    m("record.start_to_file", Some(Scope::Admin), Effect::Live),
+    m("record.stop", Some(Scope::Control), Effect::Live),
+    m("record.pause", Some(Scope::Control), Effect::Live),
+    m("record.resume", Some(Scope::Control), Effect::Live),
+    m("record.pause_toggle", Some(Scope::Control), Effect::Live),
+    m("record.status", Some(Scope::Read), Effect::Read),
+    m("stream.start", Some(Scope::Control), Effect::Live),
+    m("stream.stop", Some(Scope::Control), Effect::Live),
+    m("stream.hold", Some(Scope::Control), Effect::Live),
+    m("stream.resume", Some(Scope::Control), Effect::Live),
+    m("stream.hold_toggle", Some(Scope::Control), Effect::Live),
+    m("output.break_toggle", Some(Scope::Control), Effect::Live),
+    m("stream.status", Some(Scope::Read), Effect::Read),
+    m("stream.destinations", Some(Scope::Read), Effect::Read),
+    m(
+        "stream.destination.start",
+        Some(Scope::Control),
+        Effect::Live,
+    ),
+    m(
+        "stream.destination.stop",
+        Some(Scope::Control),
+        Effect::Live,
+    ),
+    m(
+        "stream.destination.set_enabled",
+        Some(Scope::Control),
+        Effect::Live,
+    ),
+    m(
+        "output.set_with_vertical",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m("replay.status", Some(Scope::Read), Effect::Read),
+    m("protection.status", Some(Scope::Read), Effect::Read),
+    m("calibration.run", Some(Scope::Admin), Effect::Live),
+    m("calibration.cancel", Some(Scope::Admin), Effect::Live),
+    m("calibration.status", Some(Scope::Read), Effect::Read),
+    m("source.set_monitor", Some(Scope::Control), Effect::Edit),
+    m("monitor.status", Some(Scope::Read), Effect::Read),
+    m("monitor.devices", Some(Scope::Read), Effect::Read),
+    m("monitor.set_device", Some(Scope::Admin), Effect::Edit),
+    m("monitor.set_volume", Some(Scope::Control), Effect::Edit),
+    m("monitor.set_solo", Some(Scope::Control), Effect::Edit),
+    m("loudness.status", Some(Scope::Read), Effect::Read),
+    m(
+        "loudness.set_enabled",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
+    m("loudness.reset", Some(Scope::Control), Effect::Destructive),
+    m("replay.arm", Some(Scope::Control), Effect::Live),
+    m("replay.disarm", Some(Scope::Control), Effect::Live),
+    m("replay.save", Some(Scope::Control), Effect::Edit),
+    m("vcam.status", Some(Scope::Read), Effect::Read),
+    m("vcam.start", Some(Scope::Control), Effect::Live),
+    m("vcam.stop", Some(Scope::Control), Effect::Live),
+    m("settings.get", Some(Scope::Admin), Effect::Read),
+    m("settings.set", Some(Scope::Admin), Effect::Edit),
+    m("profile.list", Some(Scope::Read), Effect::Read),
+    m("profile.switch", Some(Scope::Admin), Effect::Live),
+    m("collection.list", Some(Scope::Read), Effect::Read),
+    m("collection.switch", Some(Scope::Control), Effect::Live),
+    m("collection.set_glide", Some(Scope::Control), Effect::Edit),
+    m(
+        "collection.set_transition",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m("source.set_glide", Some(Scope::Control), Effect::Edit),
+    m("source.set_region", Some(Scope::Control), Effect::Edit),
+    m(
+        "source.set_record_separately",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m("marker.add", Some(Scope::Control), Effect::Edit),
+    m("marker.remove", Some(Scope::Control), Effect::Destructive),
+    m("project.export", Some(Scope::Control), Effect::Edit),
+    m("source.get_region", Some(Scope::Control), Effect::Read),
+    m("source.set_chrome", Some(Scope::Control), Effect::Edit),
+    m("source.get_chrome", Some(Scope::Control), Effect::Read),
+    m("source.fit_chrome", Some(Scope::Control), Effect::Edit),
+    m("source.reset_chrome", Some(Scope::Control), Effect::Edit),
+    m("scene.audio.get", Some(Scope::Read), Effect::Read),
+    m("scene.audio.set", Some(Scope::Control), Effect::Edit),
+    m("scene.audio.own", Some(Scope::Control), Effect::Edit),
+    m("scene.audio.shared", Some(Scope::Control), Effect::Edit),
+    m(
+        "scene.audio.reset_source",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
+    m("events.subscribe", Some(Scope::Read), Effect::Read),
+    m("events.unsubscribe", Some(Scope::Read), Effect::Read),
+    m("tokens.list", Some(Scope::Tokens), Effect::Read),
+    m("tokens.create", Some(Scope::Tokens), Effect::Destructive),
+    m("tokens.revoke", Some(Scope::Tokens), Effect::Destructive),
 ];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
@@ -2187,6 +2440,8 @@ pub const UI_METHODS: &[&str] = &[
     "ui.density.switch",
     "ui.settings.open",
     "ui.source.settings",
+    "ui.source.paste_attributes",
+    "ui.source.reset",
     "ui.properties.show",
     "ui.app_menu.open",
     "ui.command.list",
@@ -2198,8 +2453,17 @@ pub const UI_METHODS: &[&str] = &[
     "ui.projector.list",
 ];
 
-const fn m(name: &'static str, scope: Option<Scope>) -> MethodInfo {
-    MethodInfo { name, scope }
+const fn m(name: &'static str, scope: Option<Scope>, effect: Effect) -> MethodInfo {
+    MethodInfo {
+        name,
+        scope,
+        effect,
+    }
+}
+
+/// The effect of a method name, `None` for an unknown method (ADR-0052 decision 4).
+pub fn method_effect(name: &str) -> Option<Effect> {
+    METHODS.iter().find(|i| i.name == name).map(|i| i.effect)
 }
 
 /// The scope of a method name: `None` for an unknown method, `Some(None)` for the
@@ -2273,10 +2537,14 @@ enum WireRequest {
     SourceCopyAttributes(SourceInScene),
     #[serde(rename = "source.attributes_clipboard")]
     SourceAttributesClipboard(Empty),
+    #[serde(rename = "source.set_text")]
+    SourceSetText(SetText),
+    #[serde(rename = "text.fonts")]
+    TextFonts(Empty),
     #[serde(rename = "source.paste_attributes")]
     SourcePasteAttributes(PasteAttributes),
     #[serde(rename = "scene.switch")]
-    SceneSwitch(SceneRef),
+    SceneSwitch(SwitchScene),
     #[serde(rename = "source.rename")]
     SourceRename(RenameSource),
     #[serde(rename = "source.set_volume")]
@@ -2346,7 +2614,7 @@ enum WireRequest {
     #[serde(rename = "canvas.set_preview")]
     CanvasSetPreview(SetPreview),
     #[serde(rename = "canvas.transition")]
-    CanvasTransition(Empty),
+    CanvasTransition(TransitionOnce),
     #[serde(rename = "item.remove")]
     ItemRemove(ItemRef),
     #[serde(rename = "item.move")]
@@ -2469,6 +2737,8 @@ enum WireRequest {
     CollectionSwitch(EntryRef),
     #[serde(rename = "collection.set_glide")]
     CollectionSetGlide(SetCollectionGlide),
+    #[serde(rename = "collection.set_transition")]
+    CollectionSetTransition(SetCollectionTransition),
     #[serde(rename = "source.set_glide")]
     SourceSetGlide(SetSourceGlide),
     #[serde(rename = "source.set_region")]
@@ -2544,6 +2814,8 @@ impl From<WireRequest> for Request {
             WireRequest::SourceAttributesClipboard(_) => {
                 Request::Command(C::SourceAttributesClipboard)
             }
+            WireRequest::SourceSetText(p) => Request::Command(C::SourceSetText(p)),
+            WireRequest::TextFonts(_) => Request::Command(C::TextFonts),
             WireRequest::SourcePasteAttributes(p) => Request::Command(C::SourcePasteAttributes(p)),
             WireRequest::SceneSwitch(p) => Request::Command(C::SceneSwitch(p)),
             WireRequest::SourceRename(p) => Request::Command(C::SourceRename(p)),
@@ -2584,7 +2856,7 @@ impl From<WireRequest> for Request {
             }
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
-            WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
+            WireRequest::CanvasTransition(p) => Request::Command(C::CanvasTransition(p)),
             WireRequest::ItemRemove(p) => Request::Command(C::ItemRemove(p)),
             WireRequest::ItemMove(p) => Request::Command(C::ItemMove(p)),
             WireRequest::SceneMove(p) => Request::Command(C::SceneMove(p)),
@@ -2654,6 +2926,9 @@ impl From<WireRequest> for Request {
             WireRequest::CollectionList(_) => Request::Command(C::CollectionList),
             WireRequest::CollectionSwitch(p) => Request::Command(C::CollectionSwitch(p)),
             WireRequest::CollectionSetGlide(p) => Request::Command(C::CollectionSetGlide(p)),
+            WireRequest::CollectionSetTransition(p) => {
+                Request::Command(C::CollectionSetTransition(p))
+            }
             WireRequest::SourceSetGlide(p) => Request::Command(C::SourceSetGlide(p)),
             WireRequest::SourceSetRegion(p) => Request::Command(C::SourceSetRegion(p)),
             WireRequest::SourceSetRecordSeparately(p) => {
@@ -2710,6 +2985,8 @@ impl From<Request> for WireRequest {
                 C::SourceReset(p) => WireRequest::SourceReset(p),
                 C::SourceCopyAttributes(p) => WireRequest::SourceCopyAttributes(p),
                 C::SourceAttributesClipboard => WireRequest::SourceAttributesClipboard(Empty {}),
+                C::SourceSetText(p) => WireRequest::SourceSetText(p),
+                C::TextFonts => WireRequest::TextFonts(Empty {}),
                 C::SourcePasteAttributes(p) => WireRequest::SourcePasteAttributes(p),
                 C::SceneSwitch(p) => WireRequest::SceneSwitch(p),
                 C::SourceRename(p) => WireRequest::SourceRename(p),
@@ -2744,7 +3021,7 @@ impl From<Request> for WireRequest {
                 C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
-                C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),
+                C::CanvasTransition(p) => WireRequest::CanvasTransition(p),
                 C::ItemRemove(p) => WireRequest::ItemRemove(p),
                 C::ItemMove(p) => WireRequest::ItemMove(p),
                 C::SceneMove(p) => WireRequest::SceneMove(p),
@@ -2810,6 +3087,7 @@ impl From<Request> for WireRequest {
                 C::CollectionList => WireRequest::CollectionList(Empty {}),
                 C::CollectionSwitch(p) => WireRequest::CollectionSwitch(p),
                 C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
+                C::CollectionSetTransition(p) => WireRequest::CollectionSetTransition(p),
                 C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
                 C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
                 C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
@@ -2853,6 +3131,10 @@ pub struct HelloResult {
 pub struct AuthResult {
     /// What the session may do (the token's scopes, limited by the channel).
     pub scopes: ScopeSet,
+    /// Whether the token holds "Allow actions that cannot be undone" (protocol
+    /// 1.76). Absent from an older server: a client treats it as `false`.
+    #[serde(default)]
+    pub irreversible: bool,
     /// The server.
     pub server: ClientInfo,
 }
@@ -2875,6 +3157,10 @@ pub struct MethodInfoOwned {
     pub name: String,
     /// The scope it needs; `null` for the handshake.
     pub scope: Option<Scope>,
+    /// What it does (protocol 1.76); absent from an older server, which a client
+    /// treats as `destructive`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<Effect>,
 }
 
 /// `source.targets`' answer.
@@ -2985,6 +3271,15 @@ pub struct TokenInfo {
     pub name: String,
     /// What it allows.
     pub scopes: ScopeSet,
+    /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
+    /// omits it, which reads as allowed.
+    #[serde(default = "allowed")]
+    pub irreversible: bool,
+}
+
+/// The default of a token's permission in an answer from a server before 1.80.
+fn allowed() -> bool {
+    true
 }
 
 /// `tokens.list`' answer.
@@ -3001,6 +3296,10 @@ pub struct TokenCreated {
     pub name: String,
     /// What it allows.
     pub scopes: ScopeSet,
+    /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
+    /// omits it, which reads as allowed.
+    #[serde(default = "allowed")]
+    pub irreversible: bool,
     /// The token's text (`rbs1_` and 64 hex digits).
     pub token: String,
 }
@@ -3010,6 +3309,7 @@ impl std::fmt::Debug for TokenCreated {
         f.debug_struct("TokenCreated")
             .field("name", &self.name)
             .field("scopes", &self.scopes)
+            .field("irreversible", &self.irreversible)
             .field("token", &"<redacted>")
             .finish()
     }
@@ -3069,6 +3369,8 @@ pub enum Response {
     /// `source.copy_attributes`, `source.attributes_clipboard` (protocol 1.68); `null`
     /// while the clipboard is empty.
     AttributesClipboard(Option<crate::types::AttributesClipboard>),
+    /// `text.fonts` (protocol 1.75).
+    TextFonts(crate::types::TextFonts),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
     /// `canvas.auto_layout` (protocol 1.44).

@@ -326,17 +326,26 @@ pub struct MediaSource {
     /// (`BindReport::picture_sound`). Drop it when the binder has no audio partition;
     /// the worker then decodes no sound.
     pub sound: rbs_nodes::MediaSoundNode,
+    /// Play, pause, seek, and restart (ADR-0108 decision 10). Control path only.
+    pub control: rbs_nodes::MediaControl,
     /// Upload, drop, repeat, and underrun counters.
     pub stats: Arc<rbs_nodes::MediaStats>,
     /// The decoder factory chosen for this node.
     pub adapter: AdapterId,
 }
 
-/// A browser node (ADR-0109). No helper until it is activated with a slot.
+/// A browser source (ADR-0109): a picture node and a sound node fed by one helper. No
+/// helper until the picture node is activated with a slot.
 #[non_exhaustive]
 pub struct BrowserSource {
-    /// The node.
+    /// The picture node: adopt into the render partition.
     pub node: crate::browser::BrowserSourceNode,
+    /// The sound node: adopt into the audio partition at the binder's sound node
+    /// (`BindReport::picture_sound`). Drop it when the binder has no audio partition;
+    /// the page's sound is then dropped by the feed.
+    pub sound: crate::BrowserSoundNode,
+    /// The sound's counters.
+    pub sound_stats: Arc<crate::BrowserSoundStats>,
 }
 
 /// A text source node (ADR-0129). It shows nothing until the worker sends a picture.
@@ -935,7 +944,13 @@ impl SourceTypes {
                     table.insert_sound(t.clone(), sound);
                     rbs_nodes::media_descriptor()
                 }
-                Some(SourceClass::Browser) => crate::browser::browser_descriptor(),
+                Some(SourceClass::Browser) => {
+                    // A page is a picture node and a sound node (ADR-0109 decision 6).
+                    let sound = NodeTypeId::new_static(crate::BROWSER_SOUND_NODE_TYPE);
+                    table.insert(sound.clone(), crate::browser_sound_descriptor());
+                    table.insert_sound(t.clone(), sound);
+                    crate::browser::browser_descriptor()
+                }
                 Some(SourceClass::Text) => rbs_nodes::text_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
@@ -1213,6 +1228,7 @@ impl SourceTypes {
         Ok(SourceInstance::Media(Box::new(MediaSource {
             picture: pair.picture,
             sound: pair.sound,
+            control: pair.control,
             stats,
             adapter: factory.id(),
         })))
@@ -1225,13 +1241,19 @@ impl SourceTypes {
     ) -> Result<SourceInstance, SourceError> {
         let settings = crate::browser::browser_settings(&source.settings)
             .map_err(|(key, expected)| SourceError::InvalidSetting { key, expected })?;
+        let sound = crate::BrowserSound::new(ctx.audio, Arc::clone(&ctx.clock));
         let node = crate::browser::BrowserSourceNode::new(
             settings,
             Arc::clone(&ctx.browser_budget),
             source.id,
             ctx.browser_tree.clone(),
-        );
-        Ok(SourceInstance::Browser(BrowserSource { node }))
+        )
+        .with_sound(Arc::clone(&sound));
+        Ok(SourceInstance::Browser(BrowserSource {
+            node,
+            sound_stats: sound.stats(),
+            sound: crate::BrowserSoundNode::new(sound),
+        }))
     }
 }
 

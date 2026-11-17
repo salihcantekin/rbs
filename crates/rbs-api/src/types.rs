@@ -65,6 +65,8 @@ pub enum SourceKind {
     Media,
     /// A browser page from the helper process (protocol TBD, ADR-0109).
     Browser,
+    /// A text drawn by the server's text renderer (protocol 1.75, ADR-0129).
+    Text,
 }
 
 /// Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does
@@ -207,6 +209,30 @@ pub struct SourceInfo {
     /// what is heard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heard: Option<Heard>,
+    /// `L`: the latency of the source's running audio filters, in milliseconds
+    /// (protocol 1.77, ADR-0130; absent when 0).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub filter_latency_ms: f64,
+    /// `h`: the offset the program hears the source's sound at, in milliseconds: the
+    /// input's effective offset plus `filter_latency_ms` (protocol 1.77, ADR-0130
+    /// decision 4). It equals `sync_offset_ms` while the input's limits and the filter
+    /// compensation do not bite. Absent when 0.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub effective_offset_ms: f64,
+    /// The part of `filter_latency_ms` the input's advance limit left uncompensated,
+    /// in milliseconds; for a source without an audio input (media, browser audio)
+    /// all of it (protocol 1.77; absent when 0).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub uncompensated_ms: f64,
+    /// Output frames of the source's audio input that were silence because its audio
+    /// had not arrived (protocol 1.77). Only in `source.list` answers, and only for a
+    /// source with a running audio input; the count only grows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_late_frames: Option<u64>,
+    /// Times the source's audio input resynchronised (protocol 1.77); present like
+    /// `input_late_frames`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_resyncs: Option<u64>,
 }
 
 /// The volume and mute a source is heard at (protocol 1.48, ADR-0091).
@@ -336,6 +362,10 @@ fn is_zero_ms(v: &i32) -> bool {
     *v == 0
 }
 
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
 /// One filter of a source (protocol 1.8, ADR-0062).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilterInfo {
@@ -372,6 +402,11 @@ pub struct FilterTypeInfo {
     pub name: String,
     /// Its settings, in display order.
     pub fields: Vec<FilterField>,
+    /// The delay, in milliseconds, an instance adds at the running audio graph's format
+    /// and block size (protocol 1.77, ADR-0130 decision 2); the studio compensates it
+    /// on sources with an audio input. Present for audio types, absent for video types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
 }
 
 fn video_domain() -> String {
@@ -490,6 +525,135 @@ impl Glide {
     }
 }
 
+/// What a program-scene change looks like (protocol 1.81, ADR-0128).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionKind {
+    /// The new scene at once.
+    Cut,
+    /// The new scene fades in over the old one.
+    Fade,
+    /// Shared sources slide to their new boxes, new ones fade in (the collection
+    /// glide, ADR-0100).
+    #[default]
+    Move,
+    /// The new scene pushes the old one out (not yet drawn: runs as Move).
+    Swipe,
+    /// The new scene slides in over the old one (not yet drawn: runs as Move).
+    Slide,
+}
+
+/// Which way a Swipe or Slide moves (protocol 1.81, ADR-0128).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SwipeDirection {
+    /// Towards the left edge.
+    #[default]
+    Left,
+    /// Towards the right edge.
+    Right,
+    /// Towards the top edge.
+    Up,
+    /// Towards the bottom edge.
+    Down,
+}
+
+/// Fade settings (protocol 1.81, ADR-0128).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FadeTransition {
+    /// Milliseconds in `0..=5000`; `0` cuts.
+    pub duration_ms: u32,
+    /// How the blend maps unit time.
+    pub easing: GlideEasing,
+    /// An opaque colour (`"#rrggbb"`) to fade through; absent for a crossfade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+}
+
+impl Default for FadeTransition {
+    fn default() -> Self {
+        Self {
+            duration_ms: 300,
+            easing: GlideEasing::Linear,
+            via: None,
+        }
+    }
+}
+
+/// Swipe or Slide settings (protocol 1.81, ADR-0128).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwipeTransition {
+    /// Milliseconds in `0..=5000`; `0` cuts.
+    pub duration_ms: u32,
+    /// How the motion maps unit time.
+    pub easing: GlideEasing,
+    /// Which way it moves.
+    pub direction: SwipeDirection,
+}
+
+impl Default for SwipeTransition {
+    fn default() -> Self {
+        Self {
+            duration_ms: 500,
+            easing: GlideEasing::EaseInOut,
+            direction: SwipeDirection::Left,
+        }
+    }
+}
+
+/// The collection's transition (protocol 1.81, ADR-0128): the kind and each kind's
+/// settings. Move's settings are the collection `glide`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Transition {
+    /// The kind a program change uses.
+    pub kind: TransitionKind,
+    /// Fade settings.
+    pub fade: FadeTransition,
+    /// Swipe settings.
+    pub swipe: SwipeTransition,
+    /// Slide settings.
+    pub slide: SwipeTransition,
+}
+
+impl Transition {
+    /// True for the shipped default (Move with the default settings of every kind).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// `transition.state` (protocol 1.81, ADR-0128 decision 13): published when a
+/// program change's transition starts and when it ends, never per frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitionStateChanged {
+    /// The canvas.
+    pub canvas: OutputCanvas,
+    /// `started` or `ended`.
+    pub state: TransitionPhase,
+    /// The kind that ran.
+    pub kind: TransitionKind,
+    /// Its length in milliseconds.
+    pub duration_ms: u32,
+    /// The scene that was on air.
+    pub from: u32,
+    /// The scene going on air.
+    pub to: u32,
+    /// Engine time of this state, in nanoseconds.
+    pub at: u64,
+}
+
+/// Where a transition is (protocol 1.81).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionPhase {
+    /// The picture began to change.
+    Started,
+    /// The new scene is fully on air.
+    Ended,
+}
+
 /// A source of the collection, wherever it is placed (protocol 1.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceEntry {
@@ -555,6 +719,10 @@ pub struct SceneList {
     /// ease-in-out.
     #[serde(default, skip_serializing_if = "Glide::is_default")]
     pub glide: Glide,
+    /// The collection's transition (protocol 1.81, ADR-0128); absent when Move with
+    /// the default settings.
+    #[serde(default, skip_serializing_if = "Transition::is_default")]
+    pub transition: Transition,
     /// Every source of the collection.
     pub sources: Vec<SourceEntry>,
 }
@@ -1476,7 +1644,7 @@ pub enum StreamState {
         /// Why the hold fell back, while it does (protocol 1.67).
         #[serde(default)]
         hold_fallback_reason: Option<String>,
-        /// Each destination of the stream (protocol 1.74, ADR-0127 decision 16), in
+        /// Each destination of the stream (protocol 1.77, ADR-0127 decision 16), in
         /// the order Go live started them; the top-level `connected`, `connects` and
         /// `reconnect_attempts` sum the running ones.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1484,7 +1652,7 @@ pub enum StreamState {
     },
 }
 
-/// One destination of a live stream (protocol 1.74, ADR-0127 decision 16). Never its
+/// One destination of a live stream (protocol 1.77, ADR-0127 decision 16). Never its
 /// server or key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveDestination {
@@ -1509,7 +1677,7 @@ pub struct LiveDestination {
     pub error: Option<String>,
 }
 
-/// Where one destination of a live stream stands (protocol 1.74).
+/// Where one destination of a live stream stands (protocol 1.77).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationState {
@@ -1525,7 +1693,7 @@ pub enum DestinationState {
     Stopped,
 }
 
-/// One saved destination (`stream.destinations`, protocol 1.74, ADR-0127 decision 16).
+/// One saved destination (`stream.destinations`, protocol 1.77, ADR-0127 decision 16).
 /// Never its server or key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamDestination {
@@ -1545,7 +1713,7 @@ pub struct StreamDestination {
     pub encoding: DestinationEncodingKind,
 }
 
-/// Whether a destination shares the stream's encoding (protocol 1.74).
+/// Whether a destination shares the stream's encoding (protocol 1.77).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationEncodingKind {
@@ -1555,7 +1723,7 @@ pub enum DestinationEncodingKind {
     Own,
 }
 
-/// `stream.destinations` (protocol 1.74).
+/// `stream.destinations` (protocol 1.77).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamDestinations {
     /// The asked canvas's destinations (both canvases' without `canvas`), by id.
@@ -2598,6 +2766,13 @@ pub struct AttributesClipboard {
     pub type_id: String,
     /// Groups whose copied value is not the default.
     pub groups: Vec<String>,
+}
+
+/// `text.fonts`' answer (protocol 1.75, ADR-0129 decision 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextFonts {
+    /// The installed font families, sorted, without duplicates.
+    pub families: Vec<String>,
 }
 
 /// The topic `source.attributes_clipboard.changed` (protocol 1.68).

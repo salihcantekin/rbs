@@ -39,6 +39,7 @@ impl BrowserTree for FakeTree {
         &self,
         _config: &Configure,
         _sink: Arc<rbs_sources::BrowserFrameSink>,
+        _sound: Option<Arc<rbs_sources::BrowserSound>>,
     ) -> Result<Box<dyn BrowserSession>, String> {
         self.starts.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(FakeSession {

@@ -77,6 +77,27 @@ impl Studio {
         i64::try_from(frames.saturating_mul(1_000_000_000) / rate).unwrap_or(i64::MAX)
     }
 
+    /// The latency of one audio filter, in ns at the graph rate: 0 unless the plan
+    /// schedules it (a disabled filter is Standby) or for a video filter.
+    pub fn audio_filter_latency_ns(&self, filter: FilterId) -> i64 {
+        let frames = self
+            .filters
+            .iter()
+            .find(|f| f.filter == filter && f.scheduled)
+            .and_then(|f| match &f.instance {
+                Some(FilterInstance::Audio { stats, .. }) => {
+                    Some(u64::from(stats.latency_frames()))
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        if frames == 0 {
+            return 0;
+        }
+        let rate = u64::from(self.settings.audio_graph.format.sample_rate.hz()).max(1);
+        i64::try_from(frames.saturating_mul(1_000_000_000) / rate).unwrap_or(i64::MAX)
+    }
+
     /// How `source`'s filter latency is compensated, or `None` for a source the studio
     /// does not run.
     pub fn audio_latency(&self, source: SourceId) -> Option<AudioLatency> {

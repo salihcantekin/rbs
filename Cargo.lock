@@ -4416,6 +4416,7 @@ dependencies = [
  "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-import-obs",
  "rbs-manifest",
  "rbs-media-decode-test",
  "rbs-mux",
@@ -4431,6 +4432,9 @@ dependencies = [
  "rbs-scene",
  "rbs-sources",
  "rbs-system-probe",
+ "rbs-text",
+ "rbs-text-parley",
+ "rbs-text-test",
  "rbs-thread-os",
  "rbs-transport",
  "rbs-transport-file",
@@ -5164,7 +5168,9 @@ dependencies = [
 name = "rbs-sources"
 version = "0.0.1"
 dependencies = [
+ "allocation-counter",
  "bytes",
+ "criterion 0.8.2",
  "png",
  "rbs-audio",
  "rbs-audio-filters",
@@ -5188,6 +5194,7 @@ dependencies = [
  "rbs-scene",
  "rbs-text",
  "rbs-text-test",
+ "rtrb",
 ]
 
 [[package]]

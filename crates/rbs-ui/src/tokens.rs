@@ -154,6 +154,8 @@ pub const LENGTHS: &[&str] = &[
     "size.meter.readout",
     "size.meter.loudness",
     "size.slider.track",
+    "size.eq.curve-h",
+    "size.eq.curve-line",
     "size.meter.target",
     "size.mixer.strip",
     "size.mixer.splitter",

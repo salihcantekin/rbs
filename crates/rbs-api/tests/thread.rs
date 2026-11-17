@@ -158,6 +158,7 @@ fn a_client_authenticates_subscribes_records_and_gets_the_event() {
     let token = Token::from_bytes(&[5; 32]);
     let mut tokens = TokenStore::new();
     tokens.insert(TokenEntry {
+        irreversible: true,
         name: "Deck".into(),
         scopes: ScopeSet::PANEL,
         hash: token.hash(),
@@ -308,7 +309,9 @@ impl ControlTarget for TokenKeeper {
         match command {
             Command::TokensCreate(p) => {
                 let token = Token::from_bytes(&[7; 32]);
+                let irreversible = p.irreversible.unwrap_or(true);
                 self.store.insert(TokenEntry {
+                    irreversible,
                     name: p.name.clone(),
                     scopes: p.scopes,
                     hash: token.hash(),
@@ -318,6 +321,7 @@ impl ControlTarget for TokenKeeper {
                 Ok(Response::TokenCreated(TokenCreated {
                     name: p.name,
                     scopes: p.scopes,
+                    irreversible,
                     token: token.expose().to_owned(),
                 }))
             }

@@ -400,6 +400,7 @@ impl Studio {
                     source: input.source,
                     meter: None,
                     audio: levels.get(&input.source).copied().unwrap_or_default(),
+                    ramp: None,
                 });
             }
             let mut sent = staged.clone();

@@ -43,6 +43,80 @@ pub enum TransitionState {
     Ending,
 }
 
+/// A program change's one-off kind and duration (ADR-0128 decision 13): absent parts
+/// keep the collection's. With Move, a duration replaces the glide's and every
+/// per-source override for that change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TransitionOnce {
+    /// The kind for this change.
+    pub kind: Option<TransitionKind>,
+    /// Milliseconds for this change, at most `MAX_GLIDE_MS`.
+    pub duration_ms: Option<u32>,
+}
+
+impl TransitionOnce {
+    /// A one-off kind and duration.
+    pub fn new(kind: Option<TransitionKind>, duration_ms: Option<u32>) -> Self {
+        Self { kind, duration_ms }
+    }
+}
+
+/// Whether a transition started or ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TransitionPhase {
+    /// The picture began to change.
+    Started,
+    /// The new scene is fully on air.
+    Ended,
+}
+
+/// A transition's start or end, for the `transition.state` topic (ADR-0128 decision
+/// 13). Reported once each, never per frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TransitionEvent {
+    /// The canvas.
+    pub canvas: CanvasId,
+    /// Started or ended.
+    pub phase: TransitionPhase,
+    /// The kind that runs (Swipe and Slide run as Move until they are drawn).
+    pub kind: TransitionKind,
+    /// Its length.
+    pub duration: Duration,
+    /// The scene that was on air.
+    pub from: Option<SceneId>,
+    /// The scene going on air.
+    pub to: Option<SceneId>,
+    /// Engine time of this state.
+    pub at: Timestamp,
+}
+
+/// The transition one update runs: the collection's, with a one-off kind and duration
+/// over it.
+pub(super) struct Effective {
+    pub(super) transition: CollectionTransition,
+    pub(super) glide: rbs_scene::CollectionGlide,
+    /// False when a one-off duration replaces the per-source glide overrides.
+    pub(super) source_glides: bool,
+}
+
+impl Effective {
+    /// The kind that runs: Swipe and Slide are not drawn yet and run as Move.
+    pub(super) fn kind(&self) -> TransitionKind {
+        match self.transition.kind {
+            TransitionKind::Swipe | TransitionKind::Slide => TransitionKind::Move,
+            k => k,
+        }
+    }
+
+    /// True when the change glides (Move).
+    pub(super) fn glides(&self) -> bool {
+        self.kind() == TransitionKind::Move
+    }
+}
+
 /// Where a transition of one canvas is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -75,6 +149,58 @@ pub(super) struct CanvasTransition {
     easing: GlideEasing,
     phase: Phase,
     incoming: Option<IncomingView>,
+    /// The mixer's levels before the change (main canvas; decision 10).
+    from_mix: BTreeMap<SourceId, SourceAudio>,
+    /// The sources the new program scene is heard with (main canvas).
+    to_heard: BTreeSet<SourceId>,
+    /// The scenes it goes from and to, for its events.
+    scenes: (Option<SceneId>, Option<SceneId>),
+}
+
+/// How a running transition shapes the main mixer's strips (ADR-0128 decision 10):
+/// while it waits, the outgoing levels; while it runs, the incoming levels reached
+/// over the picture's start and duration; after it, the incoming levels. A source of
+/// the outgoing scene only goes to silence, one of the incoming scene only comes up
+/// from silence, a shared one moves from its outgoing to its incoming level.
+pub(super) struct MixShape {
+    phase: Phase,
+    duration: Duration,
+    outgoing: BTreeSet<SourceId>,
+    from_mix: BTreeMap<SourceId, SourceAudio>,
+    to_heard: BTreeSet<SourceId>,
+}
+
+impl MixShape {
+    /// Shapes strips that hold the incoming (current) levels.
+    pub(super) fn apply(&self, strips: &mut [MixStrip]) {
+        let silent = |mut a: SourceAudio| {
+            a.muted = true;
+            a
+        };
+        for s in strips {
+            match self.phase {
+                Phase::Waiting(_) => {
+                    s.audio = match self.from_mix.get(&s.source) {
+                        Some(a) if self.outgoing.contains(&s.source) => *a,
+                        _ => silent(s.audio),
+                    };
+                    s.ramp = None;
+                }
+                Phase::Running(start) => {
+                    if !self.to_heard.contains(&s.source) {
+                        s.audio = silent(s.audio);
+                    }
+                    s.ramp = Some((start, self.duration));
+                }
+                Phase::Ending(_) | Phase::Done => {
+                    if !self.to_heard.contains(&s.source) {
+                        s.audio = silent(s.audio);
+                    }
+                    s.ramp = None;
+                }
+            }
+        }
+    }
 }
 
 /// What a program change on a canvas runs, from the collection's transition: `None`
@@ -97,6 +223,43 @@ fn easing(e: GlideEasing) -> rbs_gpu::node::Easing {
 }
 
 impl Studio {
+    /// Sets the next program change's one-off kind and duration (ADR-0128 decision 13).
+    /// The next [`Studio::update`] uses it whether or not the program changes, then
+    /// forgets it.
+    pub fn set_transition_once(&mut self, once: TransitionOnce) {
+        self.transition_once = Some(once);
+    }
+
+    /// The starts and ends since the last call, oldest first.
+    pub fn take_transition_events(&mut self) -> Vec<TransitionEvent> {
+        std::mem::take(&mut self.transition_events)
+    }
+
+    /// The collection's transition with the one-off over it; takes the one-off.
+    pub(super) fn effective_transition(&mut self, collection: &SceneCollection) -> Effective {
+        let mut e = Effective {
+            transition: collection.transition(),
+            glide: collection.glide(),
+            source_glides: true,
+        };
+        if let Some(once) = self.transition_once.take() {
+            if let Some(kind) = once.kind {
+                e.transition.kind = kind;
+            }
+            if let Some(ms) = once.duration_ms {
+                match e.transition.kind {
+                    TransitionKind::Fade => e.transition.fade.duration_ms = ms,
+                    TransitionKind::Swipe | TransitionKind::Slide | TransitionKind::Move => {
+                        e.glide.duration_ms = ms;
+                        e.source_glides = false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        e
+    }
+
     /// Starts a transition on each canvas whose program scene changed in this update
     /// and whose collection transition draws the incoming picture. A change while one
     /// runs ends that one at once: its incoming scene is the outgoing scene now
@@ -104,37 +267,69 @@ impl Studio {
     pub(super) fn note_transitions(
         &mut self,
         collection: &SceneCollection,
+        effective: &Effective,
         old_main: Option<SceneId>,
         old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
         old_layers: &BTreeMap<CanvasId, Vec<BoundLayer>>,
     ) {
-        let mut changed: Vec<CanvasId> = Vec::new();
+        let mut changed: Vec<(CanvasId, Option<SceneId>, Option<SceneId>)> = Vec::new();
         let new_main = program_scene(collection, self.settings.canvas);
         if old_main.is_some() && old_main != new_main {
-            changed.push(self.settings.canvas);
+            changed.push((self.settings.canvas, old_main, new_main));
         }
         for extra in &self.extras {
             let previous = old_extra.get(&extra.canvas).copied().flatten();
-            if previous.is_some() && previous != program_scene(collection, extra.canvas) {
-                changed.push(extra.canvas);
+            let next = program_scene(collection, extra.canvas);
+            if previous.is_some() && previous != next {
+                changed.push((extra.canvas, previous, next));
             }
         }
         if changed.is_empty() {
             return;
         }
-        let blend = blend_of(collection.transition());
+        let blend = blend_of(effective.transition);
         let now = self.engine.clock().now();
         let heard: BTreeSet<SourceId> = self
             .bound_mixer
             .as_ref()
             .map(|m| m.inputs.iter().map(|i| i.source).collect())
             .unwrap_or_default();
-        for canvas in changed {
+        for (canvas, from_scene, to_scene) in changed {
             // A running one ends at once; its compositor is kept for the next one.
             let incoming = self.transitions.remove(&canvas).and_then(|t| t.incoming);
             let Some((duration, easing)) = blend else {
+                // No incoming picture: it starts now, and a Move ends after its glide.
+                let kind = effective.kind();
+                let duration = if kind == TransitionKind::Move {
+                    Duration::from_millis(u64::from(effective.glide.duration_ms))
+                } else {
+                    Duration::ZERO
+                };
+                let event = TransitionEvent {
+                    canvas,
+                    phase: TransitionPhase::Started,
+                    kind,
+                    duration,
+                    from: from_scene,
+                    to: to_scene,
+                    at: now,
+                };
+                self.transition_events.push(event);
+                // A change on this canvas replaces its pending end.
+                self.transition_ends.retain(|e| e.canvas != canvas);
+                let end = TransitionEvent {
+                    phase: TransitionPhase::Ended,
+                    at: now + duration,
+                    ..event
+                };
+                if duration.is_zero() {
+                    self.transition_events.push(end);
+                } else {
+                    self.transition_ends.push(end);
+                }
                 continue;
             };
+            self.transition_ends.retain(|e| e.canvas != canvas);
             let from = old_layers.get(&canvas).cloned().unwrap_or_default();
             let drawn: BTreeSet<SourceId> = from.iter().map(|l| l.source).collect();
             let heard = if canvas == self.settings.canvas {
@@ -146,6 +341,18 @@ impl Studio {
                 // A reused compositor: the counter must move past its value now.
                 view.ready.store(0, Ordering::Release);
             }
+            let (from_mix, to_heard) = if canvas == self.settings.canvas {
+                let to_heard = program_scene(collection, canvas)
+                    .and_then(|scene| {
+                        collection
+                            .visible_sources_cued(canvas, scene, &self.cues.items())
+                            .ok()
+                    })
+                    .unwrap_or_default();
+                (self.mix.clone(), to_heard)
+            } else {
+                (BTreeMap::new(), BTreeSet::new())
+            };
             self.transitions.insert(
                 canvas,
                 CanvasTransition {
@@ -155,6 +362,9 @@ impl Studio {
                     easing,
                     phase: Phase::Waiting(now),
                     incoming,
+                    from_mix,
+                    to_heard,
+                    scenes: (from_scene, to_scene),
                 },
             );
         }
@@ -304,6 +514,13 @@ impl Studio {
     /// passed, and marks done the ones whose plain layers the compositor took. Returns
     /// true when one is done, so the host calls [`Studio::settle_transitions`].
     pub(super) fn step_transitions(&mut self) -> bool {
+        if !self.transition_ends.is_empty() {
+            let now = self.engine.clock().now();
+            let (due, later): (Vec<_>, Vec<_>) =
+                self.transition_ends.drain(..).partition(|e| e.at <= now);
+            self.transition_ends = later;
+            self.transition_events.extend(due);
+        }
         if self.transitions.is_empty() {
             return false;
         }
@@ -311,7 +528,8 @@ impl Studio {
         let mut resend = false;
         let mut done = false;
         let layers_pending = self.layers.pending() && !self.layers.is_closed();
-        for t in self.transitions.values_mut() {
+        let mut events = Vec::new();
+        for (&canvas, t) in &mut self.transitions {
             match t.phase {
                 Phase::Waiting(since) => {
                     let ready = t
@@ -321,12 +539,14 @@ impl Studio {
                     if ready || now.saturating_since(since) >= READY_WAIT {
                         t.phase = Phase::Running(now);
                         resend = true;
+                        events.push((canvas, TransitionPhase::Started, t.duration, t.scenes));
                     }
                 }
                 Phase::Running(start) => {
                     if now.saturating_since(start) >= t.duration {
                         t.phase = Phase::Ending(now);
                         resend = true;
+                        events.push((canvas, TransitionPhase::Ended, t.duration, t.scenes));
                     }
                 }
                 Phase::Ending(sent) => {
@@ -338,17 +558,50 @@ impl Studio {
                 Phase::Done => done = true,
             }
         }
+        self.transition_events.extend(events.into_iter().map(
+            |(canvas, phase, duration, (from, to))| TransitionEvent {
+                canvas,
+                phase,
+                kind: TransitionKind::Fade,
+                duration,
+                from,
+                to,
+                at: now,
+            },
+        ));
         if resend {
             let plan = self.graph.plan();
             self.send_program_layers(&plan);
+            if self.transitions.contains_key(&self.settings.canvas) {
+                self.send_mix();
+            }
         }
         done
+    }
+
+    /// How the main canvas's transition shapes its mixer strips, `None` while none
+    /// runs there.
+    pub(super) fn transition_mix(&self) -> Option<MixShape> {
+        let t = self.transitions.get(&self.settings.canvas)?;
+        Some(MixShape {
+            phase: t.phase,
+            duration: t.duration,
+            outgoing: t.outgoing.heard.clone(),
+            from_mix: t.from_mix.clone(),
+            to_heard: t.to_heard.clone(),
+        })
     }
 
     /// How long the control thread may sleep before a transition needs a step. `None`
     /// when none runs, so nothing is armed (P13).
     pub fn transition_wait(&self, now: Timestamp) -> Option<Duration> {
-        self.transitions
+        let ends = self
+            .transition_ends
+            .iter()
+            .map(|e| e.at.saturating_since(now))
+            .min();
+        let running = self
+            .transitions
             .values()
             .map(|t| match t.phase {
                 Phase::Waiting(since) => {
@@ -360,7 +613,11 @@ impl Studio {
                 Phase::Ending(_) => Duration::from_millis(5),
                 Phase::Done => Duration::ZERO,
             })
-            .min()
+            .min();
+        match (ends, running) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// True while a transition runs on `canvas`.

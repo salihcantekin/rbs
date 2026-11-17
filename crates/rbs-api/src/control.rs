@@ -30,6 +30,29 @@ pub struct Forwarded {
     pub id: RequestId,
     /// The command.
     pub command: Command,
+    /// Who sent it (ADR-0052 decision 4).
+    pub caller: Caller,
+}
+
+/// Who sent a forwarded command (ADR-0052 decision 4): the token's name, or `None`
+/// for a same-user IPC peer without one, and whether it may do what cannot be undone.
+/// The target refuses an `edit` that changes what is on air without the permission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Caller {
+    /// The token's name; `None` for a same-user IPC peer without a token.
+    pub token: Option<String>,
+    /// "Allow actions that cannot be undone".
+    pub irreversible: bool,
+}
+
+impl Caller {
+    /// A caller with every permission: the desktop app's own requests and tests.
+    pub fn local() -> Self {
+        Self {
+            token: None,
+            irreversible: true,
+        }
+    }
 }
 
 /// The control thread's answer to a [`Forwarded`] command.
@@ -55,6 +78,20 @@ pub trait ControlTarget {
         command: Command,
         events: &mut EventPublisher,
     ) -> Result<Response, ApiError>;
+
+    /// Carries out one command for `caller`. The default ignores the caller; a target
+    /// that owns what is on air overrides it to refuse an `edit` that changes it from
+    /// a caller without the irreversible-actions permission (`not_permitted`, reason
+    /// `on_air`, ADR-0052 decision 4).
+    fn handle_as(
+        &mut self,
+        caller: &Caller,
+        command: Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        let _ = caller;
+        self.handle(command, events)
+    }
 }
 
 /// Shared between the event publisher (control thread) and the API thread.
@@ -235,12 +272,17 @@ impl ControlEndpoint {
         target: &mut dyn ControlTarget,
         events: &mut EventPublisher,
     ) {
-        let Forwarded { conn, id, command } = forwarded;
+        let Forwarded {
+            conn,
+            id,
+            command,
+            caller,
+        } = forwarded;
         let result = match command {
             Command::EventsSubscribe(s) => Ok(Response::Subscribed(Subscribed {
                 seq: events.seq_map(s.topics.iter().copied()),
             })),
-            other => target.handle(other, events),
+            other => target.handle_as(&caller, other, events),
         };
         // The API thread may have stopped; then nobody waits for the reply.
         if self.replies.send(Reply { conn, id, result }).is_ok() {

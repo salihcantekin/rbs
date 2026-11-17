@@ -25,6 +25,7 @@ mod icons;
 mod look;
 mod measure_ui;
 mod menu_bar;
+mod obs_import_page;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -184,6 +185,9 @@ struct App {
     settings_found: Vec<rbs_ui::settings_index::Found>,
     /// `source.settings` ran; the next sync opens the Source settings window.
     open_source_settings: Option<i32>,
+    /// Paste attributes (`true`) or Reset source ran for a source; the next sync opens
+    /// its window (ADR-0133).
+    open_attributes: Option<(i32, bool)>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
     /// The Add vertical output dialog is asked for (`canvas.add_vertical`).
@@ -243,6 +247,9 @@ struct App {
     source_settings: Option<SourceSettingsWindow>,
     /// The Measure sync offset window (ADR-0126 step 6), open or not.
     sync_measure: Option<SyncMeasureWindow>,
+    /// The Import from OBS window while open (ADR-0131 step 3).
+    obs_import: Option<obs_import_page::ObsImport>,
+    attributes: Option<AttributesWindow>,
     menus: MenuModels,
     /// The toolbar row's leading group (ADR-0071).
     toolbar_model: Rc<VecModel<ToolbarData>>,
@@ -347,6 +354,10 @@ impl App {
         if let Some(w) = self.sync_measure.take() {
             let _ = w.hide();
             self.studio.sync_measure_closed();
+        }
+        if let Some(w) = self.attributes.take() {
+            let _ = w.hide();
+            self.studio.attributes_closed();
         }
     }
 
@@ -687,6 +698,15 @@ impl App {
             Run::Transition => self.studio.transition(),
             Run::AddScene => self.studio.add_scene(),
             Run::DuplicateScene(id) => self.studio.duplicate_scene(id),
+            Run::DuplicateSceneWithCopies(id) => self.studio.duplicate_scene_with_copies(id),
+            Run::DuplicateSource(id) => self.studio.duplicate_source(id),
+            Run::CopyAttributes(id) => self.studio.copy_attributes(id),
+            // The window needs someone at it: not from a control surface.
+            Run::OpenAttributes(..) if !confirm => {}
+            Run::OpenAttributes(id, paste) => {
+                self.studio.selected = id;
+                self.open_attributes = Some((id, paste));
+            }
             Run::AddVertical => self.open_vertical = true,
             Run::RenameScene(id, Some(name)) => self.studio.rename_scene(id, &name),
             // Asking for a name needs someone at the window: not from a control
@@ -2398,6 +2418,12 @@ impl Ctx {
         if let Some(w) = &app.sync_measure {
             ok &= exclude_window_from_capture(w.window(), exclude);
         }
+        if let Some(i) = &app.obs_import {
+            ok &= exclude_window_from_capture(i.window.window(), exclude);
+        }
+        if let Some(w) = &app.attributes {
+            ok &= exclude_window_from_capture(w.window(), exclude);
+        }
         for f in &app.floats {
             ok &= exclude_window_from_capture(f.window.window(), exclude);
         }
@@ -2409,6 +2435,8 @@ impl Ctx {
         1 + usize::from(app.settings.is_some())
             + usize::from(app.source_settings.is_some())
             + usize::from(app.sync_measure.is_some())
+            + usize::from(app.obs_import.is_some())
+            + usize::from(app.attributes.is_some())
             + app.floats.len()
     }
 
@@ -2545,6 +2573,10 @@ impl Ctx {
         if let Some(id) = app.open_source_settings.take() {
             self.show_all(&mut app);
             open_source_settings(self, &mut app, id);
+        }
+        if let Some((id, paste)) = app.open_attributes.take() {
+            self.show_all(&mut app);
+            open_attributes(self, &mut app, id, paste);
         }
         vcam_page::sync_host(&mut app);
         self.sync_live(&mut app);
@@ -3561,6 +3593,17 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
+    /// An OBS scene collection; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_json(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter("OBS scene collection", &["json"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
     /// A PNG picture; `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn open_png(title: &str) -> Result<Option<PathBuf>, String> {
@@ -3611,6 +3654,11 @@ mod file_dialog {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_json(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn open_png(_title: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
@@ -3650,7 +3698,7 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 28] = [
+const SETTINGS_SECTIONS: [&str; 29] = [
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.audio.loudness",
@@ -3659,6 +3707,7 @@ const SETTINGS_SECTIONS: [&str; 28] = [
     "settings.general.experience",
     "settings.general.closing",
     "settings.general.glide",
+    "settings.general.import",
     "settings.general.studio",
     "settings.recording.files",
     "settings.recording.separate",
@@ -3882,6 +3931,60 @@ fn open_sync_measure(ctx: &Ctx, app: &mut App, id: i32) {
     app.sync_measure = Some(w);
 }
 
+/// Opens the Paste attributes (`paste`) or Reset source window for a source (ADR-0133
+/// decision 8), or brings it forward with that content.
+fn open_attributes(ctx: &Ctx, app: &mut App, id: i32, paste: bool) {
+    app.studio.open_attributes(id, paste);
+    if let Some(w) = &app.attributes {
+        window_place::raise(w.window());
+        return;
+    }
+    let Ok(w) = AttributesWindow::new() else {
+        app.show_error(UiError::Other("This window cannot be opened.".into()));
+        return;
+    };
+    rbs_app::window_events::install(&w);
+    look::apply(
+        &w.global::<Theme>(),
+        &w.global::<Tokens>(),
+        ctx.look.borrow().as_ref(),
+    );
+    install_studio(&w.global::<Studio>(), ctx);
+    app.studio.attach_models(&w.global::<Studio>());
+    let c = ctx.clone();
+    entry::on_close_requested(w.window(), move || {
+        c.update(|app| {
+            app.attributes = None;
+            app.studio.attributes_closed();
+        });
+        slint::CloseRequestResponse::HideWindow
+    });
+    let (weak, c) = (w.as_weak(), ctx.clone());
+    w.on_dismiss(move || {
+        entry::guard(|| {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.hide();
+            }
+            c.update(|app| {
+                app.attributes = None;
+                app.studio.attributes_closed();
+            });
+        });
+    });
+    let t = w.global::<Tokens>();
+    let width = if paste {
+        t.get_size_menu_md() * 2.0 + t.get_space_8() * 2.0
+    } else {
+        t.get_size_menu_md() + t.get_space_8() * 2.0
+    };
+    let size = slint::LogicalSize::new(width, t.get_size_floating_h() * 1.6);
+    let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
+    let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
+    app.capture_applied.1 = usize::MAX;
+    app.capture_retry = None;
+    app.attributes = Some(w);
+}
+
 fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     if let Ok(app) = ctx.app.try_borrow() {
         app.studio.attach_models(g);
@@ -3898,6 +4001,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         g.on_open_sync_measure(move |id| {
             let ctx = c.clone();
             c.update(move |app| open_sync_measure(&ctx, app, id));
+        });
+    }
+    {
+        let c = ctx.clone();
+        g.on_open_obs_import(move || {
+            entry::guard(|| {
+                let ctx = c.clone();
+                c.update(move |app| obs_import_page::open(&ctx, app));
+            });
         });
     }
     macro_rules! on {
@@ -3920,6 +4032,23 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             let _ = w.hide();
         }
         app.studio.sync_measure_closed();
+    });
+    on!(on_attributes_group, |app, i: i32, on: bool| {
+        app.studio
+            .attributes_edit(|d| d.set_group(i.max(0) as usize, on));
+    });
+    on!(on_attributes_target, |app, i: i32, on: bool| {
+        app.studio
+            .attributes_edit(|d| d.set_target(i.max(0) as usize, on));
+    });
+    on!(on_attributes_same_type, |app, on: bool| {
+        app.studio.attributes_edit(|d| d.set_same_type(on));
+    });
+    on!(on_attributes_append, |app, on: bool| {
+        app.studio.attributes_edit(|d| d.set_append(on));
+    });
+    on!(on_attributes_apply, |app| {
+        app.studio.attributes_apply();
     });
     on!(on_apply_sync_to_device_sources, |app, id: i32| {
         app.studio.apply_sync_to_device_sources(id);
@@ -4241,6 +4370,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             })
         });
     }
+    g.on_fit_path(|commands, vb_w, vb_h, w, h| {
+        entry::guard_or(slint::SharedString::default, || {
+            studio_ui::filters::fit_path(&commands, vb_w, vb_h, w, h).into()
+        })
+    });
     on!(on_reset_filter, |app, filter: i32| {
         app.studio.reset_filter(filter);
     });
@@ -4754,6 +4888,12 @@ fn apply_os_scheme(app: &mut App) {
     if let Some(w) = &app.sync_measure {
         look::set_os_scheme(&w.global::<Theme>());
     }
+    if let Some(i) = &app.obs_import {
+        look::set_os_scheme(&i.window.global::<Theme>());
+    }
+    if let Some(w) = &app.attributes {
+        look::set_os_scheme(&w.global::<Theme>());
+    }
     for f in &app.floats {
         look::set_os_scheme(&f.window.global::<Theme>());
     }
@@ -4911,6 +5051,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             open_settings: None,
             settings_found: Vec::new(),
             open_source_settings: None,
+            open_attributes: None,
             open_app_menu: false,
             open_vertical: false,
             ask_name: None,
@@ -4938,6 +5079,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             settings: None,
             source_settings: None,
             sync_measure: None,
+            obs_import: None,
+            attributes: None,
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
             toolbar_end_model: Rc::new(VecModel::default()),

@@ -139,6 +139,11 @@ fn source() -> SourceInfo {
             volume: 1.0,
             muted: false,
         }),
+        filter_latency_ms: 10.0,
+        effective_offset_ms: -30.0,
+        uncompensated_ms: 0.0,
+        input_late_frames: Some(96),
+        input_resyncs: Some(1),
     }
 }
 
@@ -163,6 +168,15 @@ fn scenes() -> SceneList {
             muted: true,
         },
         glide: Glide::default(),
+        transition: Transition {
+            kind: TransitionKind::Fade,
+            fade: FadeTransition {
+                duration_ms: 500,
+                easing: GlideEasing::Linear,
+                via: Some("#000000".into()),
+            },
+            ..Transition::default()
+        },
         sources: vec![SourceEntry {
             id: 3,
             name: "Camera".into(),
@@ -213,7 +227,23 @@ fn every_request() -> Vec<Request> {
             scene: None,
             global: true,
             with_audio: true,
+            text: None,
         })),
+        c(Command::SourceAdd(AddSource {
+            kind: SourceKind::Text,
+            adapter: String::new(),
+            target: String::new(),
+            name: Some("Title".into()),
+            scene: Some(2),
+            global: false,
+            with_audio: false,
+            text: Some("Hello".into()),
+        })),
+        c(Command::SourceSetText(SetText {
+            source: 4,
+            text: "Bye".into(),
+        })),
+        c(Command::TextFonts),
         c(Command::SourceSetCompanionAudio(SetCompanionAudio {
             source: 4,
             enabled: true,
@@ -301,7 +331,20 @@ fn every_request() -> Vec<Request> {
             filters: FilterPasteMode::Append,
             canvas: OutputCanvas::Main,
         })),
-        c(Command::SceneSwitch(SceneRef { scene: 0 })),
+        c(Command::SceneSwitch(SwitchScene {
+            scene: 0,
+            kind: Some(TransitionKind::Fade),
+            duration_ms: Some(1000),
+        })),
+        c(Command::CollectionSetTransition(SetCollectionTransition {
+            kind: Some(TransitionKind::Cut),
+            swipe: Some(SwipeTransition {
+                duration_ms: 250,
+                easing: GlideEasing::Linear,
+                direction: SwipeDirection::Up,
+            }),
+            ..SetCollectionTransition::default()
+        })),
         c(Command::SourceRename(RenameSource {
             source: 3,
             name: "Webcam".into(),
@@ -337,7 +380,7 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::SceneSources(SceneRef { scene: 2 })),
         c(Command::CanvasSetPreview(SetPreview { scene: Some(2) })),
-        c(Command::CanvasTransition),
+        c(Command::CanvasTransition(TransitionOnce::default())),
         c(Command::ItemRemove(ItemRef { item: 7 })),
         c(Command::ItemMove(MoveItem {
             item: 7,
@@ -596,6 +639,7 @@ fn every_request() -> Vec<Request> {
         c(Command::TokensCreate(CreateToken {
             name: "Stream Deck".into(),
             scopes: ScopeSet::PANEL,
+            irreversible: Some(false),
         })),
         c(Command::TokensRevoke(TokenRef {
             name: "Stream Deck".into(),
@@ -746,6 +790,7 @@ fn every_result_and_event_type_round_trips() {
                     unit: Some("px".into()),
                     default: json!(8.0),
                 }],
+                latency_ms: None,
             },
             FilterTypeInfo {
                 type_id: "org.example.audio-filter.test".into(),
@@ -782,6 +827,7 @@ fn every_result_and_event_type_round_trips() {
                         default: json!("soft"),
                     },
                 ],
+                latency_ms: Some(10.0),
             },
         ],
     });
@@ -809,6 +855,7 @@ fn every_result_and_event_type_round_trips() {
     });
     round_trip(&AuthResult {
         scopes: ScopeSet::PANEL,
+        irreversible: false,
         server: ClientInfo::new("rbs", "0.0.1"),
     });
     round_trip(&Description {
@@ -816,6 +863,7 @@ fn every_result_and_event_type_round_trips() {
         methods: vec![MethodInfoOwned {
             name: "studio.get".into(),
             scope: Some(rbs_api::Scope::Read),
+            effect: Some(rbs_api::request::Effect::Read),
         }],
         topics: Topic::ALL.to_vec(),
     });
@@ -856,11 +904,13 @@ fn every_result_and_event_type_round_trips() {
         tokens: vec![TokenInfo {
             name: "Stream Deck".into(),
             scopes: ScopeSet::PANEL,
+            irreversible: false,
         }],
     });
     let created = TokenCreated {
         name: "Stream Deck".into(),
         scopes: ScopeSet::PANEL,
+        irreversible: true,
         token: format!("rbs1_{}", "0".repeat(64)),
     };
     round_trip(&created);
@@ -1041,6 +1091,15 @@ fn every_result_and_event_type_round_trips() {
             state: SyncMeasureState::Failed {
                 reason: SyncMeasureFailure::TooFewClaps,
             },
+        }),
+        EventPayload::TransitionState(TransitionStateChanged {
+            canvas: OutputCanvas::Main,
+            state: TransitionPhase::Started,
+            kind: TransitionKind::Fade,
+            duration_ms: 300,
+            from: 1,
+            to: 2,
+            at: 5_000_000_000,
         }),
     ] {
         round_trip(&Event {
@@ -1815,7 +1874,55 @@ fn studio_mode_is_a_minor_addition() {
     assert_eq!(off.scope(), Some(Scope::Control));
     let cut: Request =
         serde_json::from_value(json!({"method": "canvas.transition", "params": {}})).unwrap();
-    assert_eq!(cut, Request::Command(Command::CanvasTransition));
+    assert_eq!(
+        cut,
+        Request::Command(Command::CanvasTransition(TransitionOnce::default()))
+    );
+    // Protocol 1.81 (ADR-0128): a one-off kind and duration; old requests still parse.
+    let fade: Request = serde_json::from_value(json!({
+        "method": "canvas.transition",
+        "params": {"kind": "fade", "duration_ms": 1000}
+    }))
+    .unwrap();
+    assert_eq!(
+        fade,
+        Request::Command(Command::CanvasTransition(TransitionOnce {
+            kind: Some(TransitionKind::Fade),
+            duration_ms: Some(1000),
+        }))
+    );
+    let switch: Request =
+        serde_json::from_value(json!({"method": "scene.switch", "params": {"scene": 4}})).unwrap();
+    assert_eq!(
+        switch,
+        Request::Command(Command::SceneSwitch(SwitchScene {
+            scene: 4,
+            kind: None,
+            duration_ms: None,
+        }))
+    );
+    let set: Request = serde_json::from_value(json!({
+        "method": "collection.set_transition",
+        "params": {"kind": "fade"}
+    }))
+    .unwrap();
+    assert_eq!(set.scope(), Some(Scope::Control));
+    assert!(
+        serde_json::from_value::<Request>(json!({
+            "method": "canvas.transition",
+            "params": {"kind": "wipe"}
+        }))
+        .is_err()
+    );
+    // A default transition is left out of the scene list.
+    let mut plain = scenes();
+    plain.transition = Transition::default();
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("transition")
+            .is_none()
+    );
     let sources: Request =
         serde_json::from_value(json!({"method": "scene.sources", "params": {"scene": 1}})).unwrap();
     assert_eq!(sources.scope(), Some(Scope::Read));
@@ -2803,6 +2910,75 @@ fn the_sync_measure_topic_is_flat_and_reads_unknown_values_as_other() {
     }))
     .unwrap();
     assert_eq!(entry.origin, DeviceSyncOrigin::Other);
+}
+
+#[test]
+fn filter_latency_fields_are_optional_and_round_trip() {
+    // Protocol 1.77 (ADR-0130 decision 9): a source without latent filters, offset or
+    // running input looks as it did before.
+    let plain = serde_json::to_value(SourceInfo {
+        filter_latency_ms: 0.0,
+        effective_offset_ms: 0.0,
+        uncompensated_ms: 0.0,
+        input_late_frames: None,
+        input_resyncs: None,
+        ..source()
+    })
+    .unwrap();
+    for key in [
+        "filter_latency_ms",
+        "effective_offset_ms",
+        "uncompensated_ms",
+        "input_late_frames",
+        "input_resyncs",
+    ] {
+        assert!(plain.get(key).is_none(), "{key}");
+    }
+    let row = serde_json::to_value(SourceInfo {
+        uncompensated_ms: 4.0,
+        ..source()
+    })
+    .unwrap();
+    assert_eq!(row["filter_latency_ms"], json!(10.0));
+    assert_eq!(row["effective_offset_ms"], json!(-30.0));
+    assert_eq!(row["uncompensated_ms"], json!(4.0));
+    assert_eq!(row["input_late_frames"], json!(96));
+    assert_eq!(row["input_resyncs"], json!(1));
+    let back: SourceInfo = serde_json::from_value(row).unwrap();
+    assert_eq!(back.uncompensated_ms, 4.0);
+    // An older server's row reads with zero latency and no counters.
+    let older: SourceInfo = serde_json::from_value(json!({
+        "id": 1, "name": "Mic", "kind": "audio_input", "status": {"state": "running"}, "volume": 1.0
+    }))
+    .unwrap();
+    assert_eq!(older.filter_latency_ms, 0.0);
+    assert_eq!(older.input_resyncs, None);
+    // An older server's filter type has no latency.
+    let ty: FilterTypeInfo = serde_json::from_value(
+        json!({"type": "org.rbs.filter.blur", "name": "Blur", "fields": []}),
+    )
+    .unwrap();
+    assert_eq!(ty.latency_ms, None);
+}
+
+#[test]
+fn text_sources_decode_as_protocol_1_75() {
+    let add: AddSource = serde_json::from_value(json!({"kind": "text", "text": "Live"})).unwrap();
+    assert_eq!(add.kind, SourceKind::Text);
+    assert_eq!(add.text.as_deref(), Some("Live"));
+    assert!(add.adapter.is_empty() && add.target.is_empty());
+    assert!(
+        serde_json::from_value::<SetText>(json!({"source": 1, "text": "x", "file": "y"})).is_err()
+    );
+    round_trip(&TextFonts {
+        families: vec!["Inter".into(), "Noto Sans".into()],
+    });
+    assert_eq!(ErrorKind::Forbidden.name(), "forbidden");
+    assert_eq!(ErrorKind::NotReady.name(), "not_ready");
+    assert_eq!(
+        serde_json::to_value(ErrorKind::NotReady).unwrap(),
+        json!("not_ready")
+    );
 }
 
 #[test]

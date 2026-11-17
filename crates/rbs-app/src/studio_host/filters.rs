@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rbs_api::request::FilterDomains;
 use rbs_api::types as api;
-use rbs_audio_filters::AudioFilterType;
+use rbs_audio_filters::{AudioFilterType, DspSetup};
 use rbs_filters::{FilterType, Values};
 use rbs_graph::node::NodeTypeId;
 use rbs_params::{Curve, Field, FieldKind, Schema, Value, color_text, parse_color};
@@ -84,6 +84,9 @@ pub struct FilterRow {
     /// The live meter of a running audio filter that has one (a noise gate); read it
     /// only while an editor shows it.
     pub meter: Option<MeterHandle>,
+    /// The delay it adds while it runs, in ns (ADR-0130 decision 2); 0 when it adds
+    /// none, is disabled or is a video filter.
+    pub latency_ns: i64,
 }
 
 /// A filter meter, equal to another only when it is the same meter (a row changes
@@ -113,6 +116,7 @@ impl FilterRow {
 pub fn rows(
     source: &Source,
     meter_of: impl Fn(FilterId) -> Option<Arc<rbs_audio_filters::FilterMeter>>,
+    latency_of: impl Fn(FilterId) -> i64,
 ) -> Vec<FilterRow> {
     let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
     source
@@ -132,6 +136,7 @@ pub fn rows(
                 values: ty.map(|t| filter_values_lenient(&t, &f.settings).0),
                 stored: f.settings.clone(),
                 meter: meter_of(f.id).map(MeterHandle),
+                latency_ns: latency_of(f.id),
             }
         })
         .collect()
@@ -281,8 +286,9 @@ fn api_field(f: &Field) -> api::FilterField {
     field
 }
 
-/// `filter.types`' answer for `domains`: video types first, then audio types.
-pub fn api_types(domains: FilterDomains) -> api::FilterTypeList {
+/// `filter.types`' answer for `domains`: video types first, then audio types. An
+/// audio type's latency is for `setup`, the running graph's (ADR-0130 decision 2).
+pub fn api_types(domains: FilterDomains, setup: DspSetup) -> api::FilterTypeList {
     let video = matches!(domains, FilterDomains::Video | FilterDomains::All)
         .then(|| {
             rbs_filters::catalogue()
@@ -307,6 +313,14 @@ pub fn api_types(domains: FilterDomains) -> api::FilterTypeList {
                 domain: if t.is_audio() { "audio" } else { "video" }.to_owned(),
                 name: t.name().to_owned(),
                 fields: t.fields().iter().map(api_field).collect(),
+                latency_ms: match t {
+                    AnyFilter::Audio(a) => {
+                        let rate = f64::from(setup.format.sample_rate.hz().max(1));
+                        let ms = f64::from(a.latency_frames(setup)) * 1_000.0 / rate;
+                        Some((ms * 1_000.0).round() / 1_000.0)
+                    }
+                    AnyFilter::Video(_) => None,
+                },
             })
             .collect(),
     }
@@ -358,7 +372,7 @@ fn invalid(e: &rbs_filters::ParamError) -> Refusal {
 
 impl Host {
     /// The source that holds `filter`, and the filter.
-    fn filter_owner(&self, filter: FilterId) -> Result<(SourceId, &Filter), Refusal> {
+    pub(super) fn filter_owner(&self, filter: FilterId) -> Result<(SourceId, &Filter), Refusal> {
         self.collection
             .sources()
             .find_map(|s| s.filters.iter().find(|f| f.id == filter).map(|f| (s.id, f)))
@@ -543,6 +557,95 @@ impl Host {
             }
         }
         Ok(())
+    }
+
+    /// Adds the voice chain to a sound source as one undo step (ADR-0130 decision 10):
+    /// noise suppression, the equaliser with its low cut on, the compressor and the
+    /// limiter, each at its defaults otherwise. A filter of one of those types that the
+    /// source already has is kept where it is and turned on with the chain's values, as
+    /// a look does (ADR-0075); the others are added at the end in that order.
+    /// `Ok(false)` when nothing changes.
+    pub(super) fn add_voice_chain(&mut self, source: SourceId) -> Result<bool, Refusal> {
+        use rbs_audio_filters::{compressor, equaliser, limiter, noise};
+        let name = self.source_name(source)?;
+        let has_sound = self
+            .collection
+            .source(source)
+            .and_then(|s| SourceKind::of(&s.type_id))
+            .is_some_and(SourceKind::is_audio);
+        if !has_sound {
+            return Err(Refusal::Invalid(format!(
+                "{name} has a picture; the voice chain is for sound sources."
+            )));
+        }
+        let chain: [(&str, &[(&str, Value)]); 4] = [
+            (noise::NOISE_SUPPRESSION, &[]),
+            (equaliser::EQUALISER, &[("low_cut", Value::Toggle(true))]),
+            (compressor::COMPRESSOR, &[]),
+            (limiter::LIMITER, &[]),
+        ];
+        // Everything is checked before anything is changed.
+        let mut filters = Vec::new();
+        for (type_id, pairs) in chain {
+            let ty = AnyFilter::find(type_id)
+                .ok_or_else(|| Refusal::Invalid(format!("There is no filter type {type_id:?}.")))?;
+            let values = Values::from_pairs(&ty, pairs.iter().copied()).map_err(|e| invalid(&e))?;
+            filters.push((ty, filter_settings(&ty, &values)));
+        }
+        let mut records = Vec::new();
+        let mut step =
+            |host: &mut Self, ty: AnyFilter, settings: Settings| -> Result<(), Refusal> {
+                let existing = host.collection.source(source).and_then(|s| {
+                    s.filters
+                        .iter()
+                        .find(|f| f.type_id == ty.type_id())
+                        .map(|f| (f.id, f.enabled, f.settings.clone()))
+                });
+                match existing {
+                    Some((id, enabled, old)) => {
+                        if old != settings {
+                            records.push(
+                                host.collection
+                                    .set_filter_settings(source, id, settings)
+                                    .map_err(|e| Refusal::of(&e))?,
+                            );
+                        }
+                        if !enabled {
+                            records.push(
+                                host.collection
+                                    .set_filter_enabled(source, id, true)
+                                    .map_err(|e| Refusal::of(&e))?,
+                            );
+                        }
+                    }
+                    None => {
+                        let (_, undo) = host
+                            .collection
+                            .add_filter(source, ty.type_id(), settings)
+                            .map_err(|e| Refusal::of(&e))?;
+                        records.push(undo);
+                    }
+                }
+                Ok(())
+            };
+        let mut result = Ok(());
+        for (ty, settings) in filters {
+            result = step(self, ty, settings);
+            if result.is_err() {
+                break;
+            }
+        }
+        match result {
+            Ok(()) if records.is_empty() => Ok(false),
+            Ok(()) => {
+                self.history.record(EditKind::Filter, &name, 0, records);
+                Ok(true)
+            }
+            Err(e) => {
+                self.roll_back(records);
+                Err(e)
+            }
+        }
     }
 
     /// Removes a filter (one undo step).
