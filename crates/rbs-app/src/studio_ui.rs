@@ -785,6 +785,8 @@ impl StudioUi {
             switching: None,
             api_switch: None,
         };
+        ui.load_canvas_sections();
+        ui.note_destinations();
         ui.refresh_tokens();
         ui.refresh_library();
         ui
@@ -5322,20 +5324,12 @@ impl StudioUi {
 
     /// Shows the output profile in use and hands its settings and stream key account
     /// to the studio.
-    fn profile_loaded(&mut self) {
-        let (profile, why) = section(
-            &self.user,
-            RECORDING,
-            RecordProfile::new,
-            RecordProfile::problem,
-        );
-        let (mut stream, stream_why) = section(
-            &self.user,
-            STREAM,
-            StreamProfile::new,
-            StreamProfile::problem,
-        );
-        stream.key_saved &= self.keys_persistent;
+    /// Reads the profile's sections beside the recording and stream ones: the
+    /// vertical canvas's (ADR-0093 decision 6), Separate files and the extra stream
+    /// destinations (ADR-0127). At start and on every profile switch, so a restart
+    /// never streams to the first destination alone or saves an empty list over the
+    /// saved one.
+    fn load_canvas_sections(&mut self) {
         // The vertical canvas's sections (ADR-0093 decision 6): one that does not load
         // counts as not saved; one that loads with a problem is kept, so a start says
         // it cannot be used.
@@ -5374,6 +5368,31 @@ impl StudioUi {
                 }
                 Err(why) => (rbs_app::stream_destinations::Destinations::default(), why),
             };
+    }
+
+    /// A destinations section that did not load is said under the stream settings,
+    /// unless they have a problem of their own.
+    fn note_destinations(&mut self) {
+        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
+            self.stream_note = format!("{}.", self.destinations_note);
+        }
+    }
+
+    fn profile_loaded(&mut self) {
+        let (profile, why) = section(
+            &self.user,
+            RECORDING,
+            RecordProfile::new,
+            RecordProfile::problem,
+        );
+        let (mut stream, stream_why) = section(
+            &self.user,
+            STREAM,
+            StreamProfile::new,
+            StreamProfile::problem,
+        );
+        stream.key_saved &= self.keys_persistent;
+        self.load_canvas_sections();
         self.profile = profile;
         self.profile_note = why
             .map(|w| format!("The saved recording settings were not used: {w}"))
@@ -5383,9 +5402,7 @@ impl StudioUi {
         self.stream_note = stream_why
             .map(|w| format!("The saved stream settings were not used: {w}"))
             .unwrap_or_default();
-        if self.stream_note.is_empty() && !self.destinations_note.is_empty() {
-            self.stream_note = format!("{}.", self.destinations_note);
-        }
+        self.note_destinations();
         self.server_draft = None;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -8117,6 +8134,33 @@ mod tests {
         // As after `Update::Started`: Go live is possible.
         ui.cannot_record = None;
         (ui, d)
+    }
+
+    #[test]
+    fn saved_destinations_are_read_again_at_start() {
+        let (mut ui, d) = ui("dest-restart");
+        let id = ui
+            .destinations
+            .add(
+                rbs_app::stream_destinations::Canvas::Main,
+                "Local B",
+                "custom",
+            )
+            .unwrap();
+        ui.save_destinations();
+        let saved = ui.destinations.clone();
+        drop(ui);
+        // As after a restart: a new session of the same folder.
+        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {}));
+        let canvas = rbs_app::user_session::first_canvas(&col);
+        let mut ui = StudioUi::new(&d, &MemoryKeyStore::new(), user, canvas);
+        assert_eq!(ui.destinations, saved);
+        // A destination added now never takes the saved one's id.
+        let next = ui
+            .destinations
+            .add(rbs_app::stream_destinations::Canvas::Main, "", "custom")
+            .unwrap();
+        assert!(next > id);
     }
 
     #[test]
