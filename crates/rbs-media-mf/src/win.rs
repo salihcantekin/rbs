@@ -10,17 +10,19 @@ use std::path::Path;
 use std::time::Duration;
 
 use windows::Win32::Media::MediaFoundation::{
-    IMF2DBuffer, IMFMediaType, IMFSample, IMFSourceReader, MF_E_INVALIDMEDIATYPE,
-    MF_E_TOPO_CODEC_NOT_FOUND, MF_E_UNSUPPORTED_BYTESTREAM_TYPE, MF_E_UNSUPPORTED_FORMAT,
-    MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_DEFAULT_STRIDE,
-    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
-    MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_ALL_STREAMS,
-    MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_AUDIO_STREAM,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READER_MEDIASOURCE,
-    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM,
-    MF_SOURCE_READERF_ERROR, MF_VERSION, MFAudioFormat_Float, MFCreateAttributes,
-    MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Audio, MFMediaType_Video,
-    MFSTARTUP_NOSOCKET, MFShutdown, MFStartup, MFVideoArea, MFVideoFormat_RGB32,
+    IMF2DBuffer, IMFDXGIDeviceManager, IMFMediaType, IMFSample, IMFSourceReader,
+    MF_E_INVALIDMEDIATYPE, MF_E_TOPO_CODEC_NOT_FOUND, MF_E_UNSUPPORTED_BYTESTREAM_TYPE,
+    MF_E_UNSUPPORTED_FORMAT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
+    MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_PD_DURATION,
+    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READER_ALL_STREAMS,
+    MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
+    MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    MF_SOURCE_READER_MEDIASOURCE, MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED,
+    MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR, MF_VERSION, MFAudioFormat_Float,
+    MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Audio,
+    MFMediaType_Video, MFSTARTUP_NOSOCKET, MFShutdown, MFStartup, MFVideoArea,
+    MFVideoFormat_ARGB32, MFVideoFormat_RGB32,
 };
 use windows::Win32::System::Com::CoIncrementMTAUsage;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
@@ -31,6 +33,7 @@ use rbs_media_decode::{
     SoundSample, frame_duration_rule, refuse_picture,
 };
 
+use crate::gpu::Gpu;
 use crate::{Crop, bgrx_to_rgba, f32_samples, hns, missing_codec, nominal_duration, to_hns};
 
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
@@ -91,15 +94,17 @@ fn url_of(path: &Path) -> HSTRING {
     HSTRING::from(plain)
 }
 
-/// A source reader on `path` with only `stream` selected.
+/// A source reader on `path` with only `stream` selected. With `manager`, the decoder
+/// and the video processor run on its D3D11 device.
 fn reader(
     path: &Path,
     stream: u32,
     video_processing: bool,
+    manager: Option<&IMFDXGIDeviceManager>,
 ) -> Result<IMFSourceReader, DecodeError> {
     let mut attributes = None;
     // SAFETY: a valid out pointer.
-    unsafe { MFCreateAttributes(&mut attributes, 1) }
+    unsafe { MFCreateAttributes(&mut attributes, 3) }
         .map_err(|e| failed("MFCreateAttributes", &e))?;
     let attributes =
         attributes.ok_or_else(|| DecodeError::Failed("MFCreateAttributes gave nothing".into()))?;
@@ -107,6 +112,16 @@ fn reader(
         // SAFETY: a valid attribute store and key.
         unsafe { attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1) }
             .map_err(|e| failed("reader attributes", &e))?;
+    }
+    if let Some(manager) = manager {
+        // SAFETY: a valid attribute store, keys and a live manager, which the store
+        // keeps its own reference to.
+        unsafe {
+            attributes
+                .SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, manager)
+                .and_then(|()| attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1))
+        }
+        .map_err(|e| failed("reader attributes", &e))?;
     }
     // SAFETY: the URL and attributes outlive the call.
     let reader =
@@ -217,6 +232,9 @@ pub(crate) struct MfDecoder {
     cursor: Duration,
     /// The previous picture's duration, to continue an unstated one.
     last_duration: Option<Duration>,
+    /// The decode device and the shared textures of native pictures; `None` copies.
+    /// Dropped after the readers that use its device manager.
+    gpu: Option<Gpu>,
     /// Declared last: Media Foundation shuts down after the readers are released.
     _runtime: Runtime,
 }
@@ -226,9 +244,22 @@ pub(crate) struct MfDecoder {
 unsafe impl Send for MfDecoder {}
 
 impl MfDecoder {
-    pub(crate) fn open(path: &Path) -> Result<Self, DecodeError> {
+    /// Opens `path`. With the render adapter's `luid`, pictures are decoded on that
+    /// adapter and handed out as shared textures; when that device cannot be made or
+    /// cannot decode the file, the file opens again for copied pictures.
+    pub(crate) fn open(path: &Path, luid: Option<u64>) -> Result<Self, DecodeError> {
+        if let Some(luid) = luid
+            && let Ok(gpu) = Gpu::new(luid)
+            && let Ok(decoder) = Self::open_with(path, Some(gpu))
+        {
+            return Ok(decoder);
+        }
+        Self::open_with(path, None)
+    }
+
+    fn open_with(path: &Path, gpu: Option<Gpu>) -> Result<Self, DecodeError> {
         let runtime = Runtime::start()?;
-        let video = reader(path, VIDEO, true)?;
+        let video = reader(path, VIDEO, true, gpu.as_ref().map(Gpu::manager))?;
         // SAFETY: valid stream indices of a live reader.
         let native = unsafe { video.GetNativeMediaType(VIDEO, 0) }.map_err(|e| {
             if is_unsupported(e.code())
@@ -239,7 +270,14 @@ impl MfDecoder {
                 failed("video stream", &e)
             }
         })?;
-        let want = media_type(&MFMediaType_Video, &MFVideoFormat_RGB32)?;
+        // The video processor's B8G8R8A8 texture for a native picture (RGB32 would be
+        // B8G8R8X8, which the importer does not take); 32-bit BGRX in memory otherwise.
+        let subtype = if gpu.is_some() {
+            MFVideoFormat_ARGB32
+        } else {
+            MFVideoFormat_RGB32
+        };
+        let want = media_type(&MFMediaType_Video, &subtype)?;
         // SAFETY: a valid stream index and media type.
         if let Err(e) = unsafe { video.SetCurrentMediaType(VIDEO, None, &want) } {
             if is_unsupported(e.code()) {
@@ -274,13 +312,14 @@ impl MfDecoder {
             duration,
             cursor: Duration::ZERO,
             last_duration: None,
+            gpu,
             _runtime: runtime,
         })
     }
 
     fn open_sound(&mut self) -> Result<&mut Sound, DecodeError> {
         if self.sound.is_none() {
-            let reader = reader(&self.path, AUDIO, false)?;
+            let reader = reader(&self.path, AUDIO, false, None)?;
             let want = media_type(&MFMediaType_Audio, &MFAudioFormat_Float)?;
             // SAFETY: a valid stream index and media type; attribute reads on the type.
             let (sample_rate, channels) = unsafe {
@@ -449,6 +488,15 @@ impl MediaDecoder for MfDecoder {
         let pts = hns(stamp);
         if pts.is_none() && frame_duration.is_none() {
             return Err(DecodeError::NoTimestamp);
+        }
+        if let Some(gpu) = self.gpu.as_mut()
+            && let Some(picture) = gpu.picture(&sample, self.shape.crop)?
+        {
+            return Ok(Some(PictureSample {
+                pts,
+                frame_duration,
+                picture,
+            }));
         }
         let bytes = picture_bytes(&sample, &self.shape)?;
         Ok(Some(PictureSample {
