@@ -1,8 +1,9 @@
 # ADR-0141: OS permissions: ask when used, show them in Settings, explain a blocked source
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-17
 - Deciders: Salih (owner)
+- Owner decision: 2026-11-17, project thread: approved after the round-2 independent review and the UI mock-ups, with one change: the fix action is not in the source's row in the Sources list, only in Properties and the source settings window (decision 8).
 - Owner direction: 2026-11-17, project thread: a permission check that runs at first start and can be run again from Settings, works on every OS, and shows which permissions RBS has. Trigger: a development build started from another worktree had no camera access and the camera source showed nothing, with no way to ask for access.
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0077](0077-source-health-retarget-and-settings-window.md), [ADR-0113](0113-experience-level-and-first-run.md)
 - Amends: [capture-port](../specs/capture-port.md) Media Foundation notes (`permission` reads the privacy consent instead of always `Granted`); [audio-io-port](../specs/audio-io-port.md) WASAPI notes (the same for microphones); ADR-0113 decision 5 (the first-run page gets an "Access" step)
@@ -54,7 +55,7 @@ Terms (glossary, with the UI proposal): the page is **Permissions**; a row's sta
 
 7. **Settings › Permissions.** A new section in the App group, after Shortcuts, shown at every experience level. One row per permission kind that is not `Unavailable`, each with its status in words and at most one action: `NotAsked` with the prompt capability **Allow**; `NotAsked` without it, `Blocked` and `Unknown` **Open system settings**; `Managed`, `Allowed`, `AskedEachTime` and `NotNeeded` none. `NotAsked` without the prompt capability says "Start RBS from RBS.app to be asked" (decision 10). The page reads the statuses when it is shown and when the Settings window gets focus back (the user returns from System Settings), and has a **Check again** button; there is no timer. A kind with the restart capability whose row is `Blocked` or `NotAsked` when the Settings window gets focus back adds "If you just allowed it, restart RBS" with **Restart RBS** (the running process keeps reading the old answer until it restarts, so nothing needs to be remembered). The page also says which app the system gives the permissions to (decision 10).
 
-8. **A blocked source says how to fix it.** A source whose fault is `PermissionDenied` keeps its ADR-0077 text ("Camera access denied") and gets one action in its unavailable row and in Properties: **Allow** when its kind is `NotAsked` and can prompt, otherwise **Fix permission**, which opens Settings › Permissions at that kind's row. When a request or a return to the page turns a kind `Allowed`, sources of that kind with a `PermissionDenied` fault are reopened once, except for kinds with the restart capability. This is a user action, so the spec's "permission errors are never retried automatically" still holds for background retries.
+8. **A blocked source says how to fix it.** A source whose fault is `PermissionDenied` keeps its ADR-0077 text ("Camera access denied") and gets one action in Properties (its Source tab) and in the source settings window, not in its row in the Sources list (owner, 2026-11-17): **Allow** when its kind is `NotAsked` and can prompt, otherwise **Fix permission**, which opens Settings › Permissions at that kind's row. When a request or a return to the page turns a kind `Allowed`, sources of that kind with a `PermissionDenied` fault are reopened once, except for kinds with the restart capability. This is a user action, so the spec's "permission errors are never retried automatically" still holds for background retries.
 
 9. **Opening the OS pane is the composition root's job.** `rbs-app` gets a small `privacy` module next to `reveal.rs` that opens the OS pane for a kind with the OS's own opener, nothing linked: macOS `x-apple.systempreferences:com.apple.preference.security?Privacy_Camera` (`Privacy_Microphone`, `Privacy_ScreenCapture`, `Privacy_AudioCapture`), Windows `ms-settings:privacy-webcam` / `ms-settings:privacy-microphone`, Linux none (no button). If the opener fails, the row says where to go in words.
 
@@ -111,4 +112,4 @@ Round 2 (same reviewer, 2026-11-17): changes requested, minor; all round-1 conce
 1. The restart line could never show (the process keeps reading the old answer) -> decision 7: shown for restart kinds that read Blocked or Not asked on focus return.
 2. `.prompt` checked the wrong app when RBS.app's binary is started from a terminal -> decision 5: also requires no other `.app` above in the ancestor walk.
 3. The alias changes WASAPI's `audio.input.permission` value -> decisions 2 and 3: deprecated alias, table updated, values stated.
-Status: all concerns resolved in the text; owner approval pending.
+Status: all concerns resolved in the text. Owner approved 2026-11-17.

@@ -669,7 +669,9 @@ impl AdapterFactory for PipeWireCaptureFactory {
                 CapabilityValue::Int(FRAMES_IN_FLIGHT as i64),
             )
             .with(caps::HDR, CapabilityValue::Flag(false))
-            .with(HARDWARE, CapabilityValue::Flag(true)))
+            .with(HARDWARE, CapabilityValue::Flag(true))
+            // The portal asks the user in its own dialog on every pick (ADR-0141).
+            .with(caps::PICK_CONSENT, CapabilityValue::Flag(portal)))
     }
 }
 

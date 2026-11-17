@@ -43,7 +43,7 @@ use rbs_capture::camera::{self, NativeMode};
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, TargetId, TargetKind, caps,
+    CaptureTarget, ErrorDomain, Permission, TargetId, TargetKind, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -407,11 +407,32 @@ impl AdapterFactory for MfCaptureFactory {
                 CapabilityValue::Int(FRAMES_IN_FLIGHT as i64),
             )
             .with(caps::HDR, CapabilityValue::Flag(false))
-            .with(HARDWARE, CapabilityValue::Flag(true)))
+            .with(HARDWARE, CapabilityValue::Flag(true))
+            // The privacy switches (ADR-0141); desktop apps get no prompt.
+            .with(caps::PERMISSION_CAMERA, CapabilityValue::Flag(true))
+            .with(
+                caps::PERMISSION_CAMERA_RESTART,
+                CapabilityValue::Flag(false),
+            )
+            .with(caps::PERMISSION_CAMERA_PROMPT, CapabilityValue::Flag(false)))
     }
 }
 
 impl CaptureFactory for MfCaptureFactory {
+    fn permission(&self, kind: TargetKind) -> Permission {
+        use rbs_system_probe::privacy_consent::{Consent, ConsentKind, consent};
+        if kind != TargetKind::Camera {
+            return Permission::Granted;
+        }
+        // Four registry reads; anything unreadable counts as allowed and `open` still
+        // reports `E_ACCESSDENIED` as `PermissionDenied` (capture-port.md).
+        match consent(ConsentKind::Camera) {
+            Consent::Allowed => Permission::Granted,
+            Consent::Denied => Permission::Denied,
+            Consent::Restricted => Permission::Restricted,
+        }
+    }
+
     fn enumerate(&self, kind: TargetKind) -> Result<Vec<CaptureTarget>, CaptureError> {
         if kind != TargetKind::Camera {
             return Err(CaptureError::Unsupported(

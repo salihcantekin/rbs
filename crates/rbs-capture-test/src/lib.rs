@@ -23,8 +23,8 @@ use std::time::Duration;
 use rbs_capture::conformance::TestHooks;
 use rbs_capture::{
     CameraMode, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, REGION_GRAB_LONG, RegionGrab, THUMBNAIL_MAX, TargetId, TargetKind,
-    Thumbnail, caps,
+    CaptureTarget, ErrorDomain, Permission, REGION_GRAB_LONG, RegionGrab, THUMBNAIL_MAX, TargetId,
+    TargetKind, Thumbnail, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
@@ -86,6 +86,20 @@ pub struct TestCaptureFactory {
     targets: Vec<Target>,
     /// Ring buffers currently alive, across all sessions of this factory.
     live: Arc<AtomicUsize>,
+    /// Scripted permissions (ADR-0141), by kind; absent: no permission model.
+    permissions: std::sync::Mutex<Vec<ScriptedPermission>>,
+    /// `request_permission` calls that would have shown a prompt.
+    prompts: Arc<AtomicUsize>,
+}
+
+/// One kind's scripted permission in the test adapter.
+#[derive(Debug, Clone, Copy)]
+struct ScriptedPermission {
+    kind: TargetKind,
+    now: Permission,
+    /// What a prompt answers; `None`: the adapter cannot prompt (no `.prompt` flag).
+    answer: Option<Permission>,
+    restart: bool,
 }
 
 impl Default for TestCaptureFactory {
@@ -149,7 +163,45 @@ impl TestCaptureFactory {
                 ),
             ],
             live: Arc::new(AtomicUsize::new(0)),
+            permissions: std::sync::Mutex::new(Vec::new()),
+            prompts: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Gives `kind` a permission model (ADR-0141): it reads `now`; a prompt, when
+    /// `answer` is set, answers it (and declares the `.prompt` capability); `restart`
+    /// declares that a grant applies after a restart. Call before probing.
+    pub fn with_permission(
+        self,
+        kind: TargetKind,
+        now: Permission,
+        answer: Option<Permission>,
+        restart: bool,
+    ) -> Self {
+        if let Ok(mut list) = self.permissions.lock() {
+            list.retain(|p| p.kind != kind);
+            list.push(ScriptedPermission {
+                kind,
+                now,
+                answer,
+                restart,
+            });
+        }
+        self
+    }
+
+    /// How many `request_permission` calls showed a (pretend) prompt.
+    pub fn prompts(&self) -> usize {
+        self.prompts.load(Ordering::Acquire)
+    }
+
+    fn scripted(&self, kind: TargetKind) -> Option<ScriptedPermission> {
+        self.permissions
+            .lock()
+            .ok()?
+            .iter()
+            .find(|p| p.kind == kind)
+            .copied()
     }
 
     /// Makes a target disappear, as if the window closed or the device was unplugged.
@@ -222,7 +274,7 @@ impl AdapterFactory for TestCaptureFactory {
         let set =
             |items: &[&str]| CapabilityValue::Set(items.iter().map(|s| (*s).to_owned()).collect());
         let kinds = ["display", "window", "camera"];
-        Ok(CapabilitySet::new()
+        let set = CapabilitySet::new()
             .with(caps::TARGET_KINDS, set(&kinds))
             .with(caps::TARGET_ENUMERATE, set(&kinds))
             .with(caps::TARGET_PICKER, set(&[]))
@@ -242,11 +294,40 @@ impl AdapterFactory for TestCaptureFactory {
                 CapabilityValue::Int(FRAMES_IN_FLIGHT as i64),
             )
             .with(caps::HDR, CapabilityValue::Flag(false))
-            .with(HARDWARE, CapabilityValue::Flag(false)))
+            .with(HARDWARE, CapabilityValue::Flag(false));
+        let mut set = set;
+        for kind in TargetKind::ALL {
+            if let Some(p) = self.scripted(kind) {
+                let (has, restart, prompt) = caps::permission_keys(kind);
+                set = set
+                    .with(has, CapabilityValue::Flag(true))
+                    .with(restart, CapabilityValue::Flag(p.restart))
+                    .with(prompt, CapabilityValue::Flag(p.answer.is_some()));
+            }
+        }
+        Ok(set)
     }
 }
 
 impl CaptureFactory for TestCaptureFactory {
+    fn permission(&self, kind: TargetKind) -> Permission {
+        self.scripted(kind).map_or(Permission::Granted, |p| p.now)
+    }
+
+    fn request_permission(&self, kind: TargetKind) -> Result<Permission, CaptureError> {
+        let Ok(mut list) = self.permissions.lock() else {
+            return Ok(Permission::Granted);
+        };
+        let Some(p) = list.iter_mut().find(|p| p.kind == kind) else {
+            return Ok(Permission::Granted);
+        };
+        if let (Permission::NotDetermined, Some(answer)) = (p.now, p.answer) {
+            self.prompts.fetch_add(1, Ordering::AcqRel);
+            p.now = answer;
+        }
+        Ok(p.now)
+    }
+
     fn enumerate(&self, kind: TargetKind) -> Result<Vec<CaptureTarget>, CaptureError> {
         Ok(self
             .targets
@@ -318,6 +399,11 @@ impl CaptureFactory for TestCaptureFactory {
         let target = self
             .find(&request.target)
             .ok_or(CaptureError::TargetNotFound)?;
+        match self.scripted(target.info.kind).map(|p| p.now) {
+            None | Some(Permission::Granted) => {}
+            Some(Permission::NotDetermined) => return Err(CaptureError::PermissionNotDetermined),
+            Some(_) => return Err(CaptureError::PermissionDenied),
+        }
         if !request.memory.contains(&MemoryKind::System) {
             return Err(CaptureError::FormatUnsupported);
         }

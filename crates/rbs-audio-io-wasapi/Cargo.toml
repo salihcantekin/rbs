@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-core = { path = "../rbs-core" }
+# The Windows privacy switches (ADR-0141).
+rbs-system-probe = { path = "../rbs-system-probe" }
 
 # The `windows` crate (MIT or Apache-2.0), as in rbs-capture-mf and rbs-capture-wgc.
 [target.'cfg(windows)'.dependencies]

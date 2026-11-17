@@ -67,3 +67,75 @@ pub(crate) fn available_memory() -> Result<u64, ProbeError> {
     }
     Ok(status.ullAvailPhys)
 }
+
+/// The four privacy switch values of `kind` (ADR-0141 decision 6); `None` for any
+/// value that is missing or unreadable.
+pub(crate) fn consent_values(
+    kind: crate::privacy_consent::ConsentKind,
+) -> crate::privacy_consent::ConsentValues {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    const STORE: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\";
+    let store = format!("{STORE}{}", kind.store());
+    crate::privacy_consent::ConsentValues {
+        policy: reg_u32(
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Policies\Microsoft\Windows\AppPrivacy",
+            kind.policy(),
+        ),
+        machine: reg_string(HKEY_LOCAL_MACHINE, &store, "Value"),
+        user: reg_string(HKEY_CURRENT_USER, &store, "Value"),
+        desktop_apps: reg_string(HKEY_CURRENT_USER, &format!("{store}\\NonPackaged"), "Value"),
+    }
+}
+
+fn reg_get(
+    root: windows_sys::Win32::System::Registry::HKEY,
+    key: &str,
+    name: &str,
+    flags: u32,
+    buf: &mut [u8],
+) -> Option<usize> {
+    use windows_sys::Win32::System::Registry::RegGetValueW;
+    let key = wide(OsStr::new(key));
+    let name = wide(OsStr::new(name));
+    let mut len = u32::try_from(buf.len()).ok()?;
+    // SAFETY: `key` and `name` are NUL-terminated and outlive the call; `buf` is
+    // writable for `len` bytes, and the call writes at most `len` bytes and stores the
+    // written length in `len`.
+    let rc = unsafe {
+        RegGetValueW(
+            root,
+            key.as_ptr(),
+            name.as_ptr(),
+            flags,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    (rc == 0).then_some(len as usize)
+}
+
+fn reg_u32(root: windows_sys::Win32::System::Registry::HKEY, key: &str, name: &str) -> Option<u32> {
+    use windows_sys::Win32::System::Registry::RRF_RT_REG_DWORD;
+    let mut buf = [0u8; 4];
+    let n = reg_get(root, key, name, RRF_RT_REG_DWORD, &mut buf)?;
+    (n == 4).then(|| u32::from_le_bytes(buf))
+}
+
+fn reg_string(
+    root: windows_sys::Win32::System::Registry::HKEY,
+    key: &str,
+    name: &str,
+) -> Option<String> {
+    use windows_sys::Win32::System::Registry::RRF_RT_REG_SZ;
+    let mut buf = [0u8; 64];
+    let n = reg_get(root, key, name, RRF_RT_REG_SZ, &mut buf)?;
+    let units: Vec<u16> = buf[..n]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&u| u != 0)
+        .collect();
+    String::from_utf16(&units).ok()
+}

@@ -119,6 +119,16 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 5. Apply and collect. Only then take back the instances of `retired_sources` and `retired_filters`: `Controller::take` returns idle instances only.
 6. Break-before-make for `report.replaced_sources`: an exclusive device (most cameras) cannot start the new instance while the old one runs. Apply first a copy of the graph with each replacing node moved to Standby, collect (the old instance is released), then apply the graph itself.
 
+### OS permissions (ADR-0141)
+
+`rbs_sources::permissions` maps the four kinds a user gives permission for (Camera, Microphone, Screen and windows, System and app sound) to port kinds and folds every serving adapter's `permission` answer and permission capabilities into one `PermissionInfo` (status, whether **Allow** can prompt, whether a grant applies after a restart). The fold is pure; its precedence is Managed, Blocked, Not asked, Unknown, Asked each time, Allowed, No permission needed, and no serving adapter is Unavailable.
+
+- `SourceTypes::permission(kind)`: calls `permission` only; fast, never prompts.
+- `SourceTypes::request_permission(kind)`: calls `request_permission` on each serving adapter that says `NotDetermined` and declares the kind's `.prompt` capability, then reads again. It blocks while a prompt is shown, so the composition root calls it from a worker thread, one request per kind at a time.
+- `PermissionKind::of_type(type_id)`: the kind a source type needs, if any.
+
+Nothing is cached, polled or started.
+
 ## Errors and failure behaviour
 
 `SourceError` (non-exhaustive): `UnknownType`, `Image(String)` (a still's picture), `NoAdapter`, `AdapterUnavailable(id)`, `NoTarget`, `InvalidSetting { key, expected }`, `Capture(CaptureError)`, `Audio(AudioIoError)`. A capture target that is gone is found by the node's `prepare` (permanent `TargetNotFound`, ADR-0038); an audio endpoint that is gone fails `instantiate` with `Audio`.

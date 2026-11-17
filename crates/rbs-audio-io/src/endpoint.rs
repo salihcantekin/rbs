@@ -148,6 +148,12 @@ pub enum Permission {
     Denied,
     /// Not asked yet; `request_permission` shows the OS prompt.
     NotDetermined,
+    /// The OS or an administrator forbids it and the user cannot change it (macOS
+    /// parental controls or device management, a Windows policy). ADR-0141.
+    Restricted,
+    /// The OS has a permission for this kind but no way to read it before use (macOS
+    /// system audio recording); it asks the first time the kind is captured. ADR-0141.
+    Unknown,
 }
 
 #[cfg(test)]
