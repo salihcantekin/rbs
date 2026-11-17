@@ -1584,9 +1584,12 @@ export component Toggle inherits Rectangle {
     property <length> knob-d: track-h - inset * 2;
     // Ink of the knob and the mark on the off track.
     property <color> off-ink: enabled ? Theme.text-secondary : Theme.text-disabled;
+    // Stretch, not start: without `text` the switch then cannot grow past its track, so
+    // a `SettingRow` puts it at the right edge of its column and the pointer area and
+    // focus ring stay on the switch. With `text`, the words take the extra width.
     HorizontalLayout {
         spacing: Tokens.space-2;
-        alignment: start;
+        alignment: stretch;
         VerticalLayout {
             alignment: center;
             track := Rectangle {
@@ -2646,6 +2649,33 @@ export component ValueReadout inherits Text {
     font-size: Tokens.type-body-size;
     overflow: elide;
     accessible-role: none;
+}
+
+// A value a `SettingRow` shows but does not edit ("WAV, 24-bit", "Up to 3 video
+// files"): body text at its own width, so the row puts it at the right edge of the
+// control column like a switch (stacked: under the name, at the left). A value longer
+// than the column is elided; screen readers get the full text. `muted`: a fixed fact or an empty state ("None"), in text.secondary; off, a
+// value that reflects the user's choices, in text.primary. A raw `Text` in a
+// `SettingRow` is counted by `cargo xtask check-ui` (`row`).
+export component SettingValue inherits Rectangle {
+    in property <string> text;
+    in property <bool> muted;
+    preferred-width: value.preferred-width;
+    max-width: value.preferred-width;
+    min-height: value.preferred-height;
+    preferred-height: value.preferred-height;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    value := Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: root.muted ? Theme.text-secondary : Theme.text-primary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
 }
 
 // Slider: a value from 0 to 1 along a track (the volume fader). Dragging or clicking
@@ -4764,15 +4794,28 @@ export component StatusLine inherits Rectangle {
         padding-top: Tokens.space-2;
         padding-bottom: Tokens.space-2;
         spacing: Tokens.space-2;
+        // The icon is centred on the first line of the words: `line` is one line of the
+        // same font (the text's real line height, not `type.body.line`). An icon a
+        // little taller than the line reaches into the padding above and below it.
         VerticalLayout {
             alignment: start;
-            padding-top: (Tokens.type-body-line - Tokens.size-icon-box) / 2;
-            Icon {
+            Rectangle {
                 width: Tokens.size-icon-box;
-                height: Tokens.size-icon-box;
-                name: root.tone == 1 ? IconName.check
-                    : root.tone >= 2 ? IconName.warning : IconName.info;
-                ink: root.tint;
+                height: line.preferred-height;
+                line := Text {
+                    visible: false;
+                    text: " ";
+                    font-size: Tokens.type-body-size;
+                    accessible-role: none;
+                }
+                Icon {
+                    y: (parent.height - self.height) / 2;
+                    width: Tokens.size-icon-box;
+                    height: Tokens.size-icon-box;
+                    name: root.tone == 1 ? IconName.check
+                        : root.tone >= 2 ? IconName.warning : IconName.info;
+                    ink: root.tint;
+                }
             }
         }
         Text {
@@ -4916,8 +4959,10 @@ export component SettingRow inherits Rectangle {
     // more than half the row.
     in property <length> control-width: Tokens.size-menu-md;
     // The control fills the column (fields, lists to pick from); off, it keeps its own
-    // width at the column's right edge (toggles, segmented controls, buttons), or at
-    // the left edge when stacked.
+    // width at the column's right edge (segmented controls, buttons), or at the left
+    // edge when stacked. A control that cannot grow (a `Toggle`, a `SettingValue`)
+    // keeps its own width at the right edge either way, so the author cannot leave it
+    // at the column's left edge (owner decision 2026-11-17).
     in property <bool> fill: true;
     // The value differs from its default (owner decision 2026-11-14): a reset button
     // shows just before the control while the row has room for it (not stacked), and
@@ -4934,7 +4979,7 @@ export component SettingRow inherits Rectangle {
     property <bool> hint-focused;
     property <bool> hint-open;
     out property <bool> hint-shown: root.hint != "" && (hover.has-hover || root.hint-focused || root.hint-open);
-    property <length> column: max(controls.min-width, min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2));
+    property <length> column: max(controls.min-width, min(min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2), controls.max-width));
     property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
     property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
     min-width: max(info.min-width, controls.min-width);

@@ -423,6 +423,65 @@ fn a_setting_rows_hint_shows_only_while_the_pointer_is_over_the_row_or_it_has_fo
     assert!(p.get_hint_shown(), "keyboard focus on the (i)");
 }
 
+#[test]
+fn a_setting_rows_switch_and_value_sit_at_its_right_edge_without_fill_false() {
+    i_slint_backend_testing::init_no_event_loop();
+    let p = rbs_app_ui::SettingRowAlignProbe::new().expect("the probe window");
+    p.show().expect("show");
+    settle();
+    let close = |a: f32, b: f32| (a - b).abs() < 0.5;
+    let right = p.get_row_right();
+    assert!(
+        !p.get_stacked(),
+        "a 600 px row puts the control beside the name"
+    );
+    // The switch keeps its own width, at the right edge (not the column's left edge).
+    assert!(
+        close(p.get_switch_right(), right),
+        "switch ends at {} of {right}",
+        p.get_switch_right()
+    );
+    assert!(
+        close(
+            p.get_switch_right() - p.get_switch_left(),
+            p.get_switch_own()
+        ),
+        "switch at its own width"
+    );
+    // So does a shown value.
+    assert!(
+        close(p.get_value_right(), right),
+        "value ends at {} of {right}",
+        p.get_value_right()
+    );
+    assert!(
+        close(p.get_value_right() - p.get_value_left(), p.get_value_own()),
+        "value at its own width"
+    );
+    // A drop-down still fills the column, up to the same edge.
+    assert!(
+        close(p.get_pick_right(), right),
+        "drop-down ends at {} of {right}",
+        p.get_pick_right()
+    );
+    assert!(
+        p.get_pick_right() - p.get_pick_left() > p.get_switch_own(),
+        "drop-down fills the column"
+    );
+    // Stacked (narrow), both go under the name at the left edge.
+    p.set_row_width(200.0);
+    settle();
+    assert!(p.get_stacked(), "a 200 px row stacks");
+    assert!(
+        close(p.get_switch_left(), 0.0),
+        "stacked switch at the left edge"
+    );
+    assert!(
+        close(p.get_value_left(), 0.0),
+        "stacked value at the left edge"
+    );
+}
+
 fn number_probe() -> rbs_app_ui::NumberFieldProbe {
     i_slint_backend_testing::init_no_event_loop();
     let p = rbs_app_ui::NumberFieldProbe::new().expect("the probe window");

@@ -146,6 +146,7 @@ Rules:
 ## U17. Settings
 
 - One settings window with a search field and a flat list of sections. No nested dialogs; a setting is never more than one section away.
+- Every setting is a `SettingRow` (or a `SettingBlock` for content that needs the card's width): name on the left, control or shown value (`SettingValue`) ending at the row's right edge, so a card's values form one column. Checked by `cargo xtask check-ui` (`row`) and `tests/overlays.rs`.
 - Changes apply immediately where safe, and are undoable. Settings that need an output restart say so and offer to apply when not live.
 
 ## U18. Notifications
@@ -187,7 +188,7 @@ The user decides what is on screen. RBS ships good defaults, never a fixed layou
 | Rule | Check |
 | --- | --- |
 | U6 | Test `no_hard_coded_visual_values` (`rbs-app`) fails on literal lengths, durations and colours in `.slint` files; review (Rust and values the test allows by marker) |
-| U6, U2 (inline help), component library | `cargo xtask check-ui` counts raw `TouchArea` outside the library, component names declared twice, `help:` texts over 90 characters and effects drawn outside the library (`drop-shadow-*`, `inner-shadow-*`, gradients, `Theme.effects-*`; [ADR-0120](../adr/0120-theme-effects.md)) against `docs/ui/baseline.toml` and the approved `docs/ui/exceptions.toml` ([ADR-0115](../adr/0115-ui-stop-rule-for-agents.md)); a test in `xtask` runs it |
+| U6, U2 (inline help), component library | `cargo xtask check-ui` counts raw `TouchArea` outside the library, component names declared twice, `help:` texts over 90 characters effects drawn outside the library (`drop-shadow-*`, `inner-shadow-*`, gradients, `Theme.effects-*`; [ADR-0120](../adr/0120-theme-effects.md)) and built-in elements such as a raw `Text` in a `SettingRow`'s control column (`row`; values right-aligned, owner 2026-11-17) against `docs/ui/baseline.toml` and the approved `docs/ui/exceptions.toml` ([ADR-0115](../adr/0115-ui-stop-rule-for-agents.md)); a test in `xtask` runs it |
 | U5 | UI frame-time and UI-thread-blocking metrics in debug builds; CI scenario |
 | U7 | Automated contrast check on tokens; keyboard-only and screen reader walkthrough per release |
 | U1, U2, U10 | Usability tests with target times and success rate |
