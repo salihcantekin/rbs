@@ -151,9 +151,11 @@ mod windows {
         // The fixture's tone peaks near 0.1 to 0.14; a single AAC frame may stay below
         // 0.1, so the level is checked over the whole clip.
         assert!(loudest > 0.05, "the sound is silent: peak {loudest}");
-        // 0.5 s, give or take one AAC frame of priming or padding.
+        // 0.5 s, give or take two AAC frames: Media Foundation returns every coded
+        // frame, the encoder's priming and the end padding included (25 x 1024 = 25600
+        // for the fixture), where AVFoundation trims them.
         assert!(
-            (24_000 - 1024..=24_000 + 1024).contains(&frames),
+            (24_000 - 2048..=24_000 + 2048).contains(&frames),
             "{frames}"
         );
     }

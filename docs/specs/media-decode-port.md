@@ -82,7 +82,7 @@ Platform video files: Media Foundation on Windows (`rbs-media-mf`, synchronous `
 - `seek`: Media Foundation moves both readers (`SetCurrentPosition`). An `AVAssetReader` cannot move once it reads, so the AVFoundation adapter replaces the picture reader with one whose time range starts at the cursor, and recreates the sound reader on the next `next_sound`.
 - A missing decoder is `Unsupported` and names it (for example: HEVC needs the HEVC Video Extensions from the Microsoft Store). A file with no picture stream is `Unsupported`, so the next adapter can try it.
 - A frame of unstated or zero duration continues by the track's nominal rate, then by the previous frame (invariant 4).
-- Not handled yet: a track's rotation (`preferredTransform`, the display matrix), colour beyond sRGB conversion by the platform, HDR.
+- Not handled yet: a track's rotation (`preferredTransform`, the display matrix), colour beyond sRGB conversion by the platform, HDR. Media Foundation also returns the AAC encoder priming and end padding untrimmed (about 21 ms of sound before the picture at the start); trimming by the track's edit list comes with the play range work.
 
 Capability: `cpu-upload` only. This is the measured fallback of ADR-0108 decision 4. Each adapter's PR records its numbers from `examples/decode_bench.rs`: time per picture and real-time factor at 1080p60 and 4K60, and the process CPU measured outside the process.
 
