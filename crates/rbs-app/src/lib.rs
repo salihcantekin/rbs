@@ -56,6 +56,7 @@ pub mod stream_services;
 pub mod studio_host;
 pub mod text_clock;
 pub mod text_timers;
+pub mod theme_hints;
 pub mod thumbnail;
 pub mod user_session;
 pub mod vcam_settings;

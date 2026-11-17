@@ -459,8 +459,12 @@ impl AppearanceUi {
             return false;
         };
         match t.kind {
+            // Neighbours move along so one edit always keeps the order rules
+            // (themes spec, "Editing").
             Kind::Length { .. } => self.change(file, |d| {
+                let before = d.clone();
                 d.length.insert(name.to_owned(), value);
+                file.carry(&before, d, name);
             }),
             Kind::Duration { .. } => self.change(file, |d| {
                 d.duration
@@ -485,7 +489,9 @@ impl AppearanceUi {
             },
         };
         self.change(file, |d| {
+            let before = d.clone();
             d.type_styles.insert(name.to_owned(), next);
+            file.carry(&before, d, name);
         })
     }
 
@@ -582,6 +588,7 @@ impl AppearanceUi {
             return self.change(file, |d| d.effects = None);
         }
         self.change_looked(file, now, |d| {
+            let before = d.clone();
             d.colors.remove(name);
             d.length.remove(name);
             d.duration.remove(name);
@@ -590,6 +597,7 @@ impl AppearanceUi {
             if name == FONT_FAMILY {
                 d.font_family = None;
             }
+            file.carry(&before, d, name);
         })
     }
 
@@ -1167,6 +1175,34 @@ mod tests {
         assert_eq!(back.light, ThemeId::BuiltIn(Base::Light));
         // Picking the theme already in use changes nothing.
         assert!(ui.pick(2, 2).is_none());
+    }
+
+    #[test]
+    fn an_edit_past_a_neighbour_carries_it_and_is_shown_at_once() {
+        let (_d, data, file, mut ui, id) = setup("carry");
+        ui.selected = ui.index_of(&ThemeId::User(id.clone()));
+        assert!(ui.edit(&file));
+        ui.choice = Appearance::new(
+            AppearanceMode::Fixed,
+            ThemeId::BuiltIn(Base::Dark),
+            ThemeId::BuiltIn(Base::Light),
+            ThemeId::User(id),
+        );
+        // radius.md above radius.lg (12) and the body text above the label (13) used
+        // to hold the whole draft until fixed by hand.
+        assert!(ui.set_number(&file, "radius.md", 16.0));
+        assert!(ui.set_style(&file, "type.body", 0, 15.0));
+        let mut notes = Vec::new();
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].length["radius.md"], 16.0);
+        assert_eq!(slots[0].length["radius.lg"], 16.0);
+        assert_eq!(slots[0].type_styles["type.body"].size, 15);
+        assert_eq!(slots[0].type_styles["type.label"].size, 15);
+        assert!(ui.to_save().is_some());
+        // Reset puts radius.lg back under radius.md: radius.md comes down with it.
+        assert!(ui.reset(&file, "radius.lg", Instant::now()));
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].length["radius.md"], 12.0);
     }
 
     #[test]
