@@ -1100,6 +1100,20 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "ui.scene.transition",
+        title: "Transition into this scene…",
+        tooltip: "Choose how the program changes to this scene; Default uses the scene collection's transition",
+        icon: Some("transition"),
+        shortcut: None,
+        menu: Menu::Scene,
+        // ADR-0135 decision 14: opens the scene's card; the card sets it with
+        // `scene.set_transition`. Without `scene`: the scene on air.
+        kind: action("ui.scene.transition"),
+        params: &[target("scene"), COLLECTION],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
         id: "scene.move",
         title: "Move",
         tooltip: "Move the scene up or down in the scene list",
@@ -3046,6 +3060,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "scene.duplicate",
             "scene.duplicate?sources=copied",
             "scene.audio.own_levels.toggle",
+            "ui.scene.transition",
             "|",
             "scene.move?direction=up",
             "scene.move?direction=down",
@@ -3929,6 +3944,7 @@ mod tests {
                 "scene.duplicate?scene=7",
                 "scene.duplicate?scene=7&sources=copied",
                 "scene.audio.own_levels.toggle?scene=7",
+                "ui.scene.transition?scene=7",
                 "|",
                 "scene.move?direction=up&scene=7",
                 "scene.move?direction=down&scene=7",
