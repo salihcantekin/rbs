@@ -200,7 +200,7 @@ The studio does not link or load CEF. A real CEF build replaces the helper execu
 
 ## Text (`org.rbs.source.text`, ADR-0129)
 
-Implementation status: phases (a) to (c). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, and the control API adds and edits text sources (control-api.md, "Protocol 1.75"). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; no menu adds a text source until phase (f), and a text row in the Sources list uses the `pencil` icon until then. Live kinds (phase (d)) and crisp resizing (phase (e)) follow.
+Implementation status: phases (a) to (d). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, the control API adds and edits text sources (control-api.md, "Protocol 1.75") and runs timers (control-api.md, "Protocol 1.84"), and live kinds are drawn ("Live kinds" below). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; no menu adds a text source until phase (f), and a text row in the Sources list uses the `pencil` icon until then. Crisp resizing (phase (e)) follows. Hold start and take start do not wait for entering texts yet; a program switch does.
 
 ```rust
 // rbs_sources::types
@@ -242,13 +242,65 @@ Settings (keys in `types::keys`; ranges are the `rbs_text` constants):
 | `outline_width`, `outline_color` | Float, Text | 0 (none), `#000000` | 0 to 64 px |
 | `shadow_color`, `shadow_x`, `shadow_y`, `shadow_blur` | Text, Float | none (no shadow), 0 | ±256 px, 0 to 64 px |
 | `background`, `padding` | Text, Float | none, 0 | 0 to 1024 px |
-| `fields`, `format`, `target`, `duration_ms`, `end_text` | Bool, Text, Text, Int, Text | false, none | live kinds (ADR-0129 decision 11, phase (d)) |
+| `fields` | Bool | false | `{...}` fields in `text` ("Live kinds") |
+| `format` | Text | per kind | a clock or timer pattern ("Live kinds") |
+| `target` | Text | none | a countdown's time of day, `HH:mm` or `HH:mm:ss` |
+| `duration_ms` | Int | none (0) | a countdown's length, 0 or more |
+| `end_text` | Text | `00:00` for a countdown, else empty | shown when a countdown reaches zero and while a recording or stream is stopped |
 
 A number key accepts an integer. `validate_text` refuses any other key, a value of the wrong kind or out of range (`InvalidSetting` naming the key), an unknown `kind` and a missing box. `read_text_lenient` never fails: it gives a wrong kind its default, clamps a value out of range (a box over the pixel cap keeps its width and is shortened), reads an unknown `kind` as `text`, and returns every key it changed for `SourceSettingsAdjusted`. Tabular figures are on for every live kind and for `fields`.
 
 **Still or not.** `is_still` answers from the class for every type except text; a text source is still only when `kind` is `text` (or absent) and `fields` is off. `rbs-record`'s picture form (`video_as: auto` writes images only for a still source; `image` on a text that is not still is `ImageOnMovingSource`) and the host's `set_record_separately` `video_as` check ask `is_still`. Recording sound separately is refused for a text source like any picture-only source (`AudioOnPictureOnly`), whatever its settings. Tests: `rbs-sources` `text::tests`, `rbs-record` `iso::tests::a_text_source_is_still_only_as_plain_text`.
 
 **Instantiate.** With no renderer registered the type is not installed and `instantiate` is `NoAdapter`. Otherwise it reads the settings leniently and returns `Text` with a node that shows nothing until the worker sends a picture through `frames`.
+
+### Live kinds (ADR-0129 decision 11)
+
+`rbs_sources::text_live` holds the pure parts; the worker calls them on the control thread with its injected clocks.
+
+```rust
+pub struct LocalTime { year, month, day, hour, minute, second, weekday /* 0 = Monday */, nanos } // LocalTime::utc(SystemTime)
+pub enum Language { English, Turkish }                   // weekday names; the app's UI language
+pub fn parse_target(&str) -> Option<u32>;                // HH:mm[:ss] -> seconds into the day
+pub fn format_clock(&LocalTime, pattern, Language) -> String;
+pub fn format_elapsed(seconds: u64, pattern) -> String;
+pub fn default_timer_pattern(seconds) -> &'static str;   // mm:ss, H:mm:ss from one hour
+pub struct RunTime { value: Duration, since: Option<Timestamp> } // at(now), paused(now); master clock
+pub struct LiveInputs { timers: BTreeMap<SourceId, RunTime>, recording, stream: Option<RunTime>, scene: String, language }
+pub fn shown(source, &TextSettings, &LiveInputs, &LiveClocks) -> Option<Shown { text, next: Option<Duration> }>;
+pub fn expand_fields(text, &LiveInputs, &LiveClocks) -> Shown;
+// rbs_sources::text_worker
+pub trait TextClock { fn now(&self) -> SystemTime; fn local(&self) -> LocalTime /* UTC */; fn until_local(&self, seconds: u32) -> Duration /* UTC */; }
+// rbs_sources::SourceTypes
+pub fn set_text_clock(&mut self, Arc<dyn TextClock>); pub fn text_clock(&self) -> Option<Arc<dyn TextClock>>;
+```
+
+- **Patterns.** `HH` (two-digit hour), `H`, `mm`, `ss`, `dd`, `MM`, `yyyy`, `ddd` (weekday name) and text in single or double quotes (an unclosed quote runs to the end); any other character is itself. A clock uses `HH:mm:ss` without `format`. A timer uses `mm:ss`, with `H:` from one hour. In a timer pattern the largest unit present takes the whole (`mm:ss` shows 75:00 for 75 minutes), `dd` is days, and `MM`, `yyyy` and `ddd` show nothing. A countdown rounds up, so it shows `00:01` until it reaches zero; elapsed times round down.
+- **Kinds.** `clock` shows `TextClock::local`. `countdown` with a valid `target` counts to its next occurrence (`TextClock::until_local`, zero at that second, tomorrow's once passed); otherwise it counts down `duration_ms` (0 when absent) with its timer. At zero it shows `end_text` (`00:00` by default). `stopwatch` counts its timer up. `recording_time` and `stream_time` show the main canvas's main recording and stream (`end_text`, default empty, while stopped). A live kind ignores `file`; `fields` applies to `text` only, so a file source shows its file as it is.
+- **Fields.** With `fields` on, `{time}` (`HH:mm:ss`), `{date}` (`yyyy-MM-dd`), `{time:PATTERN}`, `{scene}`, `{recording_time}` and `{stream_time}` (empty while stopped) are replaced; any other brace text stays as it is.
+- **Weekdays.** English and Turkish tables in `Language`; the app gives `Language::English` until the UI has languages.
+- **Updates.** The worker keeps each live source's last text and when it can change next: the next whole second of the wall clock for a wall value, of the value itself for a running timer or elapsed time. `tick` draws an on-air live source when its time has come and its text changed; a value that stands still (a paused or unstarted timer) is not drawn again. `attach` and `set_settings` carry the text in the same command, so a new live source is drawn once, never empty; `refresh` draws it up front with what it shows now. `next_due` tells the host when to service again; `Studio::service` lowers its `wait` to it. Inputs come through `set_live(&LiveInputs)` (or `set_timer`, `set_elapsed`, `set_scene`, `set_language`); a change marks the affected sources for the next tick.
+- **Clocks.** The composition root sets the local clock (`rbs-app` `text_clock::LocalTextClock`, `chrono::Local`). A local time in a DST gap resolves to the first valid minute after it; one that occurs twice resolves to the first. Without a clock set, `TextClock` reads UTC.
+
+Studio (`rbs-record`):
+
+```rust
+pub enum TimerAction { Start, Pause, Reset }   // Start on a finished countdown starts it over
+pub enum TimerRefused { NotFound, NotATimer }  // a timer is a countdown without a target, or a stopwatch
+pub struct TextTimer { source, kind: TextKind, running: bool, value: Duration } // value: time counted
+impl Studio {
+    pub fn text_timer(&mut self, source, action: TimerAction) -> Result<TextTimer, TimerRefused>;
+    pub fn text_timer_kind(&self, source) -> Option<TextKind>;
+    pub fn text_timers(&self) -> Vec<TextTimer>;            // timers that are not zero and stopped
+    pub fn set_text_timers(&mut self, timers: &[TextTimer]); // a running one runs on from now
+    pub fn set_text_outputs(&mut self, scene: &str, recording: Option<RunTime>, stream: Option<RunTime>);
+    pub fn set_text_language(&mut self, language: Language);
+}
+```
+
+The host (`rbs-app`) calls `set_text_outputs` before each service: the program scene's name (the scene a held switch is going to), and how long the main canvas's main recording (not while ending; paused time left out) and stream have run, on the studio's master clock. A studio restart hands the timers and elapsed times to the new studio with the running part folded in, so they run on; a collection switch saves the old collection's timers and restores the new one's. Timers are saved in `text-timers.toml` (user-data spec, "Text timers") on every `text.timer` and at exit.
+
+Tests: `text_live::tests` (UTC dates and weekdays, every pattern token and quoted text, timer units, targets, a clock, both countdowns, stopwatch and elapsed times, fields), `tests/text_worker.rs` (a clock on air is drawn each second and not off air; a stopwatch follows its run state and draws only on a change, once at attach; fields show the scene and the recording time), `rbs-record` `tests/text_source.rs` `timers_start_pause_reset_and_carry_across_a_restart`, `rbs-app` `text_timers::tests`, `studio_host::text_live::tests`, `text_clock::tests` and `tests/studio_api.rs` `a_control_api_client_adds_and_edits_a_text_source` (`text.timer`).
 
 ### Text worker (ADR-0129 decisions 6 and 7)
 

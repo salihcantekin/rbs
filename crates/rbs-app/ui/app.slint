@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { ScrollArea, Sections, Experience, SettingsFind, TextField, ListRow, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
+import { ScrollArea, Sections, Experience, SettingsFind, TextField, ListRow, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, Overlays, OverlayCover, PickerRow, PopoverLayer, PopoverCard } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader, SettingsScroll, SettingsHit } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -15,12 +15,12 @@ import { ObsImportWindow, ObsSceneChoice, ObsReportRow } from "obs_import.slint"
 import { AttributesWindow } from "attributes.slint";
 import { CommandMenu, ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
-import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
+import { Studio, AiActionRow, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { SourceSettingsWindow, ModeData, SourceSettingsData, SyncMeasureWindow, ObsImportWindow, ObsSceneChoice, ObsReportRow, AttributesWindow }
 export { ProjectorWindow } from "projector.slint";
 export { OverlayProbe, FocusRevealProbe, SettingRowProbe, NumberFieldProbe, ExperienceProbe, EffectsProbe, SegmentProbe } from "overlay_probe.slint";
-export { Sections, Experience, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
+export { Sections, Experience, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, AiActionRow, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -678,12 +678,163 @@ component RailPlace inherits HorizontalLayout {
     }
 }
 
-// The transition to run (ADR-0061). Cut is the only type until fades. Collection
-// glide lives in Settings › General and per-source override in Properties (ADR-0100).
+// The transition to run (ADR-0128): Cut, Fade or Move. Swipe and Slide join the list
+// when they are drawn. Move's duration and easing are the collection glide (ADR-0100),
+// also in Settings › General; a source's own glide is in Properties.
 component TransitionChoice inherits Select {
     label: @tr("Transition type");
-    options: [@tr("Cut")];
-    index: 0;
+    options: [@tr("Cut"), @tr("Fade"), @tr("Move")];
+    index: Studio.transition-kind;
+    selected(i) => { Studio.set-transition-kind(i); }
+}
+
+// The duration of the transition type on the rail; a cut has none.
+component TransitionDuration inherits NumberField {
+    label: @tr("Duration");
+    unit: @tr("ms");
+    value: Studio.transition-kind == 1 ? Studio.fade-duration : Studio.transition-kind == 2 ? Studio.glide-duration : 0;
+    step: 50;
+    enabled: Studio.transition-kind != 0;
+    edited(v) => { Studio.set-transition-duration(max(0, min(5000, round(v)))); }
+}
+
+// The transition type and duration in words, under the narrow rail's buttons.
+component TransitionCaption inherits Text {
+    property <int> ms: Studio.transition-kind == 1 ? Studio.fade-duration : Studio.glide-duration;
+    text: Studio.transition-kind == 0 ? @tr("Cut")
+        : Studio.transition-kind == 1 ? @tr("Fade") + "\n" + @tr("{} ms", root.ms)
+        : @tr("Move") + "\n" + @tr("{} ms", root.ms);
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+    accessible-role: none;
+}
+
+// Opens the transition options under itself (ADR-0128). On the narrow rail (`full`)
+// they include the type and the duration, which the rail has no room for.
+component TransitionOptionsButton inherits IconButton {
+    in property <bool> full;
+    icon: IconName.sliders;
+    name: root.full ? @tr("Transition type, duration and options") : @tr("Transition options");
+    enabled: root.full || Studio.transition-kind != 0;
+    clicked => {
+        Overlays.transition-full = root.full;
+        Overlays.transition-x = self.absolute-position.x;
+        Overlays.transition-y = self.absolute-position.y;
+        Overlays.transition-w = self.width;
+        Overlays.transition-h = self.height;
+        Overlays.transition-open = true;
+    }
+}
+
+// A labelled row of the transition options.
+component TransitionOptionRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: Tokens.space-2;
+    Text {
+        text: root.label;
+        width: Tokens.size-transition-type;
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        accessible-role: none;
+    }
+    @children
+}
+
+// The transition options popover (ADR-0128): a layer of the main window over its
+// button, under the hint and tooltip layer so a dropdown or the colour picker in it
+// opens above it. A click outside or Escape closes it; every change applies at once.
+component TransitionOptions inherits PopoverLayer {
+    dismissed => { Overlays.transition-open = false; }
+    card := PopoverCard {
+        width: max(Tokens.size-menu-md, body.preferred-width);
+        height: body.preferred-height;
+        x: clamp(Overlays.transition-x + Overlays.transition-w / 2 - self.width / 2, Tokens.space-1, max(Tokens.space-1, root.width - self.width - Tokens.space-1));
+        y: Overlays.transition-y + Overlays.transition-h + Tokens.space-1 + self.height > root.height
+            ? max(Tokens.space-1, Overlays.transition-y - self.height - Tokens.space-1)
+            : Overlays.transition-y + Overlays.transition-h + Tokens.space-1;
+        accessible-role: groupbox;
+        accessible-label: @tr("Transition options");
+        init => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; keys.focus(); }
+        changed x => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed y => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed height => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        keys := FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.transition-open = false; return accept; }
+                reject
+            }
+        }
+        body := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-2;
+            HorizontalLayout {
+                spacing: Tokens.space-1;
+                Text {
+                    text: Overlays.transition-full ? @tr("Transition")
+                        : Studio.transition-kind == 1 ? @tr("Fade options") : @tr("Move options");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                InfoHint {
+                    label: @tr("About transitions");
+                    text: Studio.transition-kind == 0 ? @tr("The scene coming on air replaces the one on air at once.")
+                        : Studio.transition-kind == 1 ? @tr("The scene coming on air fades in over the one on air.")
+                        : @tr("Sources in both scenes slide to their new place, new ones fade in.");
+                    detail: @tr("Sound follows the picture. A global scene stays still on top.");
+                }
+                Rectangle { }
+            }
+            if Overlays.transition-full: TransitionOptionRow {
+                label: @tr("Type");
+                TransitionChoice { horizontal-stretch: 1; }
+            }
+            if Overlays.transition-full: TransitionOptionRow {
+                label: @tr("Duration");
+                TransitionDuration { horizontal-stretch: 1; }
+            }
+            if Studio.transition-kind == 1: TransitionOptionRow {
+                label: @tr("Easing");
+                SegmentedControl {
+                    horizontal-stretch: 1;
+                    label: @tr("Easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: Studio.fade-easing;
+                    selected(i) => { Studio.set-fade-options(i, Studio.fade-via, ""); }
+                }
+            }
+            if Studio.transition-kind == 1: TransitionOptionRow {
+                label: @tr("Through a colour");
+                Toggle {
+                    label: @tr("Through a colour");
+                    checked: Studio.fade-via;
+                    toggled(on) => { Studio.set-fade-options(Studio.fade-easing, on, ""); }
+                }
+                if Studio.fade-via: ColorPicker {
+                    label: @tr("Colour to fade through");
+                    value: Studio.fade-via-color;
+                    picked(c) => { Studio.set-fade-options(Studio.fade-easing, true, c); }
+                }
+                Rectangle { }
+            }
+            if Studio.transition-kind == 2: TransitionOptionRow {
+                label: @tr("Easing");
+                SegmentedControl {
+                    horizontal-stretch: 1;
+                    label: @tr("Easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: Studio.glide-easing;
+                    selected(i) => { Studio.set-glide(Studio.glide-duration, i); }
+                }
+            }
+        }
+    }
 }
 
 component TransitionGo inherits VerticalLayout {
@@ -707,7 +858,7 @@ component TransitionGo inherits VerticalLayout {
         HorizontalLayout {
             alignment: center;
             go := Button {
-                icon: IconName.chevron-right;
+                icon: IconName.transition;
                 kind: "primary";
                 enabled: root.can;
                 width: Tokens.size-control-lg;
@@ -718,16 +869,13 @@ component TransitionGo inherits VerticalLayout {
                 clicked => { Studio.transition(); }
             }
         }
-        // The name (and shortcut) of the icon button, shown while it is pointed at.
-        Text {
-            text: Shell.transition-keys == "" ? @tr("Transition") : @tr("Transition") + "\n" + Shell.transition-keys;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-            accessible-role: none;
-            opacity: go.pointed ? 1 : 0;
+        // The type, duration and options behind the sliders button, then the type
+        // and duration in words (ADR-0128).
+        HorizontalLayout {
+            alignment: center;
+            TransitionOptionsButton { full: true; }
         }
+        TransitionCaption { }
     }
     // The shortcut as small, quiet text under the button (the owner, 2026-11-07); the
     // button's accessible name carries it too.
@@ -789,6 +937,11 @@ component TransitionRail inherits Rectangle {
         spacing: Tokens.space-2;
         Rectangle { }
         if !root.icons: TransitionChoice { }
+        if !root.icons: HorizontalLayout {
+            spacing: Tokens.space-1;
+            TransitionDuration { horizontal-stretch: 1; }
+            TransitionOptionsButton { }
+        }
         TransitionGo { can: root.can; icons: root.icons; }
         Rectangle { }
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
@@ -807,6 +960,10 @@ component TransitionRail inherits Rectangle {
         VerticalLayout {
             alignment: center;
             TransitionChoice { min-width: Tokens.size-transition-type-min; }
+        }
+        VerticalLayout {
+            alignment: center;
+            TransitionOptionsButton { full: true; }
         }
         VerticalLayout {
             alignment: center;
@@ -835,6 +992,14 @@ component TransitionRail inherits Rectangle {
         VerticalLayout {
             alignment: center;
             TransitionChoice { width: Tokens.size-transition-type; }
+        }
+        VerticalLayout {
+            alignment: center;
+            TransitionDuration { width: Tokens.size-transition-duration; }
+        }
+        VerticalLayout {
+            alignment: center;
+            TransitionOptionsButton { }
         }
         VerticalLayout {
             alignment: center;
@@ -2281,6 +2446,8 @@ export component MainWindow inherits Window {
             y: frame.height;
         }
     }
+    // The transition options (ADR-0128), under the hint and tooltip layer.
+    if Overlays.transition-open: TransitionOptions { width: parent.width; height: parent.height; }
     // The info hint and tooltip layer, drawn last (ADR-0094).
     OverlayHost { width: parent.width; height: parent.height; }
 }
@@ -2518,7 +2685,8 @@ export component SettingsWindow inherits Window {
     background: Theme.surface-base;
     default-font-size: Tokens.type-body-size;
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
-    // 5 Appearance (second), 6 Shortcuts (third), 7 Global sources, 8 Virtual camera.
+    // 5 Appearance (second), 6 Shortcuts (third), 7 Global sources, 8 Virtual camera,
+    // 9 Audio, 10 AI tools.
     in-out property <int> section: 1;
     // The section list shows icons only (the collapse button at its top).
     in-out property <bool> nav-collapsed;
@@ -2537,7 +2705,7 @@ export component SettingsWindow inherits Window {
         return s == 0 ? IconName.monitor : s == 1 ? IconName.dot : s == 2 ? IconName.broadcast
             : s == 3 ? IconName.link : s == 4 ? IconName.sliders : s == 5 ? IconName.palette
             : s == 6 ? IconName.keyboard : s == 7 ? IconName.globe : s == 8 ? IconName.camera
-            : IconName.headphones;
+            : s == 10 ? IconName.wand : IconName.headphones;
     }
     // Settings search (docs/specs/settings-search.md, step 2): show the row or card
     // with `key` in the section shown. `card` is its card id (the key itself for a
@@ -2919,6 +3087,13 @@ export component SettingsWindow inherits Window {
                         current: root.section == 3;
                         activated => { root.section = 3; }
                     }
+                    if Studio.ai-ready && Experience.advanced: SettingsNavItem {
+                        text: @tr("AI tools");
+                        icon: IconName.wand;
+                        compact: root.nav-collapsed;
+                        current: root.section == 10;
+                        activated => { root.section = 10; }
+                    }
                 }
                 // The search results, over the section list while the field has text.
                 if root.search != "" && !root.nav-collapsed: Rectangle {
@@ -2963,8 +3138,8 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
-                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 9 ? "settings.audio." : "";
-                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 9 ? @tr("Audio") : @tr("General");
+                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 9 ? "settings.audio." : root.section == 10 ? "settings.ai-tools." : "";
+                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 9 ? @tr("Audio") : root.section == 10 ? @tr("AI tools") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")
                             : root.section == 2 ? @tr("Where Go live sends the program and how it is encoded. Changes are saved at once.")
@@ -2974,6 +3149,7 @@ export component SettingsWindow inherits Window {
                             : root.section == 7 ? @tr("Sources heard and shown in every scene, such as your microphone.")
                             : root.section == 8 ? @tr("Meeting apps can pick RBS as a camera.")
                             : root.section == 9 ? @tr("Listening on this computer: the monitor's device and volume.")
+                            : root.section == 10 ? @tr("Let AI tools on this computer use RBS, within limits you set.")
                             : @tr("How RBS behaves on this computer.");
                     }
                     if root.section == 0: VideoSettings { }
@@ -2986,6 +3162,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 7: GlobalSourcesSettings { }
                     if root.section == 8: VirtualCameraSettings { }
                     if root.section == 9: AudioSettings { }
+                    if root.section == 10: AiToolsSettings { }
                 }
             }
         }

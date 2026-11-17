@@ -466,6 +466,8 @@ pub struct SourceTypes {
     media: Registry<dyn rbs_media_decode::MediaDecoderFactory>,
     /// Text renderers, in registration order (ADR-0129 decision 2).
     text: Vec<Arc<dyn rbs_text::TextRenderer>>,
+    /// Local wall time for live texts, from the composition root (ADR-0129 decision 11).
+    text_clock: Option<Arc<dyn crate::text_worker::TextClock>>,
 }
 
 impl Default for SourceTypes {
@@ -701,6 +703,7 @@ impl SourceTypes {
             audio: Registry::new(),
             media: Registry::new(),
             text: Vec::new(),
+            text_clock: None,
         }
     }
 
@@ -717,6 +720,17 @@ impl SourceTypes {
         block: &rbs_text::TextBlock,
     ) -> Option<Arc<dyn rbs_text::TextRenderer>> {
         crate::text::pick_renderer(&self.text, block)
+    }
+
+    /// Sets the local wall clock live texts read (the composition root's, with the
+    /// time zone). Without one, clocks read UTC.
+    pub fn set_text_clock(&mut self, clock: Arc<dyn crate::text_worker::TextClock>) {
+        self.text_clock = Some(clock);
+    }
+
+    /// The local wall clock set with [`Self::set_text_clock`].
+    pub fn text_clock(&self) -> Option<Arc<dyn crate::text_worker::TextClock>> {
+        self.text_clock.clone()
     }
 
     /// The registered text renderers, for the text worker.
