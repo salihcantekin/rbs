@@ -2260,3 +2260,37 @@ fn legacy_documents_map_to_move_or_cut() {
         assert_eq!(TransitionKind::parse(kind.as_str()), Some(kind));
     }
 }
+
+#[test]
+fn a_text_resize_changes_settings_and_layout_as_one_undo_step() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Titles", SceneScope::Shared).unwrap();
+    let mut before = Settings::new();
+    before.insert("width".into(), SettingValue::Int(200));
+    let (text, _) = s
+        .col
+        .add_source("Title", ty("text"), before.clone())
+        .unwrap();
+    let (item, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(text), full(200.0, 50.0), None)
+        .unwrap();
+    let mut after = Settings::new();
+    after.insert("width".into(), SettingValue::Int(400));
+    let undo = s
+        .col
+        .resize_text(item, after.clone(), full(400.0, 100.0))
+        .unwrap();
+    assert_eq!(s.col.source(text).unwrap().settings, after);
+    assert_eq!(s.col.item(item).unwrap().1.layout, full(400.0, 100.0));
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col.source(text).unwrap().settings, before);
+    assert_eq!(s.col.item(item).unwrap().1.layout, full(200.0, 50.0));
+    // An item must place a source.
+    let (other, _) = s.col.add_scene("Other", SceneScope::Shared).unwrap();
+    let (nested, _) = s
+        .col
+        .add_item(other, ItemContent::Scene(scene), full(10.0, 10.0), None)
+        .unwrap();
+    assert!(s.col.resize_text(nested, after, full(1.0, 1.0)).is_err());
+}
