@@ -120,6 +120,10 @@ pub struct AppSettings {
     /// absent: a screen recording does not include RBS. Linux ignores it.
     #[serde(default = "yes")]
     pub exclude_own_window: bool,
+    /// Record and Go live ask first while no microphone of the program scene is heard
+    /// (UI spec, "Silent output warning"). On when the key is absent.
+    #[serde(default = "yes")]
+    pub warn_silent: bool,
     /// Which section levels are drawn (ADR-0113 decision 2). Absent in files from
     /// older builds: [`AppSettings::settle`] fills it at the first start of this build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,6 +208,7 @@ impl Default for AppSettings {
             background_notice_shown: false,
             swap_after_transition: false,
             exclude_own_window: true,
+            warn_silent: true,
             experience: None,
             first_run_done: None,
             pause_release_s: None,
@@ -575,6 +580,14 @@ mod tests {
         // A file without the swap key (older builds): off (ADR-0098).
         std::fs::write(file(&d), "format_version = 1\non_close = \"quit\"\n").unwrap();
         assert!(!load(&d).0.swap_after_transition);
+        // Nor the silent output warning: it stays on.
+        assert!(load(&d).0.warn_silent);
+        let quiet = AppSettings {
+            warn_silent: false,
+            ..AppSettings::default()
+        };
+        save(&d, &quiet).unwrap();
+        assert!(!load(&d).0.warn_silent);
         // Invalid: the default and the reason.
         std::fs::write(file(&d), "format_version = 1\non_close = \"sometimes\"\n").unwrap();
         let (got, note) = load(&d);

@@ -174,6 +174,12 @@ impl Picture {
         &self.data
     }
 
+    /// The pixels, by value: a native surface moves on with its lease (to the
+    /// importer, which takes it exactly once).
+    pub fn into_data(self) -> PictureData {
+        self.data
+    }
+
     /// System-memory payload bytes, counted against [`MAX_FRAME_BYTES`]. A native
     /// surface counts against the surface budget instead and returns 0.
     pub fn system_bytes(&self) -> usize {
@@ -299,12 +305,53 @@ pub trait MediaDecoder: Send {
     }
 }
 
+/// Where native pictures will be imported, so an adapter that must place its surfaces
+/// on one GPU (a shared D3D11 texture on Windows) can choose it. Built with
+/// [`DecodeTarget::none`] or [`DecodeTarget::adapter`], so fields can be added.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DecodeTarget {
+    /// The LUID of the render adapter (the `adapter_luid` of a `NativeSurface`), or
+    /// `None` when it is not known: the adapter then gives system pictures, or native
+    /// ones only of a kind any device opens (an `IoSurface`).
+    pub adapter_luid: Option<u64>,
+}
+
+impl DecodeTarget {
+    /// No known import device (a probe, or a run the sound node started).
+    pub const fn none() -> Self {
+        Self { adapter_luid: None }
+    }
+
+    /// Native pictures will be imported on the adapter with this LUID.
+    pub const fn adapter(luid: u64) -> Self {
+        Self {
+            adapter_luid: Some(luid),
+        }
+    }
+}
+
 /// Factory registered by a composition root. `open` is only called with a path
 /// [`accept_local_media_path`] already accepted.
 pub trait MediaDecoderFactory: AdapterFactory {
-    /// Opens `path`. The returned decoder is dropped by the caller when the probe or
-    /// the worker ends. A probe must not keep it.
+    /// Opens `path` with no known import device: the same as
+    /// [`MediaDecoderFactory::open_for`] with [`DecodeTarget::none`]. The returned
+    /// decoder is dropped by the caller when the probe or the worker ends. A probe must
+    /// not keep it.
     fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError>;
+
+    /// Opens `path` for pictures imported on `target`. The default ignores the target
+    /// and calls [`MediaDecoderFactory::open`]. An adapter whose native pictures must
+    /// live on the import device overrides it; without a device it gives system
+    /// pictures.
+    fn open_for(
+        &self,
+        path: &Path,
+        target: &DecodeTarget,
+    ) -> Result<Box<dyn MediaDecoder>, DecodeError> {
+        let _ = target;
+        self.open(path)
+    }
 }
 
 #[cfg(test)]

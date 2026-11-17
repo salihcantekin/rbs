@@ -84,6 +84,7 @@ const GENERAL_STUDIO: &[Place] = &[at("general", "settings.general.studio")];
 const GENERAL_GLIDE: &[Place] = &[at("general", "settings.general.glide")];
 const GENERAL_IMPORT: &[Place] = &[at("general", "settings.general.import")];
 const AUDIO_MONITOR: &[Place] = &[at("audio", "settings.audio.monitor")];
+const AUDIO_SILENCE: &[Place] = &[at("audio", "settings.audio.silence")];
 const AUDIO_LOUDNESS: &[Place] = &[at("audio", "settings.audio.loudness")];
 const APPEARANCE_IN_USE: &[Place] = &[at("appearance", "settings.appearance.theme-in-use")];
 const APPEARANCE_THEMES: &[Place] = &[at("appearance", "settings.appearance.themes")];
@@ -247,6 +248,19 @@ pub const SETTINGS: &[Setting] = &[
         "Latency",
         "monitor delay buffer",
         AUDIO_MONITOR,
+        Simple,
+    ),
+    c(
+        "settings.audio.silence",
+        "Silence check",
+        "microphone mic silent no sound muted warning",
+        AUDIO_SILENCE,
+    ),
+    row(
+        "audio.warn-silent",
+        "Warn without a microphone",
+        "microphone mic silent no sound muted ask record go live stream",
+        AUDIO_SILENCE,
         Simple,
     ),
     c(
@@ -484,6 +498,13 @@ pub const SETTINGS: &[Setting] = &[
         "replay.arm",
         "Keep the past",
         "replay buffer arm on",
+        RECORDING_REPLAY,
+        Simple,
+    ),
+    row(
+        "replay.save",
+        "Save replay clip",
+        "replay buffer save clip file write export",
         RECORDING_REPLAY,
         Simple,
     ),

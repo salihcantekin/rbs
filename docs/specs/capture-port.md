@@ -285,7 +285,7 @@ The port follows semver like the plugin SDK (ADR-0003).
 
 `rbs_capture::handoff` holds two platform-independent building blocks that hardware adapters share, so the rules above are implemented and tested once:
 
-`rbs_capture::handoff` is an adapter-support module: it is versioned with the port crate but outside the port contract above, and may change in a minor version (third-party adapters that use it pin `rbs-capture` to a minor version). Its structs are still `#[non_exhaustive]` with constructors.
+`rbs_capture::handoff` is an adapter-support module: it is versioned with the port crate but outside the port contract above, and may change in a minor version (third-party adapters that use it pin `rbs-capture` to a minor version). Its structs are still `#[non_exhaustive]` with constructors. Users outside the capture adapters: the native-picture slots of the media-decode adapters `rbs-media-avf` and `rbs-media-mf` (`Ring` with `claim` and `Lease::adopt`, and `Graveyard`; media-decode-port.md, Adapters).
 
 ```rust
 pub struct Ring;                 // fixed slots, each naming one surface by a u64 value
@@ -566,4 +566,4 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 
 - Per-application capture (all windows of a process, as ScreenCaptureKit offers): a new `TargetKind` in a minor version.
 - How the registry's device watcher tells consumers that the target list changed (event type lives in the registry spec).
-- Whether `rbs_capture::handoff` should move to `rbs-core` (and under a semver guarantee) once another port (camera-less video inputs, NDI) needs it.
+- Whether `rbs_capture::handoff` should move to `rbs-core` (and under a semver guarantee) once another port (camera-less video inputs, NDI) needs it. The media-decode adapters already use it.

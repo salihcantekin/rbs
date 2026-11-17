@@ -486,6 +486,23 @@ pub struct SceneInfo {
     /// The scene keeps its own levels (protocol 1.48, ADR-0091); absent when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_audio: bool,
+    /// The transition into this scene (protocol 1.86, ADR-0135); absent: the
+    /// collection's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_in: Option<SceneTransition>,
+}
+
+/// A scene's transition override (protocol 1.86, ADR-0135 decision 8): an absent part
+/// is the collection's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneTransition {
+    /// The kind; absent: the collection's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TransitionKind>,
+    /// Milliseconds in `0..=5000`; absent: the kind's duration in the collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
 }
 
 /// How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.

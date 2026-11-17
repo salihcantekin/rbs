@@ -1597,3 +1597,74 @@ fn the_collection_transition_is_set_and_undone_and_a_one_off_cut_is_reported() {
     }
     drop(host);
 }
+
+#[test]
+fn a_scene_transition_is_set_listed_cleared_undone_and_refused_when_wrong() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+
+    // Absent until set (protocol 1.86, ADR-0135 decision 10).
+    assert!(scenes(&mut c)["scenes"][0].get("transition_in").is_none());
+    ok(&c.call(
+        "scene.set_transition",
+        json!({"scene": one, "transition": {"kind": "swipe", "duration_ms": 400}}),
+    ));
+    assert_eq!(
+        scenes(&mut c)["scenes"][0]["transition_in"],
+        json!({"kind": "swipe", "duration_ms": 400})
+    );
+    // Only a duration keeps the collection's kind.
+    ok(&c.call(
+        "scene.set_transition",
+        json!({"scene": one, "transition": {"duration_ms": 900}}),
+    ));
+    assert_eq!(
+        scenes(&mut c)["scenes"][0]["transition_in"],
+        json!({"duration_ms": 900})
+    );
+    // One undo step brings the previous override back.
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(
+        scenes(&mut c)["scenes"][0]["transition_in"],
+        json!({"kind": "swipe", "duration_ms": 400})
+    );
+    // null and an empty override both clear it.
+    ok(&c.call(
+        "scene.set_transition",
+        json!({"scene": one, "transition": null}),
+    ));
+    assert!(scenes(&mut c)["scenes"][0].get("transition_in").is_none());
+    ok(&c.call(
+        "scene.set_transition",
+        json!({"scene": one, "transition": {"kind": "fade"}}),
+    ));
+    ok(&c.call(
+        "scene.set_transition",
+        json!({"scene": one, "transition": {}}),
+    ));
+    assert!(scenes(&mut c)["scenes"][0].get("transition_in").is_none());
+
+    assert_eq!(
+        kind(&c.call(
+            "scene.set_transition",
+            json!({"scene": 99, "transition": {"kind": "cut"}})
+        )),
+        "not_found"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "scene.set_transition",
+            json!({"scene": one, "transition": {"duration_ms": 5001}})
+        )),
+        "invalid_params"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "scene.set_transition",
+            json!({"scene": one, "transition": {"kind": "spin"}})
+        )),
+        "invalid_params"
+    );
+}
