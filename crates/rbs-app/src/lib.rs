@@ -26,6 +26,7 @@
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
 
+pub mod ai_tools;
 pub mod background;
 pub mod browser_tree;
 pub mod calibration_file;
@@ -51,7 +52,10 @@ pub mod replay_settings;
 pub mod stream_destinations;
 pub mod stream_key;
 pub mod stream_profile;
+pub mod stream_services;
 pub mod studio_host;
+pub mod text_clock;
+pub mod text_timers;
 pub mod thumbnail;
 pub mod user_session;
 pub mod vcam_settings;

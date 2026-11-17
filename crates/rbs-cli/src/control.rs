@@ -12,6 +12,10 @@ use serde_json::{Value, json};
 /// control thread between frames, normally within milliseconds; this bounds a hung one.
 const WAIT: Duration = Duration::from_secs(10);
 
+/// Why a same-user session got no scopes from `session.hello`: only AI tools are
+/// started in RBS, so IPC takes only their token (ADR-0134 decision 2).
+pub const ONLY_AI_TOOLS: &str = "RBS serves only AI tools right now, which accept only their own token here. Turn on remote control in RBS's Settings, or stop AI tools there, then try again";
+
 /// The outcome of trying to reach a running RBS.
 pub enum Reach {
     /// It serves the control API to this user and allows what was asked for.
@@ -73,6 +77,9 @@ impl RunningApp {
                     .and_then(|p| p.strip_prefix("1."))
                     .and_then(|m| m.parse().ok());
                 Reach::Connected(app)
+            }
+            Ok(r) if r.get("scopes").is_none_or(Value::is_null) => {
+                Reach::Unusable(ONLY_AI_TOOLS.to_owned())
             }
             Ok(_) => Reach::Unusable(format!("it does not allow {what} here")),
             Err(e) => Reach::Unusable(e.message),

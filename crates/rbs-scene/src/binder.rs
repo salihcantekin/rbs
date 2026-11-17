@@ -94,19 +94,43 @@ pub enum Role {
 /// 6). It names sources, not a scene: a held program transitioned to itself has the
 /// same scene id going out and coming in (ADR-0063 decision 3).
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutgoingScene {
     /// The sources the outgoing picture draws: kept linked to the program compositor
     /// and running for the transition's length.
     pub drawn: BTreeSet<SourceId>,
     /// The sources the outgoing scene is heard with: kept in the program mixer.
     pub heard: BTreeSet<SourceId>,
+    /// False when the transition draws without an incoming compositor (Move: the
+    /// program compositor draws the incoming layers itself, decision 5).
+    pub incoming: bool,
+}
+
+impl Default for OutgoingScene {
+    /// Nothing kept, with an incoming compositor.
+    fn default() -> Self {
+        Self::new(BTreeSet::new(), BTreeSet::new())
+    }
 }
 
 impl OutgoingScene {
-    /// The outgoing picture's `drawn` sources and its `heard` ones.
+    /// The outgoing picture's `drawn` sources and its `heard` ones, with an incoming
+    /// compositor.
     pub fn new(drawn: BTreeSet<SourceId>, heard: BTreeSet<SourceId>) -> Self {
-        Self { drawn, heard }
+        Self {
+            drawn,
+            heard,
+            incoming: true,
+        }
+    }
+
+    /// The outgoing picture's sources without an incoming compositor (Move).
+    pub fn without_incoming(drawn: BTreeSet<SourceId>, heard: BTreeSet<SourceId>) -> Self {
+        Self {
+            drawn,
+            heard,
+            incoming: false,
+        }
     }
 }
 
@@ -646,7 +670,8 @@ impl SceneBinder {
 
     /// Like [`Self::sync_held`], also binding a running transition per canvas in
     /// `outgoing` (ADR-0128 decision 6): a compositor for `(canvas, Role::Incoming)`
-    /// drawing the canvas's program scene, linked into the program compositor; the
+    /// drawing the canvas's program scene, linked into the program compositor (unless
+    /// [`OutgoingScene::incoming`] is false, for Move); the
     /// outgoing scene's `drawn` sources linked to the program compositor and running;
     /// its `heard` sources in the program mixer. A canvas not in the collection, or
     /// without a program scene, is skipped. An empty map binds nothing of it and
@@ -1147,7 +1172,10 @@ impl State {
             if let Some(h) = hold.get(&canvas.id) {
                 needed.insert((canvas.id, Role::Hold), h.scene);
             }
-            if let (Some(scene), true) = (canvas.program, outgoing.contains_key(&canvas.id)) {
+            if let (Some(scene), true) = (
+                canvas.program,
+                outgoing.get(&canvas.id).is_some_and(|o| o.incoming),
+            ) {
                 needed.insert((canvas.id, Role::Incoming), scene);
             }
         }

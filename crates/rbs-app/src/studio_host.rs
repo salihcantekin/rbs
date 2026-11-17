@@ -77,6 +77,8 @@ mod on_air;
 pub mod protection;
 pub mod replay;
 pub mod sync_measure;
+mod text_live;
+mod text_resize;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -135,8 +137,7 @@ pub enum SourceKind {
     /// A web page from the browser helper (ADR-0109). Not in [`SourceKind::ALL`].
     Browser,
     /// A text, drawn by the registered text renderer (ADR-0129). Not in
-    /// [`SourceKind::ALL`]: it has no target; the control API adds it (phase (c)), the
-    /// Add source menu later (phase (f)).
+    /// [`SourceKind::ALL`]: it has no target; Add source adds "Text" at once.
     Text,
 }
 
@@ -390,6 +391,9 @@ pub struct SourceRow {
     /// A colour source draws its fill. False leaves the inside empty. True for every
     /// other kind and when the setting is absent.
     pub filled: bool,
+    /// A text source's stored settings (ADR-0129 decision 13: the Text tab shows
+    /// them); `None` for every other kind.
+    pub text: Option<Settings>,
     /// Capture region in full-picture pixels (ADR-0103); absent when `cap_has` is false.
     pub cap_has: bool,
     /// Left edge of the capture region.
@@ -506,6 +510,7 @@ impl PartialEq for SourceRow {
             && self.glide == other.glide
             && self.fill == other.fill
             && self.filled == other.filled
+            && self.text == other.text
             && self.cap_has == other.cap_has
             && self.cap_l == other.cap_l
             && self.cap_t == other.cap_t
@@ -852,10 +857,22 @@ pub enum Command {
         url: String,
     },
     /// Add a text source showing `text` (ADR-0129), its box fitted to the text, one
-    /// undo step. No menu sends it yet (phase (f)).
+    /// undo step (Add source › Text).
     AddText {
         /// What it shows.
         text: String,
+    },
+    /// Fit a text source's box to its text (ADR-0129 decision 13, Fit box to text):
+    /// the item keeps its centre and its scale. One undo step.
+    FitTextBox(SourceId),
+    /// Read the installed font families for the font picker ([`Update::TextFonts`]).
+    ListTextFonts,
+    /// Start, pause or reset a text source's timer (`text.timer`).
+    TextTimer {
+        /// The countdown or stopwatch.
+        source: SourceId,
+        /// What to do.
+        action: rbs_record::TimerAction,
     },
     /// The fill colour of a colour source (`#rrggbb` or `#rrggbbaa`), one undo step.
     SetSourceFill {
@@ -990,6 +1007,9 @@ pub enum Command {
         /// `0` linear, `1` ease-in-out.
         easing: u8,
     },
+    /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
+    /// step.
+    SetTransition(rbs_scene::CollectionTransition),
     /// Per-source slide override (ADR-0100). `custom` false clears it. One undo step.
     SetSourceGlide {
         /// The source.
@@ -1320,6 +1340,15 @@ pub enum Command {
     /// Save the vertical stream's key (`None` removes it) under the vertical account
     /// ([`stream_key::vertical_account`]); answered with [`Update::VerticalStreamKey`].
     SaveVerticalStreamKey(Option<Secret>),
+    /// Save the key of stream destination `id` (`None` removes it) under its account
+    /// ([`crate::stream_destinations::key_account`], ADR-0127 decision 1); answered
+    /// with [`Update::DestinationKey`].
+    SaveDestinationKey(u32, Option<Secret>),
+    /// Start destination `.0` again while its canvas streams, from the live chip's
+    /// list (ADR-0127 decision 17): `stream.destination.start`.
+    StartDestination(u32),
+    /// Stop destination `.0` while the others go on: `stream.destination.stop`.
+    StopDestination(u32),
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
@@ -2085,6 +2114,8 @@ struct CanvasOutputs {
     /// The destinations of the running stream, the anchor's among them; empty while
     /// nothing streams.
     destinations: Vec<LiveDestination>,
+    /// The rows last sent with [`Update::LiveDestinations`], without their time on air.
+    destinations_shown: Vec<api::LiveDestination>,
     /// Recording protection ended the recording (ADR-0090 decision 3): the reason for
     /// its summary once the tail is in.
     protection_stop: Option<String>,
@@ -2286,6 +2317,7 @@ impl Default for CanvasOutputs {
             auto_recording: false,
             streaming: None,
             destinations: Vec::new(),
+            destinations_shown: Vec::new(),
             protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
@@ -2773,6 +2805,9 @@ pub enum Update {
     },
     /// What the Source settings window of a source shows ([`Command::OpenSourceSettings`]).
     SourceSettings(SourceSettingsView),
+    /// The installed font families, sorted ([`Command::ListTextFonts`]); empty when
+    /// no text renderer is installed.
+    TextFonts(Vec<String>),
     /// What the Measure sync offset window shows; `None` closes it (ADR-0126).
     SyncMeasure(Option<SyncMeasureView>),
     /// What the attribute clipboard holds (ADR-0133); `None` while it is empty.
@@ -2821,6 +2856,9 @@ pub enum Update {
     StreamKey(Result<bool, String>),
     /// [`Command::SaveVerticalStreamKey`] done, as [`Update::StreamKey`].
     VerticalStreamKey(Result<bool, String>),
+    /// [`Command::SaveDestinationKey`] done for destination `.0`, as
+    /// [`Update::StreamKey`].
+    DestinationKey(u32, Result<bool, String>),
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
@@ -2833,6 +2871,9 @@ pub enum Update {
     /// A control API client turned a stream destination on or off
     /// (`stream.destination.set_enabled`, protocol 1.77); the UI saves the section.
     StreamDestinations(Destinations),
+    /// The destinations of a canvas's running stream changed state, counters or error
+    /// (ADR-0127 decision 17): the live chip's list; empty once the stream ends.
+    LiveDestinations(OutputCanvas, Vec<api::LiveDestination>),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
     TokensChanged,
@@ -3550,6 +3591,18 @@ struct Host {
     /// A program switch held back until its entering texts are uploaded, at most
     /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
     held_switch: Option<SceneId>,
+    /// How long the main recording and stream have run, for live texts (ADR-0129
+    /// decision 11).
+    text_elapsed: text_live::TextElapsed,
+    /// `text-timers.toml` as last read or written.
+    text_timer_file: Vec<crate::text_timers::Entry>,
+    /// The collection's saved timers were handed to the studio.
+    text_timers_restored: bool,
+    /// A text item's drag waiting to rest before it gets its new box (ADR-0129
+    /// decision 12).
+    crisp_pending: Option<text_resize::CrispPending>,
+    /// The font picker waits for the families (read off the control thread).
+    fonts_wanted: bool,
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
@@ -3741,6 +3794,7 @@ fn run(
         host.end_stream(c, None, notify);
         host.stop_recording(c, None, notify);
     }
+    host.save_text_timers();
     let _ = host.studio.shutdown();
 }
 
@@ -3855,6 +3909,7 @@ fn round(
             calibration.unwrap_or(Duration::from_secs(3600))
         };
     }
+    host.feed_text_live();
     let serviced = host.studio.service();
     let mut wait = serviced.wait.unwrap_or(MAX_WAIT).min(MAX_WAIT);
     if served_api {
@@ -3875,6 +3930,15 @@ fn round(
         host.apply(notify);
     }
     host.waiting = waiting;
+    if let Some(left) = host.drive_crisp(notify) {
+        wait = wait.min(left);
+    }
+    if host.fonts_wanted {
+        host.list_text_fonts(notify);
+        if host.fonts_wanted {
+            wait = wait.min(text_resize::FONTS_POLL);
+        }
+    }
     if host.held_switch.is_some() {
         host.drive_held_switch(notify);
         if host.held_switch.is_some() {
@@ -4045,6 +4109,7 @@ fn start(
                 SourceKind::Color,
                 SourceKind::Media,
                 SourceKind::Browser,
+                SourceKind::Text,
             ]
             .into_iter()
             .filter(|k| installed.contains(&k.type_id())),
@@ -4120,6 +4185,21 @@ fn start(
         history_shown: (None, None),
         waiting: false,
         held_switch: None,
+        text_elapsed: text_live::TextElapsed::default(),
+        text_timer_file: config
+            .config_dir
+            .as_deref()
+            .map(|d| {
+                let (file, note) = crate::text_timers::load(d);
+                if let Some(why) = note {
+                    eprintln!("rbs: text timers were not read: {why}");
+                }
+                file
+            })
+            .unwrap_or_default(),
+        text_timers_restored: false,
+        crisp_pending: None,
+        fonts_wanted: false,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
         iso: None,
         stats_due: None,
@@ -4542,6 +4622,18 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
+            Command::FitTextBox(id) => {
+                let done = self.fit_text_box(id);
+                self.answer(done, notify);
+            }
+            Command::ListTextFonts => self.list_text_fonts(notify),
+            Command::TextTimer { source, action } => match self.studio.text_timer(source, action) {
+                Ok(_) => self.save_text_timers(),
+                Err(rbs_record::TimerRefused::NotATimer) => notify(Update::Error(
+                    "Only a countdown for a length or a stopwatch has a timer.".into(),
+                )),
+                Err(_) => {}
+            },
             Command::AddText { text } => match self.add_text(None, &text, false) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
@@ -4661,6 +4753,10 @@ impl Host {
                 easing,
             } => {
                 let done = self.set_glide(duration_ms, easing);
+                self.answer(done, notify);
+            }
+            Command::SetTransition(t) => {
+                let done = self.put_transition(t);
                 self.answer(done, notify);
             }
             Command::SetSourceGlide {
@@ -5085,6 +5181,31 @@ impl Host {
                 let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
                 notify(Update::VerticalStreamKey(result));
             }
+            Command::StartDestination(id) => {
+                self.run_ui_api(
+                    rbs_api::Command::StreamDestinationStart(rbs_api::request::DestinationRef {
+                        id,
+                    }),
+                    notify,
+                );
+            }
+            Command::StopDestination(id) => {
+                self.run_ui_api(
+                    rbs_api::Command::StreamDestinationStop(rbs_api::request::DestinationRef {
+                        id,
+                    }),
+                    notify,
+                );
+            }
+            Command::SaveDestinationKey(id, key) => {
+                let account = crate::stream_destinations::key_account(&self.key_account, id);
+                let result = match &key {
+                    Some(k) => self.keys.write(&account, k).map(|()| true),
+                    None => self.keys.remove(&account).map(|()| false),
+                }
+                .map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()));
+                notify(Update::DestinationKey(id, result));
+            }
             Command::SetKeyAccount(account) => self.key_account = account,
             Command::SaveImportedKey(account, key) => {
                 if let Err(e) = self.keys.write(&account, &key) {
@@ -5430,6 +5551,7 @@ impl Host {
         };
         // Whatever the old collection's last change was, it is saved before this one.
         self.publish_save();
+        self.save_text_timers();
         let old = (
             std::mem::replace(&mut self.collection, next),
             std::mem::replace(&mut self.canvas, canvas),
@@ -5441,6 +5563,9 @@ impl Host {
         let result = match self.restart() {
             Ok(()) => {
                 self.autosave = autosave;
+                // The new collection's timers, not the old one's.
+                self.studio.set_text_timers(&[]);
+                self.text_timers_restored = false;
                 self.saved = Some(loaded);
                 self.history.clear();
                 // The attribute clipboard belongs to the old collection (ADR-0133).
@@ -6111,6 +6236,9 @@ impl Host {
             self.forget_vertical_outputs();
         }
         let run = self.run_collection();
+        // Timers and elapsed times run on across the restart (ADR-0129 decision 11).
+        let timers = self.studio.text_timers();
+        let old_now = self.clock.now();
         let engine = (self.engine)();
         let clock = engine.clock();
         let studio = Studio::start_with_tree(
@@ -6124,6 +6252,8 @@ impl Host {
         .map_err(|e| e.to_string())?;
         self.studio = studio;
         self.clock = clock;
+        self.studio.set_text_timers(&timers);
+        self.text_elapsed = self.text_elapsed.moved(old_now, self.clock.now());
         self.waiting = self.studio.waiting();
         // Pictures belonged to the old studio; the next publish adds them again with
         // the canvas's size now (ADR-0125 decision 3).
@@ -8366,6 +8496,11 @@ impl Host {
                 .map(|r| api::LiveDestination { on_air_ms: 0, ..r })
                 .collect()
         };
+        let rows_shown = without_time(&rows);
+        if rows_shown != self.outs[slot(c)].destinations_shown {
+            self.outs[slot(c)].destinations_shown = rows_shown;
+            notify(Update::LiveDestinations(c, rows.clone()));
+        }
         let rows_changed = match &self.outs[slot(c)].stream_state {
             api::StreamState::Live { destinations, .. } => {
                 without_time(destinations) != without_time(&rows)
@@ -8442,6 +8577,10 @@ impl Host {
         let failure = failure.or(failed);
         self.outs[slot(c)].streaming = None;
         self.outs[slot(c)].destinations.clear();
+        if !self.outs[slot(c)].destinations_shown.is_empty() {
+            self.outs[slot(c)].destinations_shown.clear();
+            notify(Update::LiveDestinations(c, Vec::new()));
+        }
         self.outs[slot(c)].hold = HoldPlan::default();
         self.mark_stream(c, false);
         // A recording started with the stream outlives a stream that failed: it is the
@@ -10750,6 +10889,12 @@ impl Host {
         if let Some(s) = p.slide {
             t.slide = scene_swipe(s);
         }
+        self.put_transition(t)
+    }
+
+    /// Sets the collection's transition as one undo step; `Ok(false)` when it is
+    /// already set.
+    fn put_transition(&mut self, t: rbs_scene::CollectionTransition) -> Result<bool, Refusal> {
         if self.collection.transition() == t {
             return Ok(false);
         }
@@ -11704,6 +11849,7 @@ impl Host {
         let name = self.name_of(id);
         self.history
             .record(EditKind::Place, &name, gesture, vec![undo]);
+        self.crisp_after_box(item, gesture, &name);
         Ok(true)
     }
 
@@ -12560,6 +12706,8 @@ impl Host {
                         s.settings.get(keys::FILLED),
                         Some(SettingValue::Bool(false))
                     ),
+                    text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
+                        .then(|| s.settings.clone()),
                     cap_has,
                     cap_l,
                     cap_t,
@@ -13519,6 +13667,7 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::TextTimer(p) => host.text_timer(p),
             C::TextFonts => match host.studio.text_fonts(&host.adapters.sources) {
                 rbs_record::TextFonts::Ready(families) => {
                     Ok(Response::TextFonts(rbs_api::types::TextFonts {
@@ -15540,12 +15689,30 @@ fn measure_text(
     block: rbs_text::TextBlock,
     wait: Duration,
 ) -> Option<[u32; 2]> {
+    measure_text_wrapped(renderer, block, None, wait)
+}
+
+/// [`measure_text`] wrapped at `max_width` (Fit box to text), with the same wait.
+fn measure_text_at(
+    renderer: Arc<dyn rbs_text::TextRenderer>,
+    block: rbs_text::TextBlock,
+    max_width: Option<u32>,
+) -> Option<[u32; 2]> {
+    measure_text_wrapped(renderer, block, max_width, TEXT_MEASURE_WAIT)
+}
+
+fn measure_text_wrapped(
+    renderer: Arc<dyn rbs_text::TextRenderer>,
+    block: rbs_text::TextBlock,
+    max_width: Option<u32>,
+    wait: Duration,
+) -> Option<[u32; 2]> {
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("rbs-text-measure".into())
         .spawn(move || {
             let measured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                renderer.measure(&block, None)
+                renderer.measure(&block, max_width)
             }));
             let _ = tx.send(measured.ok().and_then(Result::ok));
         })

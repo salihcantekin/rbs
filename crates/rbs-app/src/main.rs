@@ -1200,6 +1200,11 @@ impl App {
                     self.studio.add_browser_page("https://example.com/");
                     return;
                 }
+                Some(SourceKind::Text) => {
+                    // "Text" in the system font, centred; Properties opens on Text.
+                    self.studio.add_text("Text");
+                    return;
+                }
                 _ => {}
             }
         }
@@ -1207,6 +1212,15 @@ impl App {
         self.close_picker_ui();
         self.picker_host = self.run_origin.clone();
         self.studio.open_add_picker(what);
+        self.sync_picker();
+    }
+
+    /// Opens the searchable picker on the font families for a text source (ADR-0129
+    /// decision 13); the list fills when the studio has read it.
+    fn ask_text_font(&mut self, id: i32) {
+        self.close_picker_ui();
+        self.picker_host = self.run_origin.clone();
+        self.studio.open_font_picker(id);
         self.sync_picker();
     }
 
@@ -1229,6 +1243,7 @@ impl App {
         };
         use studio_ui::add_picker::Status;
         let status = match view.status {
+            Status::Looking if view.fonts => "Reading the fonts...",
             Status::Looking => "Looking for devices...",
             Status::Nothing => "Nothing of this type was found.",
             Status::NoMatch => "Nothing matches.",
@@ -1635,6 +1650,11 @@ impl Ctx {
             .unwrap_or_default()
             .into();
         app.main.global::<Shell>().set_live_duration(text.clone());
+        // The live chip's list: each destination's time on air ticks too.
+        if !app.studio.live_destination_count().is_empty() {
+            let dests = studio_ui::destinations::live_model(&app.studio.live_destination_rows());
+            app.main.global::<Shell>().set_live_dests(dests);
+        }
         app.main
             .global::<Shell>()
             .set_rec_paused_for(paused.clone());
@@ -1705,6 +1725,9 @@ impl Ctx {
                 && !app.session.workspace().is_open(&p)
             {
                 app.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            }
+            if let Some(source) = applied.focus_text {
+                app.show_source_properties(source, 4);
             }
             if let Some(source) = applied.focus_shape {
                 let _ = app.session.set_section_closed("properties.shape", false);
@@ -2727,9 +2750,13 @@ impl Ctx {
             .map(|d| clock_text(d.as_secs()))
             .unwrap_or_default()
             .into();
+        let dest_count: slint::SharedString = app.studio.live_destination_count().into();
+        let dests = studio_ui::destinations::live_model(&app.studio.live_destination_rows());
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
+            g.set_live_dest_count(dest_count.clone());
+            g.set_live_dests(dests.clone());
             g.set_rec_paused_for(paused_for.clone());
             g.set_st_held_for(held_for.clone());
             g.set_live_outputs(live.outputs_text().into());
@@ -3118,6 +3145,16 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     on!(on_toast_undo, |app| {
         if app.toast.is_some() {
             app.undo();
+        }
+    });
+    on!(on_live_dest_stop, |app, id: i32| {
+        if let Ok(id) = u32::try_from(id) {
+            app.studio.live_dest_stop(id);
+        }
+    });
+    on!(on_live_dest_retry, |app, id: i32| {
+        if let Ok(id) = u32::try_from(id) {
+            app.studio.live_dest_retry(id);
         }
     });
     on!(on_toast_dismiss, |app| {
@@ -3588,6 +3625,30 @@ fn pick_media() {
     }
 }
 
+/// Asks for the file a text source reads (ADR-0129 decision 13).
+fn pick_text_file(id: i32) {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_text("Choose a text file").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app
+                .studio
+                .set_text_value(id, "file", &path.to_string_lossy()),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// Properties › Source › Change… of a media file: the same dialog as Add source, and
 /// the new path is one undo step.
 fn change_media_file(id: i32) {
@@ -3671,6 +3732,18 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
+    /// A text file a text source reads (ADR-0129); `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_text(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter("Text", &["txt", "md", "csv", "log"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
     /// Where to export; `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn save(title: &str, file_name: &str) -> Result<Option<PathBuf>, String> {
@@ -3707,6 +3780,11 @@ mod file_dialog {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_text(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn save(_title: &str, _file_name: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
@@ -3722,7 +3800,14 @@ fn close_preview() {
 
 /// Sections that start closed (ADR-0078): the workspace lists them when the user
 /// opens them, under the id with this suffix, so an old file keeps them closed.
-const CLOSED_BY_DEFAULT: [&str; 3] = ["sources.global", "mixer.hidden", "mixer.loudness"];
+const CLOSED_BY_DEFAULT: [&str; 6] = [
+    "sources.global",
+    "mixer.hidden",
+    "mixer.loudness",
+    "properties.text-outline",
+    "properties.text-shadow",
+    "properties.text-background",
+];
 const OPENED_SUFFIX: &str = "-open";
 
 /// The key a section is stored under, and whether listing it means "closed".
@@ -3734,9 +3819,18 @@ fn section_key(id: &str) -> (String, bool) {
     }
 }
 
+/// The AI tools section of Settings (ADR-0134) is shown: its server side (the API
+/// thread with optional transports, the token slot flags, `rbs-mcp`'s IPC session) is
+/// in.
+pub(crate) const AI_TOOLS_READY: bool = true;
+
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 29] = [
+const SETTINGS_SECTIONS: [&str; 33] = [
+    "settings.ai-tools.access",
+    "settings.ai-tools.actions",
+    "settings.ai-tools.connect",
+    "settings.ai-tools.status",
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.audio.loudness",
@@ -3758,7 +3852,7 @@ const SETTINGS_SECTIONS: [&str; 29] = [
     "settings.sources.add-global",
     "settings.sources.global-sources",
     "settings.stream.connection",
-    "settings.stream.destination",
+    "settings.stream.destinations",
     "settings.stream.encoding",
     "settings.stream.while-live",
     "settings.vcam.camera",
@@ -4445,6 +4539,24 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_glide, |app, duration_ms: i32, easing: i32| {
         app.studio.set_glide(duration_ms, easing);
     });
+    on!(on_set_transition_kind, |app, index: i32| {
+        app.studio.set_transition_kind(index);
+    });
+    on!(on_set_transition_duration, |app, duration_ms: i32| {
+        app.studio.set_transition_duration(duration_ms);
+    });
+    on!(
+        on_set_fade_options,
+        |app, easing: i32, via: bool, color: slint::SharedString| {
+            app.studio.set_fade_options(easing, via, &color);
+        }
+    );
+    on!(
+        on_set_swipe_options,
+        |app, slide: bool, easing: i32, direction: i32| {
+            app.studio.set_swipe_options(slide, easing, direction);
+        }
+    );
     on!(
         on_set_source_glide,
         |app, id: i32, custom: bool, duration_ms: i32, easing: i32| {
@@ -4543,6 +4655,49 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     );
     on!(on_set_source_filled, |app, id: i32, on: bool| {
         app.studio.set_source_filled(id, on);
+    });
+    on!(on_set_text_kind, |app, id: i32, kind: i32| {
+        app.studio.set_text_kind(id, kind);
+    });
+    on!(
+        on_set_text_value,
+        |app, id: i32, key: slint::SharedString, value: slint::SharedString| {
+            app.studio.set_text_value(id, key.as_str(), value.as_str());
+        }
+    );
+    on!(
+        on_set_text_number,
+        |app, id: i32, key: slint::SharedString, value: f32| {
+            app.studio.set_text_number(id, key.as_str(), value);
+        }
+    );
+    on!(on_set_text_flag, |app,
+                           id: i32,
+                           key: slint::SharedString,
+                           value: bool| {
+        app.studio.set_text_flag(id, key.as_str(), value);
+    });
+    on!(on_set_text_effect, |app, id: i32, effect: i32, on: bool| {
+        app.studio.set_text_effect(id, effect, on);
+    });
+    on!(
+        on_set_text_countdown,
+        |app, id: i32, until: bool, target: slint::SharedString, seconds: i32| {
+            app.studio
+                .set_text_countdown(id, until, target.as_str(), seconds);
+        }
+    );
+    on!(on_choose_text_font, |app, id: i32| {
+        app.ask_text_font(id);
+    });
+    on!(on_choose_text_file, |_app, id: i32| {
+        pick_text_file(id);
+    });
+    on!(on_fit_text_box, |app, id: i32| {
+        app.studio.fit_text_box(id);
+    });
+    on!(on_text_timer, |app, id: i32, action: i32| {
+        app.studio.text_timer(id, action);
     });
     on!(on_set_source_region, |app, id: i32, region: i32| {
         app.studio.set_source_region(id, region);
@@ -4713,6 +4868,45 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_latency, |app, i: i32| {
         app.studio.set_latency(i);
     });
+    on!(on_dest_set_enabled, |app, id: i32, on: bool| {
+        app.studio.dest_set_enabled(id, on);
+    });
+    on!(on_dest_edit, |app, id: i32| {
+        app.studio.dest_edit(id);
+    });
+    on!(on_dest_add, |app| {
+        app.studio.dest_add();
+    });
+    on!(on_dest_set_service, |app, i: i32| {
+        app.studio.dest_set_service(i);
+    });
+    on!(on_dest_set_name, |app, text: slint::SharedString| {
+        app.studio.dest_set_name(&text);
+    });
+    on!(on_dest_set_server, |app, text: slint::SharedString| {
+        app.studio.dest_set_server(&text);
+    });
+    on!(on_dest_save_key, |app, text: slint::SharedString| {
+        app.studio.dest_save_key(Some(&text));
+    });
+    on!(on_dest_remove_key, |app| {
+        app.studio.dest_save_key(None);
+    });
+    on!(on_dest_set_own, |app, own: bool| {
+        app.studio.dest_set_own(own);
+    });
+    on!(on_dest_set_reconnect, |app, on: bool| {
+        app.studio.dest_set_reconnect(on);
+    });
+    on!(on_dest_save, |app| {
+        app.studio.dest_save();
+    });
+    on!(on_dest_cancel, |app| {
+        app.studio.dest_cancel();
+    });
+    on!(on_dest_remove, |app| {
+        app.studio.dest_remove();
+    });
     on!(on_set_canvas_sides, |app, width: f32, height: f32| {
         app.studio.set_canvas_sides(width, height, close_preview);
     });
@@ -4802,6 +4996,28 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_rc_new_key, |app| {
         app.studio.new_key();
+    });
+    // Settings, AI tools (ADR-0134).
+    on!(on_ai_start, |app| {
+        app.studio.ai_start();
+    });
+    on!(on_ai_stop, |app| {
+        app.studio.ai_stop();
+    });
+    on!(on_set_ai_autostart, |app, on: bool| {
+        app.studio.set_ai_autostart(on);
+    });
+    on!(on_set_ai_access, |app, i: i32| {
+        app.studio.set_ai_access(i);
+    });
+    on!(on_set_ai_irreversible, |app, on: bool| {
+        app.studio.set_ai_irreversible(on);
+    });
+    on!(on_ai_new_token, |app| {
+        app.studio.ai_new_token();
+    });
+    on!(on_pick_ai_tool, |app, i: i32| {
+        app.studio.pick_ai_tool(i);
     });
     // Before every redraw of the main window: popups open, move and close with a redraw,
     // and so does a change of the window's scale; the preview layer follows them
@@ -5265,6 +5481,17 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             app.studio.host = Some(host);
             // Remote control, if the user turned it on (off by default: nothing starts).
             app.studio.sync_remote();
+            // Recent actions and connected AI tools redraw the page when they change. Runs on
+            // the API thread; `entry::invoke` guards the body on the UI thread.
+            app.studio.ai_forward.notify_with(|| {
+                let _ = entry::invoke(|| {
+                    if let Some(ctx) = CTX.with(|c| c.borrow().clone()) {
+                        ctx.update(|_| {});
+                    }
+                });
+            });
+            // AI tools, if "Start when RBS opens" is on (ADR-0134 decision 2).
+            app.studio.ai_autostart();
             vcam_page::studio_started(app);
             replay_page::started(app);
         }),
@@ -5429,6 +5656,14 @@ fn settings_search(app: &mut App, text: &str) {
     use rbs_ui::settings_index::{Found, window_search};
     let Some(w) = &app.settings else { return };
     app.settings_found = window_search(text, &settings_section_title);
+    // The AI tools section shows once its server side exists (ADR-0134 decision 9).
+    if !AI_TOOLS_READY {
+        app.settings_found.retain(|f| match f {
+            Found::Section(name) => *name != "ai_tools",
+            Found::Setting(hit) => hit.place.section != "ai_tools",
+            Found::Command(..) => true,
+        });
+    }
     let section = |name: &str| menu_bar::settings_section(name).unwrap_or_default();
     let hits: Vec<SettingsHit> = app
         .settings_found

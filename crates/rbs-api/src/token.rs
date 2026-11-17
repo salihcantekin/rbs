@@ -132,9 +132,43 @@ fn is_permitted(irreversible: &bool) -> bool {
     *irreversible
 }
 
+/// Who made a token and what may use it (ADR-0134 decision 3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenKind {
+    /// Made by the user for an app (Settings, Remote control; `tokens.create`).
+    #[default]
+    User,
+    /// The AI tools token RBS makes on Start (Settings, AI tools). Accepted only on a
+    /// same-user IPC session, and only while AI tools are started.
+    AiTools,
+}
+
+impl TokenKind {
+    /// The wire name.
+    pub fn name(self) -> &'static str {
+        match self {
+            TokenKind::User => "user",
+            TokenKind::AiTools => "ai_tools",
+        }
+    }
+}
+
+/// The reserved name of the AI tools token; the name check refuses it for user tokens.
+pub const AI_TOOLS_NAME: &str = "AI tools";
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_user(kind: &TokenKind) -> bool {
+    *kind == TokenKind::User
+}
+
 /// One stored token: a user-given name, its scopes, its permission and its hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenEntry {
+    /// Who made it (ADR-0134). Absent in saved files for user tokens, so
+    /// `remote-control.toml` never carries it.
+    #[serde(default, skip_serializing_if = "is_user")]
+    pub kind: TokenKind,
     /// "Allow actions that cannot be undone" (ADR-0052 decision 4): without it,
     /// `live` and `destructive` methods are refused with `not_permitted`. An entry
     /// saved before the field has it, so existing tokens keep their behaviour.
@@ -169,6 +203,13 @@ impl TokenStore {
     pub fn revoke(&mut self, name: &str) -> bool {
         let before = self.entries.len();
         self.entries.retain(|e| e.name != name);
+        self.entries.len() != before
+    }
+
+    /// Removes the entry with this hash; true when one was removed.
+    pub fn revoke_hash(&mut self, hash: &TokenHash) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|e| e.hash != *hash);
         self.entries.len() != before
     }
 
@@ -216,5 +257,34 @@ fn nibble(c: u8) -> Option<u8> {
         b'0'..=b'9' => Some(c - b'0'),
         b'a'..=b'f' => Some(c - b'a' + 10),
         _ => None,
+    }
+}
+
+/// What the API thread checks tokens against (ADR-0134 decision 2): the store (the
+/// union of `remote-control.toml` and `ai-tools.toml`) and two flags, replaced
+/// together so Start and Stop are ordered against `session.authenticate` exactly as a
+/// revocation is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenSlot {
+    /// The tokens.
+    pub store: TokenStore,
+    /// AI tools are started: the `ai_tools` token is accepted on same-user IPC.
+    /// While false its sessions are closed and its `session.authenticate` is refused
+    /// with `not_permitted`, `data.reason: "ai_tools_off"`.
+    pub ai_tools_started: bool,
+    /// A same-user IPC `session.hello` gets every scope (remote control is on, or a
+    /// headless server). While false (only AI tools are started) it waits for
+    /// `session.authenticate`, which then grants the token's scopes.
+    pub tokenless_ipc: bool,
+}
+
+impl From<TokenStore> for TokenSlot {
+    /// The store with AI tools stopped and tokenless IPC, as before ADR-0134.
+    fn from(store: TokenStore) -> Self {
+        Self {
+            store,
+            ai_tools_started: false,
+            tokenless_ipc: true,
+        }
     }
 }

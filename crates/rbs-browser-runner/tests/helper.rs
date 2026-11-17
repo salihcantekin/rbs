@@ -139,7 +139,8 @@ fn the_supervisor_publishes_frames_and_reports_an_exit() {
     use std::sync::atomic::{AtomicU32, Ordering};
     let published = Arc::new(AtomicU32::new(0));
     let seen = Arc::clone(&published);
-    let mut sup = Supervisor::start(spawn(&["--hold"]), 60, move |px, w, h| {
+    let mut sup = Supervisor::start(spawn(&["--hold"]), 60, move |px, w, h, painted| {
+        assert!(painted > 0, "the helper stamps its frames");
         assert_eq!(px.len(), (w * h * 4) as usize);
         seen.fetch_add(1, Ordering::Relaxed);
     })
@@ -153,7 +154,7 @@ fn the_supervisor_publishes_frames_and_reports_an_exit() {
     let child = sup.stop().unwrap();
     assert!(child.unavailable);
 
-    let sup = Supervisor::start(spawn(&["--exit-immediately"]), 60, |_, _, _| {}).unwrap();
+    let sup = Supervisor::start(spawn(&["--exit-immediately"]), 60, |_, _, _, _| {}).unwrap();
     let start = Instant::now();
     while !sup.exited() {
         assert!(start.elapsed() < GUARD, "hang guard");
@@ -200,9 +201,13 @@ fn page_sound_crosses_the_sound_section_in_order() {
     .unwrap();
     assert!(child.has_sound());
     let heard = Arc::new(Mutex::new(Heard::default()));
-    let mut sup =
-        Supervisor::start_with_sound(child, 60, |_, _, _| {}, Box::new(Sink(Arc::clone(&heard))))
-            .unwrap();
+    let mut sup = Supervisor::start_with_sound(
+        child,
+        60,
+        |_, _, _, _| {},
+        Box::new(Sink(Arc::clone(&heard))),
+    )
+    .unwrap();
     let start = Instant::now();
     // A tenth of a second of sound, whatever the scheduling.
     while heard.lock().unwrap().frames < 4_800 {

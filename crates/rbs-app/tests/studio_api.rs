@@ -676,6 +676,8 @@ fn a_control_api_client_drives_the_studio() {
 fn a_control_api_client_adds_and_edits_a_text_source() {
     let Some(gpu) = gpu() else { return };
     let (tx, updates) = mpsc::channel();
+    let clock = TestClock::new();
+    let engine_clock = clock.clone();
     let mut config = HostConfig::desktop();
     config.preview = None;
     let host = StudioHost::spawn(
@@ -687,9 +689,9 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || {
+        move || {
             Engine::with_clock(
-                Arc::new(TestClock::new()),
+                Arc::new(engine_clock.clone()),
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
@@ -781,6 +783,69 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
         !file["error"]["message"].as_str().unwrap().contains("/etc"),
         "{file}"
     );
+
+    // A box edit makes the text crisp (ADR-0129 decision 12): the box and the font
+    // size double with the item, in one undo step.
+    let before = c.call("source.get_settings", json!({"source": id}))["result"]["settings"].clone();
+    let (w, h) = (
+        before["width"].as_f64().unwrap(),
+        before["height"].as_f64().unwrap(),
+    );
+    let placed = c.call(
+        "item.set_box",
+        json!({"source": id, "position": [0.0, 0.0], "size": [w * 2.0, h * 2.0]}),
+    );
+    assert_eq!(placed["result"]["ok"], true, "{placed}");
+    let after = c.call("source.get_settings", json!({"source": id}))["result"]["settings"].clone();
+    assert_eq!(after["width"].as_f64(), Some(w * 2.0), "{after}");
+    assert_eq!(after["height"].as_f64(), Some(h * 2.0), "{after}");
+    assert_eq!(after["size"].as_f64(), Some(96.0), "{after}");
+    let undone = c.call("edit.undo", json!({}));
+    assert!(undone["result"].is_object(), "{undone}");
+    let back = c.call("source.get_settings", json!({"source": id}))["result"]["settings"].clone();
+    assert_eq!(back, before, "one undo step restores the box and the size");
+
+    // A drag stretches; the box changes once the drag rests.
+    let dragged = c.call(
+        "item.set_box",
+        json!({"source": id, "position": [0.0, 0.0], "size": [w * 3.0, h * 3.0], "gesture": 7}),
+    );
+    assert_eq!(dragged["result"]["ok"], true, "{dragged}");
+    let stretched =
+        c.call("source.get_settings", json!({"source": id}))["result"]["settings"].clone();
+    assert_eq!(stretched, before, "not while the drag goes on");
+    clock.advance(Duration::from_millis(300));
+    let guard = std::time::Instant::now();
+    loop {
+        let now =
+            c.call("source.get_settings", json!({"source": id}))["result"]["settings"].clone();
+        if now["width"].as_f64() == Some(w * 3.0) {
+            assert_eq!(now["size"].as_f64(), Some(144.0), "{now}");
+            break;
+        }
+        assert!(guard.elapsed() < LIMIT, "the rested drag never got its box");
+        std::thread::yield_now();
+    }
+    c.call("edit.undo", json!({}));
+    let back = c.call("source.get_settings", json!({"source": id}))["result"]["settings"].clone();
+    assert_eq!(back, before, "the drag and its box are one undo step");
+
+    // `text.timer` (protocol 1.84) runs a stopwatch, not a plain text.
+    let plain = c.call("text.timer", json!({"source": id, "action": "start"}));
+    assert_eq!(plain["error"]["data"]["kind"], "invalid_params", "{plain}");
+    let kind = c.call(
+        "source.set_settings",
+        json!({"source": id, "settings": {"kind": "stopwatch"}}),
+    );
+    assert!(kind["result"].is_object(), "{kind}");
+    let started = c.call("text.timer", json!({"source": id, "action": "start"}));
+    assert_eq!(started["result"]["kind"], "stopwatch", "{started}");
+    assert_eq!(started["result"]["running"], true, "{started}");
+    let reset = c.call("text.timer", json!({"source": id, "action": "reset"}));
+    assert_eq!(reset["result"]["running"], false, "{reset}");
+    assert_eq!(reset["result"]["value_ms"], 0, "{reset}");
+    let gone = c.call("text.timer", json!({"source": 999, "action": "pause"}));
+    assert_eq!(gone["error"]["data"]["kind"], "not_found", "{gone}");
 
     // The font list: `not_ready` until the worker has read it, then the families.
     let guard = std::time::Instant::now();

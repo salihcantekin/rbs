@@ -9,7 +9,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ai::unix_now;
 use rbs_api::types::{OutputKind, OutputTarget};
+use rbs_app::ai_tools::{Forward as AiForward, Tool};
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
@@ -20,7 +22,7 @@ use rbs_app::record_profile::{
     audio_fact, fit_output_size, output_choice_copy, output_size_options, recommended_video_kbps,
     vertical_recording_from_main,
 };
-use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
+use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer, SlotFlags};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{
     self, HoldPicture, HoldSound, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
@@ -39,6 +41,7 @@ use rbs_app::vertical_outputs::{self, VerticalFlags};
 use rbs_audio::LevelMeter;
 use rbs_core::fault::SourceFault;
 use rbs_record::Link;
+use rbs_remote_settings::ai_tools::{self as ai_settings, AiToolsSettings};
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::{
     Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Shape, SourceId,
@@ -66,10 +69,13 @@ const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
 pub(crate) mod add_picker;
+pub(crate) mod ai;
 pub(crate) mod attributes;
+pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
 pub(crate) mod monitor;
+pub(crate) mod text_props;
 
 pub mod rec_state {
     pub const OFF: i32 = 0;
@@ -90,6 +96,8 @@ pub mod st_state {
 pub mod output {
     pub const RECORDING: i32 = 0;
     pub const STREAM: i32 = 1;
+    /// The stream destination being edited, with its own settings (ADR-0127).
+    pub const DESTINATION: i32 = 2;
 }
 
 /// Field codes of `Studio.set-encoding` (the `EncoderFields` component in studio.slint).
@@ -239,6 +247,8 @@ pub struct StudioUi {
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
     add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
+    /// The font the font picker marks as current.
+    font_current: String,
     /// The Library's looks (set once) and sample pictures (made when the panel first
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
@@ -264,6 +274,11 @@ pub struct StudioUi {
     reveal_shape: bool,
     /// Taken by [`Self::apply`] when a plain frame was selected.
     focus_shape: Option<i32>,
+    /// Taken by [`Self::apply`] when a text source was just added: Properties opens
+    /// on its Text tab (ADR-0129 decision 13).
+    focus_text: Option<i32>,
+    /// The stored settings of each text source in the rows, by id: the Text tab's.
+    text_settings: std::collections::BTreeMap<i32, rbs_scene::model::Settings>,
     /// Moving and resizing on the picture panel (ADR-0048).
     edit: PreviewEdit,
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
@@ -335,6 +350,8 @@ pub struct StudioUi {
     pub studio_mode: bool,
     /// Collection glide defaults (ADR-0100).
     glide: rbs_scene::CollectionGlide,
+    /// The collection's transition (ADR-0128).
+    transition: rbs_scene::CollectionTransition,
     /// The preview scene's picture layer exists (studio mode).
     pub scene_preview_ready: bool,
     /// The preview scene's picture layer could not be made in this session.
@@ -415,6 +432,20 @@ pub struct StudioUi {
     network: Option<NetworkShown>,
     /// Why other computers cannot connect although network access is on.
     network_failure: Option<String>,
+    /// AI tools settings (Settings, AI tools; ADR-0134), as saved.
+    ai: AiToolsSettings,
+    /// AI tools are started.
+    ai_started: bool,
+    /// Why AI tools are not started although asked (Start failed, the studio stopped).
+    ai_failure: Option<String>,
+    /// Something to say once on the page (a renamed token, a replaced token file).
+    ai_note: String,
+    /// The AI tool the connection line is made for.
+    ai_tool: Tool,
+    /// The flags of the token slot, shared with `tokens.*` on the control thread.
+    slot_flags: Arc<SlotFlags>,
+    /// Recent actions and connected AI tools, fed from the server's audit.
+    pub ai_forward: Arc<AiForward>,
     /// A problem with a network access change (own files, new key, busy settings).
     network_note: String,
     /// The stream's settings (Settings, Stream), as saved.
@@ -485,6 +516,13 @@ pub struct StudioUi {
     destinations: rbs_app::stream_destinations::Destinations,
     /// Why the saved destinations are not used, if they are not.
     destinations_note: String,
+    /// The Destinations card's editor, while open (ADR-0127 decision 17).
+    dest_editor: Option<destinations::Editor>,
+    /// Bumped when Rust sets the editor's text fields.
+    dest_serial: u32,
+    /// The main canvas's running destinations, each with when it arrived (the live
+    /// chip's list, ADR-0127 decision 17).
+    live_dests: Vec<(rbs_api::types::LiveDestination, Instant)>,
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111).
     pub vertical_flags: VerticalFlags,
     /// What the Stream section shows for a vertical stream not saved yet.
@@ -596,6 +634,9 @@ impl StudioUi {
             adding: false,
             reveal_shape: false,
             focus_shape: None,
+            focus_text: None,
+            font_current: String::new(),
+            text_settings: std::collections::BTreeMap::new(),
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
@@ -636,6 +677,7 @@ impl StudioUi {
             preview_ready: false,
             studio_mode: false,
             glide: rbs_scene::CollectionGlide::default(),
+            transition: rbs_scene::CollectionTransition::default(),
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
@@ -698,6 +740,16 @@ impl StudioUi {
             tokens: Rc::new(VecModel::default()),
             network: None,
             network_failure: None,
+            ai: ai_settings::read(config).unwrap_or_else(|why| {
+                log(&format!("AI tools settings not used: {why}"));
+                AiToolsSettings::default()
+            }),
+            ai_started: false,
+            ai_failure: None,
+            ai_note: String::new(),
+            ai_tool: Tool::ClaudeDesktop,
+            slot_flags: Arc::default(),
+            ai_forward: AiForward::new(),
             network_note: String::new(),
             stream,
             stream_note: stream_why
@@ -718,6 +770,9 @@ impl StudioUi {
             vertical_stream: None,
             destinations: rbs_app::stream_destinations::Destinations::default(),
             destinations_note: String::new(),
+            dest_editor: None,
+            dest_serial: 0,
+            live_dests: Vec::new(),
             vertical_flags: VerticalFlags::default(),
             no_stream: StreamProfile::new(),
             st_live: None,
@@ -791,6 +846,19 @@ impl StudioUi {
         } else {
             1
         });
+        let t = self.transition;
+        g.set_transition_kind(transition_index(t.kind));
+        g.set_fade_duration(t.fade.duration_ms as i32);
+        g.set_fade_easing(i32::from(t.fade.easing != rbs_scene::GlideEasing::Linear));
+        g.set_fade_via(t.fade.via.is_some());
+        let [r, gr, b] = t.fade.via.unwrap_or([0, 0, 0]);
+        g.set_fade_via_color(slint::Color::from_rgb_u8(r, gr, b));
+        g.set_swipe_duration(t.swipe.duration_ms as i32);
+        g.set_swipe_easing(i32::from(t.swipe.easing != rbs_scene::GlideEasing::Linear));
+        g.set_swipe_direction(direction_index(t.swipe.direction));
+        g.set_slide_duration(t.slide.duration_ms as i32);
+        g.set_slide_easing(i32::from(t.slide.easing != rbs_scene::GlideEasing::Linear));
+        g.set_slide_direction(direction_index(t.slide.direction));
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -803,7 +871,14 @@ impl StudioUi {
                 .is_some_and(|s| s.id == self.selected && s.picture)
         });
         g.set_looks_ready(looks);
-        g.set_properties_source(self.remember_properties());
+        let shown = self.remember_properties();
+        g.set_properties_source(shown);
+        g.set_text_props(
+            self.text_settings
+                .get(&shown)
+                .map(|s| text_props::text_data(shown, s))
+                .unwrap_or_default(),
+        );
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
         g.set_switching(self.switching.is_some());
@@ -968,7 +1043,9 @@ impl StudioUi {
         g.set_canvas_restarting(self.canvas_restarting);
         g.set_canvas_note(self.canvas_note.as_str().into());
         self.push_remote(g);
+        self.push_ai(g);
         self.push_stream(g);
+        self.push_destinations(g);
         self.push_monitor(g);
         self.push_loudness(g);
         g.set_picture_panel(picture_panel.into());
@@ -1145,61 +1222,61 @@ impl StudioUi {
         (status, false)
     }
 
-    /// Starts or stops the control API server to match the settings: on while remote
-    /// control is on and the studio's control thread runs, nothing at all otherwise.
+    /// Starts or stops the control API server to match the settings: the API thread
+    /// while remote control is on or AI tools are started and the studio's control
+    /// thread runs, nothing at all otherwise; the WebSocket transport only while remote
+    /// control is on (ADR-0134 decision 2). A server whose WebSocket transport stopped
+    /// (`restart_remote`) gets only that transport again: its IPC sessions stay.
     pub fn sync_remote(&mut self) {
-        let want = self.remote.enabled && self.host.is_some();
-        if !want {
+        let host = self.host.is_some();
+        if self.ai_started && !host {
+            // AI tools stop with the studio; they start again with it while "Start
+            // when RBS opens" is on.
+            self.ai_stopped_by("AI tools stopped because the studio stopped.");
+        }
+        let want_ws = self.remote.enabled && host;
+        let want_api = want_ws || (self.ai_started && host);
+        if !want_api {
             self.stop_remote();
             self.remote_failure = None;
             return;
         }
-        if self.remote_server.is_some() {
-            return;
-        }
-        if self.host.is_none() {
-            return;
-        }
-        self.reload_tokens();
-        let Some(host) = &self.host else {
-            return;
-        };
-        // Local IPC too, so `rbs-cli token` changes reach this app at once.
-        let ipc = match rbs_api_ipc::Endpoint::for_current_user() {
-            Ok(e) => Some(e),
-            Err(why) => {
-                log(&format!("remote control: no local IPC endpoint: {why}"));
-                None
+        if self.remote_server.is_none() {
+            self.reload_tokens();
+            if !self.start_api() {
+                return;
             }
-        };
-        let options = RemoteOptions {
-            control_waker: Box::new(host.api_waker()),
-            audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
-            ipc,
-            levels: Some(host.level_feed()),
-        };
-        // The settings may change on the way (a renewed certificate): `host` is taken
-        // again below.
+        }
+        self.push_slot();
+        if !want_ws {
+            if let Some(server) = self.remote_server.as_mut()
+                && server.serves_ws()
+            {
+                server.stop_ws();
+                log("remote control off; AI tools keep running");
+            }
+            self.remote_failure = None;
+            return;
+        }
+        if self
+            .remote_server
+            .as_ref()
+            .is_some_and(RemoteServer::serves_ws)
+        {
+            return;
+        }
+        // The settings may change on the way (a renewed certificate).
         let network = self.prepare_network();
-        let started = match network {
-            Some(n) => {
-                RemoteServer::start_network(self.remote.port, n, self.remote.store(), options)
-            }
-            None => RemoteServer::start_on_port(self.remote.port, self.remote.store(), options),
-        };
-        let Some(host) = &self.host else {
+        let Some(server) = self.remote_server.as_mut() else {
             return;
+        };
+        let started = match network {
+            Some(n) => server.start_ws_network(self.remote.port, n),
+            None => server.start_ws_loopback(self.remote.port),
         };
         match started {
-            Ok((server, endpoint)) => {
-                host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
+            Ok(()) => {
                 log(&format!("remote control on at {}", self.remote.address()));
-                match (server.ipc_endpoint(), server.ipc_problem()) {
-                    (Some(e), _) => log(&format!("remote control: local IPC at {e}")),
-                    (None, Some(why)) => log(&format!("remote control: no local IPC: {why}")),
-                    (None, None) => {}
-                }
-                self.remote_server = Some(server);
                 self.remote_failure = None;
             }
             Err(e) => {
@@ -1209,8 +1286,74 @@ impl StudioUi {
                     why.replace_range(..1, &first.to_uppercase());
                 }
                 self.remote_failure = Some(why);
+                // Nothing else needs the API thread: nothing keeps running.
+                if !self.ai_started {
+                    self.stop_remote();
+                }
             }
         }
+    }
+
+    /// The token slot: both settings files' tokens with the AI tools flags, set on the
+    /// running server (ADR-0134 decision 2: the one composer of slot values).
+    fn push_slot(&self) {
+        self.slot_flags.set(self.ai_started, self.remote.enabled);
+        if let Some(server) = &self.remote_server {
+            server.set_slot(
+                self.slot_flags
+                    .slot(ai_settings::union_store(&self.remote, &self.ai)),
+            );
+        }
+    }
+
+    /// Starts the API thread and attaches it to the control thread, with local IPC
+    /// when it can be served (so `rbs-cli token` changes reach this app at once).
+    /// False (the reason in `remote_failure`) when it did not start.
+    fn start_api(&mut self) -> bool {
+        let Some(host) = &self.host else {
+            return false;
+        };
+        // The sink is fixed while the server runs: AI tools records go to the forward,
+        // which keeps them only while AI tools are started (ADR-0134 decision 7).
+        let forward = self.ai_forward.clone();
+        let flags = self.slot_flags.clone();
+        let options = RemoteOptions {
+            control_waker: Box::new(host.api_waker()),
+            audit: Box::new(move |a| {
+                forward.record(&a, unix_now(), flags.ai_tools_started());
+                log(&format!("remote control: {a:?}"));
+            }),
+            ipc: None,
+            levels: Some(host.level_feed()),
+        };
+        self.slot_flags.set(self.ai_started, self.remote.enabled);
+        let slot = self
+            .slot_flags
+            .slot(ai_settings::union_store(&self.remote, &self.ai));
+        let (mut server, endpoint) = match RemoteServer::start_api(slot, options) {
+            Ok(started) => started,
+            Err(e) => {
+                log(&format!("remote control did not start: {e}"));
+                self.remote_failure = Some(format!("Remote control did not start: {e}"));
+                return false;
+            }
+        };
+        match rbs_api_ipc::Endpoint::for_current_user() {
+            Ok(e) => {
+                let shown = e.to_string();
+                match server.start_ipc(e) {
+                    Ok(()) => log(&format!("remote control: local IPC at {shown}")),
+                    Err(why) => log(&format!("remote control: no local IPC: {why}")),
+                }
+            }
+            Err(why) => log(&format!("remote control: no local IPC endpoint: {why}")),
+        }
+        host.attach_api(
+            endpoint,
+            Some(server.api_tokens(self.config.clone(), self.slot_flags.clone())),
+        );
+        self.remote_server = Some(server);
+        true
     }
 
     /// The TLS identity and settings for network access when it is on, made or renewed
@@ -1293,10 +1436,12 @@ impl StudioUi {
         }
     }
 
-    /// Starts the server again with the settings as they are now (connected apps are
-    /// disconnected and reconnect).
+    /// Starts the WebSocket transport again with the settings as they are now (its
+    /// apps are disconnected and reconnect; IPC sessions stay, ADR-0134 decision 2).
     fn restart_remote(&mut self) {
-        self.stop_remote();
+        if let Some(server) = self.remote_server.as_mut() {
+            server.stop_ws();
+        }
         self.remote_failure = None;
         self.sync_remote();
     }
@@ -1589,6 +1734,11 @@ impl StudioUi {
     /// The Settings window closed: a token shown once is not shown again, and the
     /// revoke can no longer be undone there.
     pub fn settings_closed(&mut self) {
+        // Recent actions are kept after Stop until Settings closes (ADR-0134 decision 7).
+        if !self.ai_started {
+            self.ai_forward.clear();
+        }
+        self.ai_note.clear();
         self.commit_server();
         self.new_token = None;
         self.revoked = None;
@@ -1610,9 +1760,7 @@ impl StudioUi {
     }
 
     fn tokens_changed(&mut self) {
-        if let Some(server) = &self.remote_server {
-            server.set_tokens(self.remote.store());
-        }
+        self.push_slot();
         self.refresh_tokens();
     }
 
@@ -2281,6 +2429,85 @@ impl StudioUi {
         });
     }
 
+    /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move,
+    /// `3` Swipe, `4` Slide.
+    pub fn set_transition_kind(&mut self, index: i32) {
+        let mut t = self.transition;
+        t.kind = match index {
+            0 => rbs_scene::TransitionKind::Cut,
+            1 => rbs_scene::TransitionKind::Fade,
+            3 => rbs_scene::TransitionKind::Swipe,
+            4 => rbs_scene::TransitionKind::Slide,
+            _ => rbs_scene::TransitionKind::Move,
+        };
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
+    /// The duration of the rail's kind: Fade's, Swipe's and Slide's own, Move's is
+    /// the collection glide. Cut has none.
+    pub fn set_transition_duration(&mut self, duration_ms: i32) {
+        let ms = duration_ms.clamp(0, 5_000) as u32;
+        let mut t = self.transition;
+        match self.transition.kind {
+            rbs_scene::TransitionKind::Fade => {
+                t.fade.duration_ms = ms;
+                self.send(Command::SetTransition(t));
+            }
+            rbs_scene::TransitionKind::Swipe => {
+                t.swipe.duration_ms = ms;
+                self.send(Command::SetTransition(t));
+            }
+            rbs_scene::TransitionKind::Slide => {
+                t.slide.duration_ms = ms;
+                self.send(Command::SetTransition(t));
+            }
+            rbs_scene::TransitionKind::Cut => {}
+            _ => self.send(Command::SetGlide {
+                duration_ms: ms,
+                easing: u8::from(self.glide.easing != rbs_scene::GlideEasing::Linear),
+            }),
+        }
+    }
+
+    /// Fade's options: easing (`0` linear, `1` ease-in-out) and an opaque colour to
+    /// fade through (`"#rrggbb"`; empty keeps the colour, black when there is none).
+    pub fn set_fade_options(&mut self, easing: i32, via: bool, color: &str) {
+        let mut t = self.transition;
+        t.fade.easing = if easing == 0 {
+            rbs_scene::GlideEasing::Linear
+        } else {
+            rbs_scene::GlideEasing::EaseInOut
+        };
+        let keep = self.transition.fade.via.unwrap_or([0, 0, 0]);
+        t.fade.via = via.then(|| rgb_hex(color).unwrap_or(keep));
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
+    /// Swipe's options, or Slide's when `slide`: easing (`0` linear, `1`
+    /// ease-in-out) and direction (`0` left, `1` right, `2` up, `3` down).
+    pub fn set_swipe_options(&mut self, slide: bool, easing: i32, direction: i32) {
+        let mut t = self.transition;
+        let s = if slide { &mut t.slide } else { &mut t.swipe };
+        s.easing = if easing == 0 {
+            rbs_scene::GlideEasing::Linear
+        } else {
+            rbs_scene::GlideEasing::EaseInOut
+        };
+        s.direction = match direction {
+            1 => rbs_scene::SwipeDirection::Right,
+            2 => rbs_scene::SwipeDirection::Up,
+            3 => rbs_scene::SwipeDirection::Down,
+            _ => rbs_scene::SwipeDirection::Left,
+        };
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
     /// Per-source slide override (ADR-0100). `custom` false clears it.
     pub fn set_source_glide(&mut self, id: i32, custom: bool, duration_ms: i32, easing: i32) {
         self.send(Command::SetSourceGlide {
@@ -2362,6 +2589,9 @@ impl StudioUi {
                 }
             }
             Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
+            Some(add_picker::Pick::Font(id, family)) => {
+                self.set_text_value(id.get() as i32, rbs_sources::types::keys::FONT, &family);
+            }
             None => return false,
         }
         self.add_picker = None;
@@ -2378,7 +2608,12 @@ impl StudioUi {
             .kind()
             .map_or("existing source".to_owned(), |k| k.label().to_lowercase());
         Some(PickerView {
-            title: format!("Add {what}"),
+            title: if p.is_fonts() {
+                "Choose a font".to_owned()
+            } else {
+                format!("Add {what}")
+            },
+            fonts: p.is_fonts(),
             status: p.status(),
             rows: p.rows(),
             offers_audio: p.offers_audio(),
@@ -3213,7 +3448,12 @@ impl StudioUi {
 
     /// The encoder settings of an [`output`].
     fn encoding_of(&self, out: i32) -> Encoding {
-        if out == output::STREAM {
+        if out == output::DESTINATION
+            && let Some(e) = self.dest_encoding()
+        {
+            return e;
+        }
+        if out == output::STREAM || out == output::DESTINATION {
             self.stream_form().encoding.clone()
         } else {
             self.record_form().encoding()
@@ -3272,6 +3512,8 @@ impl StudioUi {
             1 if self.vertical.is_some() => OutputCanvas::Vertical,
             _ => OutputCanvas::Main,
         };
+        // The editor belongs to the canvas it was opened on.
+        self.dest_editor = None;
         self.folder_serial += 1;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -3320,7 +3562,7 @@ impl StudioUi {
     /// The encoder fields of an [`output`]'s form, for its settings and encoder.
     fn form(&self, out: i32) -> EncoderForm {
         let e = self.encoding_of(out);
-        if out == output::STREAM {
+        if out == output::STREAM || out == output::DESTINATION {
             EncoderForm::for_stream(&e, &self.options(&e))
         } else {
             EncoderForm::new(&e, &self.options(&e))
@@ -3341,7 +3583,7 @@ impl StudioUi {
     /// MPEG-TS do not carry HEVC or AV1. A recording lists HEVC and AV1 when an
     /// encoder on this computer does, and keeps a saved codec visible.
     fn video_codecs(&self, out: i32, e: &Encoding) -> Vec<VideoCodec> {
-        if out == output::STREAM {
+        if out == output::STREAM || out == output::DESTINATION {
             return vec![VideoCodec::H264];
         }
         let mut list = vec![VideoCodec::H264];
@@ -3584,7 +3826,9 @@ impl StudioUi {
         if !changed {
             return;
         }
-        if out == output::STREAM {
+        if out == output::DESTINATION {
+            self.dest_set_encoding(e);
+        } else if out == output::STREAM {
             self.stream_form_mut().encoding = e;
             self.save_stream_form();
         } else {
@@ -4750,6 +4994,111 @@ impl StudioUi {
         });
     }
 
+    /// Adds a text source showing `text` (Add source › Text, ADR-0129 decision 13);
+    /// it is selected and Properties opens on its Text tab.
+    pub fn add_text(&mut self, text: &str) {
+        self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = false;
+        self.send(Command::AddText {
+            text: text.to_owned(),
+        });
+    }
+
+    fn patch_text(&mut self, id: i32, patch: text_props::Patch) {
+        if patch.is_empty() || !self.text_settings.contains_key(&id) {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch,
+        });
+    }
+
+    /// The Text tab's Kind (an index of [`text_props::KINDS`]).
+    pub fn set_text_kind(&mut self, id: i32, kind: i32) {
+        let Some(patch) = self
+            .text_settings
+            .get(&id)
+            .and_then(|s| text_props::kind_patch(s, kind))
+        else {
+            return;
+        };
+        self.patch_text(id, patch);
+    }
+
+    /// A text setting of the Text tab; an empty value removes the key (but `text`).
+    pub fn set_text_value(&mut self, id: i32, key: &str, value: &str) {
+        self.patch_text(id, text_props::value_patch(key, value));
+    }
+
+    pub fn set_text_number(&mut self, id: i32, key: &str, value: f32) {
+        if value.is_finite() {
+            self.patch_text(id, text_props::number_patch(key, f64::from(value)));
+        }
+    }
+
+    pub fn set_text_flag(&mut self, id: i32, key: &str, value: bool) {
+        self.patch_text(id, text_props::flag_patch(key, value));
+    }
+
+    /// Outline (0), Shadow (1) or Background (2) on or off.
+    pub fn set_text_effect(&mut self, id: i32, effect: i32, on: bool) {
+        let Some(patch) = self
+            .text_settings
+            .get(&id)
+            .map(|s| text_props::effect_patch(s, effect, on))
+        else {
+            return;
+        };
+        self.patch_text(id, patch);
+    }
+
+    pub fn set_text_countdown(&mut self, id: i32, until: bool, target: &str, seconds: i32) {
+        self.patch_text(id, text_props::countdown_patch(until, target, seconds));
+    }
+
+    /// Fit box to text.
+    pub fn fit_text_box(&mut self, id: i32) {
+        if self.text_settings.contains_key(&id) {
+            self.deleted.clear();
+            self.send(Command::FitTextBox(SourceId::from_raw(id as u32)));
+        }
+    }
+
+    /// Start (0), Pause (1) or Reset (2) of a countdown's or stopwatch's timer.
+    pub fn text_timer(&mut self, id: i32, action: i32) {
+        let action = match action {
+            0 => rbs_record::TimerAction::Start,
+            1 => rbs_record::TimerAction::Pause,
+            2 => rbs_record::TimerAction::Reset,
+            _ => return,
+        };
+        self.send(Command::TextTimer {
+            source: SourceId::from_raw(id as u32),
+            action,
+        });
+    }
+
+    /// Opens the font picker for a text source; the families are asked for.
+    pub fn open_font_picker(&mut self, id: i32) {
+        let Some(settings) = self.text_settings.get(&id) else {
+            return;
+        };
+        let current = match settings.get(rbs_sources::types::keys::FONT) {
+            Some(rbs_scene::model::SettingValue::Text(f)) => f.clone(),
+            _ => String::new(),
+        };
+        self.add_picker = Some(add_picker::AddPicker::fonts(
+            SourceId::from_raw(id as u32),
+            &current,
+        ));
+        self.font_current = current;
+        self.picker_dirty = true;
+        self.send(Command::ListTextFonts);
+    }
+
     /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
     /// changes nothing.
     pub fn set_source_fill(&mut self, id: i32, color: &str) {
@@ -5579,6 +5928,7 @@ impl StudioUi {
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 out.focus_shape = self.focus_shape.take();
+                out.focus_text = self.focus_text.take();
                 self.refresh_existing();
                 self.refresh_marks();
             }
@@ -5610,6 +5960,7 @@ impl StudioUi {
                     self.show_master();
                 }
                 self.glide = list.glide;
+                self.transition = list.transition;
                 let data: Vec<SceneData> = list
                     .scenes
                     .iter()
@@ -5686,6 +6037,13 @@ impl StudioUi {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
             },
+            Update::TextFonts(families) => {
+                if let Some(p) = &mut self.add_picker
+                    && p.answer_fonts(&families, &self.font_current)
+                {
+                    self.picker_dirty = true;
+                }
+            }
             Update::SourceSettings(view) => {
                 let (data, choices) = source_settings_data(&view);
                 self.source_settings.set_vec(vec![data]);
@@ -5844,6 +6202,8 @@ impl StudioUi {
                 }
                 Err(why) => self.stream_note = why,
             },
+            Update::DestinationKey(id, r) => self.dest_key_saved(id, r),
+            Update::LiveDestinations(c, rows) => self.live_destinations_changed(c, rows),
             Update::StreamKey(r) => match r {
                 Ok(saved) => {
                     self.stream.key_saved = saved;
@@ -5886,7 +6246,11 @@ impl StudioUi {
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
-            Update::TokensChanged => self.read_tokens(false),
+            Update::TokensChanged => {
+                self.read_tokens(false);
+                // `tokens.revoke` of the AI tools token changes ai-tools.toml.
+                self.read_ai();
+            }
             // `profile.switch` or `collection.switch`: the caller switches, since a
             // collection switch needs the window's preview.
             Update::SwitchRequested {
@@ -6220,10 +6584,20 @@ impl StudioUi {
                 self.focus_shape = Some(added.id);
                 self.reveal_shape = false;
             }
+            if rows
+                .iter()
+                .any(|r| r.id.get() as i32 == added.id && r.kind == Some(SourceKind::Text))
+            {
+                self.focus_text = Some(added.id);
+            }
         } else if !data.iter().any(|d| d.id == self.selected) {
             self.selected = -1;
         }
         set_rows(&self.sources, data);
+        self.text_settings = rows
+            .iter()
+            .filter_map(|r| Some((r.id.get() as i32, r.text.clone()?)))
+            .collect();
         self.rows = rows;
         // The Source tab marks the source's own target: it may have changed.
         self.refresh_source_targets();
@@ -6441,6 +6815,8 @@ fn paint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView) {
 /// The Add source dialog's content ([`StudioUi::take_picker_view`]).
 pub struct PickerView {
     pub title: String,
+    /// The picker lists font families (a text source's Font).
+    pub fonts: bool,
     pub status: add_picker::Status,
     pub rows: Vec<add_picker::Row>,
     /// Show "Capture audio too" (displays and windows) and whether it is checked.
@@ -6466,6 +6842,8 @@ pub struct Applied {
     pub studio_mode_started: bool,
     /// A plain frame was just added and selected: open Properties on its border.
     pub focus_shape: Option<i32>,
+    /// A text source was just added and selected: open Properties on its Text tab.
+    pub focus_text: Option<i32>,
     /// A control API client asked to switch: scene collections (`true`) or output
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.
@@ -6816,7 +7194,7 @@ fn request_of(
     }
 }
 
-fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+pub(crate) fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
     ModelRc::from(Rc::new(VecModel::from(
         items
             .into_iter()
@@ -7120,7 +7498,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Media) => "film",
         Some(SourceKind::Browser) => "globe",
         // Until the text UI (ADR-0129 phase (f)) brings its own icon.
-        Some(SourceKind::Text) => "pencil",
+        Some(SourceKind::Text) => "text",
         None => "window",
     }
 }
@@ -7499,6 +7877,37 @@ fn hold_note_text(hold: Option<StreamHold>) -> &'static str {
         Some(HoldNote::Sound) => "The hold scene's sound failed: sending silence",
         None => "",
     }
+}
+
+/// The rail's index of a transition kind (ADR-0128).
+fn transition_index(kind: rbs_scene::TransitionKind) -> i32 {
+    match kind {
+        rbs_scene::TransitionKind::Cut => 0,
+        rbs_scene::TransitionKind::Fade => 1,
+        rbs_scene::TransitionKind::Swipe => 3,
+        rbs_scene::TransitionKind::Slide => 4,
+        _ => 2,
+    }
+}
+
+/// The rail's index of a Swipe or Slide direction.
+fn direction_index(direction: rbs_scene::SwipeDirection) -> i32 {
+    match direction {
+        rbs_scene::SwipeDirection::Right => 1,
+        rbs_scene::SwipeDirection::Up => 2,
+        rbs_scene::SwipeDirection::Down => 3,
+        _ => 0,
+    }
+}
+
+/// `#rrggbb` as bytes.
+fn rgb_hex(s: &str) -> Option<[u8; 3]> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
 /// The play state (4 standby when the studio runs no instance), cursor and length of

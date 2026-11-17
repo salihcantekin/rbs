@@ -11,11 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use rbs_audio_io::edge::EdgeClock;
 use rbs_browser_ipc::{Configure, restart_delay};
 use rbs_core::media::{
     ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
+    next_generation,
 };
-use rbs_core::time::Timestamp;
+use rbs_core::time::{Clock, Timestamp};
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::upload::SourceUpload;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
@@ -346,58 +348,163 @@ fn check_side(width: u32, height: u32) -> Result<(), (&'static str, &'static str
 /// Output pin index on browser source nodes.
 pub const VIDEO_PIN: usize = 0;
 
-/// Studio-owned RGBA the render thread uploads. The helper writes on the control thread.
-#[derive(Debug)]
+/// The newest page picture, waiting for the render thread.
+struct PendingPicture {
+    frame: VideoFrame,
+    /// Master time of the paint, or `None` when unknown: due at once.
+    stamp: Option<Timestamp>,
+}
+
+/// Studio-owned RGBA the render thread uploads (ADR-0109 decision 8). The supervisor
+/// thread publishes each page picture with its master-time stamp; the render thread
+/// takes the newest one whose stamp is due, so a picture is not shown before the sound
+/// painted with it is heard (ADR-0106 decision 4).
+///
+/// The supervisor makes the frame (copy, allocation) and keeps one reference to its
+/// bytes, so the render thread only uploads and drops a reference: it never allocates,
+/// frees or waits here.
 pub struct BrowserFrameSink {
-    pixels: Mutex<Vec<u8>>,
+    pending: Mutex<Option<PendingPicture>>,
+    /// Supervisor only: the last picture's bytes, reused when the render thread let go.
+    kept: Mutex<Kept>,
     width: AtomicU32,
     height: AtomicU32,
     generation: AtomicU32,
+}
+
+#[derive(Default)]
+struct Kept {
+    last: Option<Bytes>,
+    /// Bytes the render thread still held when a newer picture came; dropped here once
+    /// it lets go, so the last reference never goes on the render thread.
+    retired: Option<Bytes>,
 }
 
 impl BrowserFrameSink {
     /// Empty buffer.
     pub fn new() -> Self {
         Self {
-            pixels: Mutex::new(Vec::new()),
+            pending: Mutex::new(None),
+            kept: Mutex::new(Kept::default()),
             width: AtomicU32::new(0),
             height: AtomicU32::new(0),
             generation: AtomicU32::new(0),
         }
     }
 
-    /// Publishes straight-alpha `Rgba8` bytes. Runs on the control thread.
+    /// Publishes straight-alpha `Rgba8` bytes, due at once. Supervisor or control thread.
     pub fn publish(&self, rgba: &[u8], width: u32, height: u32) {
-        if let Ok(mut pixels) = self.pixels.lock() {
-            if pixels.len() != rgba.len() {
-                *pixels = rgba.to_owned();
-            } else {
-                pixels.copy_from_slice(rgba);
+        self.publish_at(rgba, width, height, None);
+    }
+
+    /// Publishes straight-alpha `Rgba8` bytes painted at master time `stamp` (see
+    /// [`BrowserPictureEdge`]). A picture the render thread has not taken yet is
+    /// replaced. Supervisor or control thread, never the render thread.
+    pub fn publish_at(&self, rgba: &[u8], width: u32, height: u32, stamp: Option<Timestamp>) {
+        let expected = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        if width == 0 || height == 0 || rgba.len() != expected {
+            return;
+        }
+        // The replaced picture is freed here, on this thread.
+        let replaced = self.pending.lock().ok().and_then(|mut slot| slot.take());
+        drop(replaced);
+        let Ok(mut kept) = self.kept.lock() else {
+            return;
+        };
+        if kept.retired.as_ref().is_some_and(Bytes::is_unique) {
+            kept.retired = None;
+        }
+        let bytes = match kept.last.take().map(Bytes::try_into_mut) {
+            Some(Ok(mut reuse)) if reuse.len() == rgba.len() => {
+                reuse.copy_from_slice(rgba);
+                reuse.freeze()
             }
+            Some(Err(held)) => {
+                // The render thread still reads it; at most one is kept back.
+                kept.retired = Some(held);
+                Bytes::copy_from_slice(rgba)
+            }
+            _ => Bytes::copy_from_slice(rgba),
+        };
+        let format = VideoFormat::new(
+            Size::new(width, height),
+            PixelFormat::Rgba8,
+            ColorSpace::SRGB,
+        );
+        let planes = [PlaneLayout {
+            offset: 0,
+            stride: width as usize * 4,
+        }];
+        let Ok(system) = SystemFrame::new(format, bytes.clone(), &planes) else {
+            return;
+        };
+        kept.last = Some(bytes);
+        drop(kept);
+        // A new key per picture, also when it has no stamp (ADR-0117 decision 4).
+        let frame = VideoFrame::system(stamp.unwrap_or(Timestamp::ZERO), system, None)
+            .with_sequence(next_generation());
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = Some(PendingPicture { frame, stamp });
         }
         self.width.store(width, Ordering::Release);
         self.height.store(height, Ordering::Release);
         self.generation.fetch_add(1, Ordering::Release);
     }
 
-    /// Generation the render path last uploaded.
+    /// Forgets a picture the render thread has not taken (the helper stopped).
+    pub(crate) fn clear(&self) {
+        let stale = self.pending.lock().ok().and_then(|mut slot| slot.take());
+        drop(stale);
+    }
+
+    /// Pictures published so far.
     pub fn generation(&self) -> &AtomicU32 {
         &self.generation
     }
 
-    /// Copies the latest pixels when `generation > 0`.
-    pub fn snapshot(&self) -> Option<(Bytes, u32, u32)> {
-        let generation = self.generation.load(Ordering::Acquire);
-        if generation == 0 {
+    /// Render thread: the newest picture whose stamp is at or before `now`, once.
+    /// `None` when there is none, it is not due yet, or the supervisor holds the
+    /// slot this instant (taken on a later tick). Never waits, never allocates.
+    pub fn take_due(&self, now: Timestamp) -> Option<VideoFrame> {
+        let mut slot = self.pending.try_lock().ok()?;
+        if slot.as_ref()?.stamp.is_some_and(|stamp| stamp > now) {
             return None;
         }
-        let pixels = self.pixels.lock().ok()?;
-        let width = self.width.load(Ordering::Acquire);
-        let height = self.height.load(Ordering::Acquire);
-        if pixels.is_empty() || width == 0 || height == 0 {
-            return None;
+        slot.take().map(|pending| pending.frame)
+    }
+}
+
+/// Maps a helper's paint time to master time on the supervisor thread (ADR-0109
+/// decision 8), by the rule page sound follows (decision 6): an [`EdgeClock`] fed with
+/// OS and master times read back to back. Never places a picture after now.
+pub struct BrowserPictureEdge {
+    edge: EdgeClock,
+    clock: Arc<dyn Clock>,
+}
+
+impl BrowserPictureEdge {
+    /// An edge onto the master `clock`.
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            edge: EdgeClock::default(),
+            clock,
         }
-        Some((Bytes::copy_from_slice(&pixels), width, height))
+    }
+
+    /// The master time of a picture painted at OS time `painted`, given that the OS
+    /// clock reads `os_now` now. `painted` 0 (unknown) or later than `os_now` (an
+    /// untrusted helper) counts as now.
+    pub fn stamp(&mut self, painted: u64, os_now: u64) -> Timestamp {
+        let now = self.clock.now();
+        self.edge.observe(os_now, now);
+        let painted = if painted == 0 || painted > os_now {
+            os_now
+        } else {
+            painted
+        };
+        self.edge.to_master(painted, Duration::ZERO, now)
     }
 }
 
@@ -431,6 +538,10 @@ impl BrowserControlSidecar {
     /// The sink helpers fill and the render path reads.
     pub fn sink(&self) -> Arc<BrowserFrameSink> {
         Arc::clone(&self.sink)
+    }
+
+    fn frames(&self) -> &BrowserFrameSink {
+        &self.sink
     }
 
     /// Polls the helper and refreshes the sink. Never runs in `process` (P6).
@@ -519,8 +630,6 @@ pub struct BrowserSourceNode {
     retry_after: Option<Duration>,
     starts: u32,
     upload: SourceUpload,
-    uploaded_generation: u32,
-    ready: Option<VideoFrame>,
     sound: Option<Arc<crate::BrowserSound>>,
 }
 
@@ -550,8 +659,6 @@ impl BrowserSourceNode {
             retry_after: None,
             starts: 0,
             upload: SourceUpload::new(),
-            uploaded_generation: 0,
-            ready: None,
             sound: None,
         }
     }
@@ -643,9 +750,8 @@ impl BrowserSourceNode {
     /// Standby. Kills the helper. No process remains.
     pub fn standby(&mut self) {
         self.control.clear_session();
+        self.control.frames().clear();
         self.budget.release(self.source);
-        self.ready = None;
-        self.uploaded_generation = 0;
     }
 
     fn note_exit(&mut self) {
@@ -702,44 +808,32 @@ impl Node<GpuRuntime> for BrowserSourceNode {
     }
 
     fn warm(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let generation = self.control.sink().generation().load(Ordering::Acquire);
-        if generation == 0 || generation == self.uploaded_generation {
-            return Ok(());
-        }
-        let Some((pixels, width, height)) = self.control.sink().snapshot() else {
-            return Ok(());
-        };
+        // Textures for the page size, so the first picture does not create them.
         let format = VideoFormat::new(
-            Size::new(width, height),
+            Size::new(self.settings.width, self.settings.height),
             PixelFormat::Rgba8,
             ColorSpace::SRGB,
         );
-        let planes = [PlaneLayout {
-            offset: 0,
-            stride: width as usize * 4,
-        }];
-        let system = SystemFrame::new(format, pixels, &planes)
-            .map_err(|_| NodeError::Permanent("browser picture layout invalid"))?;
-        let frame = VideoFrame::system(Timestamp::ZERO, system, None);
-        let uploaded = self
-            .upload
-            .upload(ctx.shared, &mut ctx.local.pool, frame)
-            .map_err(|_| NodeError::Backend("browser picture upload failed"))?;
-        self.uploaded_generation = generation;
-        self.ready = Some(uploaded);
-        Ok(())
+        self.upload
+            .prepare_for(ctx.shared, &mut ctx.local.pool, &format)
+            .map_err(|_| NodeError::Backend("browser picture upload failed"))
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let Some(frame) = self.ready.take() else {
+        // The newest picture whose stamp is due (ADR-0109 decision 8). The output keeps
+        // it until the next one, as a still's does.
+        let Some(system) = self.control.frames().take_due(ctx.tick().time) else {
             return Ok(());
         };
-        drop(ctx.outputs().set_video(VIDEO_PIN, Some(frame))?);
+        let texture = self
+            .upload
+            .upload(ctx.shared(), &mut ctx.local().pool, system)
+            .map_err(|_| NodeError::Backend("browser picture upload failed"))?;
+        drop(ctx.outputs().set_video(VIDEO_PIN, Some(texture))?);
         Ok(())
     }
 
     fn cool(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) {
-        self.ready = None;
         self.upload.release(&mut ctx.local.pool);
     }
 
@@ -758,4 +852,74 @@ pub enum SourceReach {
     },
     /// May open a network connection. Browser sources are always this, including `file`.
     Network,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+    use super::*;
+
+    const RGBA: [u8; 16] = [7; 16];
+
+    #[test]
+    fn the_render_thread_takes_the_newest_due_picture_once() {
+        let sink = BrowserFrameSink::new();
+        let at = |ms: u64| Timestamp::from_nanos(ms * 1_000_000);
+        assert!(sink.take_due(at(100)).is_none(), "nothing yet");
+        sink.publish_at(&RGBA, 2, 2, Some(at(50)));
+        assert!(sink.take_due(at(49)).is_none(), "not before its time");
+        sink.publish_at(&[9; 16], 2, 2, Some(at(60)));
+        assert!(sink.take_due(at(55)).is_none(), "the newer one is not due");
+        let frame = sink.take_due(at(60)).unwrap();
+        assert_eq!(frame.timestamp(), at(60));
+        assert!(sink.take_due(at(70)).is_none(), "taken once");
+        // Without a stamp a picture is due at once.
+        sink.publish(&RGBA, 2, 2);
+        assert!(sink.take_due(Timestamp::ZERO).is_some());
+        assert_eq!(sink.generation().load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_picture_of_the_wrong_size_is_not_published() {
+        let sink = BrowserFrameSink::new();
+        sink.publish(&RGBA, 3, 2);
+        sink.publish(&RGBA, 0, 4);
+        assert!(sink.take_due(Timestamp::ZERO).is_none());
+    }
+
+    #[test]
+    fn taking_and_dropping_a_picture_does_not_allocate_or_free() {
+        let sink = BrowserFrameSink::new();
+        sink.publish_at(&RGBA, 2, 2, Some(Timestamp::ZERO));
+        let info = allocation_counter::measure(|| {
+            let frame = sink.take_due(Timestamp::ZERO);
+            assert!(frame.is_some());
+            drop(frame);
+        });
+        assert_eq!(info.count_total, 0, "{info:?}");
+    }
+
+    #[test]
+    fn the_supervisor_reuses_the_bytes_the_render_thread_let_go() {
+        let sink = BrowserFrameSink::new();
+        sink.publish(&RGBA, 2, 2);
+        drop(sink.take_due(Timestamp::ZERO));
+        let info = allocation_counter::measure(|| sink.publish(&[1; 16], 2, 2));
+        // The frame's own bookkeeping may allocate; the pixels are not copied anew.
+        let fresh = allocation_counter::measure(|| sink.publish(&[2; 16], 2, 2));
+        assert!(info.bytes_total <= fresh.bytes_total, "{info:?} {fresh:?}");
+    }
+
+    #[test]
+    fn a_picture_from_the_future_is_placed_now() {
+        use rbs_core::time::TestClock;
+        let clock = TestClock::new();
+        clock.advance(Duration::from_secs(1));
+        let mut edge = BrowserPictureEdge::new(Arc::new(clock.clone()));
+        let os_now = 5_000_000_000;
+        assert_eq!(edge.stamp(os_now + 1_000_000, os_now), clock.now());
+        clock.advance(Duration::from_millis(10));
+        let unknown = edge.stamp(0, os_now + 10_000_000);
+        assert!(unknown <= clock.now());
+    }
 }

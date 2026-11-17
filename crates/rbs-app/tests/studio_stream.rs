@@ -1920,7 +1920,7 @@ fn a_control_api_client_holds_a_stream_with_a_scene() {
     let (api, mut c) = api_client(&host);
     let sub = c.call(
         "events.subscribe",
-        serde_json::json!({"topics": ["stream.state"]}),
+        serde_json::json!({"topics": ["stream.state", "settings.changed"]}),
     );
     assert!(sub["result"].is_object(), "{sub}");
     add_display(&host, &rx);
@@ -1971,6 +1971,9 @@ fn a_control_api_client_holds_a_stream_with_a_scene() {
     profile.hold_scene = Some(brk as u32);
     profile.hold_sound = rbs_app::stream_profile::HoldSound::Scene;
     host.send(Command::SetStreamProfile(profile));
+    // The profile comes through the command channel, the call through the API: wait
+    // until the host has taken it, or the call can be served first.
+    c.event("settings.changed", |d| d["stream"]["hold_scene"] == brk);
     let got = c.call("settings.get", serde_json::json!({}));
     let stream = &got["result"]["data"]["stream"];
     assert_eq!(stream["hold_scene"], brk, "{got}");

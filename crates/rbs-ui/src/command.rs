@@ -216,7 +216,7 @@ const COMMAND: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 10] = [
+pub const SETTINGS_SECTIONS: [&str; 11] = [
     "general",
     "audio",
     "appearance",
@@ -227,6 +227,7 @@ pub const SETTINGS_SECTIONS: [&str; 10] = [
     "stream",
     "virtual_camera",
     "remote_control",
+    "ai_tools",
 ];
 
 /// A picker's choice: optional, because the bare picker id opens the list.
@@ -2416,6 +2417,7 @@ pub fn choice_icon(id: &CommandId, checked: bool) -> Option<&'static str> {
             Some("system_audio") | Some("application_audio") => "speaker",
             Some("media") | Some("image") => "image",
             Some("browser") => "window",
+            Some("text") => "text",
             Some("existing") => "copy",
             _ => "plus",
         },
@@ -2778,6 +2780,9 @@ pub const MAX_SEARCH_RESULTS: usize = 40;
 
 /// The title of a Settings section (`remote_control` reads "Remote control").
 pub fn settings_section_title(section: &str) -> String {
+    if section == "ai_tools" {
+        return "AI tools".to_owned();
+    }
     let mut out = section.replace('_', " ");
     if let Some(first) = out.get(0..1) {
         let upper = first.to_ascii_uppercase();

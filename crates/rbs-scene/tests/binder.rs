@@ -2359,6 +2359,56 @@ fn a_transition_binds_the_incoming_picture_and_keeps_the_outgoing_scene() {
 }
 
 #[test]
+fn a_move_keeps_the_outgoing_scene_without_an_incoming_compositor() {
+    use rbs_scene::binder::OutgoingScene;
+    let (mut s, mic) = audio_setup();
+    let (film, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(film), full(), None)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let film_node = s.binder.source_node(film).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    let (next, _) = s.col.add_scene("Next", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(next, ItemContent::Source(s.screen), full(), None)
+        .unwrap();
+    s.col.set_program(s.wide, Some(next)).unwrap();
+    let outgoing = BTreeMap::from([(
+        s.wide,
+        OutgoingScene::without_incoming(BTreeSet::from([film]), BTreeSet::from([mic])),
+    )]);
+    let none = BTreeSet::new();
+    let report = s
+        .binder
+        .sync_transition(
+            &s.col,
+            &mut s.graph,
+            &BTreeSet::new(),
+            &none,
+            &BTreeMap::new(),
+            &outgoing,
+        )
+        .unwrap();
+    // No incoming compositor; the program compositor draws the new scene and keeps
+    // the leaving film linked and playing so it can fade out.
+    assert!(!report.compositors.contains_key(&(s.wide, Role::Incoming)));
+    assert_eq!(s.binder.compositor(s.wide, Role::Incoming), None);
+    let screen_node = s.binder.source_node(s.screen).unwrap();
+    let into_program = links_into(&s, comp);
+    assert!(into_program.contains(&screen_node));
+    assert!(into_program.contains(&film_node));
+    assert_eq!(state(&s, film_node), Lifecycle::Active);
+    // The end: the film sleeps.
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(!links_into(&s, comp).contains(&film_node));
+    assert_eq!(state(&s, film_node), Lifecycle::Standby);
+}
+
+#[test]
 fn a_transition_on_a_canvas_without_a_program_binds_nothing() {
     use rbs_scene::binder::OutgoingScene;
     let mut s = setup();

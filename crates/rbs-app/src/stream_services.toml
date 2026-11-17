@@ -1,0 +1,49 @@
+# Streaming service presets (ADR-0127 decision 12). Data only: the engine never sees a
+# service name, and nothing here is fetched from the network. A preset fills the
+# server field (which stays editable) and names the destination. `limits` are what the
+# service publishes for H.264/AAC ingest; they only warn, and `checked` is the date
+# they were last compared with the service's own guidance.
+
+[[service]]
+id = "youtube"
+name = "YouTube"
+servers = [
+    { label = "RTMPS", url = "rtmps://a.rtmps.youtube.com/live2" },
+    { label = "RTMP", url = "rtmp://a.rtmp.youtube.com/live2" },
+]
+key_help = "YouTube Studio, Go live, Stream: copy the stream key."
+limits = { max_keyframe_seconds = 4, checked = "2026-11-17" }
+
+[[service]]
+id = "twitch"
+name = "Twitch"
+servers = [{ label = "Automatic", url = "rtmp://live.twitch.tv/app" }]
+key_help = "Twitch dashboard, Settings, Stream: copy the primary stream key."
+limits = { max_video_kbps = 6000, max_keyframe_seconds = 2, checked = "2026-11-17" }
+
+[[service]]
+id = "kick"
+name = "Kick"
+servers = []
+server_from_dashboard = true
+key_help = "Kick dashboard, Settings, Stream URL and key: copy both."
+
+[[service]]
+id = "facebook"
+name = "Facebook Live"
+servers = [{ label = "RTMPS", url = "rtmps://live-api-s.facebook.com:443/rtmp/" }]
+key_help = "Live Producer, Streaming software: copy the stream key."
+limits = { max_keyframe_seconds = 2, checked = "2026-11-17" }
+
+[[service]]
+id = "x"
+name = "X"
+servers = []
+server_from_dashboard = true
+key_help = "Media Studio, Producer, Sources: copy the server and the stream key."
+
+[[service]]
+id = "custom"
+name = "Custom"
+servers = []
+key_help = "The stream key your server or service gives you."

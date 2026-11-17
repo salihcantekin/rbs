@@ -534,12 +534,12 @@ pub enum TransitionKind {
     /// The new scene fades in over the old one.
     Fade,
     /// Shared sources slide to their new boxes, new ones fade in (the collection
-    /// glide, ADR-0100).
+    /// glide, ADR-0100), leaving ones fade out.
     #[default]
     Move,
-    /// The new scene pushes the old one out (not yet drawn: runs as Move).
+    /// The new scene slides in over the old one from an edge.
     Swipe,
-    /// The new scene slides in over the old one (not yet drawn: runs as Move).
+    /// The new scene pushes the old one out.
     Slide,
 }
 
@@ -2848,6 +2848,21 @@ pub struct AttributesClipboard {
 pub struct TextFonts {
     /// The installed font families, sorted, without duplicates.
     pub families: Vec<String>,
+}
+
+/// `text.timer`'s answer (protocol 1.84, ADR-0129 decision 11): the timer as it
+/// stands now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextTimerState {
+    /// The text source's id.
+    pub source: u32,
+    /// `countdown` or `stopwatch`.
+    pub kind: String,
+    /// It runs.
+    pub running: bool,
+    /// Time counted, in milliseconds (a countdown's is the time gone, not the time
+    /// left).
+    pub value_ms: u64,
 }
 
 /// The topic `source.attributes_clipboard.changed` (protocol 1.68).

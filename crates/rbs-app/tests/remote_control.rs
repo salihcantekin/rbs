@@ -8,6 +8,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rbs_api_ws::{SUBPROTOCOL, close_code};
@@ -294,7 +295,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
     )
     .unwrap();
     assert_eq!(server.ipc_problem(), None);
-    host.attach_api(api, Some(server.api_tokens(config.clone())));
+    host.attach_api(api, Some(server.api_tokens(config.clone(), Arc::default())));
 
     let mut cli = IpcClient::connect(&endpoint, LIMIT).unwrap();
     let mut call = |id: u32, method: &str, params: Value| -> Value {
@@ -345,7 +346,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
     let list = call(3, "tokens.list", json!({}));
     assert_eq!(
         list["result"]["tokens"],
-        json!([{"name": "Deck", "scopes": ["read", "control"], "irreversible": true}])
+        json!([{"name": "Deck", "scopes": ["read", "control"], "irreversible": true, "kind": "user"}])
     );
     let taken = call(
         4,
@@ -410,4 +411,109 @@ fn with_network_access_apps_on_this_computer_still_connect_without_tls() {
         json!(["read", "control", "admin"]),
         "{auth}"
     );
+}
+
+/// The server split (ADR-0134 decisions 2 and 9): the API thread runs alone, the
+/// WebSocket transport restarts (a network or certificate change) without dropping the
+/// IPC session, and stopping IPC removes its endpoint while WebSocket keeps serving.
+#[test]
+fn restarting_the_websocket_transport_keeps_ipc_sessions() {
+    use rbs_api_ipc::{IpcClient, Received};
+
+    let token = rbs_api::Token::generate().unwrap();
+    let mut profile = RemoteProfile::new();
+    profile.tokens.push(rbs_api::TokenEntry {
+        kind: rbs_api::TokenKind::User,
+        irreversible: true,
+        name: "Deck".into(),
+        scopes: Access::Control.scopes(),
+        hash: token.hash(),
+    });
+    let (mut server, _endpoint) = RemoteServer::start_api(
+        profile.store(),
+        RemoteOptions {
+            control_waker: Box::new(|| {}),
+            audit: Box::new(|_| {}),
+            ipc: None,
+            levels: None,
+        },
+    )
+    .unwrap();
+    assert!(!server.serves_ws());
+    assert!(
+        server.local_addrs().is_empty(),
+        "no port without remote control"
+    );
+
+    let endpoint = ipc_endpoint("split");
+    server.start_ipc(endpoint.clone()).unwrap();
+    let mut cli = IpcClient::connect(&endpoint, LIMIT).unwrap();
+    let call = |cli: &mut IpcClient, id: u32, method: &str, params: Value| -> Value {
+        cli.send(
+            &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string(),
+        )
+        .unwrap();
+        match cli.recv(LIMIT).unwrap() {
+            Some(Received::Message(m)) => serde_json::from_str(&m).unwrap(),
+            other => panic!("no answer: {other:?}"),
+        }
+    };
+    let hello = call(
+        &mut cli,
+        1,
+        "session.hello",
+        json!({"protocols": ["1.0"], "client": {"name": "rbs-cli", "version": "1"}}),
+    );
+    assert!(hello["result"]["scopes"].is_array(), "{hello}");
+
+    server
+        .start_ws(
+            rbs_api_ws::WsConfig::on(vec![SocketAddr::from(([127, 0, 0, 1], 0))]),
+            false,
+        )
+        .unwrap();
+    let first = server.local_addrs()[0];
+    let mut deck = Client::open(first);
+    assert_eq!(
+        deck.login(token.expose())["result"]["scopes"],
+        json!(["read", "control"])
+    );
+
+    // A network change: only the WebSocket transport restarts.
+    server
+        .start_ws(
+            rbs_api_ws::WsConfig::on(vec![SocketAddr::from(([127, 0, 0, 1], 0))]),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        deck.closed(),
+        Some(close_code(rbs_api::CloseReason::ServerStopping))
+    );
+    let mut again = Client::open(server.local_addrs()[0]);
+    assert!(again.login(token.expose())["result"].is_object());
+    // The IPC session is still there and answers.
+    let ping = call(&mut cli, 2, "api.describe", json!({}));
+    assert!(ping["result"].is_object(), "{ping}");
+
+    // Stopping IPC removes the endpoint; WebSocket keeps serving.
+    server.stop_ipc();
+    assert!(server.ipc_endpoint().is_none());
+    assert!(matches!(
+        cli.recv(LIMIT).unwrap(),
+        Some(Received::Closed(_))
+    ));
+    assert!(IpcClient::connect(&endpoint, LIMIT).is_err());
+    if !cfg!(windows) {
+        assert!(!endpoint.0.exists(), "the socket file is removed");
+    }
+    let still = again.call(json!({"jsonrpc": "2.0", "id": 3, "method": "api.describe"}));
+    assert!(still["result"].is_object(), "{still}");
+
+    server.stop_ws();
+    assert!(!server.serves_ws());
+    drop(server);
+    if !cfg!(windows) {
+        let _ = std::fs::remove_dir_all(endpoint.0.parent().unwrap());
+    }
 }

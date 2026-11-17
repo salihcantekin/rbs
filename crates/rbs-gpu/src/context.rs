@@ -99,6 +99,9 @@ impl GpuMetrics {
 /// Created when the first canvas becomes Active; an engine with no active canvas
 /// holds none (P13).
 pub struct GpuContext {
+    /// Keeps the device in the exit registry until the context drops (see `exit`).
+    #[cfg(target_os = "linux")]
+    pub(crate) _exit_drain: crate::exit::ExitDrain,
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -255,6 +258,8 @@ impl GpuContext {
 
         let adapter_luid = crate::interop::adapter_luid(&device);
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            _exit_drain: crate::exit::ExitDrain::register(&device),
             instance,
             adapter,
             device,
