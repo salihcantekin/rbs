@@ -2,16 +2,10 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, DialogActions, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, MenuSurface, NumberField, SegmentedControl, Select, Slider, TextField, Toggle, ValueReadout, SettingRow, ListRow } from "components.slint";
+import { Button, DialogActions, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, MenuSurface, NumberField, SegmentedControl, Select, Slider, TextField, Toggle, ValueReadout, SettingRow, ListRow, HintText as Hint, ErrorText as Problem, CaptionField as Field } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { ThemeOption, ThemeTokenRow, Appearance, IconName, Overlays, SettingsScroll } from "base/types.slint";
 export { ThemeOption, ThemeTokenRow, Appearance }
-
-component Hint inherits Text {
-    color: Theme.text-secondary;
-    font-size: Tokens.type-caption-size;
-    wrap: word-wrap;
-}
 
 // A colour warning: a small mark and the words in the warning colour (amber), so it
 // reads as advice, not as an error (ADR-0072).
@@ -37,24 +31,6 @@ component Warning inherits HorizontalLayout {
         wrap: word-wrap;
         accessible-label: @tr("Warning: {}", root.text);
     }
-}
-
-component Problem inherits Text {
-    color: Theme.state-error;
-    font-size: Tokens.type-caption-size;
-    wrap: word-wrap;
-}
-
-component Field inherits VerticalLayout {
-    in property <string> label;
-    spacing: Tokens.space-1;
-    Text {
-        text: root.label;
-        color: Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        accessible-role: none;
-    }
-    @children
 }
 
 // Three squares: background, text and accent colour of a theme.

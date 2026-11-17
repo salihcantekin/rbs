@@ -4,67 +4,10 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, SectionHeader, MoreHidden, Button, StatusLine, FindMark } from "components.slint";
+import { FocusRing, RingFocus, Icon, SectionHeader, MoreHidden, Button, StatusLine, FindMark, SurfaceCard } from "components.slint";
 import { SettingsHit, SettingsScroll, IconName, Sections, Experience, SettingsFind } from "base/types.slint";
 export { SettingsHit, SettingsScroll }
-
-// One entry of the section list. The section in use has a quiet plate and the label
-// weight, and is marked checked for screen readers, so it is never shown by colour
-// alone (U7). `compact`: the collapsed section list shows the icon only; the name
-// stays the accessible name.
-export component SettingsNavItem inherits Rectangle {
-    in property <string> text;
-    in property <IconName> icon;
-    in property <bool> current;
-    in property <bool> compact;
-    callback activated();
-    height: Tokens.size-control-lg;
-    border-radius: Tokens.radius-md;
-    background: root.current || touch.has-hover ? Theme.surface-overlay : transparent;
-    border-width: root.current ? Tokens.size-border : 0px;
-    border-color: Theme.accent;
-    accessible-role: list-item;
-    accessible-label: text;
-    accessible-checked: current;
-    accessible-item-selectable: true;
-    accessible-item-selected: current;
-    accessible-action-default => { activated(); }
-    forward-focus: focus;
-    HorizontalLayout {
-        padding-left: root.compact ? 0px : Tokens.space-3;
-        padding-right: root.compact ? 0px : Tokens.space-2;
-        spacing: Tokens.space-2;
-        alignment: root.compact ? LayoutAlignment.center : LayoutAlignment.stretch;
-        VerticalLayout {
-            horizontal-stretch: 0;
-            alignment: center;
-            Icon {
-                name: root.icon;
-                ink: root.current ? Theme.text-primary : Theme.text-secondary;
-            }
-        }
-        if !root.compact: Text {
-            text: root.text;
-            color: Theme.text-primary;
-            font-size: Tokens.type-body-size;
-            font-weight: root.current ? Tokens.type-label-weight : Tokens.type-body-weight;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-    }
-    focus := RingFocus {
-        focus-on-click: false;
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
-            reject
-        }
-    }
-    // A click does not focus the entry (no focus ring after a click); Tab does.
-    touch := TouchArea {
-        clicked => { root.activated(); }
-    }
-    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
-}
+export { SettingsNavItem } from "components.slint";
 
 // A group name in the section list: small, secondary, upper case (mockup E).
 export component SettingsNavGroup inherits Text {
@@ -121,7 +64,7 @@ export component SettingsHeader inherits VerticalLayout {
 // A card: one group of related settings, with a title (small, secondary, upper case,
 // as section titles in mockup E) and an optional line saying what the group is for.
 // The rows inside draw the dividers between them.
-export component SettingsCard inherits Rectangle {
+export component SettingsCard inherits SurfaceCard {
     in property <string> title;
     in property <string> description;
     // A card with an id folds under its title and keeps that in the workspace file
@@ -134,11 +77,7 @@ export component SettingsCard inherits Rectangle {
     property <bool> shown-here;
     out property <bool> show-all: root.shown-here || (root.id != "" && Experience.shown(root.id, Experience.rev));
     property <bool> closed: root.id != "" && Sections.closed(root.id, Sections.rev);
-    background: Theme.surface-raised;
-    border-radius: Tokens.radius-lg;
-    // ADR-0112 decision 3: the outline shows only where colour does not separate the card.
-    border-width: Theme.panel-outline ? Tokens.size-border : 0px;
-    border-color: Theme.border-subtle;
+    // The look (surface, radius, outline, effects shadow) is `SurfaceCard`'s.
     accessible-role: groupbox;
     accessible-label: title;
     horizontal-stretch: 1;

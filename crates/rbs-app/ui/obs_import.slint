@@ -4,17 +4,14 @@
 // across exactly, what does not and why. Nothing is written until Import; a new scene
 // collection and output profile are made, and nothing the user has now changes.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, DialogActions, OverlayHost, ScrollArea, Select, SettingRow, StatusLine, Toggle } from "components.slint";
+import { Button, Checkbox, DialogActions, OverlayHost, ScrollArea, Select, SettingRow, StatusLine, Toggle, SurfaceCard } from "components.slint";
 import { ObsSceneChoice, ObsReportRow } from "base/types.slint";
 export { ObsSceneChoice, ObsReportRow }
 
 // A raised card with a caps title, as on a Settings page.
-component Card inherits Rectangle {
+component Card inherits SurfaceCard {
     in property <string> title;
-    background: Theme.surface-raised;
-    border-radius: Tokens.radius-lg;
-    border-width: Tokens.size-border;
-    border-color: Theme.border-subtle;
+    outlined: true;
     VerticalLayout {
         padding: Tokens.space-3;
         spacing: Tokens.space-2;
