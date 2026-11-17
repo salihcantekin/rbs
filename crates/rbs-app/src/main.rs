@@ -161,10 +161,13 @@ struct FloatSlot {
     models: DockModels,
 }
 
+/// View › Theme entries: label, theme id, checked.
+type ThemeChoices = Vec<(String, String, bool)>;
+
 struct App {
     /// The View › Theme choices and the user-data revision they were read at, so a
     /// sync reads no theme files from disk unless user data changed (audit U-01).
-    theme_choices: RefCell<Option<(u64, Vec<(String, String, bool)>)>>,
+    theme_choices: RefCell<Option<(u64, ThemeChoices)>>,
     session: LayoutSession,
     store: WorkspaceStore,
     config: PathBuf,
@@ -543,7 +546,7 @@ impl App {
     }
 
     /// The View › Theme choices, read from user data only after it changed.
-    fn theme_choices(&self) -> Vec<(String, String, bool)> {
+    fn theme_choices(&self) -> ThemeChoices {
         let revision = self.studio.user.revision();
         let mut cache = self.theme_choices.borrow_mut();
         match cache.as_ref() {
