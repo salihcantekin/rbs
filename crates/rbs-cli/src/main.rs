@@ -95,6 +95,12 @@ fn main() -> ExitCode {
                 args::AppCommand::Stream(args::StreamControl::Start) => "app stream start",
                 args::AppCommand::Stream(args::StreamControl::Stop) => "app stream stop",
                 args::AppCommand::Stream(args::StreamControl::Status { .. }) => "app stream status",
+                args::AppCommand::Stream(args::StreamControl::Destinations { .. }) => {
+                    "app stream destinations"
+                }
+                args::AppCommand::Stream(args::StreamControl::Destination { .. }) => {
+                    "app stream destination"
+                }
             };
             let result = rbs_api_ipc::Endpoint::for_current_user()
                 .map_err(|e| format!("the local control endpoint is not known ({e})"))
