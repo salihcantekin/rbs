@@ -200,7 +200,7 @@ The studio does not link or load CEF. A real CEF build replaces the helper execu
 
 ## Text (`org.rbs.source.text`, ADR-0129)
 
-Implementation status: phases (a) to (d). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, the control API adds and edits text sources (control-api.md, "Protocol 1.75") and runs timers (control-api.md, "Protocol 1.84"), and live kinds are drawn ("Live kinds" below). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; no menu adds a text source until phase (f), and a text row in the Sources list uses the `pencil` icon until then. Crisp resizing (phase (e)) follows. Hold start and take start do not wait for entering texts yet; a program switch does.
+Implementation status: phases (a) to (d). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, the control API adds and edits text sources (control-api.md, "Protocol 1.75") and runs timers (control-api.md, "Protocol 1.84"), and live kinds are drawn ("Live kinds" below). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; no menu adds a text source until phase (f), and a text row in the Sources list uses the `pencil` icon until then. Crisp resizing is in (phase (e), "Crisp resizing" below). Hold start and take start do not wait for entering texts; a program switch does.
 
 ```rust
 // rbs_sources::types
@@ -301,6 +301,22 @@ impl Studio {
 The host (`rbs-app`) calls `set_text_outputs` before each service: the program scene's name (the scene a held switch is going to), and how long the main canvas's main recording (not while ending; paused time left out) and stream have run, on the studio's master clock. A studio restart hands the timers and elapsed times to the new studio with the running part folded in, so they run on; a collection switch saves the old collection's timers and restores the new one's. Timers are saved in `text-timers.toml` (user-data spec, "Text timers") on every `text.timer` and at exit.
 
 Tests: `text_live::tests` (UTC dates and weekdays, every pattern token and quoted text, timer units, targets, a clock, both countdowns, stopwatch and elapsed times, fields), `tests/text_worker.rs` (a clock on air is drawn each second and not off air; a stopwatch follows its run state and draws only on a change, once at attach; fields show the scene and the recording time), `rbs-record` `tests/text_source.rs` `timers_start_pause_reset_and_carry_across_a_restart`, `rbs-app` `text_timers::tests`, `studio_host::text_live::tests`, `text_clock::tests` and `tests/studio_api.rs` `a_control_api_client_adds_and_edits_a_text_source` (`text.timer`).
+
+### Crisp resizing (ADR-0129 decision 12)
+
+```rust
+// rbs_sources::text_resize
+pub struct Resized { settings: Settings, crop: Crop, size: [f32; 2] }
+pub fn resized(settings: &Settings, crop: Crop, size: [f32; 2]) -> Option<Resized>;
+// rbs_scene
+impl SceneCollection { pub fn resize_text(&mut self, item, settings, layout) -> Result<Undo, SceneError>; } // Op::Batch [ReplaceSource, ReplaceItem]
+```
+
+- **Rule.** The item shows `crop` of the box at `size` canvas pixels; the factors are `size / (box - crop)` per axis. The new box is the old box times each factor, rounded to whole pixels; the crop scales per axis. `size`, `outline_width`, `shadow_x`, `shadow_y`, `shadow_blur`, `padding` and `letter_spacing` scale by the vertical factor, or by the smaller factor when the two are within 1 % (aspect kept); keys that are absent stay absent (`size` is always written), values are clamped to their ranges and kept to two decimals. The item's new size is the new box less the new crop, so it draws one picture pixel per canvas pixel; its sign (a flip), position and rotation stay.
+- **Caps.** A side of 4096, 8 388 608 pixels and `size` 1024: the factors are lowered together until all hold, the box stops there and the item keeps the size asked for, so the rest is stretched. `None` (stretch only) when the box would not change, the picture shows nothing, or a crop would cover the new box.
+- **Host** (`rbs-app` `studio_host/text_resize.rs`). A box edit on the main canvas (`item.set_box`, the preview, Transform's size) of a text item is crisp when the source is placed once in the whole collection, the item has no layout of its own on any canvas, and no running take writes its separate picture track. A single edit (`gesture` 0) changes the box in the same undo step at once. A drag (a `gesture`) is stretched while it moves; once it rests for `CRISP_SETTLE` (250 ms, master clock) the box changes, recorded under the drag's gesture so drag and box undo as one step. Anything else stretches as before. The vertical canvas and Transform's Fit and Reset stretch for now.
+
+Tests: `rbs-sources` `text_resize::tests` (doubling, wider and taller boxes, crop per axis and rounding, caps, nothing to change), `rbs-scene` `tests/collection.rs` `a_text_resize_changes_settings_and_layout_as_one_undo_step`, `rbs-app` `tests/studio_api.rs` `a_control_api_client_adds_and_edits_a_text_source` (a single box edit and a rested drag, each undone in one step).
 
 ### Text worker (ADR-0129 decisions 6 and 7)
 
