@@ -163,6 +163,10 @@ format = 4
 "size.window.min-h" = 720
 "size.floating.w" = 640
 "size.floating.h" = 420
+# A window sized to its content (Source settings): the least and the most it opens at.
+# Beyond the most, the content scrolls.
+"size.floating.min-h" = 240
+"size.floating.max-h" = 760
 "size.settings.w" = 920
 "size.settings.h" = 680
 "step.nudge" = 8
@@ -221,6 +225,10 @@ format = 4
 # Source tab: a window or display's picture in front of its name in the target list (16:9).
 "size.target.thumb-w" = 96
 "size.target.thumb-h" = 54
+# Source settings: the capture region preview opens this tall and never gets
+# smaller than the minimum when the window shrinks.
+"size.target.preview-h" = 280
+"size.target.preview-min-h" = 160
 # Notice card: the outline, the side mark plus the countdown bar, and the widest
 # the card may be. A longer message elides; the card never grows with the window.
 "size.toast.border" = 2
@@ -242,6 +250,9 @@ format = 4
 # `delay.repeat-start`, then steps every `delay.repeat`.
 "delay.repeat-start" = 400
 "delay.repeat" = 80
+# Not motion: a NumberField being dragged sends a new value at most once per
+# `delay.live-edit` (about one frame), so a fast drag does not queue edits.
+"delay.live-edit" = 16
 # Not motion: how long the pointer rests on a control before its tooltip shows.
 "delay.tooltip" = 500
 # Not motion: how long the pointer rests on a menu row with a submenu before it opens

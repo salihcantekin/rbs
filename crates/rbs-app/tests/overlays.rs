@@ -513,36 +513,120 @@ fn release(w: &slint::Window, x: f32, y: f32) {
     settle();
 }
 
+/// Lets the field's live-edit timer (`delay.live-edit`, 16 ms) fire.
+fn next_live_edit() {
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+    settle();
+}
+
 #[test]
-fn dragging_a_number_field_changes_it_once_on_release() {
+fn dragging_a_number_field_sends_each_value_in_one_gesture() {
     let p = number_probe();
     let w = p.window();
     press(w, 50.0, 14.0);
-    // 20 px right and 4 px up at 4 px a step: six steps.
+    // 10 px right and 2 px up at 4 px a step: three steps.
     drag_to(w, 60.0, 12.0);
+    next_live_edit();
+    assert_eq!(
+        p.get_edits(),
+        1,
+        "the value in between applies during the drag"
+    );
+    assert_eq!(p.get_value(), 13.0);
+    let gesture = p.get_edit_gesture();
+    assert_ne!(gesture, 0, "a drag's edits carry its gesture");
+    // 20 px right and 4 px up: six steps.
     drag_to(w, 70.0, 10.0);
-    assert_eq!(p.get_edits(), 0, "nothing applies during the drag");
-    release(w, 70.0, 10.0);
-    assert_eq!(p.get_edits(), 1, "one change for the whole drag");
+    next_live_edit();
+    assert_eq!(p.get_edits(), 2);
     assert_eq!(p.get_value(), 16.0);
-    // Left lowers it.
+    assert_eq!(
+        p.get_edit_gesture(),
+        gesture,
+        "the same drag, the same gesture"
+    );
+    release(w, 70.0, 10.0);
+    assert_eq!(p.get_edits(), 2, "release sends nothing already sent");
+    assert_eq!(p.get_gesture(), 0, "no gesture outside a drag");
+    // Left lowers it, in a gesture of its own; release sends a value still waiting.
     press(w, 50.0, 14.0);
     drag_to(w, 42.0, 14.0);
     release(w, 42.0, 14.0);
     assert_eq!(p.get_value(), 14.0);
+    assert_eq!(p.get_edits(), 3);
+    assert_ne!(p.get_edit_gesture(), gesture);
 }
 
 #[test]
-fn escape_during_a_drag_keeps_the_value() {
+fn a_field_that_is_not_live_changes_once_on_release() {
+    let p = number_probe();
+    p.set_live(false);
+    let w = p.window();
+    press(w, 50.0, 14.0);
+    drag_to(w, 60.0, 12.0);
+    next_live_edit();
+    drag_to(w, 70.0, 10.0);
+    next_live_edit();
+    assert_eq!(p.get_edits(), 0, "nothing applies during the drag");
+    release(w, 70.0, 10.0);
+    assert_eq!(p.get_edits(), 1, "one change for the whole drag");
+    assert_eq!(p.get_value(), 16.0);
+}
+
+#[test]
+fn escape_during_a_drag_puts_the_value_back() {
     let p = number_probe();
     let w = p.window();
     press(w, 50.0, 14.0);
     drag_to(w, 90.0, 14.0);
+    next_live_edit();
+    assert_eq!(p.get_value(), 20.0, "applied live");
     key_on(w, Key::Escape);
+    assert_eq!(p.get_value(), 10.0, "back where the drag started");
+    let edits = p.get_edits();
     drag_to(w, 120.0, 14.0);
+    next_live_edit();
     release(w, 120.0, 14.0);
-    assert_eq!(p.get_edits(), 0);
+    assert_eq!(p.get_edits(), edits, "the cancelled drag sends no more");
     assert_eq!(p.get_value(), 10.0);
+    // Not live: Escape sends nothing at all.
+    p.set_live(false);
+    press(w, 50.0, 14.0);
+    drag_to(w, 90.0, 14.0);
+    key_on(w, Key::Escape);
+    release(w, 90.0, 14.0);
+    assert_eq!(p.get_edits(), edits);
+    assert_eq!(p.get_value(), 10.0);
+}
+
+#[test]
+fn a_field_being_typed_in_still_drags() {
+    let p = number_probe();
+    let w = p.window();
+    // A click types.
+    press(w, 50.0, 14.0);
+    release(w, 50.0, 14.0);
+    assert!(p.get_typing());
+    // A drag past the swipe threshold changes the value live, from what is typed.
+    w.dispatch_event(WindowEvent::KeyPressed { text: "2".into() });
+    w.dispatch_event(WindowEvent::KeyReleased { text: "2".into() });
+    press(w, 50.0, 14.0);
+    drag_to(w, 62.0, 14.0);
+    next_live_edit();
+    assert_eq!(p.get_edits(), 1);
+    assert_eq!(p.get_value(), 5.0, "2 and three steps");
+    assert_ne!(p.get_edit_gesture(), 0);
+    release(w, 62.0, 14.0);
+    assert!(p.get_typing(), "the field keeps the focus");
+    assert_eq!(p.get_gesture(), 0);
+    // Escape during such a drag puts the value back.
+    press(w, 50.0, 14.0);
+    drag_to(w, 70.0, 14.0);
+    next_live_edit();
+    assert_eq!(p.get_value(), 10.0);
+    key_on(w, Key::Escape);
+    assert_eq!(p.get_value(), 5.0);
+    release(w, 70.0, 14.0);
 }
 
 #[test]

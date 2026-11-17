@@ -3,7 +3,7 @@
 // toolkit-neutral rbs-ui crate: Slint has no recursive components, so Rust flattens
 // each window's layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions, Slider, VSlider } from "components.slint";
+import { Button, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions, Slider, VSlider, PanelTab } from "components.slint";
 import { CommandMenu } from "context_menu.slint";
 import { AppMenu, AppMenuButton } from "app_menu.slint";
 import { ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel } from "studio.slint";
@@ -176,74 +176,6 @@ component PanelContent inherits Rectangle {
     }
 }
 
-// A tab in a panel header: its title, underlined in the accent colour while it is the
-// shown one (no tab background, spec Frame).
-component Tab inherits Rectangle {
-    in property <TabData> tab;
-    in property <bool> selected;
-    // A stack with one panel is a window title, not a tab.
-    in property <bool> sole;
-    callback activate();
-    callback open-menu();
-    callback close();
-    // Double-click, or Shift+Escape (Escape alone stays with dialogs and fields).
-    callback maximize();
-    height: Tokens.size-control-lg;
-    width: title.preferred-width + 2 * Tokens.space-2;
-    border-radius: Tokens.radius-sm;
-    background: !selected && touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: AccessibleRole.tab;
-    accessible-label: tab.title;
-    accessible-item-selected: selected;
-    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it; Shift+Escape maximizes or restores it");
-    accessible-action-default => { activate(); }
-    forward-focus: focus;
-    focus := RingFocus {
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { activate(); return accept; }
-            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
-            if e.text == Key.Delete || e.text == Key.Backspace { close(); return accept; }
-            if e.text == Key.Escape && e.modifiers.shift { maximize(); return accept; }
-            reject
-        }
-    }
-    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
-    // under the pointer takes the press for itself (focus-on-click).
-    // Dragging the tab moves the panel (ADR-0049 decision 5); a press without a drag
-    // reaches the TouchArea inside as a click. Not while the layout is locked.
-    drag := DragArea {
-        allow-move: !Shell.locked;
-        data: Shell.panel-data(tab.id);
-        touch := TouchArea {
-            clicked => { focus.focus-pointer(); activate(); }
-            double-clicked => { maximize(); }
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
-            }
-        }
-    }
-    title := Text {
-        x: Tokens.space-2;
-        text: tab.title;
-        color: selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-        font-size: Tokens.type-label-size;
-        font-weight: selected && !sole ? Tokens.type-title-weight : Tokens.type-label-weight;
-        vertical-alignment: center;
-    }
-    Rectangle {
-        x: title.x;
-        width: title.preferred-width;
-        y: parent.height - Tokens.size-tab-indicator;
-        height: selected && !sole ? Tokens.size-tab-indicator : 0px;
-        background: Theme.accent;
-    }
-    Rectangle {
-        border-width: focus.has-focus ? Tokens.size-focus-ring : 0px;
-        border-color: Theme.border-focus;
-        border-radius: Tokens.radius-sm;
-    }
-}
-
 // A panel card (spec Frame): a rounded card with a header of the stack's tabs and its
 // actions (auto-hide, collapse, more), then the shown panel. Collapsed, only the
 // header is drawn; in a horizontal split it is a strip as wide as the header is high.
@@ -281,7 +213,7 @@ component StackView inherits Rectangle {
                 tabs := HorizontalLayout {
                     accessible-role: tab-list;
                     alignment: start;
-                    for t[i] in data.tabs: Tab {
+                    for t[i] in data.tabs: PanelTab {
                         tab: t;
                         sole: data.tabs.length < 2;
                         selected: i == data.active && !data.collapsed;
@@ -508,6 +440,7 @@ component TransitionChoice inherits Select {
 
 // The duration of the transition type on the rail; a cut has none.
 component TransitionDuration inherits NumberField {
+    live: false;
     label: @tr("Duration");
     unit: @tr("ms");
     value: Studio.transition-kind == 1 ? Studio.fade-duration
@@ -1047,6 +980,7 @@ component SceneTransitionCard inherits PopoverLayer {
                     accessible-role: none;
                 }
                 NumberField {
+                    live: false;
                     label: @tr("Own duration");
                     unit: @tr("ms");
                     value: Overlays.scene-transition-ms >= 0 ? Overlays.scene-transition-ms : root.kind-ms;

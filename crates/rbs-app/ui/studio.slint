@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine } from "components.slint";
+import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine, HintText as Hint, CaptionField as Field, MenuArea, SurfaceCard } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -526,13 +526,7 @@ export component ScenesPanel inherits Rectangle {
     changed asked => { if Studio.state == 1 { Studio.add-scene(); } }
     // A right-click outside the rows: the panel's own menu (Add scene).
     panel-menu := CommandMenu { context: "scenes"; }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                panel-menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { panel-menu.open({ x: x, y: y }); } }
     if Studio.scenes.length == 0: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -547,16 +541,14 @@ export component ScenesPanel inherits Rectangle {
         // button never arrives and the next one does. The wheel still scrolls.
         drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
-        TouchArea {
+        MenuArea {
             width: parent.width;
             height: max(rows.preferred-height, flick.view-height);
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    panel-menu.open({
-                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
-                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
-                    });
-                }
+            menu-at(x, y) => {
+                panel-menu.open({
+                    x: self.absolute-position.x - root.absolute-position.x + x,
+                    y: self.absolute-position.y - root.absolute-position.y + y,
+                });
             }
         }
         rows := VerticalLayout {
@@ -627,13 +619,7 @@ export component SourcesPanel inherits Rectangle {
     panel-menu := CommandMenu { context: "sources"; }
     // The empty state's Add source: the source types as a menu (ADR-0094 B1).
     add-menu := CommandMenu { context: "add-source"; }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                panel-menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { panel-menu.open({ x: x, y: y }); } }
     if Studio.sources.length == 0: EmptyState {
         y: header;
         width: parent.width;
@@ -652,16 +638,14 @@ export component SourcesPanel inherits Rectangle {
         // button never arrives and the next one does. The wheel still scrolls.
         drag-pan: false;
         // Under the rows: the empty space below them opens the panel's menu.
-        TouchArea {
+        MenuArea {
             width: parent.width;
             height: max(rows.preferred-height, flick.view-height);
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    panel-menu.open({
-                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
-                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
-                    });
-                }
+            menu-at(x, y) => {
+                panel-menu.open({
+                    x: self.absolute-position.x - root.absolute-position.x + x,
+                    y: self.absolute-position.y - root.absolute-position.y + y,
+                });
             }
         }
         rows := VerticalLayout {
@@ -1202,13 +1186,7 @@ component MeterView inherits Rectangle {
         // In Own levels the scene too, for "Use the source's level" (ADR-0091).
         target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     VerticalLayout {
         width: 100%;
         spacing: Tokens.space-1;
@@ -1293,13 +1271,7 @@ component HiddenStrip inherits Rectangle {
         context: "mixer-source";
         target: "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     HorizontalLayout {
         x: root.pad;
         y: root.pad;
@@ -1335,13 +1307,7 @@ component HiddenRow inherits Rectangle {
         context: "mixer-source";
         target: "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     HorizontalLayout {
         spacing: Tokens.space-2;
         VerticalLayout {
@@ -1413,13 +1379,7 @@ component MeterStrip inherits Rectangle {
         // In Own levels the scene too, for "Use the source's level" (ADR-0091).
         target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
-    TouchArea {
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                menu.open({ x: self.mouse-x, y: self.mouse-y });
-            }
-        }
-    }
+    MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     HorizontalLayout {
         x: root.pad;
         y: root.pad;
@@ -1910,17 +1870,15 @@ export component MixerPanel inherits Rectangle {
         content-width: self.width;
         content-height: max(strips.preferred-height, self.height);
         mouse-drag-pan-enabled: false;
-        TouchArea {
+        MenuArea {
             width: root.width;
             height: max(strips.preferred-height, root.height);
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    // Relative to the panel, where the menu is, whatever the scroll.
-                    mixer-menu.open({
-                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
-                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
-                    });
-                }
+            menu-at(x, y) => {
+                // Relative to the panel, where the menu is, whatever the scroll.
+                mixer-menu.open({
+                    x: self.absolute-position.x - root.absolute-position.x + x,
+                    y: self.absolute-position.y - root.absolute-position.y + y,
+                });
             }
         }
         strips := VerticalLayout {
@@ -2238,13 +2196,6 @@ export component LiveControlsPanel inherits Rectangle {
     }
 }
 
-// A one-line explanation under a field (U2: every option explains itself).
-component Hint inherits Text {
-    color: Theme.text-secondary;
-    font-size: Tokens.type-caption-size;
-    wrap: word-wrap;
-}
-
 // A section title that does not collapse (ADR-0076): the same look as SectionHeader,
 // with a rule to the end of the row, but plain text for screen readers.
 component SectionTitle inherits HorizontalLayout {
@@ -2317,18 +2268,6 @@ component Section inherits VerticalLayout {
             @children
         }
     }
-}
-
-component Field inherits VerticalLayout {
-    in property <string> label;
-    spacing: Tokens.space-1;
-    Text {
-        text: root.label;
-        color: Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        accessible-role: none;
-    }
-    @children
 }
 
 // Reports its place when the Library gear asks, so Properties can scroll to it.
@@ -2454,7 +2393,7 @@ component StyleFields inherits Section {
             index: data.shape;
             enabled: !data.locked;
             selected(i) => {
-                Studio.set-source-style(data.id, i, i == 0 ? data.radius : 0, data.border, data.border-width, data.border-color);
+                Studio.set-source-style(data.id, i, i == 0 ? data.radius : 0, data.border, data.border-width, data.border-color, 0);
             }
         }
     }
@@ -2467,7 +2406,7 @@ component StyleFields inherits Section {
                 value: data.radius;
                 enabled: !data.locked;
                 edited(v) => {
-                    Studio.set-source-style(data.id, 0, max(v, 0), data.border, data.border-width, data.border-color);
+                    Studio.set-source-style(data.id, 0, max(v, 0), data.border, data.border-width, data.border-color, self.gesture);
                 }
             }
         }
@@ -2493,7 +2432,7 @@ component StyleFields inherits Section {
         checked: data.border;
         enabled: !data.locked;
         toggled(on) => {
-            Studio.set-source-style(data.id, data.shape, data.radius, on, data.border-width, data.border-color);
+            Studio.set-source-style(data.id, data.shape, data.radius, on, data.border-width, data.border-color, 0);
         }
     }
     Shown {
@@ -2510,7 +2449,7 @@ component StyleFields inherits Section {
                     enabled: !data.locked;
                     edited(v) => {
                         if v > 0 {
-                            Studio.set-source-style(data.id, data.shape, data.radius, true, v, data.border-color);
+                            Studio.set-source-style(data.id, data.shape, data.radius, true, v, data.border-color, self.gesture);
                         }
                     }
                 }
@@ -2529,7 +2468,7 @@ component StyleFields inherits Section {
                         enabled: !data.locked;
                         picked(c) => {
                             if c != data.border-color {
-                                Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, c);
+                                Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, c, 0);
                             }
                         }
                     }
@@ -2539,7 +2478,7 @@ component StyleFields inherits Section {
                         enabled: !data.locked;
                         accepted(t) => {
                             if t != data.border-color {
-                                Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, t);
+                                Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, t, 0);
                             }
                             // A refused colour goes back to the one that stands; an
                             // accepted one arrives through `colour-text`.
@@ -2738,7 +2677,7 @@ component CropFields inherits Section {
             label: @tr("Crop left of {}", data.name);
             value: data.crop-l;
             enabled: can-edit;
-            edited(v) => { Studio.set-source-crop(data.id, max(v, 0), data.crop-t, data.crop-r, data.crop-b); }
+            edited(v) => { Studio.set-source-crop(data.id, max(v, 0), data.crop-t, data.crop-r, data.crop-b, self.gesture); }
         }
         NumberField {
             horizontal-stretch: 1;
@@ -2747,7 +2686,7 @@ component CropFields inherits Section {
             label: @tr("Crop right of {}", data.name);
             value: data.crop-r;
             enabled: can-edit;
-            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, max(v, 0), data.crop-b); }
+            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, max(v, 0), data.crop-b, self.gesture); }
         }
     }
     HorizontalLayout {
@@ -2759,7 +2698,7 @@ component CropFields inherits Section {
             label: @tr("Crop top of {}", data.name);
             value: data.crop-t;
             enabled: can-edit;
-            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, max(v, 0), data.crop-r, data.crop-b); }
+            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, max(v, 0), data.crop-r, data.crop-b, self.gesture); }
         }
         NumberField {
             horizontal-stretch: 1;
@@ -2768,7 +2707,7 @@ component CropFields inherits Section {
             label: @tr("Crop bottom of {}", data.name);
             value: data.crop-b;
             enabled: can-edit;
-            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, data.crop-r, max(v, 0)); }
+            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, data.crop-r, max(v, 0), self.gesture); }
         }
     }
     Text {
@@ -2820,7 +2759,7 @@ component TransformFields inherits VerticalLayout {
                 label: @tr("Position X of {}", data.name);
                 value: data.x;
                 enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h); }
+                edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h, self.gesture); }
             }
             NumberField {
                 horizontal-stretch: 1;
@@ -2829,7 +2768,7 @@ component TransformFields inherits VerticalLayout {
                 label: @tr("Position Y of {}", data.name);
                 value: data.y;
                 enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h); }
+                edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h, self.gesture); }
             }
         }
         HorizontalLayout {
@@ -2841,7 +2780,7 @@ component TransformFields inherits VerticalLayout {
                 label: @tr("Width of {}", data.name);
                 value: data.w;
                 enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h); }
+                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h, self.gesture); }
             }
             NumberField {
                 horizontal-stretch: 1;
@@ -2850,7 +2789,7 @@ component TransformFields inherits VerticalLayout {
                 label: @tr("Height of {}", data.name);
                 value: data.h;
                 enabled: !data.locked;
-                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
+                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v, self.gesture); }
             }
         }
     }
@@ -3351,6 +3290,7 @@ component AudioFields inherits VerticalLayout {
             HorizontalLayout {
                 spacing: Tokens.size-field-gap;
                 NumberField {
+                    live: false;
                     horizontal-stretch: 1;
                     preferred-width: 0;
                     label: @tr("Sync offset of {} in milliseconds", data.name);
@@ -3785,7 +3725,7 @@ component TextFields inherits VerticalLayout {
                 horizontal-stretch: 1;
                 label: @tr("Last lines of the file of {}", data.name);
                 value: t.file-lines;
-                edited(v) => { Studio.set-text-number(t.id, "file_lines", max(0, round(v))); }
+                edited(v) => { Studio.set-text-number(t.id, "file_lines", max(0, round(v)), self.gesture); }
             }
             VerticalLayout {
                 alignment: center;
@@ -3801,7 +3741,7 @@ component TextFields inherits VerticalLayout {
         label: @tr("Countdown of {}", data.name);
         options: [@tr("For a length"), @tr("Until a time")];
         index: t.until ? 1 : 0;
-        selected(i) => { if (i == 1) != t.until { Studio.set-text-countdown(t.id, i == 1, t.target, t.minutes * 60 + t.seconds); } }
+        selected(i) => { if (i == 1) != t.until { Studio.set-text-countdown(t.id, i == 1, t.target, t.minutes * 60 + t.seconds, 0); } }
     }
     if t.kind == 2 && !t.until: HorizontalLayout {
         spacing: Tokens.size-field-gap;
@@ -3812,7 +3752,7 @@ component TextFields inherits VerticalLayout {
                 label: @tr("Countdown minutes of {}", data.name);
                 unit: @tr("min");
                 value: t.minutes;
-                edited(v) => { Studio.set-text-countdown(t.id, false, t.target, max(0, round(v)) * 60 + t.seconds); }
+                edited(v) => { Studio.set-text-countdown(t.id, false, t.target, max(0, round(v)) * 60 + t.seconds, self.gesture); }
             }
         }
         Field {
@@ -3822,7 +3762,7 @@ component TextFields inherits VerticalLayout {
                 label: @tr("Countdown seconds of {}", data.name);
                 unit: @tr("s");
                 value: t.seconds;
-                edited(v) => { Studio.set-text-countdown(t.id, false, t.target, t.minutes * 60 + max(0, min(59, round(v)))); }
+                edited(v) => { Studio.set-text-countdown(t.id, false, t.target, t.minutes * 60 + max(0, min(59, round(v))), self.gesture); }
             }
         }
     }
@@ -3832,7 +3772,7 @@ component TextFields inherits VerticalLayout {
             label: @tr("Time of day {} counts down to", data.name);
             text: t.target;
             placeholder: @tr("HH:mm");
-            accepted(v) => { if v != t.target { Studio.set-text-countdown(t.id, true, v, t.minutes * 60 + t.seconds); } }
+            accepted(v) => { if v != t.target { Studio.set-text-countdown(t.id, true, v, t.minutes * 60 + t.seconds, 0); } }
         }
     }
     if t.kind >= 1: TextFormatField { text: t; name: data.name; }
@@ -3869,7 +3809,7 @@ component TextFields inherits VerticalLayout {
                 label: @tr("Font size of {} in pixels", data.name);
                 unit: @tr("px");
                 value: t.size;
-                edited(v) => { Studio.set-text-number(t.id, "size", max(1, min(1024, v))); }
+                edited(v) => { Studio.set-text-number(t.id, "size", max(1, min(1024, v)), self.gesture); }
             }
         }
         Field {
@@ -3890,7 +3830,7 @@ component TextFields inherits VerticalLayout {
         Checkbox {
             text: @tr("Bold");
             checked: t.bold;
-            toggled(on) => { Studio.set-text-number(t.id, "weight", on ? 700 : 400); }
+            toggled(on) => { Studio.set-text-number(t.id, "weight", on ? 700 : 400, 0); }
         }
         Checkbox {
             text: @tr("Italic");
@@ -3925,7 +3865,7 @@ component TextFields inherits VerticalLayout {
                     unit: @tr("px");
                     value: t.outline-width;
                     enabled: t.outline;
-                    edited(v) => { Studio.set-text-number(t.id, "outline_width", max(0, min(64, v))); }
+                    edited(v) => { Studio.set-text-number(t.id, "outline_width", max(0, min(64, v)), self.gesture); }
                 }
             }
             Field {
@@ -3966,7 +3906,7 @@ component TextFields inherits VerticalLayout {
                     unit: @tr("px");
                     value: t.shadow-x;
                     enabled: t.shadow;
-                    edited(v) => { Studio.set-text-number(t.id, "shadow_x", max(-256, min(256, v))); }
+                    edited(v) => { Studio.set-text-number(t.id, "shadow_x", max(-256, min(256, v)), self.gesture); }
                 }
             }
             Field {
@@ -3977,7 +3917,7 @@ component TextFields inherits VerticalLayout {
                     unit: @tr("px");
                     value: t.shadow-y;
                     enabled: t.shadow;
-                    edited(v) => { Studio.set-text-number(t.id, "shadow_y", max(-256, min(256, v))); }
+                    edited(v) => { Studio.set-text-number(t.id, "shadow_y", max(-256, min(256, v)), self.gesture); }
                 }
             }
             Field {
@@ -3988,7 +3928,7 @@ component TextFields inherits VerticalLayout {
                     unit: @tr("px");
                     value: t.shadow-blur;
                     enabled: t.shadow;
-                    edited(v) => { Studio.set-text-number(t.id, "shadow_blur", max(0, min(64, v))); }
+                    edited(v) => { Studio.set-text-number(t.id, "shadow_blur", max(0, min(64, v)), self.gesture); }
                 }
             }
         }
@@ -4019,7 +3959,7 @@ component TextFields inherits VerticalLayout {
                     unit: @tr("px");
                     value: t.padding;
                     enabled: t.background;
-                    edited(v) => { Studio.set-text-number(t.id, "padding", max(0, min(1024, v))); }
+                    edited(v) => { Studio.set-text-number(t.id, "padding", max(0, min(1024, v)), self.gesture); }
                 }
             }
         }
@@ -4316,6 +4256,7 @@ component SourceProperties inherits VerticalLayout {
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             NumberField {
+                live: false;
                 horizontal-stretch: 1;
                 preferred-width: 0;
                 label: @tr("Show duration of {} in milliseconds", data.name);
@@ -4381,6 +4322,7 @@ component SourceProperties inherits VerticalLayout {
             if data.custom-glide: Field {
                 label: @tr("Duration");
                 NumberField {
+                    live: false;
                     label: @tr("Glide duration of {} in milliseconds", data.name);
                     unit: @tr("ms");
                     value: data.glide-duration;
@@ -4489,7 +4431,6 @@ export component PropertiesPanel inherits Rectangle {
         }
     }
 }
-
 
 // One labelled fact in an output card: the name in secondary, the value in the body size.
 component OutputFact inherits HorizontalLayout {

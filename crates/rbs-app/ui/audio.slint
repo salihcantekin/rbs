@@ -138,6 +138,7 @@ export component AudioSettings inherits Rectangle {
                 summary: @tr("In LUFS");
                 fill: false;
                 NumberField {
+                    live: false;
                     label: @tr("Custom target");
                     unit: "LUFS";
                     value: Studio.loudness-target-lufs;
@@ -155,6 +156,7 @@ export component AudioSettings inherits Rectangle {
                 reset => { Studio.set-loudness-limit(-1); }
                 fill: false;
                 NumberField {
+                    live: false;
                     label: @tr("True-peak limit");
                     unit: "dBTP";
                     value: Studio.loudness-limit;

@@ -186,14 +186,24 @@ export component NumberFieldProbe inherits Window {
     width: 300px;
     height: 100px;
     in-out property <float> value: 10;
+    in property <bool> live: true;
     out property <int> edits;
+    // The gesture of the last edit, and the field's now (0 outside a drag).
+    out property <int> edit-gesture;
+    out property <int> gesture: field.gesture;
+    out property <bool> typing: field.focused;
     field := NumberField {
         x: 0px;
         y: 0px;
         width: 200px;
         label: "Width";
         value: root.value;
-        edited(v) => { root.edits += 1; root.value = v; }
+        live: root.live;
+        edited(v) => {
+            root.edits += 1;
+            root.edit-gesture = self.gesture;
+            root.value = v;
+        }
     }
     // literal-end
 }

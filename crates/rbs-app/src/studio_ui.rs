@@ -129,6 +129,19 @@ pub const VERTICAL_PANEL: &str = rbs_ui::command::VERTICAL_PANEL;
 /// editing state and not the main picture's (both number from 1).
 const VERTICAL_SEQ: u64 = 1 << 62;
 
+/// Marks the gestures the UI numbers (`Studio.gesture-serial`: a dragged field or the
+/// rotation slider), so they never meet the picture panels' own drag numbers.
+const UI_GESTURE: u64 = 1 << 61;
+
+/// The undo gesture of a UI drag number: 0 (or less) is none and never joins a step.
+fn ui_gesture(gesture: i32) -> u64 {
+    if gesture > 0 {
+        UI_GESTURE | gesture as u64
+    } else {
+        0
+    }
+}
+
 /// Each picture panel's state, with the codes of [`preview_state`].
 #[derive(Clone, Copy)]
 pub struct PictureStates {
@@ -2090,6 +2103,7 @@ impl StudioUi {
         self.send(Command::SetSourceSettings {
             id: SourceId::from_raw(id as u32),
             patch,
+            gesture: 0,
         });
     }
 
@@ -2156,6 +2170,7 @@ impl StudioUi {
         self.send(Command::SetSourceSettings {
             id: SourceId::from_raw(id as u32),
             patch: std::iter::once((key.to_owned(), value)).collect(),
+            gesture: 0,
         });
     }
 
@@ -2177,6 +2192,7 @@ impl StudioUi {
         self.send(Command::SetSourceSettings {
             id: SourceId::from_raw(id as u32),
             patch,
+            gesture: 0,
         });
     }
 
@@ -2330,7 +2346,7 @@ impl StudioUi {
         self.send(Command::TransformSource {
             id: SourceId::from_raw(id as u32),
             op: TransformOp::SetAngle(degrees),
-            gesture: gesture.max(0) as u64,
+            gesture: ui_gesture(gesture),
             canvas: self.props_target(id),
         });
     }
@@ -2843,27 +2859,29 @@ impl StudioUi {
 
     /// A video source's box on the canvas, in canvas pixels (the Properties fields;
     /// the picture panel's drags go through [`PreviewEdit`], numbered).
-    pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+    /// Boxes that share a non-zero `gesture` (one drag of a field) are one undo step.
+    pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32, gesture: i32) {
         self.deleted.clear();
         self.send_box(
             0,
             id,
             SourceBox::new([x, y], [w, h]),
-            0,
+            ui_gesture(gesture),
             self.props_target(id),
         );
     }
 
     /// Source pixels cut from each edge of a video source's picture (the Properties
     /// fields, ADR-0058); the box changes so the picture keeps its scale.
-    pub fn set_source_crop(&mut self, id: i32, crop: [i32; 4]) {
+    /// Crops that share a non-zero `gesture` (one drag of a field) are one undo step.
+    pub fn set_source_crop(&mut self, id: i32, crop: [i32; 4], gesture: i32) {
         if self.host.is_none() {
             return;
         }
         self.deleted.clear();
         self.send(Command::SetSourceCrop {
             seq: 0,
-            gesture: 0,
+            gesture: ui_gesture(gesture),
             id: SourceId::from_raw(id as u32),
             crop: crop.map(|v| v.max(0) as u32),
             keep_scale: true,
@@ -3000,6 +3018,7 @@ impl StudioUi {
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
     /// 0 rectangle, 1 circle, 2 ellipse, 3 triangle, 4 arrow. A colour that is not
     /// `#rrggbb` or `#rrggbbaa` changes nothing.
+    #[allow(clippy::too_many_arguments)] // One argument per field of the form, and its drag.
     pub fn set_source_style(
         &mut self,
         id: i32,
@@ -3008,6 +3027,7 @@ impl StudioUi {
         border: bool,
         width: f32,
         color: &str,
+        gesture: i32,
     ) {
         let Some(color) = rbs_api::types::parse_color(color.trim()) else {
             return;
@@ -3026,7 +3046,7 @@ impl StudioUi {
             .with_shadow(shadow);
         self.deleted.clear();
         self.send(Command::SetSourceStyle {
-            gesture: 0,
+            gesture: ui_gesture(gesture),
             id: SourceId::from_raw(id as u32),
             style,
             canvas: self.props_target(id),
@@ -5118,6 +5138,12 @@ impl StudioUi {
     }
 
     fn patch_text(&mut self, id: i32, patch: text_props::Patch) {
+        self.patch_text_in(id, patch, 0);
+    }
+
+    /// [`Self::patch_text`] as part of a field's drag (`gesture` from the UI, 0 for
+    /// none): the patches of one drag are one undo step.
+    fn patch_text_in(&mut self, id: i32, patch: text_props::Patch, gesture: i32) {
         if patch.is_empty() || !self.text_settings.contains_key(&id) {
             return;
         }
@@ -5125,6 +5151,7 @@ impl StudioUi {
         self.send(Command::SetSourceSettings {
             id: SourceId::from_raw(id as u32),
             patch,
+            gesture: ui_gesture(gesture),
         });
     }
 
@@ -5145,9 +5172,11 @@ impl StudioUi {
         self.patch_text(id, text_props::value_patch(key, value));
     }
 
-    pub fn set_text_number(&mut self, id: i32, key: &str, value: f32) {
+    /// A number of the Text tab; edits that share a non-zero `gesture` (one drag of
+    /// the field) are one undo step.
+    pub fn set_text_number(&mut self, id: i32, key: &str, value: f32, gesture: i32) {
         if value.is_finite() {
-            self.patch_text(id, text_props::number_patch(key, f64::from(value)));
+            self.patch_text_in(id, text_props::number_patch(key, f64::from(value)), gesture);
         }
     }
 
@@ -5167,8 +5196,21 @@ impl StudioUi {
         self.patch_text(id, patch);
     }
 
-    pub fn set_text_countdown(&mut self, id: i32, until: bool, target: &str, seconds: i32) {
-        self.patch_text(id, text_props::countdown_patch(until, target, seconds));
+    /// A countdown's end; edits that share a non-zero `gesture` (one drag of a field)
+    /// are one undo step.
+    pub fn set_text_countdown(
+        &mut self,
+        id: i32,
+        until: bool,
+        target: &str,
+        seconds: i32,
+        gesture: i32,
+    ) {
+        self.patch_text_in(
+            id,
+            text_props::countdown_patch(until, target, seconds),
+            gesture,
+        );
     }
 
     /// Fit box to text.
@@ -8152,6 +8194,19 @@ fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_gestures_never_meet_the_picture_panels_numbers() {
+        assert_eq!(ui_gesture(0), 0, "no gesture stays none");
+        assert_eq!(ui_gesture(-3), 0);
+        assert_eq!(ui_gesture(1), UI_GESTURE | 1);
+        assert_ne!(ui_gesture(1), 1, "the picture panel's first drag");
+        assert_eq!(
+            ui_gesture(1) & VERTICAL_SEQ,
+            0,
+            "nor the vertical picture's mark"
+        );
+    }
 
     #[test]
     fn the_stream_card_names_a_hold_scene_fallback_only_while_held() {
