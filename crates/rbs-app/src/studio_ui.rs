@@ -492,6 +492,9 @@ pub struct StudioUi {
     dest_editor: Option<destinations::Editor>,
     /// Bumped when Rust sets the editor's text fields.
     dest_serial: u32,
+    /// The main canvas's running destinations, each with when it arrived (the live
+    /// chip's list, ADR-0127 decision 17).
+    live_dests: Vec<(rbs_api::types::LiveDestination, Instant)>,
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111).
     pub vertical_flags: VerticalFlags,
     /// What the Stream section shows for a vertical stream not saved yet.
@@ -727,6 +730,7 @@ impl StudioUi {
             destinations_note: String::new(),
             dest_editor: None,
             dest_serial: 0,
+            live_dests: Vec::new(),
             vertical_flags: VerticalFlags::default(),
             no_stream: StreamProfile::new(),
             st_live: None,
@@ -5846,6 +5850,7 @@ impl StudioUi {
                 Err(why) => self.stream_note = why,
             },
             Update::DestinationKey(id, r) => self.dest_key_saved(id, r),
+            Update::LiveDestinations(c, rows) => self.live_destinations_changed(c, rows),
             Update::StreamKey(r) => match r {
                 Ok(saved) => {
                     self.stream.key_saved = saved;

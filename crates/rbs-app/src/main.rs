@@ -1635,6 +1635,11 @@ impl Ctx {
             .unwrap_or_default()
             .into();
         app.main.global::<Shell>().set_live_duration(text.clone());
+        // The live chip's list: each destination's time on air ticks too.
+        if !app.studio.live_destination_count().is_empty() {
+            let dests = studio_ui::destinations::live_model(&app.studio.live_destination_rows());
+            app.main.global::<Shell>().set_live_dests(dests);
+        }
         app.main
             .global::<Shell>()
             .set_rec_paused_for(paused.clone());
@@ -2727,9 +2732,13 @@ impl Ctx {
             .map(|d| clock_text(d.as_secs()))
             .unwrap_or_default()
             .into();
+        let dest_count: slint::SharedString = app.studio.live_destination_count().into();
+        let dests = studio_ui::destinations::live_model(&app.studio.live_destination_rows());
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
+            g.set_live_dest_count(dest_count.clone());
+            g.set_live_dests(dests.clone());
             g.set_rec_paused_for(paused_for.clone());
             g.set_st_held_for(held_for.clone());
             g.set_live_outputs(live.outputs_text().into());
@@ -3118,6 +3127,16 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     on!(on_toast_undo, |app| {
         if app.toast.is_some() {
             app.undo();
+        }
+    });
+    on!(on_live_dest_stop, |app, id: i32| {
+        if let Ok(id) = u32::try_from(id) {
+            app.studio.live_dest_stop(id);
+        }
+    });
+    on!(on_live_dest_retry, |app, id: i32| {
+        if let Ok(id) = u32::try_from(id) {
+            app.studio.live_dest_retry(id);
         }
     });
     on!(on_toast_dismiss, |app| {

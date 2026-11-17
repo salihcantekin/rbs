@@ -1271,6 +1271,11 @@ pub enum Command {
     /// ([`crate::stream_destinations::key_account`], ADR-0127 decision 1); answered
     /// with [`Update::DestinationKey`].
     SaveDestinationKey(u32, Option<Secret>),
+    /// Start destination `.0` again while its canvas streams, from the live chip's
+    /// list (ADR-0127 decision 17): `stream.destination.start`.
+    StartDestination(u32),
+    /// Stop destination `.0` while the others go on: `stream.destination.stop`.
+    StopDestination(u32),
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
@@ -2036,6 +2041,8 @@ struct CanvasOutputs {
     /// The destinations of the running stream, the anchor's among them; empty while
     /// nothing streams.
     destinations: Vec<LiveDestination>,
+    /// The rows last sent with [`Update::LiveDestinations`], without their time on air.
+    destinations_shown: Vec<api::LiveDestination>,
     /// Recording protection ended the recording (ADR-0090 decision 3): the reason for
     /// its summary once the tail is in.
     protection_stop: Option<String>,
@@ -2237,6 +2244,7 @@ impl Default for CanvasOutputs {
             auto_recording: false,
             streaming: None,
             destinations: Vec::new(),
+            destinations_shown: Vec::new(),
             protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
             stream_state: api::StreamState::Idle { last: None },
@@ -2785,6 +2793,9 @@ pub enum Update {
     /// A control API client turned a stream destination on or off
     /// (`stream.destination.set_enabled`, protocol 1.77); the UI saves the section.
     StreamDestinations(Destinations),
+    /// The destinations of a canvas's running stream changed state, counters or error
+    /// (ADR-0127 decision 17): the live chip's list; empty once the stream ends.
+    LiveDestinations(OutputCanvas, Vec<api::LiveDestination>),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
     TokensChanged,
@@ -5042,6 +5053,22 @@ impl Host {
             Command::SaveVerticalStreamKey(key) => {
                 let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
                 notify(Update::VerticalStreamKey(result));
+            }
+            Command::StartDestination(id) => {
+                self.run_ui_api(
+                    rbs_api::Command::StreamDestinationStart(rbs_api::request::DestinationRef {
+                        id,
+                    }),
+                    notify,
+                );
+            }
+            Command::StopDestination(id) => {
+                self.run_ui_api(
+                    rbs_api::Command::StreamDestinationStop(rbs_api::request::DestinationRef {
+                        id,
+                    }),
+                    notify,
+                );
             }
             Command::SaveDestinationKey(id, key) => {
                 let account = crate::stream_destinations::key_account(&self.key_account, id);
@@ -8341,6 +8368,11 @@ impl Host {
                 .map(|r| api::LiveDestination { on_air_ms: 0, ..r })
                 .collect()
         };
+        let rows_shown = without_time(&rows);
+        if rows_shown != self.outs[slot(c)].destinations_shown {
+            self.outs[slot(c)].destinations_shown = rows_shown;
+            notify(Update::LiveDestinations(c, rows.clone()));
+        }
         let rows_changed = match &self.outs[slot(c)].stream_state {
             api::StreamState::Live { destinations, .. } => {
                 without_time(destinations) != without_time(&rows)
@@ -8417,6 +8449,10 @@ impl Host {
         let failure = failure.or(failed);
         self.outs[slot(c)].streaming = None;
         self.outs[slot(c)].destinations.clear();
+        if !self.outs[slot(c)].destinations_shown.is_empty() {
+            self.outs[slot(c)].destinations_shown.clear();
+            notify(Update::LiveDestinations(c, Vec::new()));
+        }
         self.outs[slot(c)].hold = HoldPlan::default();
         self.mark_stream(c, false);
         // A recording started with the stream outlives a stream that failed: it is the
