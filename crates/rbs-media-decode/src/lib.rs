@@ -354,6 +354,156 @@ pub trait MediaDecoderFactory: AdapterFactory {
     }
 }
 
+/// How a stored picture turns to display upright: a track's rotation (an MP4 or
+/// QuickTime display matrix, Media Foundation's `MF_MT_VIDEO_ROTATION`). An adapter
+/// hands out upright pictures (port invariant 12), turning them itself.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rotation {
+    /// Upright as stored.
+    #[default]
+    None,
+    /// A quarter turn clockwise (a phone held upright, the camera on the left).
+    Clockwise90,
+    /// A half turn.
+    Half,
+    /// A quarter turn counter-clockwise.
+    Clockwise270,
+}
+
+impl Rotation {
+    /// The rotation of a turn of `degrees` clockwise, to the nearest quarter turn.
+    pub fn from_clockwise_degrees(degrees: f64) -> Self {
+        if !degrees.is_finite() {
+            return Self::None;
+        }
+        match ((degrees / 90.0).round() as i64).rem_euclid(4) {
+            1 => Self::Clockwise90,
+            2 => Self::Half,
+            3 => Self::Clockwise270,
+            _ => Self::None,
+        }
+    }
+
+    /// Whether the width and height swap.
+    pub fn swaps_sides(self) -> bool {
+        matches!(self, Self::Clockwise90 | Self::Clockwise270)
+    }
+
+    /// The upright size of a `width` x `height` stored picture.
+    pub fn upright(self, width: u32, height: u32) -> (u32, u32) {
+        if self.swaps_sides() {
+            (height, width)
+        } else {
+            (width, height)
+        }
+    }
+}
+
+/// Turns a tightly packed 4-byte-per-pixel picture of `width` x `height` upright into
+/// `out` (cleared first), for the copy path; returns the upright size. `None` when
+/// `src` is shorter than the picture.
+pub fn rotate_rgba(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    rotation: Rotation,
+    out: &mut Vec<u8>,
+) -> Option<(u32, u32)> {
+    let (w, h) = (width as usize, height as usize);
+    let len = w.checked_mul(h)?.checked_mul(4)?;
+    let src = src.get(..len)?;
+    out.clear();
+    let (uw, uh) = rotation.upright(width, height);
+    if rotation == Rotation::None {
+        out.extend_from_slice(src);
+        return Some((uw, uh));
+    }
+    out.resize(len, 0);
+    let ow = uw as usize;
+    // Upright row `y` starts at stored pixel `base + y * down`, and each next upright
+    // pixel lies `step` stored pixels on: strides, with no choice inside the loop.
+    let (w_i, h_i) = (w as isize, h as isize);
+    let (base, down, step) = match rotation {
+        // Upright (x, y) is stored (y, h - 1 - x).
+        Rotation::Clockwise90 => ((h_i - 1) * w_i, 1, -w_i),
+        // Upright (x, y) is stored (w - 1 - x, h - 1 - y).
+        Rotation::Half => ((h_i - 1) * w_i + w_i - 1, -w_i, -1),
+        // Upright (x, y) is stored (w - 1 - y, x).
+        _ => (w_i - 1, -1, w_i),
+    };
+    for (y, row) in out.chunks_exact_mut(ow * 4).enumerate() {
+        let mut at = base + y as isize * down;
+        for pixel in row.chunks_exact_mut(4) {
+            let i = at as usize * 4;
+            pixel.copy_from_slice(&src[i..i + 4]);
+            at += step;
+        }
+    }
+    Some((uw, uh))
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    /// A 3 x 2 picture whose pixels are numbered 0..6 in the first byte.
+    fn numbered() -> Vec<u8> {
+        (0u8..6).flat_map(|n| [n, 0, 0, 255]).collect()
+    }
+
+    fn firsts(bytes: &[u8]) -> Vec<u8> {
+        bytes.chunks_exact(4).map(|p| p[0]).collect()
+    }
+
+    #[test]
+    fn each_quarter_turn_moves_the_pixels_clockwise() {
+        // 0 1 2
+        // 3 4 5
+        let mut out = Vec::new();
+        let cases = [
+            (Rotation::None, (3, 2), vec![0, 1, 2, 3, 4, 5]),
+            // 3 0
+            // 4 1
+            // 5 2
+            (Rotation::Clockwise90, (2, 3), vec![3, 0, 4, 1, 5, 2]),
+            (Rotation::Half, (3, 2), vec![5, 4, 3, 2, 1, 0]),
+            // 2 5
+            // 1 4
+            // 0 3
+            (Rotation::Clockwise270, (2, 3), vec![2, 5, 1, 4, 0, 3]),
+        ];
+        for (rotation, size, want) in cases {
+            assert_eq!(
+                rotate_rgba(&numbered(), 3, 2, rotation, &mut out),
+                Some(size)
+            );
+            assert_eq!(firsts(&out), want, "{rotation:?}");
+        }
+        assert_eq!(
+            rotate_rgba(&numbered()[..20], 3, 2, Rotation::Half, &mut out),
+            None
+        );
+    }
+
+    #[test]
+    fn degrees_round_to_quarter_turns() {
+        assert_eq!(
+            Rotation::from_clockwise_degrees(90.0),
+            Rotation::Clockwise90
+        );
+        assert_eq!(
+            Rotation::from_clockwise_degrees(-90.0),
+            Rotation::Clockwise270
+        );
+        assert_eq!(Rotation::from_clockwise_degrees(180.0), Rotation::Half);
+        assert_eq!(Rotation::from_clockwise_degrees(-180.0), Rotation::Half);
+        assert_eq!(Rotation::from_clockwise_degrees(359.0), Rotation::None);
+        assert_eq!(Rotation::from_clockwise_degrees(f64::NAN), Rotation::None);
+        assert_eq!(Rotation::Clockwise90.upright(160, 90), (90, 160));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -37,7 +37,11 @@ mod windows {
     }
 
     fn open() -> Option<Box<dyn MediaDecoder>> {
-        match MfMediaFactory::new().open(&fixture("clip.mp4")) {
+        open_file("clip.mp4")
+    }
+
+    fn open_file(name: &str) -> Option<Box<dyn MediaDecoder>> {
+        match MfMediaFactory::new().open(&fixture(name)) {
             Ok(decoder) => Some(decoder),
             Err(DecodeError::Unsupported(why)) => {
                 eprintln!("skipped: {why}");
@@ -108,6 +112,41 @@ mod windows {
                 map(p)
             );
         }
+    }
+
+    /// `fixtures/rotated.mp4` is `clip.mp4` with a quarter turn clockwise in its track
+    /// header: upright it is 90x160, green at the top right and red at the bottom left.
+    #[test]
+    fn a_rotated_track_is_turned_upright() {
+        let Some(mut dec) = open_file("rotated.mp4") else {
+            return;
+        };
+        let mut count = 0u64;
+        while let Some(p) = dec.next_picture().unwrap() {
+            assert_eq!(
+                (p.picture.width, p.picture.height),
+                (90, 160),
+                "picture {count}"
+            );
+            assert_eq!(p.pts, Some(ms(100 * count)), "picture {count}");
+            let green = pixel(&p, 80, 8);
+            let red = pixel(&p, 8, 150);
+            assert!(
+                near(green, [0, 255, 0, 255]) && near(red, [255, 0, 0, 255]),
+                "picture {count}: top right {green:?}, bottom left {red:?}\n{}",
+                map(&p)
+            );
+            count += 1;
+            assert!(count < 50, "the stream must end");
+        }
+        assert_eq!(count, 5);
+        // After a seek the pictures are still upright.
+        dec.seek(ms(200)).unwrap();
+        let p = dec
+            .next_picture()
+            .unwrap()
+            .expect("a picture after the seek");
+        assert_eq!((p.picture.width, p.picture.height), (90, 160));
     }
 
     #[test]
@@ -260,6 +299,60 @@ mod windows {
             context.Unmap(&staging, 0);
             out
         }
+    }
+
+    #[test]
+    fn a_rotated_track_stays_native_and_upright() {
+        use rbs_core::media::{FramePayload, NativeSurface};
+        use rbs_media_decode::DecodeTarget;
+
+        let Some((luid, device)) = first_adapter() else {
+            eprintln!("skipped: no DXGI adapter");
+            return;
+        };
+        let mut dec = match MfMediaFactory::new()
+            .open_for(&fixture("rotated.mp4"), &DecodeTarget::adapter(luid))
+        {
+            Ok(decoder) => decoder,
+            Err(DecodeError::Unsupported(why)) => {
+                eprintln!("skipped: {why}");
+                return;
+            }
+            Err(e) => panic!("open: {e}"),
+        };
+        let mut count = 0u64;
+        while let Some(p) = dec.next_picture().unwrap() {
+            assert_eq!(
+                (p.picture.width, p.picture.height),
+                (90, 160),
+                "picture {count}"
+            );
+            let PictureData::Native(frame) = p.picture.data() else {
+                eprintln!("skipped: this machine decodes the fixture off the GPU");
+                return;
+            };
+            assert_eq!(
+                (frame.format().size.width, frame.format().size.height),
+                (90, 160)
+            );
+            let FramePayload::Native {
+                surface: NativeSurface::D3dSharedHandle { handle, .. },
+                ..
+            } = *frame.payload()
+            else {
+                panic!("picture {count} is not a shared handle");
+            };
+            // B, G, R, A: green top right, red bottom left.
+            let green = shared_pixel(&device, handle, 80, 8);
+            let red = shared_pixel(&device, handle, 8, 150);
+            assert!(
+                near(green, [0, 255, 0, 255]) && near(red, [0, 0, 255, 255]),
+                "picture {count}: top right {green:?}, bottom left {red:?}"
+            );
+            count += 1;
+            assert!(count < 50, "the stream must end");
+        }
+        assert_eq!(count, 5);
     }
 
     #[test]
