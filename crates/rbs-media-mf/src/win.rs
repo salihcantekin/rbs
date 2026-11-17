@@ -221,11 +221,14 @@ struct Sound {
     channels: u16,
 }
 
-/// The turn still to apply to the reader's pictures (spec invariant 12). When the
-/// native type states `MF_MT_VIDEO_ROTATION`, the source reader's video processor
-/// already turns the pictures upright (its output is the stored size with the sides
-/// swapped), so nothing is left. Otherwise the track header's display matrix
-/// (`edits.rs`) is the turn, unless the output size shows it was applied anyway.
+/// The turn still to apply to the reader's pictures (spec invariant 12).
+///
+/// The turn comes from the picture track's display matrix (`edits.rs`), or from
+/// `MF_MT_VIDEO_ROTATION` (counted counter-clockwise) for a file without one. The
+/// source reader's video processor applies a stated `MF_MT_VIDEO_ROTATION` itself
+/// (measured on Windows 11 for a quarter turn), so a quarter turn is left only when
+/// the output picture (its display aperture) still lies the way the stored one does;
+/// a half turn, which no size shows, is left only when the native type states none.
 fn left_to_turn(path: &Path, native: &IMFMediaType, shape: &VideoShape) -> Rotation {
     // SAFETY: attribute reads on a native type.
     let (stated, stored) = unsafe {
@@ -234,18 +237,22 @@ fn left_to_turn(path: &Path, native: &IMFMediaType, shape: &VideoShape) -> Rotat
             native.GetUINT64(&MF_MT_FRAME_SIZE).ok(),
         )
     };
-    if stated != 0 {
-        return Rotation::None;
-    }
     let rotation = std::fs::File::open(path)
         .ok()
         .and_then(|mut file| crate::edits::video_rotation(&mut file))
-        .unwrap_or_default();
-    let turned_already = stored.is_some_and(|size| {
-        let (w, h) = ((size >> 32) as u32, size as u32);
-        w != h && (shape.frame_w, shape.frame_h) == (h, w)
-    });
-    if rotation.swaps_sides() && turned_already {
+        .unwrap_or_else(|| Rotation::from_clockwise_degrees(-f64::from(stated)));
+    if rotation.swaps_sides() {
+        let lies_as_stored = stored.is_none_or(|size| {
+            let (w, h) = ((size >> 32) as u32, size as u32);
+            let (cw, ch) = (shape.crop.width, shape.crop.height);
+            w == h || cw == ch || (w > h) == (cw > ch)
+        });
+        if lies_as_stored {
+            rotation
+        } else {
+            Rotation::None
+        }
+    } else if stated != 0 {
         Rotation::None
     } else {
         rotation

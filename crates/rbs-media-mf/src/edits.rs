@@ -184,7 +184,11 @@ fn picture_track_rotation(trak: &[u8]) -> Option<Rotation> {
             tkhd.get(start..start + 4)?.try_into().ok()?,
         )))
     };
-    let (a, b) = (value(0)?, value(1)?);
+    let (a, b, c, d) = (value(0)?, value(1)?, value(3)?, value(4)?);
+    if a * d - b * c < 0.0 {
+        // A mirrored track: not a turn, so it is shown as stored.
+        return Some(Rotation::None);
+    }
     // The matrix [a b; c d] turns by atan2(b, a), clockwise on screen (y down).
     Some(Rotation::from_clockwise_degrees(b.atan2(a).to_degrees()))
 }
@@ -494,6 +498,8 @@ mod tests {
             ([0, ONE, -ONE, 0], Rotation::Clockwise90),
             ([-ONE, 0, 0, -ONE], Rotation::Half),
             ([0, -ONE, ONE, 0], Rotation::Clockwise270),
+            // Mirrored left to right: no turn.
+            ([-ONE, 0, 0, ONE], Rotation::None),
         ];
         for (matrix, want) in cases {
             // A sound track first: only the picture track counts.

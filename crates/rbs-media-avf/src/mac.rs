@@ -8,14 +8,19 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::time::Duration;
 
+use objc2::Message;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
+use objc2::runtime::ProtocolObject;
 use objc2_av_foundation::{
     AVAsset, AVAssetReader, AVAssetReaderOutput, AVAssetReaderStatus, AVAssetReaderTrackOutput,
     AVAssetReaderVideoCompositionOutput, AVAssetTrack, AVMediaType, AVMediaTypeAudio,
-    AVMediaTypeVideo, AVURLAsset, AVVideoComposition,
+    AVMediaTypeVideo, AVMutableVideoComposition, AVMutableVideoCompositionInstruction,
+    AVMutableVideoCompositionLayerInstruction, AVURLAsset, AVVideoCompositionInstructionProtocol,
+    AVVideoCompositionLayerInstruction,
 };
 use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::CGSize;
 use objc2_core_foundation::{CFString, CFType};
 use objc2_core_media::{
     CMAudioFormatDescriptionGetStreamBasicDescription, CMFormatDescription, CMSampleBuffer, CMTime,
@@ -268,8 +273,105 @@ fn first_track(
 fn track_rotation(track: &AVAssetTrack) -> Rotation {
     // SAFETY: a plain property read of a live track.
     let t = unsafe { track.preferredTransform() };
+    if t.a * t.d - t.b * t.c < 0.0 {
+        // A mirrored track: not a turn, so it is shown as stored (as on Windows).
+        return Rotation::None;
+    }
     // The matrix [a b; c d] turns by atan2(b, a), clockwise on screen (y down).
     Rotation::from_clockwise_degrees(t.b.atan2(t.a).to_degrees())
+}
+
+/// A video composition of `track` alone, turned by its `preferredTransform`: the
+/// pictures keep the track's own timing (a variable rate stays variable) and the
+/// composition works in the track's own colour tags, so a native picture is still
+/// described by `track_color`.
+fn turned_composition(
+    asset: &AVAsset,
+    track: &AVAssetTrack,
+) -> Retained<AVMutableVideoComposition> {
+    // SAFETY: plain property reads and setters on live, newly made objects; the
+    // composition is configured before a reader output uses it.
+    unsafe {
+        let t = track.preferredTransform();
+        let natural = track.naturalSize();
+        let composition = AVMutableVideoComposition::videoComposition();
+        composition.setRenderSize(CGSize {
+            width: (t.a * natural.width + t.c * natural.height).abs(),
+            height: (t.b * natural.width + t.d * natural.height).abs(),
+        });
+        let min = track.minFrameDuration();
+        let frame = if min.flags.contains(CMTimeFlags::Valid) && min.value > 0 {
+            min
+        } else {
+            CMTime {
+                value: 1,
+                timescale: 60,
+                flags: CMTimeFlags::Valid,
+                epoch: 0,
+            }
+        };
+        composition.setFrameDuration(frame);
+        composition.setSourceTrackIDForFrameTiming(track.trackID());
+        let layer =
+            AVMutableVideoCompositionLayerInstruction::videoCompositionLayerInstructionWithAssetTrack(
+                track,
+            );
+        let start = CMTime {
+            value: 0,
+            timescale: 1,
+            flags: CMTimeFlags::Valid,
+            epoch: 0,
+        };
+        layer.setTransform_atTime(t, start);
+        let instruction = AVMutableVideoCompositionInstruction::videoCompositionInstruction();
+        instruction.setTimeRange(CMTimeRange {
+            start,
+            duration: asset.duration(),
+        });
+        let layers: Retained<NSArray<AVVideoCompositionLayerInstruction>> =
+            NSArray::from_retained_slice(&[Retained::into_super(layer)]);
+        instruction.setLayerInstructions(&layers);
+        let instructions: Retained<
+            NSArray<ProtocolObject<dyn AVVideoCompositionInstructionProtocol>>,
+        > = NSArray::from_retained_slice(&[ProtocolObject::from_retained(instruction)]);
+        composition.setInstructions(&instructions);
+        let [primaries, matrix, transfer] = color_tags(track);
+        composition.setColorPrimaries(primaries.as_deref());
+        composition.setColorYCbCrMatrix(matrix.as_deref());
+        composition.setColorTransferFunction(transfer.as_deref());
+        composition
+    }
+}
+
+/// The track's colour primaries, Y'CbCr matrix and transfer tags as strings, each
+/// `None` when the track has none.
+fn color_tags(track: &AVAssetTrack) -> [Option<Retained<NSString>>; 3] {
+    // SAFETY: a plain property read of a live track.
+    let descriptions = unsafe { track.formatDescriptions() };
+    let Some(first) = descriptions.firstObject() else {
+        return [None, None, None];
+    };
+    // SAFETY: `formatDescriptions` holds `CMFormatDescription`s, which are CF objects;
+    // the reference lives as long as `first`.
+    let description: &CMFormatDescription =
+        unsafe { &*(Retained::as_ptr(&first).cast::<CMFormatDescription>()) };
+    // SAFETY: framework string constants, valid for the life of the process.
+    let keys = unsafe {
+        [
+            kCMFormatDescriptionExtension_ColorPrimaries,
+            kCMFormatDescriptionExtension_YCbCrMatrix,
+            kCMFormatDescriptionExtension_TransferFunction,
+        ]
+    };
+    keys.map(|key| {
+        // SAFETY: reads a tag of a live description.
+        let value = unsafe { description.extension(key) }?;
+        let text: &CFString = (*value).downcast_ref::<CFString>()?;
+        // SAFETY: CFString and NSString are toll-free bridged; the retain keeps the
+        // string alive after `value` drops.
+        let text: &NSString = unsafe { &*(text as *const CFString).cast::<NSString>() };
+        Some(text.retain())
+    })
 }
 
 /// A reader of `track` from `cursor` on. A `rotated` track is read through a video
@@ -293,10 +395,7 @@ fn start_reader(
                 &tracks,
                 Some(settings),
             );
-            // The synchronous constructor is deprecated in favour of an async one that
-            // needs a run loop the worker does not have; the asset is loaded already.
-            #[allow(deprecated)]
-            let composition = AVVideoComposition::videoCompositionWithPropertiesOfAsset(asset);
+            let composition = turned_composition(asset, track);
             output.setVideoComposition(Some(&composition));
             Retained::into_super(output)
         } else {

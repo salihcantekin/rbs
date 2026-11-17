@@ -414,20 +414,30 @@ pub fn rotate_rgba(
     let len = w.checked_mul(h)?.checked_mul(4)?;
     let src = src.get(..len)?;
     out.clear();
-    out.reserve(len);
     let (uw, uh) = rotation.upright(width, height);
-    let (ow, oh) = (uw as usize, uh as usize);
-    for y in 0..oh {
-        for x in 0..ow {
-            // The stored pixel shown at upright (x, y).
-            let (sx, sy) = match rotation {
-                Rotation::None => (x, y),
-                Rotation::Clockwise90 => (y, h - 1 - x),
-                Rotation::Half => (w - 1 - x, h - 1 - y),
-                Rotation::Clockwise270 => (w - 1 - y, x),
-            };
-            let at = (sy * w + sx) * 4;
-            out.extend_from_slice(&src[at..at + 4]);
+    if rotation == Rotation::None {
+        out.extend_from_slice(src);
+        return Some((uw, uh));
+    }
+    out.resize(len, 0);
+    let ow = uw as usize;
+    // Upright row `y` starts at stored pixel `base + y * down`, and each next upright
+    // pixel lies `step` stored pixels on: strides, with no choice inside the loop.
+    let (w_i, h_i) = (w as isize, h as isize);
+    let (base, down, step) = match rotation {
+        // Upright (x, y) is stored (y, h - 1 - x).
+        Rotation::Clockwise90 => ((h_i - 1) * w_i, 1, -w_i),
+        // Upright (x, y) is stored (w - 1 - x, h - 1 - y).
+        Rotation::Half => ((h_i - 1) * w_i + w_i - 1, -w_i, -1),
+        // Upright (x, y) is stored (w - 1 - y, x).
+        _ => (w_i - 1, -1, w_i),
+    };
+    for (y, row) in out.chunks_exact_mut(ow * 4).enumerate() {
+        let mut at = base + y as isize * down;
+        for pixel in row.chunks_exact_mut(4) {
+            let i = at as usize * 4;
+            pixel.copy_from_slice(&src[i..i + 4]);
+            at += step;
         }
     }
     Some((uw, uh))
