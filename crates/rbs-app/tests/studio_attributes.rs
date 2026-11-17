@@ -435,3 +435,187 @@ fn sound_is_live_and_never_chosen_by_default() {
     assert_eq!(r["muted"], false);
     assert_eq!(r["volume"], 0.5);
 }
+
+/// The rows of one scene (`scene.sources`), top first.
+fn scene_rows(c: &mut Client, scene: &Value) -> Vec<Value> {
+    ok(&c.call("scene.sources", json!({"scene": scene})))["sources"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn ids(rows: &[Value]) -> Vec<u64> {
+    rows.iter().map(|r| r["id"].as_u64().unwrap()).collect()
+}
+
+#[test]
+fn removing_sources_from_a_duplicated_scene_never_touches_the_original() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    ok(&c.call(
+        "source.set_companion_audio",
+        json!({"source": screen, "enabled": true}),
+    ));
+    add(&mut c, "camera", "Cam");
+    add(&mut c, "audio_input", "Mic");
+    let scene = ok(&c.call("scene.list", json!({})))["data"]["scenes"][0]["id"].clone();
+    let original = scene_rows(&mut c, &scene);
+    assert_eq!(original.len(), 4, "{original:?}");
+
+    // Duplicate scene (references): removing every item of the copy deletes nothing.
+    let shared = ok(&c.call("scene.duplicate", json!({"scene": scene})))["scene"].clone();
+    let rows = scene_rows(&mut c, &shared);
+    assert_eq!(ids(&rows), ids(&original));
+    for r in &rows {
+        let gone = c.call("item.remove", json!({"item": r["item"]}));
+        assert_eq!(ok(&gone)["source_deleted"], false, "{r}");
+    }
+    assert!(scene_rows(&mut c, &shared).is_empty());
+    assert_eq!(ids(&scene_rows(&mut c, &scene)), ids(&original));
+
+    // Duplicate scene with new sources: removing the copies deletes them and leaves
+    // the original scene's sources placed and running.
+    let copied = ok(&c.call(
+        "scene.duplicate",
+        json!({"scene": scene, "sources": "copied"}),
+    ))
+    .clone();
+    let copy_scene = copied["scene"].clone();
+    let rows = scene_rows(&mut c, &copy_scene);
+    assert_eq!(rows.len(), original.len());
+    for r in &rows {
+        assert!(!ids(&original).contains(&r["id"].as_u64().unwrap()), "{r}");
+    }
+    for r in &rows {
+        let gone = c.call("item.remove", json!({"item": r["item"]}));
+        // The screen's companion copy went with the screen copy.
+        if gone.get("error").is_some() {
+            assert_eq!(kind(&gone), "not_found", "{gone}");
+            continue;
+        }
+        assert_eq!(ok(&gone)["source_deleted"], true, "{r}");
+    }
+    assert!(scene_rows(&mut c, &copy_scene).is_empty());
+    assert_eq!(ids(&scene_rows(&mut c, &scene)), ids(&original));
+    // Undo brings every copy back in its scene.
+    for _ in 0..rows.len() {
+        let _ = c.call("edit.undo", json!({}));
+    }
+
+    // The same through the UI: the copied scene is edited and each source is removed
+    // from it by its row.
+    use rbs_app::studio_host::Command;
+    use rbs_scene::model::{SceneId, SourceId};
+    let raw = |v: &Value| u32::try_from(v.as_u64().unwrap()).unwrap();
+    let copied = ok(&c.call(
+        "scene.duplicate",
+        json!({"scene": scene, "sources": "copied"}),
+    ))
+    .clone();
+    let copy_scene = copied["scene"].clone();
+    host.send(Command::SwitchScene(SceneId::from_raw(raw(&copy_scene))));
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.program == SceneId::from_raw(raw(&copy_scene)) => Some(()),
+        _ => None,
+    });
+    let rows = scene_rows(&mut c, &copy_scene);
+    for r in &rows {
+        host.send(Command::RemoveFromScene(SourceId::from_raw(raw(&r["id"]))));
+    }
+    // Every row answered: a Deleted per source still there when asked, or an error
+    // only for a companion that already went with its picture.
+    let mut left = rows.len();
+    next(&updates, |u| match u {
+        Update::Deleted { .. } => {
+            left -= 1;
+            (left == 0).then_some(())
+        }
+        Update::Error(e) if e.contains("not in the scene any more") => {
+            left -= 1;
+            (left == 0).then_some(())
+        }
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert!(scene_rows(&mut c, &copy_scene).is_empty());
+    assert_eq!(ids(&scene_rows(&mut c, &scene)), ids(&original));
+
+    // Undo brings the copies back; Delete source on one copy leaves its original.
+    while scene_rows(&mut c, &copy_scene).len() < rows.len() {
+        ok(&c.call("edit.undo", json!({})));
+    }
+    let back = scene_rows(&mut c, &copy_scene);
+    assert_eq!(ids(&back), ids(&rows));
+    for r in &back {
+        let _ = c.call("source.delete", json!({"source": r["id"]}));
+    }
+    assert!(scene_rows(&mut c, &copy_scene).is_empty());
+    assert_eq!(ids(&scene_rows(&mut c, &scene)), ids(&original));
+    drop(host);
+}
+
+/// The kind of the next undo step the host announces that removes or deletes `name`.
+fn next_removal(updates: &Receiver<Update>, name: &str) -> rbs_app::edit_history::EditKind {
+    use rbs_app::edit_history::EditKind;
+    next(updates, |u| match u {
+        Update::History { undo: Some(s), .. }
+            if s.name == name && matches!(s.kind, EditKind::Remove | EditKind::Delete) =>
+        {
+            Some(s.kind)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn the_companion_sound_leaves_the_scene_with_its_picture() {
+    // ADR-0142, protocol 1.88.
+    use rbs_app::edit_history::EditKind;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    ok(&c.call(
+        "source.set_companion_audio",
+        json!({"source": screen, "enabled": true}),
+    ));
+    let scene = ok(&c.call("scene.list", json!({})))["data"]["scenes"][0]["id"].clone();
+    let rows = scene_rows(&mut c, &scene);
+    let sound = rows
+        .iter()
+        .find(|r| r["companion_of"] == screen)
+        .unwrap()
+        .clone();
+    let picture = rows.iter().find(|r| r["id"] == screen).unwrap().clone();
+    let copy = ok(&c.call("scene.duplicate", json!({"scene": scene})))["scene"].clone();
+    let copy_rows = scene_rows(&mut c, &copy);
+
+    // Removing the picture from the first scene takes its sound there; the copy keeps both.
+    let gone = c.call("item.remove", json!({"item": picture["item"]}));
+    let gone = ok(&gone);
+    assert_eq!(gone["source_deleted"], false);
+    assert_eq!(
+        gone["removed_items"],
+        json!([picture["item"], sound["item"]])
+    );
+    assert!(gone.get("deleted_sources").is_none(), "{gone}");
+    assert!(scene_rows(&mut c, &scene).is_empty());
+    assert_eq!(ids(&scene_rows(&mut c, &copy)), ids(&copy_rows));
+    assert_eq!(next_removal(&updates, "Screen"), EditKind::Remove);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(ids(&scene_rows(&mut c, &scene)), ids(&rows));
+
+    // With the sound placed only beside the picture, it is deleted with that item and
+    // the step is still Remove, named after the picture.
+    let copy_sound = copy_rows.iter().find(|r| r["id"] == sound["id"]).unwrap();
+    ok(&c.call("item.remove", json!({"item": copy_sound["item"]})));
+    let gone = c.call("item.remove", json!({"item": picture["item"]}));
+    assert_eq!(ok(&gone)["deleted_sources"], json!([sound["id"]]));
+    assert_eq!(next_removal(&updates, "Screen"), EditKind::Remove);
+    assert!(sources(&mut c).iter().all(|s| s["id"] != sound["id"]));
+    ok(&c.call("edit.undo", json!({})));
+    assert!(sources(&mut c).iter().any(|s| s["id"] == sound["id"]));
+    drop(host);
+}

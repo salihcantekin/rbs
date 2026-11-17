@@ -230,7 +230,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `source.set_volume {source, volume}`, `source.set_muted {source, muted}` | `control` | Volume (linear, `0..=1`) and mute of a source; live, not undoable (protocol 1.6) |
 | `filter.types {domain?}` | `read` | Built-in filter types and their fields (protocol 1.8, ADR-0062); `domain` is `"video"` (default), `"audio"` or `"all"` (protocol 1.16, ADR-0082) |
 | `filter.add {source, type, settings?}`, `filter.remove {filter}`, `filter.move {filter, index}`, `filter.set_enabled {filter, enabled}`, `filter.set_settings {filter, settings}` | `control` | Edit a source's filter chain; one undo step each (protocol 1.8) |
-| `item.remove {item}` | `control` | Remove from scene: one item; the source too when it was its last placement (protocol 1.10, ADR-0065) |
+| `item.remove {item}` | `control` | Remove from scene: one item; the source too when it was its last placement (protocol 1.10, ADR-0065); a picture's companion sound items in that scene go with it, answering `removed_items` and `deleted_sources` (protocol 1.88, ADR-0142) |
 | `scene.move {scene, direction}` (`up` or `down`; protocol 1.33) | one place in the canvas's scene list; already at that end answers done and changes nothing |
 | `source.set_active {source, active}` (protocol 1.33) | `active` false releases the device (the `standby` hint); true keeps a placed source open, including off air. Hiding it, or switching scenes, does not release it |
 | `item.move {item, direction}` | `control` | Move that item among sources with a picture; sound-only items are skipped. One undo step. `direction` is `up` or `down` (one step; protocol 1.32), or `front` / `back` to an end (protocol 1.36, ADR-0084 Arrange). Doing nothing (already at that end, or the item is not a source) answers `{}` |
@@ -542,6 +542,13 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Timing.** A pause or resume takes effect on a render tick at least two render periods after the call (`recording.md`, "Pause and hold"); a resume before the pause began cancels it. Every recording the desktop app starts can be paused, its separate files with it.
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
+
+### Protocol 1.88: a companion sound leaves a scene with its picture (ADR-0142)
+
+- **`item.remove {item}`** changes meaning. When the item places a picture source that its scene no longer draws afterwards (no other item of it there, directly or in a scene nested in it, whatever the items' visibility), the items of its companions (`companion_of`) placed directly in that scene are removed in the same undo step. A companion left placed nowhere is deleted. Other scenes never change. At the picture's last placement in any scene, the picture and its companions are deleted, as before. `global.remove` without `keep` follows the same rule in the global scene.
+- **Answer.** `{source_deleted, removed_items?, deleted_sources?}`. `removed_items` lists every item removed in any scene, the named one first. `deleted_sources` lists every source deleted: the picture at its last placement, and companions. Both are absent when empty.
+- **Older clients and servers.** A 1.87 client ignores the new fields and sees the extra removals in `scene.changed` and `source.changed`. A 1.87 server removes only the named item, so a client checks for 1.88 before relying on it.
+- **As built.** `rbs-scene` `SceneCollection::remove_from_scene` and `Removed`; `rbs-api` `ItemRemoved`. Tests: `rbs-scene/tests/removal.rs`, `rbs-app/tests/studio_attributes.rs` (`the_companion_sound_leaves_the_scene_with_its_picture`, `removing_sources_from_a_duplicated_scene_never_touches_the_original`).
 
 ### Protocol 1.87: T-bar (ADR-0135 decisions 1 to 7)
 
