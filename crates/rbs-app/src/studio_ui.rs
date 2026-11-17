@@ -9,7 +9,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ai::unix_now;
 use rbs_api::types::{OutputKind, OutputTarget};
+use rbs_app::ai_tools::{Forward as AiForward, Tool};
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
@@ -20,7 +22,7 @@ use rbs_app::record_profile::{
     audio_fact, fit_output_size, output_choice_copy, output_size_options, recommended_video_kbps,
     vertical_recording_from_main,
 };
-use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
+use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer, SlotFlags};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{
     self, HoldPicture, HoldSound, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
@@ -39,6 +41,7 @@ use rbs_app::vertical_outputs::{self, VerticalFlags};
 use rbs_audio::LevelMeter;
 use rbs_core::fault::SourceFault;
 use rbs_record::Link;
+use rbs_remote_settings::ai_tools::{self as ai_settings, AiToolsSettings};
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::{
     Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Shape, SourceId,
@@ -66,6 +69,7 @@ const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
 pub(crate) mod add_picker;
+pub(crate) mod ai;
 pub(crate) mod attributes;
 pub(crate) mod destinations;
 pub(crate) mod filters;
@@ -418,6 +422,20 @@ pub struct StudioUi {
     network: Option<NetworkShown>,
     /// Why other computers cannot connect although network access is on.
     network_failure: Option<String>,
+    /// AI tools settings (Settings, AI tools; ADR-0134), as saved.
+    ai: AiToolsSettings,
+    /// AI tools are started.
+    ai_started: bool,
+    /// Why AI tools are not started although asked (Start failed, the studio stopped).
+    ai_failure: Option<String>,
+    /// Something to say once on the page (a renamed token, a replaced token file).
+    ai_note: String,
+    /// The AI tool the connection line is made for.
+    ai_tool: Tool,
+    /// The flags of the token slot, shared with `tokens.*` on the control thread.
+    slot_flags: Arc<SlotFlags>,
+    /// Recent actions and connected AI tools, fed from the server's audit.
+    pub ai_forward: Arc<AiForward>,
     /// A problem with a network access change (own files, new key, busy settings).
     network_note: String,
     /// The stream's settings (Settings, Stream), as saved.
@@ -705,6 +723,16 @@ impl StudioUi {
             tokens: Rc::new(VecModel::default()),
             network: None,
             network_failure: None,
+            ai: ai_settings::read(config).unwrap_or_else(|why| {
+                log(&format!("AI tools settings not used: {why}"));
+                AiToolsSettings::default()
+            }),
+            ai_started: false,
+            ai_failure: None,
+            ai_note: String::new(),
+            ai_tool: Tool::ClaudeDesktop,
+            slot_flags: Arc::default(),
+            ai_forward: AiForward::new(),
             network_note: String::new(),
             stream,
             stream_note: stream_why
@@ -984,6 +1012,7 @@ impl StudioUi {
         g.set_canvas_restarting(self.canvas_restarting);
         g.set_canvas_note(self.canvas_note.as_str().into());
         self.push_remote(g);
+        self.push_ai(g);
         self.push_stream(g);
         self.push_destinations(g);
         self.push_monitor(g);
@@ -1162,14 +1191,39 @@ impl StudioUi {
         (status, false)
     }
 
-    /// Starts or stops the control API server to match the settings: on while remote
-    /// control is on and the studio's control thread runs, nothing at all otherwise.
-    /// A server whose WebSocket transport stopped (`restart_remote`) gets only that
-    /// transport again: its IPC sessions stay connected (ADR-0134 decision 2).
+    /// Starts or stops the control API server to match the settings: the API thread
+    /// while remote control is on or AI tools are started and the studio's control
+    /// thread runs, nothing at all otherwise; the WebSocket transport only while remote
+    /// control is on (ADR-0134 decision 2). A server whose WebSocket transport stopped
+    /// (`restart_remote`) gets only that transport again: its IPC sessions stay.
     pub fn sync_remote(&mut self) {
-        let want = self.remote.enabled && self.host.is_some();
-        if !want {
+        let host = self.host.is_some();
+        if self.ai_started && !host {
+            // AI tools stop with the studio; they start again with it while "Start
+            // when RBS opens" is on.
+            self.ai_stopped_by("AI tools stopped because the studio stopped.");
+        }
+        let want_ws = self.remote.enabled && host;
+        let want_api = want_ws || (self.ai_started && host);
+        if !want_api {
             self.stop_remote();
+            self.remote_failure = None;
+            return;
+        }
+        if self.remote_server.is_none() {
+            self.reload_tokens();
+            if !self.start_api() {
+                return;
+            }
+        }
+        self.push_slot();
+        if !want_ws {
+            if let Some(server) = self.remote_server.as_mut()
+                && server.serves_ws()
+            {
+                server.stop_ws();
+                log("remote control off; AI tools keep running");
+            }
             self.remote_failure = None;
             return;
         }
@@ -1178,13 +1232,6 @@ impl StudioUi {
             .as_ref()
             .is_some_and(RemoteServer::serves_ws)
         {
-            return;
-        }
-        if self.host.is_none() {
-            return;
-        }
-        self.reload_tokens();
-        if self.remote_server.is_none() && !self.start_api() {
             return;
         }
         // The settings may change on the way (a renewed certificate).
@@ -1209,8 +1256,22 @@ impl StudioUi {
                 }
                 self.remote_failure = Some(why);
                 // Nothing else needs the API thread: nothing keeps running.
-                self.stop_remote();
+                if !self.ai_started {
+                    self.stop_remote();
+                }
             }
+        }
+    }
+
+    /// The token slot: both settings files' tokens with the AI tools flags, set on the
+    /// running server (ADR-0134 decision 2: the one composer of slot values).
+    fn push_slot(&self) {
+        self.slot_flags.set(self.ai_started, self.remote.enabled);
+        if let Some(server) = &self.remote_server {
+            server.set_slot(
+                self.slot_flags
+                    .slot(ai_settings::union_store(&self.remote, &self.ai)),
+            );
         }
     }
 
@@ -1221,13 +1282,24 @@ impl StudioUi {
         let Some(host) = &self.host else {
             return false;
         };
+        // The sink is fixed while the server runs: AI tools records go to the forward,
+        // which keeps them only while AI tools are started (ADR-0134 decision 7).
+        let forward = self.ai_forward.clone();
+        let flags = self.slot_flags.clone();
         let options = RemoteOptions {
             control_waker: Box::new(host.api_waker()),
-            audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
+            audit: Box::new(move |a| {
+                forward.record(&a, unix_now(), flags.ai_tools_started());
+                log(&format!("remote control: {a:?}"));
+            }),
             ipc: None,
             levels: Some(host.level_feed()),
         };
-        let (mut server, endpoint) = match RemoteServer::start_api(self.remote.store(), options) {
+        self.slot_flags.set(self.ai_started, self.remote.enabled);
+        let slot = self
+            .slot_flags
+            .slot(ai_settings::union_store(&self.remote, &self.ai));
+        let (mut server, endpoint) = match RemoteServer::start_api(slot, options) {
             Ok(started) => started,
             Err(e) => {
                 log(&format!("remote control did not start: {e}"));
@@ -1245,7 +1317,10 @@ impl StudioUi {
             }
             Err(why) => log(&format!("remote control: no local IPC endpoint: {why}")),
         }
-        host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
+        host.attach_api(
+            endpoint,
+            Some(server.api_tokens(self.config.clone(), self.slot_flags.clone())),
+        );
         self.remote_server = Some(server);
         true
     }
@@ -1628,6 +1703,11 @@ impl StudioUi {
     /// The Settings window closed: a token shown once is not shown again, and the
     /// revoke can no longer be undone there.
     pub fn settings_closed(&mut self) {
+        // Recent actions are kept after Stop until Settings closes (ADR-0134 decision 7).
+        if !self.ai_started {
+            self.ai_forward.clear();
+        }
+        self.ai_note.clear();
         self.commit_server();
         self.new_token = None;
         self.revoked = None;
@@ -1649,9 +1729,7 @@ impl StudioUi {
     }
 
     fn tokens_changed(&mut self) {
-        if let Some(server) = &self.remote_server {
-            server.set_tokens(self.remote.store());
-        }
+        self.push_slot();
         self.refresh_tokens();
     }
 
@@ -5910,7 +5988,11 @@ impl StudioUi {
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
-            Update::TokensChanged => self.read_tokens(false),
+            Update::TokensChanged => {
+                self.read_tokens(false);
+                // `tokens.revoke` of the AI tools token changes ai-tools.toml.
+                self.read_ai();
+            }
             // `profile.switch` or `collection.switch`: the caller switches, since a
             // collection switch needs the window's preview.
             Update::SwitchRequested {

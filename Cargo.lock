@@ -4418,6 +4418,7 @@ dependencies = [
  "rbs-graph",
  "rbs-import-obs",
  "rbs-manifest",
+ "rbs-mcp",
  "rbs-media-anim",
  "rbs-media-decode-test",
  "rbs-mux",
