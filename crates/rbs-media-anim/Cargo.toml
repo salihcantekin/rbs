@@ -1,0 +1,20 @@
+[package]
+name = "rbs-media-anim"
+description = "Media-file decoder adapter for animated pictures: GIF, APNG and animated WebP in pure Rust (ADR-0108 decision 4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-media-decode = { path = "../rbs-media-decode" }
+# Pure-Rust decoders, already in the workspace lock through other crates.
+gif = "0.14"
+png = "0.18"
+image-webp = "0.2"
+
+[lints]
+workspace = true

@@ -150,19 +150,16 @@ pub(crate) fn run(job: Job) {
     };
     // The anchor is set before the picture node learns the worker is ready, so a
     // clock that moves after `wake` returns cannot move it.
-    let anchor = job.clock.now() + LEAD;
+    // A run that starts paused (a seek after the pause release, a wake into `paused`)
+    // shows its one picture from the command's instant, as a seek while paused does.
+    let now = job.clock.now();
+    let anchor = if command.paused {
+        command.instant.max(now)
+    } else {
+        now + LEAD
+    };
     let (pictures_tx, pictures_rx) = rtrb::RingBuffer::new(PICTURE_SLOTS);
     let (returns_tx, returns_rx) = rtrb::RingBuffer::new(PICTURE_SLOTS + 2);
-    if job
-        .ready
-        .send(Ok(Ready {
-            pictures: pictures_rx,
-            returns: returns_tx,
-        }))
-        .is_err()
-    {
-        return;
-    }
     let mut run = Run {
         anchor,
         cursor: job.cursor,
@@ -184,8 +181,22 @@ pub(crate) fn run(job: Job) {
     };
     job.shared
         .set_paused_cursor(run.paused.then_some(job.cursor));
+    // A run that starts paused queues its one picture before `wake` returns, so the
+    // first tick after it shows the picture.
     if run.paused && run.next_picture().is_err() {
-        job.progress.failed.store(true, Ordering::Release);
+        let _ = job.ready.send(Err(MediaNodeError::Failed(
+            "the paused picture could not be queued".into(),
+        )));
+        return;
+    }
+    if job
+        .ready
+        .send(Ok(Ready {
+            pictures: pictures_rx,
+            returns: returns_tx,
+        }))
+        .is_err()
+    {
         return;
     }
     run.loop_until_done();

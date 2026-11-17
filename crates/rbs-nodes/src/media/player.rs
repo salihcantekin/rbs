@@ -61,7 +61,26 @@ pub(crate) struct Player {
     pub(crate) ended_stored: bool,
     pub(crate) attempts: u32,
     pub(crate) retry_after: Option<Duration>,
+    /// A program or hold scene draws the source (the binder's on-air set, ADR-0107
+    /// decision 6). True until the host says otherwise.
+    pub(crate) on_air: bool,
+    /// Stopped because only a preview scene draws the source: it plays when a program
+    /// or hold scene draws it (ADR-0108 decision 10). Kept across Standby.
+    pub(crate) cued: bool,
+    /// The pause release let the worker and the decoder go while the source stays
+    /// paused or cued; the next command that needs a picture starts a worker again.
+    pub(crate) released: bool,
+    /// How long a source stays paused or cued before the pause release
+    /// (`pause_release_s`).
+    pub(crate) pause_release: Duration,
+    /// When the current worker started: the release timer counts from the later of
+    /// this and the newest record's instant, so a source that wakes paused or cued
+    /// keeps its worker for the full time.
+    pub(crate) started_at: rbs_core::time::Timestamp,
 }
+
+/// The default of the `pause_release_s` app setting (ADR-0108 decision 10).
+pub(crate) const PAUSE_RELEASE: Duration = Duration::from_secs(30);
 
 impl Player {
     pub(crate) fn new(
@@ -89,6 +108,11 @@ impl Player {
             ended_stored: false,
             attempts: 0,
             retry_after: None,
+            on_air: true,
+            cued: false,
+            released: false,
+            pause_release: PAUSE_RELEASE,
+            started_at: rbs_core::time::Timestamp::ZERO,
         }
     }
 
@@ -109,41 +133,63 @@ impl Player {
         }
         if self.phase == MediaPhase::Standby {
             self.start_shown(shared)
+        } else if self.released && matches!(user, User::Picture) {
+            // A picture node that wakes after the pause release needs the picture at
+            // the cursor: one is decoded, then the release timer runs again.
+            self.start(shared)
         } else {
             Ok(())
         }
     }
 
-    /// Starts a worker because the source is shown: with `restart_when_shown` the
-    /// cursor goes to the start and a stored pause becomes play (ADR-0108 decision 10
-    /// table).
+    /// Starts a worker because the source is shown, following the transition table
+    /// of ADR-0108 decision 10. Shown only in a preview scene, a source with no
+    /// stored pause or end is cued at the range start (or at the stored cursor with
+    /// `restart_when_shown` false) and a stored pause or end stays. On air,
+    /// `restart_when_shown` moves the cursor to the start and makes a stored pause or
+    /// end play; without it a stored pause or end stays and a cued source plays.
     pub(crate) fn start_shown(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
-        if self.ended_stored && !self.restart_when_shown {
-            // A stored end stays ended (the table): the last picture is shown, paused.
-            let newest = shared.controls.newest();
-            if !newest.paused {
-                shared.controls.write(Record {
-                    generation: newest.generation.wrapping_add(1),
-                    instant: self.clock.now(),
-                    paused: true,
-                    position: None,
-                });
+        let newest = shared.controls.newest();
+        if !self.on_air {
+            let stored = self.ended_stored || (newest.paused && !self.cued);
+            if !stored {
+                self.cued = true;
+                if self.restart_when_shown {
+                    shared.move_cursor(Duration::ZERO);
+                }
             }
+            if !newest.paused {
+                self.write_now(shared, true);
+            }
+            return self.start(shared);
         }
+        let was_cued = std::mem::replace(&mut self.cued, false);
         if self.restart_when_shown {
             self.ended_stored = false;
-            shared.set_cursor(Duration::ZERO);
-            let newest = shared.controls.newest();
+            shared.move_cursor(Duration::ZERO);
             if newest.paused {
-                shared.controls.write(Record {
-                    generation: newest.generation.wrapping_add(1),
-                    instant: self.clock.now(),
-                    paused: false,
-                    position: None,
-                });
+                self.write_now(shared, false);
             }
+        } else if self.ended_stored {
+            // A stored end stays ended (the table): the last picture is shown, paused.
+            if !newest.paused {
+                self.write_now(shared, true);
+            }
+        } else if was_cued && newest.paused {
+            self.write_now(shared, false);
         }
         self.start(shared)
+    }
+
+    /// Writes a record that applies from now: the worker that starts next follows it.
+    fn write_now(&self, shared: &Shared, paused: bool) {
+        let newest = shared.controls.newest();
+        shared.controls.write(Record {
+            generation: newest.generation.wrapping_add(1),
+            instant: self.clock.now(),
+            paused,
+            position: None,
+        });
     }
 
     /// True while a node is prepared.
@@ -175,6 +221,7 @@ impl Player {
     /// the worker holds its first picture.
     pub(crate) fn start(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
         self.join_worker();
+        let was_released = std::mem::replace(&mut self.released, false);
         shared.offer_rings(None);
         self.phase = MediaPhase::Standby;
         let cursor = shared.cursor();
@@ -225,13 +272,25 @@ impl Player {
                 self.queue_allocations = self.queue_allocations.saturating_add(1);
                 self.worker = Some(Worker { join, shutdown });
                 self.phase = MediaPhase::Playing;
+                self.started_at = self.clock.now();
                 Ok(())
             }
             Err(error) => {
                 shutdown.store(true, Ordering::Release);
                 join.thread().unpark();
                 let _ = join.join();
-                self.phase = MediaPhase::Standby;
+                if was_released {
+                    // The file could not be opened again after the pause release (it
+                    // moved, its drive left): the nodes stay prepared and keep the last
+                    // picture, the source reports `Unavailable`, and the next command
+                    // tries again. The picture node's `service` holds the picture and
+                    // counts the attempt.
+                    self.progress.failed.store(true, Ordering::Release);
+                    self.released = true;
+                    self.phase = MediaPhase::Playing;
+                } else {
+                    self.phase = MediaPhase::Standby;
+                }
                 Err(error)
             }
         }
@@ -257,10 +316,30 @@ impl Player {
         let failed = self.progress.failed.load(Ordering::Acquire);
         let ended = self.phase == MediaPhase::Hold
             || (self.phase == MediaPhase::Playing && self.ended.load(Ordering::Acquire));
-        self.ended_stored = ended && !failed;
+        // A source woken from a stored end that never left it keeps it.
+        self.ended_stored = (ended || self.ended_stored) && !failed;
+        self.released = false;
         self.join_worker();
         shared.offer_rings(None);
         self.phase = MediaPhase::Standby;
+    }
+
+    /// The pause release (ADR-0108 decision 10): joins the worker, which frees the
+    /// decoder, the file handle and the worker's buffers, while the state, the cursor
+    /// and the picture node's last picture stay. Control path.
+    pub(crate) fn release_worker(&mut self, shared: &Shared) {
+        // A worker that reached the end of the file goes to the end hold instead.
+        if self.phase != MediaPhase::Playing
+            || self.worker.is_none()
+            || self.ended.load(Ordering::Acquire)
+        {
+            return;
+        }
+        self.join_worker();
+        // The thread marks itself ended when it returns; this run did not end.
+        self.ended = Arc::new(AtomicBool::new(false));
+        shared.offer_rings(None);
+        self.released = true;
     }
 
     pub(crate) fn worker_joined(&self) -> bool {

@@ -21,10 +21,14 @@
 //! pause, seek, and restart write records that every item's generation is checked
 //! against.
 //!
-//! Not in this step (ADR-0108 decisions 3, 5, 7, 10, 11, 12): the probe and the open
-//! on a worker thread instead of the control thread, the reaper, the pause release
-//! timer, the `cued` state, the play range, live keys, native surfaces, and NV12/P010
-//! upload.
+//! The host writes whether a program or hold scene draws the source
+//! ([`MediaControl::set_on_air`]); a source only a preview scene draws is cued. The
+//! host calls [`MediaControl::service`] on the control path: it releases the worker
+//! and the decoder of a source paused or cued for `pause_release_s`.
+//!
+//! Not in this step (ADR-0108 decisions 3, 5, 7, 11, 12): the probe and the open on a
+//! worker thread instead of the control thread, the reaper, the play range, live
+//! keys, native surfaces, and NV12/P010 upload.
 
 mod control;
 mod pcm;
@@ -231,6 +235,13 @@ impl Shared {
                 .saturating_add(1)
         });
         self.paused_cursor.store(nanos, Ordering::Release);
+    }
+
+    /// Moves the cursor while no worker follows it (asleep, released, or about to
+    /// start): the stored pause point is replaced too. Control path.
+    pub(crate) fn move_cursor(&self, cursor: Duration) {
+        self.set_paused_cursor(None);
+        self.set_cursor(cursor);
     }
 
     pub(crate) fn set_cursor(&self, cursor: Duration) {

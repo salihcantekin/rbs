@@ -541,6 +541,13 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.83: media playback controls (ADR-0108 decision 10)
+
+- `media.play {source}`, `media.pause {source}`, `media.seek {source, position_ms}` and `media.restart {source}` (scope `control`, effect `edit`: reversed by another call), and `media.state {source}` (scope `read`, effect `read`). Each answers `{source, state, cursor_ms, duration_ms?}` after the command: `state` is `playing`, `paused`, `cued`, `ended`, `standby` or `unavailable` (a client treats a value it does not know as unknown; the `rbs-api` decoder maps it to `MediaPlayState::Unknown`), `cursor_ms` is where a pause stopped or the picture shown last, and `duration_ms` is the file's stated duration once it was opened.
+- They are the source's control handle (`MediaControl`, scene sources spec): live actions that do not write the document, are not undo steps, do not replace the source, and act on every canvas and on preview and program together. `media.seek` past the stated duration is clamped to it. A source that only a preview scene draws is `cued`: `media.play` and `media.restart` do not play it in the preview; it plays on the take.
+- Refusals: `not_found` for an unknown source; `invalid_params` for a source that is not a media file; `conflict` for a command on a media source that has no instance yet (it is in no scene the studio runs; `media.state` then answers `standby`); `failed` when the file cannot be opened again (the state is then `unavailable`). After the pause release a command that needs the decoder waits for the open on the control thread (the async open is not built yet).
+- No topic yet: a client reads the state from each answer or with `media.state`. A 1.82 server answers `method_not_found`.
+
 ### Protocol 1.82: importing from OBS (ADR-0131 decision 12)
 
 - **`import.obs.scan`** (`admin`, effect `read`) answers `{collections: [name], profiles: [name]}`: the scene collections and profiles in OBS's settings folders on the server's computer (`rbs_import_obs::discover::default_config_dirs`), by name only, sorted and deduplicated. Never a path.
