@@ -171,6 +171,7 @@ pub const LENGTHS: &[&str] = &[
     "size.transition.type",
     "size.transition.type-min",
     "size.transition.duration",
+    "size.transition.tbar",
     "size.transition.compact",
     "size.target.thumb-w",
     "size.target.thumb-h",

@@ -1435,6 +1435,13 @@ export global Studio {
     callback set-studio-mode(bool /* on */);
     // The preview scene goes on air and the scene on air to preview (a cut).
     callback transition();
+    // The T-bar (ADR-0135): its place from 0 to 1, set by the rail while it moves. A
+    // value between holds the transition there, 1 puts the preview scene on air, 0
+    // cancels. `tbar-resets` changes when a held T-bar ended otherwise (a take, a
+    // transition, a switch or a preview change): the rail goes back to 0.
+    in-out property <float> tbar;
+    in property <int> tbar-resets;
+    callback transition-progress(float /* t */);
     callback list-targets(int /* kind */);
     callback list-source-targets(int /* source */);
     // The Source settings window opens for a source.

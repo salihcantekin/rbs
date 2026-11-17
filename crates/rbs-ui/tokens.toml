@@ -215,7 +215,9 @@ format = 4
 "size.transition.type" = 112
 "size.transition.type-min" = 72
 "size.transition.duration" = 88
-"size.transition.compact" = 600
+# The narrowest T-bar below the pictures (ADR-0135).
+"size.transition.tbar" = 240
+"size.transition.compact" = 840
 # Source tab: a window or display's picture in front of its name in the target list (16:9).
 "size.target.thumb-w" = 96
 "size.target.thumb-h" = 54
