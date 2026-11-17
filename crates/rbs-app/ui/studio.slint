@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, HScrollArea, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine } from "components.slint";
+import { DialogActions, HScrollArea, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -60,6 +60,12 @@ export struct AttributeGroupRow { id: string, title: string, index: int, checked
 export struct AttributeTargetRow { name: string, note: string, checked: bool, copied: bool, shown: bool }
 // `count` sources are checked, `groups-on` groups; `has-filters` when a filter group is on.
 export struct AttributesData { paste: bool, name: string, picture: [AttributeGroupRow], sound: [AttributeGroupRow], source: [AttributeGroupRow], targets: [AttributeTargetRow], same-type: bool, append: bool, count: int, groups-on: int, has-filters: bool }
+// The Text tab of a text source (ADR-0129 decision 13), filled while the selected
+// source is one (`on`). `kind`: 0 text, 1 clock, 2 countdown, 3 stopwatch, 4 recording
+// time, 5 stream time. `align`: 0 left, 1 centre, 2 right. A countdown counts to
+// `target` when `until`, else for `minutes` and `seconds`. `format-default` is the
+// pattern used while `format` is empty. Colours are `#rrggbb[aa]` with their swatch.
+export struct TextData { on: bool, id: int, kind: int, text: string, file: string, file-name: string, file-lines: int, fields: bool, font: string, size: float, bold: bool, italic: bool, color: string, swatch: color, align: int, format: string, format-default: string, until: bool, target: string, minutes: int, seconds: int, end-text: string, outline: bool, outline-width: float, outline-color: string, outline-swatch: color, shadow: bool, shadow-color: string, shadow-swatch: color, shadow-x: float, shadow-y: float, shadow-blur: float, background: bool, background-color: string, background-swatch: color, padding: float }
 export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }
 // `heading` is set on the first row of a group ("Same application", "Other").
 // `picture` is the target's thumbnail when `has-picture`; `wants-picture` is set for displays and windows, whose rows keep the kind's icon until the picture comes.
@@ -394,6 +400,20 @@ export global Studio {
     callback add-stamp(int /* 0 circle … 6 arrow */);
     callback add-image();
     callback set-source-fill(int /* id */, string /* #rrggbb */);
+    // A text source (ADR-0129 decision 13): what the Text tab shows, and its edits.
+    // Each edit is one undo step; `key` is a setting key of the text source type.
+    in property <TextData> text-props;
+    callback set-text-kind(int /* id */, int /* kind */);
+    callback set-text-value(int /* id */, string /* key */, string /* value; "" removes it */);
+    callback set-text-number(int /* id */, string /* key */, float /* value */);
+    callback set-text-flag(int /* id */, string /* key */, bool /* value */);
+    // Outline, Shadow and Background on or off.
+    callback set-text-effect(int /* id */, int /* 0 outline, 1 shadow, 2 background */, bool /* on */);
+    callback set-text-countdown(int /* id */, bool /* until a time */, string /* target */, int /* length in seconds */);
+    callback choose-text-font(int /* id */);
+    callback choose-text-file(int /* id */);
+    callback fit-text-box(int /* id */);
+    callback text-timer(int /* id */, int /* 0 start, 1 pause, 2 reset */);
     callback set-source-filled(int /* id */, bool /* draw the fill */);
     callback open-filter-settings(int /* source */, int /* filter */);
     callback open-shape-settings(int /* source */);
@@ -404,7 +424,8 @@ export global Studio {
     in-out property <int> look-anchor-serial: 0;
     in-out property <length> look-anchor-y: 0px;
     // Filters (ADR-0062).
-    // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio, 3 Source (shown first).
+    // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio, 3 Source (shown first),
+    // 4 Text (a text source's first tab).
     in-out property <int> properties-tab;
     callback select-filter(int /* source */, int /* filter */);
     callback remove-filter(int /* filter */);
@@ -4730,6 +4751,418 @@ component SourceFields inherits VerticalLayout {
     }
 }
 
+// A colour as a swatch that opens the colour picker, beside its code (never colour
+// alone, U7). The code field is set from `value` whenever it changes, because setting
+// the text after an edit ends the field's binding; a refused code goes back.
+component ColourEntry inherits HorizontalLayout {
+    // The accessible names: the swatch button's and the code field's.
+    in property <string> pick-label;
+    in property <string> label;
+    in property <string> value;
+    in property <color> swatch;
+    callback picked(string);
+    property <string> stands: root.value;
+    changed stands => { code.text = root.stands; }
+    spacing: Tokens.size-field-gap;
+    ColorPicker {
+        label: root.pick-label;
+        value: root.swatch;
+        picked(c) => { if c != root.value { root.picked(c); } }
+    }
+    code := TextField {
+        horizontal-stretch: 1;
+        label: root.label;
+        text: root.value;
+        accepted(t) => {
+            if t != root.value { root.picked(t); }
+            self.text = root.value;
+        }
+    }
+}
+
+// The pattern of a clock or timer, with what its letters mean behind (i).
+component TextFormatField inherits Field {
+    in property <TextData> text;
+    in property <string> name;
+    label: @tr("Format");
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        TextField {
+            horizontal-stretch: 1;
+            label: @tr("Format of {}", root.name);
+            text: root.text.format;
+            placeholder: root.text.format-default;
+            accepted(t) => { if t != root.text.format { Studio.set-text-value(root.text.id, "format", t); } }
+        }
+        VerticalLayout {
+            alignment: center;
+            InfoHint {
+                label: @tr("Format");
+                text: @tr("HH hours, mm minutes, ss seconds, dd day, MM month, yyyy year, ddd weekday. Text in quotes is shown as it is. Empty uses {}.", root.text.format-default);
+            }
+        }
+    }
+}
+
+// Start, Pause and Reset of a countdown's or a stopwatch's timer (text.timer).
+component TimerButtons inherits HorizontalLayout {
+    in property <TextData> text;
+    in property <string> name;
+    spacing: Tokens.space-1;
+    alignment: start;
+    Button {
+        lead: IconName.play;
+        text: @tr("Start");
+        accessible-name: @tr("Start the timer of {}", root.name);
+        dense: true;
+        clicked => { Studio.text-timer(root.text.id, 0); }
+    }
+    Button {
+        lead: IconName.pause;
+        text: @tr("Pause");
+        accessible-name: @tr("Pause the timer of {}", root.name);
+        dense: true;
+        clicked => { Studio.text-timer(root.text.id, 1); }
+    }
+    Button {
+        lead: IconName.reset;
+        text: @tr("Reset");
+        accessible-name: @tr("Reset the timer of {}", root.name);
+        dense: true;
+        clicked => { Studio.text-timer(root.text.id, 2); }
+    }
+}
+
+// The Text tab of a text source (ADR-0129 decision 13): Kind and its own fields, then
+// the font, then Outline, Shadow and Background, each turned on by its switch, and
+// Fit box to text. Every change is one undo step and shows at once.
+component TextFields inherits VerticalLayout {
+    in property <SourceData> data;
+    property <TextData> t: Studio.text-props;
+    spacing: Tokens.size-field-gap;
+    Field {
+        label: @tr("Kind");
+        Select {
+            label: @tr("Kind of {}", data.name);
+            options: [@tr("Text"), @tr("Clock"), @tr("Countdown"), @tr("Stopwatch"), @tr("Recording time"), @tr("Stream time")];
+            index: t.kind;
+            selected(i) => { if i != t.kind { Studio.set-text-kind(t.id, i); } }
+        }
+    }
+    // Text: what it shows, its fields, or a file.
+    if t.kind == 0: Field {
+        label: @tr("Text");
+        TextArea {
+            label: @tr("Text of {}", data.name);
+            text: t.text;
+            enabled: t.file == "";
+            placeholder: @tr("Type the text to show");
+            accepted(v) => { if v != t.text { Studio.set-text-value(t.id, "text", v); } }
+        }
+    }
+    if t.kind == 0 && t.file == "": HorizontalLayout {
+        spacing: Tokens.space-1;
+        Toggle {
+            horizontal-stretch: 1;
+            text: @tr("Fill in fields");
+            label: @tr("Fill in fields in {}", data.name);
+            checked: t.fields;
+            toggled(on) => { Studio.set-text-flag(t.id, "fields", on); }
+        }
+        VerticalLayout {
+            alignment: center;
+            InfoHint {
+                label: @tr("Fill in fields");
+                text: @tr("{{time}}, {{date}}, {{time:HH:mm}}, {{scene}}, {{recording_time}} and {{stream_time}} in the text are replaced by their value while it is shown.");
+            }
+        }
+    }
+    if t.kind == 0: Field {
+        label: @tr("Read from file");
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Text {
+                horizontal-stretch: 1;
+                text: t.file == "" ? @tr("No file") : t.file-name;
+                color: t.file == "" ? Theme.text-secondary : Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Button {
+                lead: IconName.folder;
+                text: @tr("Choose…");
+                accessible-name: @tr("Choose a file for {}", data.name);
+                dense: true;
+                clicked => { Studio.choose-text-file(t.id); }
+            }
+            if t.file != "": IconButton {
+                icon: IconName.close;
+                name: @tr("Stop reading from {}", t.file-name);
+                clicked => { Studio.set-text-value(t.id, "file", ""); }
+            }
+        }
+    }
+    if t.kind == 0 && t.file != "": Field {
+        label: @tr("Lines");
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            NumberField {
+                horizontal-stretch: 1;
+                label: @tr("Last lines of the file of {}", data.name);
+                value: t.file-lines;
+                edited(v) => { Studio.set-text-number(t.id, "file_lines", max(0, round(v))); }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoHint {
+                    label: @tr("Lines");
+                    text: @tr("Shows the last lines of the file, read again when it changes. 0 shows the whole file.");
+                }
+            }
+        }
+    }
+    // A countdown: for a length, or until a time of day.
+    if t.kind == 2: SegmentedControl {
+        label: @tr("Countdown of {}", data.name);
+        options: [@tr("For a length"), @tr("Until a time")];
+        index: t.until ? 1 : 0;
+        selected(i) => { if (i == 1) != t.until { Studio.set-text-countdown(t.id, i == 1, t.target, t.minutes * 60 + t.seconds); } }
+    }
+    if t.kind == 2 && !t.until: HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Minutes");
+            NumberField {
+                label: @tr("Countdown minutes of {}", data.name);
+                unit: @tr("min");
+                value: t.minutes;
+                edited(v) => { Studio.set-text-countdown(t.id, false, t.target, max(0, round(v)) * 60 + t.seconds); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Seconds");
+            NumberField {
+                label: @tr("Countdown seconds of {}", data.name);
+                unit: @tr("s");
+                value: t.seconds;
+                edited(v) => { Studio.set-text-countdown(t.id, false, t.target, t.minutes * 60 + max(0, min(59, round(v)))); }
+            }
+        }
+    }
+    if t.kind == 2 && t.until: Field {
+        label: @tr("Time of day");
+        TextField {
+            label: @tr("Time of day {} counts down to", data.name);
+            text: t.target;
+            placeholder: @tr("HH:mm");
+            accepted(v) => { if v != t.target { Studio.set-text-countdown(t.id, true, v, t.minutes * 60 + t.seconds); } }
+        }
+    }
+    if t.kind >= 1: TextFormatField { text: t; name: data.name; }
+    if t.kind == 2 || t.kind >= 4: Field {
+        label: t.kind == 2 ? @tr("Text at zero") : @tr("Text while stopped");
+        TextField {
+            label: t.kind == 2 ? @tr("Text of {} at zero", data.name) : @tr("Text of {} while stopped", data.name);
+            text: t.end-text;
+            placeholder: t.kind == 2 ? "00:00" : "";
+            accepted(v) => { if v != t.end-text { Studio.set-text-value(t.id, "end_text", v); } }
+        }
+    }
+    if (t.kind == 2 && !t.until) || t.kind == 3: TimerButtons { text: t; name: data.name; }
+    // The font: the searchable picker of the installed families, the system font first.
+    Field {
+        label: @tr("Font");
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                text: t.font == "" ? @tr("System font") : t.font;
+                icon: IconName.chevron-down;
+                menu: true;
+                accessible-name: @tr("Font of {}: {}", data.name, t.font == "" ? @tr("System font") : t.font);
+                clicked => { Studio.choose-text-font(t.id); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Size");
+            NumberField {
+                label: @tr("Font size of {} in pixels", data.name);
+                unit: @tr("px");
+                value: t.size;
+                edited(v) => { Studio.set-text-number(t.id, "size", max(1, min(1024, v))); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Colour");
+            ColourEntry {
+                pick-label: @tr("Choose the text colour of {}", data.name);
+                label: @tr("Text colour of {}", data.name);
+                value: t.color;
+                swatch: t.swatch;
+                picked(c) => { Studio.set-text-value(t.id, "color", c); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        Checkbox {
+            text: @tr("Bold");
+            checked: t.bold;
+            toggled(on) => { Studio.set-text-number(t.id, "weight", on ? 700 : 400); }
+        }
+        Checkbox {
+            text: @tr("Italic");
+            checked: t.italic;
+            toggled(on) => { Studio.set-text-flag(t.id, "italic", on); }
+        }
+    }
+    Field {
+        label: @tr("Alignment");
+        SegmentedControl {
+            label: @tr("Alignment of {}", data.name);
+            options: [@tr("Left"), @tr("Centre"), @tr("Right")];
+            index: t.align;
+            selected(i) => {
+                if i != t.align { Studio.set-text-value(t.id, "align", i == 0 ? "left" : i == 1 ? "center" : "right"); }
+            }
+        }
+    }
+    // Effects: each kept while off; its switch draws it.
+    FeatureSection {
+        title: @tr("Outline");
+        id: "properties.text-outline";
+        on: t.outline;
+        toggled(on) => { Studio.set-text-effect(t.id, 0, on); }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            Field {
+                horizontal-stretch: 1;
+                label: @tr("Width");
+                NumberField {
+                    label: @tr("Outline width of {} in pixels", data.name);
+                    unit: @tr("px");
+                    value: t.outline-width;
+                    enabled: t.outline;
+                    edited(v) => { Studio.set-text-number(t.id, "outline_width", max(0, min(64, v))); }
+                }
+            }
+            Field {
+                horizontal-stretch: 1;
+                label: @tr("Colour");
+                ColourEntry {
+                    pick-label: @tr("Choose the outline colour of {}", data.name);
+                    label: @tr("Outline colour of {}", data.name);
+                    value: t.outline-color;
+                    swatch: t.outline-swatch;
+                    picked(c) => { Studio.set-text-value(t.id, "outline_color", c); }
+                }
+            }
+        }
+    }
+    FeatureSection {
+        title: @tr("Shadow");
+        id: "properties.text-shadow";
+        on: t.shadow;
+        toggled(on) => { Studio.set-text-effect(t.id, 1, on); }
+        Field {
+            label: @tr("Colour");
+            ColourEntry {
+                pick-label: @tr("Choose the shadow colour of {}", data.name);
+                label: @tr("Shadow colour of {}", data.name);
+                value: t.shadow-color;
+                swatch: t.shadow-swatch;
+                picked(c) => { Studio.set-text-value(t.id, "shadow_color", c); }
+            }
+        }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            Field {
+                horizontal-stretch: 1;
+                label: @tr("X");
+                NumberField {
+                    label: @tr("Shadow offset of {} to the right in pixels", data.name);
+                    unit: @tr("px");
+                    value: t.shadow-x;
+                    enabled: t.shadow;
+                    edited(v) => { Studio.set-text-number(t.id, "shadow_x", max(-256, min(256, v))); }
+                }
+            }
+            Field {
+                horizontal-stretch: 1;
+                label: @tr("Y");
+                NumberField {
+                    label: @tr("Shadow offset of {} downwards in pixels", data.name);
+                    unit: @tr("px");
+                    value: t.shadow-y;
+                    enabled: t.shadow;
+                    edited(v) => { Studio.set-text-number(t.id, "shadow_y", max(-256, min(256, v))); }
+                }
+            }
+            Field {
+                horizontal-stretch: 1;
+                label: @tr("Blur");
+                NumberField {
+                    label: @tr("Shadow blur of {} in pixels", data.name);
+                    unit: @tr("px");
+                    value: t.shadow-blur;
+                    enabled: t.shadow;
+                    edited(v) => { Studio.set-text-number(t.id, "shadow_blur", max(0, min(64, v))); }
+                }
+            }
+        }
+    }
+    FeatureSection {
+        title: @tr("Background");
+        id: "properties.text-background";
+        on: t.background;
+        toggled(on) => { Studio.set-text-effect(t.id, 2, on); }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            Field {
+                horizontal-stretch: 1;
+                label: @tr("Colour");
+                ColourEntry {
+                    pick-label: @tr("Choose the background colour of {}", data.name);
+                    label: @tr("Background colour of {}", data.name);
+                    value: t.background-color;
+                    swatch: t.background-swatch;
+                    picked(c) => { Studio.set-text-value(t.id, "background", c); }
+                }
+            }
+            Field {
+                horizontal-stretch: 1;
+                label: @tr("Padding");
+                NumberField {
+                    label: @tr("Background padding of {} in pixels", data.name);
+                    unit: @tr("px");
+                    value: t.padding;
+                    enabled: t.background;
+                    edited(v) => { Studio.set-text-number(t.id, "padding", max(0, min(1024, v))); }
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        alignment: start;
+        Button {
+            lead: IconName.fit;
+            text: @tr("Fit box to text");
+            accessible-name: @tr("Fit the box of {} to its text", data.name);
+            tooltip: @tr("Makes the box just big enough for the text, so nothing is cut or shrunk.");
+            dense: true;
+            clicked => { Studio.fit-text-box(t.id); }
+        }
+    }
+}
+
 component SourceProperties inherits VerticalLayout {
     in property <SourceData> data;
     // Delete source asks first (ADR-0065).
@@ -4744,7 +5177,10 @@ component SourceProperties inherits VerticalLayout {
     // and sound, without Audio when it has none, only Audio for sound alone.
     property <int> before-source: data.picture ? (data.audio ? 3 : 2) : 1;
     property <int> want: Studio.properties-tab;
-    property <int> tab: has-source && (!data.ok || want == 3) ? 3
+    // A text source (ADR-0129 decision 13): Text first, then Transform and Filters.
+    property <bool> is-text: Studio.text-props.on && Studio.text-props.id == data.id;
+    property <int> tab: is-text ? (want == 0 || want == 1 ? want : 4)
+        : has-source && (!data.ok || want == 3) ? 3
         : !data.picture ? 2
         : want == 1 ? 1
         : want == 2 && data.audio ? 2
@@ -4809,14 +5245,16 @@ component SourceProperties inherits VerticalLayout {
     // Transform, Filters and, for a source with sound, Audio, then Source (ADR-0062, ADR-0076, ADR-0077).
     if data.picture || has-source: Tabs {
         label: @tr("Properties of {}", data.name);
-        options: has-source
+        options: is-text ? [@tr("Text"), @tr("Transform"), @tr("Filters")]
+            : has-source
             ? (data.picture
                 ? (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio"), @tr("Source")] : [@tr("Transform"), @tr("Filters"), @tr("Source")])
                 : [@tr("Audio"), @tr("Source")])
             : (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Transform"), @tr("Filters")]);
-        index: tab == 3 ? before-source : data.picture ? tab : 0;
+        index: is-text ? (tab == 4 ? 0 : tab + 1) : tab == 3 ? before-source : data.picture ? tab : 0;
         selected(i) => {
-            if has-source && i == before-source { Studio.properties-tab = 3; }
+            if is-text { Studio.properties-tab = i == 0 ? 4 : i - 1; }
+            else if has-source && i == before-source { Studio.properties-tab = 3; }
             else if data.picture { Studio.properties-tab = i; }
             else { Studio.properties-tab = 2; }
         }
@@ -4848,6 +5286,7 @@ component SourceProperties inherits VerticalLayout {
         }
     }
     if tab == 3: SourceFields { data: data; }
+    if tab == 4: TextFields { data: data; }
     // Which canvas's layout the Transform fields edit (ADR-0093 decision 4): the
     // vertical canvas's own layout changes only that canvas.
     if tab == 0 && Studio.props-can-vertical: SegmentedControl {

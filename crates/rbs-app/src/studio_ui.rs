@@ -71,6 +71,7 @@ pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
 pub(crate) mod monitor;
+pub(crate) mod text_props;
 
 pub mod rec_state {
     pub const OFF: i32 = 0;
@@ -242,6 +243,8 @@ pub struct StudioUi {
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
     add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
+    /// The font the font picker marks as current.
+    font_current: String,
     /// The Library's looks (set once) and sample pictures (made when the panel first
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
@@ -265,6 +268,11 @@ pub struct StudioUi {
     reveal_shape: bool,
     /// Taken by [`Self::apply`] when a plain frame was selected.
     focus_shape: Option<i32>,
+    /// Taken by [`Self::apply`] when a text source was just added: Properties opens
+    /// on its Text tab (ADR-0129 decision 13).
+    focus_text: Option<i32>,
+    /// The stored settings of each text source in the rows, by id: the Text tab's.
+    text_settings: std::collections::BTreeMap<i32, rbs_scene::model::Settings>,
     /// Moving and resizing on the picture panel (ADR-0048).
     edit: PreviewEdit,
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
@@ -602,6 +610,9 @@ impl StudioUi {
             adding: false,
             reveal_shape: false,
             focus_shape: None,
+            focus_text: None,
+            font_current: String::new(),
+            text_settings: std::collections::BTreeMap::new(),
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
@@ -819,7 +830,14 @@ impl StudioUi {
                 .is_some_and(|s| s.id == self.selected && s.picture)
         });
         g.set_looks_ready(looks);
-        g.set_properties_source(self.remember_properties());
+        let shown = self.remember_properties();
+        g.set_properties_source(shown);
+        g.set_text_props(
+            self.text_settings
+                .get(&shown)
+                .map(|s| text_props::text_data(shown, s))
+                .unwrap_or_default(),
+        );
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
         g.set_switching(self.switching.is_some());
@@ -2379,6 +2397,9 @@ impl StudioUi {
                 }
             }
             Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
+            Some(add_picker::Pick::Font(id, family)) => {
+                self.set_text_value(id.get() as i32, rbs_sources::types::keys::FONT, &family);
+            }
             None => return false,
         }
         self.add_picker = None;
@@ -2395,7 +2416,12 @@ impl StudioUi {
             .kind()
             .map_or("existing source".to_owned(), |k| k.label().to_lowercase());
         Some(PickerView {
-            title: format!("Add {what}"),
+            title: if p.is_fonts() {
+                "Choose a font".to_owned()
+            } else {
+                format!("Add {what}")
+            },
+            fonts: p.is_fonts(),
             status: p.status(),
             rows: p.rows(),
             offers_audio: p.offers_audio(),
@@ -4776,6 +4802,111 @@ impl StudioUi {
         });
     }
 
+    /// Adds a text source showing `text` (Add source › Text, ADR-0129 decision 13);
+    /// it is selected and Properties opens on its Text tab.
+    pub fn add_text(&mut self, text: &str) {
+        self.deleted.clear();
+        self.adding = true;
+        self.reveal_shape = false;
+        self.send(Command::AddText {
+            text: text.to_owned(),
+        });
+    }
+
+    fn patch_text(&mut self, id: i32, patch: text_props::Patch) {
+        if patch.is_empty() || !self.text_settings.contains_key(&id) {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch,
+        });
+    }
+
+    /// The Text tab's Kind (an index of [`text_props::KINDS`]).
+    pub fn set_text_kind(&mut self, id: i32, kind: i32) {
+        let Some(patch) = self
+            .text_settings
+            .get(&id)
+            .and_then(|s| text_props::kind_patch(s, kind))
+        else {
+            return;
+        };
+        self.patch_text(id, patch);
+    }
+
+    /// A text setting of the Text tab; an empty value removes the key (but `text`).
+    pub fn set_text_value(&mut self, id: i32, key: &str, value: &str) {
+        self.patch_text(id, text_props::value_patch(key, value));
+    }
+
+    pub fn set_text_number(&mut self, id: i32, key: &str, value: f32) {
+        if value.is_finite() {
+            self.patch_text(id, text_props::number_patch(key, f64::from(value)));
+        }
+    }
+
+    pub fn set_text_flag(&mut self, id: i32, key: &str, value: bool) {
+        self.patch_text(id, text_props::flag_patch(key, value));
+    }
+
+    /// Outline (0), Shadow (1) or Background (2) on or off.
+    pub fn set_text_effect(&mut self, id: i32, effect: i32, on: bool) {
+        let Some(patch) = self
+            .text_settings
+            .get(&id)
+            .map(|s| text_props::effect_patch(s, effect, on))
+        else {
+            return;
+        };
+        self.patch_text(id, patch);
+    }
+
+    pub fn set_text_countdown(&mut self, id: i32, until: bool, target: &str, seconds: i32) {
+        self.patch_text(id, text_props::countdown_patch(until, target, seconds));
+    }
+
+    /// Fit box to text.
+    pub fn fit_text_box(&mut self, id: i32) {
+        if self.text_settings.contains_key(&id) {
+            self.deleted.clear();
+            self.send(Command::FitTextBox(SourceId::from_raw(id as u32)));
+        }
+    }
+
+    /// Start (0), Pause (1) or Reset (2) of a countdown's or stopwatch's timer.
+    pub fn text_timer(&mut self, id: i32, action: i32) {
+        let action = match action {
+            0 => rbs_record::TimerAction::Start,
+            1 => rbs_record::TimerAction::Pause,
+            2 => rbs_record::TimerAction::Reset,
+            _ => return,
+        };
+        self.send(Command::TextTimer {
+            source: SourceId::from_raw(id as u32),
+            action,
+        });
+    }
+
+    /// Opens the font picker for a text source; the families are asked for.
+    pub fn open_font_picker(&mut self, id: i32) {
+        let Some(settings) = self.text_settings.get(&id) else {
+            return;
+        };
+        let current = match settings.get(rbs_sources::types::keys::FONT) {
+            Some(rbs_scene::model::SettingValue::Text(f)) => f.clone(),
+            _ => String::new(),
+        };
+        self.add_picker = Some(add_picker::AddPicker::fonts(
+            SourceId::from_raw(id as u32),
+            &current,
+        ));
+        self.font_current = current;
+        self.picker_dirty = true;
+        self.send(Command::ListTextFonts);
+    }
+
     /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
     /// changes nothing.
     pub fn set_source_fill(&mut self, id: i32, color: &str) {
@@ -5601,6 +5732,7 @@ impl StudioUi {
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 out.focus_shape = self.focus_shape.take();
+                out.focus_text = self.focus_text.take();
                 self.refresh_existing();
                 self.refresh_marks();
             }
@@ -5709,6 +5841,13 @@ impl StudioUi {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
             },
+            Update::TextFonts(families) => {
+                if let Some(p) = &mut self.add_picker
+                    && p.answer_fonts(&families, &self.font_current)
+                {
+                    self.picker_dirty = true;
+                }
+            }
             Update::SourceSettings(view) => {
                 let (data, choices) = source_settings_data(&view);
                 self.source_settings.set_vec(vec![data]);
@@ -6235,10 +6374,20 @@ impl StudioUi {
                 self.focus_shape = Some(added.id);
                 self.reveal_shape = false;
             }
+            if rows
+                .iter()
+                .any(|r| r.id.get() as i32 == added.id && r.kind == Some(SourceKind::Text))
+            {
+                self.focus_text = Some(added.id);
+            }
         } else if !data.iter().any(|d| d.id == self.selected) {
             self.selected = -1;
         }
         set_rows(&self.sources, data);
+        self.text_settings = rows
+            .iter()
+            .filter_map(|r| Some((r.id.get() as i32, r.text.clone()?)))
+            .collect();
         self.rows = rows;
         // The Source tab marks the source's own target: it may have changed.
         self.refresh_source_targets();
@@ -6456,6 +6605,8 @@ fn paint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView) {
 /// The Add source dialog's content ([`StudioUi::take_picker_view`]).
 pub struct PickerView {
     pub title: String,
+    /// The picker lists font families (a text source's Font).
+    pub fonts: bool,
     pub status: add_picker::Status,
     pub rows: Vec<add_picker::Row>,
     /// Show "Capture audio too" (displays and windows) and whether it is checked.
@@ -6481,6 +6632,8 @@ pub struct Applied {
     pub studio_mode_started: bool,
     /// A plain frame was just added and selected: open Properties on its border.
     pub focus_shape: Option<i32>,
+    /// A text source was just added and selected: open Properties on its Text tab.
+    pub focus_text: Option<i32>,
     /// A control API client asked to switch: scene collections (`true`) or output
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.
@@ -7135,7 +7288,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Media) => "film",
         Some(SourceKind::Browser) => "globe",
         // Until the text UI (ADR-0129 phase (f)) brings its own icon.
-        Some(SourceKind::Text) => "pencil",
+        Some(SourceKind::Text) => "text",
         None => "window",
     }
 }
