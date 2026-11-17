@@ -71,6 +71,7 @@ mod device_sync;
 pub mod filters;
 mod loudness;
 mod monitor;
+mod network;
 mod on_air;
 pub mod protection;
 pub mod replay;
@@ -12494,6 +12495,7 @@ impl ControlTarget for ApiTarget<'_> {
         events: &mut EventPublisher,
     ) -> Result<Response, ApiError> {
         self.host.check_on_air(caller.irreversible, &command)?;
+        self.host.check_network(caller.irreversible, &command)?;
         self.handle(command, events)
     }
 
@@ -15232,7 +15234,7 @@ fn api_swipe(s: rbs_scene::SwipeSettings) -> api::SwipeTransition {
     }
 }
 
-/// The collection's transition as `scene.list` shows it (protocol 1.79).
+/// The collection's transition as `scene.list` shows it (protocol 1.81).
 fn api_transition(t: rbs_scene::CollectionTransition) -> api::Transition {
     api::Transition {
         kind: api_transition_kind(t.kind),

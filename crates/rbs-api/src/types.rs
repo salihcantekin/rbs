@@ -525,7 +525,7 @@ impl Glide {
     }
 }
 
-/// What a program-scene change looks like (protocol 1.79, ADR-0128).
+/// What a program-scene change looks like (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransitionKind {
@@ -543,7 +543,7 @@ pub enum TransitionKind {
     Slide,
 }
 
-/// Which way a Swipe or Slide moves (protocol 1.79, ADR-0128).
+/// Which way a Swipe or Slide moves (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SwipeDirection {
@@ -558,7 +558,7 @@ pub enum SwipeDirection {
     Down,
 }
 
-/// Fade settings (protocol 1.79, ADR-0128).
+/// Fade settings (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FadeTransition {
@@ -581,7 +581,7 @@ impl Default for FadeTransition {
     }
 }
 
-/// Swipe or Slide settings (protocol 1.79, ADR-0128).
+/// Swipe or Slide settings (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SwipeTransition {
@@ -603,7 +603,7 @@ impl Default for SwipeTransition {
     }
 }
 
-/// The collection's transition (protocol 1.79, ADR-0128): the kind and each kind's
+/// The collection's transition (protocol 1.81, ADR-0128): the kind and each kind's
 /// settings. Move's settings are the collection `glide`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Transition {
@@ -624,7 +624,7 @@ impl Transition {
     }
 }
 
-/// `transition.state` (protocol 1.79, ADR-0128 decision 13): published when a
+/// `transition.state` (protocol 1.81, ADR-0128 decision 13): published when a
 /// program change's transition starts and when it ends, never per frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransitionStateChanged {
@@ -644,7 +644,7 @@ pub struct TransitionStateChanged {
     pub at: u64,
 }
 
-/// Where a transition is (protocol 1.79).
+/// Where a transition is (protocol 1.81).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransitionPhase {
@@ -719,7 +719,7 @@ pub struct SceneList {
     /// ease-in-out.
     #[serde(default, skip_serializing_if = "Glide::is_default")]
     pub glide: Glide,
-    /// The collection's transition (protocol 1.79, ADR-0128); absent when Move with
+    /// The collection's transition (protocol 1.81, ADR-0128); absent when Move with
     /// the default settings.
     #[serde(default, skip_serializing_if = "Transition::is_default")]
     pub transition: Transition,

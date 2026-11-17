@@ -639,6 +639,7 @@ fn every_request() -> Vec<Request> {
         c(Command::TokensCreate(CreateToken {
             name: "Stream Deck".into(),
             scopes: ScopeSet::PANEL,
+            irreversible: Some(false),
         })),
         c(Command::TokensRevoke(TokenRef {
             name: "Stream Deck".into(),
@@ -903,11 +904,13 @@ fn every_result_and_event_type_round_trips() {
         tokens: vec![TokenInfo {
             name: "Stream Deck".into(),
             scopes: ScopeSet::PANEL,
+            irreversible: false,
         }],
     });
     let created = TokenCreated {
         name: "Stream Deck".into(),
         scopes: ScopeSet::PANEL,
+        irreversible: true,
         token: format!("rbs1_{}", "0".repeat(64)),
     };
     round_trip(&created);
@@ -1875,7 +1878,7 @@ fn studio_mode_is_a_minor_addition() {
         cut,
         Request::Command(Command::CanvasTransition(TransitionOnce::default()))
     );
-    // Protocol 1.79 (ADR-0128): a one-off kind and duration; old requests still parse.
+    // Protocol 1.81 (ADR-0128): a one-off kind and duration; old requests still parse.
     let fade: Request = serde_json::from_value(json!({
         "method": "canvas.transition",
         "params": {"kind": "fade", "duration_ms": 1000}

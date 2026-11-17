@@ -27,7 +27,7 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
-/// 1.79 adds scene transitions (ADR-0128 decision 13): `collection.set_transition`,
+/// 1.81 adds scene transitions (ADR-0128 decision 13): `collection.set_transition`,
 /// `kind` and `duration_ms` on `scene.switch` and `canvas.transition`, `transition` on
 /// `scene.list`, and the topic `transition.state`.
 /// 1.63 adds pauses to markers (ADR-0124 decision 10): `pause_markers` in a recording
@@ -101,7 +101,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.79";
+pub const PROTOCOL_VERSION: &str = "1.81";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -825,31 +825,55 @@ impl Server {
                     let method = command.method();
                     // Checked after the scope: a caller learns of the permission only
                     // for a method it could otherwise call (ADR-0052 decision 4).
-                    if command.effect().is_irreversible() {
-                        if irreversible {
+                    let effect = command.effect();
+                    let refusal = if effect.is_irreversible() && !irreversible {
+                        Some((
+                            "irreversible",
+                            format!(
+                                "{method} cannot be undone, and this token is not allowed actions that cannot be undone"
+                            ),
+                        ))
+                    } else if let Command::TokensCreate(p) = command
+                        && p.scopes.iter().any(|sc| !scopes.contains(sc))
+                    {
+                        // A token never gets more than its maker holds (ADR-0052
+                        // decision 4); only scopes are left, since a caller without
+                        // the permission is refused above.
+                        Some((
+                            "scopes",
+                            format!("{method} cannot give scopes this session does not hold"),
+                        ))
+                    } else if !irreversible && command.reaches_network() {
+                        Some((
+                            "network",
+                            format!(
+                                "{method} could connect to another computer, and this token is not allowed actions that cannot be undone"
+                            ),
+                        ))
+                    } else {
+                        None
+                    };
+                    match refusal {
+                        None if effect.is_irreversible() => {
                             self.actions
                                 .push_back(Action::Audit(AuditEvent::Irreversible {
                                     conn,
                                     token: token_name.clone(),
                                     method,
                                 }));
-                        } else {
+                        }
+                        None => {}
+                        Some((reason, message)) => {
                             self.actions
                                 .push_back(Action::Audit(AuditEvent::NotPermitted {
                                     conn,
                                     token: token_name.clone(),
                                     method,
-                                    reason: "irreversible",
+                                    reason,
                                 }));
                             let mut data = serde_json::Map::new();
-                            data.insert("reason".into(), "irreversible".into());
-                            let e = ApiError::with_data(
-                                ErrorKind::NotPermitted,
-                                format!(
-                                    "{method} cannot be undone, and this token is not allowed actions that cannot be undone"
-                                ),
-                                data,
-                            );
+                            data.insert("reason".into(), reason.into());
+                            let e = ApiError::with_data(ErrorKind::NotPermitted, message, data);
                             queued = Queued::Answer(id.clone(), Err(e));
                         }
                     }
@@ -1162,6 +1186,7 @@ impl Server {
             {
                 Some("on_air") => "on_air",
                 Some("network") => "network",
+                Some("scopes") => "scopes",
                 _ => "irreversible",
             };
             let token = s.token_name();

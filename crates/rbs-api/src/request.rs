@@ -138,7 +138,7 @@ pub struct SetCollectionGlide {
     pub easing: crate::types::GlideEasing,
 }
 
-/// `collection.set_transition` (protocol 1.79, ADR-0128): the collection's transition.
+/// `collection.set_transition` (protocol 1.81, ADR-0128): the collection's transition.
 /// Only the given parts change; one undo step.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -157,7 +157,7 @@ pub struct SetCollectionTransition {
     pub slide: Option<crate::types::SwipeTransition>,
 }
 
-/// A transition for one program change only (protocol 1.79, ADR-0128 decision 13):
+/// A transition for one program change only (protocol 1.81, ADR-0128 decision 13):
 /// `kind` and `duration_ms` replace the collection's for this change; absent ones keep
 /// it. With kind `move`, `duration_ms` replaces the glide's duration and every
 /// per-source override for this change.
@@ -172,7 +172,7 @@ pub struct TransitionOnce {
     pub duration_ms: Option<u32>,
 }
 
-/// `scene.switch` (protocol 1.6; `kind` and `duration_ms` since 1.79).
+/// `scene.switch` (protocol 1.6; `kind` and `duration_ms` since 1.81).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SwitchScene {
@@ -1570,8 +1570,15 @@ pub struct CreateToken {
     /// Its name, unique; surrounding spaces are dropped.
     pub name: String,
     /// What it allows: `["read"]`, `["read", "control"]` or `["read", "control",
-    /// "admin"]` (the access levels the desktop app offers).
+    /// "admin"]` (the access levels the desktop app offers). Never more than the
+    /// caller's own scopes (`not_permitted`, protocol 1.80).
     pub scopes: ScopeSet,
+    /// "Allow actions that cannot be undone" (protocol 1.80, ADR-0052 decision 4);
+    /// absent: allowed, as tokens behave without the field. Only a caller that holds
+    /// the permission reaches `tokens.create` (it is `destructive`), so it can give
+    /// either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irreversible: Option<bool>,
 }
 
 /// `tokens.revoke`.
@@ -1830,7 +1837,7 @@ pub enum Command {
     CollectionSwitch(EntryRef),
     /// `collection.set_glide` (protocol 1.35, ADR-0100).
     CollectionSetGlide(SetCollectionGlide),
-    /// `collection.set_transition` (protocol 1.79, ADR-0128).
+    /// `collection.set_transition` (protocol 1.81, ADR-0128).
     CollectionSetTransition(SetCollectionTransition),
     /// `source.set_glide` (protocol 1.35, ADR-0100).
     SourceSetGlide(SetSourceGlide),
@@ -2071,6 +2078,25 @@ impl Command {
         match self {
             Command::SettingsSet(p) if p.canvas.is_some() => Effect::Live,
             c => method_effect(c.method()).unwrap_or(Effect::Destructive),
+        }
+    }
+
+    /// True when the call, by its parameters alone, could make RBS open a connection
+    /// to a host (ADR-0052 decision 4, protocol 1.79): a browser source, or a location
+    /// value that is not a local absolute path ([`crate::location::is_local_path`]).
+    /// Checked on the API thread; a source's settings and target, whose meaning
+    /// depends on the source's kind, are checked by the control target.
+    pub fn reaches_network(&self) -> bool {
+        use crate::location::is_local_path;
+        match self {
+            Command::SourceAdd(p) => p.kind == SourceKind::Browser,
+            Command::RecordStartToFile(p) => !is_local_path(&p.path),
+            Command::SettingsSet(p) => p.profiles.as_ref().is_some_and(|profiles| {
+                profiles
+                    .iter()
+                    .any(|r| !r.folder.is_empty() && !is_local_path(&r.folder))
+            }),
+            _ => false,
         }
     }
 }
@@ -3245,6 +3271,15 @@ pub struct TokenInfo {
     pub name: String,
     /// What it allows.
     pub scopes: ScopeSet,
+    /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
+    /// omits it, which reads as allowed.
+    #[serde(default = "allowed")]
+    pub irreversible: bool,
+}
+
+/// The default of a token's permission in an answer from a server before 1.80.
+fn allowed() -> bool {
+    true
 }
 
 /// `tokens.list`' answer.
@@ -3261,6 +3296,10 @@ pub struct TokenCreated {
     pub name: String,
     /// What it allows.
     pub scopes: ScopeSet,
+    /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
+    /// omits it, which reads as allowed.
+    #[serde(default = "allowed")]
+    pub irreversible: bool,
     /// The token's text (`rbs1_` and 64 hex digits).
     pub token: String,
 }
@@ -3270,6 +3309,7 @@ impl std::fmt::Debug for TokenCreated {
         f.debug_struct("TokenCreated")
             .field("name", &self.name)
             .field("scopes", &self.scopes)
+            .field("irreversible", &self.irreversible)
             .field("token", &"<redacted>")
             .finish()
     }
