@@ -14,8 +14,10 @@
 //!   time range starts at the cursor.
 //! - Pictures are the decoder's IOSurface-backed `420v` (NV12) pixel buffers, handed
 //!   out zero-copy as native `IoSurface` pictures (`zero-copy`, ADR-0108 decision 4).
-//!   The buffer stays in a counted slot while a lease names it and the surface is kept
-//!   10 s after its last use (`surfaces`).
+//!   The buffer stays in a counted slot while a lease names it (`surfaces`). The
+//!   colour comes from the track's tags; a file whose colour the importer cannot decode
+//!   (HDR, an unknown matrix) is copied instead, and a picture is skipped when every
+//!   slot is still referenced.
 //! - [`AvfMediaFactory::cpu_upload`] copies each picture once into `Rgba8` instead
 //!   (`cpu-upload`): the measured fallback, used by the conformance pixel checks.
 //!
