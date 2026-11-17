@@ -4,6 +4,8 @@
 use rbs_sources::permissions::PermissionKind;
 
 /// The pane's address for `kind`, where the OS has one.
+// Each platform keeps one of the blocks, so its `return` is the tail there.
+#[allow(clippy::needless_return)]
 pub fn pane(kind: PermissionKind) -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {

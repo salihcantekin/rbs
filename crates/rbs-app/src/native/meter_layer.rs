@@ -13,7 +13,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
-use objc2_quartz_core::{CAAutoresizingMask, CALayer, CATransaction};
+use objc2_quartz_core::{CAAutoresizingMask, CACornerMask, CALayer, CATransaction};
 use rbs_ui::layout::Rect;
 use rbs_ui::meter::{MeterView, Orientation};
 use rbs_ui::tokens::{Color, Tokens};
@@ -106,6 +106,28 @@ impl MeterLayers {
         place(&self.clip, v.clipped.then_some(self.geometry.clip), scale);
     }
 
+    /// Rounds the bar's two ends as the toolkit's rounded, clipped bar does: the low
+    /// zone at the start (it always starts there) and the high zone at the end (it
+    /// reaches it at full scale). The joins between zones stay square.
+    fn round(&self, radius: f64) {
+        // The sublayers use top-left coordinates (the container is flipped in effect),
+        // so the minimum Y corners are the top ones.
+        let (start, end) = match self.geometry.orientation {
+            Orientation::Vertical => (
+                CACornerMask::LayerMinXMaxYCorner | CACornerMask::LayerMaxXMaxYCorner,
+                CACornerMask::LayerMinXMinYCorner | CACornerMask::LayerMaxXMinYCorner,
+            ),
+            Orientation::Horizontal => (
+                CACornerMask::LayerMinXMinYCorner | CACornerMask::LayerMinXMaxYCorner,
+                CACornerMask::LayerMaxXMinYCorner | CACornerMask::LayerMaxXMaxYCorner,
+            ),
+        };
+        for (layer, corners) in [(&self.zones[0], start), (&self.zones[2], end)] {
+            layer.setCornerRadius(radius);
+            layer.setMaskedCorners(corners);
+        }
+    }
+
     /// Draws the shown view again (after a geometry, scale or colour change), so the
     /// change shows at once even when no update follows (inactive audio).
     fn redraw(&mut self, colors: &CgColors, scale: f64) {
@@ -132,6 +154,8 @@ pub struct MeterBridgeLayer {
     /// Device pixels per point of the window (the superlayer's `contentsScale`): edges
     /// are snapped to device pixels, as the toolkit draws them, so they stay sharp.
     scale: f64,
+    /// The bars' corner radius in points ([`MeterBridgeLayer::set_corner_radius`]).
+    radius: f64,
 }
 
 impl MeterBridgeLayer {
@@ -148,7 +172,27 @@ impl MeterBridgeLayer {
             colors: CgColors::new(colors),
             placed: None,
             scale: 1.0,
+            radius: 0.0,
         }
+    }
+
+    /// Rounds the ends of every bar by `points` (the toolkit's bar radius, a design
+    /// token), at once. Not finite or negative counts as square.
+    pub fn set_corner_radius(&mut self, points: f32) {
+        let radius = if points.is_finite() && points > 0.0 {
+            f64::from(points)
+        } else {
+            0.0
+        };
+        if radius == self.radius {
+            return;
+        }
+        self.radius = radius;
+        transaction(|| {
+            for m in &self.meters {
+                m.round(radius);
+            }
+        });
     }
 
     /// Adds the bridge to an AppKit view's backing layer, above its content.
@@ -296,18 +340,24 @@ impl MeterBridgeLayer {
                 let zones = [0, 1, 2].map(|z| layer(&self.colors.zones[z]));
                 let peak = layer(&self.colors.zones[0]);
                 let clip = layer(&self.colors.clip);
-                self.meters.push(MeterLayers {
+                let m = MeterLayers {
                     zones,
                     peak,
                     clip,
                     geometry: g,
                     shown: None,
                     peak_zone: 0,
-                });
+                };
+                m.round(self.radius);
+                self.meters.push(m);
             }
             for (m, g) in self.meters.iter_mut().zip(geometry) {
                 if m.geometry != *g {
+                    let turned = m.geometry.orientation != g.orientation;
                     m.geometry = *g;
+                    if turned {
+                        m.round(self.radius);
+                    }
                     m.redraw(&self.colors, scale);
                 }
             }
