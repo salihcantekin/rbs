@@ -144,5 +144,6 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0134](0134-ai-tools-settings-page.md) | Start AI tools (`rbs-mcp`) from a Settings page, with a start-on-open option, an RBS-made token file and a generated connection line per AI tool | Accepted |
 | [0135](0135-transitions-t-bar-scene-override-rehearse.md) | Transitions phase 3: a T-bar driving the transition by hand, a transition into a scene, and Rehearse on the Preview picture | Accepted |
 | [0136](0136-no-halo-in-the-frame-bar.md) | No halo in the frame bar, so the Glow look keeps the bar's height | Accepted |
+| [0137](0137-rbs-drawn-context-menus-and-lists.md) | Context menus and drop-down lists are drawn by RBS in the window; the macOS menu bar stays native; the projector menu stays native | Accepted |
 | [0138](0138-split-the-generated-ui-crate.md) | Split the generated UI code into a base crate (shared globals and structs) and one crate per window group, for parallel and partial UI builds | Accepted |
 | [0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md) | Remote guests: one RBS shares its program to another over peer-to-peer WebRTC, paired by an invite code and an answer code, with no server of ours | Accepted |

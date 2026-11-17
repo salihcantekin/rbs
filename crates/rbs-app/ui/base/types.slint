@@ -324,6 +324,108 @@ export struct OverlayCover { x: length, y: length, width: length, height: length
 // filter never changes what choosing it means.
 export struct PickerRow { name: string, note: string, index: int }
 
+// The menus RBS draws in the window (ADR-0137): every context menu (`CommandMenu`)
+// is a layer of the window's `OverlayHost`, drawn from tokens the same on every
+// platform. Only the projector keeps a native menu (`NativeCommandMenu`), which the
+// system draws outside its shared picture.
+
+// One choice of a native submenu: its title, the registry id it runs, and whether it
+// is the current one.
+export struct ContextChoice { title: string, id: string, checked: bool, icon: image }
+
+// One item of a native menu: `kind` 1 a command, 2 a separator, 3 a submenu of `choices`.
+export struct ContextItem {
+    kind: int,
+    title: string,
+    // Empty while a checkmark takes its place.
+    icon: image,
+    id: string,
+    enabled: bool,
+    checkable: bool,
+    checked: bool,
+    choices: [ContextChoice],
+}
+
+// One row of a drawn menu: `kind` 1 a command, 2 a separator, 3 a submenu (its rows
+// come from `ContextMenus.submenu`).
+export struct MenuRow {
+    kind: int,
+    title: string,
+    // Icon name from the set; empty while a checkmark takes its place.
+    icon: string,
+    // The shortcut bound to the command, as the platform writes it, or "".
+    shortcut: string,
+    id: string,
+    enabled: bool,
+    checkable: bool,
+    checked: bool,
+    // Why it is disabled, or "".
+    reason: string,
+}
+
+export global ContextMenus {
+    // The native menu's items (the projector), at most as many as its slots.
+    in-out property <[ContextItem]> items;
+    // The native menu's items of `context` for `target` (`key=value&...`, the
+    // parameters that name what was right-clicked, percent-encoded as in command ids).
+    callback prepare(string /* context */, string /* target */) -> [ContextItem];
+    // The drawn menu's rows of `context` for `target`. Rust keeps the submenus of the
+    // menu it made, sets `has-reasons`, and keeps the focus of the moment, which
+    // `closed` gives back.
+    callback rows(string /* context */, string /* target */) -> [MenuRow];
+    // The rows of the submenu at row `index` of the last menu made.
+    callback submenu(int) -> [MenuRow];
+    // The next row after `from` (wrapping) whose title starts with `letter`
+    // (case-insensitive), or -1.
+    pure callback find(/* rows */ [MenuRow], /* from */ int, /* letter */ string) -> int;
+    // Where a menu (`beside` false) or a submenu (`beside` true) of natural size `w` x `h`
+    // goes for `anchor`, in a window `win-w` x `win-h`, `margin` from its edges
+    // (`menu_layout::place`).
+    pure callback place(/* anchor */ OverlayCover, /* w */ length, /* h */ length, /* win-w */ length, /* win-h */ length, /* margin */ length, /* beside */ bool) -> OverlayCover;
+    // Runs a command registry id: false when it is refused (its entry is disabled by
+    // now, ADR-0137 decision 6), so a switch row keeps its state and the menu closes.
+    callback run(string) -> bool;
+    // The drawn menu closed: Rust gives the focus back to what had it.
+    callback closed();
+    // The drawn menu of the window: open, its rows, whether any row has a disabled
+    // reason (the menu then has a reason line), and its anchor (window coordinates:
+    // the bottom-left corner and the height above it). `serial` moves on each open.
+    in-out property <bool> open;
+    in-out property <[MenuRow]> shown;
+    in-out property <bool> has-reasons;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <length> above;
+    in-out property <length> wide;
+    in-out property <int> serial;
+    // Where the menu and its submenu are, for the preview layer's cut-out (ADR-0054).
+    in-out property <OverlayCover> cover;
+    in-out property <bool> sub-open;
+    in-out property <OverlayCover> sub-cover;
+    // Opens the menu of `context` for `target` under the window point (`x`, `y`), or
+    // over it, `above` higher, when there is no room below; a menu that does not fit
+    // on the right ends at `x + wide` (a button's right edge). Nothing opens when the
+    // context has no items.
+    public function open-at(context: string, target: string, x: length, y: length, wide: length, above: length) {
+        let rows = root.rows(context, target);
+        if rows.length == 0 { return; }
+        root.shown = rows;
+        root.x = x;
+        root.y = y;
+        root.above = above;
+        root.wide = wide;
+        root.serial += 1;
+        root.open = true;
+    }
+    // Closes the menu without running anything.
+    public function close() {
+        if !root.open { return; }
+        root.open = false;
+        root.sub-open = false;
+        root.closed();
+    }
+}
+
 export global Overlays {
     property <int> serial;
     // The info hint popover: its text, and the button it belongs to (its window
@@ -338,6 +440,7 @@ export global Overlays {
     in-out property <length> hint-h;
     in-out property <OverlayCover> hint-cover;
     public function open-hint(text: string, detail: string, x: length, y: length, w: length, h: length) -> int {
+        ContextMenus.close();
         serial += 1;
         hint-text = text;
         hint-detail = detail;
@@ -368,6 +471,7 @@ export global Overlays {
     in-out property <int> color-serial;
     in-out property <OverlayCover> color-cover;
     public function open-color(label: string, value: color, x: length, y: length, w: length, h: length) -> int {
+        ContextMenus.close();
         serial += 1;
         color-label = label;
         color-value = value;
@@ -398,6 +502,7 @@ export global Overlays {
     in-out property <int> select-serial;
     in-out property <OverlayCover> select-cover;
     public function open-select(label: string, options: [string], index: int, x: length, y: length, w: length, h: length) -> int {
+        ContextMenus.close();
         serial += 1;
         select-label = label;
         select-options = options;
@@ -538,7 +643,11 @@ export global Overlays {
     out property <bool> tip-waiting: tip-owner >= 0 && !tip-shown && !hint-open && window-active;
     public function window-activation(active: bool) {
         window-active = active;
-        if !active { tip-close(); }
+        if !active {
+            tip-close();
+            // A drawn menu closes with its window's activation (ADR-0137 decision 6).
+            ContextMenus.close();
+        }
     }
     // Closes the tooltip, shown or waiting.
     public function tip-close() {
@@ -1015,33 +1124,7 @@ export global Appearance {
     callback undo();
 }
 
-// From context_menu.slint.
-// One choice of a submenu: its title, the registry id it runs, and whether it is the
-// current one.
-export struct ContextChoice { title: string, id: string, checked: bool, icon: image }
-
-// One item: `kind` 1 a command, 2 a separator, 3 a submenu of `choices`.
-export struct ContextItem {
-    kind: int,
-    title: string,
-    // Empty while a checkmark takes its place.
-    icon: image,
-    id: string,
-    enabled: bool,
-    checkable: bool,
-    checked: bool,
-    choices: [ContextChoice],
-}
-
-export global ContextMenus {
-    // The items of the menu being opened, at most as many as the slots below.
-    in-out property <[ContextItem]> items;
-    // The items of `context`'s menu for `target` (`key=value&...`, the parameters
-    // that name what was right-clicked, percent-encoded as in command ids).
-    callback prepare(string /* context */, string /* target */) -> [ContextItem];
-    // Runs a command registry id.
-    callback run(string);
-}
+// From context_menu.slint: moved before Overlays, which closes the drawn menu.
 
 // From obs_import.slint.
 // One scene of the chosen collection and whether it is brought.
@@ -1781,8 +1864,6 @@ export global Studio {
     callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
     callback preview-drag(float /* x */, float /* y */);
     callback preview-release();
-    // The picture's context menu opens at `x`, `y` (the picture's own coordinates).
-    callback preview-menu-opened(float /* x */, float /* y */);
     // Arrow keys on the picture panel: move the selected source by this many canvas
     // pixels.
     callback preview-nudge(int /* dx */, int /* dy */);

@@ -1,7 +1,8 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, SplitButton, InfoHint, IconButton, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, SegmentedControl, SettingValue } from "components.slint";
+import { Button, SplitButton, InfoHint, IconButton, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, SegmentedControl, SettingValue, ListRow } from "components.slint";
+import { CommandMenu } from "context_menu.slint";
 import { SettingsCard } from "settings.slint";
 import { PropertiesPanel } from "studio.slint";
 import { ReplayControls } from "replay.slint";
@@ -175,6 +176,8 @@ export component SettingRowAlignProbe inherits Window {
     out property <length> pick-left: pick.absolute-position.x;
     out property <length> pick-right: pick.absolute-position.x + pick.width;
     out property <bool> stacked: switch-row.stacked;
+    // Its Select opens a drawn list (ADR-0137 decision 10).
+    OverlayHost { width: parent.width; height: parent.height; }
 }
 
 // A window for tests/overlays.rs: drag to change on a NumberField.
@@ -367,6 +370,64 @@ export component PropertiesProbe inherits Window {
         height: parent.height;
         live-state: 0;
     }
+    // Its Selects and Add filter menu open as layers (ADR-0137 decision 10).
+    OverlayHost { width: parent.width; height: parent.height; }
+}
+
+// A window for tests/menus.rs and the menu screenshots: a panel of list rows with a
+// drawn context menu (ADR-0137), a button whose menu opens at the window's bottom, and
+// a Select. Not shown by the app.
+export component MenuProbe inherits Window {
+    // literal-begin: a test window; its size and the places of its controls are test data
+    width: 640px;
+    height: 420px;
+    background: Theme.surface-base;
+    out property <bool> row-focused: row.keyboard-focus;
+    in property <[string]> select-options: ["Fit", "Fill", "Stretch"];
+    in-out property <int> select-index: 0;
+    Rectangle {
+        x: 12px;
+        y: 12px;
+        width: 260px;
+        height: 396px;
+        background: Theme.surface-raised;
+        border-radius: Tokens.radius-md;
+        VerticalLayout {
+            padding: Tokens.space-2;
+            alignment: start;
+            row := ListRow {
+                has-icon: true;
+                icon: IconName.camera;
+                name: "Camera";
+                selected: true;
+                menu-asked(at) => { menu.open({ x: self.x + at.x, y: self.y + at.y }); }
+            }
+            ListRow { has-icon: true; icon: IconName.mic; name: "Microphone"; }
+            ListRow { has-icon: true; icon: IconName.monitor; name: "Display capture"; }
+        }
+        bottom := Button {
+            x: Tokens.space-2;
+            y: parent.height - self.height - Tokens.space-2;
+            text: "Profile";
+            clicked => { menu.open-from({ x: self.x, y: self.y + self.height }, self.width, self.height); }
+        }
+        menu := CommandMenu { context: "source"; target: "source=2"; }
+    }
+    choice := Select {
+        x: 300px;
+        y: 12px;
+        width: 160px;
+        label: "Fit";
+        options: root.select-options;
+        index: root.select-index;
+        selected(i) => { root.select-index = i; }
+    }
+    // literal-end
+    public function open-at(x: length, y: length) { menu.open({ x: x - 12px, y: y - 12px }); } // literal: the panel's place above
+    public function open-bottom() { bottom.clicked(); }
+    public function focus-row() { row.focus-row(); }
+    public function focus-select() { choice.focus(); }
+    OverlayHost { width: parent.width; height: parent.height; }
 }
 
 // The Live controls' replay buffer part, for tests/replay_shots.rs (ADR-0088).

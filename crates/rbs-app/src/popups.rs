@@ -12,7 +12,8 @@
 //! Reads `i-slint-core`, Slint's internal crate, at the exact version `slint` is pinned
 //! to; `tests/popup_covers.rs` checks the result against known placements.
 
-use i_slint_core::item_tree::ItemRc;
+use i_slint_core::input::FocusReason;
+use i_slint_core::item_tree::{ItemRc, ItemWeak};
 use i_slint_core::window::{PopupWindowLocation, WindowInner};
 use rbs_ui::layout::Rect;
 
@@ -45,5 +46,24 @@ pub fn open_in(window: &slint::Window, out: &mut Vec<Rect>) {
                 h: y1 - y0,
             });
         }
+    }
+}
+
+/// The item that has the keyboard focus in `window`, to give it back when a drawn
+/// menu closes (ADR-0137 decision 7: Slint has no public way to do this).
+pub fn focused(window: &slint::Window) -> ItemWeak {
+    WindowInner::from_pub(window).focus_item.borrow().clone()
+}
+
+/// Gives the keyboard focus back to `item` in `window` when nothing has it: a drawn
+/// menu closed and took its focus with it. Called after the event that closed the
+/// menu, so a window the picked command opened (a prompt) keeps the focus it took.
+pub fn refocus(window: &slint::Window, item: &ItemWeak) {
+    let inner = WindowInner::from_pub(window);
+    if inner.focus_item.borrow().upgrade().is_some() {
+        return;
+    }
+    if let Some(rc) = item.upgrade() {
+        inner.set_focus_item(&rc, true, FocusReason::Programmatic);
     }
 }

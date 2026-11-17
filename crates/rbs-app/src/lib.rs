@@ -38,6 +38,7 @@ pub mod encoder_form;
 pub mod hotkeys;
 pub mod levels;
 pub mod loudness_settings;
+pub mod menu_layout;
 pub mod monitor_settings;
 #[cfg(target_os = "macos")]
 pub mod native;

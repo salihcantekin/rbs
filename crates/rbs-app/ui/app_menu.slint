@@ -6,7 +6,7 @@
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
 import { ScrollArea, Button, Icon, ListRow, MenuSurface } from "components.slint";
-import { AppMenuRow, AppMenuChip, AppMenus, IconName, Icons, OverlayCover } from "base/types.slint";
+import { AppMenuRow, AppMenuChip, AppMenus, IconName, Icons, OverlayCover, ContextMenus } from "base/types.slint";
 export { AppMenuRow, AppMenuChip, AppMenus }
 
 // A category (one menu) in the left column.
@@ -101,6 +101,8 @@ export component AppMenu inherits Rectangle {
 
     // The content is made each time it opens: fill it then.
     init => {
+        // One layer at a time (ADR-0137 decision 2): a drawn context menu gives way.
+        ContextMenus.close();
         root.category = AppMenus.category;
         AppMenus.prepare();
         refresh();
