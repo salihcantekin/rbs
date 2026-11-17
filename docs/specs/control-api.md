@@ -543,7 +543,13 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
-<<<<<<< HEAD
+### Protocol 1.88: a companion sound leaves a scene with its picture (ADR-0142)
+
+- **`item.remove {item}`** changes meaning. When the item places a picture source that its scene no longer draws afterwards (no other item of it there, directly or in a scene nested in it, whatever the items' visibility), the items of its companions (`companion_of`) placed directly in that scene are removed in the same undo step. A companion left placed nowhere is deleted. Other scenes never change. At the picture's last placement in any scene, the picture and its companions are deleted, as before. `global.remove` without `keep` follows the same rule in the global scene.
+- **Answer.** `{source_deleted, removed_items?, deleted_sources?}`. `removed_items` lists every item removed in any scene, the named one first. `deleted_sources` lists every source deleted: the picture at its last placement, and companions. Both are absent when empty.
+- **Older clients and servers.** A 1.87 client ignores the new fields and sees the extra removals in `scene.changed` and `source.changed`. A 1.87 server removes only the named item, so a client checks for 1.88 before relying on it.
+- **As built.** `rbs-scene` `SceneCollection::remove_from_scene` and `Removed`; `rbs-api` `ItemRemoved`. Tests: `rbs-scene/tests/removal.rs`, `rbs-app/tests/studio_attributes.rs` (`the_companion_sound_leaves_the_scene_with_its_picture`, `removing_sources_from_a_duplicated_scene_never_touches_the_original`).
+
 ### Protocol 1.89: Stinger (ADR-0140 decisions 1, 3 and 9)
 
 - **Kind.** `TransitionKind` gains `stinger`: a media file plays over the change and the scenes switch at its cut point. `collection.set_transition`, `scene.set_transition` (`transition_in.kind`) and a one-off `kind` on `canvas.transition` and `scene.switch` accept it; a `duration_ms` given with it is ignored, because the duration is the file's play range.
@@ -551,14 +557,6 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **`scene.list` and `scene.changed`.** The collection `transition` carries `stinger {source, cut_ms?, cut_found_ms?}`, absent while no source and no cut point are set. `cut_found_ms` is the cut point found from the file's alpha (the first picture, within 10 s of the range start, that covers 99 % of the canvas), absent until the look finished or when none covers it; a look that finishes after the change publishes a further `scene.changed`.
 - **Older clients and servers.** A 1.88 client ignores `stinger` and reads the kind `stinger` as an unknown kind; the `rbs-api` crate before 1.89 refuses the kind. A 1.88 server refuses `stinger` in `collection.set_transition` (unknown key) and the kind `stinger` (`invalid_params`).
 - **As built.** `rbs-scene` `TransitionKind::Stinger`, `StingerSettings`, `SceneCollection::placed_stinger`, `SceneError::StingerPlaced`; `rbs-user-data` format 21; `rbs-media-decode` `has_alpha`, `DecodeTarget::with_keep_alpha`, `DecodeError::AlphaUnsupported`; `rbs-sources` `stinger::{look, alpha_here, covers}`, `SourceTypes::stinger_file`; `rbs-api` `types::StingerTransition`, `request::TransitionSet`; `rbs-app` `studio_host::stinger` (the look, its cache keyed by path, size, modification time, play range and canvas size). Tests: `rbs-scene/tests/collection.rs` (`the_stinger_source_is_never_placed_by_an_edit_and_leaves_with_its_source`), `rbs-user-data/tests/scenes.rs`, `rbs-media-decode-test/tests/alpha.rs`, `rbs-sources/tests/stinger.rs`, `rbs-app/tests/studio_scenes.rs`. Playback (the gate, the cut, sound and failures) is phase 4b.
-=======
-### Protocol 1.88: a companion sound leaves a scene with its picture (ADR-0142)
-
-- **`item.remove {item}`** changes meaning. When the item places a picture source that its scene no longer draws afterwards (no other item of it there, directly or in a scene nested in it, whatever the items' visibility), the items of its companions (`companion_of`) placed directly in that scene are removed in the same undo step. A companion left placed nowhere is deleted. Other scenes never change. At the picture's last placement in any scene, the picture and its companions are deleted, as before. `global.remove` without `keep` follows the same rule in the global scene.
-- **Answer.** `{source_deleted, removed_items?, deleted_sources?}`. `removed_items` lists every item removed in any scene, the named one first. `deleted_sources` lists every source deleted: the picture at its last placement, and companions. Both are absent when empty.
-- **Older clients and servers.** A 1.87 client ignores the new fields and sees the extra removals in `scene.changed` and `source.changed`. A 1.87 server removes only the named item, so a client checks for 1.88 before relying on it.
-- **As built.** `rbs-scene` `SceneCollection::remove_from_scene` and `Removed`; `rbs-api` `ItemRemoved`. Tests: `rbs-scene/tests/removal.rs`, `rbs-app/tests/studio_attributes.rs` (`the_companion_sound_leaves_the_scene_with_its_picture`, `removing_sources_from_a_duplicated_scene_never_touches_the_original`).
->>>>>>> origin/main
 
 ### Protocol 1.87: T-bar (ADR-0135 decisions 1 to 7)
 
