@@ -125,6 +125,31 @@ pub enum StreamControl {
         /// Print the state as the control API's JSON.
         json: bool,
     },
+    /// `destinations [--json]`: the saved destinations of its streams.
+    Destinations {
+        /// Print the list as the control API's JSON.
+        json: bool,
+    },
+    /// `destination start|stop|enable|disable <id>`: one destination.
+    Destination {
+        /// What to do with it.
+        action: DestinationAction,
+        /// Its id (`destinations` lists them).
+        id: u32,
+    },
+}
+
+/// What `app stream destination` asks of one destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestinationAction {
+    /// `stream.destination.start`.
+    Start,
+    /// `stream.destination.stop`.
+    Stop,
+    /// `stream.destination.set_enabled` with `true`.
+    Enable,
+    /// `stream.destination.set_enabled` with `false`.
+    Disable,
 }
 
 /// Where `stream` sends the program: the URL and its transport settings. The stream key
@@ -230,6 +255,8 @@ usage:
   rbs-cli token revoke <name>
   rbs-cli remote fingerprint
   rbs-cli app stream start|stop|status [--json]
+  rbs-cli app stream destinations [--json]
+  rbs-cli app stream destination start|stop|enable|disable <id>
   rbs-cli vcam status|add|format|remove [--size WxH] [--fps N]
   rbs-cli project --manifest <recording.rbs.toml> [--format fcpxml|xmeml] [--strict]
   rbs-cli obs-import scan
@@ -589,8 +616,43 @@ fn app<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<AppCommand, String> 
             };
             StreamControl::Status { json }
         }
+        Some("destinations") => {
+            let json = match it.next() {
+                None => false,
+                Some("--json") => true,
+                Some(extra) => {
+                    return Err(format!("app stream destinations: unexpected {extra:?}"));
+                }
+            };
+            StreamControl::Destinations { json }
+        }
+        Some("destination") => {
+            let action = match it.next() {
+                Some("start") => DestinationAction::Start,
+                Some("stop") => DestinationAction::Stop,
+                Some("enable") => DestinationAction::Enable,
+                Some("disable") => DestinationAction::Disable,
+                Some(other) => {
+                    return Err(format!("app stream destination: unknown command {other:?}"));
+                }
+                None => {
+                    return Err(
+                        "app stream destination needs start, stop, enable or disable".into(),
+                    );
+                }
+            };
+            let id = it.next().ok_or(
+                "app stream destination: the id is missing (`app stream destinations` lists them)",
+            )?;
+            let id = id
+                .parse()
+                .map_err(|_| format!("app stream destination: {id:?} is not a destination id"))?;
+            StreamControl::Destination { action, id }
+        }
         Some(other) => return Err(format!("app stream: unknown command {other:?}")),
-        None => return Err("app stream needs start, stop or status".into()),
+        None => {
+            return Err("app stream needs start, stop, status, destinations or destination".into());
+        }
     };
     match it.next() {
         None => Ok(AppCommand::Stream(command)),
@@ -1125,7 +1187,27 @@ mod tests {
                 json: true
             })))
         );
+        assert_eq!(
+            p(&["app", "stream", "destinations", "--json"]),
+            Ok(Command::App(AppCommand::Stream(
+                StreamControl::Destinations { json: true }
+            )))
+        );
+        assert_eq!(
+            p(&["app", "stream", "destination", "stop", "2"]),
+            Ok(Command::App(AppCommand::Stream(
+                StreamControl::Destination {
+                    action: DestinationAction::Stop,
+                    id: 2
+                }
+            )))
+        );
         for bad in [
+            &["app", "stream", "destination"][..],
+            &["app", "stream", "destination", "start"],
+            &["app", "stream", "destination", "start", "x"],
+            &["app", "stream", "destination", "pause", "1"],
+            &["app", "stream", "destinations", "--yaml"],
             &["app"][..],
             &["app", "record"],
             &["app", "stream"],

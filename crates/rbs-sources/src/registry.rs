@@ -454,6 +454,20 @@ impl NodeTypes for NodeTypeTable {
     fn live_settings(&self, type_id: &NodeTypeId) -> bool {
         class_of(type_id) == Some(SourceClass::Text)
     }
+
+    /// A media file takes `loop`, `restart_when_shown` and its play range in place
+    /// (ADR-0108 decision 12).
+    fn live_keys(&self, type_id: &NodeTypeId) -> &'static [&'static str] {
+        match class_of(type_id) {
+            Some(SourceClass::Media) => &[
+                keys::LOOP,
+                keys::RESTART_WHEN_SHOWN,
+                keys::START_MS,
+                keys::END_MS,
+            ],
+            _ => &[],
+        }
+    }
 }
 
 /// The capture and audio input adapters, and the source types they provide.
@@ -538,6 +552,8 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::PATH,
             keys::LOOP,
             keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS,
         ],
         SourceClass::Text => crate::text::TEXT_KEYS,
         SourceClass::Browser => &[
@@ -561,7 +577,12 @@ pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
         Some(SourceClass::Capture(TargetKind::Camera)) => &[keys::WIDTH, keys::HEIGHT, keys::FPS],
         Some(SourceClass::Capture(_)) => &[keys::CURSOR, keys::WIDTH, keys::HEIGHT, keys::FPS],
         Some(SourceClass::Audio(EndpointKind::OutputLoopback)) => &[keys::EXCLUDE_OWN_PROCESS],
-        Some(SourceClass::Media) => &[keys::LOOP, keys::RESTART_WHEN_SHOWN],
+        Some(SourceClass::Media) => &[
+            keys::LOOP,
+            keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS,
+        ],
         Some(SourceClass::Browser) => &[keys::WIDTH, keys::HEIGHT, keys::FPS, keys::TRANSPARENT],
         Some(SourceClass::Audio(_) | SourceClass::Still) | None => &[],
         // Which text keys are options (font, colour, outline) and which are identity
@@ -1230,6 +1251,7 @@ impl SourceTypes {
         };
         let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
         let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
+        let (start, end) = media_range(&source.settings)?;
         let pair = rbs_nodes::media_pair(
             factory.clone(),
             path,
@@ -1238,6 +1260,12 @@ impl SourceTypes {
             Arc::clone(&ctx.clock),
             ctx.audio,
         );
+        pair.control
+            .set_range(start, end)
+            .map_err(|_| SourceError::InvalidSetting {
+                key: keys::END_MS,
+                expected: "greater than start_ms",
+            })?;
         let stats = pair.picture.stats();
         Ok(SourceInstance::Media(Box::new(MediaSource {
             picture: pair.picture,
@@ -1298,6 +1326,8 @@ fn validate_media(settings: &Settings) -> Result<(), SourceError> {
             keys::PATH,
             keys::LOOP,
             keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS,
         ]
         .contains(&key.as_str())
         {
@@ -1333,8 +1363,79 @@ fn validate_media(settings: &Settings) -> Result<(), SourceError> {
     }
     flag(settings, keys::LOOP)?;
     flag(settings, keys::RESTART_WHEN_SHOWN)?;
+    media_range(settings)?;
     text(settings, keys::ADAPTER)?;
     Ok(())
+}
+
+/// Sends the live keys `keys` of a media file's `settings` to its control handle
+/// (ADR-0108 decision 12), for [`rbs_scene::binder::BindReport::live_changed`]. A
+/// value the type refuses is skipped and reported; the others still apply.
+pub fn apply_media_live(
+    control: &rbs_nodes::MediaControl,
+    settings: &Settings,
+    keys: &[String],
+) -> Result<(), SourceError> {
+    let mut first_error = None;
+    let mut keep = |result: Result<(), SourceError>| {
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    };
+    let changed = |key: &str| keys.iter().any(|k| k == key);
+    if changed(keys::RESTART_WHEN_SHOWN) {
+        keep(flag(settings, keys::RESTART_WHEN_SHOWN).map(|on| {
+            control.set_restart_when_shown(on.unwrap_or(true));
+        }));
+    }
+    if changed(keys::START_MS) || changed(keys::END_MS) {
+        keep(media_range(settings).and_then(|(start, end)| {
+            control
+                .set_range(start, end)
+                .map_err(|_| SourceError::InvalidSetting {
+                    key: keys::END_MS,
+                    expected: "greater than start_ms",
+                })
+        }));
+    }
+    // Last, so an end hold that loops again starts from the new range.
+    if changed(keys::LOOP) {
+        keep(flag(settings, keys::LOOP).and_then(|on| {
+            control
+                .set_loop(on.unwrap_or(true))
+                .map_err(|error| SourceError::Media(error.to_string()))
+        }));
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// The play range of a media file (ADR-0108 decision 11): `start_ms` (default 0) and
+/// `end_ms` (absent for the end of the file), each a whole number of milliseconds of
+/// at least 0, and `end_ms` greater than `start_ms`. Values past the end of the file
+/// are clamped when it opens.
+fn media_range(settings: &Settings) -> Result<(Duration, Option<Duration>), SourceError> {
+    let ms = |key: &'static str| match settings.get(key) {
+        None => Ok(None),
+        Some(SettingValue::Int(value)) => u64::try_from(*value)
+            .map(|value| Some(Duration::from_millis(value)))
+            .map_err(|_| SourceError::InvalidSetting {
+                key,
+                expected: "milliseconds, 0 or more",
+            }),
+        Some(_) => Err(SourceError::InvalidSetting {
+            key,
+            expected: "an integer",
+        }),
+    };
+    let start = ms(keys::START_MS)?.unwrap_or(Duration::ZERO);
+    let end = ms(keys::END_MS)?;
+    if end.is_some_and(|end| end <= start) {
+        return Err(SourceError::InvalidSetting {
+            key: keys::END_MS,
+            expected: "greater than start_ms",
+        });
+    }
+    Ok((start, end))
 }
 
 fn raw_path_is_remote(path: &str) -> bool {

@@ -282,7 +282,8 @@ impl MediaControl {
             return match state {
                 PlayState::Ended => {
                     player.cued = true;
-                    Self::start_at(&shared, &mut player, Duration::ZERO, true)
+                    let start = shared.range_start();
+                    Self::start_at(&shared, &mut player, start, true)
                 }
                 PlayState::Paused => {
                     player.cued = true;
@@ -293,7 +294,10 @@ impl MediaControl {
         }
         match state {
             PlayState::Playing => Ok(()),
-            PlayState::Ended => Self::start_at(&shared, &mut player, Duration::ZERO, false),
+            PlayState::Ended => {
+                let start = shared.range_start();
+                Self::start_at(&shared, &mut player, start, false)
+            }
             _ => Self::command(&shared, &mut player, false, None),
         }
     }
@@ -317,8 +321,9 @@ impl MediaControl {
         }
     }
 
-    /// Moves the cursor to `position` (clamped to the stated duration). While paused,
-    /// or from the end hold, the picture at the new position is shown and held.
+    /// Moves the cursor to `position`, clamped into the play range and to the stated
+    /// duration. While paused, or from the end hold, the picture at the new position
+    /// is shown and held.
     pub fn seek(&self, position: Duration) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
@@ -326,6 +331,12 @@ impl MediaControl {
             Some(duration) => position.min(duration),
             None => position,
         };
+        // The range end itself is the next pass: the last picture before it is held.
+        let position = match shared.range_end() {
+            Some(end) => position.min(end.saturating_sub(Duration::from_nanos(1))),
+            None => position,
+        };
+        let position = position.max(shared.range_start());
         match Self::state_of(&shared, &player) {
             PlayState::Ended => Self::start_at(&shared, &mut player, position, true),
             _ => {
@@ -335,7 +346,7 @@ impl MediaControl {
         }
     }
 
-    /// Plays from the start of the range (0 until the play range is built).
+    /// Plays from the start of the play range.
     pub fn restart(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
@@ -343,11 +354,42 @@ impl MediaControl {
         if off_air {
             player.cued = true;
         }
+        let start = shared.range_start();
         if Self::state_of(&shared, &player) == PlayState::Ended {
-            return Self::start_at(&shared, &mut player, Duration::ZERO, off_air);
+            return Self::start_at(&shared, &mut player, start, off_air);
         }
         // Off air, a restart is a seek to the start that stays cued.
-        Self::command(&shared, &mut player, off_air, Some(Duration::ZERO))
+        Self::command(&shared, &mut player, off_air, Some(start))
+    }
+
+    /// Sets the play range (ADR-0108 decision 11): `start` and, when set, `end`
+    /// (`None` is the end of the file). Refuses `end <= start` and changes nothing.
+    /// A cursor outside the new range moves to its start (decision 12); playing, the
+    /// source seeks there, and a range end that moves takes effect at the end of the
+    /// pass.
+    pub fn set_range(&self, start: Duration, end: Option<Duration>) -> Result<(), MediaNodeError> {
+        if end.is_some_and(|end| end <= start) {
+            return Err(MediaNodeError::Invalid("start_ms less than end_ms"));
+        }
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        shared.set_range(start, end);
+        let cursor = shared.cursor();
+        let moved = shared.in_range(cursor);
+        if moved == cursor {
+            return Ok(());
+        }
+        match Self::state_of(&shared, &player) {
+            // No worker follows a record: the next start begins at the new start.
+            PlayState::Standby | PlayState::Ended | PlayState::Unavailable => {
+                shared.move_cursor(moved);
+                Ok(())
+            }
+            _ => {
+                let paused = shared.controls.newest().paused;
+                Self::command(&shared, &mut player, paused, Some(moved))
+            }
+        }
     }
 
     /// Whether a program or hold scene draws the source: the binder's on-air set,
@@ -373,25 +415,45 @@ impl MediaControl {
                     // `restart_when_shown` starts at the range start (the table),
                     // also after a seek while cued.
                     player.cued = false;
-                    let position = restart.then_some(Duration::ZERO);
+                    let position = restart.then(|| shared.range_start());
                     Self::command(&shared, &mut player, false, position)
                 }
                 PlayState::Ended if restart => {
-                    Self::start_at(&shared, &mut player, Duration::ZERO, false)
+                    let start = shared.range_start();
+                    Self::start_at(&shared, &mut player, start, false)
                 }
                 PlayState::Paused if restart => {
-                    Self::command(&shared, &mut player, false, Some(Duration::ZERO))
+                    let start = shared.range_start();
+                    Self::command(&shared, &mut player, false, Some(start))
                 }
                 _ => Ok(()),
             }
         } else if state == PlayState::Playing {
             // A take swapped it out: cued where it stopped, or at the start.
             player.cued = true;
-            let position = restart.then_some(Duration::ZERO);
+            let position = restart.then(|| shared.range_start());
             Self::command(&shared, &mut player, true, position)
         } else {
             Ok(())
         }
+    }
+
+    /// The live `loop` key (ADR-0108 decision 12). While playing it takes effect at
+    /// the next end of the range; an end hold whose `loop` becomes true plays again
+    /// from the range start (a restart: cued when the source is not on air).
+    pub fn set_loop(&self, on: bool) -> Result<(), MediaNodeError> {
+        let ended = {
+            let player = self.shared.player();
+            let was = player.loop_flag.swap(on, Ordering::AcqRel);
+            on && !was && Self::state_of(&self.shared, &player) == PlayState::Ended
+        };
+        if ended { self.restart() } else { Ok(()) }
+    }
+
+    /// The live `restart_when_shown` key (ADR-0108 decision 12): read by the next
+    /// transition of the on-air table and the next wake.
+    pub fn set_restart_when_shown(&self, on: bool) {
+        self.shared.player().restart_when_shown = on;
     }
 
     /// How long a paused or cued source keeps its worker and decoder (the

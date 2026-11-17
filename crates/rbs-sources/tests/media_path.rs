@@ -213,3 +213,90 @@ fn a_missing_codec_is_reported_over_a_plain_failure() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_play_range_with_end_not_after_start_is_refused() {
+    let id = rbs_graph::node::NodeTypeId::new(types::MEDIA_SOURCE);
+    let with = |start: Option<i64>, end: Option<SettingValue>| {
+        let mut settings = Settings::new();
+        settings.insert(
+            keys::PATH.to_owned(),
+            SettingValue::Text(r"C:\clips\clip.mp4".to_owned()),
+        );
+        if let Some(start) = start {
+            settings.insert(keys::START_MS.to_owned(), SettingValue::Int(start));
+        }
+        if let Some(end) = end {
+            settings.insert(keys::END_MS.to_owned(), end);
+        }
+        rbs_sources::validate_settings(&id, &settings)
+    };
+    assert!(with(None, None).is_ok());
+    assert!(with(Some(1_000), None).is_ok());
+    assert!(with(Some(1_000), Some(SettingValue::Int(2_000))).is_ok());
+    for (start, end, key) in [
+        (Some(2_000), Some(SettingValue::Int(2_000)), "end_ms"),
+        (Some(2_000), Some(SettingValue::Int(1_000)), "end_ms"),
+        (None, Some(SettingValue::Int(0)), "end_ms"),
+        (Some(-1), None, "start_ms"),
+        (None, Some(SettingValue::Text("1s".to_owned())), "end_ms"),
+    ] {
+        let err = with(start, end.clone()).unwrap_err();
+        assert!(
+            matches!(err, SourceError::InvalidSetting { key: k, .. } if k == key),
+            "{start:?} {end:?} -> {err}"
+        );
+    }
+    assert!(rbs_sources::option_keys(&id).contains(&keys::START_MS));
+    assert!(rbs_sources::option_keys(&id).contains(&keys::END_MS));
+}
+
+#[test]
+fn live_media_keys_reach_the_control_handle() {
+    let (dir, file) = temp_file("live");
+    let mut reg = SourceTypes::new();
+    reg.register_media(Arc::new(ScriptFactory::new(ScriptClip::silent_frames())))
+        .unwrap();
+    reg.probe();
+    let ctx = InstanceContext::new(
+        Arc::new(rbs_core::time::TestClock::new()),
+        rbs_audio::AudioGraphConfig::default(),
+    );
+    let SourceInstance::Media(media) = instantiate(&reg, &ctx, &file.to_string_lossy()).unwrap()
+    else {
+        panic!("media");
+    };
+    let id = rbs_graph::node::NodeTypeId::new(types::MEDIA_SOURCE);
+    use rbs_scene::binder::NodeTypes;
+    assert_eq!(
+        reg.node_types().live_keys(&id),
+        [
+            keys::LOOP,
+            keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS
+        ]
+    );
+    let mut settings = Settings::new();
+    settings.insert(keys::START_MS.to_owned(), SettingValue::Int(100));
+    settings.insert(keys::LOOP.to_owned(), SettingValue::Bool(false));
+    let changed = [keys::START_MS.to_owned(), keys::LOOP.to_owned()];
+    rbs_sources::apply_media_live(&media.control, &settings, &changed).unwrap();
+    assert_eq!(
+        media.control.cursor(),
+        std::time::Duration::from_millis(100)
+    );
+    // A range the type refuses changes nothing and is reported.
+    settings.insert(keys::END_MS.to_owned(), SettingValue::Int(50));
+    let err = rbs_sources::apply_media_live(&media.control, &settings, &[keys::END_MS.to_owned()])
+        .unwrap_err();
+    assert!(
+        matches!(err, SourceError::InvalidSetting { key: "end_ms", .. }),
+        "{err}"
+    );
+    assert_eq!(
+        media.control.cursor(),
+        std::time::Duration::from_millis(100)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

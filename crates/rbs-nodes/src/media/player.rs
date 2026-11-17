@@ -155,7 +155,7 @@ impl Player {
             if !stored {
                 self.cued = true;
                 if self.restart_when_shown {
-                    shared.move_cursor(Duration::ZERO);
+                    shared.move_cursor(shared.range_start());
                 }
             }
             if !newest.paused {
@@ -166,7 +166,7 @@ impl Player {
         let was_cued = std::mem::replace(&mut self.cued, false);
         if self.restart_when_shown {
             self.ended_stored = false;
-            shared.move_cursor(Duration::ZERO);
+            shared.move_cursor(shared.range_start());
             if newest.paused {
                 self.write_now(shared, false);
             }

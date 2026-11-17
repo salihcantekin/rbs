@@ -440,6 +440,16 @@ pub fn open_canvases() -> Vec<ProjectorCanvas> {
     SLOTS.with(|slots| slots.borrow().iter().map(|s| s.canvas).collect())
 }
 
+/// Runs `f` on every open projector window (to give each the look again after a theme
+/// change, themes spec "Applying").
+pub fn each_window(f: impl Fn(&ProjectorWindow)) {
+    SLOTS.with(|slots| {
+        for s in slots.borrow().iter() {
+            f(&s.window);
+        }
+    });
+}
+
 /// The open projectors as the menu shows them.
 pub fn shown() -> Vec<Shown> {
     SLOTS.with(|slots| {

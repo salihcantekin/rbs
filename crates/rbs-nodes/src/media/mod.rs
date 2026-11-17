@@ -194,6 +194,10 @@ pub(crate) struct Shared {
     pub(crate) handoff_ready: AtomicBool,
     /// Media cursor in nanoseconds: the picture last shown, kept across Standby.
     cursor: AtomicU64,
+    /// Start of the play range in nanoseconds (ADR-0108 decision 11; 0 by default).
+    range_start: AtomicU64,
+    /// End of the play range in nanoseconds plus one; 0 for the end of the file.
+    range_end: AtomicU64,
     /// Where the worker's pause stopped, in nanoseconds plus one; 0 while playing.
     paused_cursor: AtomicU64,
     /// Playback. Locked on the control path only.
@@ -228,6 +232,8 @@ impl Shared {
             handoff: Mutex::new(Handoff::default()),
             handoff_ready: AtomicBool::new(false),
             cursor: AtomicU64::new(0),
+            range_start: AtomicU64::new(0),
+            range_end: AtomicU64::new(0),
             paused_cursor: AtomicU64::new(0),
             player: Mutex::new(player),
         })
@@ -264,6 +270,38 @@ impl Shared {
     pub(crate) fn move_cursor(&self, cursor: Duration) {
         self.set_paused_cursor(None);
         self.set_cursor(cursor);
+    }
+
+    /// Where the play range starts (ADR-0108 decision 11).
+    pub(crate) fn range_start(&self) -> Duration {
+        Duration::from_nanos(self.range_start.load(Ordering::Acquire))
+    }
+
+    /// Where the play range ends; `None` for the end of the file.
+    pub(crate) fn range_end(&self) -> Option<Duration> {
+        match self.range_end.load(Ordering::Acquire) {
+            0 => None,
+            end => Some(Duration::from_nanos(end - 1)),
+        }
+    }
+
+    /// Stores the play range. The caller checked `start < end`.
+    pub(crate) fn set_range(&self, start: Duration, end: Option<Duration>) {
+        let nanos = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX - 1);
+        self.range_start.store(nanos(start), Ordering::Release);
+        self.range_end
+            .store(end.map_or(0, |e| nanos(e) + 1), Ordering::Release);
+    }
+
+    /// `position` moved into the play range: before the start or at or after the end
+    /// it is the start (decision 12).
+    pub(crate) fn in_range(&self, position: Duration) -> Duration {
+        let start = self.range_start();
+        if position < start || self.range_end().is_some_and(|end| position >= end) {
+            start
+        } else {
+            position
+        }
     }
 
     pub(crate) fn set_cursor(&self, cursor: Duration) {

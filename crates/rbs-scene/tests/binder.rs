@@ -1351,6 +1351,65 @@ fn a_type_with_live_settings_keeps_its_node_and_reports_the_change() {
     assert_eq!(report.retired_sources, [screen]);
 }
 
+/// A camera whose `fps` and `loop` keys are live (ADR-0108 decision 12).
+struct LiveKeysCamera;
+
+impl rbs_scene::binder::NodeTypes for LiveKeysCamera {
+    fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
+        types(type_id)
+    }
+    fn live_keys(&self, type_id: &NodeTypeId) -> &'static [&'static str] {
+        if type_id.as_str() == "org.rbs.source.camera" {
+            &["fps", "loop"]
+        } else {
+            &[]
+        }
+    }
+}
+
+#[test]
+fn a_change_of_live_keys_only_keeps_the_node_and_lists_the_keys() {
+    let mut s = setup();
+    s.binder = SceneBinder::new(LiveKeysCamera);
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(s.cam).unwrap();
+    let mut settings = s.col.source(s.cam).unwrap().settings.clone();
+    settings.insert("fps".into(), SettingValue::Int(25));
+    settings.insert("loop".into(), SettingValue::Bool(false));
+    s.col.set_source_settings(s.cam, settings.clone()).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(s.binder.source_node(s.cam), Some(node));
+    assert_eq!(
+        report.live_changed,
+        [(s.cam, node, vec!["fps".to_owned(), "loop".to_owned()])]
+    );
+    assert!(report.changed_sources.is_empty());
+    assert!(report.retired_sources.is_empty());
+    assert!(report.replaced_sources.is_empty());
+    assert_eq!(state(&s, node), Lifecycle::Active);
+
+    // Removing a live key is a live change too.
+    settings.remove("loop");
+    s.col.set_source_settings(s.cam, settings.clone()).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(
+        report.live_changed,
+        [(s.cam, node, vec!["loop".to_owned()])]
+    );
+
+    // Same settings again: nothing to report.
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.live_changed.is_empty());
+
+    // A live key with another key replaces the source.
+    settings.insert("fps".into(), SettingValue::Int(50));
+    settings.insert("width".into(), SettingValue::Int(800));
+    s.col.set_source_settings(s.cam, settings).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.live_changed.is_empty());
+    assert_eq!(report.retired_sources, [node]);
+}
+
 #[test]
 fn deleted_sources_and_filters_are_reported_retired() {
     let (mut s, mic) = audio_setup();
