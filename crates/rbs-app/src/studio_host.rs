@@ -986,6 +986,9 @@ pub enum Command {
         id: SourceId,
         /// The keys to change.
         patch: BTreeMap<String, serde_json::Value>,
+        /// Patches that share a non-zero gesture (one drag of a field) are one undo
+        /// step; 0 never joins.
+        gesture: u64,
     },
     /// Try a source that is not running again with its stored settings (ADR-0077).
     ReloadSource(SourceId),
@@ -4771,8 +4774,8 @@ impl Host {
             Command::CloseSourceSettings => {
                 self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel);
             }
-            Command::SetSourceSettings { id, patch } => {
-                let done = self.patch_source_settings(id, &patch);
+            Command::SetSourceSettings { id, patch, gesture } => {
+                let done = self.patch_source_settings_in(id, &patch, gesture);
                 self.answer(done, notify);
             }
             Command::Media { id, op } => {
@@ -10663,6 +10666,17 @@ impl Host {
         id: SourceId,
         patch: &BTreeMap<String, serde_json::Value>,
     ) -> Result<bool, Refusal> {
+        self.patch_source_settings_in(id, patch, 0)
+    }
+
+    /// [`Self::patch_source_settings`] as part of `gesture`: patches that share a
+    /// non-zero gesture are one undo step (a dragged field, design system NumberField).
+    fn patch_source_settings_in(
+        &mut self,
+        id: SourceId,
+        patch: &BTreeMap<String, serde_json::Value>,
+        gesture: u64,
+    ) -> Result<bool, Refusal> {
         let source = self
             .collection
             .source(id)
@@ -10741,7 +10755,7 @@ impl Host {
             );
         }
         self.history
-            .record(EditKind::SourceSettings, &name, 0, undos);
+            .record(EditKind::SourceSettings, &name, gesture, undos);
         self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::SourceSettings);
         Ok(true)
     }

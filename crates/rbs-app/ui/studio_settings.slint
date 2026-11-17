@@ -487,6 +487,7 @@ export component RecordingSettings inherits Rectangle {
                 reset => { Studio.set-marker-lead(0); }
                 fill: false;
                 NumberField {
+                    live: false;
                     label: @tr("Marker lead");
                     unit: @tr("s");
                     value: Studio.rec-marker-lead;
@@ -614,6 +615,7 @@ export component RecordingSettings inherits Rectangle {
                             accessible-role: none;
                         }
                         NumberField {
+                            live: false;
                             label: @tr("Long side");
                             preferred-width: Tokens.size-field-compact;
                             value: Studio.out-long;
@@ -1033,6 +1035,7 @@ export component StreamSettings inherits Rectangle {
                             accessible-role: none;
                         }
                         NumberField {
+                            live: false;
                             label: @tr("Long side");
                             preferred-width: Tokens.size-field-compact;
                             value: Studio.st-long;
@@ -1107,6 +1110,7 @@ export component VideoSettings inherits Rectangle {
                     HorizontalLayout {
                         spacing: Tokens.space-2;
                         NumberField {
+                            live: false;
                             label: @tr("Canvas width");
                             prefix: "W";
                             preferred-width: Tokens.size-field-compact;
@@ -1116,6 +1120,7 @@ export component VideoSettings inherits Rectangle {
                             edited(v) => { Studio.set-canvas-sides(v, Studio.canvas-height); }
                         }
                         NumberField {
+                            live: false;
                             label: @tr("Canvas height");
                             prefix: "H";
                             preferred-width: Tokens.size-field-compact;
@@ -1288,6 +1293,7 @@ export component GeneralSettings inherits Rectangle {
                 default-text: @tr("{} ms", Studio.glide-default-duration);
                 reset => { Studio.set-glide(Studio.glide-default-duration, Studio.glide-easing); }
                 NumberField {
+                    live: false;
                     label: @tr("Glide duration in milliseconds");
                     unit: @tr("ms");
                     value: Studio.glide-duration;

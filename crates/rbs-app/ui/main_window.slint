@@ -507,6 +507,7 @@ component TransitionChoice inherits Select {
 
 // The duration of the transition type on the rail; a cut has none.
 component TransitionDuration inherits NumberField {
+    live: false;
     label: @tr("Duration");
     unit: @tr("ms");
     value: Studio.transition-kind == 1 ? Studio.fade-duration
@@ -960,6 +961,7 @@ component SceneTransitionCard inherits PopoverLayer {
                     accessible-role: none;
                 }
                 NumberField {
+                    live: false;
                     label: @tr("Own duration");
                     unit: @tr("ms");
                     value: Overlays.scene-transition-ms >= 0 ? Overlays.scene-transition-ms : root.kind-ms;
