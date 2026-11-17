@@ -3298,6 +3298,22 @@ export global Overlays {
     in-out property <length> transition-h;
     in-out property <OverlayCover> transition-cover;
 
+    // A scene's "Transition into this scene" card (ADR-0135 decision 14): drawn by the
+    // window whose Scenes panel holds the scene's row, under the row (its window
+    // position and size). `scene-transition-kind` is -1 for the collection's kind, else
+    // the rail's index; `scene-transition-ms` -1 for the kind's own duration. Reported
+    // as a cover like the hint.
+    in-out property <bool> scene-transition-open;
+    in-out property <int> scene-transition-id: -1;
+    in-out property <string> scene-transition-name;
+    in-out property <int> scene-transition-kind: -1;
+    in-out property <int> scene-transition-ms: -1;
+    in-out property <length> scene-transition-x;
+    in-out property <length> scene-transition-y;
+    in-out property <length> scene-transition-w;
+    in-out property <length> scene-transition-h;
+    in-out property <OverlayCover> scene-transition-cover;
+
     // The live chip's destinations list (ADR-0127 decision 17): drawn by the main
     // window under the button that opened it, reported as a cover like the hint.
     in-out property <bool> live-open;

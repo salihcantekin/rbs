@@ -801,7 +801,8 @@ impl App {
             Run::DuplicateSource(id) => self.studio.duplicate_source(id),
             Run::CopyAttributes(id) => self.studio.copy_attributes(id),
             // The window needs someone at it: not from a control surface.
-            Run::OpenAttributes(..) if !confirm => {}
+            Run::OpenAttributes(..) | Run::SceneTransition(_) if !confirm => {}
+            Run::SceneTransition(id) => self.ask_scene_transition(id),
             Run::OpenAttributes(id, paste) => {
                 self.studio.selected = id;
                 self.open_attributes = Some((id, paste));
@@ -1063,6 +1064,23 @@ impl App {
                 g.set_renaming_source(id);
                 g.set_rename_source_asked(g.get_rename_source_asked() + 1);
             }
+        };
+        ask(self.main.global::<Studio>());
+        for f in &self.floats {
+            ask(f.window.global::<Studio>());
+        }
+    }
+
+    /// Opens the scene's "Transition into this scene" card under its row (ADR-0135).
+    /// The Scenes panel opens so the row is there.
+    fn ask_scene_transition(&mut self, id: i32) {
+        if let Some(p) = panel("rbs.scenes") {
+            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
+            self.raise_host_of(&p);
+        }
+        let ask = |g: Studio<'_>| {
+            g.set_transition_scene(id);
+            g.set_transition_scene_asked(g.get_transition_scene_asked() + 1);
         };
         ask(self.main.global::<Studio>());
         for f in &self.floats {
@@ -4735,6 +4753,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         on_rename_scene,
         |app, id: i32, name: slint::SharedString| {
             app.studio.rename_scene(id, &name);
+        }
+    );
+    on!(
+        on_set_scene_transition,
+        |app, id: i32, kind: i32, duration: i32| {
+            app.studio.set_scene_transition(id, kind, duration);
         }
     );
     on!(on_move_source, |app, id: i32, up: bool| {

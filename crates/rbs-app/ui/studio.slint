@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, HScrollArea, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine } from "components.slint";
+import { DialogActions, HScrollArea, ListBox, ScrollArea, Sections, Experience, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeBand, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine, Overlays } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
@@ -29,7 +29,9 @@ export struct SourceData { id: int, name: string, kind: string, icon: string, st
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
 // `live`: the scene on air; `preview`: the preview scene in studio mode (ADR-0061).
 // `own-levels`: the scene keeps its own volumes and mutes (Own levels, ADR-0091).
-export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int, own-levels: bool }
+// `transition-kind`: the scene's own transition into it (ADR-0135), -1 the collection's,
+// else the rail's index; `transition-ms` its own duration, -1 the kind's.
+export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int, own-levels: bool, transition-kind: int, transition-ms: int }
 // A source of the collection for Add source's "Existing source" list.
 // A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
 // picture: `frame` is true for a frame (transparent in the middle), `thumb` its picture.
@@ -493,6 +495,13 @@ export global Studio {
     callback add-scene();
     callback remove-scene(int /* id */);
     callback rename-scene(int /* id */, string /* name */);
+    // Sets a scene's transition into it (ADR-0135): `kind` -1 the collection's, else the
+    // rail's index; `duration` -1 the kind's own duration, else milliseconds.
+    callback set-scene-transition(int /* id */, int /* kind */, int /* duration */);
+    // "Transition into this scene…" from a menu: the row of this scene opens its card
+    // and sets it back to -1; the count makes each ask a change.
+    in-out property <int> transition-scene: -1;
+    in-out property <int> transition-scene-asked;
     // The Scenes panel's `+` in its card title row; each press adds one.
     in-out property <int> add-scene-asked;
     // Rename from a menu or a shortcut: the row of this scene or source starts its
@@ -1361,7 +1370,24 @@ component SceneRowView inherits Rectangle {
     }
     property <int> rename-asked: Studio.rename-scene-asked;
     changed rename-asked => { root.take-rename(); }
-    init => { root.take-scene-confirm(); root.take-rename(); }
+    property <int> transition-asked: Studio.transition-scene-asked;
+    changed transition-asked => { root.take-transition(); }
+    init => { root.take-scene-confirm(); root.take-rename(); root.take-transition(); }
+    // Opens the scene's transition card under the row (ADR-0135).
+    function take-transition() {
+        if Studio.transition-scene == data.id {
+            Studio.transition-scene = -1;
+            Overlays.scene-transition-id = data.id;
+            Overlays.scene-transition-name = data.name;
+            Overlays.scene-transition-kind = data.transition-kind;
+            Overlays.scene-transition-ms = data.transition-ms;
+            Overlays.scene-transition-x = root.absolute-position.x;
+            Overlays.scene-transition-y = root.absolute-position.y;
+            Overlays.scene-transition-w = root.width;
+            Overlays.scene-transition-h = root.height;
+            Overlays.scene-transition-open = true;
+        }
+    }
     function take-rename() {
         if Studio.renaming-scene == data.id { row.editing = true; Studio.renaming-scene = -1; }
     }

@@ -8,9 +8,12 @@
 //!
 //! `cargo xtask affected` checks, lints or tests only the crates a change can break
 //! (`affected`, `docs/specs/testing-strategy.md`).
+//!
+//! `cargo xtask ui-dev` runs the app with the UI live preview (`ui_dev`).
 
 mod affected;
 mod check_ui;
+mod ui_dev;
 
 use std::env;
 use std::fs;
@@ -55,11 +58,22 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("ui-dev") => {
+            let rest: Vec<String> = args.collect();
+            match ui_dev::run(&workspace_root(), &rest) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("ui-dev: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-layers\n{}\n{}",
+                "usage: cargo xtask check-layers\n{}\n{}\n{}",
                 check_ui::USAGE,
-                affected::USAGE
+                affected::USAGE,
+                ui_dev::USAGE
             );
             ExitCode::from(2)
         }

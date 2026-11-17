@@ -20,6 +20,13 @@ test = false
 doctest = false
 doc = false
 
+[features]
+# Development only: the UI is interpreted at run time and reloads when a `.slint` file
+# is saved, so a UI edit needs no Rust build (`cargo xtask ui-dev`, testing strategy,
+# "UI live preview"). Takes effect only with `SLINT_LIVE_PREVIEW=1` at build time.
+# Never enabled in builds that ship.
+live-preview = ["slint/live-preview"]
+
 [dependencies]
 rbs-ui = { path = "../rbs-ui" }
 # The same exact pin and features as rbs-app (ADR-0022, decisions 1, 2 and 5).
