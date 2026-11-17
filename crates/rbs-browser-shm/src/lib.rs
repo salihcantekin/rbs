@@ -20,7 +20,10 @@
 //! 28      4     reserved (0)
 //! 32      8     frames written by the helper
 //! 40      8     heartbeat: the helper adds one at least every 500 ms
-//! 48      80    reserved (0)
+//! 48      24    paint time of slots 0, 1 and 2: OS monotonic nanoseconds
+//!               ([`os_monotonic_nanos`]) the helper took when it started to fill the
+//!               slot; 0 = unknown (ADR-0109 decision 8)
+//! 72      56    reserved (0)
 //! 128     ...   three slots of width * height * 4 bytes, sRGB
 //! ```
 //!
@@ -52,6 +55,8 @@ pub const MAGIC: u32 = 0x4253_4252;
 /// Layout version.
 pub const VERSION: u32 = 1;
 const DIRTY: u32 = 0b100;
+/// Header offset of slot 0's paint time; slots 1 and 2 follow.
+const PAINTED: usize = 48;
 const INDEX: u32 = 0b011;
 
 /// Pixel layout of the slots.
@@ -217,9 +222,14 @@ impl FrameRing {
         self.dword(40).fetch_add(1, Ordering::Release);
     }
 
-    /// Helper side: fills the writer's slot with `fill` and publishes it. Never waits.
+    /// Helper side: fills the writer's slot with `fill` and publishes it, stamped with
+    /// the OS monotonic time at the call (the paint time). Never waits.
     pub fn publish_with(&self, writer: &mut RingWriter, fill: impl FnOnce(&mut [u8])) {
         let index = (writer.back.min(SLOTS - 1)) as usize;
+        // The writer owns this slot's stamp as it owns the slot; the exchange below
+        // publishes both.
+        self.dword(PAINTED + 8 * index)
+            .store(os_monotonic_nanos(), Ordering::Relaxed);
         let start = HEADER + index * self.slot;
         // SAFETY: `start + slot` is inside the mapping (`section_bytes` sized it and
         // `index < SLOTS`). The triple buffer gives the writer exclusive ownership of
@@ -261,6 +271,14 @@ impl FrameRing {
             );
         }
         true
+    }
+
+    /// Studio side: the paint time (OS monotonic nanoseconds) of the frame the last
+    /// [`Self::take_latest`] copied, or 0 when the helper did not stamp it. Untrusted:
+    /// the caller maps it through its edge clock, which never places it after now.
+    pub fn painted(&self, reader: &RingReader) -> u64 {
+        let index = reader.front.min(SLOTS - 1) as usize;
+        self.dword(PAINTED + 8 * index).load(Ordering::Relaxed)
     }
 
     fn word(&self, offset: usize) -> &AtomicU32 {
@@ -588,6 +606,34 @@ mod tests {
         let mut buf = Vec::new();
         assert!(studio.take_latest(&mut reader, &mut buf));
         assert_eq!(buf[0], 5);
+    }
+
+    #[test]
+    fn each_frame_carries_its_own_paint_time() {
+        let studio = FrameRing::create(2, 2, SlotLayout::Rgba8Straight).unwrap();
+        let helper = FrameRing::open(studio.name(), 2, 2).unwrap();
+        let mut writer = helper.writer();
+        let mut reader = studio.reader();
+        let mut buf = Vec::new();
+        assert_eq!(studio.painted(&reader), 0, "unknown before a frame");
+        let before = os_monotonic_nanos();
+        helper.publish_with(&mut writer, |px| px.fill(1));
+        let after = os_monotonic_nanos();
+        assert!(studio.take_latest(&mut reader, &mut buf));
+        let first = studio.painted(&reader);
+        assert!(
+            (before..=after).contains(&first),
+            "{before} {first} {after}"
+        );
+        helper.publish_with(&mut writer, |px| px.fill(2));
+        helper.publish_with(&mut writer, |px| px.fill(3));
+        assert!(studio.take_latest(&mut reader, &mut buf));
+        assert_eq!(buf[0], 3);
+        assert!(studio.painted(&reader) >= first);
+        // The slot the reader holds keeps its stamp while the writer paints others.
+        let held = studio.painted(&reader);
+        helper.publish_with(&mut writer, |px| px.fill(4));
+        assert_eq!(studio.painted(&reader), held);
     }
 
     #[test]

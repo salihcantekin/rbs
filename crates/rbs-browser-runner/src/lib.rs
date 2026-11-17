@@ -42,6 +42,8 @@ pub struct HelperChild {
     pub width: u32,
     /// Height of `frame` once a frame arrived.
     pub height: u32,
+    /// OS monotonic nanoseconds at which the helper painted `frame`; 0 = unknown.
+    pub painted: u64,
     /// The helper is not running (exited, killed, or lost its heartbeat).
     pub unavailable: bool,
     /// Exits counted toward back-off. A live child stays at 0.
@@ -71,6 +73,7 @@ impl HelperChild {
         }
         self.width = self.ring.width();
         self.height = self.ring.height();
+        self.painted = self.ring.painted(&self.reader);
         true
     }
 
@@ -219,6 +222,7 @@ pub fn spawn_helper(
         last_beat: 0,
         last_beat_at: Instant::now(),
         frame: Vec::new(),
+        painted: 0,
         width: 0,
         height: 0,
         unavailable: false,
@@ -232,7 +236,8 @@ pub const STOP_GRACE: Duration = Duration::from_secs(1);
 
 /// Studio-side supervisor thread for one running helper (ADR-0109 decision 8). It
 /// exists only while the source is Active (P13). At the page's frame rate it copies the
-/// newest frame out of the section and hands it to `publish`, and it checks the
+/// newest frame out of the section and hands it to `publish` with its paint time (OS
+/// monotonic nanoseconds, 0 = unknown), and it checks the
 /// process and the heartbeat. It never runs on the render thread.
 #[derive(Debug)]
 pub struct Supervisor {
@@ -262,7 +267,7 @@ impl Supervisor {
     pub fn start(
         child: HelperChild,
         fps: u32,
-        publish: impl FnMut(&[u8], u32, u32) + Send + 'static,
+        publish: impl FnMut(&[u8], u32, u32, u64) + Send + 'static,
     ) -> Result<Self, String> {
         Self::start_inner(child, fps, publish, None)
     }
@@ -272,7 +277,7 @@ impl Supervisor {
     pub fn start_with_sound(
         child: HelperChild,
         fps: u32,
-        publish: impl FnMut(&[u8], u32, u32) + Send + 'static,
+        publish: impl FnMut(&[u8], u32, u32, u64) + Send + 'static,
         sound: Box<dyn PageSound>,
     ) -> Result<Self, String> {
         Self::start_inner(child, fps, publish, Some(sound))
@@ -281,7 +286,7 @@ impl Supervisor {
     fn start_inner(
         mut child: HelperChild,
         fps: u32,
-        mut publish: impl FnMut(&[u8], u32, u32) + Send + 'static,
+        mut publish: impl FnMut(&[u8], u32, u32, u64) + Send + 'static,
         mut sound: Option<Box<dyn PageSound>>,
     ) -> Result<Self, String> {
         use std::sync::Arc;
@@ -308,7 +313,7 @@ impl Supervisor {
                         sound.pump();
                     }
                     if child.refresh() {
-                        publish(&child.frame, child.width, child.height);
+                        publish(&child.frame, child.width, child.height, child.painted);
                     }
                     if !child.process_alive() || !child.check_heartbeat(Instant::now()) {
                         exited_flag.store(true, Ordering::Release);
