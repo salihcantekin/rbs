@@ -972,6 +972,14 @@ export global Studio {
     in property <string> ai-where;
     in property <string> ai-line;
     in property <string> ai-line-note;
+    // What to do with the line beside pasting it (merging, copying again after a move).
+    in property <string> ai-line-help;
+    // The picked tool's own configuration file: its name and folder ("" for a tool set
+    // up by a command), and whether it exists yet. RBS only shows it (ADR-0134
+    // decision 5).
+    in property <string> ai-config-name;
+    in property <string> ai-config-folder;
+    in property <bool> ai-config-exists;
     in property <[AiActionRow]> ai-actions;
     callback ai-start();
     callback ai-stop();
@@ -980,6 +988,7 @@ export global Studio {
     callback set-ai-irreversible(bool);
     callback ai-new-token();
     callback pick-ai-tool(int);
+    callback ai-show-config();
 
     // Output profiles and scene collections (ADR-0051): the entries, the one in use,
     // and the menu actions. Actions: 0 new, 1 duplicate (both with a name and then
@@ -7007,7 +7016,7 @@ export component AiToolsSettings inherits Rectangle {
             if Studio.ai-line != "": SettingBlock {
                 find: "ai-tools.line";
                 label: Studio.ai-where;
-                help: @tr("Copy it again after moving RBS.");
+                help: Studio.ai-line-help;
                 HorizontalLayout {
                     spacing: Tokens.space-2;
                     Rectangle {
@@ -7046,6 +7055,19 @@ export component AiToolsSettings inherits Rectangle {
                             clicked => { line.copy-all(); }
                         }
                     }
+                }
+            }
+            if Studio.ai-config-name != "": SettingRow {
+                find: "ai-tools.config-file";
+                label: Studio.ai-config-name;
+                summary: Studio.ai-config-folder;
+                help: Studio.ai-config-exists || Studio.ai-line == "" ? "" : @tr("It does not exist yet. Make it in this folder and paste the text above.");
+                fill: false;
+                Button {
+                    lead: IconName.folder;
+                    text: Studio.ai-config-exists ? @tr("Show in folder") : @tr("Open folder");
+                    accessible-name: Studio.ai-config-exists ? @tr("Show {} in folder", Studio.ai-config-name) : @tr("Open the folder of {}", Studio.ai-config-name);
+                    clicked => { Studio.ai-show-config(); }
                 }
             }
         }
