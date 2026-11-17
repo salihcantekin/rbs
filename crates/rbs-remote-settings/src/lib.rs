@@ -238,6 +238,17 @@ impl RemoteProfile {
     /// itself: the only time it exists in readable form. Refuses an empty, too long or
     /// taken name with a sentence that says how to fix it.
     pub fn create_token(&mut self, name: &str, access: Access) -> Result<Token, String> {
+        self.create_token_with(name, access, true)
+    }
+
+    /// Like [`Self::create_token`], with or without "Allow actions that cannot be
+    /// undone" (ADR-0052 decision 4).
+    pub fn create_token_with(
+        &mut self,
+        name: &str,
+        access: Access,
+        irreversible: bool,
+    ) -> Result<Token, String> {
         let name = name.trim();
         if let Some(why) = name_problem(name) {
             return Err(why);
@@ -250,7 +261,7 @@ impl RemoteProfile {
         let token = Token::generate()
             .map_err(|e| format!("The system could not make a random token ({e}). Try again."))?;
         self.tokens.push(TokenEntry {
-            irreversible: true,
+            irreversible,
             name: name.to_owned(),
             scopes: access.scopes(),
             hash: token.hash(),

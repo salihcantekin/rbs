@@ -41,6 +41,7 @@ pub fn token_command(
                     .map(|t| TokenInfo {
                         name: t.name.clone(),
                         scopes: t.scopes,
+                        irreversible: t.irreversible,
                     })
                     .collect(),
             }),
@@ -63,12 +64,14 @@ pub fn token_command(
                     format!("An access token named \"{name}\" exists. Choose another name."),
                 ));
             }
+            let irreversible = p.irreversible.unwrap_or(true);
             let token = profile
-                .create_token(name, access)
+                .create_token_with(name, access, irreversible)
                 .map_err(|why| ApiError::new(ErrorKind::Failed, why))?;
             Ok(Response::TokenCreated(TokenCreated {
                 name: name.to_owned(),
                 scopes: access.scopes(),
+                irreversible,
                 token: token.expose().to_owned(),
             }))
         }),
@@ -156,6 +159,7 @@ mod tests {
         Command::TokensCreate(CreateToken {
             name: name.into(),
             scopes,
+            irreversible: None,
         })
     }
 
@@ -222,7 +226,8 @@ mod tests {
             list.tokens,
             vec![TokenInfo {
                 name: "Deck".into(),
-                scopes: ScopeSet::PANEL
+                scopes: ScopeSet::PANEL,
+                irreversible: true,
             }]
         );
 
@@ -307,6 +312,29 @@ mod tests {
             std::fs::read_to_string(crate::file(&d)).unwrap(),
             "enabled = yes"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_token_can_be_made_without_the_irreversible_permission() {
+        let d = dir("agent");
+        let command = Command::TokensCreate(CreateToken {
+            name: "agent".into(),
+            scopes: ScopeSet::PANEL,
+            irreversible: Some(false),
+        });
+        let (a, store) = applied(&d, &command);
+        let Response::TokenCreated(created) = a.response else {
+            panic!("not TokenCreated");
+        };
+        assert!(!created.irreversible);
+        let entry = store.unwrap().verify(&created.token).unwrap().clone();
+        assert!(!entry.irreversible);
+        let (a, _) = applied(&d, &Command::TokensList);
+        let Response::Tokens(list) = a.response else {
+            panic!("not Tokens");
+        };
+        assert!(!list.tokens[0].irreversible);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
