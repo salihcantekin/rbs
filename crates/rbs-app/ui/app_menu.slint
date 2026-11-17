@@ -5,7 +5,7 @@
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
-import { ScrollArea, Button, Icon, IconName, Icons, ListRow, MenuSurface, OverlayCover } from "components.slint";
+import { ScrollArea, Button, Icon, IconName, Icons, ListRow, MenuSurface, OverlayCover, ContextMenus } from "components.slint";
 
 // One row of the item column. kind: 1 command, 2 section heading, 3 separator,
 // 4 picker (opens its choices), 5 back (from a picker's choices).
@@ -151,6 +151,8 @@ export component AppMenu inherits Rectangle {
 
     // The content is made each time it opens: fill it then.
     init => {
+        // One layer at a time (ADR-0137 decision 2): a drawn context menu gives way.
+        ContextMenus.close();
         root.category = AppMenus.category;
         AppMenus.prepare();
         refresh();

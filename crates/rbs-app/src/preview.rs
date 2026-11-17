@@ -317,6 +317,14 @@ fn place_one(window: &MainWindow, which: Picture) {
         if overlays.get_picker_open() {
             st.covers.push(overlay(overlays.get_picker_cover()));
         }
+        // The drawn context menu and its submenu (ADR-0137 decision 9).
+        let menus = window.global::<crate::ui::ContextMenus>();
+        if menus.get_open() {
+            st.covers.push(overlay(menus.get_cover()));
+            if menus.get_sub_open() {
+                st.covers.push(overlay(menus.get_sub_cover()));
+            }
+        }
         let app_menu = window.global::<crate::ui::AppMenus>();
         if app_menu.get_open() {
             st.covers.push(overlay(app_menu.get_cover()));

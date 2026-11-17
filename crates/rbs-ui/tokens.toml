@@ -242,6 +242,9 @@ format = 4
 "delay.repeat" = 80
 # Not motion: how long the pointer rests on a control before its tooltip shows.
 "delay.tooltip" = 500
+# Not motion: how long the pointer rests on a menu row with a submenu before it opens
+# (ADR-0137).
+"delay.submenu" = 250
 # Not motion: how long a toast stays before it closes, and how often the time left steps.
 "delay.toast" = 8000
 "delay.toast-tick" = 1000

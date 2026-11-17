@@ -224,9 +224,6 @@ struct App {
     /// The capture pair a deferred retry is aiming for, with how many short syncs
     /// remain. Cleared when applied or when the wanted pair changes.
     capture_retry: Option<((bool, usize), u8)>,
-    /// Where the preview picture's context menu opened (the picture's coordinates)
-    /// and the system cursor then (screen pixels), until the next press on a picture.
-    menu_press: Option<([f32; 2], (i32, i32))>,
     /// The studio's preview, kept to connect again when the hidden window shows.
     preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
     /// The preview scene's picture in studio mode (ADR-0061), kept the same way.
@@ -2853,7 +2850,7 @@ impl Ctx {
         let look = self.look.borrow();
         let make = |pw: &ProjectorWindow| {
             look::apply(&pw.global::<Theme>(), &pw.global::<Tokens>(), look.as_ref());
-            install_context_menus(&pw.global::<ContextMenus>(), self, None);
+            install_context_menus(pw, self, None);
         };
         projector::sync(&wanted, &make);
         drop(look);
@@ -2965,7 +2962,7 @@ impl Ctx {
         install(&fw.global::<Shell>(), self);
         replay_page::install(&fw.global::<ReplayBuffer>(), self);
         install_menus(&fw.global::<Menus>(), self);
-        install_context_menus(&fw.global::<ContextMenus>(), self, Some(fw.as_weak()));
+        install_context_menus(&fw, self, Some(fw.as_weak()));
         install_picker(&fw.global::<Overlays>(), self);
         shortcuts_page::install_press(&fw.global::<Shortcuts>(), self);
         install_studio(&fw.global::<Studio>(), self);
@@ -3463,12 +3460,14 @@ fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
     });
 }
 
-fn install_context_menus(
-    g: &ContextMenus<'_>,
-    ctx: &Ctx,
-    origin: Option<slint::Weak<FloatWindow>>,
-) {
+fn install_context_menus<W>(w: &W, ctx: &Ctx, origin: Option<slint::Weak<FloatWindow>>)
+where
+    W: ComponentHandle + 'static,
+    for<'a> ContextMenus<'a>: slint::Global<'a, W>,
+{
+    let g = w.global::<ContextMenus>();
     let c = ctx.clone();
+    // The native menu (the projector, ADR-0137 decision 1).
     g.on_prepare(move |context, target| {
         let items = match c.app.try_borrow_mut() {
             Ok(mut app) => entry::guard_or(Vec::new, || app.context_items(&context, &target)),
@@ -3477,6 +3476,57 @@ fn install_context_menus(
         c.update(|_| {});
         let rows: Vec<ContextItem> = items.into_iter().map(context_row).collect();
         ModelRc::new(VecModel::from(rows))
+    });
+    // The drawn menu: its submenus and the focus it found, kept until the next one.
+    let subs: Rc<RefCell<Vec<Vec<MenuRow>>>> = Rc::default();
+    let focus: Rc<RefCell<Option<i_slint_core::item_tree::ItemWeak>>> = Rc::default();
+    let c = ctx.clone();
+    let weak = w.as_weak();
+    let (subs_rows, focus_rows) = (subs.clone(), focus.clone());
+    g.on_rows(move |context, target| {
+        let items = match c.app.try_borrow_mut() {
+            Ok(mut app) => entry::guard_or(Vec::new, || app.context_items(&context, &target)),
+            Err(_) => Vec::new(),
+        };
+        c.update(|_| {});
+        let label = |id: &str| {
+            c.keys
+                .try_borrow()
+                .ok()
+                .and_then(|k| k.label(id))
+                .unwrap_or_default()
+        };
+        let (rows, subs) = menu_rows(items, &label);
+        if let Some(w) = weak.upgrade() {
+            *focus_rows.borrow_mut() = Some(rbs_app::popups::focused(w.window()));
+            w.global::<ContextMenus>()
+                .set_has_reasons(rows.iter().any(|r| !r.reason.is_empty()));
+        }
+        // One layer at a time (decision 2): the RBS menu gives way.
+        c.update(|app| app.main.global::<AppMenus>().set_open(false));
+        *subs_rows.borrow_mut() = subs;
+        ModelRc::new(VecModel::from(rows))
+    });
+    g.on_submenu(move |index| {
+        let rows = usize::try_from(index)
+            .ok()
+            .and_then(|i| subs.borrow().get(i).cloned())
+            .unwrap_or_default();
+        ModelRc::new(VecModel::from(rows))
+    });
+    rbs_app::menu_layout::install(&g);
+    let weak = w.as_weak();
+    g.on_closed(move || {
+        let Some(item) = focus.borrow_mut().take() else {
+            return;
+        };
+        let weak = weak.clone();
+        // After the event that closed the menu, which Slint is still dispatching.
+        entry::single_shot(Duration::ZERO, move || {
+            if let Some(w) = weak.upgrade() {
+                rbs_app::popups::refocus(w.window(), &item);
+            }
+        });
     });
     let c = ctx.clone();
     g.on_run(move |id| {
@@ -3487,6 +3537,67 @@ fn install_context_menus(
             app.run_origin = None;
         });
     });
+}
+
+/// The rows of a drawn menu (ADR-0137 decision 3) and the rows of each of its
+/// submenus by row index; `label` gives the shortcut bound to an id, or "".
+fn menu_rows(
+    items: Vec<context_menu::Item>,
+    label: &dyn Fn(&str) -> String,
+) -> (Vec<MenuRow>, Vec<Vec<MenuRow>>) {
+    let mut subs = Vec::with_capacity(items.len());
+    let rows = items
+        .into_iter()
+        .map(|i| {
+            subs.push(
+                i.choices
+                    .iter()
+                    .map(|(title, id, checked)| {
+                        let cid = CommandId::parse(id).ok();
+                        // A boolean setting gets a switch; a picker's choice a check.
+                        let toggle = cid.as_ref().is_some_and(|c| {
+                            rbs_ui::command::entry(c.base()).is_some_and(|e| {
+                                e.checkable
+                                    && !matches!(e.kind, rbs_ui::command::Kind::Picker { .. })
+                            })
+                        });
+                        let icon = cid
+                            .as_ref()
+                            .and_then(|c| rbs_ui::command::choice_icon(c, *checked && !toggle))
+                            .unwrap_or("");
+                        MenuRow {
+                            kind: context_menu::Kind::Command as i32,
+                            title: title.into(),
+                            icon: icon.into(),
+                            shortcut: label(id).into(),
+                            id: id.into(),
+                            enabled: true,
+                            checkable: toggle,
+                            checked: *checked,
+                            reason: Default::default(),
+                        }
+                    })
+                    .collect(),
+            );
+            MenuRow {
+                kind: i.kind as i32,
+                shortcut: if i.kind == context_menu::Kind::Command {
+                    label(&i.id).into()
+                } else {
+                    Default::default()
+                },
+                title: i.title.into(),
+                // A checkable row shows a switch, so it keeps its own icon.
+                icon: if i.checkable { i.symbol } else { i.icon }.into(),
+                id: i.id.into(),
+                enabled: i.enabled,
+                checkable: i.checkable,
+                checked: i.checked,
+                reason: i.reason.into(),
+            }
+        })
+        .collect();
+    (rows, subs)
 }
 
 fn context_row(i: context_menu::Item) -> ContextItem {
@@ -4214,21 +4325,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                            shift: bool,
                            no_snap: bool,
                            crop: bool| {
-        // On Windows the click that closes the picture's context menu arrives as a
-        // press at the place the menu opened, though the cursor has moved: that press
-        // only closes the menu.
-        if let Some((at, then)) = app.menu_press.take()
-            && (at[0] - x).abs() < 0.5
-            && (at[1] - y).abs() < 0.5
-            && cursor_pos().is_some_and(|now| (now.0 - then.0).abs() + (now.1 - then.1).abs() > 2)
-        {
-            return;
-        }
         app.studio
             .preview_press([x, y], [w, h], shift, no_snap, crop);
-    });
-    on!(on_preview_menu_opened, |app, x: f32, y: f32| {
-        app.menu_press = cursor_pos().map(|c| ([x, y], c));
     });
     on!(on_preview_drag, |app, x: f32, y: f32| {
         // The click that closes a system menu on Windows can reach the picture without
@@ -5295,7 +5393,6 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             bg,
             capture_applied: (false, usize::MAX),
             capture_retry: None,
-            menu_press: None,
             preview_endpoint: None,
             scene_preview_endpoint: None,
             vertical_preview_endpoint: None,
@@ -5330,7 +5427,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install(&main.global::<Shell>(), &ctx);
     replay_page::install(&main.global::<ReplayBuffer>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
-    install_context_menus(&main.global::<ContextMenus>(), &ctx, None);
+    install_context_menus(&main, &ctx, None);
     {
         let c = ctx.clone();
         projector::install(move |e| c.update(move |app| app.projector_event(e)));
@@ -5586,19 +5683,6 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())
-}
-
-/// The system cursor in screen pixels (Windows; elsewhere `None`: the toolkit's press
-/// positions are always current there).
-fn cursor_pos() -> Option<(i32, i32)> {
-    #[cfg(windows)]
-    {
-        rbs_app::win::cursor_pos()
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
 }
 
 /// The Settings window's search field changed: its results (settings search step 3).

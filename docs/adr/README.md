@@ -142,3 +142,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0132](0132-browser-engine-css-interaction.md) | The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in | Accepted |
 | [0133](0133-duplicate-reset-and-paste-source-attributes.md) | Duplicate a source (and a scene with new sources), reset a source, and paste chosen attribute groups onto other sources in one undo step; sound stays live | Accepted |
 | [0134](0134-ai-tools-settings-page.md) | Start AI tools (`rbs-mcp`) from a Settings page, with a start-on-open option, an RBS-made token file and a generated connection line per AI tool | Accepted |
+| [0137](0137-rbs-drawn-context-menus-and-lists.md) | Context menus and drop-down lists are drawn by RBS in the window; the macOS menu bar stays native; the projector menu stays native | Proposed |

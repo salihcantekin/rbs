@@ -519,7 +519,6 @@ export global Studio {
     callback preview-drag(float /* x */, float /* y */);
     callback preview-release();
     // The picture's context menu opens at `x`, `y` (the picture's own coordinates).
-    callback preview-menu-opened(float /* x */, float /* y */);
     // Arrow keys on the picture panel: move the selected source by this many canvas
     // pixels.
     callback preview-nudge(int /* dx */, int /* dy */);
@@ -1090,15 +1089,11 @@ export component ProgramPanel inherits Rectangle {
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { root.release(); return; }
             // The menu opens when the right button goes up, not down, so the press it
-            // opened on has its release. On Windows the click that closes a system menu
-            // reaches the picture as a press at the place the menu opened (the moves
-            // made while it was open never arrive) and without its release; the app
-            // tells it from a real press by the cursor's place (`preview-menu-opened`).
+            // opened on has its release.
             if e.button == PointerEventButton.right {
                 if e.kind == PointerEventKind.up {
                     keys.focus();
                     root.menu-at = { x: self.mouse-x, y: self.mouse-y };
-                    Studio.preview-menu-opened(self.mouse-x / 1px, self.mouse-y / 1px);
                     // `menu-at` is in the picture's (touch area's) coordinates; the
                     // menu element covers the whole panel.
                     menu.open({ x: root.menu-at.x, y: root.menu-at.y + root.strip });
@@ -1408,10 +1403,10 @@ component SceneRowView inherits Rectangle {
                     icon: IconName.more;
                     name: @tr("Actions for {}", data.name);
                     clicked => {
-                        menu.open({
+                        menu.open-from({
                             x: self.absolute-position.x - menu.absolute-position.x,
                             y: self.absolute-position.y - menu.absolute-position.y + self.height,
-                        });
+                        }, self.height);
                     }
                 }
             }
@@ -2454,10 +2449,10 @@ component MeterStrip inherits Rectangle {
         icon: IconName.more;
         name: @tr("More options for {}", root.title);
         clicked => {
-            menu.open({
+            menu.open-from({
                 x: self.absolute-position.x - menu.absolute-position.x,
                 y: self.absolute-position.y + self.height - menu.absolute-position.y,
-            });
+            }, self.height);
         }
     }
 }
@@ -2855,10 +2850,10 @@ export component MixerPanel inherits Rectangle {
                     icon: IconName.more;
                     name: @tr("Levels of this scene");
                     clicked => {
-                        scene-menu.open({
+                        scene-menu.open-from({
                             x: self.absolute-position.x - scene-menu.absolute-position.x,
                             y: self.absolute-position.y + self.height - scene-menu.absolute-position.y,
-                        });
+                        }, self.height);
                     }
                 }
             }
@@ -4318,7 +4313,7 @@ component AddFilterButton inherits Rectangle {
         accessible-name: @tr("Add a filter to {}", source.name);
         lead: IconName.plus;
         icon: IconName.chevron-down;
-        clicked => { menu.open({ x: 0px, y: root.height }); }
+        clicked => { menu.open-from({ x: 0px, y: root.height }, root.height); }
     }
     menu := CommandMenu {
         context: "add-filter";
