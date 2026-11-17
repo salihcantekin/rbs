@@ -67,6 +67,7 @@ const REPORT_EVERY: u32 = 30;
 /// Codes of `Studio.rec-state`.
 pub(crate) mod add_picker;
 pub(crate) mod attributes;
+pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
 pub(crate) mod monitor;
@@ -90,6 +91,8 @@ pub mod st_state {
 pub mod output {
     pub const RECORDING: i32 = 0;
     pub const STREAM: i32 = 1;
+    /// The stream destination being edited, with its own settings (ADR-0127).
+    pub const DESTINATION: i32 = 2;
 }
 
 /// Field codes of `Studio.set-encoding` (the `EncoderFields` component in studio.slint).
@@ -333,6 +336,8 @@ pub struct StudioUi {
     pub studio_mode: bool,
     /// Collection glide defaults (ADR-0100).
     glide: rbs_scene::CollectionGlide,
+    /// The collection's transition (ADR-0128).
+    transition: rbs_scene::CollectionTransition,
     /// The preview scene's picture layer exists (studio mode).
     pub scene_preview_ready: bool,
     /// The preview scene's picture layer could not be made in this session.
@@ -483,6 +488,10 @@ pub struct StudioUi {
     destinations: rbs_app::stream_destinations::Destinations,
     /// Why the saved destinations are not used, if they are not.
     destinations_note: String,
+    /// The Destinations card's editor, while open (ADR-0127 decision 17).
+    dest_editor: Option<destinations::Editor>,
+    /// Bumped when Rust sets the editor's text fields.
+    dest_serial: u32,
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111).
     pub vertical_flags: VerticalFlags,
     /// What the Stream section shows for a vertical stream not saved yet.
@@ -633,6 +642,7 @@ impl StudioUi {
             preview_ready: false,
             studio_mode: false,
             glide: rbs_scene::CollectionGlide::default(),
+            transition: rbs_scene::CollectionTransition::default(),
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
@@ -715,6 +725,8 @@ impl StudioUi {
             vertical_stream: None,
             destinations: rbs_app::stream_destinations::Destinations::default(),
             destinations_note: String::new(),
+            dest_editor: None,
+            dest_serial: 0,
             vertical_flags: VerticalFlags::default(),
             no_stream: StreamProfile::new(),
             st_live: None,
@@ -788,6 +800,13 @@ impl StudioUi {
         } else {
             1
         });
+        let t = self.transition;
+        g.set_transition_kind(transition_index(t.kind));
+        g.set_fade_duration(t.fade.duration_ms as i32);
+        g.set_fade_easing(i32::from(t.fade.easing != rbs_scene::GlideEasing::Linear));
+        g.set_fade_via(t.fade.via.is_some());
+        let [r, gr, b] = t.fade.via.unwrap_or([0, 0, 0]);
+        g.set_fade_via_color(slint::Color::from_rgb_u8(r, gr, b));
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -966,6 +985,7 @@ impl StudioUi {
         g.set_canvas_note(self.canvas_note.as_str().into());
         self.push_remote(g);
         self.push_stream(g);
+        self.push_destinations(g);
         self.push_monitor(g);
         self.push_loudness(g);
         g.set_picture_panel(picture_panel.into());
@@ -2231,6 +2251,53 @@ impl StudioUi {
         });
     }
 
+    /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move.
+    pub fn set_transition_kind(&mut self, index: i32) {
+        let mut t = self.transition;
+        t.kind = match index {
+            0 => rbs_scene::TransitionKind::Cut,
+            1 => rbs_scene::TransitionKind::Fade,
+            _ => rbs_scene::TransitionKind::Move,
+        };
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
+    /// The duration of the rail's kind: Fade's own, Move's is the collection glide.
+    /// Cut has none.
+    pub fn set_transition_duration(&mut self, duration_ms: i32) {
+        let ms = duration_ms.clamp(0, 5_000) as u32;
+        match self.transition.kind {
+            rbs_scene::TransitionKind::Fade => {
+                let mut t = self.transition;
+                t.fade.duration_ms = ms;
+                self.send(Command::SetTransition(t));
+            }
+            rbs_scene::TransitionKind::Cut => {}
+            _ => self.send(Command::SetGlide {
+                duration_ms: ms,
+                easing: u8::from(self.glide.easing != rbs_scene::GlideEasing::Linear),
+            }),
+        }
+    }
+
+    /// Fade's options: easing (`0` linear, `1` ease-in-out) and an opaque colour to
+    /// fade through (`"#rrggbb"`; empty keeps the colour, black when there is none).
+    pub fn set_fade_options(&mut self, easing: i32, via: bool, color: &str) {
+        let mut t = self.transition;
+        t.fade.easing = if easing == 0 {
+            rbs_scene::GlideEasing::Linear
+        } else {
+            rbs_scene::GlideEasing::EaseInOut
+        };
+        let keep = self.transition.fade.via.unwrap_or([0, 0, 0]);
+        t.fade.via = via.then(|| rgb_hex(color).unwrap_or(keep));
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
     /// Per-source slide override (ADR-0100). `custom` false clears it.
     pub fn set_source_glide(&mut self, id: i32, custom: bool, duration_ms: i32, easing: i32) {
         self.send(Command::SetSourceGlide {
@@ -3163,7 +3230,12 @@ impl StudioUi {
 
     /// The encoder settings of an [`output`].
     fn encoding_of(&self, out: i32) -> Encoding {
-        if out == output::STREAM {
+        if out == output::DESTINATION
+            && let Some(e) = self.dest_encoding()
+        {
+            return e;
+        }
+        if out == output::STREAM || out == output::DESTINATION {
             self.stream_form().encoding.clone()
         } else {
             self.record_form().encoding()
@@ -3222,6 +3294,8 @@ impl StudioUi {
             1 if self.vertical.is_some() => OutputCanvas::Vertical,
             _ => OutputCanvas::Main,
         };
+        // The editor belongs to the canvas it was opened on.
+        self.dest_editor = None;
         self.folder_serial += 1;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -3270,7 +3344,7 @@ impl StudioUi {
     /// The encoder fields of an [`output`]'s form, for its settings and encoder.
     fn form(&self, out: i32) -> EncoderForm {
         let e = self.encoding_of(out);
-        if out == output::STREAM {
+        if out == output::STREAM || out == output::DESTINATION {
             EncoderForm::for_stream(&e, &self.options(&e))
         } else {
             EncoderForm::new(&e, &self.options(&e))
@@ -3291,7 +3365,7 @@ impl StudioUi {
     /// MPEG-TS do not carry HEVC or AV1. A recording lists HEVC and AV1 when an
     /// encoder on this computer does, and keeps a saved codec visible.
     fn video_codecs(&self, out: i32, e: &Encoding) -> Vec<VideoCodec> {
-        if out == output::STREAM {
+        if out == output::STREAM || out == output::DESTINATION {
             return vec![VideoCodec::H264];
         }
         let mut list = vec![VideoCodec::H264];
@@ -3534,7 +3608,9 @@ impl StudioUi {
         if !changed {
             return;
         }
-        if out == output::STREAM {
+        if out == output::DESTINATION {
+            self.dest_set_encoding(e);
+        } else if out == output::STREAM {
             self.stream_form_mut().encoding = e;
             self.save_stream_form();
         } else {
@@ -5556,6 +5632,7 @@ impl StudioUi {
                     self.show_master();
                 }
                 self.glide = list.glide;
+                self.transition = list.transition;
                 let data: Vec<SceneData> = list
                     .scenes
                     .iter()
@@ -5790,6 +5867,7 @@ impl StudioUi {
                 }
                 Err(why) => self.stream_note = why,
             },
+            Update::DestinationKey(id, r) => self.dest_key_saved(id, r),
             Update::StreamKey(r) => match r {
                 Ok(saved) => {
                     self.stream.key_saved = saved;
@@ -6753,7 +6831,7 @@ fn request_of(
     }
 }
 
-fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+pub(crate) fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
     ModelRc::from(Rc::new(VecModel::from(
         items
             .into_iter()
@@ -7436,6 +7514,26 @@ fn hold_note_text(hold: Option<StreamHold>) -> &'static str {
         Some(HoldNote::Sound) => "The hold scene's sound failed: sending silence",
         None => "",
     }
+}
+
+/// The rail's index of a transition kind (ADR-0128): Swipe and Slide run as Move until
+/// they are drawn, so the rail shows them as Move.
+fn transition_index(kind: rbs_scene::TransitionKind) -> i32 {
+    match kind {
+        rbs_scene::TransitionKind::Cut => 0,
+        rbs_scene::TransitionKind::Fade => 1,
+        _ => 2,
+    }
+}
+
+/// `#rrggbb` as bytes.
+fn rgb_hex(s: &str) -> Option<[u8; 3]> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
 #[cfg(test)]

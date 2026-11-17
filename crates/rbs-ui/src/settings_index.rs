@@ -95,7 +95,7 @@ const RECORDING_SEPARATE: &[Place] = &[at("recording", "settings.recording.separ
 const RECORDING_MARKERS: &[Place] = &[at("recording", "settings.recording.markers")];
 const RECORDING_ENCODING: &[Place] = &[at("recording", "settings.recording.encoding")];
 const RECORDING_REPLAY: &[Place] = &[at("recording", "settings.recording.replay")];
-const STREAM_DESTINATION: &[Place] = &[at("stream", "settings.stream.destination")];
+const STREAM_DESTINATIONS: &[Place] = &[at("stream", "settings.stream.destinations")];
 const STREAM_CONNECTION: &[Place] = &[at("stream", "settings.stream.connection")];
 const STREAM_WHILE_LIVE: &[Place] = &[at("stream", "settings.stream.while-live")];
 const STREAM_ENCODING: &[Place] = &[at("stream", "settings.stream.encoding")];
@@ -524,24 +524,10 @@ pub const SETTINGS: &[Setting] = &[
     ),
     // Stream
     c(
-        "settings.stream.destination",
-        "Destination",
-        "service platform youtube twitch",
-        STREAM_DESTINATION,
-    ),
-    row(
-        "stream.server",
-        "Server",
-        "rtmp rtmps srt url ingest service youtube twitch",
-        STREAM_DESTINATION,
-        Simple,
-    ),
-    row(
-        "stream.key",
-        "Stream key",
-        "secret password",
-        STREAM_DESTINATION,
-        Simple,
+        "settings.stream.destinations",
+        "Destinations",
+        "service platform youtube twitch kick facebook multistream server rtmp rtmps srt url ingest stream key secret",
+        STREAM_DESTINATIONS,
     ),
     c(
         "settings.stream.connection",

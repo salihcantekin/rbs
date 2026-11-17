@@ -48,6 +48,10 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 name = "browser_sound"
 harness = false
 
+[[bench]]
+name = "browser_picture"
+harness = false
+
 [lints]
 workspace = true
 

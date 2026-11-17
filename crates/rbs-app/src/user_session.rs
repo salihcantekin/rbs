@@ -689,6 +689,11 @@ impl CollectionSaver {
         import_on(&self.shared, plan)
     }
 
+    /// The id of the collection it saves.
+    pub fn id(&self) -> &str {
+        self.id.as_str()
+    }
+
     /// Asks the writer thread to save `collection` (replacing a save of it still
     /// waiting).
     pub fn save(&self, collection: &SceneCollection) {
