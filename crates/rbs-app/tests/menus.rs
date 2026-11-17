@@ -122,7 +122,10 @@ fn setup() -> Menu {
 
 fn install(p: &Probe) -> Menu {
     let g = p.global::<ContextMenus>();
-    rbs_app::menu_layout::install(&g);
+    g.on_find(|rows, from, letter| rbs_app::menu_layout::find_row(&rows, from, &letter));
+    g.on_place(|anchor, w, h, win_w, win_h, margin, beside| {
+        rbs_app::menu_layout::place_cover(anchor, [w, h], [win_w, win_h], margin, beside)
+    });
     let focus = Rc::new(RefCell::new(None));
     let weak = p.as_weak();
     let saved = focus.clone();

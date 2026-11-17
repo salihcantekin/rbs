@@ -3626,18 +3626,39 @@ where
             .unwrap_or_default();
         ModelRc::new(VecModel::from(rows))
     });
-    rbs_app::menu_layout::install(&g);
+    g.on_find(|rows, from, letter| {
+        entry::guard_or(
+            || -1,
+            || rbs_app::menu_layout::find_row(&rows, from, &letter),
+        )
+    });
+    g.on_place(|anchor, w, h, win_w, win_h, margin, beside| {
+        entry::guard_or(
+            || anchor.clone(),
+            || {
+                rbs_app::menu_layout::place_cover(
+                    anchor.clone(),
+                    [w, h],
+                    [win_w, win_h],
+                    margin,
+                    beside,
+                )
+            },
+        )
+    });
     let weak = w.as_weak();
     g.on_closed(move || {
-        let Some(item) = focus.borrow_mut().take() else {
-            return;
-        };
-        let weak = weak.clone();
-        // After the event that closed the menu, which Slint is still dispatching.
-        entry::single_shot(Duration::ZERO, move || {
-            if let Some(w) = weak.upgrade() {
-                rbs_app::popups::refocus(w.window(), &item);
-            }
+        entry::guard(|| {
+            let Some(item) = focus.borrow_mut().take() else {
+                return;
+            };
+            let weak = weak.clone();
+            // After the event that closed the menu, which Slint is still dispatching.
+            entry::single_shot(Duration::ZERO, move || {
+                if let Some(w) = weak.upgrade() {
+                    rbs_app::popups::refocus(w.window(), &item);
+                }
+            });
         });
     });
     let c = ctx.clone();

@@ -4469,6 +4469,7 @@ export component MenuLayer inherits Rectangle {
     keys := FocusScope {
         width: 0px;
         height: 0px;
+        focus-on-click: false;
         init => { self.focus(); }
         // Rows take no focus (Slint 1.18 has no active descendant): the current row is
         // this scope's value, so a screen reader hears each move (decision 7).

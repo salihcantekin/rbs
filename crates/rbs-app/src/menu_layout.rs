@@ -1,8 +1,9 @@
 //! Where a drawn menu goes and which row a typed letter moves to (ADR-0137): pure
-//! functions, and the `ContextMenus` callbacks that call them, so the code Slint runs
+//! functions, and their forms on Slint's types that the `ContextMenus` callbacks call, so the code Slint runs
 //! is the code the tests check.
 
-use rbs_app_ui::{ContextMenus, OverlayCover};
+use rbs_app_ui::{MenuRow, OverlayCover};
+use slint::{Model, ModelRc};
 
 /// A rectangle in window coordinates (logical pixels).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -107,43 +108,50 @@ pub fn find<'a>(
     })
 }
 
-/// Connects `ContextMenus.place` and `ContextMenus.find` of a window to [`place`] and
-/// [`find`].
-pub fn install(g: &ContextMenus<'_>) {
-    g.on_find(|rows, from, letter| {
-        let titles: Vec<slint::SharedString> = slint::Model::iter(&rows)
-            .map(|r| {
-                if r.kind == 2 {
-                    slint::SharedString::new()
-                } else {
-                    r.title
-                }
-            })
-            .collect();
-        find(titles.iter().map(|t| t.as_str()), from, &letter)
-            .and_then(|i| i32::try_from(i).ok())
-            .unwrap_or(-1)
-    });
-    g.on_place(|anchor, w, h, win_w, win_h, margin, beside| {
-        let spot = place(
-            Spot {
-                x: anchor.x,
-                y: anchor.y,
-                w: anchor.width,
-                h: anchor.height,
-            },
-            [w, h],
-            [win_w, win_h],
-            margin,
-            beside,
-        );
-        OverlayCover {
-            x: spot.x,
-            y: spot.y,
-            width: spot.w,
-            height: spot.h,
-        }
-    });
+/// `ContextMenus.find` (ADR-0137): the row of `rows` that [`find`] picks, or -1.
+/// Separators have no title.
+pub fn find_row(rows: &ModelRc<MenuRow>, from: i32, letter: &str) -> i32 {
+    let titles: Vec<slint::SharedString> = rows
+        .iter()
+        .map(|r| {
+            if r.kind == 2 {
+                slint::SharedString::new()
+            } else {
+                r.title
+            }
+        })
+        .collect();
+    find(titles.iter().map(|t| t.as_str()), from, letter)
+        .and_then(|i| i32::try_from(i).ok())
+        .unwrap_or(-1)
+}
+
+/// `ContextMenus.place` (ADR-0137): [`place`] on Slint's types.
+pub fn place_cover(
+    anchor: OverlayCover,
+    size: [f32; 2],
+    window: [f32; 2],
+    margin: f32,
+    beside: bool,
+) -> OverlayCover {
+    let spot = place(
+        Spot {
+            x: anchor.x,
+            y: anchor.y,
+            w: anchor.width,
+            h: anchor.height,
+        },
+        size,
+        window,
+        margin,
+        beside,
+    );
+    OverlayCover {
+        x: spot.x,
+        y: spot.y,
+        width: spot.w,
+        height: spot.h,
+    }
 }
 
 #[cfg(test)]
