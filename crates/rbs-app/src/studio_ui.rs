@@ -67,6 +67,7 @@ const REPORT_EVERY: u32 = 30;
 /// Codes of `Studio.rec-state`.
 pub(crate) mod add_picker;
 pub(crate) mod attributes;
+pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
 pub(crate) mod monitor;
@@ -90,6 +91,8 @@ pub mod st_state {
 pub mod output {
     pub const RECORDING: i32 = 0;
     pub const STREAM: i32 = 1;
+    /// The stream destination being edited, with its own settings (ADR-0127).
+    pub const DESTINATION: i32 = 2;
 }
 
 /// Field codes of `Studio.set-encoding` (the `EncoderFields` component in studio.slint).
@@ -485,6 +488,10 @@ pub struct StudioUi {
     destinations: rbs_app::stream_destinations::Destinations,
     /// Why the saved destinations are not used, if they are not.
     destinations_note: String,
+    /// The Destinations card's editor, while open (ADR-0127 decision 17).
+    dest_editor: Option<destinations::Editor>,
+    /// Bumped when Rust sets the editor's text fields.
+    dest_serial: u32,
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111).
     pub vertical_flags: VerticalFlags,
     /// What the Stream section shows for a vertical stream not saved yet.
@@ -718,6 +725,8 @@ impl StudioUi {
             vertical_stream: None,
             destinations: rbs_app::stream_destinations::Destinations::default(),
             destinations_note: String::new(),
+            dest_editor: None,
+            dest_serial: 0,
             vertical_flags: VerticalFlags::default(),
             no_stream: StreamProfile::new(),
             st_live: None,
@@ -976,6 +985,7 @@ impl StudioUi {
         g.set_canvas_note(self.canvas_note.as_str().into());
         self.push_remote(g);
         self.push_stream(g);
+        self.push_destinations(g);
         self.push_monitor(g);
         self.push_loudness(g);
         g.set_picture_panel(picture_panel.into());
@@ -1154,6 +1164,8 @@ impl StudioUi {
 
     /// Starts or stops the control API server to match the settings: on while remote
     /// control is on and the studio's control thread runs, nothing at all otherwise.
+    /// A server whose WebSocket transport stopped (`restart_remote`) gets only that
+    /// transport again: its IPC sessions stay connected (ADR-0134 decision 2).
     pub fn sync_remote(&mut self) {
         let want = self.remote.enabled && self.host.is_some();
         if !want {
@@ -1161,52 +1173,32 @@ impl StudioUi {
             self.remote_failure = None;
             return;
         }
-        if self.remote_server.is_some() {
+        if self
+            .remote_server
+            .as_ref()
+            .is_some_and(RemoteServer::serves_ws)
+        {
             return;
         }
         if self.host.is_none() {
             return;
         }
         self.reload_tokens();
-        let Some(host) = &self.host else {
+        if self.remote_server.is_none() && !self.start_api() {
             return;
-        };
-        // Local IPC too, so `rbs-cli token` changes reach this app at once.
-        let ipc = match rbs_api_ipc::Endpoint::for_current_user() {
-            Ok(e) => Some(e),
-            Err(why) => {
-                log(&format!("remote control: no local IPC endpoint: {why}"));
-                None
-            }
-        };
-        let options = RemoteOptions {
-            control_waker: Box::new(host.api_waker()),
-            audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
-            ipc,
-            levels: Some(host.level_feed()),
-        };
-        // The settings may change on the way (a renewed certificate): `host` is taken
-        // again below.
+        }
+        // The settings may change on the way (a renewed certificate).
         let network = self.prepare_network();
-        let started = match network {
-            Some(n) => {
-                RemoteServer::start_network(self.remote.port, n, self.remote.store(), options)
-            }
-            None => RemoteServer::start_on_port(self.remote.port, self.remote.store(), options),
-        };
-        let Some(host) = &self.host else {
+        let Some(server) = self.remote_server.as_mut() else {
             return;
+        };
+        let started = match network {
+            Some(n) => server.start_ws_network(self.remote.port, n),
+            None => server.start_ws_loopback(self.remote.port),
         };
         match started {
-            Ok((server, endpoint)) => {
-                host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
+            Ok(()) => {
                 log(&format!("remote control on at {}", self.remote.address()));
-                match (server.ipc_endpoint(), server.ipc_problem()) {
-                    (Some(e), _) => log(&format!("remote control: local IPC at {e}")),
-                    (None, Some(why)) => log(&format!("remote control: no local IPC: {why}")),
-                    (None, None) => {}
-                }
-                self.remote_server = Some(server);
                 self.remote_failure = None;
             }
             Err(e) => {
@@ -1216,8 +1208,46 @@ impl StudioUi {
                     why.replace_range(..1, &first.to_uppercase());
                 }
                 self.remote_failure = Some(why);
+                // Nothing else needs the API thread: nothing keeps running.
+                self.stop_remote();
             }
         }
+    }
+
+    /// Starts the API thread and attaches it to the control thread, with local IPC
+    /// when it can be served (so `rbs-cli token` changes reach this app at once).
+    /// False (the reason in `remote_failure`) when it did not start.
+    fn start_api(&mut self) -> bool {
+        let Some(host) = &self.host else {
+            return false;
+        };
+        let options = RemoteOptions {
+            control_waker: Box::new(host.api_waker()),
+            audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
+            ipc: None,
+            levels: Some(host.level_feed()),
+        };
+        let (mut server, endpoint) = match RemoteServer::start_api(self.remote.store(), options) {
+            Ok(started) => started,
+            Err(e) => {
+                log(&format!("remote control did not start: {e}"));
+                self.remote_failure = Some(format!("Remote control did not start: {e}"));
+                return false;
+            }
+        };
+        match rbs_api_ipc::Endpoint::for_current_user() {
+            Ok(e) => {
+                let shown = e.to_string();
+                match server.start_ipc(e) {
+                    Ok(()) => log(&format!("remote control: local IPC at {shown}")),
+                    Err(why) => log(&format!("remote control: no local IPC: {why}")),
+                }
+            }
+            Err(why) => log(&format!("remote control: no local IPC endpoint: {why}")),
+        }
+        host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
+        self.remote_server = Some(server);
+        true
     }
 
     /// The TLS identity and settings for network access when it is on, made or renewed
@@ -1300,10 +1330,12 @@ impl StudioUi {
         }
     }
 
-    /// Starts the server again with the settings as they are now (connected apps are
-    /// disconnected and reconnect).
+    /// Starts the WebSocket transport again with the settings as they are now (its
+    /// apps are disconnected and reconnect; IPC sessions stay, ADR-0134 decision 2).
     fn restart_remote(&mut self) {
-        self.stop_remote();
+        if let Some(server) = self.remote_server.as_mut() {
+            server.stop_ws();
+        }
         self.remote_failure = None;
         self.sync_remote();
     }
@@ -3198,7 +3230,12 @@ impl StudioUi {
 
     /// The encoder settings of an [`output`].
     fn encoding_of(&self, out: i32) -> Encoding {
-        if out == output::STREAM {
+        if out == output::DESTINATION
+            && let Some(e) = self.dest_encoding()
+        {
+            return e;
+        }
+        if out == output::STREAM || out == output::DESTINATION {
             self.stream_form().encoding.clone()
         } else {
             self.record_form().encoding()
@@ -3257,6 +3294,8 @@ impl StudioUi {
             1 if self.vertical.is_some() => OutputCanvas::Vertical,
             _ => OutputCanvas::Main,
         };
+        // The editor belongs to the canvas it was opened on.
+        self.dest_editor = None;
         self.folder_serial += 1;
         self.server_serial += 1;
         self.key_serial += 1;
@@ -3305,7 +3344,7 @@ impl StudioUi {
     /// The encoder fields of an [`output`]'s form, for its settings and encoder.
     fn form(&self, out: i32) -> EncoderForm {
         let e = self.encoding_of(out);
-        if out == output::STREAM {
+        if out == output::STREAM || out == output::DESTINATION {
             EncoderForm::for_stream(&e, &self.options(&e))
         } else {
             EncoderForm::new(&e, &self.options(&e))
@@ -3326,7 +3365,7 @@ impl StudioUi {
     /// MPEG-TS do not carry HEVC or AV1. A recording lists HEVC and AV1 when an
     /// encoder on this computer does, and keeps a saved codec visible.
     fn video_codecs(&self, out: i32, e: &Encoding) -> Vec<VideoCodec> {
-        if out == output::STREAM {
+        if out == output::STREAM || out == output::DESTINATION {
             return vec![VideoCodec::H264];
         }
         let mut list = vec![VideoCodec::H264];
@@ -3569,7 +3608,9 @@ impl StudioUi {
         if !changed {
             return;
         }
-        if out == output::STREAM {
+        if out == output::DESTINATION {
+            self.dest_set_encoding(e);
+        } else if out == output::STREAM {
             self.stream_form_mut().encoding = e;
             self.save_stream_form();
         } else {
@@ -5826,6 +5867,7 @@ impl StudioUi {
                 }
                 Err(why) => self.stream_note = why,
             },
+            Update::DestinationKey(id, r) => self.dest_key_saved(id, r),
             Update::StreamKey(r) => match r {
                 Ok(saved) => {
                     self.stream.key_saved = saved;
@@ -6789,7 +6831,7 @@ fn request_of(
     }
 }
 
-fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+pub(crate) fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
     ModelRc::from(Rc::new(VecModel::from(
         items
             .into_iter()

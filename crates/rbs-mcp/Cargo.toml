@@ -1,6 +1,6 @@
 [package]
 name = "rbs-mcp"
-description = "MCP server for AI agents: a control API client (ADR-0052). Speaks stdio and reaches RBS only through local IPC."
+description = "MCP server for AI agents: a control API client (ADR-0052, ADR-0134). Speaks stdio and reaches RBS only through local IPC."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,18 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# MCP itself is a few JSON-RPC messages over stdio, written here on serde_json: the
+# official Rust SDK needs an async runtime, which a blocking stdio program with one
+# request at a time does not (mcp-server spec, "MCP library").
 [dependencies]
+# Method table and effects (the methods built into the API), the token type.
+rbs-api = { path = "../rbs-api" }
+# The IPC client: the only way to RBS.
+rbs-api-ipc = { path = "../rbs-api-ipc" }
+# The injected clock for the retry spacing.
+rbs-core = { path = "../rbs-core" }
+# `config_dir`, so the default token file is where RBS writes it.
+rbs-remote-settings = { path = "../rbs-remote-settings" }
 serde_json = "1"
 
 [lints]

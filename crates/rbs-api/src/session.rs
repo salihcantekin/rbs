@@ -463,6 +463,13 @@ impl Server {
         &self.config
     }
 
+    /// Changes `allow_remote_admin` for sessions that authenticate from now on (the
+    /// WebSocket transport restarts with the new network settings, ADR-0134
+    /// decision 2).
+    pub fn set_allow_remote_admin(&mut self, allow: bool) {
+        self.config.allow_remote_admin = allow;
+    }
+
     /// Sessions the server still holds (open, or closed with a request in flight).
     pub fn session_count(&self) -> usize {
         self.sessions.len()
