@@ -4419,7 +4419,9 @@ dependencies = [
  "rbs-import-obs",
  "rbs-manifest",
  "rbs-media-anim",
+ "rbs-media-avf",
  "rbs-media-decode-test",
+ "rbs-media-mf",
  "rbs-mux",
  "rbs-mux-flac",
  "rbs-mux-fmp4",
@@ -4983,6 +4985,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-media-avf"
+version = "0.0.1"
+dependencies = [
+ "objc2 0.6.5",
+ "objc2-av-foundation",
+ "objc2-core-audio-types",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "rbs-core",
+ "rbs-media-decode",
+]
+
+[[package]]
 name = "rbs-media-decode"
 version = "0.0.1"
 dependencies = [
@@ -5002,6 +5018,16 @@ name = "rbs-media-format"
 version = "0.0.1"
 dependencies = [
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-media-mf"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-media-decode",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

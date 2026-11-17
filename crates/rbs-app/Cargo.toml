@@ -134,6 +134,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
 rbs-capture-mf = { path = "../rbs-capture-mf" }
+rbs-media-mf = { path = "../rbs-media-mf" }
 rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
 rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
@@ -161,6 +162,7 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 # The platform's adapters (src/platform.rs).
 rbs-capture-sck = { path = "../rbs-capture-sck" }
 rbs-capture-avf = { path = "../rbs-capture-avf" }
+rbs-media-avf = { path = "../rbs-media-avf" }
 rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
 rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
