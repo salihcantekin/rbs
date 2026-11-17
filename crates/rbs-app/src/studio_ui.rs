@@ -1857,6 +1857,10 @@ impl StudioUi {
         let Some(kind) = self.rows.iter().find(|r| r.id == id).and_then(|r| r.kind) else {
             return;
         };
+        // A media file has no targets: its Source tab shows the file instead.
+        if kind == SourceKind::Media {
+            return;
+        }
         self.source_targets_for = Some(id);
         self.source_query.clear();
         self.source_pictures.clear();
@@ -2134,6 +2138,27 @@ impl StudioUi {
         self.send(Command::SetSourceSettings {
             id: SourceId::from_raw(id as u32),
             patch: std::iter::once((key.to_owned(), value)).collect(),
+        });
+    }
+
+    /// Sets one end of a media file's play range at `at_ms` of media time, or clears
+    /// the range (ADR-0108 decision 11): one settings patch, so one undo step.
+    pub fn set_media_range_mark(&mut self, id: i32, mark: RangeMark, at_ms: i32) {
+        let Some(media) = self
+            .rows
+            .iter()
+            .find(|r| r.id.get() as i32 == id)
+            .and_then(|r| r.media.as_ref())
+        else {
+            return;
+        };
+        let Some(patch) = range_patch(media.start_ms, media.end_ms, mark, i64::from(at_ms)) else {
+            return;
+        };
+        self.deleted.clear();
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch,
         });
     }
 
@@ -6524,6 +6549,15 @@ impl StudioUi {
                     media_path: r.media.as_ref().map_or("", |m| m.path.as_str()).into(),
                     media_loop: r.media.as_ref().is_some_and(|m| m.looped),
                     media_restart: r.media.as_ref().is_some_and(|m| m.restart_when_shown),
+                    media_start_ms: r
+                        .media
+                        .as_ref()
+                        .map_or(0, |m| i32::try_from(m.start_ms).unwrap_or(i32::MAX)),
+                    media_end_ms: r
+                        .media
+                        .as_ref()
+                        .and_then(|m| m.end_ms)
+                        .map_or(-1, |ms| i32::try_from(ms).unwrap_or(i32::MAX)),
                     media_state,
                     media_pos_ms,
                     media_len_ms,
@@ -9466,5 +9500,106 @@ mod tests {
         );
         assert!(s.enabled(&cmd("ui.layout.undo")).is_err());
         let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// Which end of a media file's play range a press sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeMark {
+    /// The range starts here.
+    Start,
+    /// The range ends here.
+    End,
+    /// The whole file plays again.
+    Clear,
+}
+
+impl RangeMark {
+    /// 0 start, 1 end, anything else clears (the UI's code).
+    pub fn from_code(code: i32) -> Self {
+        match code {
+            0 => Self::Start,
+            1 => Self::End,
+            _ => Self::Clear,
+        }
+    }
+}
+
+/// The settings patch that puts `mark` at `at` milliseconds into the range
+/// `start..end`, or `None` when nothing changes. A start at or after the end drops the
+/// end (the range runs to the end of the file); an end at or before the start drops
+/// the start, as an editor's in and out points do. A start of 0 is stored as absent.
+fn range_patch(
+    start: i64,
+    end: Option<i64>,
+    mark: RangeMark,
+    at: i64,
+) -> Option<std::collections::BTreeMap<String, serde_json::Value>> {
+    use rbs_sources::types::keys;
+    let at = at.max(0);
+    let (new_start, new_end) = match mark {
+        RangeMark::Start => (at, end.filter(|&e| e > at)),
+        RangeMark::End if at == 0 => return None,
+        RangeMark::End => (if start < at { start } else { 0 }, Some(at)),
+        RangeMark::Clear => (0, None),
+    };
+    if (new_start, new_end) == (start, end) {
+        return None;
+    }
+    let start_value = if new_start == 0 {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::from(new_start)
+    };
+    let end_value = new_end.map_or(serde_json::Value::Null, serde_json::Value::from);
+    Some(
+        [
+            (keys::START_MS.to_owned(), start_value),
+            (keys::END_MS.to_owned(), end_value),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod range_mark_tests {
+    use super::*;
+
+    fn pair(patch: &std::collections::BTreeMap<String, serde_json::Value>) -> (i64, Option<i64>) {
+        (
+            patch["start_ms"].as_i64().unwrap_or(0),
+            patch["end_ms"].as_i64(),
+        )
+    }
+
+    #[test]
+    fn marks_set_the_range_like_in_and_out_points() {
+        // A start inside the range keeps the end.
+        let p = range_patch(0, Some(9_000), RangeMark::Start, 2_000).unwrap();
+        assert_eq!(pair(&p), (2_000, Some(9_000)));
+        // A start after the end drops the end.
+        let p = range_patch(0, Some(9_000), RangeMark::Start, 9_500).unwrap();
+        assert_eq!(pair(&p), (9_500, None));
+        // An end after the start keeps the start.
+        let p = range_patch(2_000, None, RangeMark::End, 7_000).unwrap();
+        assert_eq!(pair(&p), (2_000, Some(7_000)));
+        // An end before the start drops the start.
+        let p = range_patch(5_000, None, RangeMark::End, 3_000).unwrap();
+        assert_eq!(pair(&p), (0, Some(3_000)));
+        // Clear plays the whole file; a start of 0 is stored as absent.
+        let p = range_patch(2_000, Some(7_000), RangeMark::Clear, 0).unwrap();
+        assert!(p["start_ms"].is_null() && p["end_ms"].is_null());
+    }
+
+    #[test]
+    fn a_mark_that_changes_nothing_sends_nothing() {
+        assert!(range_patch(0, None, RangeMark::Clear, 0).is_none());
+        assert!(range_patch(2_000, None, RangeMark::Start, 2_000).is_none());
+        assert!(range_patch(0, None, RangeMark::End, 0).is_none());
+        assert_eq!(RangeMark::from_code(0), RangeMark::Start);
+        assert_eq!(RangeMark::from_code(1), RangeMark::End);
+        assert_eq!(RangeMark::from_code(2), RangeMark::Clear);
     }
 }
