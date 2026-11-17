@@ -112,6 +112,10 @@ pub struct OutgoingScene {
     /// False when the transition draws without an incoming compositor (Move: the
     /// program compositor draws the incoming layers itself, decision 5).
     pub incoming: bool,
+    /// The scene the incoming compositor draws while the program stays as it is (a
+    /// manual transition, ADR-0135 decision 2); its heard sources join the program
+    /// mixer. `None`: the canvas's program scene.
+    pub incoming_scene: Option<SceneId>,
 }
 
 impl Default for OutgoingScene {
@@ -129,6 +133,30 @@ impl OutgoingScene {
             drawn,
             heard,
             incoming: true,
+            incoming_scene: None,
+        }
+    }
+
+    /// A manual transition towards `scene` (ADR-0135 decision 2): the incoming
+    /// compositor draws `scene` and the program mixer also hears it; nothing of the
+    /// program is kept beyond what the program scene binds.
+    pub fn towards(scene: SceneId) -> Self {
+        Self {
+            drawn: BTreeSet::new(),
+            heard: BTreeSet::new(),
+            incoming: true,
+            incoming_scene: Some(scene),
+        }
+    }
+
+    /// The same entry drawing the canvas's program scene again: what a manual
+    /// transition keeps after the program change, with the outgoing sources.
+    pub fn with_program(self, drawn: BTreeSet<SourceId>, heard: BTreeSet<SourceId>) -> Self {
+        Self {
+            drawn,
+            heard,
+            incoming: self.incoming,
+            incoming_scene: None,
         }
     }
 
@@ -138,6 +166,7 @@ impl OutgoingScene {
             drawn,
             heard,
             incoming: false,
+            incoming_scene: None,
         }
     }
 }
@@ -1195,11 +1224,14 @@ impl State {
             if let Some(h) = hold.get(&canvas.id) {
                 needed.insert((canvas.id, Role::Hold), h.scene);
             }
-            if let (Some(scene), true) = (
+            if let (Some(program), Some(o)) = (
                 canvas.program,
-                outgoing.get(&canvas.id).is_some_and(|o| o.incoming),
+                outgoing.get(&canvas.id).filter(|o| o.incoming),
             ) {
-                needed.insert((canvas.id, Role::Incoming), scene);
+                needed.insert(
+                    (canvas.id, Role::Incoming),
+                    o.incoming_scene.unwrap_or(program),
+                );
             }
         }
         let unneeded: Vec<(CanvasId, Role)> = self
@@ -1404,9 +1436,17 @@ impl State {
                         .collect(),
                     None => BTreeSet::new(),
                 };
-                // The outgoing scene is heard until its transition ends.
+                // The outgoing scene is heard until its transition ends; a manual
+                // transition's incoming scene is heard from its start (ADR-0135).
                 if let Some(o) = outgoing.get(&canvas.id) {
                     heard.extend(o.heard.iter().copied());
+                    if let Some(scene) = o.incoming_scene {
+                        heard.extend(
+                            collection
+                                .visible_sources_cued(canvas.id, scene, cued_items)
+                                .map_err(BindError::Scene)?,
+                        );
+                    }
                 }
                 let inputs = link_mixer(&self.sources, graph, mix, &heard)?;
                 report.mixers.insert(

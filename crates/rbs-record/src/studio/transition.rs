@@ -79,11 +79,28 @@ pub enum TransitionPhase {
     Started,
     /// The new scene is fully on air.
     Ended,
+    /// A manual transition holds at [`TransitionEvent::progress`] (ADR-0135
+    /// decision 6): the latest value, at most once per service step.
+    Holding,
+}
+
+/// What a T-bar value did (ADR-0135 decisions 1 to 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ManualStep {
+    /// Nothing to show: `t` is 0 with no manual transition, the kind is Cut below
+    /// the end, or a manual transition was cancelled.
+    Idle,
+    /// A manual transition waits for its picture or holds at `t`.
+    Holding,
+    /// `t` reached 1: the host makes the program change now, which ends the manual
+    /// transition without a timed one.
+    Take,
 }
 
 /// A transition's start or end, for the `transition.state` topic (ADR-0128 decision
 /// 13). Reported once each, never per frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct TransitionEvent {
     /// The canvas.
@@ -100,6 +117,10 @@ pub struct TransitionEvent {
     pub to: Option<SceneId>,
     /// Engine time of this state.
     pub at: Timestamp,
+    /// Driven by hand (a T-bar, ADR-0135 decision 5).
+    pub manual: bool,
+    /// The progress a manual transition holds at (`Holding`).
+    pub progress: Option<f32>,
 }
 
 /// The transition one update runs: the collection's, with a one-off kind and duration
@@ -163,6 +184,27 @@ pub(super) struct CanvasTransition {
     to_heard: BTreeSet<SourceId>,
     /// The scenes it goes from and to, for its events.
     scenes: (Option<SceneId>, Option<SceneId>),
+    /// Driven by hand (ADR-0135); `None` for a timed transition.
+    manual: Option<Manual>,
+}
+
+/// A manual transition's own state (ADR-0135 decisions 1 to 6).
+pub(super) struct Manual {
+    /// The latest applied progress.
+    t: f32,
+    /// The kind it shows (Move is drawn as a crossfade, decision 3).
+    kind: TransitionKind,
+    /// When it passed its ready gate (`started` was published).
+    started: Option<Timestamp>,
+    /// The sources the program mixer heard at its start.
+    from_heard: BTreeSet<SourceId>,
+    /// The levels the preview scene is heard with.
+    to_mix: BTreeMap<SourceId, SourceAudio>,
+    /// Cancelled (t back to 0, or ended without a program change): the program
+    /// alone again until the settle.
+    cancelled: bool,
+    /// The program changed to its scene: it ends without a timed transition.
+    taken: bool,
 }
 
 /// How a running transition shapes the main mixer's strips (ADR-0128 decision 10):
@@ -171,6 +213,9 @@ pub(super) struct CanvasTransition {
 /// the outgoing scene only goes to silence, one of the incoming scene only comes up
 /// from silence, a shared one moves from its outgoing to its incoming level.
 pub(super) struct MixShape {
+    /// A manual transition's eased progress and the preview levels (ADR-0135
+    /// decision 4); `None` for a timed one.
+    manual: Option<(f32, BTreeMap<SourceId, SourceAudio>)>,
     phase: Phase,
     duration: Duration,
     outgoing: BTreeSet<SourceId>,
@@ -192,6 +237,26 @@ impl MixShape {
                         Some(a) if self.outgoing.contains(&s.source) => *a,
                         _ => silent(s.audio),
                     };
+                    s.ramp = None;
+                }
+                Phase::Running(_) if self.manual.is_some() => {
+                    // Each strip at the lerp of its outgoing and incoming gain, with
+                    // the mixer's default ramp, as a fader (decision 4).
+                    let Some((w, to_mix)) = &self.manual else {
+                        continue;
+                    };
+                    let gain = |a: Option<&SourceAudio>, heard: bool| match a {
+                        Some(a) if heard && !a.muted => a.volume,
+                        _ => 0.0,
+                    };
+                    let out = gain(
+                        self.from_mix.get(&s.source),
+                        self.outgoing.contains(&s.source),
+                    );
+                    let into = gain(to_mix.get(&s.source), self.to_heard.contains(&s.source));
+                    let volume = out + (into - out) * w;
+                    s.audio.volume = volume;
+                    s.audio.muted = volume <= 0.0;
                     s.ramp = None;
                 }
                 Phase::Running(start) => {
@@ -303,6 +368,115 @@ fn shifted(mut t: rbs_gpu::math::Affine2, (dx, dy): (f32, f32)) -> rbs_gpu::math
     t
 }
 
+/// A start, end or hold found by a step, made an event at the step's time.
+struct Step {
+    canvas: CanvasId,
+    phase: TransitionPhase,
+    kind: TransitionKind,
+    duration: Duration,
+    scenes: (Option<SceneId>, Option<SceneId>),
+    manual: bool,
+    progress: Option<f32>,
+}
+
+impl Step {
+    fn new(
+        canvas: CanvasId,
+        phase: TransitionPhase,
+        kind: TransitionKind,
+        duration: Duration,
+        scenes: (Option<SceneId>, Option<SceneId>),
+    ) -> Self {
+        Self {
+            canvas,
+            phase,
+            kind,
+            duration,
+            scenes,
+            manual: false,
+            progress: None,
+        }
+    }
+
+    fn manual(mut self, progress: Option<f32>) -> Self {
+        self.manual = true;
+        self.progress = progress;
+        self
+    }
+
+    fn event(self, at: Timestamp) -> TransitionEvent {
+        TransitionEvent {
+            canvas: self.canvas,
+            phase: self.phase,
+            kind: self.kind,
+            duration: self.duration,
+            from: self.scenes.0,
+            to: self.scenes.1,
+            at,
+            manual: self.manual,
+            progress: self.progress,
+        }
+    }
+}
+
+/// The incoming canvas over the outgoing `layers`, frozen at progress `t` (ADR-0135
+/// decision 3): what the timed transition shows at `t` times its duration. Returns the
+/// layers to draw above `layers`, and moves `layers` out for a Slide.
+fn frozen_blend(
+    compositor: NodeId,
+    (w, h): (u32, u32),
+    blend: Blend,
+    ease: GlideEasing,
+    t: f32,
+    layers: &mut [rbs_gpu::node::NodeLayer],
+) -> Vec<rbs_gpu::node::NodeLayer> {
+    let e = |u: f32| easing(ease).map(f64::from(u));
+    let full = || rbs_gpu::node::NodeLayer::new(compositor, 0, 0.0, 0.0, w as f32, h as f32);
+    let mut top = full();
+    // Transparent areas are the picture over black, as after the transition.
+    top.opaque = true;
+    let mut out = Vec::with_capacity(2);
+    match blend {
+        Blend::Fade { via: None } | Blend::Move => top.opacity = e(t),
+        Blend::Fade {
+            via: Some([r, g, b]),
+        } => {
+            let mut colour = full();
+            colour.style = LayerStyle::new(
+                LayerShape::Box,
+                w.max(h) as f32,
+                [r, g, b, 255],
+                [w as f32, h as f32],
+            );
+            colour.opacity = e((2.0 * t).min(1.0));
+            out.push(colour);
+            top.opacity = e((2.0 * t - 1.0).max(0.0));
+        }
+        Blend::Swipe { direction, push } => {
+            let (dx, dy) = swipe_offset(direction, (w, h));
+            let gone = e(t);
+            let k = 1.0 - gone;
+            top.transform = shifted(top.transform, (dx * k, dy * k));
+            if push {
+                for l in layers.iter_mut() {
+                    l.transform = shifted(l.transform, (-dx * gone, -dy * gone));
+                }
+            }
+        }
+    }
+    out.push(top);
+    out
+}
+
+/// The levels `scene` is heard with (ADR-0091): its own entries over the sources'.
+fn scene_mix(collection: &SceneCollection, scene: SceneId) -> BTreeMap<SourceId, SourceAudio> {
+    let levels = collection.scene(scene).and_then(|s| s.audio.as_ref());
+    collection
+        .sources()
+        .map(|s| (s.id, levels.map_or(s.audio, |l| l.heard(s.id, s.audio))))
+        .collect()
+}
+
 fn easing(e: GlideEasing) -> rbs_gpu::node::Easing {
     match e {
         GlideEasing::Linear => rbs_gpu::node::Easing::Linear,
@@ -325,11 +499,6 @@ impl Studio {
 
     /// The collection's transition with the one-off over it; takes the one-off.
     pub(super) fn effective_transition(&mut self, collection: &SceneCollection) -> Effective {
-        let mut e = Effective {
-            transition: collection.transition(),
-            glide: collection.glide(),
-            source_glides: true,
-        };
         // The incoming scene's override (ADR-0135 decision 8): the main canvas's new
         // program scene when it changes, else the first further canvas's that does.
         let changed = |canvas: CanvasId, old: Option<SceneId>| {
@@ -344,11 +513,31 @@ impl Studio {
                 .iter()
                 .find_map(|x| changed(x.canvas, program_scene(&self.collection, x.canvas)))
         });
+        let once = self.transition_once.take().unwrap_or_default();
+        let mut e = Self::transition_into(collection, incoming, once);
+        // A manual transition's end starts no timed one (ADR-0135 decision 5).
+        if self.manual_take {
+            e.transition.kind = TransitionKind::Cut;
+        }
+        e
+    }
+
+    /// The transition a change into `incoming` uses: `once`, then the scene's
+    /// override, then the collection (ADR-0135 decision 8).
+    fn transition_into(
+        collection: &SceneCollection,
+        incoming: Option<SceneId>,
+        once: TransitionOnce,
+    ) -> Effective {
+        let mut e = Effective {
+            transition: collection.transition(),
+            glide: collection.glide(),
+            source_glides: true,
+        };
         let scene_override = incoming
             .and_then(|id| collection.scene(id))
             .and_then(|s| s.transition_in)
             .unwrap_or_default();
-        let once = self.transition_once.take().unwrap_or_default();
         // Precedence: the one-off, then the scene's override, then the collection. A
         // one-off kind without a duration uses that kind's collection duration.
         if let Some(kind) = once.kind.or(scene_override.kind) {
@@ -401,6 +590,7 @@ impl Studio {
         if changed.is_empty() {
             return;
         }
+        let manual = self.manual_take;
         let blend = blend_of(effective.transition).or_else(|| move_of(effective));
         let now = self.engine.clock().now();
         let cued = self.cues.items();
@@ -417,6 +607,44 @@ impl Studio {
             .map(|m| m.inputs.iter().map(|i| i.source).collect())
             .unwrap_or_default();
         for (canvas, from_scene, to_scene) in changed {
+            // A manual transition's end (ADR-0135 decision 5): the same entry keeps
+            // its incoming node, now drawing the program, with the outgoing scene's
+            // sources until the settle; the plain layers go out now.
+            if let Some(t) = self
+                .transitions
+                .get_mut(&canvas)
+                .filter(|t| t.manual.as_ref().is_some_and(|m| !m.cancelled))
+            {
+                let drawn: BTreeSet<SourceId> = old_layers
+                    .get(&canvas)
+                    .map(|l| l.iter().map(|l| l.source).collect())
+                    .unwrap_or_default();
+                let heard = if canvas == self.settings.canvas {
+                    heard.clone()
+                } else {
+                    BTreeSet::new()
+                };
+                t.outgoing = t.outgoing.clone().with_program(drawn, heard);
+                t.phase = Phase::Ending(now);
+                if let Some(m) = &mut t.manual {
+                    m.taken = true;
+                    let duration = m
+                        .started
+                        .map_or(Duration::ZERO, |s| now.saturating_since(s));
+                    self.transition_events.push(TransitionEvent {
+                        canvas,
+                        phase: TransitionPhase::Ended,
+                        kind: m.kind,
+                        duration,
+                        from: from_scene,
+                        to: to_scene,
+                        at: now,
+                        manual: true,
+                        progress: None,
+                    });
+                }
+                continue;
+            }
             // A running one ends at once; its compositor is kept for the next one.
             let incoming = self.transitions.remove(&canvas).and_then(|t| t.incoming);
             let from = old_layers.get(&canvas).cloned().unwrap_or_default();
@@ -449,6 +677,8 @@ impl Studio {
                     from: from_scene,
                     to: to_scene,
                     at: now,
+                    manual,
+                    progress: None,
                 };
                 self.transition_events.push(event);
                 // A change on this canvas replaces its pending end.
@@ -492,6 +722,8 @@ impl Studio {
                     from: from_scene,
                     to: to_scene,
                     at: now,
+                    manual: false,
+                    progress: None,
                 });
                 (
                     OutgoingScene::without_incoming(leaving, heard),
@@ -513,6 +745,7 @@ impl Studio {
                     from_mix,
                     to_heard,
                     scenes: (from_scene, to_scene),
+                    manual: None,
                 },
             );
         }
@@ -654,7 +887,22 @@ impl Studio {
             let _ = view.layers.send(node_layers(&incoming, plan));
         }
         let mut outgoing = program.clone();
-        outgoing.layers.clone_from(&t.from);
+        // A manual transition keeps the program as it is, edits included.
+        if t.manual.is_none() {
+            outgoing.layers.clone_from(&t.from);
+        }
+        if let (Some(m), Phase::Running(_)) = (&t.manual, t.phase) {
+            outgoing.layers.retain(|l| !is_global(l));
+            let mut layers = node_layers(&outgoing, plan);
+            if let Some(view) = &t.incoming {
+                let top = frozen_blend(view.compositor, size, t.blend, t.easing, m.t, &mut layers);
+                layers.extend(top);
+            }
+            let mut above = program.clone();
+            above.layers.retain(|l| is_global(l));
+            layers.extend(node_layers(&above, plan));
+            return Some(layers);
+        }
         match t.phase {
             Phase::Waiting(_) => Some(node_layers(&outgoing, plan)),
             Phase::Running(start) => {
@@ -773,7 +1021,7 @@ impl Studio {
         let layers_pending = self.layers.pending() && !self.layers.is_closed();
         let mut events = Vec::new();
         for (&canvas, t) in &mut self.transitions {
-            let kind = t.blend.kind();
+            let kind = t.manual.as_ref().map_or(t.blend.kind(), |m| m.kind);
             match t.phase {
                 Phase::Waiting(since) => {
                     let ready = t
@@ -783,14 +1031,53 @@ impl Studio {
                     if ready || now.saturating_since(since) >= READY_WAIT {
                         t.phase = Phase::Running(now);
                         resend = true;
-                        events.push((canvas, TransitionPhase::Started, kind, t.duration, t.scenes));
+                        if let Some(m) = &mut t.manual {
+                            // Past its ready gate: `started`, then where it holds.
+                            m.started = Some(now);
+                            events.push(
+                                Step::new(
+                                    canvas,
+                                    TransitionPhase::Started,
+                                    kind,
+                                    Duration::ZERO,
+                                    t.scenes,
+                                )
+                                .manual(None),
+                            );
+                            events.push(
+                                Step::new(
+                                    canvas,
+                                    TransitionPhase::Holding,
+                                    kind,
+                                    Duration::ZERO,
+                                    t.scenes,
+                                )
+                                .manual(Some(m.t)),
+                            );
+                        } else {
+                            events.push(Step::new(
+                                canvas,
+                                TransitionPhase::Started,
+                                kind,
+                                t.duration,
+                                t.scenes,
+                            ));
+                        }
                     }
                 }
+                // A manual transition holds until its value changes.
+                Phase::Running(_) if t.manual.is_some() => {}
                 Phase::Running(start) => {
                     if now.saturating_since(start) >= t.duration {
                         t.phase = Phase::Ending(now);
                         resend = true;
-                        events.push((canvas, TransitionPhase::Ended, kind, t.duration, t.scenes));
+                        events.push(Step::new(
+                            canvas,
+                            TransitionPhase::Ended,
+                            kind,
+                            t.duration,
+                            t.scenes,
+                        ));
                     }
                 }
                 Phase::Ending(sent) => {
@@ -802,17 +1089,8 @@ impl Studio {
                 Phase::Done => done = true,
             }
         }
-        self.transition_events.extend(events.into_iter().map(
-            |(canvas, phase, kind, duration, (from, to))| TransitionEvent {
-                canvas,
-                phase,
-                kind,
-                duration,
-                from,
-                to,
-                at: now,
-            },
-        ));
+        self.transition_events
+            .extend(events.into_iter().map(|s| s.event(now)));
         if resend {
             let plan = self.graph.plan();
             self.send_program_layers(&plan);
@@ -827,7 +1105,25 @@ impl Studio {
     /// runs there.
     pub(super) fn transition_mix(&self) -> Option<MixShape> {
         let t = self.transitions.get(&self.settings.canvas)?;
+        if let Some(m) = &t.manual {
+            let ease = easing(t.easing);
+            return Some(MixShape {
+                manual: (!m.cancelled && !m.taken)
+                    .then(|| (ease.map(f64::from(m.t)), m.to_mix.clone())),
+                phase: t.phase,
+                duration: t.duration,
+                outgoing: m.from_heard.clone(),
+                from_mix: t.from_mix.clone(),
+                // Cancelled: the program's own sources only (decision 6).
+                to_heard: if m.cancelled {
+                    m.from_heard.clone()
+                } else {
+                    t.to_heard.clone()
+                },
+            });
+        }
         Some(MixShape {
+            manual: None,
             phase: t.phase,
             duration: t.duration,
             outgoing: t.outgoing.heard.clone(),
@@ -853,14 +1149,226 @@ impl Studio {
                     let left = READY_WAIT.saturating_sub(now.saturating_since(since));
                     left.min(Duration::from_millis(5))
                 }
+                // A held T-bar needs no step until its value changes.
+                Phase::Running(_) if t.manual.is_some() => Duration::MAX,
                 Phase::Running(start) => t.duration.saturating_sub(now.saturating_since(start)),
                 Phase::Ending(_) => Duration::from_millis(5),
                 Phase::Done => Duration::ZERO,
             })
             .min();
+        let running = running.filter(|d| *d != Duration::MAX);
         match (ends, running) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
+        }
+    }
+
+    /// Applies a T-bar value `t` on `canvas` (ADR-0135 decisions 1 to 7); call it once
+    /// per service step with the latest value. The first `t > 0` starts a manual
+    /// transition from the program scene to the preview scene (a timed one running
+    /// there ends at once); it waits for the incoming picture, then holds the blend
+    /// at `t`. `t = 0` cancels it. At `t = 1` it answers [`ManualStep::Take`]: the host
+    /// makes the program change now, which ends it without a timed transition. Does
+    /// nothing on a canvas without a preview scene.
+    pub fn transition_progress(
+        &mut self,
+        canvas: CanvasId,
+        t: f32,
+        sources: &SourceTypes,
+    ) -> Result<ManualStep, RecordError> {
+        let t = if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let now = self.engine.clock().now();
+        let live = |tr: &&mut CanvasTransition| {
+            tr.manual.as_ref().is_some_and(|m| !m.cancelled && !m.taken)
+        };
+        if let Some(tr) = self.transitions.get_mut(&canvas).filter(live) {
+            if t >= 1.0 {
+                self.manual_take = true;
+                return Ok(ManualStep::Take);
+            }
+            if t <= 0.0 {
+                self.cancel_manual(canvas);
+                return Ok(ManualStep::Idle);
+            }
+            let running = matches!(tr.phase, Phase::Running(_));
+            let Some(m) = tr.manual.as_mut() else {
+                return Ok(ManualStep::Idle);
+            };
+            if m.t == t {
+                return Ok(ManualStep::Holding);
+            }
+            m.t = t;
+            if running {
+                let held = Step::new(
+                    canvas,
+                    TransitionPhase::Holding,
+                    m.kind,
+                    Duration::ZERO,
+                    tr.scenes,
+                )
+                .manual(Some(t))
+                .event(now);
+                // The latest value only, at most once per service step.
+                self.transition_events
+                    .retain(|e| !(e.canvas == canvas && e.phase == TransitionPhase::Holding));
+                self.transition_events.push(held);
+                self.resend_transition(canvas);
+            }
+            return Ok(ManualStep::Holding);
+        }
+        if t <= 0.0 {
+            return Ok(ManualStep::Idle);
+        }
+        let collection = self.collection.clone();
+        let Some(preview) = collection.canvas(canvas).and_then(|c| c.preview) else {
+            return Ok(ManualStep::Idle);
+        };
+        let e = Self::transition_into(&collection, Some(preview), TransitionOnce::default());
+        let kind = e.kind();
+        // Move is drawn as a crossfade with its easing (decision 3).
+        let blend = blend_of(e.transition).or_else(|| {
+            (kind == TransitionKind::Move).then_some((
+                Duration::ZERO,
+                e.glide.easing,
+                Blend::Fade { via: None },
+            ))
+        });
+        let Some((_, easing, blend)) = blend else {
+            // Cut (or a duration of 0): nothing to hold; it cuts at the end.
+            if t >= 1.0 {
+                self.manual_take = true;
+                return Ok(ManualStep::Take);
+            }
+            return Ok(ManualStep::Idle);
+        };
+        if t >= 1.0 {
+            self.manual_take = true;
+            return Ok(ManualStep::Take);
+        }
+        // A timed transition on this canvas ends at once (decision 7); its
+        // compositor is kept.
+        let incoming = match self.transitions.remove(&canvas) {
+            Some(old) => {
+                if matches!(old.phase, Phase::Waiting(_) | Phase::Running(_)) {
+                    let kind = old.blend.kind();
+                    self.transition_events.push(
+                        Step::new(
+                            canvas,
+                            TransitionPhase::Ended,
+                            kind,
+                            old.duration,
+                            old.scenes,
+                        )
+                        .event(now),
+                    );
+                }
+                old.incoming
+            }
+            None => None,
+        };
+        if let Some(view) = &incoming {
+            view.ready.store(0, Ordering::Release);
+        }
+        let main = canvas == self.settings.canvas;
+        let from = self.layer_snapshot().remove(&canvas).unwrap_or_default();
+        let cued = self.cues.items();
+        let (from_heard, from_mix, to_heard, to_mix) = if main {
+            (
+                self.bound_mixer
+                    .as_ref()
+                    .map(|m| m.inputs.iter().map(|i| i.source).collect())
+                    .unwrap_or_default(),
+                self.mix.clone(),
+                collection
+                    .visible_sources_cued(canvas, preview, &cued)
+                    .map(|v| v.into_iter().collect())
+                    .unwrap_or_default(),
+                scene_mix(&collection, preview),
+            )
+        } else {
+            Default::default()
+        };
+        self.transitions.insert(
+            canvas,
+            CanvasTransition {
+                from,
+                outgoing: OutgoingScene::towards(preview),
+                duration: Duration::ZERO,
+                easing,
+                blend,
+                phase: Phase::Waiting(now),
+                incoming,
+                from_mix,
+                to_heard,
+                scenes: (program_scene(&collection, canvas), Some(preview)),
+                manual: Some(Manual {
+                    t,
+                    kind,
+                    started: None,
+                    from_heard,
+                    to_mix,
+                    cancelled: false,
+                    taken: false,
+                }),
+            },
+        );
+        self.update(&collection, sources)?;
+        Ok(ManualStep::Holding)
+    }
+
+    /// Cancels the manual transition of `canvas` (ADR-0135 decision 6): the program
+    /// alone again and the strips back to their levels; it is unbound at the settle
+    /// that follows. `ended` goes out with `to` equal to `from` once it had started.
+    /// False when none holds there.
+    pub fn cancel_manual(&mut self, canvas: CanvasId) -> bool {
+        let now = self.engine.clock().now();
+        let Some(tr) = self.transitions.get_mut(&canvas) else {
+            return false;
+        };
+        let Some(m) = tr.manual.as_mut().filter(|m| !m.cancelled && !m.taken) else {
+            return false;
+        };
+        m.cancelled = true;
+        m.t = 0.0;
+        if let Some(started) = m.started {
+            let from = tr.scenes.0;
+            self.transition_events.push(TransitionEvent {
+                canvas,
+                phase: TransitionPhase::Ended,
+                kind: m.kind,
+                duration: now.saturating_since(started),
+                from,
+                to: from,
+                at: now,
+                manual: true,
+                progress: None,
+            });
+        }
+        tr.phase = Phase::Ending(now);
+        self.transition_events
+            .retain(|e| !(e.canvas == canvas && e.phase == TransitionPhase::Holding));
+        self.resend_transition(canvas);
+        true
+    }
+
+    /// True while a manual transition holds on `canvas` (not cancelled or taken).
+    pub fn manual_transition(&self, canvas: CanvasId) -> bool {
+        self.transitions
+            .get(&canvas)
+            .and_then(|t| t.manual.as_ref())
+            .is_some_and(|m| !m.cancelled && !m.taken)
+    }
+
+    /// Sends the program layers and, on the main canvas, the strips again.
+    fn resend_transition(&mut self, canvas: CanvasId) {
+        let plan = self.graph.plan();
+        self.send_program_layers(&plan);
+        if canvas == self.settings.canvas {
+            self.send_mix();
         }
     }
 
@@ -943,6 +1451,94 @@ mod tests {
         t.kind = TransitionKind::Slide;
         t.slide.duration_ms = 0;
         assert_eq!(blend_of(t), None);
+    }
+
+    /// A node id for layers that are never drawn.
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn any_node() -> NodeId {
+        let mut g = rbs_graph::description::GraphDescription::new();
+        let d = rbs_graph::node::NodeDescriptor::new(
+            rbs_graph::node::NodeTypeId::new_static("test.node"),
+            rbs_graph::node::NodeKind::Source,
+            vec![],
+            vec![rbs_graph::node::Pin::one(
+                "video",
+                rbs_graph::node::LinkKind::Video,
+            )],
+        );
+        g.add_node(Arc::new(d)).unwrap()
+    }
+
+    #[test]
+    fn a_frozen_blend_shows_what_the_timed_one_shows_at_t() {
+        let node = any_node();
+        let size = (1920, 1080);
+        let lin = GlideEasing::Linear;
+        // A crossfade: the incoming opacity is e(t).
+        let top = frozen_blend(node, size, Blend::Fade { via: None }, lin, 0.3, &mut []);
+        assert_eq!(top.len(), 1);
+        assert!((top[0].opacity - 0.3).abs() < 1e-6);
+        assert!(
+            top[0].fade.is_none() && top[0].slide.is_none(),
+            "static layers"
+        );
+        // Through a colour: the colour in the first half, the scene in the second.
+        let via = Blend::Fade {
+            via: Some([0, 0, 0]),
+        };
+        let first = frozen_blend(node, size, via, lin, 0.25, &mut []);
+        assert!((first[0].opacity - 0.5).abs() < 1e-6);
+        assert_eq!(first[1].opacity, 0.0);
+        let second = frozen_blend(node, size, via, lin, 0.75, &mut []);
+        assert_eq!(second[0].opacity, 1.0);
+        assert!((second[1].opacity - 0.5).abs() < 1e-6);
+        // A Slide at half way: the incoming canvas half in, the outgoing half out.
+        let mut out = [rbs_gpu::node::NodeLayer::new(
+            node, 0, 0.0, 0.0, 1920.0, 1080.0,
+        )];
+        let before = out[0].transform.tx;
+        let slide = Blend::Swipe {
+            direction: SwipeDirection::Left,
+            push: true,
+        };
+        let top = frozen_blend(node, size, slide, lin, 0.5, &mut out);
+        assert!((top[0].transform.tx - 960.0).abs() < 1e-3);
+        assert!((out[0].transform.tx - (before - 960.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_held_t_bar_lerps_each_strip_between_its_two_gains() {
+        let (a, b, c) = (
+            SourceId::from_raw(1),
+            SourceId::from_raw(2),
+            SourceId::from_raw(3),
+        );
+        let level = SourceAudio::new;
+        let strip = |source| MixStrip {
+            producer: any_node(),
+            source,
+            meter: None,
+            audio: level(1.0, false),
+            ramp: None,
+        };
+        let shape = MixShape {
+            manual: Some((
+                0.25,
+                BTreeMap::from([(a, level(0.4, false)), (c, level(1.0, false))]),
+            )),
+            phase: Phase::Running(Timestamp::ZERO),
+            duration: Duration::ZERO,
+            outgoing: BTreeSet::from([a, b]),
+            from_mix: BTreeMap::from([(a, level(0.8, false)), (b, level(1.0, true))]),
+            to_heard: BTreeSet::from([a, c]),
+        };
+        let mut strips = [strip(a), strip(b), strip(c)];
+        shape.apply(&mut strips);
+        // a: 0.8 -> 0.4; b: muted out, not in -> 0; c: only in, 0 -> 1.
+        assert!((strips[0].audio.volume - 0.7).abs() < 1e-6);
+        assert!(strips[1].audio.muted);
+        assert!((strips[2].audio.volume - 0.25).abs() < 1e-6);
+        assert!(strips.iter().all(|s| s.ramp.is_none()), "the default ramp");
     }
 
     #[test]

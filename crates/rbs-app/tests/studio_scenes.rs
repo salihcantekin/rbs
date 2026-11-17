@@ -1668,3 +1668,79 @@ fn a_scene_transition_is_set_listed_cleared_undone_and_refused_when_wrong() {
         "invalid_params"
     );
 }
+
+#[test]
+fn a_t_bar_holds_then_puts_the_preview_on_air_and_refuses_when_wrong() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    ok(&c.call(
+        "events.subscribe",
+        json!({"topics": ["scene.changed", "transition.state"]}),
+    ));
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    add(&mut c, "screen", "Main screen");
+    let two = ok(&c.call("scene.add", json!({"name": "Game"})))["scene"]
+        .as_u64()
+        .unwrap();
+    ok(&c.call("collection.set_transition", json!({"kind": "fade"})));
+    // Outside studio mode there is no T-bar (ADR-0135 decision 1).
+    assert_eq!(
+        kind(&c.call("canvas.transition_progress", json!({"t": 0.5}))),
+        "conflict"
+    );
+    ok(&c.call("canvas.set_preview", json!({"scene": two})));
+    for bad in [json!({"t": 1.5}), json!({"t": -0.1}), json!({})] {
+        assert_eq!(
+            kind(&c.call("canvas.transition_progress", bad.clone())),
+            "invalid_params",
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        kind(&c.call(
+            "canvas.transition_progress",
+            json!({"canvas": "vertical", "t": 0.5})
+        )),
+        "conflict"
+    );
+
+    // Held, the program stays. This host draws no program picture (no output, a
+    // test clock), so it waits at its ready gate and publishes nothing yet; the
+    // studio's own test covers `started` and `holding`.
+    ok(&c.call("canvas.transition_progress", json!({"t": 0.4})));
+    ok(&c.call("canvas.transition_progress", json!({"t": 0.6})));
+    assert_eq!(scenes(&mut c)["program"], one);
+
+    // 1 puts the preview on air without a timed transition.
+    ok(&c.call("canvas.transition_progress", json!({"t": 1.0})));
+    let e = c.event("transition.state", |d| d["state"] == "ended");
+    let d = &e["params"]["data"];
+    assert_eq!(d["manual"], true, "{e}");
+    assert_eq!(d["kind"], "fade");
+    assert_eq!(
+        (d["from"].clone(), d["to"].clone()),
+        (json!(one), json!(two))
+    );
+    assert_eq!(scenes(&mut c)["program"], two);
+
+    // Back to 0 cancels: the program stays as it is.
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    ok(&c.call("canvas.transition_progress", json!({"t": 0.5})));
+    ok(&c.call("canvas.transition_progress", json!({"t": 0.0})));
+    assert_eq!(scenes(&mut c)["program"], two);
+    // A held one is cancelled by a transition, which then runs as today.
+    ok(&c.call("canvas.transition_progress", json!({"t": 0.5})));
+    ok(&c.call("canvas.transition", json!({"kind": "cut"})));
+    let e = c.event("transition.state", |d| {
+        d["state"] == "ended" && d["to"] == one
+    });
+    assert_eq!(e["params"]["data"].get("manual"), None, "{e}");
+    assert_eq!(scenes(&mut c)["program"], one);
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
+    drop(host);
+}
