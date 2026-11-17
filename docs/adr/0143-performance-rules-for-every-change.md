@@ -76,7 +76,7 @@ New output types reuse these shared producers instead of building their own chai
 
 ### R4. Work at the size, rate and format that is used
 
-- Sources are captured, decoded and kept at no more than the largest size and rate any shown consumer uses. The OS is asked to scale where it can.
+- Sources are captured, decoded and kept at no more than the largest size and rate at which they are drawn on a canvas by a scene shown under ADR-0107 decision 6, or used by an output. Canvas pixels count, not the preview panel's on-screen size. The OS is asked to scale where it can.
 - A stated step or hysteresis applies, so a resize does not reopen the device on every step.
 - A new texture, pool or buffer uses the smallest pixel format that keeps the quality the output needs.
 - Existing format contracts stay until an ADR supersedes them: `Rgba16Float` canvases and filter outputs (ADR-0062, ADR-0086, ADR-0128).
@@ -109,9 +109,9 @@ The preview and the meters animate continuously. They use the native layers of A
 
 ### R9. Picture copies are counted
 
-- Every per-frame CPU copy and GPU-to-CPU readback of a picture is counted in the metrics (P4, `frames_cpu_copied`) and listed in the Cost section.
+- GPU-to-CPU readbacks are counted in `frames_cpu_copied` (P4). Other per-frame CPU copies of a picture are counted in a separate metric defined in the gpu-compositor spec (spec first). Both are listed in the Cost section.
 - One-time copies, such as a still upload, are listed but not counted per frame.
-- No new per-frame copy is added to the default path (CLAUDE.md, ADR-0038) without an ADR that supersedes this rule for that path.
+- No new per-frame copy is added to the default path without a new ADR that allows it for that path (CLAUDE.md, ADR-0038, as ADR-0117 did). R9 adds no exception.
 - A new path that hands frames between the GPU and an encoder, a capture or another process states how it reaches zero copy, or why it cannot.
 
 ### R10. Encoder defaults are measured for quality per bit
@@ -162,6 +162,7 @@ Later, rules that can be counted move into automatic checks, the way `cargo xtas
   - the skill and PR template lines above;
   - `docs/perf/threads.md`;
   - the absolute idle check and its text in `docs/specs/performance-budgets.md` (spec first, CLAUDE.md rule 2);
+  - the per-frame CPU copy metric in the gpu-compositor spec (R9);
   - a one-line pointer from `docs/architecture/principles.md` and CLAUDE.md to this ADR, so contributors find it.
 
 ## Alternatives considered
@@ -190,4 +191,6 @@ Later, rules that can be counted move into automatic checks, the way `cargo xtas
 14. Overlaps with existing rules were repeated. They are now named in Context and only cited.
 15. The finding count disagreed with the audit (149) and some wording was idiomatic. Both fixed.
 
-Owner approval: Salih, 2026-11-17 ("adr ları kabul edelim"), given before this revision. A confirming review of the revised text follows.
+**Round 2: independent AI session, 2026-11-17. Verdict: approve with changes.** All 15 round-1 resolutions are confirmed in the text. No conflict was found with P1-P15, ADR-0013, 0034, 0035, 0038, 0051, 0062, 0086, 0102, 0107 or 0128. Applied: R4's "shown" now means ADR-0107 decision 6 scenes plus outputs, at canvas pixels. R9 points to ADR-0038 for new copies and keeps `frames_cpu_copied` for readbacks only. The owner confirms the revised text before acceptance.
+
+Owner approval: Salih approved accepting the ADR on 2026-11-17 ("adr ları kabul edelim"), before the review rounds changed the text. Confirmation of the revised text: pending. Record the name and date here before setting Status to Accepted.
