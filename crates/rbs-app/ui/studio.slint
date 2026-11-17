@@ -3365,16 +3365,15 @@ component SourceFields inherits VerticalLayout {
         }
         Text {
             horizontal-stretch: 1;
+            vertical-alignment: center;
             text: data.status;
             color: Theme.text-primary;
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
         }
-    }
-    // Refused access (ADR-0141 decision 8; here, never in the Sources list): Allow
-    // shows the system's question, Fix permission opens Settings › Permissions.
-    if data.perm-action != 0: HorizontalLayout {
-        alignment: start;
+        // Refused access (ADR-0141 decision 8; here, never in the Sources list), right
+        // of the status: Allow shows the system's question, Fix permission opens
+        // Settings › Permissions.
         if data.perm-action == 1: Button {
             text: @tr("Allow");
             accessible-name: @tr("Allow access for {}", data.name);
