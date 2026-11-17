@@ -1,4 +1,5 @@
-//! The API thread (ADR-0044 decision 5): exists only while remote control is on, owns
+//! The API thread (ADR-0044 decision 5, ADR-0134 decision 2): exists only while remote
+//! control is on or AI tools are started, owns
 //! the [`Server`], and sleeps on one [`Wake`] shared by the transport inbox, the reply
 //! channel and the event slots until the server's next deadline. No periodic wake-up:
 //! with no session and nothing due it sleeps until signalled.
@@ -48,7 +49,31 @@ struct Shared {
     wake: Arc<Wake>,
     stop: AtomicBool,
     tokens: Mutex<Option<TokenStore>>,
+    /// A new "allow remote admin", taken like `tokens`.
+    remote_admin: Mutex<Option<bool>>,
     rounds: AtomicU64,
+}
+
+impl Shared {
+    /// Applies what was set from other threads since the last call.
+    fn apply_pending(&self, server: &mut Server) {
+        let admin = self
+            .remote_admin
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(a) = admin {
+            server.set_allow_remote_admin(a);
+        }
+        let tokens = self
+            .tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(t) = tokens {
+            server.set_tokens(t);
+        }
+    }
 }
 
 /// Replaces the token store of a running [`ApiServer`] ([`ApiServer::token_handle`]).
@@ -124,6 +149,7 @@ impl ApiServer {
             wake,
             stop: AtomicBool::new(false),
             tokens: Mutex::new(None),
+            remote_admin: Mutex::new(None),
             rounds: AtomicU64::new(0),
         });
         let thread = {
@@ -154,14 +180,7 @@ impl ApiServer {
                             break;
                         }
                         let now = clock.now();
-                        let tokens = shared
-                            .tokens
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .take();
-                        if let Some(t) = tokens {
-                            server.set_tokens(t);
-                        }
+                        shared.apply_pending(&mut server);
                         while let Some(event) = inbox.pop() {
                             // A store set before a client connected must be in place
                             // before that client's events are handled: replies go out
@@ -169,14 +188,7 @@ impl ApiServer {
                             // authenticate within one round. Checking after each pop
                             // orders the replacement before every event enqueued
                             // after it (`set` happens before the event was sent).
-                            let tokens = shared
-                                .tokens
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .take();
-                            if let Some(t) = tokens {
-                                server.set_tokens(t);
-                            }
+                            shared.apply_pending(&mut server);
                             server.handle(Input::Transport(event), now);
                         }
                         while let Ok(reply) = reply_rx.try_recv() {
@@ -212,6 +224,18 @@ impl ApiServer {
     /// Replaces the token store; sessions of revoked tokens are closed.
     pub fn set_tokens(&self, tokens: TokenStore) {
         self.token_handle().set(tokens);
+    }
+
+    /// Sets "allow remote admin" for sessions that authenticate from now on (a
+    /// transport restarted after this call accepts nothing before it applies).
+    /// Sessions already authenticated keep their scopes.
+    pub fn set_allow_remote_admin(&self, allow: bool) {
+        *self
+            .shared
+            .remote_admin
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(allow);
+        self.shared.wake.signal();
     }
 
     /// A handle that replaces the token store from another thread, such as the

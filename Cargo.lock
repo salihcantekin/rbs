@@ -4968,6 +4968,10 @@ dependencies = [
 name = "rbs-mcp"
 version = "0.0.1"
 dependencies = [
+ "rbs-api",
+ "rbs-api-ipc",
+ "rbs-core",
+ "rbs-remote-settings",
  "serde_json",
 ]
 
