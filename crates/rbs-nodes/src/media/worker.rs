@@ -21,14 +21,14 @@ use rbs_core::media::{
 use rbs_core::time::{Clock, Timestamp};
 use rbs_gpu::yuv_decode::check_color;
 use rbs_media_decode::{
-    DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory, PictureLayout, PictureSample,
-    SampleColor, refuse_picture,
+    DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory, PictureData, PictureLayout,
+    PictureSample, SampleColor, refuse_picture,
 };
 
 use super::control::Record;
 use super::pcm::Converter;
 use super::picture::MediaNodeError;
-use super::{LEAD, PICTURE_SLOTS, Shared, SoundBlock, SoundInlet};
+use super::{LEAD, MediaStats, NATIVE_WAITING, PICTURE_SLOTS, Shared, SoundBlock, SoundInlet};
 
 /// Longest a worker parks before it looks at the clock again.
 const PARK: Duration = Duration::from_millis(2);
@@ -40,7 +40,12 @@ const CATCH_UP_CHUNKS: usize = 64;
 
 /// One picture in flight, stamped with master time.
 pub(crate) struct Pending {
-    pub(crate) frame: VideoFrame,
+    /// The picture: system memory, or a native surface until the picture node imports
+    /// it (`None` after that).
+    pub(crate) frame: Option<VideoFrame>,
+    /// Counts a native picture against [`NATIVE_WAITING`] until it is imported or
+    /// dropped.
+    pub(crate) native: Option<NativeSlot>,
     /// The control generation it was decoded for (ADR-0108 decision 10).
     pub(crate) generation: u32,
     pub(crate) start: Timestamp,
@@ -49,6 +54,35 @@ pub(crate) struct Pending {
     pub(crate) index: u32,
     pub(crate) mark: u8,
     pub(crate) bytes: usize,
+}
+
+/// A picture decoded while the picture node was away: the sample, its media time,
+/// its master time, and its native slot.
+type Unseen = (PictureSample, Duration, i128, Option<NativeSlot>);
+
+/// One native picture counted in [`MediaStats::native_waiting`] until it is imported or
+/// dropped. Claiming and dropping are atomic operations only, so the picture node may
+/// drop one in `process`.
+pub(crate) struct NativeSlot(Arc<MediaStats>);
+
+impl NativeSlot {
+    /// A slot, or `None` when the source already holds [`NATIVE_WAITING`] native
+    /// pictures that are not imported yet.
+    pub(crate) fn claim(stats: &Arc<MediaStats>) -> Option<Self> {
+        stats
+            .native_waiting
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < NATIVE_WAITING).then_some(n + 1)
+            })
+            .ok()?;
+        Some(Self(Arc::clone(stats)))
+    }
+}
+
+impl Drop for NativeSlot {
+    fn drop(&mut self) {
+        self.0.native_waiting.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// What the worker hands the picture node once it holds the first picture.
@@ -95,7 +129,8 @@ impl Drop for Released<'_> {
 
 /// Runs one worker until the end of the file (without `loop`), a fault, or shutdown.
 pub(crate) fn run(job: Job) {
-    let mut decoder = match job.factory.open(&job.path) {
+    let target = job.shared.decode_target();
+    let mut decoder = match job.factory.open_for(&job.path, &target) {
         Ok(decoder) => decoder,
         Err(error) => {
             let _ = job
@@ -106,7 +141,10 @@ pub(crate) fn run(job: Job) {
     };
     job.progress.decoder_held.store(true, Ordering::Release);
     let _released = Released(&job.progress.decoder_held);
-    if let Err(error) = decoder.seek(job.cursor) {
+    // The cursor inside the play range, and a range start past the end of the file
+    // clamped to its last picture (ADR-0108 decision 11).
+    let cursor = clamp_into(job.shared.in_range(job.cursor), decoder.duration());
+    if let Err(error) = decoder.seek(cursor) {
         let _ = job
             .ready
             .send(Err(MediaNodeError::Failed(error.to_string())));
@@ -125,8 +163,8 @@ pub(crate) fn run(job: Job) {
     // The command this run follows: a run started paused shows its first picture and
     // stops (ADR-0108 decision 10).
     let command = job.shared.controls.newest();
-    let mut pictures = PictureStream::new(job.cursor);
-    let first = match pictures.first(&mut *decoder) {
+    let mut pictures = PictureStream::new(cursor);
+    let first = match pictures.first(&mut *decoder, job.shared.range_end()) {
         Ok(first) => first,
         Err(error) => {
             let _ = job.ready.send(Err(error));
@@ -162,10 +200,11 @@ pub(crate) fn run(job: Job) {
     let (returns_tx, returns_rx) = rtrb::RingBuffer::new(PICTURE_SLOTS + 2);
     let mut run = Run {
         anchor,
-        cursor: job.cursor,
+        cursor,
         generation: command.generation,
         paused: command.paused,
-        paused_at: command.paused.then_some(job.cursor),
+        paused_at: command.paused.then_some(cursor),
+        held: false,
         offset: Duration::ZERO,
         prev_offset: Duration::ZERO,
         pictures,
@@ -173,14 +212,13 @@ pub(crate) fn run(job: Job) {
         pictures_tx,
         returns_rx,
         index: 0,
-        sound: SoundStream::new(&job.config, job.cursor),
+        sound: SoundStream::new(&job.config, cursor),
         primed_sound,
         unseen: std::collections::VecDeque::new(),
         job: &job,
         decoder: &mut *decoder,
     };
-    job.shared
-        .set_paused_cursor(run.paused.then_some(job.cursor));
+    job.shared.set_paused_cursor(run.paused.then_some(cursor));
     // A run that starts paused queues its one picture before `wake` returns, so the
     // first tick after it shows the picture.
     if run.paused && run.next_picture().is_err() {
@@ -219,6 +257,9 @@ struct Run<'a> {
     paused: bool,
     /// Where the pause stopped, for the next play.
     paused_at: Option<Duration>,
+    /// A looping range shorter than one picture: that picture is held and the file
+    /// is not sought again until a command (ADR-0108 decision 11).
+    held: bool,
     /// Media time added by finished loop passes.
     offset: Duration,
     /// `offset` before the last loop boundary.
@@ -232,7 +273,7 @@ struct Run<'a> {
     /// Pictures decoded while the picture node was not prepared, with their media
     /// start and master time: the latest one due and those after it (at most
     /// [`PICTURE_SLOTS`]). Decoded samples, not copies.
-    unseen: std::collections::VecDeque<(PictureSample, Duration, i128)>,
+    unseen: std::collections::VecDeque<Unseen>,
     /// The first sound chunk, decoded before the anchor was set.
     primed_sound: Option<rbs_media_decode::SoundSample>,
 }
@@ -305,6 +346,7 @@ impl Run<'_> {
                 Ok(())
             }
             (true, Some(position)) => {
+                let position = clamp_into(job.shared.in_range(position), self.decoder.duration());
                 self.paused = true;
                 self.paused_at = Some(position);
                 job.shared.set_cursor(position);
@@ -318,6 +360,7 @@ impl Run<'_> {
                 let from = position
                     .or(self.paused_at.take())
                     .unwrap_or_else(|| job.shared.cursor());
+                let from = clamp_into(job.shared.in_range(from), self.decoder.duration());
                 self.paused = false;
                 self.paused_at = None;
                 job.shared.set_paused_cursor(None);
@@ -333,6 +376,7 @@ impl Run<'_> {
     /// offset, new picture and sound streams, nothing primed.
     fn restart_at(&mut self, position: Duration, anchor: Timestamp) -> Result<(), DecodeError> {
         self.decoder.seek(position)?;
+        self.held = false;
         self.anchor = anchor;
         self.cursor = position;
         self.offset = Duration::ZERO;
@@ -376,13 +420,22 @@ impl Run<'_> {
                 if job.shared.picture_attached.load(Ordering::Acquire) && !self.unseen.is_empty() {
                     busy = true;
                     let unseen = std::mem::take(&mut self.unseen);
-                    for (sample, start, master) in &unseen {
-                        if self.queue_picture(sample, *start, *master).is_err() {
+                    for (sample, start, master, slot) in unseen {
+                        if self.queue_picture(sample, start, master, slot).is_err() {
                             job.progress.failed.store(true, Ordering::Release);
                             return;
                         }
                     }
                 }
+                job.progress
+                    .settled_at
+                    .store(now.as_nanos().saturating_add(1), Ordering::Release);
+                if !busy {
+                    thread::park_timeout(PARK);
+                }
+                continue;
+            }
+            if self.held {
                 job.progress
                     .settled_at
                     .store(now.as_nanos().saturating_add(1), Ordering::Release);
@@ -398,8 +451,8 @@ impl Run<'_> {
             if job.shared.picture_attached.load(Ordering::Acquire) && !self.unseen.is_empty() {
                 busy = true;
                 let unseen = std::mem::take(&mut self.unseen);
-                for (sample, start, master) in &unseen {
-                    if self.queue_picture(sample, *start, *master).is_err() {
+                for (sample, start, master, slot) in unseen {
+                    if self.queue_picture(sample, start, master, slot).is_err() {
                         job.progress.failed.store(true, Ordering::Release);
                         return;
                     }
@@ -453,16 +506,24 @@ impl Run<'_> {
                 if !job.loop_flag.load(Ordering::Acquire) {
                     return;
                 }
-                let pass = self.pass_length();
-                if self.decoder.seek(Duration::ZERO).is_err() {
+                let start = self.range_start();
+                let pass = self.pass_end().saturating_sub(start);
+                let shorter = self.pictures.known.is_some_and(|picture| pass < picture);
+                if self.pictures.count == 0 || (self.pictures.count == 1 && shorter) {
+                    // A range shorter than one picture, or past the last one: hold
+                    // the picture, seek no more (ADR-0108 decision 11).
+                    self.held = true;
+                    continue;
+                }
+                if self.decoder.seek(start).is_err() {
                     job.progress.failed.store(true, Ordering::Release);
                     return;
                 }
                 // The next pass starts where this one's range ended.
                 self.prev_offset = self.offset;
                 self.offset = self.offset.saturating_add(pass);
-                self.pictures.restart();
-                self.sound.restart();
+                self.pictures.restart(start);
+                self.sound.restart(start);
                 self.primed_sound = None;
                 continue;
             }
@@ -499,24 +560,37 @@ impl Run<'_> {
             && self.job.shared.has_audio.load(Ordering::Acquire)
     }
 
-    /// Media length of the pass that just ended: the later end of its pictures and its
-    /// sound, so the next pass starts after both. With an audio stream the file's
-    /// stated duration counts too, so the loop phase does not depend on whether the
-    /// sound node is prepared.
-    fn pass_length(&self) -> Duration {
-        let mut length = self.pictures.pass_end.max(self.sound.pass_end);
+    /// Media end of the pass that just ended: the later end of its pictures and its
+    /// sound, so the next pass starts after both, and at most the range end. With an
+    /// audio stream the file's stated duration counts too, so the loop phase does not
+    /// depend on whether the sound node is prepared.
+    fn pass_end(&self) -> Duration {
+        let mut end = self.pictures.pass_end.max(self.sound.pass_end);
         if self.job.shared.has_audio.load(Ordering::Acquire) {
             if let Some(duration) = self.decoder.duration() {
-                length = length.max(duration);
+                end = end.max(duration);
             }
         }
-        length
+        match self.job.shared.range_end() {
+            Some(range_end) => end.min(range_end),
+            None => end,
+        }
+    }
+
+    /// Where each loop pass starts: the range start, clamped into the file.
+    fn range_start(&self) -> Duration {
+        clamp_into(self.job.shared.range_start(), self.decoder.duration())
     }
 
     fn next_picture(&mut self) -> Result<(), ()> {
         let sample = match self.primed.take() {
             Some(sample) => sample,
-            None => match self.pictures.pull(self.decoder) {
+            None => match if self.pictures.count == 0 {
+                self.pictures
+                    .first_of_pass(self.decoder, self.job.shared.range_end())
+            } else {
+                self.pictures.pull(self.decoder)
+            } {
                 Ok(Some(sample)) => sample,
                 Ok(None) => {
                     self.pictures.done = true;
@@ -525,6 +599,13 @@ impl Run<'_> {
                 Err(_) => return Err(()),
             },
         };
+        // A picture at or after the range end ends the pass; the first one of a pass is
+        // always shown, so an empty range shows one picture (ADR-0108 decision 11).
+        let starts = sample.pts.unwrap_or(self.pictures.next);
+        if self.pictures.count > 0 && self.job.shared.range_end().is_some_and(|end| starts >= end) {
+            self.pictures.done = true;
+            return Ok(());
+        }
         let Some((start, _end)) = self.pictures.stamp(&sample) else {
             return Err(());
         };
@@ -533,59 +614,111 @@ impl Run<'_> {
         if !self.job.shared.picture_attached.load(Ordering::Acquire) {
             let master = self.master(start).max(self.anchor.as_nanos() as i128);
             let now = self.job.clock.now().as_nanos() as i128;
-            self.unseen.push_back((sample, start, master));
-            // Keep the latest picture that is due and the ones after it.
-            while self.unseen.len() > PICTURE_SLOTS
-                || self.unseen.get(1).is_some_and(|(_, _, m)| *m <= now)
-            {
-                self.unseen.pop_front();
+            // Keep the latest picture that is due and the ones after it, this one
+            // included: drop the first while the one after it is due.
+            loop {
+                let second = match self.unseen.len() {
+                    0 => None,
+                    1 => Some(master),
+                    _ => self.unseen.get(1).map(|(_, _, m, _)| *m),
+                };
+                if self.unseen.len() >= PICTURE_SLOTS || second.is_some_and(|m| m <= now) {
+                    self.unseen.pop_front();
+                } else {
+                    break;
+                }
             }
+            // A native picture is kept only within the surface budget.
+            let slot = if sample.picture.is_native() {
+                let Some(slot) = NativeSlot::claim(&self.job.shared.stats) else {
+                    self.job
+                        .shared
+                        .stats
+                        .worker_dropped_pictures
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                };
+                Some(slot)
+            } else {
+                None
+            };
+            self.unseen.push_back((sample, start, master, slot));
             return Ok(());
         }
         self.unseen.clear();
         // A picture that starts before the position is not shown before the anchor,
         // so it never changes before the sound (ADR-0108 decision 10).
         let master = self.master(start).max(self.anchor.as_nanos() as i128);
-        self.queue_picture(&sample, start, master)
+        self.queue_picture(sample, start, master, None)
     }
 
     /// Copies one picture into a frame and queues it, or drops and counts it when the
-    /// ring or the byte cap is full.
+    /// ring, the byte cap, or the surface budget is full. A native picture moves on
+    /// uncopied; `slot` is its claim when it was kept in `unseen`.
     fn queue_picture(
         &mut self,
-        sample: &PictureSample,
+        sample: PictureSample,
         start: Duration,
         master: i128,
+        slot: Option<NativeSlot>,
     ) -> Result<(), ()> {
         let job = self.job;
-        let picture = &sample.picture;
+        let picture = sample.picture;
         if refuse_picture(picture.width, picture.height, picture.system_bytes()).is_some() {
             return Err(());
         }
-        // Native surfaces land with the platform adapters (ADR-0108 decision 5).
-        let Some(parts) = picture_parts(picture) else {
-            return Err(());
-        };
-        let mark = parts.bytes.first().copied().unwrap_or(0);
-        let bytes = parts.bytes.len();
+        let start_master = to_timestamp(master);
         let index = self.index;
         self.index = self.index.wrapping_add(1);
-        let start_master = to_timestamp(master);
-        let fill = fill_count(bytes);
-        let queued = job.progress.queued_frames.load(Ordering::Relaxed) as usize;
-        let queued_bytes = job.progress.queued_bytes.load(Ordering::Relaxed) as usize;
-        if queued >= fill || queued_bytes.saturating_add(bytes) > MAX_FRAME_BYTES {
+        let (frame, native, mark, bytes, fill) = if picture.is_native() {
+            let Some(slot) = slot.or_else(|| NativeSlot::claim(&job.shared.stats)) else {
+                job.shared
+                    .stats
+                    .worker_dropped_pictures
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            };
+            let PictureData::Native(frame) = picture.into_data() else {
+                return Err(());
+            };
+            (
+                frame.with_timestamp(start_master),
+                Some(slot),
+                0,
+                0,
+                PICTURE_SLOTS,
+            )
+        } else {
+            let Some(parts) = picture_parts(&picture) else {
+                return Err(());
+            };
+            let bytes = parts.bytes.len();
+            let fill = fill_count(bytes);
+            let queued = job.progress.queued_frames.load(Ordering::Relaxed) as usize;
+            let queued_bytes = job.progress.queued_bytes.load(Ordering::Relaxed) as usize;
+            if queued >= fill || queued_bytes.saturating_add(bytes) > MAX_FRAME_BYTES {
+                job.shared
+                    .stats
+                    .worker_dropped_pictures
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            let mark = parts.bytes.first().copied().unwrap_or(0);
+            let Ok(frame) = system_frame(&parts, start_master) else {
+                return Err(());
+            };
+            (frame, None, mark, bytes, fill)
+        };
+        if job.progress.queued_frames.load(Ordering::Relaxed) as usize >= fill {
             job.shared
                 .stats
                 .worker_dropped_pictures
                 .fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
-        let Ok(frame) = system_frame(&parts, start_master) else {
-            return Err(());
-        };
         let item = Pending {
-            frame,
+            frame: Some(frame),
+            native,
             generation: self.generation,
             start: start_master,
             media: start,
@@ -637,6 +770,14 @@ impl Run<'_> {
                 (src_frames as u64).saturating_mul(1_000_000_000) / u64::from(src_rate),
             );
             let media = sample.pts.unwrap_or(self.sound.next_media);
+            let range_end = job.shared.range_end();
+            if let Some(end) = range_end.filter(|end| media >= *end) {
+                // Sound at or after the range end ends the pass, cut at its sample.
+                self.sound.pass_end = self.sound.pass_end.max(end);
+                self.sound
+                    .flush(self.sound.frame_of(self.offset + end, rate));
+                return Ok(());
+            }
             self.sound.next_media = media.saturating_add(length);
             self.sound.pass_end = self.sound.pass_end.max(self.sound.next_media);
             // A sound node attached late skips what the graph can no longer play.
@@ -652,6 +793,11 @@ impl Run<'_> {
                 job.config.format.sample_rate.hz(),
                 job.config.format.channels.channels(),
             );
+            if let Some(end) = range_end.filter(|end| self.sound.next_media >= *end) {
+                // No sample past the range end is cut into a block.
+                self.sound
+                    .flush(self.sound.frame_of(self.offset + end, rate));
+            }
             return Ok(());
         }
         Ok(())
@@ -661,7 +807,7 @@ impl Run<'_> {
     /// of the range, then cuts every block that is complete.
     fn finish_sound(&mut self, now: Timestamp) {
         let rate = i128::from(self.job.config.format.sample_rate.hz());
-        let end = self.sound.frame_of(self.offset + self.pass_length(), rate);
+        let end = self.sound.frame_of(self.offset + self.pass_end(), rate);
         self.sound.flush(end);
         self.cut_blocks(now, !self.job.loop_flag.load(Ordering::Acquire));
     }
@@ -746,6 +892,11 @@ struct PictureStream {
     known: Option<Duration>,
     pass_end: Duration,
     done: bool,
+    /// Pictures stamped in this pass.
+    count: u32,
+    /// A picture read past the cursor while looking back for the one that covers it:
+    /// the next one [`Self::pull`] gives.
+    pending: Option<PictureSample>,
 }
 
 impl PictureStream {
@@ -756,20 +907,29 @@ impl PictureStream {
             known: None,
             pass_end: cursor,
             done: false,
+            count: 0,
+            pending: None,
         }
     }
 
-    fn restart(&mut self) {
-        self.cursor = Duration::ZERO;
-        self.next = Duration::ZERO;
-        self.pass_end = Duration::ZERO;
+    /// The next loop pass, from the range start.
+    fn restart(&mut self, start: Duration) {
+        self.cursor = start;
+        self.next = start;
+        self.pass_end = start;
         self.done = false;
+        self.count = 0;
+        self.pending = None;
     }
 
     /// The first picture that ends after the cursor (an adapter may seek to the
     /// keyframe before it), checked against the size limits.
-    fn first(&mut self, decoder: &mut dyn MediaDecoder) -> Result<PictureSample, MediaNodeError> {
-        let sample = match self.pull(decoder) {
+    fn first(
+        &mut self,
+        decoder: &mut dyn MediaDecoder,
+        end: Option<Duration>,
+    ) -> Result<PictureSample, MediaNodeError> {
+        let sample = match self.first_of_pass(decoder, end) {
             Ok(Some(sample)) => sample,
             Ok(None) => return Err(MediaNodeError::Invalid("a file with a picture stream")),
             Err(error) => return Err(MediaNodeError::Failed(error.to_string())),
@@ -784,12 +944,63 @@ impl PictureStream {
         Ok(sample)
     }
 
+    /// The first picture of a pass. An adapter may give the first picture at or after
+    /// the cursor instead of the one that covers it (the port contract): when that
+    /// one starts at or after the range end, or there is none (a cursor in the last
+    /// picture), the worker seeks back in growing steps for the last picture at or
+    /// before the cursor, so the range shows a picture of its own (ADR-0108 decision
+    /// 11).
+    fn first_of_pass(
+        &mut self,
+        decoder: &mut dyn MediaDecoder,
+        end: Option<Duration>,
+    ) -> Result<Option<PictureSample>, DecodeError> {
+        let cursor = self.cursor;
+        let sample = self.pull(decoder)?;
+        let outside = match &sample {
+            None => true,
+            Some(sample) => {
+                let start = sample.pts.unwrap_or(self.next);
+                start > cursor && end.is_some_and(|end| start >= end)
+            }
+        };
+        if !outside || cursor.is_zero() {
+            return Ok(sample);
+        }
+        drop(sample);
+        let mut step = LOOK_BACK;
+        loop {
+            let from = cursor.saturating_sub(step);
+            decoder.seek(from)?;
+            self.pending = None;
+            let mut last = None;
+            while let Some(sample) = decoder.next_picture()? {
+                if sample.pts.is_some_and(|start| start > cursor) {
+                    self.pending = Some(sample);
+                    break;
+                }
+                last = Some(sample);
+            }
+            if last.is_some() {
+                return Ok(last);
+            }
+            if from.is_zero() {
+                return Ok(self.pending.take());
+            }
+            step = step.saturating_mul(2);
+        }
+    }
+
     fn pull(
         &mut self,
         decoder: &mut dyn MediaDecoder,
     ) -> Result<Option<PictureSample>, DecodeError> {
         loop {
-            let Some(sample) = decoder.next_picture()? else {
+            let next = match self.pending.take() {
+                Some(sample) => Some(sample),
+                None => decoder.next_picture()?,
+            };
+            let Some(sample) = next else {
                 return Ok(None);
             };
             let start = sample.pts.unwrap_or(self.next);
@@ -814,6 +1025,7 @@ impl PictureStream {
         let end = start.saturating_add(duration);
         self.next = end;
         self.pass_end = self.pass_end.max(end);
+        self.count = self.count.saturating_add(1);
         Some((start, end))
     }
 }
@@ -881,9 +1093,10 @@ impl SoundStream {
         self.pass_end = Duration::ZERO;
     }
 
-    fn restart(&mut self) {
+    /// The next loop pass, from the range start: the frames keep flowing on.
+    fn restart(&mut self, start: Duration) {
         self.converter = None;
-        self.next_media = Duration::ZERO;
+        self.next_media = start;
         self.skip = 0;
         self.resync = true;
         self.done = false;
@@ -1065,6 +1278,21 @@ impl SoundStream {
         if let Some(j) = self.block.as_mut() {
             *j += 1;
         }
+    }
+}
+
+/// The first step back when a seek gave no picture covering the cursor; it doubles
+/// until one is found.
+const LOOK_BACK: Duration = Duration::from_millis(100);
+
+/// `position` clamped to just before the stated end of the file, so a range start
+/// past the end shows the last picture (ADR-0108 decision 11).
+fn clamp_into(position: Duration, duration: Option<Duration>) -> Duration {
+    match duration {
+        Some(duration) if !duration.is_zero() => {
+            position.min(duration.saturating_sub(Duration::from_nanos(1)))
+        }
+        _ => position,
     }
 }
 

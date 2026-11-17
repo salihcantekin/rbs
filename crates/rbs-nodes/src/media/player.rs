@@ -80,7 +80,7 @@ pub(crate) struct Player {
 }
 
 /// The default of the `pause_release_s` app setting (ADR-0108 decision 10).
-pub(crate) const PAUSE_RELEASE: Duration = Duration::from_secs(30);
+pub const PAUSE_RELEASE: Duration = Duration::from_secs(30);
 
 impl Player {
     pub(crate) fn new(
@@ -155,7 +155,7 @@ impl Player {
             if !stored {
                 self.cued = true;
                 if self.restart_when_shown {
-                    shared.move_cursor(Duration::ZERO);
+                    shared.move_cursor(shared.range_start());
                 }
             }
             if !newest.paused {
@@ -166,7 +166,7 @@ impl Player {
         let was_cued = std::mem::replace(&mut self.cued, false);
         if self.restart_when_shown {
             self.ended_stored = false;
-            shared.move_cursor(Duration::ZERO);
+            shared.move_cursor(shared.range_start());
             if newest.paused {
                 self.write_now(shared, false);
             }

@@ -120,6 +120,10 @@ pub struct AppSettings {
     /// absent: a screen recording does not include RBS. Linux ignores it.
     #[serde(default = "yes")]
     pub exclude_own_window: bool,
+    /// Record and Go live ask first while no microphone of the program scene is heard
+    /// (UI spec, "Silent output warning"). On when the key is absent.
+    #[serde(default = "yes")]
+    pub warn_silent: bool,
     /// Which section levels are drawn (ADR-0113 decision 2). Absent in files from
     /// older builds: [`AppSettings::settle`] fills it at the first start of this build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,9 +132,25 @@ pub struct AppSettings {
     /// `experience`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_run_done: Option<bool>,
+    /// Seconds a paused or cued media file keeps its decoder before it is released
+    /// (ADR-0108 decision 10). Absent: 30. Read through [`AppSettings::pause_release`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_release_s: Option<u32>,
 }
 
+/// The longest `pause_release_s` honoured: one hour.
+const MAX_PAUSE_RELEASE_S: u32 = 3600;
+
 impl AppSettings {
+    /// The media pause release (`pause_release_s`, default 30 s), clamped to 1 s to
+    /// one hour so a typo neither releases at once nor keeps decoders forever.
+    pub fn pause_release(&self) -> std::time::Duration {
+        self.pause_release_s
+            .map_or(rbs_record::MEDIA_PAUSE_RELEASE, |s| {
+                std::time::Duration::from_secs(u64::from(s.clamp(1, MAX_PAUSE_RELEASE_S)))
+            })
+    }
+
     /// Fills the fields an older file lacks (ADR-0113 decisions 2 and 5): an existing
     /// install reads as Pro with the first run done, a new one as Standard with the first
     /// run to show. Returns whether anything changed, so the caller saves at once and the
@@ -188,8 +208,10 @@ impl Default for AppSettings {
             background_notice_shown: false,
             swap_after_transition: false,
             exclude_own_window: true,
+            warn_silent: true,
             experience: None,
             first_run_done: None,
+            pause_release_s: None,
         }
     }
 }
@@ -558,6 +580,14 @@ mod tests {
         // A file without the swap key (older builds): off (ADR-0098).
         std::fs::write(file(&d), "format_version = 1\non_close = \"quit\"\n").unwrap();
         assert!(!load(&d).0.swap_after_transition);
+        // Nor the silent output warning: it stays on.
+        assert!(load(&d).0.warn_silent);
+        let quiet = AppSettings {
+            warn_silent: false,
+            ..AppSettings::default()
+        };
+        save(&d, &quiet).unwrap();
+        assert!(!load(&d).0.warn_silent);
         // Invalid: the default and the reason.
         std::fs::write(file(&d), "format_version = 1\non_close = \"sometimes\"\n").unwrap();
         let (got, note) = load(&d);
@@ -609,6 +639,21 @@ mod tests {
         assert!(old.settle(true));
         assert_eq!(old.experience, Some(Experience::Pro));
         assert_eq!(old.first_run_done, Some(true));
+    }
+
+    #[test]
+    fn the_pause_release_defaults_to_30_s_and_is_clamped() {
+        use std::time::Duration;
+        let mut s = AppSettings::default();
+        assert_eq!(s.pause_release(), Duration::from_secs(30));
+        s.pause_release_s = Some(0);
+        assert_eq!(s.pause_release(), Duration::from_secs(1));
+        s.pause_release_s = Some(u32::MAX);
+        assert_eq!(s.pause_release(), Duration::from_secs(3600));
+        s.pause_release_s = Some(90);
+        assert_eq!(s.pause_release(), Duration::from_secs(90));
+        let text = toml::to_string(&AppSettings::default()).unwrap();
+        assert!(!text.contains("pause_release_s"), "absent unless set");
     }
 
     #[test]

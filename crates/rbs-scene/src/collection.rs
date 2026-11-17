@@ -16,8 +16,8 @@ use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
     DisplayChrome, Fallback, Filter, FilterId, ItemContent, ItemId, Layout, MAX_GLIDE_MS,
     MAX_SHOW_FOR_MS, MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId,
-    SceneItem, SceneLevel, SceneScope, SettingValue, Settings, Source, SourceAudio, SourceGlide,
-    SourceId, SourceMonitor, SourceRegion, show_for_is_valid,
+    SceneItem, SceneLevel, SceneScope, SceneTransition, SettingValue, Settings, Source,
+    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, show_for_is_valid,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -249,6 +249,12 @@ enum Op {
     SetTransition {
         expected: CollectionTransition,
         new: CollectionTransition,
+    },
+    /// Replaces a scene's transition override (ADR-0135).
+    SetSceneTransition {
+        scene: SceneId,
+        expected: Option<SceneTransition>,
+        new: Option<SceneTransition>,
     },
     /// Replaces a source's optional glide override (ADR-0100).
     SetSourceGlide {
@@ -1195,6 +1201,26 @@ impl SceneCollection {
         })
     }
 
+    /// Sets or clears the transition into a scene (ADR-0135 decision 8; one undo step;
+    /// `InvalidTransition` when the duration is out of range). An override of nothing
+    /// is stored as `None`.
+    pub fn set_scene_transition(
+        &mut self,
+        id: SceneId,
+        transition: Option<SceneTransition>,
+    ) -> Result<Undo, SceneError> {
+        if transition.is_some_and(|t| !t.is_valid()) {
+            return Err(SceneError::InvalidTransition);
+        }
+        let new = transition.filter(|t| !t.is_empty());
+        let expected = self.get_scene(id)?.transition_in;
+        self.apply(Op::SetSceneTransition {
+            scene: id,
+            expected,
+            new,
+        })
+    }
+
     /// Sets or clears a source's slide override (ADR-0100; `InvalidGlide` when out of
     /// range). `None` clears it so the collection glide applies.
     pub fn set_source_glide(
@@ -1354,6 +1380,7 @@ impl SceneCollection {
             scope,
             items: Vec::new(),
             audio: None,
+            transition_in: None,
         };
         let undo = self.apply_with(
             Op::InsertScene {
@@ -1393,6 +1420,7 @@ impl SceneCollection {
             scope: source.scope,
             items,
             audio: source.audio.clone(),
+            transition_in: source.transition_in,
         };
         let undo = self.apply_with(
             Op::InsertScene {
@@ -2050,6 +2078,25 @@ impl SceneCollection {
                 }
                 self.transition = new;
                 Ok(Op::SetTransition {
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::SetSceneTransition {
+                scene,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .scenes
+                    .get_mut(&scene)
+                    .ok_or(SceneError::UnknownScene(scene))?;
+                if slot.transition_in != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.transition_in = new;
+                Ok(Op::SetSceneTransition {
+                    scene,
                     expected: new,
                     new: expected,
                 })

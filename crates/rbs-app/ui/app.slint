@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { ScrollArea, Sections, Experience, SettingsFind, TextField, ListRow, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, Overlays, OverlayCover, PickerRow, PopoverLayer, PopoverCard } from "components.slint";
+import { ScrollArea, Sections, Experience, SettingsFind, TextField, ListRow, Button, SplitButton, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, Overlays, OverlayCover, PickerRow, PopoverLayer, PopoverCard, Checkbox, DialogActions } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader, SettingsScroll, SettingsHit } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -19,7 +19,7 @@ import { Studio, TextData, AiActionRow, ModeData, SourceSettingsData, EntryRow, 
 
 export { SourceSettingsWindow, ModeData, SourceSettingsData, SyncMeasureWindow, ObsImportWindow, ObsSceneChoice, ObsReportRow, AttributesWindow }
 export { ProjectorWindow } from "projector.slint";
-export { OverlayProbe, FocusRevealProbe, SettingRowProbe, NumberFieldProbe, ExperienceProbe, EffectsProbe, SegmentProbe, PropertiesProbe, MenuProbe } from "overlay_probe.slint";
+export { OverlayProbe, FocusRevealProbe, SettingRowProbe, NumberFieldProbe, ExperienceProbe, EffectsProbe, SegmentProbe, PropertiesProbe, ReplayProbe, MenuProbe } from "overlay_probe.slint";
 export { Sections, Experience, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, MenuRow, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, TextData, AiActionRow, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
 
 // One destination of the running stream in the live chip's list (ADR-0127 decision 17).
@@ -149,6 +149,13 @@ export global Shell {
     callback caption-regions(length /* lead end */, length /* end start */, length /* max x */, length /* max width */, length /* row height */);
     // End stream from the menu bar: the frame asks first (U4).
     in property <bool> end-stream-confirm;
+    // Record (1) or Go live (2) was pressed while no microphone is heard: the frame
+    // asks first (UI spec, "Silent output warning"); 0 asks nothing. The reason in
+    // words for the question's first line.
+    in property <int> silent-confirm;
+    in property <string> silent-reason;
+    // `go` starts anyway; `stop-asking` (with `go`) turns the warning off.
+    callback silent-answer(bool /* go */, bool /* stop-asking */);
     // The same for the vertical canvas's stream (ADR-0093 decision 6).
     in property <bool> end-vertical-confirm;
     // A vertical canvas exists: Go live and Record get a ▾ with its outputs.
@@ -1526,6 +1533,62 @@ component EndStreamCard inherits Rectangle {
     }
 }
 
+// Record or Go live while no microphone is heard asks first (UI spec, "Silent output
+// warning"): the reason, what it means, "Don't ask again" and the answers. Cancel
+// has the focus, so a stray Enter does not start a silent output.
+component SilentQuestion inherits VerticalLayout {
+    property <bool> stream: Shell.silent-confirm == 2;
+    property <bool> stop-asking;
+    public function focus-cancel() { actions.focus-cancel(); }
+    spacing: Tokens.space-2;
+    Text {
+        text: root.stream ? @tr("Go live without sound?") : @tr("Record without sound?");
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+    }
+    Text {
+        text: Shell.silent-reason;
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+    }
+    Text {
+        text: root.stream ? @tr("Viewers will not hear you.") : @tr("The recording will have no voice.");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+    }
+    Checkbox {
+        text: @tr("Don't ask again");
+        checked: root.stop-asking;
+        toggled(on) => { root.stop-asking = on; }
+    }
+    actions := DialogActions {
+        confirm-text: root.stream ? @tr("Go live anyway") : @tr("Record anyway");
+        cancelled => { Shell.silent-answer(false, false); }
+        confirmed => { Shell.silent-answer(true, root.stop-asking); }
+    }
+}
+
+// The question in the main window: a card under Go live and Record, like End stream's.
+// It reports its rectangle as `Shell.confirm-cover` for the preview layer (ADR-0054).
+component SilentCard inherits Rectangle {
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    init => { Shell.confirm-cover = rect; question.focus-cancel(); }
+    changed rect => { Shell.confirm-cover = rect; }
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    accessible-role: groupbox;
+    accessible-label: Shell.silent-confirm == 2 ? @tr("Go live without sound?") : @tr("Record without sound?");
+    lay := VerticalLayout {
+        padding: Tokens.space-3;
+        question := SilentQuestion { }
+    }
+}
+
 // The workspace picker in the toolbar: "Workspace" and the current one's name, a
 // library Button in its menu form.
 component WorkspacePicker inherits Button {
@@ -1562,11 +1625,11 @@ component ToolbarCell inherits HorizontalLayout {
     // (ADR-0124, owner approval 2026-11-16).
     property <bool> holdable: item.id == "stream.toggle" && item.live && Studio.st-holdable;
     property <bool> split: vertical-menu || pausable || holdable;
-    // This position keeps the halo's clear zone round its button (ADR-0122 decision 8):
-    // the cell pads its sides so that, with the row's `space.2`, nothing lies within
-    // `Theme.halo-clear + size.focus-ring` of the button. The zone belongs to the
-    // position, whatever the button's kind is now, so going live moves nothing. 0 unless
-    // the theme draws a halo.
+    // A position that opts in keeps the halo's clear zone round its button (ADR-0122
+    // decision 8): the cell pads its sides so that, with the row's `space.2`, nothing
+    // lies within `Theme.halo-clear + size.focus-ring` of the button. The zone belongs to
+    // the position, whatever the button's kind is now, so going live moves nothing. 0
+    // unless the theme draws a halo. No frame bar position opts in today (ADR-0136).
     in property <bool> halo-room: false;
     property <length> halo-pad: halo-room && Theme.halo-clear > 0 ? max(Tokens.space-2, Theme.halo-clear + Tokens.size-focus-ring) - Tokens.space-2 : 0px;
     padding-left: halo-pad;
@@ -1623,7 +1686,7 @@ component ToolbarCell inherits HorizontalLayout {
     if item.kind == 1: WorkspacePicker {
         clicked => { root.open-workspaces(self.absolute-position.x); }
     }
-    // The separator keeps its height when the row grows (ADR-0122 decision 8).
+    // The separator has a fixed height; it does not stretch with the row.
     if item.kind == 2: VerticalLayout {
         alignment: center;
         Rectangle {
@@ -1745,14 +1808,13 @@ component FrameBar inherits Rectangle {
     changed max-x => { publish-regions(); }
     property <bool> caption-on: Shell.custom-caption;
     changed caption-on => { publish-regions(); }
-    // The row grows while the theme draws a halo (ADR-0122 decision 8), and the caption
-    // row reported to Windows is this height.
+    // The row's height changes with density, and the caption row reported to Windows is
+    // this height.
     changed height => { publish-regions(); }
-    // The room above and below the row's items: `space.1`, or the clear zone of Go
-    // live's halo (plus `size.focus-ring`, for a SplitButton's outside rings) while the
-    // theme draws one. Every item keeps its size, centred; only the window buttons span
-    // the row.
-    property <length> row-pad: Theme.halo-clear > 0 ? max(Tokens.space-1, Theme.halo-clear + Tokens.size-focus-ring) : Tokens.space-1;
+    // The room above and below the row's items. It is the same in every look: the frame
+    // bar does not opt in to the halo (ADR-0136), so Glow does not make it taller. Every
+    // item keeps its size, centred; only the window buttons span the row.
+    property <length> row-pad: Tokens.space-1;
     height: Tokens.size-control-md + 2 * row-pad + Tokens.size-border;
     background: Theme.surface-base;
     Rectangle {
@@ -1858,8 +1920,7 @@ component FrameBar inherits Rectangle {
             // with the toolbar hidden or customised (U1, ADR-0073).
             for item in Shell.toolbar-fixed: ToolbarCell {
                 item: item;
-                // Go live's position opts in to the halo; Record's does not.
-                halo-room: item.id == "stream.toggle";
+                // No halo here, so the bar keeps its height in Glow (ADR-0136).
                 vertical-menu: Shell.vertical-outputs;
                 vertical-on: item.id == "stream.toggle" ? Shell.vertical-live : Shell.vertical-rec;
                 open-workspaces(x) => { }
@@ -2416,6 +2477,11 @@ export component MainWindow inherits Window {
                 Shell.app-menu-asked += 1;
                 return accept;
             }
+            // Escape answers the silent output question as Cancel.
+            if e.text == Key.Escape && !Shell.quit-confirm && Shell.silent-confirm != 0 {
+                Shell.silent-answer(false, false);
+                return accept;
+            }
             // Escape answers the End stream card as Keep streaming (U4, U7).
             if e.text == Key.Escape && !Shell.quit-confirm && (Shell.end-stream-confirm || Shell.end-vertical-confirm) {
                 if Shell.end-stream-confirm { Shell.end-stream-answer(false); } else { Shell.end-vertical-answer(false); }
@@ -2566,6 +2632,13 @@ export component MainWindow inherits Window {
             ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
             : frame.height + Tokens.space-1;
         vertical: !Shell.end-stream-confirm;
+    }
+    // Record or Go live without a heard microphone asks first, in the same place.
+    if Shell.silent-confirm != 0 && !Shell.end-stream-confirm && !Shell.end-vertical-confirm && !Shell.quit-confirm: SilentCard {
+        x: parent.width - self.width - Tokens.space-2;
+        y: Shell.error-kind != 0 || Shell.background-notice != 0
+            ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
+            : frame.height + Tokens.space-1;
     }
     // The first Close with Keep RBS running says once where RBS goes, in the error
     // bar's place over the window (ADR-0056); OK (or Dismiss) hides the windows.
@@ -2806,6 +2879,11 @@ export component FloatWindow inherits Window {
     edit-keys := FocusScope {
         focus-on-tab-navigation: false;
         key-pressed(e) => {
+            // Escape answers the silent output question as Cancel.
+            if e.text == Key.Escape && Shell.silent-confirm != 0 {
+                Shell.silent-answer(false, false);
+                return accept;
+            }
             if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
             reject
         }
@@ -2818,6 +2896,17 @@ export component FloatWindow inherits Window {
                     Button { lead: IconName.dock; text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
                     if Shell.end-stream-confirm: EndStreamConfirm { }
                     if Shell.end-vertical-confirm && !Shell.end-stream-confirm: EndStreamConfirm { vertical: true; }
+                }
+            }
+            // The silent output question asked from this window's menu bar.
+            if Shell.silent-confirm != 0 && !Shell.end-stream-confirm && !Shell.end-vertical-confirm: Rectangle {
+                background: Theme.surface-overlay;
+                border-color: Theme.border-strong;
+                border-width: Tokens.size-border;
+                HorizontalLayout {
+                    padding: Tokens.space-3;
+                    alignment: start;
+                    q := SilentQuestion { init => { q.focus-cancel(); } }
                 }
             }
             DockArea {

@@ -268,7 +268,9 @@ fn place_one(window: &MainWindow, which: Picture) {
             st.covers.push(toast(shell.get_top_toast()));
         }
         // The End stream question (U4), under Go live and Record.
-        if (shell.get_end_stream_confirm() || shell.get_end_vertical_confirm())
+        if (shell.get_end_stream_confirm()
+            || shell.get_end_vertical_confirm()
+            || shell.get_silent_confirm() != 0)
             && !shell.get_quit_confirm()
         {
             st.covers.push(toast(shell.get_confirm_cover()));

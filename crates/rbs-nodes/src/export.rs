@@ -59,9 +59,12 @@ pub struct ExportNodeStats {
     pub frames: AtomicU64,
     /// Canvas frames not converted because every readback was in flight.
     pub busy: AtomicU64,
-    /// Converted frames lost before delivery (stale, no free buffer, map failure, or
-    /// still in flight when the node was released).
+    /// Converted frames lost before delivery (stale, no free buffer or map failure).
     pub lost: AtomicU64,
+    /// Readbacks still in flight when the node was released (a stop without
+    /// `ExportEnd`). The stop cut them; they are not a drop while running, so
+    /// the stream and recording summaries leave them out.
+    pub released: AtomicU64,
     /// Timestamp in nanoseconds plus one of the last frame put on "video"; 0 before
     /// the first (ADR-0045: the studio compares it with the encoder's).
     pub last_frame: AtomicU64,
@@ -914,7 +917,7 @@ impl Node<GpuRuntime> for VideoExportNode {
         // `ExportEnd`, or past the studio's tail limit): counted, never silent.
         if let Some(download) = self.download.take() {
             self.stats
-                .lost
+                .released
                 .fetch_add(download.in_flight() as u64, Ordering::Relaxed);
         }
     }

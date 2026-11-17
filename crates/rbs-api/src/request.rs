@@ -740,6 +740,18 @@ pub struct RenameScene {
     pub name: String,
 }
 
+/// `scene.set_transition` (protocol 1.86, ADR-0135 decision 10): sets or clears the
+/// transition into a scene; one undo step. `null` or `{}` clears it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSceneTransition {
+    /// The scene's id.
+    pub scene: u32,
+    /// The override, or `null` to clear it.
+    #[serde(default)]
+    pub transition: Option<crate::types::SceneTransition>,
+}
+
 /// `source.rename` (protocol 1.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1756,6 +1768,8 @@ pub enum Command {
     SceneRemove(SceneRef),
     /// `scene.rename` (protocol 1.6).
     SceneRename(RenameScene),
+    /// `scene.set_transition` (protocol 1.86).
+    SceneSetTransition(SetSceneTransition),
     /// `scene.duplicate` (protocol 1.43): a copy of the scene, not on air.
     SceneDuplicate(DuplicateScene),
     /// `source.duplicate` (protocol 1.68).
@@ -2054,6 +2068,7 @@ impl Command {
             Command::SceneAdd(_) => "scene.add",
             Command::SceneRemove(_) => "scene.remove",
             Command::SceneRename(_) => "scene.rename",
+            Command::SceneSetTransition(_) => "scene.set_transition",
             Command::SceneDuplicate(_) => "scene.duplicate",
             Command::SourceDuplicate(_) => "source.duplicate",
             Command::SourceReset(_) => "source.reset",
@@ -2330,6 +2345,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("scene.add", Some(Scope::Control), Effect::Edit),
     m("scene.remove", Some(Scope::Control), Effect::Edit),
     m("scene.rename", Some(Scope::Control), Effect::Edit),
+    m("scene.set_transition", Some(Scope::Control), Effect::Edit),
     m("scene.duplicate", Some(Scope::Control), Effect::Edit),
     m("source.duplicate", Some(Scope::Control), Effect::Edit),
     m("source.reset", Some(Scope::Control), Effect::Destructive),
@@ -2695,6 +2711,8 @@ enum WireRequest {
     SceneRemove(SceneRef),
     #[serde(rename = "scene.rename")]
     SceneRename(RenameScene),
+    #[serde(rename = "scene.set_transition")]
+    SceneSetTransition(SetSceneTransition),
     #[serde(rename = "scene.duplicate")]
     SceneDuplicate(DuplicateScene),
     #[serde(rename = "source.duplicate")]
@@ -2993,6 +3011,7 @@ impl From<WireRequest> for Request {
             WireRequest::SceneAdd(p) => Request::Command(C::SceneAdd(p)),
             WireRequest::SceneRemove(p) => Request::Command(C::SceneRemove(p)),
             WireRequest::SceneRename(p) => Request::Command(C::SceneRename(p)),
+            WireRequest::SceneSetTransition(p) => Request::Command(C::SceneSetTransition(p)),
             WireRequest::SceneDuplicate(p) => Request::Command(C::SceneDuplicate(p)),
             WireRequest::SourceDuplicate(p) => Request::Command(C::SourceDuplicate(p)),
             WireRequest::SourceReset(p) => Request::Command(C::SourceReset(p)),
@@ -3175,6 +3194,7 @@ impl From<Request> for WireRequest {
                 C::SceneAdd(p) => WireRequest::SceneAdd(p),
                 C::SceneRemove(p) => WireRequest::SceneRemove(p),
                 C::SceneRename(p) => WireRequest::SceneRename(p),
+                C::SceneSetTransition(p) => WireRequest::SceneSetTransition(p),
                 C::SceneDuplicate(p) => WireRequest::SceneDuplicate(p),
                 C::SourceDuplicate(p) => WireRequest::SourceDuplicate(p),
                 C::SourceReset(p) => WireRequest::SourceReset(p),

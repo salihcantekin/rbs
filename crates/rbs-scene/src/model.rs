@@ -735,6 +735,31 @@ pub struct CollectionTransition {
     pub slide: SwipeSettings,
 }
 
+/// A scene's override of the transition into it (ADR-0135 decision 8): the kind, the
+/// duration, or both. An absent part is the collection's. The kind's other settings
+/// (easing, colour, direction) are always the collection's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SceneTransition {
+    /// The kind; `None` is the collection's kind.
+    pub kind: Option<TransitionKind>,
+    /// Milliseconds in `0..=MAX_GLIDE_MS`; `None` is the kind's duration in the
+    /// collection. With Move it replaces the glide's duration and every per-source
+    /// override for that change.
+    pub duration_ms: Option<u32>,
+}
+
+impl SceneTransition {
+    /// True when the duration is in range.
+    pub fn is_valid(self) -> bool {
+        self.duration_ms.is_none_or(|d| d <= MAX_GLIDE_MS)
+    }
+
+    /// True when it overrides nothing (stored as no override).
+    pub fn is_empty(self) -> bool {
+        self.kind.is_none() && self.duration_ms.is_none()
+    }
+}
+
 impl CollectionTransition {
     /// True when every duration is in range.
     pub fn is_valid(self) -> bool {
@@ -964,6 +989,9 @@ pub struct Scene {
     /// The scene's own levels (ADR-0091): `None` is Shared levels, the sources' own
     /// volume and mute apply; `Some` is Own levels.
     pub audio: Option<SceneAudio>,
+    /// The transition used when this scene comes on air (ADR-0135 decision 8); `None`
+    /// uses the collection's.
+    pub transition_in: Option<SceneTransition>,
 }
 
 impl Scene {
@@ -975,6 +1003,7 @@ impl Scene {
             scope,
             items: Vec::new(),
             audio: None,
+            transition_in: None,
         }
     }
 

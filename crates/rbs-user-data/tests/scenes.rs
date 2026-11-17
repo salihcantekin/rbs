@@ -955,3 +955,63 @@ fn a_transition_in_an_older_format_or_out_of_range_is_refused() {
         );
     }
 }
+
+#[test]
+fn a_scene_transition_round_trips_in_format_20_and_older_formats_refuse_it() {
+    // ADR-0135 decision 9.
+    use rbs_scene::{SceneTransition, TransitionKind};
+    let mut col = show();
+    let scene = col.scenes().next().unwrap().id;
+    // Without an override the format stays below 20.
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("transition_in"), "{plain}");
+    assert!(!plain.contains("format = 20"), "{plain}");
+    for t in [
+        SceneTransition {
+            kind: Some(TransitionKind::Swipe),
+            duration_ms: Some(800),
+        },
+        SceneTransition {
+            kind: None,
+            duration_ms: Some(0),
+        },
+        SceneTransition {
+            kind: Some(TransitionKind::Cut),
+            duration_ms: None,
+        },
+    ] {
+        col.set_scene_transition(scene, Some(t)).unwrap();
+        let text = document::render(&col, Some("Show")).unwrap();
+        assert!(text.contains("format = 20"), "{text}");
+        let back = document::parse::<SceneCollection>(&text).unwrap().document;
+        assert_eq!(back.scene(scene).unwrap().transition_in, Some(t));
+        assert_eq!(back, col);
+    }
+    let scene_doc = "[[scenes]]\nid = 0\nname = \"A\"\n";
+    for (format, bad) in [
+        (19, "transition_in = { kind = \"fade\" }\n"),
+        (20, "transition_in = { kind = \"wipe\" }\n"),
+        (20, "transition_in = { duration_ms = 9000 }\n"),
+        (
+            20,
+            "transition_in = { kind = \"fade\", easing = \"linear\" }\n",
+        ),
+    ] {
+        let text = format!(
+            "format = {format}\nkind = \"scene-collection\"\n[next]\nscene = 1\n{scene_doc}{bad}"
+        );
+        assert!(
+            matches!(
+                document::parse::<SceneCollection>(&text),
+                Err(DataError::Invalid(_))
+            ),
+            "{format} {bad}"
+        );
+    }
+    // An empty table is no override.
+    let text = format!(
+        "format = 20\nkind = \"scene-collection\"\n[next]\nscene = 1\n{scene_doc}transition_in = {{}}\n"
+    );
+    let col = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(col.scenes().next().unwrap().transition_in, None);
+}

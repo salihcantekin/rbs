@@ -588,7 +588,6 @@ export component Button inherits Rectangle {
         : kind == "danger" ? Theme.effects-shade-danger
         : checked ? Theme.effects-shade-checked
         : Theme.effects-shade-secondary);
-    property <bool> fx-glow: root.fx && Theme.effects-halo-blur > 0 && !focus.ring;
     property <color> fx-top: focus.ring ? face-fill
         : kind == "primary" ? (touch.pressed ? Theme.effects-top-primary-pressed : touch.has-hover ? Theme.effects-top-primary-hover : Theme.effects-top-primary-rest)
         : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.effects-top-danger-hover : Theme.effects-top-danger-rest)
