@@ -1465,6 +1465,55 @@ pub struct RecordStartToFile {
     pub canvas: Option<OutputCanvas>,
 }
 
+/// What `import.obs.check` and `import.obs.run` bring (protocol 1.81, ADR-0131
+/// decision 12): the parts the desktop wizard offers. Every part is on when absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObsImportChoice {
+    /// The scenes to bring, by OBS name (and the scenes they nest); absent: all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenes: Option<Vec<String>>,
+    /// OBS's desktop audio and microphones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_audio: Option<bool>,
+    /// Audio filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_filters: Option<bool>,
+    /// Video filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_filters: Option<bool>,
+    /// The canvas size and frame rate of the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<bool>,
+    /// Recording settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<bool>,
+    /// The stream server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_server: Option<bool>,
+    /// The stream key (into the credential store only; needs `stream_server`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_key: Option<bool>,
+    /// Hotkeys (added; never replacing a shortcut of the user's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkeys: Option<bool>,
+}
+
+/// `import.obs.check` and `import.obs.run` (protocol 1.81): a collection and a
+/// profile named as `import.obs.scan` found them, never by path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObsImport {
+    /// A collection name from `import.obs.scan`.
+    pub collection: String,
+    /// A profile name from `import.obs.scan`; absent: no profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// What to bring; absent: everything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choose: Option<ObsImportChoice>,
+}
+
 /// `profile.switch` and `collection.switch` (protocol 1.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryRef {
@@ -1821,6 +1870,14 @@ pub enum Command {
     TokensCreate(CreateToken),
     /// `tokens.revoke`.
     TokensRevoke(TokenRef),
+    /// `import.obs.scan` (protocol 1.81): the OBS collections and profiles on this
+    /// computer, by name.
+    ImportObsScan,
+    /// `import.obs.check` (protocol 1.81): the report of an import, nothing written.
+    ImportObsCheck(ObsImport),
+    /// `import.obs.run` (protocol 1.81): imports as a new scene collection and output
+    /// profile.
+    ImportObsRun(ObsImport),
 }
 
 impl Command {
@@ -1970,6 +2027,9 @@ impl Command {
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
             Command::TokensRevoke(_) => "tokens.revoke",
+            Command::ImportObsScan => "import.obs.scan",
+            Command::ImportObsCheck(_) => "import.obs.check",
+            Command::ImportObsRun(_) => "import.obs.run",
         }
     }
 }
@@ -2319,6 +2379,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("tokens.list", Some(Scope::Tokens), Effect::Read),
     m("tokens.create", Some(Scope::Tokens), Effect::Destructive),
     m("tokens.revoke", Some(Scope::Tokens), Effect::Destructive),
+    m("import.obs.scan", Some(Scope::Admin), Effect::Read),
+    m("import.obs.check", Some(Scope::Admin), Effect::Read),
+    m("import.obs.run", Some(Scope::Admin), Effect::Destructive),
 ];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
@@ -2713,6 +2776,12 @@ enum WireRequest {
     TokensCreate(CreateToken),
     #[serde(rename = "tokens.revoke")]
     TokensRevoke(TokenRef),
+    #[serde(rename = "import.obs.scan")]
+    ImportObsScan(Empty),
+    #[serde(rename = "import.obs.check")]
+    ImportObsCheck(ObsImport),
+    #[serde(rename = "import.obs.run")]
+    ImportObsRun(ObsImport),
 }
 
 impl From<WireRequest> for Request {
@@ -2880,6 +2949,9 @@ impl From<WireRequest> for Request {
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
             WireRequest::TokensRevoke(p) => Request::Command(C::TokensRevoke(p)),
+            WireRequest::ImportObsScan(_) => Request::Command(C::ImportObsScan),
+            WireRequest::ImportObsCheck(p) => Request::Command(C::ImportObsCheck(p)),
+            WireRequest::ImportObsRun(p) => Request::Command(C::ImportObsRun(p)),
         }
     }
 }
@@ -3036,6 +3108,9 @@ impl From<Request> for WireRequest {
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
                 C::TokensRevoke(p) => WireRequest::TokensRevoke(p),
+                C::ImportObsScan => WireRequest::ImportObsScan(Empty {}),
+                C::ImportObsCheck(p) => WireRequest::ImportObsCheck(p),
+                C::ImportObsRun(p) => WireRequest::ImportObsRun(p),
             },
         }
     }
@@ -3355,6 +3430,12 @@ pub enum Response {
     Settings(Snapshot<Settings>),
     /// `profile.list`, `collection.list` (protocol 1.4).
     Library(Library),
+    /// `import.obs.scan` (protocol 1.81).
+    ObsScan(crate::types::ObsScan),
+    /// `import.obs.check` (protocol 1.81).
+    ObsCheck(crate::types::ObsCheck),
+    /// `import.obs.run` (protocol 1.81).
+    ObsRun(crate::types::ObsRun),
     /// `events.subscribe`.
     Subscribed(Subscribed),
     /// `tokens.list`.

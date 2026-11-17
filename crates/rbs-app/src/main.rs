@@ -1732,6 +1732,9 @@ impl Ctx {
                     _ => projector::picture(canvas, picture),
                 }
             }
+            if applied.obs_imported == Some(true) {
+                shortcuts_page::load(&ctx, app);
+            }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
                     app.dismiss_source_settings();
