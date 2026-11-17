@@ -261,6 +261,10 @@ pub enum DecodeError {
     /// lacks (for example HEVC without the Store extension). The host tries the next
     /// adapter and tells the user what is missing.
     Unsupported(String),
+    /// The open asked to keep alpha ([`DecodeTarget::with_keep_alpha`]) for a stream
+    /// that has it, and the adapter cannot deliver it (ADR-0140 decision 2). The host
+    /// tries the next adapter, as for `Unsupported`.
+    AlphaUnsupported,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -271,6 +275,9 @@ impl std::fmt::Display for DecodeError {
                 f.write_str("the container has neither a timestamp nor a frame duration")
             }
             DecodeError::Unsupported(what) => write!(f, "unsupported {what}"),
+            DecodeError::AlphaUnsupported => {
+                f.write_str("this adapter cannot keep the picture's transparency")
+            }
         }
     }
 }
@@ -303,6 +310,12 @@ pub trait MediaDecoder: Send {
     fn duration(&self) -> Option<Duration> {
         None
     }
+
+    /// Whether the picture stream signals alpha (ADR-0140 decision 2), read once after
+    /// open. An adapter that cannot tell answers false.
+    fn has_alpha(&self) -> bool {
+        false
+    }
 }
 
 /// Where native pictures will be imported, so an adapter that must place its surfaces
@@ -315,19 +328,35 @@ pub struct DecodeTarget {
     /// `None` when it is not known: the adapter then gives system pictures, or native
     /// ones only of a kind any device opens (an `IoSurface`).
     pub adapter_luid: Option<u64>,
+    /// Keep the picture's alpha (ADR-0140 decision 2): for a stream with alpha the
+    /// adapter delivers straight-alpha `Rgba8` system pictures with the alpha kept, or
+    /// fails the open with [`DecodeError::AlphaUnsupported`]. No effect for a stream
+    /// without alpha, which opens on the adapter's usual path. False by default.
+    pub keep_alpha: bool,
 }
 
 impl DecodeTarget {
     /// No known import device (a probe, or a run the sound node started).
     pub const fn none() -> Self {
-        Self { adapter_luid: None }
+        Self {
+            adapter_luid: None,
+            keep_alpha: false,
+        }
     }
 
     /// Native pictures will be imported on the adapter with this LUID.
     pub const fn adapter(luid: u64) -> Self {
         Self {
             adapter_luid: Some(luid),
+            keep_alpha: false,
         }
+    }
+
+    /// The same target, keeping the picture's alpha (ADR-0140 decision 2).
+    #[must_use]
+    pub const fn with_keep_alpha(mut self) -> Self {
+        self.keep_alpha = true;
+        self
     }
 }
 
@@ -340,17 +369,22 @@ pub trait MediaDecoderFactory: AdapterFactory {
     /// not keep it.
     fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError>;
 
-    /// Opens `path` for pictures imported on `target`. The default ignores the target
-    /// and calls [`MediaDecoderFactory::open`]. An adapter whose native pictures must
-    /// live on the import device overrides it; without a device it gives system
-    /// pictures.
+    /// Opens `path` for pictures imported on `target`. The default ignores the import
+    /// device and calls [`MediaDecoderFactory::open`]; with `keep_alpha` it refuses a
+    /// stream with alpha with [`DecodeError::AlphaUnsupported`], so an adapter that
+    /// does not know the option never hands out opaque pictures for it (ADR-0140
+    /// decision 2). An adapter whose native pictures must live on the import device,
+    /// or that keeps alpha, overrides it; without a device it gives system pictures.
     fn open_for(
         &self,
         path: &Path,
         target: &DecodeTarget,
     ) -> Result<Box<dyn MediaDecoder>, DecodeError> {
-        let _ = target;
-        self.open(path)
+        let decoder = self.open(path)?;
+        if target.keep_alpha && decoder.has_alpha() {
+            return Err(DecodeError::AlphaUnsupported);
+        }
+        Ok(decoder)
     }
 }
 

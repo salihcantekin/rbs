@@ -1,6 +1,6 @@
 # ADR-0103: A source may store a capture region distinct from the item crop
 
-- Status: Proposed
+- Status: Accepted (2026-11-17)
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0058](0058-crop-editing-of-sources.md), [ADR-0039](0039-scene-source-types.md), [ADR-0077](0077-source-health-retarget-and-settings-window.md)
@@ -55,3 +55,5 @@ Concerns:
 6. **Accepted limits (open).** Full-frame filters grading chrome and blur bleed are explicit trade-offs. No change required; record for implementers and rule 16 UI approval on the Region section.
 
 Resolutions (author, 2026-11-12), written into decisions 1–6: (1) region not re-derived on resize; empty intersection skips the layer. (2) item crop stays full-picture pixels; effective UV is intersection; size for fit/recrop is the region size. (3) one UV merge; no compositor feature flag. (4) `source.set_region` / `get_region`, distinct EditKind, refusals named. (5) new port method for the 960px grab, not a larger thumbnail. (6) filter cost and rule 16 unchanged.
+
+Owner acceptance: Salih, 2026-11-17: "Tüm ADR'ları kabul et" ("accept all the ADRs"). The decision is built and in use; the concerns above that are still open are accepted by the owner as follow-ups for the work that touches them (ADR-0014, architecture-review skill: approve with open concerns only when the owner accepts them).

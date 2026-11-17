@@ -7,7 +7,7 @@ import { AppearanceSettings } from "appearance.slint";
 import { ShortcutsSettings } from "shortcuts.slint";
 import { VirtualCameraSettings } from "vcam.slint";
 import { AudioSettings } from "audio.slint";
-import { RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings } from "studio_settings.slint";
+import { RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings, PermissionsSettings } from "studio_settings.slint";
 import { Menus, Shell, Sections, Experience, SettingsFind, IconName, SettingsScroll, SettingsHit, Appearance, Shortcuts, Studio } from "base/types.slint";
 
 // The Settings window (U17): a list of sections with a search field, and the chosen
@@ -43,7 +43,7 @@ export component SettingsWindow inherits Window {
         return s == 0 ? IconName.monitor : s == 1 ? IconName.dot : s == 2 ? IconName.broadcast
             : s == 3 ? IconName.link : s == 4 ? IconName.sliders : s == 5 ? IconName.palette
             : s == 6 ? IconName.keyboard : s == 7 ? IconName.globe : s == 8 ? IconName.camera
-            : s == 10 ? IconName.wand : IconName.headphones;
+            : s == 10 ? IconName.wand : s == 11 ? IconName.lock : IconName.headphones;
     }
     // Settings search (docs/specs/settings-search.md, step 2): show the row or card
     // with `key` in the section shown. `card` is its card id (the key itself for a
@@ -179,92 +179,93 @@ export component SettingsWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[17]; icon: Menus.icons[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
             MenuItem { title: Menus.titles[18]; icon: Menus.icons[18]; enabled: Menus.enabled[18]; activated => { Menus.run("canvas.transition"); } }
+            MenuItem { title: Menus.titles[19]; icon: Menus.icons[19]; enabled: Menus.enabled[19]; activated => { Menus.run("ui.transition.rehearse"); } }
         }
         Menu {
             title: @tr("Source");
             Menu {
-                title: Menus.titles[19];
-                icon: Menus.icons[19];
-                enabled: Menus.enabled[19];
+                title: Menus.titles[20];
+                icon: Menus.icons[20];
+                enabled: Menus.enabled[20];
                 for c in Menus.choices[10]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
             Menu {
-                title: Menus.titles[20];
-                icon: Menus.icons[20];
-                enabled: Menus.enabled[20];
-                for c in Menus.choices[11]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
-            }
-            Menu {
                 title: Menus.titles[21];
                 icon: Menus.icons[21];
                 enabled: Menus.enabled[21];
-                for c in Menus.choices[12]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+                for c in Menus.choices[11]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             Menu {
                 title: Menus.titles[22];
                 icon: Menus.icons[22];
                 enabled: Menus.enabled[22];
-                for c in Menus.choices[13]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+                for c in Menus.choices[12]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             Menu {
                 title: Menus.titles[23];
                 icon: Menus.icons[23];
                 enabled: Menus.enabled[23];
-                for c in Menus.choices[14]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+                for c in Menus.choices[13]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             Menu {
                 title: Menus.titles[24];
                 icon: Menus.icons[24];
                 enabled: Menus.enabled[24];
+                for c in Menus.choices[14]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[25];
+                icon: Menus.icons[25];
+                enabled: Menus.enabled[25];
                 for c in Menus.choices[15]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[25]; icon: Menus.icons[25]; enabled: Menus.enabled[25]; activated => { Menus.run("item.remove"); } }
-            MenuItem { title: Menus.titles[26]; icon: Menus.icons[26]; enabled: Menus.enabled[26]; activated => { Menus.run("source.delete"); } }
+            MenuItem { title: Menus.titles[26]; icon: Menus.icons[26]; enabled: Menus.enabled[26]; activated => { Menus.run("item.remove"); } }
+            MenuItem { title: Menus.titles[27]; icon: Menus.icons[27]; enabled: Menus.enabled[27]; activated => { Menus.run("source.delete"); } }
             MenuSeparator { }
             Menu {
-                title: Menus.titles[27];
-                icon: Menus.icons[27];
-                enabled: Menus.enabled[27];
+                title: Menus.titles[28];
+                icon: Menus.icons[28];
+                enabled: Menus.enabled[28];
                 for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
         }
         Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[28]; icon: Menus.icons[28]; enabled: Menus.enabled[28]; checkable: true; checked: Menus.checked[28]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("record.toggle"); } }
-            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("record.pause_toggle"); } }
-            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("stream.hold_toggle"); } }
-            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; activated => { Menus.run("output.break_toggle"); } }
+            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; checkable: true; checked: Menus.checked[30]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("record.pause_toggle"); } }
+            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; activated => { Menus.run("stream.hold_toggle"); } }
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; activated => { Menus.run("output.break_toggle"); } }
             Menu {
-                title: Menus.titles[33];
-                icon: Menus.icons[33];
-                enabled: Menus.enabled[33];
+                title: Menus.titles[34];
+                icon: Menus.icons[34];
+                enabled: Menus.enabled[34];
                 for c in Menus.choices[17]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("vcam.toggle"); } }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; checkable: true; checked: Menus.checked[35]; activated => { Menus.run("vcam.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; checkable: true; checked: Menus.checked[35]; activated => { Menus.run("replay.toggle"); } }
-            MenuItem { title: Menus.titles[36]; icon: Menus.icons[36]; enabled: Menus.enabled[36]; activated => { Menus.run("replay.save"); } }
+            MenuItem { title: Menus.titles[36]; icon: Menus.icons[36]; enabled: Menus.enabled[36]; checkable: true; checked: Menus.checked[36]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[37]; icon: Menus.icons[37]; enabled: Menus.enabled[37]; activated => { Menus.run("replay.save"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[37]; icon: Menus.icons[37]; enabled: Menus.enabled[37]; activated => { Menus.run("marker.add"); } }
+            MenuItem { title: Menus.titles[38]; icon: Menus.icons[38]; enabled: Menus.enabled[38]; activated => { Menus.run("marker.add"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[38];
-                icon: Menus.icons[38];
-                enabled: Menus.enabled[38];
+                title: Menus.titles[39];
+                icon: Menus.icons[39];
+                enabled: Menus.enabled[39];
                 for c in Menus.choices[18]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[39]; icon: Menus.icons[39]; enabled: Menus.enabled[39]; checkable: true; checked: Menus.checked[39]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[40]; icon: Menus.icons[40]; enabled: Menus.enabled[40]; checkable: true; checked: Menus.checked[40]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[40]; icon: Menus.icons[40]; enabled: Menus.enabled[40]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[41]; icon: Menus.icons[41]; enabled: Menus.enabled[41]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -377,6 +378,13 @@ export component SettingsWindow inherits Window {
                         current: root.section == 6;
                         activated => { root.section = 6; }
                     }
+                    SettingsNavItem {
+                        text: @tr("Permissions");
+                        icon: IconName.lock;
+                        compact: root.nav-collapsed;
+                        current: root.section == 11;
+                        activated => { root.section = 11; }
+                    }
                     Rectangle { height: Tokens.space-2; }
                     if !root.nav-collapsed: SettingsNavGroup { title: @tr("Output"); }
                     if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
@@ -476,8 +484,8 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
-                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 9 ? "settings.audio." : root.section == 10 ? "settings.ai-tools." : "";
-                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 9 ? @tr("Audio") : root.section == 10 ? @tr("AI tools") : @tr("General");
+                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 9 ? "settings.audio." : root.section == 10 ? "settings.ai-tools." : root.section == 11 ? "settings.permissions." : "";
+                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 9 ? @tr("Audio") : root.section == 10 ? @tr("AI tools") : root.section == 11 ? @tr("Permissions") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")
                             : root.section == 2 ? @tr("Where Go live sends the program and how it is encoded. Changes are saved at once.")
@@ -488,6 +496,7 @@ export component SettingsWindow inherits Window {
                             : root.section == 8 ? @tr("Meeting apps can pick RBS as a camera.")
                             : root.section == 9 ? @tr("Listening on this computer: the monitor's device and volume.")
                             : root.section == 10 ? @tr("Let AI tools on this computer use RBS, within limits you set.")
+                            : root.section == 11 ? @tr("What this computer lets RBS use. RBS asks the first time you add a source that needs it.")
                             : @tr("How RBS behaves on this computer.");
                     }
                     if root.section == 0: VideoSettings { }
@@ -501,6 +510,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 8: VirtualCameraSettings { }
                     if root.section == 9: AudioSettings { }
                     if root.section == 10: AiToolsSettings { }
+                    if root.section == 11: PermissionsSettings { }
                 }
             }
         }

@@ -2342,3 +2342,87 @@ fn a_scene_transition_is_set_cleared_undone_copied_and_bounded() {
     assert_eq!(col, before);
     let _ = undo;
 }
+
+#[test]
+fn the_stinger_source_is_never_placed_by_an_edit_and_leaves_with_its_source() {
+    // ADR-0140 decision 1.
+    use rbs_scene::{CollectionTransition, StingerSettings, TransitionKind};
+    let mut s = studio();
+    let (a, _) = s.col.add_scene("A", SceneScope::Shared).unwrap();
+    let (clip, _) = s
+        .col
+        .add_source("Stinger", ty("media-file"), Settings::new())
+        .unwrap();
+    let sting = |source| CollectionTransition {
+        kind: TransitionKind::Stinger,
+        stinger: StingerSettings {
+            source: Some(source),
+            cut_ms: Some(700),
+        },
+        ..CollectionTransition::default()
+    };
+    // An unknown source is refused.
+    assert_eq!(
+        s.col.set_transition(sting(SourceId::from_raw(99))),
+        Err(SceneError::UnknownSource(SourceId::from_raw(99)))
+    );
+    // A placed source cannot become the stinger.
+    s.col
+        .add_item(a, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    let before = s.col.clone();
+    assert_eq!(
+        s.col.set_transition(sting(s.cam)),
+        Err(SceneError::StingerPlaced(s.cam))
+    );
+    assert_eq!(s.col, before);
+    // The stinger cannot be placed.
+    s.col.set_transition(sting(clip)).unwrap();
+    assert_eq!(
+        s.col
+            .add_item(a, ItemContent::Source(clip), full(1.0, 1.0), None)
+            .map(|_| ()),
+        Err(SceneError::StingerPlaced(clip))
+    );
+    assert_eq!(s.col.placed_stinger(), None);
+    // Removing it clears the stinger in the same undo step.
+    let with = s.col.clone();
+    let undo = s.col.delete_source(clip).unwrap();
+    assert_eq!(s.col.transition().stinger.source, None);
+    assert_eq!(s.col.transition().kind, TransitionKind::Stinger);
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, with);
+}
+
+#[test]
+fn a_loaded_collection_with_its_stinger_placed_stays_editable() {
+    // ADR-0140 decision 1: it loads as it is; the studio runs the change as a Cut.
+    use rbs_scene::{CollectionTransition, StingerSettings, TransitionKind};
+    let mut s = studio();
+    let (a, _) = s.col.add_scene("A", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(a, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    let canvases = s.col.canvases().cloned().collect();
+    let sources = s.col.sources().cloned().collect();
+    let scenes = s.col.scenes().cloned().collect();
+    let transition = CollectionTransition {
+        kind: TransitionKind::Stinger,
+        stinger: StingerSettings {
+            source: Some(s.cam),
+            cut_ms: None,
+        },
+        ..CollectionTransition::default()
+    };
+    let mut col = SceneCollection::from_parts_with_transition(
+        canvases,
+        sources,
+        scenes,
+        s.col.id_counters(),
+        s.col.glide(),
+        transition,
+    )
+    .unwrap();
+    assert_eq!(col.placed_stinger(), Some(s.cam));
+    col.rename_scene(a, "B").unwrap();
+}

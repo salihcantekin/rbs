@@ -1,6 +1,6 @@
 # ADR-0104: Display chrome insets hide the taskbar or Dock via the source region
 
-- Status: Proposed
+- Status: Accepted (2026-11-17)
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0103](0103-source-region.md), [ADR-0102](0102-output-size-distinct-from-canvas.md), [ADR-0077](0077-source-health-retarget-and-settings-window.md)
@@ -56,3 +56,5 @@ Concerns:
 7. Port semver and the separate rule-11 review for `work_rect` are acknowledged in decision 5 but not in consequences -> open: capture-port ADR/spec change records semver as minor additive field on `CaptureTarget` / `SourceTarget`.
 
 Resolutions (author, 2026-11-12), written into decisions 1–6: (1) chrome fields on `Source`, out of settings compare. (2) no `work_rect` → manual insets; Reset no-op. (3) cover/fit are layout Fit/fill of the region UV into the item box, not a new compositor path. (4) no auto-refresh; Reset or edit. (5) filter trade unchanged. (6) named tests. (7) minor additive `work_rect` + rule 11.
+
+Owner acceptance: Salih, 2026-11-17: "Tüm ADR'ları kabul et" ("accept all the ADRs"). The decision is built and in use; the concerns above that are still open are accepted by the owner as follow-ups for the work that touches them (ADR-0014, architecture-review skill: approve with open concerns only when the owner accepts them).

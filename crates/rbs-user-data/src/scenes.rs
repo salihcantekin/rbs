@@ -18,10 +18,11 @@
 //! # easing = "ease-in-out"     # or "linear"
 //!
 //! # [transition]               # format 19, ADR-0128; absent: Move (format 18 and older: Cut when the glide is 0 ms)
-//! # kind = "fade"              # "cut", "fade", "move", "swipe" or "slide"
+//! # kind = "fade"              # "cut", "fade", "move", "swipe", "slide" or "stinger" (format 21)
 //! # fade = { duration_ms = 300, easing = "linear", via = "#000000" }   # via: fade through a colour
 //! # swipe = { duration_ms = 500, easing = "ease-in-out", direction = "left" }  # "left", "right", "up", "down"
 //! # slide = { duration_ms = 500, easing = "ease-in-out", direction = "left" }
+//! # stinger = { source = 4, cut_ms = 700 }   # format 21, ADR-0140; each part optional
 //!
 //! [[canvases]]
 //! id = 0
@@ -81,7 +82,7 @@ use rbs_scene::model::{
     Filter, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle, Layout, MasterAudio,
     RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope, SettingValue,
     Settings, Shadow, Shape, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
-    SourceRegion, SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
+    SourceRegion, StingerSettings, SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, MAX_GLIDE_MS, SceneCollection, SceneTransition};
@@ -211,6 +212,20 @@ struct TransitionDoc {
     swipe: Option<SwipeDoc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slide: Option<SwipeDoc>,
+    /// Stinger's settings (format 21, ADR-0140).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stinger: Option<StingerDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StingerDoc {
+    /// The media-file source's id; absent: none chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<u32>,
+    /// The user's cut point; absent: the found point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut_ms: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -264,6 +279,10 @@ impl From<CollectionTransition> for TransitionDoc {
             }),
             swipe: (t.swipe != d.swipe).then(|| swipe(t.swipe)),
             slide: (t.slide != d.slide).then(|| swipe(t.slide)),
+            stinger: (t.stinger != d.stinger).then(|| StingerDoc {
+                source: t.stinger.source.map(SourceId::get),
+                cut_ms: t.stinger.cut_ms,
+            }),
         }
     }
 }
@@ -297,6 +316,12 @@ impl TryFrom<TransitionDoc> for CollectionTransition {
         }
         if let Some(s) = doc.slide {
             t.slide = swipe(s)?;
+        }
+        if let Some(s) = doc.stinger {
+            t.stinger = StingerSettings {
+                source: s.source.map(SourceId::from_raw),
+                cut_ms: s.cut_ms,
+            };
         }
         Ok(t)
     }
@@ -938,12 +963,20 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 20;
+    const FORMAT: u32 = 21;
 
     fn write_format(&self) -> u32 {
+        let t = self.transition();
+        let stinger = t.kind == TransitionKind::Stinger
+            || t.stinger != StingerSettings::default()
+            || self
+                .scenes()
+                .any(|s| s.transition_in.and_then(|t| t.kind) == Some(TransitionKind::Stinger));
         // Format 18 and older read a 0 ms glide as Cut, so such a collection is written
         // as 19 to keep its own transition (ADR-0128 decision 3).
-        if self.scenes().any(|s| s.transition_in.is_some()) {
+        if stinger {
+            21
+        } else if self.scenes().any(|s| s.transition_in.is_some()) {
             20
         } else if !self.transition().is_default() || self.glide().duration_ms == 0 {
             19
@@ -992,8 +1025,23 @@ impl Document for SceneCollection {
     /// is a format 19 body whose transition is Move, or Cut when its glide is 0 ms, and a
     /// file is written as 19 only when it needs it. Format 20 adds the optional scene
     /// `transition_in` (ADR-0135); a format 19 or older body is a format 20 body
-    /// without it, and a file is written as 20 only when a scene has it.
+    /// without it, and a file is written as 20 only when a scene has it. Format 21 adds
+    /// the Stinger kind and the optional `transition.stinger` (ADR-0140); a format 20 or
+    /// older body is a format 21 body without them, and a file is written as 21 only
+    /// when it uses them.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        let stung = body
+            .get("transition")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|t| t.contains_key("stinger"));
+        if (1..=20).contains(&from) && stung {
+            return Err(format!(
+                "format {from} has no `transition.stinger` (format 21)"
+            ));
+        }
+        if from == 20 {
+            return Ok(());
+        }
         let overridden = body
             .get("scenes")
             .and_then(toml::Value::as_array)

@@ -120,7 +120,12 @@ impl MediaDecoderFactory for MfMediaFactory {
         } else {
             None
         };
-        Ok(Box::new(win::MfDecoder::open(path, luid)?))
+        let decoder = win::MfDecoder::open(path, luid)?;
+        // Media Foundation's outputs (NV12, RGB32) drop alpha (ADR-0140 decision 2).
+        if target.keep_alpha && decoder.has_alpha() {
+            return Err(DecodeError::AlphaUnsupported);
+        }
+        Ok(Box::new(decoder))
     }
 
     #[cfg(not(windows))]
