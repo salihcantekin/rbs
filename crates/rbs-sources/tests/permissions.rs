@@ -127,3 +127,24 @@ fn no_serving_adapter_is_unavailable() {
         PermissionStatus::Unavailable
     );
 }
+
+#[test]
+fn a_request_runs_off_the_registry() {
+    let capture = TestCaptureFactory::new().with_permission(
+        TargetKind::Camera,
+        Permission::NotDetermined,
+        Some(Permission::Granted),
+        false,
+    );
+    let (reg, capture, _) = types(capture, TestAudioBackend::new());
+    let request = reg.permission_request(PermissionKind::Camera);
+    assert!(!request.is_empty());
+    assert_eq!(request.kind(), PermissionKind::Camera);
+    std::thread::spawn(move || request.run()).join().unwrap();
+    assert_eq!(capture.prompts(), 1);
+    assert_eq!(
+        reg.permission(PermissionKind::Camera).status,
+        PermissionStatus::Allowed
+    );
+    assert!(reg.permission_request(PermissionKind::Camera).is_empty());
+}

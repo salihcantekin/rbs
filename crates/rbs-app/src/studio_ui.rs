@@ -16,6 +16,7 @@ use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
+use rbs_app::permission_text;
 use rbs_app::record_profile::{
     AUDIO_KBPS, Delivery, EditorProject, Encoding, Format, MAX_MARKER_LEAD_MS, OutputSize,
     RateMode, RecordProfile, SEPARATE_FILES_SECTION, SeparateFiles, VIDEO_KBPS, VideoCodec,
@@ -47,6 +48,7 @@ use rbs_scene::model::{
     Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Shape, SourceId,
     SourceRegion, VideoAs,
 };
+use rbs_sources::permissions::PermissionKind;
 use rbs_transport::Secret;
 use rbs_ui::fader;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
@@ -248,6 +250,18 @@ fn vertical_why(why: &str) -> String {
 /// What the window knows of the studio.
 pub struct StudioUi {
     pub host: Option<StudioHost>,
+    /// The OS permission statuses as the host last sent them, and the kind whose
+    /// prompt shows (ADR-0141); Settings › Permissions reads them.
+    pub permissions: (
+        Vec<(
+            rbs_sources::permissions::PermissionKind,
+            rbs_sources::permissions::PermissionInfo,
+        )>,
+        Option<rbs_sources::permissions::PermissionKind>,
+    ),
+    /// Counts the statuses the host sent, so the first-run page knows an answer is
+    /// newer than its request.
+    pub permissions_serial: u64,
     /// 0 starting, 1 running, 2 failed.
     pub state: i32,
     pub failure: String,
@@ -656,6 +670,8 @@ impl StudioUi {
             media_ticks: Vec::new(),
             selected: -1,
             attributes_clipboard: None,
+            permissions: (Vec::new(), None),
+            permissions_serial: 0,
             inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
@@ -6177,6 +6193,15 @@ impl StudioUi {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
             },
+            Update::Permissions { rows, waiting } => {
+                self.permissions = (rows, waiting);
+                self.permissions_serial += 1;
+                // A refused source's fix action follows the status (Allow or Fix
+                // permission).
+                if self.rows.iter().any(|r| refused(r).is_some()) {
+                    self.set_rows(self.rows.clone());
+                }
+            }
             Update::TextFonts(families) => {
                 if let Some(p) = &mut self.add_picker
                     && p.answer_fonts(&families, &self.font_current)
@@ -6599,7 +6624,10 @@ impl StudioUi {
                 };
                 let (media_state, media_pos_ms, media_len_ms) =
                     media_tick_fields(&self.media_ticks, r.id.get() as i32);
+                let (perm_kind, perm_action) = self.permission_fix(r);
                 SourceData {
+                    perm_kind,
+                    perm_action,
                     media: r.media.is_some(),
                     media_path: r.media.as_ref().map_or("", |m| m.path.as_str()).into(),
                     media_loop: r.media.as_ref().is_some_and(|m| m.looped),
@@ -6752,6 +6780,20 @@ impl StudioUi {
         self.rows = rows;
         // The Source tab marks the source's own target: it may have changed.
         self.refresh_source_targets();
+    }
+
+    /// A source refused access: its permission kind's page number and its fix action
+    /// (`permission_text::source_action`); `(-1, 0)` for any other source.
+    fn permission_fix(&self, r: &SourceRow) -> (i32, i32) {
+        let Some(kind) = refused(r) else {
+            return (-1, 0);
+        };
+        let (rows, waiting) = &self.permissions;
+        let info = rows.iter().find(|(k, _)| *k == kind).map(|(_, i)| *i);
+        (
+            permission_text::kind_code(kind),
+            permission_text::source_action(info, *waiting == Some(kind)),
+        )
     }
 
     /// The Mixer: what is heard, the program scene's audio (ADR-0061; the edited scene's
@@ -7665,7 +7707,17 @@ fn library_samples(height: u32) -> Vec<SampleData> {
         .collect()
 }
 
-/// The icon a source's row shows for its kind (design system icon set).
+/// The permission kind a source was refused, if it was (ADR-0141).
+fn refused(r: &SourceRow) -> Option<PermissionKind> {
+    match r.status {
+        SourceStatus::Unavailable {
+            fault: SourceFault::PermissionDenied,
+            ..
+        } => PermissionKind::of_type(&r.kind?.type_id()),
+        _ => None,
+    }
+}
+
 /// The reason a source is unavailable, in plain words for its kind (ADR-0077).
 fn unavailable_text(fault: SourceFault, kind: Option<SourceKind>) -> &'static str {
     use SourceKind as K;
@@ -7686,6 +7738,7 @@ fn unavailable_text(fault: SourceFault, kind: Option<SourceKind>) -> &'static st
     }
 }
 
+/// The icon a source's row shows for its kind (design system icon set).
 fn source_icon(kind: Option<SourceKind>) -> &'static str {
     match kind {
         Some(SourceKind::Screen) => "monitor",

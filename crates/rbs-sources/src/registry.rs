@@ -500,6 +500,36 @@ impl fmt::Debug for SourceTypes {
     }
 }
 
+/// The OS prompts for one permission kind, taken out of the registry so a host can
+/// show them on a worker thread (ADR-0141 decision 4).
+pub struct PermissionRequest {
+    kind: PermissionKind,
+    capture: Vec<(Arc<dyn CaptureFactory>, TargetKind)>,
+    audio: Vec<(Arc<dyn AudioBackend>, EndpointKind)>,
+}
+
+impl PermissionRequest {
+    /// The kind asked for.
+    pub fn kind(&self) -> PermissionKind {
+        self.kind
+    }
+
+    /// True when no adapter would prompt.
+    pub fn is_empty(&self) -> bool {
+        self.capture.is_empty() && self.audio.is_empty()
+    }
+
+    /// Shows the prompts, one after another; blocks until each is answered.
+    pub fn run(self) {
+        for (f, t) in self.capture {
+            let _ = f.request_permission(t);
+        }
+        for (b, e) in self.audio {
+            let _ = b.request_permission(e);
+        }
+    }
+}
+
 fn cap_flag(caps: &CapabilitySet, key: &rbs_core::capability::CapabilityKey) -> bool {
     matches!(caps.get(key), Some(CapabilityValue::Flag(true)))
 }
@@ -809,12 +839,27 @@ impl SourceTypes {
     /// reads the status again. Blocks while a prompt is shown: call it from a thread
     /// that is neither the UI thread nor a real-time thread (ADR-0141 decision 4).
     pub fn request_permission(&self, kind: PermissionKind) -> PermissionInfo {
+        self.permission_request(kind).run();
+        self.permission(kind)
+    }
+
+    /// The prompts [`request_permission`](Self::request_permission) would show, as a
+    /// value a host can run on its own worker thread without holding the registry.
+    pub fn permission_request(&self, kind: PermissionKind) -> PermissionRequest {
+        let mut request = PermissionRequest {
+            kind,
+            capture: Vec::new(),
+            audio: Vec::new(),
+        };
         for &t in kind.target_kinds() {
+            let prompt_key = capture_caps::permission_keys(t).2;
             for f in self.capture_candidates(t) {
-                let caps = self.capture.capabilities(&f.id());
-                let prompt = caps.is_some_and(|c| cap_flag(c, &capture_caps::permission_keys(t).2));
+                let prompt = self
+                    .capture
+                    .capabilities(&f.id())
+                    .is_some_and(|c| cap_flag(c, &prompt_key));
                 if prompt && f.permission(t) == rbs_capture::Permission::NotDetermined {
-                    let _ = f.request_permission(t);
+                    request.capture.push((f, t));
                 }
             }
         }
@@ -828,11 +873,11 @@ impl SourceTypes {
                     .capabilities(&b.id())
                     .is_some_and(|c| cap_flag(c, &prompt_key));
                 if prompt && b.permission(e) == rbs_audio_io::Permission::NotDetermined {
-                    let _ = b.request_permission(e);
+                    request.audio.push((b, e));
                 }
             }
         }
-        self.permission(kind)
+        request
     }
 
     fn permission_answers(&self, kind: PermissionKind) -> Vec<AdapterAnswer> {

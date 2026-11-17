@@ -7,7 +7,7 @@ import { AppearanceSettings } from "appearance.slint";
 import { ShortcutsSettings } from "shortcuts.slint";
 import { VirtualCameraSettings } from "vcam.slint";
 import { AudioSettings } from "audio.slint";
-import { RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings } from "studio_settings.slint";
+import { RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, AiToolsSettings, GeneralSettings, GlobalSourcesSettings, PermissionsSettings } from "studio_settings.slint";
 import { Menus, Shell, Sections, Experience, SettingsFind, IconName, SettingsScroll, SettingsHit, Appearance, Shortcuts, Studio } from "base/types.slint";
 
 // The Settings window (U17): a list of sections with a search field, and the chosen
@@ -43,7 +43,7 @@ export component SettingsWindow inherits Window {
         return s == 0 ? IconName.monitor : s == 1 ? IconName.dot : s == 2 ? IconName.broadcast
             : s == 3 ? IconName.link : s == 4 ? IconName.sliders : s == 5 ? IconName.palette
             : s == 6 ? IconName.keyboard : s == 7 ? IconName.globe : s == 8 ? IconName.camera
-            : s == 10 ? IconName.wand : IconName.headphones;
+            : s == 10 ? IconName.wand : s == 11 ? IconName.lock : IconName.headphones;
     }
     // Settings search (docs/specs/settings-search.md, step 2): show the row or card
     // with `key` in the section shown. `card` is its card id (the key itself for a
@@ -377,6 +377,13 @@ export component SettingsWindow inherits Window {
                         current: root.section == 6;
                         activated => { root.section = 6; }
                     }
+                    SettingsNavItem {
+                        text: @tr("Permissions");
+                        icon: IconName.lock;
+                        compact: root.nav-collapsed;
+                        current: root.section == 11;
+                        activated => { root.section = 11; }
+                    }
                     Rectangle { height: Tokens.space-2; }
                     if !root.nav-collapsed: SettingsNavGroup { title: @tr("Output"); }
                     if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
@@ -476,8 +483,8 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
-                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 9 ? "settings.audio." : root.section == 10 ? "settings.ai-tools." : "";
-                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 9 ? @tr("Audio") : root.section == 10 ? @tr("AI tools") : @tr("General");
+                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : root.section == 9 ? "settings.audio." : root.section == 10 ? "settings.ai-tools." : root.section == 11 ? "settings.permissions." : "";
+                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : root.section == 9 ? @tr("Audio") : root.section == 10 ? @tr("AI tools") : root.section == 11 ? @tr("Permissions") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")
                             : root.section == 2 ? @tr("Where Go live sends the program and how it is encoded. Changes are saved at once.")
@@ -488,6 +495,7 @@ export component SettingsWindow inherits Window {
                             : root.section == 8 ? @tr("Meeting apps can pick RBS as a camera.")
                             : root.section == 9 ? @tr("Listening on this computer: the monitor's device and volume.")
                             : root.section == 10 ? @tr("Let AI tools on this computer use RBS, within limits you set.")
+                            : root.section == 11 ? @tr("What this computer lets RBS use. RBS asks the first time you add a source that needs it.")
                             : @tr("How RBS behaves on this computer.");
                     }
                     if root.section == 0: VideoSettings { }
@@ -501,6 +509,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 8: VirtualCameraSettings { }
                     if root.section == 9: AudioSettings { }
                     if root.section == 10: AiToolsSettings { }
+                    if root.section == 11: PermissionsSettings { }
                 }
             }
         }

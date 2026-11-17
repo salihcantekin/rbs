@@ -111,6 +111,8 @@ const AI_STATUS: &[Place] = &[at("ai_tools", "settings.ai-tools.status")];
 const AI_ACCESS: &[Place] = &[at("ai_tools", "settings.ai-tools.access")];
 const AI_CONNECT: &[Place] = &[at("ai_tools", "settings.ai-tools.connect")];
 const AI_ACTIONS: &[Place] = &[at("ai_tools", "settings.ai-tools.actions")];
+const PERM_DEVICES: &[Place] = &[at("permissions", "settings.permissions.devices")];
+const PERM_HOLDER: &[Place] = &[at("permissions", "settings.permissions.holder")];
 /// The Encoding card's rows (`EncoderFields`), shared by Recording and Stream.
 const ENCODING: &[Place] = &[
     at("recording", "settings.recording.encoding"),
@@ -330,6 +332,19 @@ pub const SETTINGS: &[Setting] = &[
         "Themes",
         "theme editor import export dark light colours colors",
         APPEARANCE_THEMES,
+    ),
+    // Permissions (ADR-0141)
+    c(
+        "settings.permissions.devices",
+        "Devices and screen",
+        "permission privacy camera microphone screen recording sound allow blocked access",
+        PERM_DEVICES,
+    ),
+    c(
+        "settings.permissions.holder",
+        "Who gets these permissions",
+        "permission privacy app bundle terminal macos tcc check again",
+        PERM_HOLDER,
     ),
     // Video
     c(

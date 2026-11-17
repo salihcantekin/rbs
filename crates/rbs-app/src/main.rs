@@ -26,9 +26,11 @@ mod look;
 mod measure_ui;
 mod menu_bar;
 mod obs_import_page;
+mod permissions_page;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
+mod privacy;
 mod projector;
 mod replay_page;
 mod reveal;
@@ -206,6 +208,9 @@ struct App {
     settings_found: Vec<rbs_ui::settings_index::Found>,
     /// `source.settings` ran; the next sync opens the Source settings window.
     open_source_settings: Option<i32>,
+    /// The first-run page asked for the statuses for its access step (ADR-0141
+    /// decision 11): the statuses' serial at the request.
+    first_run_access: Option<u64>,
     /// Paste attributes (`true`) or Reset source ran for a source; the next sync opens
     /// its window (ADR-0133).
     open_attributes: Option<(i32, bool)>,
@@ -1951,6 +1956,9 @@ impl Ctx {
                 if section == SECTION_VIRTUAL_CAMERA {
                     vcam_page::opened(app);
                 }
+                if section == permissions_page::SECTION {
+                    permissions_page::opened(app);
+                }
                 app.studio.monitor_page_shown(section == SECTION_AUDIO);
                 show_settings_target(&ctx, app, section, target);
                 return;
@@ -2038,6 +2046,9 @@ impl Ctx {
                 if s == SECTION_VIRTUAL_CAMERA {
                     c.update(vcam_page::opened);
                 }
+                if s == permissions_page::SECTION {
+                    c.update(permissions_page::opened);
+                }
                 if s == SECTION_APPEARANCE {
                     let ctx = c.clone();
                     c.update(move |app| appearance_page::opened(&ctx, app));
@@ -2066,6 +2077,9 @@ impl Ctx {
             }
             if section == SECTION_VIRTUAL_CAMERA {
                 vcam_page::opened(app);
+            }
+            if section == permissions_page::SECTION {
+                permissions_page::opened(app);
             }
             app.studio.monitor_page_shown(section == SECTION_AUDIO);
             show_settings_target(&ctx, app, section, target);
@@ -2735,6 +2749,7 @@ impl Ctx {
         Self::push_experience(&app);
         vcam_page::push(&app);
         replay_page::push(&app);
+        permissions_page::push(&mut app);
 
         // Main window.
         let (stacks, handles, rail) = view::window_view(
@@ -3507,7 +3522,15 @@ fn install_first_run(g: &Overlays<'_>, ctx: &Ctx) {
     g.on_first_run_done(move |choice, theme| {
         let ctx = c.clone();
         c.update(move |app: &mut App| {
-            app.main.global::<Overlays>().set_first_run_open(false);
+            // The access step follows once the statuses are read (ADR-0141 decision
+            // 11); `permissions_page::push` shows it or closes the page.
+            if app.studio.host.is_some() {
+                app.first_run_access = Some(app.studio.permissions_serial);
+                app.studio
+                    .send(rbs_app::studio_host::Command::ReadPermissions);
+            } else {
+                app.main.global::<Overlays>().set_first_run_open(false);
+            }
             let level = if choice < 0 {
                 background::Experience::Standard
             } else {
@@ -4114,7 +4137,7 @@ pub(crate) const AI_TOOLS_READY: bool = true;
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 34] = [
+const SETTINGS_SECTIONS: [&str; 36] = [
     "settings.ai-tools.access",
     "settings.ai-tools.actions",
     "settings.ai-tools.connect",
@@ -4130,6 +4153,8 @@ const SETTINGS_SECTIONS: [&str; 34] = [
     "settings.general.glide",
     "settings.general.import",
     "settings.general.studio",
+    "settings.permissions.devices",
+    "settings.permissions.holder",
     "settings.recording.files",
     "settings.recording.separate",
     "settings.recording.markers",
@@ -4824,6 +4849,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_open_loudness_settings, |app| {
         app.run_command("ui.settings.open?setting=settings.audio.loudness");
     });
+    on!(on_open_permission_settings, |app| {
+        app.run_command("ui.settings.open?section=permissions");
+    });
     on!(on_set_loudness_target, |app, index: i32| {
         app.studio.set_loudness_target(index);
     });
@@ -5454,6 +5482,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_ai_show_config, |app| {
         app.studio.ai_show_config();
     });
+    // Settings, Permissions (ADR-0141).
+    permissions_page::install(g, ctx);
     // Before every redraw of the main window: popups open, move and close with a redraw,
     // and so does a change of the window's scale; the preview layer follows them
     // (ADR-0034 decisions 2 and 4).
@@ -5759,6 +5789,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             density: user.data().appearance().0.density,
             open_settings: None,
             settings_found: Vec::new(),
+            first_run_access: None,
             open_source_settings: None,
             open_attributes: None,
             open_app_menu: false,
@@ -5827,6 +5858,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_name_prompt(&main.global::<Overlays>(), &ctx);
     install_vertical_prompt(&main.global::<Overlays>(), &ctx);
     install_first_run(&main.global::<Overlays>(), &ctx);
+    permissions_page::install_first_run(&main.global::<Overlays>(), &ctx);
     // A new install asks once how to start (ADR-0113 decision 5).
     if ctx.app.borrow().bg.first_run_done == Some(false) {
         main.global::<Overlays>().set_first_run_open(true);

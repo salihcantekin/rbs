@@ -10,7 +10,7 @@
 //! UI command waiting, and state changes are published as events with a `seq` per
 //! state key. With no API attached this costs a counter increment per change.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -59,6 +59,7 @@ use rbs_scene::{
 };
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::BrowserTree;
+use rbs_sources::permissions::{PermissionInfo, PermissionKind, PermissionStatus};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
@@ -1406,6 +1407,13 @@ pub enum Command {
         /// The `seq` of the [`Update::SwitchRequested`] this answers, if any.
         answered: Option<u64>,
     },
+    /// Read the OS permission statuses ([`Update::Permissions`], ADR-0141). Fast, never
+    /// prompts.
+    ReadPermissions,
+    /// Show the OS prompt for a permission kind on a worker thread (ADR-0141 decision
+    /// 4); [`Update::Permissions`] follows when it is answered. Ignored while a prompt
+    /// for the kind is showing.
+    RequestPermission(PermissionKind),
 }
 
 /// A video encoder the user can pick.
@@ -2969,6 +2977,15 @@ pub enum Update {
         /// Untracked outputs stopped.
         stopped: usize,
     },
+    /// The OS permission statuses (ADR-0141), answering [`Command::ReadPermissions`]
+    /// and sent after every permission request. `waiting` is the kind whose OS prompt
+    /// is showing now, if any.
+    Permissions {
+        /// Every kind with an installed adapter, in page order.
+        rows: Vec<(PermissionKind, PermissionInfo)>,
+        /// The kind being asked for now.
+        waiting: Option<PermissionKind>,
+    },
 }
 
 /// Counters of one running output, for the Stats panel.
@@ -3097,6 +3114,8 @@ enum Msg {
         id: u64,
         msg: calibration::WorkerMsg,
     },
+    /// An OS permission prompt was answered (ADR-0141).
+    PermissionAnswered(PermissionKind),
 }
 
 /// How the studio starts.
@@ -3555,6 +3574,15 @@ struct Host {
     media_sent: Option<Vec<MediaTick>>,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
+    /// OS permission prompts showing now, each with the commands waiting for its
+    /// answer (ADR-0141 decision 4). One prompt per kind at a time.
+    permission_asking: HashMap<PermissionKind, Vec<Command>>,
+    /// Kinds asked for in this run: adding a source prompts at most once per kind.
+    permission_asked: Vec<PermissionKind>,
+    /// The kinds some shown source was refused, when the UI last got the statuses for
+    /// them: a newly refused kind sends the statuses, so Properties offers Allow or Fix
+    /// permission.
+    permission_refused: Vec<PermissionKind>,
     /// The generation of the region-preview grab that may still deliver (ADR-0103).
     region_grabs: Arc<AtomicU64>,
     /// The collection as last handed to `autosave`.
@@ -3773,7 +3801,8 @@ fn run(
                     | Msg::ReplayWritten(_)
                     | Msg::Thumbnail { .. }
                     | Msg::RegionPreview { .. }
-                    | Msg::Calibration { .. } => {}
+                    | Msg::Calibration { .. }
+                    | Msg::PermissionAnswered(_) => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -3891,6 +3920,7 @@ fn round(
             host.api = None;
         }
         Some(Msg::PickFailed(why)) => notify(Update::Error(why)),
+        Some(Msg::PermissionAnswered(kind)) => host.permission_answered(kind, notify),
         Some(Msg::ReplayWritten(result)) => host.replay_written(result, notify),
         Some(Msg::Thumbnail {
             generation,
@@ -4307,6 +4337,9 @@ fn start(
         media_pause_release: config.media_pause_release,
         media_sent: None,
         thumbs: Arc::new(AtomicU64::new(0)),
+        permission_asking: HashMap::new(),
+        permission_asked: Vec::new(),
+        permission_refused: Vec::new(),
         region_grabs: Arc::new(AtomicU64::new(0)),
         // A collection that had to be completed is saved at the first publish.
         saved: loaded,
@@ -4390,6 +4423,15 @@ impl Host {
                 let targets = self.targets(kind);
                 notify(Update::Targets(kind, targets));
             }
+            Command::AddSourceWithAudio { ref kind, .. } | Command::AddSource { ref kind, .. }
+                if self.prompt_first(*kind).is_some() =>
+            {
+                if let Some(p) = self.prompt_first(*kind) {
+                    self.ask_permission(p, Some(c), notify);
+                }
+            }
+            Command::ReadPermissions => self.send_permissions(notify),
+            Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
             Command::AddSourceWithAudio { kind, target } => {
                 let done = self
                     .add(kind, &target)
@@ -5518,6 +5560,108 @@ impl Host {
                 break;
             }
         }
+    }
+
+    /// The permission kind to ask for before adding a source of `kind`: one that was
+    /// not asked yet and can show a prompt, at most once per run (ADR-0141 decision 4).
+    fn prompt_first(&self, kind: SourceKind) -> Option<PermissionKind> {
+        let p = PermissionKind::of_type(&kind.type_id())?;
+        if self.permission_asked.contains(&p) {
+            return None;
+        }
+        let info = self.adapters.sources.permission(p);
+        (info.status == PermissionStatus::NotAsked && info.can_prompt).then_some(p)
+    }
+
+    /// Every kind with an installed adapter and its status.
+    fn permission_rows(&self) -> Vec<(PermissionKind, PermissionInfo)> {
+        PermissionKind::ALL
+            .into_iter()
+            .map(|k| (k, self.adapters.sources.permission(k)))
+            .filter(|(_, info)| info.status != PermissionStatus::Unavailable)
+            .collect()
+    }
+
+    fn send_permissions(&self, notify: &dyn Fn(Update)) {
+        notify(Update::Permissions {
+            rows: self.permission_rows(),
+            waiting: self.permission_asking.keys().next().copied(),
+        });
+    }
+
+    /// Shows the OS prompt for `kind` on a one-shot worker; `then` runs when it is
+    /// answered. A second request while one shows waits for the same answer.
+    fn ask_permission(
+        &mut self,
+        kind: PermissionKind,
+        then: Option<Command>,
+        notify: &dyn Fn(Update),
+    ) {
+        if let Some(waiting) = self.permission_asking.get_mut(&kind) {
+            waiting.extend(then);
+            return;
+        }
+        if !self.permission_asked.contains(&kind) {
+            self.permission_asked.push(kind);
+        }
+        let request = self.adapters.sources.permission_request(kind);
+        if request.is_empty() {
+            if let Some(c) = then {
+                self.post(Msg::Ui(c));
+            }
+            self.send_permissions(notify);
+            return;
+        }
+        self.permission_asking
+            .insert(kind, then.into_iter().collect());
+        self.send_permissions(notify);
+        let inbox = Weak::clone(&self.inbox);
+        // Blocks until the user answers; detached, so quitting never waits for it.
+        let spawned = std::thread::Builder::new()
+            .name("rbs-permission".into())
+            .spawn(move || {
+                request.run();
+                if let Some(tx) = inbox.upgrade() {
+                    let _ = tx.send(Msg::PermissionAnswered(kind));
+                }
+            });
+        if spawned.is_err() {
+            self.post(Msg::PermissionAnswered(kind));
+        }
+    }
+
+    /// A prompt was answered: run what waited for it, reopen sources of the kind that
+    /// were refused when it is allowed now (not for kinds that apply after a restart),
+    /// and tell the UI.
+    fn permission_answered(&mut self, kind: PermissionKind, notify: &dyn Fn(Update)) {
+        let waiting = self.permission_asking.remove(&kind).unwrap_or_default();
+        let info = self.adapters.sources.permission(kind);
+        if info.status == PermissionStatus::Allowed && !info.restart {
+            let refused: Vec<SourceId> = self
+                .studio
+                .sources()
+                .iter()
+                .filter(|st| st.fault == Some(SourceFault::PermissionDenied))
+                .map(|st| st.source)
+                .filter(|id| {
+                    self.collection
+                        .source(*id)
+                        .and_then(|s| PermissionKind::of_type(&s.type_id))
+                        == Some(kind)
+                })
+                .collect();
+            let reopen = !refused.is_empty();
+            for id in refused {
+                let _ = self.reload_source(id);
+            }
+            if reopen {
+                self.apply(notify);
+            }
+        }
+        for c in waiting {
+            self.post(Msg::Ui(c));
+        }
+        self.send_permissions(notify);
     }
 
     /// Shows the OS picker of `entry.adapter` on a thread of its own (it blocks while
@@ -12679,6 +12823,24 @@ impl Host {
         }
         let rows = self.rows();
         if rows != self.rows {
+            let mut refused: Vec<PermissionKind> = rows
+                .iter()
+                .filter_map(|r| match r.status {
+                    SourceStatus::Unavailable {
+                        fault: SourceFault::PermissionDenied,
+                        ..
+                    } => PermissionKind::of_type(&r.kind?.type_id()),
+                    _ => None,
+                })
+                .collect();
+            refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
+            refused.dedup();
+            if refused != self.permission_refused {
+                if refused.iter().any(|k| !self.permission_refused.contains(k)) {
+                    self.send_permissions(notify);
+                }
+                self.permission_refused = refused;
+            }
             self.rows = rows.clone();
             notify(Update::Sources(rows));
         }
