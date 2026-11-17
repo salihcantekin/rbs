@@ -3706,9 +3706,18 @@ fn section_key(id: &str) -> (String, bool) {
     }
 }
 
+/// The AI tools section of Settings (ADR-0134) is shown: false until the server side
+/// it controls (the API thread with optional transports and `rbs-mcp`'s IPC session) is
+/// merged, so the page never offers a Start that does nothing.
+const AI_TOOLS_READY: bool = false;
+
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 29] = [
+const SETTINGS_SECTIONS: [&str; 33] = [
+    "settings.ai-tools.access",
+    "settings.ai-tools.actions",
+    "settings.ai-tools.connect",
+    "settings.ai-tools.status",
     "settings.appearance.theme-in-use",
     "settings.audio.monitor",
     "settings.audio.loudness",
@@ -5380,6 +5389,14 @@ fn settings_search(app: &mut App, text: &str) {
     use rbs_ui::settings_index::{Found, window_search};
     let Some(w) = &app.settings else { return };
     app.settings_found = window_search(text, &settings_section_title);
+    // The AI tools section shows once its server side exists (ADR-0134 decision 9).
+    if !AI_TOOLS_READY {
+        app.settings_found.retain(|f| match f {
+            Found::Section(name) => *name != "ai_tools",
+            Found::Setting(hit) => hit.place.section != "ai_tools",
+            Found::Command(..) => true,
+        });
+    }
     let section = |name: &str| menu_bar::settings_section(name).unwrap_or_default();
     let hits: Vec<SettingsHit> = app
         .settings_found
