@@ -150,3 +150,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0140](0140-stinger-transition.md) | Stinger transition: a media file played over the program change, its cut point found from the alpha | Accepted |
 | [0141](0141-os-permissions-page-and-just-in-time-requests.md) | OS permissions: ask at the moment of use, a Settings › Permissions page, and a fix action on a blocked source | Accepted |
 | [0142](0142-companion-sound-leaves-the-scene-with-its-picture.md) | A companion sound leaves a scene with its picture: Remove from scene takes the companions' items in that scene, other scenes stay (supersedes ADR-0065 decision 7 in part) | Accepted |
+| [0144](0144-code-quality-rules-and-their-enforcement.md) | Code quality rules and how they are enforced: size ratchet, logic outside the toolkit crate, one command path, typed errors, shared test support, pinned toolchain, one verify gate, checked docs | Proposed |
