@@ -159,6 +159,19 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
         a.sources
             .register_media(Arc::new(rbs_media_anim::AnimFactory::new())),
     );
+    // Video files through Media Foundation (ADR-0108), after the image decoder so an
+    // animated image keeps its pure-Rust path.
+    #[cfg(windows)]
+    note(
+        a.sources
+            .register_media(Arc::new(rbs_media_mf::MfMediaFactory::new())),
+    );
+    // Video files through AVFoundation (ADR-0108), after the image decoder.
+    #[cfg(target_os = "macos")]
+    note(
+        a.sources
+            .register_media(Arc::new(rbs_media_avf::AvfMediaFactory::new())),
+    );
     // Bright demo pattern for every other file until FFmpeg is linked (ADR-0108). The
     // file path is ignored.
     note(

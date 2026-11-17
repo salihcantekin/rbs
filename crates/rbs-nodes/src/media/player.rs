@@ -80,7 +80,7 @@ pub(crate) struct Player {
 }
 
 /// The default of the `pause_release_s` app setting (ADR-0108 decision 10).
-pub(crate) const PAUSE_RELEASE: Duration = Duration::from_secs(30);
+pub const PAUSE_RELEASE: Duration = Duration::from_secs(30);
 
 impl Player {
     pub(crate) fn new(

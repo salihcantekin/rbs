@@ -46,6 +46,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 
 pub use control::{MediaControl, PlayState, RECORDS as MEDIA_CONTROL_RECORDS};
 pub use picture::{MediaNodeError, MediaPhase, MediaPictureNode};
+pub use player::PAUSE_RELEASE;
 pub use sound::MediaSoundNode;
 
 /// Type id of the picture node.

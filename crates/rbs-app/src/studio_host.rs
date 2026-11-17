@@ -432,7 +432,55 @@ pub struct SourceRow {
     /// How the latency of its running audio filters is compensated (ADR-0130 decision
     /// 4); `None` for a source the studio does not run.
     pub latency: Option<rbs_record::AudioLatency>,
+    /// The stored playback settings of a media file (ADR-0108); `None` for every other
+    /// kind. The play state and cursor travel in [`Update::Media`].
+    pub media: Option<MediaSettings>,
 }
+
+/// A media file's stored settings, as Properties shows them (ADR-0108).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaSettings {
+    /// The file's path.
+    pub path: String,
+    /// Play again at the end (default on).
+    pub looped: bool,
+    /// Start from the beginning when shown again (default on).
+    pub restart_when_shown: bool,
+}
+
+impl MediaSettings {
+    fn of(source: &Source) -> Option<Self> {
+        if source.type_id.as_str() != types::MEDIA_SOURCE {
+            return None;
+        }
+        let flag = |key: &str| !matches!(source.settings.get(key), Some(SettingValue::Bool(false)));
+        Some(Self {
+            path: match source.settings.get(keys::PATH) {
+                Some(SettingValue::Text(path)) => path.clone(),
+                _ => String::new(),
+            },
+            looped: flag(keys::LOOP),
+            restart_when_shown: flag(keys::RESTART_WHEN_SHOWN),
+        })
+    }
+}
+
+/// The play state of one media source for the UI (ADR-0108 decision 10): sent while
+/// any plays, and when one changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaTick {
+    /// The source.
+    pub id: SourceId,
+    /// 0 playing, 1 paused, 2 cued, 3 ended, 4 standby, 5 unavailable.
+    pub state: u8,
+    /// The cursor, in steps of [`MEDIA_TICK`].
+    pub cursor_ms: u32,
+    /// The file's length; 0 while unknown.
+    pub duration_ms: u32,
+}
+
+/// How often the play state is sent while a media file plays.
+const MEDIA_TICK: Duration = Duration::from_millis(250);
 
 impl PartialEq for SourceRow {
     fn eq(&self, other: &Self) -> bool {
@@ -447,6 +495,7 @@ impl PartialEq for SourceRow {
             && self.record_separately == other.record_separately
             && self.device_peers == other.device_peers
             && self.latency == other.latency
+            && self.media == other.media
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -928,6 +977,14 @@ pub enum Command {
     },
     /// Try a source that is not running again with its stored settings (ADR-0077).
     ReloadSource(SourceId),
+    /// Play, pause, seek or restart a media file (ADR-0108 decision 10): a live action,
+    /// not an undo step.
+    Media {
+        /// The media source.
+        id: SourceId,
+        /// What to do.
+        op: MediaOp,
+    },
     /// Adds (`on`) or removes the "Capture audio too" companion of a display or window
     /// source, one undo step (ADR-0096).
     SetCompanionAudio {
@@ -2639,6 +2696,8 @@ pub struct MarkerNote {
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// The play state of every media source the studio runs (ADR-0108 decision 10).
+    Media(Vec<MediaTick>),
     /// The monitor output (ADR-0097): device, volume, whether it is wanted and plays,
     /// its latency, solo and problem. Sent once at the start and when it changes.
     Monitor(api::MonitorStatus),
@@ -3044,6 +3103,9 @@ pub struct HostConfig {
     /// A transition also puts the old program scene in preview (ADR-0098); false by
     /// default.
     pub swap_after_transition: bool,
+    /// How long a paused or cued media file keeps its decoder (`pause_release_s`,
+    /// ADR-0108 decision 10); 30 s by default.
+    pub media_pause_release: Duration,
     /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
     /// is opened only while a source is monitored or soloed.
     pub monitor: MonitorSettings,
@@ -3101,6 +3163,7 @@ impl HostConfig {
             virtual_camera: None,
             config_dir: None,
             swap_after_transition: false,
+            media_pause_release: rbs_record::MEDIA_PAUSE_RELEASE,
             monitor: MonitorSettings::default(),
             loudness: crate::loudness_settings::LoudnessSettings::default(),
             system_probe: None,
@@ -3457,6 +3520,10 @@ struct Host {
     disk_probe: Option<rbs_record::estimate::DiskProbe>,
     /// A transition also puts the old program scene in preview (ADR-0098).
     swap_after_transition: bool,
+    /// The media pause release the studio is started with (`pause_release_s`).
+    media_pause_release: Duration,
+    /// The play states sent last ([`Update::Media`]); `None` sends them again.
+    media_sent: Option<Vec<MediaTick>>,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
     /// The generation of the region-preview grab that may still deliver (ADR-0103).
@@ -3946,6 +4013,9 @@ fn round(
     if let Some(left) = host.drive_marker_flush(now, notify) {
         wait = wait.min(left);
     }
+    if let Some(left) = host.report_media(notify) {
+        wait = wait.min(left);
+    }
     host.report_monitor(notify);
     if let Some(left) = host.report_replay(now, notify) {
         wait = wait.min(left);
@@ -4001,6 +4071,7 @@ fn start(
     });
     settings.scene_preview = SCENE_PICTURE;
     settings.audio_offsets = filters::audio_offsets(&collection);
+    settings.media_pause_release = config.media_pause_release;
     let held = held_copy(&collection, canvas);
     let run = held.as_ref().and_then(|h| run_copy(&collection, canvas, h));
     let first = engine();
@@ -4176,6 +4247,8 @@ fn start(
             .read_free_space
             .map(|r| rbs_record::estimate::DiskProbe::new(r.0)),
         swap_after_transition: config.swap_after_transition,
+        media_pause_release: config.media_pause_release,
+        media_sent: None,
         thumbs: Arc::new(AtomicU64::new(0)),
         region_grabs: Arc::new(AtomicU64::new(0)),
         // A collection that had to be completed is saved at the first publish.
@@ -4647,6 +4720,12 @@ impl Host {
             Command::SetSourceSettings { id, patch } => {
                 let done = self.patch_source_settings(id, &patch);
                 self.answer(done, notify);
+            }
+            Command::Media { id, op } => {
+                if let Err(e) = self.media_command(id.get(), op) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+                self.media_sent = None;
             }
             Command::ReloadSource(id) => match self.reload_source(id) {
                 Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
@@ -6147,6 +6226,7 @@ impl Host {
         settings.preview = preview;
         settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
+        settings.media_pause_release = self.media_pause_release;
         if let Some(v) = self
             .vertical
             .filter(|v| self.collection.canvas(v.canvas).is_some())
@@ -10666,6 +10746,43 @@ impl Host {
         })
     }
 
+    /// Sends the play state of every media source when it changed; while one plays,
+    /// asks to be called again in [`MEDIA_TICK`]. Nothing runs without media (P13).
+    fn report_media(&mut self, notify: &dyn Fn(Update)) -> Option<Duration> {
+        use rbs_record::MediaPlayState as State;
+        let mut playing = false;
+        let ticks: Vec<MediaTick> = self
+            .studio
+            .media_controls()
+            .map(|(id, control)| {
+                let state = control.state();
+                playing |= state == State::Playing;
+                let step = MEDIA_TICK.as_millis() as u64;
+                let cursor = u64::try_from(control.cursor().as_millis()).unwrap_or(u64::MAX);
+                MediaTick {
+                    id,
+                    state: match state {
+                        State::Playing => 0,
+                        State::Paused => 1,
+                        State::Cued => 2,
+                        State::Ended => 3,
+                        State::Unavailable => 5,
+                        _ => 4,
+                    },
+                    cursor_ms: u32::try_from(cursor / step * step).unwrap_or(u32::MAX),
+                    duration_ms: control
+                        .duration()
+                        .map_or(0, |d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
+                }
+            })
+            .collect();
+        if self.media_sent.as_ref() != Some(&ticks) {
+            self.media_sent = Some(ticks.clone());
+            notify(Update::Media(ticks));
+        }
+        playing.then_some(MEDIA_TICK)
+    }
+
     fn reload_source(&mut self, id: SourceId) -> Result<Reload, Refusal> {
         if self.collection.source(id).is_none() {
             return Err(Refusal::NotFound(format!(
@@ -12519,6 +12636,7 @@ impl Host {
                     cue_remaining_ms,
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
+                    media: MediaSettings::of(s),
                     latency: self.studio.audio_latency(s.id),
                     device_peers: self
                         .device_peers(s.id)
@@ -15603,12 +15721,18 @@ fn measure_text_wrapped(
 }
 
 /// One `media.*` method (protocol 1.83).
-#[derive(Debug, Clone, Copy)]
-enum MediaOp {
+/// A playback action on a media source (ADR-0108 decision 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaOp {
+    /// Play from the cursor.
     Play,
+    /// Pause at the cursor.
     Pause,
+    /// Move the cursor to this many milliseconds.
     Seek(u64),
+    /// Play from the start.
     Restart,
+    /// Read the state only.
     State,
 }
 
