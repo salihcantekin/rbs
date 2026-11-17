@@ -446,6 +446,10 @@ pub struct MediaSettings {
     pub looped: bool,
     /// Start from the beginning when shown again (default on).
     pub restart_when_shown: bool,
+    /// Where the play range starts, in milliseconds of media time (default 0).
+    pub start_ms: i64,
+    /// Where the play range ends; `None` for the end of the file.
+    pub end_ms: Option<i64>,
 }
 
 impl MediaSettings {
@@ -461,6 +465,14 @@ impl MediaSettings {
             },
             looped: flag(keys::LOOP),
             restart_when_shown: flag(keys::RESTART_WHEN_SHOWN),
+            start_ms: match source.settings.get(keys::START_MS) {
+                Some(SettingValue::Int(ms)) => (*ms).max(0),
+                _ => 0,
+            },
+            end_ms: match source.settings.get(keys::END_MS) {
+                Some(SettingValue::Int(ms)) => Some(*ms),
+                _ => None,
+            },
         })
     }
 }
