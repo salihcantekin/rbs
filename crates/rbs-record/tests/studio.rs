@@ -1472,6 +1472,9 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
     col.set_preview(canvas, Some(scene)).unwrap();
     let up = studio.update(&col, &r.adapters.sources).unwrap();
     assert!(up.failed.is_empty(), "{:?}", up.failed);
+    // The Move keeps the leaving clip playing while it fades out (ADR-0128); end it.
+    studio.end_transitions();
+    studio.settle_transitions(&r.adapters.sources);
     assert_eq!(control.state(), rbs_nodes::MediaPlayState::Standby);
     // The take: on air again, it plays.
     col.set_program(canvas, Some(scene)).unwrap();
@@ -1893,6 +1896,12 @@ fn transitions_report_their_start_and_end_and_take_a_one_off_kind() {
     }));
     ended.extend(phases(&mut studio));
     assert_eq!(ended, [(TransitionPhase::Ended, TransitionKind::Move)]);
+    // The display leaves, so its fade-out kept the outgoing scene: settle it.
+    assert!(run_until(&mut studio, &clock, |s| s
+        .transition_wait(clock.now())
+        == Some(Duration::ZERO)));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
     assert_eq!(studio.transition_wait(clock.now()), None, "nothing armed");
 
     // The one-off was used once: back to the collection's Cut.
@@ -1905,6 +1914,168 @@ fn transitions_report_their_start_and_end_and_take_a_one_off_kind() {
             (TransitionPhase::Ended, TransitionKind::Cut)
         ]
     );
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_move_fades_out_what_leaves_and_needs_nothing_when_nothing_leaves() {
+    // ADR-0128 decision 5: a Move runs at once, without an incoming compositor, only
+    // when the outgoing scene draws a source the incoming one does not.
+    use rbs_record::{TransitionPhase, TransitionState};
+    use rbs_scene::{CollectionGlide, CollectionTransition, GlideEasing, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Move,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    col.set_glide(CollectionGlide {
+        duration_ms: 200,
+        easing: GlideEasing::EaseInOut,
+    })
+    .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition-move", ContainerId::Matroska),
+        )
+        .unwrap();
+    let ticks = |s: &Studio| s.engine().worker_stats(RENDER).unwrap().ticks();
+    let t0 = ticks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| ticks(s) >= t0 + 3));
+
+    // The display, the microphone and the rest leave: it runs at once.
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Running),
+        "no incoming picture to wait for"
+    );
+    let events = studio.take_transition_events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].phase, TransitionPhase::Started);
+    assert_eq!(events[0].kind, TransitionKind::Move);
+    assert_eq!(events[0].duration, Duration::from_millis(200));
+    assert_eq!(
+        studio.transition_wait(clock.now()),
+        Some(Duration::from_millis(200))
+    );
+    let t1 = ticks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| ticks(s) >= t1 + 3));
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Running)
+    );
+    assert!(run_until(&mut studio, &clock, |s| s
+        .transition_wait(clock.now())
+        == Some(Duration::ZERO)));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert_eq!(studio.transition_state(canvas), None, "settled");
+
+    // Back: everything of the camera scene is in the live scene, nothing leaves.
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.transition_state(canvas), None);
+    let t2 = ticks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| ticks(s) >= t2 + 3));
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_fade_through_a_colour_a_swipe_and_a_slide_run_and_settle() {
+    // ADR-0128 decision 5: each draws for its duration and settles like a Fade.
+    use rbs_record::{TransitionPhase, TransitionState};
+    use rbs_scene::{CollectionTransition, SwipeDirection, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition-kinds", ContainerId::Matroska),
+        )
+        .unwrap();
+    let mut via = CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    };
+    via.fade.duration_ms = 100;
+    via.fade.via = Some([0, 0, 0]);
+    let mut swipe = CollectionTransition {
+        kind: TransitionKind::Swipe,
+        ..CollectionTransition::default()
+    };
+    swipe.swipe.duration_ms = 100;
+    swipe.swipe.direction = SwipeDirection::Up;
+    let mut slide = CollectionTransition {
+        kind: TransitionKind::Slide,
+        ..CollectionTransition::default()
+    };
+    slide.slide.duration_ms = 100;
+    slide.slide.direction = SwipeDirection::Right;
+    let mut to = other;
+    for (transition, kind) in [
+        (via, TransitionKind::Fade),
+        (swipe, TransitionKind::Swipe),
+        (slide, TransitionKind::Slide),
+    ] {
+        col.set_transition(transition).unwrap();
+        col.set_program(canvas, Some(to)).unwrap();
+        studio.update(&col, &r.adapters.sources).unwrap();
+        assert!(run_until(&mut studio, &clock, |s| {
+            s.transition_state(canvas) == Some(TransitionState::Running)
+        }));
+        let started = clock.now();
+        assert!(run_until(&mut studio, &clock, |s| s
+            .transition_wait(clock.now())
+            == Some(Duration::ZERO)
+            && s.transition_state(canvas) == Some(TransitionState::Ending)));
+        assert!(clock.now().saturating_since(started) >= Duration::from_millis(100));
+        let events = studio.take_transition_events();
+        assert_eq!(
+            events.iter().map(|e| (e.phase, e.kind)).collect::<Vec<_>>(),
+            [
+                (TransitionPhase::Started, kind),
+                (TransitionPhase::Ended, kind)
+            ]
+        );
+        assert!(studio.take_transition_done());
+        studio.settle_transitions(&r.adapters.sources);
+        assert_eq!(studio.transition_state(canvas), None);
+        to = if to == other { live } else { other };
+    }
     studio.stop_output(out).unwrap();
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
