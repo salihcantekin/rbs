@@ -13,7 +13,7 @@ use rbs_core::time::{Clock, MonotonicClock};
 
 use crate::control::{ControlEndpoint, EventShared};
 use crate::session::{Action, AuditEvent, Input, Sampler, Server, ServerConfig};
-use crate::token::TokenStore;
+use crate::token::{TokenSlot, TokenStore};
 use crate::transport::{ControlTransport, TransportError, TransportInbox};
 use crate::wake::Wake;
 
@@ -48,7 +48,7 @@ impl ApiOptions {
 struct Shared {
     wake: Arc<Wake>,
     stop: AtomicBool,
-    tokens: Mutex<Option<TokenStore>>,
+    tokens: Mutex<Option<TokenSlot>>,
     /// A new "allow remote admin", taken like `tokens`.
     remote_admin: Mutex<Option<bool>>,
     rounds: AtomicU64,
@@ -71,7 +71,7 @@ impl Shared {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(t) = tokens {
-            server.set_tokens(t);
+            server.set_slot(t);
         }
     }
 }
@@ -87,9 +87,10 @@ impl Shared {
 pub struct TokenHandle(Arc<Shared>);
 
 impl TokenHandle {
-    /// Replaces the token store.
-    pub fn set(&self, tokens: TokenStore) {
-        *self.0.tokens.lock().unwrap_or_else(PoisonError::into_inner) = Some(tokens);
+    /// Replaces the token store and the AI tools flags (ADR-0134 decision 2). A store
+    /// alone (`store.into()`) means AI tools stopped and tokenless IPC.
+    pub fn set(&self, slot: impl Into<TokenSlot>) {
+        *self.0.tokens.lock().unwrap_or_else(PoisonError::into_inner) = Some(slot.into());
         self.0.wake.signal();
     }
 }
@@ -114,7 +115,7 @@ impl ApiServer {
     /// the control thread drains.
     pub fn start(
         config: ServerConfig,
-        tokens: TokenStore,
+        tokens: impl Into<TokenSlot>,
         options: ApiOptions,
     ) -> Result<(ApiServer, ControlEndpoint), TransportError> {
         let ApiOptions {
@@ -221,9 +222,15 @@ impl ApiServer {
         Ok((api, endpoint))
     }
 
-    /// Replaces the token store; sessions of revoked tokens are closed.
+    /// Replaces the token store (AI tools stopped, tokenless IPC); sessions of
+    /// revoked tokens are closed.
     pub fn set_tokens(&self, tokens: TokenStore) {
         self.token_handle().set(tokens);
+    }
+
+    /// Replaces the token store and the AI tools flags.
+    pub fn set_slot(&self, slot: TokenSlot) {
+        self.token_handle().set(slot);
     }
 
     /// Sets "allow remote admin" for sessions that authenticate from now on (a

@@ -932,6 +932,7 @@ fn every_result_and_event_type_round_trips() {
             name: "Stream Deck".into(),
             scopes: ScopeSet::PANEL,
             irreversible: false,
+            kind: rbs_api::TokenKind::User,
         }],
     });
     let created = TokenCreated {

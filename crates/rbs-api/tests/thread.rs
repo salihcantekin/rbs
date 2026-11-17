@@ -158,6 +158,7 @@ fn a_client_authenticates_subscribes_records_and_gets_the_event() {
     let token = Token::from_bytes(&[5; 32]);
     let mut tokens = TokenStore::new();
     tokens.insert(TokenEntry {
+        kind: rbs_api::TokenKind::User,
         irreversible: true,
         name: "Deck".into(),
         scopes: ScopeSet::PANEL,
@@ -311,6 +312,7 @@ impl ControlTarget for TokenKeeper {
                 let token = Token::from_bytes(&[7; 32]);
                 let irreversible = p.irreversible.unwrap_or(true);
                 self.store.insert(TokenEntry {
+                    kind: rbs_api::TokenKind::User,
                     irreversible,
                     name: p.name.clone(),
                     scopes: p.scopes,

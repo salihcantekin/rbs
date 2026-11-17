@@ -2909,6 +2909,7 @@ fn a_token_without_the_permission_cannot_change_what_is_on_air() {
     let token = rbs_api::token::Token::from_bytes(&[7; 32]);
     let mut tokens = rbs_api::TokenStore::new();
     tokens.insert(rbs_api::token::TokenEntry {
+        kind: rbs_api::TokenKind::User,
         irreversible: false,
         name: "agent".into(),
         scopes: rbs_api::ScopeSet::PANEL,
@@ -2983,6 +2984,7 @@ fn a_token_without_the_permission_cannot_point_a_source_at_another_computer() {
     let token = rbs_api::token::Token::from_bytes(&[7; 32]);
     let mut tokens = rbs_api::TokenStore::new();
     tokens.insert(rbs_api::token::TokenEntry {
+        kind: rbs_api::TokenKind::User,
         irreversible: false,
         name: "agent".into(),
         scopes: rbs_api::ScopeSet::PANEL,
