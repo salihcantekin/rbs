@@ -2445,3 +2445,121 @@ fn a_t_bar_holds_the_blend_then_takes_or_cancels() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// Rehearse (ADR-0135 decisions 11 to 13): the transition plays on the Preview picture
+/// only, the program never changes, and it ends after its time, when stopped, or when
+/// the preview scene changes; Cut has nothing to rehearse. The preview picture runs on
+/// Windows and macOS only.
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
+    use rbs_gpu::share::PreviewDesc;
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let src = &r.adapters.sources;
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    let fade = |ms: u32| {
+        let mut t = CollectionTransition::default();
+        t.kind = TransitionKind::Fade;
+        t.fade.duration_ms = ms;
+        t
+    };
+    col.set_transition(fade(5000)).unwrap();
+    col.set_preview(canvas, Some(other)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(canvas);
+    settings.audio = false;
+    settings.preview = Some(PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 3,
+    });
+    settings.scene_preview = true;
+    let mut studio = Studio::start(engine, gpu, &col, src, &settings).unwrap();
+    assert!(studio.studio_mode());
+    // Render ticks: `run_until` fails on any node failure, so a picture whose input
+    // was relinked wrong shows here.
+    let more = |studio: &Studio, n: u64| {
+        let at = studio.engine().worker_stats(RENDER).unwrap().ticks();
+        move |s: &Studio| s.engine().worker_stats(RENDER).unwrap().ticks() >= at + n
+    };
+
+    // It plays on the Preview picture, which keeps running; nothing else moves.
+    assert!(studio.rehearse(&col, src).unwrap());
+    assert!(studio.rehearsing());
+    assert!(!studio.rehearse(&col, src).unwrap(), "one at a time");
+    let ticks = more(&studio, 10);
+    assert!(run_until(&mut studio, &clock, ticks));
+    assert!(studio.rehearsing());
+    assert_eq!(studio.transition_state(canvas), None);
+    assert!(studio.take_transition_events().is_empty());
+    assert_eq!(col.canvas(canvas).unwrap().program, Some(live));
+
+    // Stopped: the picture shows the preview scene again.
+    studio.end_rehearsal(src).unwrap();
+    assert!(!studio.rehearsing());
+    let ticks = more(&studio, 10);
+    assert!(run_until(&mut studio, &clock, ticks));
+
+    // A short one ends after its time.
+    col.set_transition(fade(300)).unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(studio.rehearse(&col, src).unwrap());
+    let wait = studio.rehearsal_wait(clock.now()).unwrap();
+    assert!(wait <= Duration::from_millis(300), "{wait:?}");
+    assert!(run_until(&mut studio, &clock, Studio::rehearsal_done));
+    studio.end_rehearsal(src).unwrap();
+    assert!(!studio.rehearsing());
+    assert_eq!(studio.rehearsal_wait(clock.now()), None);
+
+    // A change of the preview scene ends it at once.
+    assert!(studio.rehearse(&col, src).unwrap());
+    col.set_preview(canvas, Some(live)).unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(!studio.rehearsing());
+    let ticks = more(&studio, 10);
+    assert!(run_until(&mut studio, &clock, ticks));
+
+    // Cut has nothing to rehearse.
+    col.set_preview(canvas, Some(other)).unwrap();
+    let mut cut = CollectionTransition::default();
+    cut.kind = TransitionKind::Cut;
+    col.set_transition(cut).unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(!studio.rehearse(&col, src).unwrap());
+
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// Without a Preview picture (no UI, or outside studio mode) there is nothing to
+/// rehearse on, and nothing is added (ADR-0135 decision 12).
+#[test]
+fn without_a_preview_picture_nothing_is_rehearsed() {
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let src = &r.adapters.sources;
+    let (mut col, canvas) = scene();
+    let other = camera_scene(&mut col);
+    let mut t = CollectionTransition::default();
+    t.kind = TransitionKind::Fade;
+    col.set_transition(t).unwrap();
+    let (engine, _clock) = engine_at_start();
+    let mut settings = StudioSettings::new(canvas);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, src, &settings).unwrap();
+    assert!(!studio.rehearse(&col, src).unwrap(), "outside studio mode");
+    col.set_preview(canvas, Some(other)).unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(!studio.rehearse(&col, src).unwrap(), "no picture for a UI");
+    assert!(!studio.rehearsing());
+    assert_eq!(studio.rehearsal_wait(Timestamp::ZERO), None);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

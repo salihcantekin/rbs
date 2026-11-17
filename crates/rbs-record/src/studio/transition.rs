@@ -349,6 +349,113 @@ fn move_of(effective: &Effective) -> Option<(Duration, GlideEasing, Blend)> {
     })
 }
 
+/// What a rehearsal plays (ADR-0135 decision 11): the transition a
+/// `canvas.transition` into `preview` would run now, with Move as a crossfade of the
+/// glide's duration and easing. `None` for Cut and a duration of 0.
+pub(super) fn rehearsal_plan(
+    collection: &SceneCollection,
+    preview: SceneId,
+) -> Option<(Duration, GlideEasing, TransitionKind)> {
+    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default());
+    let kind = e.kind();
+    if kind == TransitionKind::Move {
+        return (e.glide.duration_ms > 0).then(|| {
+            (
+                Duration::from_millis(u64::from(e.glide.duration_ms)),
+                e.glide.easing,
+                kind,
+            )
+        });
+    }
+    blend_of(e.transition).map(|(d, ease, blend)| (d, ease, blend.kind()))
+}
+
+/// The rehearsal compositor's layers (ADR-0135 decision 12): the program picture,
+/// and over it the preview picture coming in as the timed transition would bring it,
+/// from `start` for `duration`, in the rehearsal's own `size`. Move is a crossfade.
+pub(super) fn rehearsal_layers(
+    collection: &SceneCollection,
+    preview: SceneId,
+    (program, incoming): (NodeId, NodeId),
+    size: (u32, u32),
+    start: Timestamp,
+) -> Vec<rbs_gpu::node::NodeLayer> {
+    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default());
+    let plan = blend_of(e.transition).or_else(|| {
+        (e.kind() == TransitionKind::Move && e.glide.duration_ms > 0).then(|| {
+            (
+                Duration::from_millis(u64::from(e.glide.duration_ms)),
+                e.glide.easing,
+                Blend::Fade { via: None },
+            )
+        })
+    });
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    let mut bottom = rbs_gpu::node::NodeLayer::new(program, 0, 0.0, 0.0, w, h);
+    bottom.opaque = true;
+    let Some((duration, ease, blend)) = plan else {
+        return vec![bottom];
+    };
+    let ease = easing(ease);
+    let mut top = rbs_gpu::node::NodeLayer::new(incoming, 0, 0.0, 0.0, w, h);
+    top.opaque = true;
+    let mut layers = Vec::with_capacity(3);
+    match blend {
+        Blend::Fade { via: None } | Blend::Move => {
+            top.fade = Some(Fade {
+                from: 0.0,
+                start,
+                duration,
+                easing: ease,
+            });
+            layers.push(bottom);
+        }
+        Blend::Fade {
+            via: Some([r, g, b]),
+        } => {
+            let half = duration / 2;
+            let mut colour = rbs_gpu::node::NodeLayer::new(incoming, 0, 0.0, 0.0, w, h);
+            colour.style = LayerStyle::new(LayerShape::Box, w.max(h), [r, g, b, 255], [w, h]);
+            colour.fade = Some(Fade {
+                from: 0.0,
+                start,
+                duration: half,
+                easing: ease,
+            });
+            top.fade = Some(Fade {
+                from: 0.0,
+                start: start + half,
+                duration: duration - half,
+                easing: ease,
+            });
+            layers.push(bottom);
+            layers.push(colour);
+        }
+        Blend::Swipe { direction, push } => {
+            let offset = swipe_offset(direction, size);
+            top.slide = Some(Slide {
+                from: shifted(top.transform, offset),
+                start,
+                duration,
+                easing: ease,
+            });
+            if push {
+                let at = bottom.transform;
+                bottom.transform = shifted(at, (-offset.0, -offset.1));
+                bottom.slide = Some(Slide {
+                    from: at,
+                    start,
+                    duration,
+                    easing: ease,
+                });
+            }
+            layers.push(bottom);
+        }
+    }
+    layers.push(top);
+    layers
+}
+
 /// The offset, in canvas pixels, the incoming canvas of a Swipe starts at: one canvas
 /// width or height off the edge opposite `direction`.
 fn swipe_offset(direction: SwipeDirection, (w, h): (u32, u32)) -> (f32, f32) {
@@ -1223,6 +1330,8 @@ impl Studio {
         if t <= 0.0 {
             return Ok(ManualStep::Idle);
         }
+        // A T-bar move ends a rehearsal at once (ADR-0135 decision 13).
+        self.drop_rehearsal();
         let collection = self.collection.clone();
         let Some(preview) = collection.canvas(canvas).and_then(|c| c.preview) else {
             return Ok(ManualStep::Idle);
@@ -1402,9 +1511,10 @@ impl Studio {
         std::mem::take(&mut self.transition_done)
     }
 
-    /// Ends every transition at once (leaving studio mode, a collection switch,
-    /// stopping): the next update binds without them.
+    /// Ends every transition and a rehearsal at once (leaving studio mode, a
+    /// collection switch, stopping): the next update binds without them.
     pub fn end_transitions(&mut self) {
+        self.drop_rehearsal();
         for t in self.transitions.values_mut() {
             t.phase = Phase::Done;
         }
@@ -1414,6 +1524,68 @@ impl Studio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn a_rehearsal_blends_the_two_pictures_in_its_own_size() {
+        use rbs_scene::model::SceneScope;
+        let mut col = SceneCollection::new();
+        let (scene, _) = col.add_scene("Next", SceneScope::Shared).unwrap();
+        let (program, incoming) = (any_node(), any_node());
+        let at = Timestamp::from_nanos(7);
+        let mut t = CollectionTransition::default();
+        // Cut and a duration of 0: nothing to rehearse, only the program picture.
+        t.kind = TransitionKind::Cut;
+        col.set_transition(t).unwrap();
+        assert_eq!(rehearsal_plan(&col, scene), None);
+        let only = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        assert_eq!(only.len(), 1);
+        // Fade: the preview picture fades in over the program picture, both filling
+        // the rehearsal's size.
+        t.kind = TransitionKind::Fade;
+        t.fade.duration_ms = 300;
+        col.set_transition(t).unwrap();
+        assert_eq!(
+            rehearsal_plan(&col, scene).map(|(d, _, k)| (d, k)),
+            Some((Duration::from_millis(300), TransitionKind::Fade))
+        );
+        let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        assert_eq!(l.len(), 2);
+        assert_eq!((l[0].producer, l[1].producer), (program, incoming));
+        assert!(l[0].fade.is_none());
+        let fade = l[1].fade.unwrap();
+        assert_eq!((fade.from, fade.start, fade.duration), (0.0, at, Duration::from_millis(300)));
+        // Move rehearses as a crossfade of the glide's duration.
+        t.kind = TransitionKind::Move;
+        col.set_transition(t).unwrap();
+        let glide = col.glide().duration_ms;
+        assert_eq!(
+            rehearsal_plan(&col, scene).map(|(d, _, k)| (d, k)),
+            Some((Duration::from_millis(u64::from(glide)), TransitionKind::Move))
+        );
+        let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        assert!(l[1].fade.is_some());
+        // Slide: the preview picture comes in from one rehearsal width away and the
+        // program picture leaves by the same offset.
+        t.kind = TransitionKind::Slide;
+        t.slide.duration_ms = 500;
+        t.slide.direction = SwipeDirection::Left;
+        col.set_transition(t).unwrap();
+        let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        let (top, bottom) = (l[1], l[0]);
+        assert_eq!(top.slide.unwrap().from, shifted(top.transform, (64.0, 0.0)));
+        assert_eq!(bottom.transform, shifted(bottom.slide.unwrap().from, (-64.0, 0.0)));
+        // The scene's own transition wins over the collection's.
+        col.set_scene_transition(
+            scene,
+            Some(rbs_scene::SceneTransition {
+                kind: Some(TransitionKind::Cut),
+                duration_ms: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(rehearsal_plan(&col, scene), None);
+    }
 
     #[test]
     fn fade_swipe_and_slide_with_a_duration_blend() {

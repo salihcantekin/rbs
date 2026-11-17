@@ -79,6 +79,7 @@ mod monitor;
 mod pause;
 mod replay;
 mod sync_measure;
+mod rehearse;
 mod transition;
 pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
@@ -1165,6 +1166,8 @@ pub struct Studio {
     /// The preview scene's compositor and picture while the canvas is in studio mode
     /// (ADR-0061); `None` otherwise, so nothing of it runs.
     scene_preview: Option<ScenePreview>,
+    /// A rehearsal on the Preview picture (ADR-0135 decision 12); `None` otherwise.
+    rehearsal: Option<rehearse::Rehearsal>,
     /// Hold scenes by canvas while a stream holds with one (ADR-0124 phase 2b).
     hold_scenes: BTreeMap<CanvasId, hold::HoldRun>,
     /// A hold scene fell back in [`Studio::service`] since the host last asked.
@@ -1647,6 +1650,7 @@ impl Studio {
             meters: BTreeMap::new(),
             preview,
             scene_preview: None,
+            rehearsal: None,
             hold_scenes: BTreeMap::new(),
             hold_fell_back: false,
             extras,
@@ -2219,6 +2223,8 @@ impl Studio {
     ) -> Result<Updated, RecordError> {
         let followed = with_followers(collection, &mut self.last_follow);
         let collection = &followed;
+        // A new program or preview scene ends a rehearsal at once (ADR-0135 decision 13).
+        self.end_rehearsal_for(collection);
         let old_layers = self.layer_snapshot();
         let old_main = program_scene(&self.collection, self.settings.canvas);
         let old_extra: BTreeMap<CanvasId, Option<SceneId>> = self
