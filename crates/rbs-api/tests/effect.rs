@@ -227,3 +227,39 @@ fn a_canvas_change_through_settings_set_is_live() {
     h.call(conn, "settings.set", json!({}));
     assert_eq!(h.forwarded.len(), before + 1);
 }
+
+#[test]
+fn the_caller_goes_with_the_command_and_on_air_refusals_are_audited() {
+    let mut h = harness();
+    let conn = h.login(PeerInfo::loopback_websocket(), AGENT_SEED);
+    h.call(conn, "scene.switch", json!({"scene": 1}));
+    let f = h.forwarded.pop().unwrap();
+    assert_eq!(
+        f.caller,
+        rbs_api::Caller {
+            token: Some("agent".into()),
+            irreversible: false,
+        }
+    );
+    let mut data = serde_json::Map::new();
+    data.insert("reason".into(), "on_air".into());
+    let e = rbs_api::ApiError::with_data(rbs_api::ErrorKind::NotPermitted, "on air", data);
+    h.reply(&f, Err(e));
+    assert_eq!(h.one(conn)["error"]["data"]["reason"], "on_air");
+    assert!(h.audit.contains(&AuditEvent::NotPermitted {
+        conn,
+        token: Some("agent".into()),
+        method: "scene.switch",
+        reason: "on_air",
+    }));
+}
+
+#[test]
+fn a_same_user_ipc_session_is_a_permitted_caller() {
+    let mut h = harness();
+    let conn = h.connect(PeerInfo::same_user_ipc());
+    h.call(conn, "session.hello", hello());
+    h.take(conn);
+    h.call(conn, "scene.switch", json!({"scene": 1}));
+    assert_eq!(h.forwarded[0].caller, rbs_api::Caller::local());
+}

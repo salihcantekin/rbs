@@ -163,7 +163,7 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | `auth_failed` | -32002 | Unknown or wrong token |
 | `unsupported_protocol` | -32003 | No common protocol major |
 | `scope_denied` | -32010 | Scope missing |
-| `not_permitted` | -32012 | The token lacks the irreversible-actions permission (protocol 1.76, ADR-0052); `data.reason` is `irreversible` (1.76), later `on_air` or `network` |
+| `not_permitted` | -32012 | The token lacks the irreversible-actions permission (protocol 1.76, ADR-0052); `data.reason` is `irreversible` (1.76), `on_air` (1.78), later `network` |
 | `busy` | -32020 | Request queue full |
 | `rate_limited` | -32021 | Request rate exceeded (also `marker.add` above its own rate, protocol 1.50) |
 | `message_too_large` | -32022 | Message over the size limit |
@@ -540,6 +540,12 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.78: the on-air check (ADR-0052 decision 4, second part)
+
+- **What is on air.** While any output runs (a recording or stream of either canvas, the virtual camera, or the armed replay buffer), every canvas counts as on air: stricter than ADR-0052's per-canvas rule, and simple. On air is each canvas's program scene, the followed canvas's program scene for a follower, a fallback scene, the canvas's global scene, and everything reachable from them: nested scenes, their items and the sources those items show (`rbs_scene::SceneCollection::on_air`, a pure function tested directly).
+- **The check.** The server passes the caller (token name and permission) with each forwarded command (`rbs_api::Caller`, `ControlTarget::handle_as`). For a caller without the permission, an `edit` that changes what is on air is answered `not_permitted` with `data.reason: "on_air"`, and the refusal is audited when the answer is forwarded. It fails closed: an `edit` passes only when it is known never to touch the picture or sound on air (`settings.set` without `canvas`, `monitor.*`, `output.set_with_vertical`, `replay.save`, `project.export`, `marker.add`, `canvas.set_preview`, `scene.add`, `source.copy_attributes`), or when it acts only on what it names (the `item.*`, `source.*`, `filter.*` and `scene.*` edits) and every scene, item, source and filter it names is off air; a method that places into a scene and names none (it would use the program scene) is refused. Every other `edit` (program switch, transitions, undo and redo, master levels, global sources, looks, layouts) is refused while an output runs.
+- **Not yet.** The network and location checks (`network`) and `tokens.create {irreversible}`.
+
 ### Protocol 1.77: filter latency (ADR-0130 decision 9)
 
 - **`filter.types`.** Each audio type adds `latency_ms`: the delay an instance adds at the running audio graph's format and block size (`AudioFilterType::latency_frames`, `audio-filters.md`, "Latency"), in milliseconds to the microsecond. 0 for a type with no delay (gain, noise gate, ducker, compressor, equaliser); 2 for the limiter at 48 kHz; 10 for noise suppression with 480-frame blocks. Video types omit it.
@@ -559,7 +565,7 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **The permission.** A token entry has `irreversible` ("Allow actions that cannot be undone"); an entry saved without it has it, so existing tokens keep their behaviour, and an entry that has it saves as before. A same-user IPC session without a token has it. `session.authenticate` answers `irreversible` beside `scopes`.
 - **The check.** After the scope check, a `live` or `destructive` method from a session without the permission is answered `not_permitted` (code -32012; ADR-0052 planned -32011, which `forbidden` took in 1.75) with `data.reason: "irreversible"`, in its turn behind the request in flight, and nothing reaches the control thread. Changing a token's permission closes its sessions, as a scope change does.
 - **Audit.** Every admitted `live` or `destructive` call and every `not_permitted` refusal is an audit record with the token name (`AuditEvent::Irreversible`, `AuditEvent::NotPermitted`).
-- **Not yet.** Until the on-air check ships, a token without the permission can still change what is on air through `edit` methods (program switch, mute, volume, filters). The on-air and network checks (`on_air`, `network`), the caller context of `ControlTarget`, `tokens.create {irreversible}` and making tokens without the permission in the app follow in later minor versions. Until a token without the permission can be made, every token keeps it, so behaviour is unchanged.
+- **Not yet** (in 1.76; the on-air check is in 1.78). The on-air and network checks (`on_air`, `network`), the caller context of `ControlTarget`, `tokens.create {irreversible}` and making tokens without the permission in the app follow in later minor versions. Until a token without the permission can be made, every token keeps it, so behaviour is unchanged.
 - **Older servers** list no `effect` and answer no `irreversible`; a client treats them as `destructive` and `false`.
 
 ### Protocol 1.75: text sources (ADR-0129 decision 8)
