@@ -765,6 +765,8 @@ pub enum Command {
         /// The filter type's id.
         type_id: String,
     },
+    /// Add the voice chain to a sound source (ADR-0130 decision 10; one undo step).
+    AddVoiceChain(SourceId),
     /// Apply a built-in look to a source's item and filters (ADR-0075; one undo step).
     ApplyLook {
         /// The source.
@@ -4435,6 +4437,10 @@ impl Host {
                 let done = self
                     .add_filter(source, &type_id, &std::collections::BTreeMap::new())
                     .map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::AddVoiceChain(source) => {
+                let done = self.add_voice_chain(source);
                 self.answer(done, notify);
             }
             Command::AddSample { sample } => {
