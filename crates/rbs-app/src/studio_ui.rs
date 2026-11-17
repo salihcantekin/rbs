@@ -8617,7 +8617,7 @@ mod tests {
         let model = |v: Vec<ToolbarData>| slint::ModelRc::new(slint::VecModel::from(v));
         i_slint_backend_testing::init_no_event_loop();
         let file = TokenFile::built_in().unwrap();
-        // Calm, and Glow: its halo's clear zone pads Go live's cell (ADR-0122 decision 8).
+        // Calm, and Glow, which no longer pads Go live's cell (ADR-0136).
         for effects in [Effects::Calm, Effects::Glow] {
             for density in [Density::Regular, Density::Compact, Density::Roomy] {
                 for base in [Base::Dark, Base::Light] {

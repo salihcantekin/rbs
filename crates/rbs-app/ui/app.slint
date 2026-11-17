@@ -1562,11 +1562,11 @@ component ToolbarCell inherits HorizontalLayout {
     // (ADR-0124, owner approval 2026-11-16).
     property <bool> holdable: item.id == "stream.toggle" && item.live && Studio.st-holdable;
     property <bool> split: vertical-menu || pausable || holdable;
-    // This position keeps the halo's clear zone round its button (ADR-0122 decision 8):
-    // the cell pads its sides so that, with the row's `space.2`, nothing lies within
-    // `Theme.halo-clear + size.focus-ring` of the button. The zone belongs to the
-    // position, whatever the button's kind is now, so going live moves nothing. 0 unless
-    // the theme draws a halo.
+    // A position that opts in keeps the halo's clear zone round its button (ADR-0122
+    // decision 8): the cell pads its sides so that, with the row's `space.2`, nothing
+    // lies within `Theme.halo-clear + size.focus-ring` of the button. The zone belongs to
+    // the position, whatever the button's kind is now, so going live moves nothing. 0
+    // unless the theme draws a halo. No frame bar position opts in today (ADR-0136).
     in property <bool> halo-room: false;
     property <length> halo-pad: halo-room && Theme.halo-clear > 0 ? max(Tokens.space-2, Theme.halo-clear + Tokens.size-focus-ring) - Tokens.space-2 : 0px;
     padding-left: halo-pad;
@@ -1623,7 +1623,7 @@ component ToolbarCell inherits HorizontalLayout {
     if item.kind == 1: WorkspacePicker {
         clicked => { root.open-workspaces(self.absolute-position.x); }
     }
-    // The separator keeps its height when the row grows (ADR-0122 decision 8).
+    // The separator has a fixed height; it does not stretch with the row.
     if item.kind == 2: VerticalLayout {
         alignment: center;
         Rectangle {
@@ -1745,14 +1745,13 @@ component FrameBar inherits Rectangle {
     changed max-x => { publish-regions(); }
     property <bool> caption-on: Shell.custom-caption;
     changed caption-on => { publish-regions(); }
-    // The row grows while the theme draws a halo (ADR-0122 decision 8), and the caption
-    // row reported to Windows is this height.
+    // The row's height changes with density, and the caption row reported to Windows is
+    // this height.
     changed height => { publish-regions(); }
-    // The room above and below the row's items: `space.1`, or the clear zone of Go
-    // live's halo (plus `size.focus-ring`, for a SplitButton's outside rings) while the
-    // theme draws one. Every item keeps its size, centred; only the window buttons span
-    // the row.
-    property <length> row-pad: Theme.halo-clear > 0 ? max(Tokens.space-1, Theme.halo-clear + Tokens.size-focus-ring) : Tokens.space-1;
+    // The room above and below the row's items. It is the same in every look: the frame
+    // bar does not opt in to the halo (ADR-0136), so Glow does not make it taller. Every
+    // item keeps its size, centred; only the window buttons span the row.
+    property <length> row-pad: Tokens.space-1;
     height: Tokens.size-control-md + 2 * row-pad + Tokens.size-border;
     background: Theme.surface-base;
     Rectangle {
@@ -1858,8 +1857,7 @@ component FrameBar inherits Rectangle {
             // with the toolbar hidden or customised (U1, ADR-0073).
             for item in Shell.toolbar-fixed: ToolbarCell {
                 item: item;
-                // Go live's position opts in to the halo; Record's does not.
-                halo-room: item.id == "stream.toggle";
+                // No halo here, so the bar keeps its height in Glow (ADR-0136).
                 vertical-menu: Shell.vertical-outputs;
                 vertical-on: item.id == "stream.toggle" ? Shell.vertical-live : Shell.vertical-rec;
                 open-workspaces(x) => { }
