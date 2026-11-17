@@ -858,6 +858,10 @@ export global Studio {
     callback set-canvas-portrait(bool);
     callback set-canvas-rate(int);
 
+    // Audio (Settings, Audio): Record and Go live ask first while no microphone is
+    // heard (UI spec, "Silent output warning").
+    in property <bool> warn-silent: true;
+    callback set-warn-silent(bool);
     // General (Settings, General): leave the RBS windows out of a screen recording.
     in property <bool> exclude-own-window: true;
     callback set-exclude-own-window(bool);
