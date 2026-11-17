@@ -1,6 +1,6 @@
 # ADR-0143: Performance rules for every change
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-17
 - Deciders: Salih (owner); independent review recorded below (ADR-0014)
 
@@ -193,4 +193,4 @@ Later, rules that can be counted move into automatic checks, the way `cargo xtas
 
 **Round 2: independent AI session, 2026-11-17. Verdict: approve with changes.** All 15 round-1 resolutions are confirmed in the text. No conflict was found with P1-P15, ADR-0013, 0034, 0035, 0038, 0051, 0062, 0086, 0102, 0107 or 0128. Applied: R4's "shown" now means ADR-0107 decision 6 scenes plus outputs, at canvas pixels. R9 points to ADR-0038 for new copies and keeps `frames_cpu_copied` for readbacks only. The owner confirms the revised text before acceptance.
 
-Owner approval: Salih approved accepting the ADR on 2026-11-17 ("adr ları kabul edelim"), before the review rounds changed the text. Confirmation of the revised text: pending. Record the name and date here before setting Status to Accepted.
+Owner approval: Salih approved accepting the ADR on 2026-11-17 ("adr ları kabul edelim"), before the review rounds changed the text. Salih confirmed the revised text on 2026-11-17 after both review rounds. Status: Accepted.
