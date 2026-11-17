@@ -1,6 +1,6 @@
 # Spec: Audio filters
 
-- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082). Latency contract and compensation (ADR-0130 step 1) and Noise suppression (step 2, `rbs-denoise`), the compressor (step 3), the limiter (step 4) and the equaliser (step 5) built; the API fields are planned.
+- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082). Latency contract and compensation (ADR-0130 step 1) and Noise suppression (step 2, `rbs-denoise`), the compressor (step 3), the limiter (step 4) and the equaliser (step 5) built; the API fields are control API 1.77 (`control-api.md`).
 - Owner crate(s): `rbs-audio-filters` (audio filter type trait, DSP trait, filter node, catalogue, conformance suite); `rbs-denoise` (RNNoise, ADR-0130); `rbs-params` (settings schema, shared with video filters)
 - Related ADRs: ADR-0130 (latency, voice filters), ADR-0082, ADR-0062, ADR-0023, ADR-0020, ADR-0013
 

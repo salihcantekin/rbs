@@ -23,7 +23,7 @@ use crate::record_profile::{
     AUDIO_KBPS, Encoding, Format, MAX_B_FRAMES, OutputSize, Preset, RateMode, RecordProfile,
     VideoCodec, output_size_problem,
 };
-use crate::stream_key::{self, KeyStore};
+use crate::stream_key;
 use crate::stream_profile::{StreamProfile, parse_server};
 use crate::user_session::{RECORDING, STREAM};
 
@@ -298,7 +298,7 @@ pub fn write(
     data: &UserData,
     lock: &WriterLock,
     plan: &ImportPlan,
-    keys: &dyn KeyStore,
+    save_key: &dyn Fn(&str, Secret) -> Result<(), String>,
     platform: Platform,
     folder_exists: &dyn Fn(&Path) -> bool,
 ) -> Result<Written, String> {
@@ -330,8 +330,7 @@ pub fn write(
         }
         match (&profile_written, key) {
             (Some((id, _)), Some(k)) if stream_chosen => {
-                if let Err(e) =
-                    keys.write(&stream_key::account(id.as_str()), &Secret::new(k.expose()))
+                if let Err(e) = save_key(&stream_key::account(id.as_str()), Secret::new(k.expose()))
                 {
                     notes.push(
                         step(
@@ -396,6 +395,132 @@ pub fn write(
     })
 }
 
+/// Files on this computer for the import: PNG sizes and file presence. Devices are not
+/// enumerated yet, so device targets keep their defaults and the report says so.
+pub struct AppLookup;
+
+impl rbs_import_obs::Lookup for AppLookup {
+    fn picture_size(&self, path: &Path) -> Option<(u32, u32)> {
+        use std::io::Read as _;
+        let mut head = [0u8; 24];
+        std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+        if head[..8] != *b"\x89PNG\r\n\x1a\n" || head[12..16] != *b"IHDR" {
+            return None;
+        }
+        let w = u32::from_be_bytes([head[16], head[17], head[18], head[19]]);
+        let h = u32::from_be_bytes([head[20], head[21], head[22], head[23]]);
+        (w > 0 && h > 0).then_some((w, h))
+    }
+    fn file_exists(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+    fn targets(&self, _: &NodeTypeId) -> Vec<rbs_import_obs::LookupTarget> {
+        Vec::new()
+    }
+}
+
+/// The OBS collections and profiles found in OBS's settings folders on this computer.
+#[derive(Debug, Clone, Default)]
+pub struct Found {
+    /// Collections: name and file.
+    pub collections: Vec<(String, std::path::PathBuf)>,
+    /// Profiles: name and folder.
+    pub profiles: Vec<(String, std::path::PathBuf)>,
+}
+
+/// Scans OBS's settings folders. Reads only the file names and each collection's
+/// `name`; an unreadable folder is left out.
+pub fn find_obs() -> Found {
+    let mut f = Found::default();
+    for dir in rbs_import_obs::discover::default_config_dirs() {
+        if let Ok(i) = rbs_import_obs::discover::scan(&dir) {
+            f.collections
+                .extend(i.collections.into_iter().map(|c| (c.name, c.path)));
+            f.profiles
+                .extend(i.profiles.into_iter().map(|p| (p.name, p.path)));
+        }
+    }
+    f
+}
+
+/// The names of a collection's scenes in OBS's order (`scene_order`, else the order of
+/// the scene sources). Empty when the file is not a collection.
+pub fn scene_names(json: &[u8]) -> Vec<String> {
+    let Ok(root) = serde_json::from_slice::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let names = |v: Option<&serde_json::Value>, pick: &dyn Fn(&serde_json::Value) -> bool| {
+        v.and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter(|x| pick(x))
+                    .filter_map(|x| x.get("name").and_then(serde_json::Value::as_str))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let order = names(root.get("scene_order"), &|_| true);
+    if !order.is_empty() {
+        return order;
+    }
+    names(root.get("sources"), &|x| {
+        x.get("id").and_then(serde_json::Value::as_str) == Some("scene")
+    })
+}
+
+/// "1920 x 1080, 60 fps" from a profile's `[Video]`, or empty.
+pub fn canvas_summary(files: &rbs_import_obs::ProfileFiles) -> String {
+    let ini = rbs_import_obs::ini::Ini::parse(&String::from_utf8_lossy(&files.basic_ini));
+    let v = rbs_import_obs::VideoFacts::read(&ini);
+    match (v.base, v.fps) {
+        (Some((w, h)), Some((n, d))) if d > 0 => {
+            let fps = f64::from(n) / f64::from(d);
+            let fps = if (fps - fps.round()).abs() < 0.005 {
+                format!("{}", fps.round())
+            } else {
+                format!("{fps:.2}")
+            };
+            format!("{w} x {h}, {fps} fps")
+        }
+        (Some((w, h)), _) => format!("{w} x {h}"),
+        _ => String::new(),
+    }
+}
+
+/// One line of the Check page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRow {
+    /// The OBS object.
+    pub name: String,
+    /// The scenes it is in, or empty.
+    pub place: String,
+    /// Why, and what to do.
+    pub reason: String,
+}
+
+impl From<&ReportEntry> for CheckRow {
+    fn from(e: &ReportEntry) -> Self {
+        Self {
+            name: e.obs_name.clone(),
+            place: e.scenes.join(", "),
+            reason: match &e.hint {
+                Some(h) => format!("{} {h}", e.reason),
+                None => e.reason.clone(),
+            },
+        }
+    }
+}
+
+/// The Check page: "4 · 8 · 7" (scenes, sources, items as in OBS), what came across
+/// approximately and what did not. Parts the user left out are not listed.
+pub fn check_view(report: &rbs_import_obs::ImportReport) -> (String, Vec<CheckRow>, Vec<CheckRow>) {
+    let e = &report.exact;
+    let exact = format!("{} · {} · {}", e.scenes, e.sources, e.items);
+    let rows = |o: Outcome| report.with_outcome(o).map(CheckRow::from).collect();
+    (exact, rows(Outcome::Approximated), rows(Outcome::Skipped))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
@@ -405,7 +530,7 @@ mod tests {
     use rbs_import_obs::{Lookup, LookupTarget, Mappers, Options, plan};
     use std::path::PathBuf;
 
-    use crate::stream_key::MemoryKeyStore;
+    use crate::stream_key::{KeyStore, MemoryKeyStore};
 
     /// ADR-0131 decision 1: every mapper's RBS type and field key exists in this build.
     #[test]
@@ -540,7 +665,15 @@ mod tests {
         let lock = data.try_lock().unwrap().unwrap();
         let keys = MemoryKeyStore::new();
         let p = the_plan("advanced", &Options::default());
-        let w = write(&data, &lock, &p, &keys, Platform::Windows, &|_| true).unwrap();
+        let w = write(
+            &data,
+            &lock,
+            &p,
+            &|a, k| keys.write(a, &k),
+            Platform::Windows,
+            &|_| true,
+        )
+        .unwrap();
         assert_eq!(w.collection.1, "Evening show");
         let (pid, pname) = w.profile.clone().unwrap();
         assert_eq!(pname, "Advanced");
@@ -555,7 +688,15 @@ mod tests {
         assert!(!format!("{w:?}").contains("SECRET"));
 
         // A second import gets free names and adds no duplicate shortcut.
-        let w2 = write(&data, &lock, &p, &keys, Platform::Windows, &|_| true).unwrap();
+        let w2 = write(
+            &data,
+            &lock,
+            &p,
+            &|a, k| keys.write(a, &k),
+            Platform::Windows,
+            &|_| true,
+        )
+        .unwrap();
         assert_eq!(w2.collection.1, "Evening show 2");
         assert_eq!(w2.profile.unwrap().1, "Advanced 2");
         let (doc2, _) = data.shortcuts();
@@ -576,7 +717,15 @@ mod tests {
             ..Options::default()
         };
         let p = the_plan("advanced", &options);
-        let w = write(&data, &lock, &p, &keys, Platform::Windows, &|_| true).unwrap();
+        let w = write(
+            &data,
+            &lock,
+            &p,
+            &|a, k| keys.write(a, &k),
+            Platform::Windows,
+            &|_| true,
+        )
+        .unwrap();
         let (pid, _) = w.profile.unwrap();
         assert!(
             keys.read(&stream_key::account(pid.as_str()))
@@ -587,5 +736,20 @@ mod tests {
         assert!(profile.get::<StreamProfile>(STREAM).unwrap().is_none());
         drop(lock);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_wizard_helpers_read_the_fixtures() {
+        let json = std::fs::read(fixtures().join("show.json")).unwrap();
+        let names = scene_names(&json);
+        assert!(names.contains(&"Main".to_owned()), "{names:?}");
+        assert!(scene_names(b"not json").is_empty());
+        let files = read_profile(&fixtures().join("advanced")).unwrap();
+        assert_eq!(canvas_summary(&files), "2560 x 1440, 59.94 fps");
+        let p = the_plan("advanced", &Options::default());
+        let (exact, approx, skipped) = check_view(&p.report);
+        assert_eq!(exact.matches('·').count(), 2);
+        assert!(!approx.is_empty() && !skipped.is_empty());
+        assert!(skipped.iter().all(|r| !r.reason.contains("SECRET")));
     }
 }

@@ -82,6 +82,7 @@ const GENERAL_CLOSING: &[Place] = &[at("general", "settings.general.closing")];
 const GENERAL_CAPTURE: &[Place] = &[at("general", "settings.general.capture")];
 const GENERAL_STUDIO: &[Place] = &[at("general", "settings.general.studio")];
 const GENERAL_GLIDE: &[Place] = &[at("general", "settings.general.glide")];
+const GENERAL_IMPORT: &[Place] = &[at("general", "settings.general.import")];
 const AUDIO_MONITOR: &[Place] = &[at("audio", "settings.audio.monitor")];
 const AUDIO_LOUDNESS: &[Place] = &[at("audio", "settings.audio.loudness")];
 const APPEARANCE_IN_USE: &[Place] = &[at("appearance", "settings.appearance.theme-in-use")];
@@ -201,6 +202,19 @@ pub const SETTINGS: &[Setting] = &[
         "Easing",
         "glide curve animation",
         GENERAL_GLIDE,
+        Simple,
+    ),
+    c(
+        "settings.general.import",
+        "Bring from another app",
+        "import migrate obs",
+        GENERAL_IMPORT,
+    ),
+    row(
+        "general.import-obs",
+        "OBS Studio",
+        "import migrate obs scenes profile hotkeys switch from",
+        GENERAL_IMPORT,
         Simple,
     ),
     // Audio

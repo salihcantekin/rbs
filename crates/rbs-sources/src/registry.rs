@@ -326,6 +326,8 @@ pub struct MediaSource {
     /// (`BindReport::picture_sound`). Drop it when the binder has no audio partition;
     /// the worker then decodes no sound.
     pub sound: rbs_nodes::MediaSoundNode,
+    /// Play, pause, seek, and restart (ADR-0108 decision 10). Control path only.
+    pub control: rbs_nodes::MediaControl,
     /// Upload, drop, repeat, and underrun counters.
     pub stats: Arc<rbs_nodes::MediaStats>,
     /// The decoder factory chosen for this node.
@@ -1226,6 +1228,7 @@ impl SourceTypes {
         Ok(SourceInstance::Media(Box::new(MediaSource {
             picture: pair.picture,
             sound: pair.sound,
+            control: pair.control,
             stats,
             adapter: factory.id(),
         })))

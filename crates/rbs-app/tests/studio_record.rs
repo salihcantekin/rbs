@@ -1397,12 +1397,17 @@ impl rbs_api::transport::ConnectionSender for JsonSender {
 
 impl ApiClient {
     fn attach(host: &StudioHost) -> Self {
+        Self::attach_with(host, rbs_api::TokenStore::new())
+    }
+
+    /// [`ApiClient::attach`] with a server that accepts `tokens`.
+    fn attach_with(host: &StudioHost, tokens: rbs_api::TokenStore) -> Self {
         let server =
             rbs_api::session::ServerConfig::new(rbs_api::request::ClientInfo::new("rbs", "test"))
                 .unwrap();
         let (api, endpoint) = rbs_api::ApiServer::start(
             server,
-            rbs_api::TokenStore::new(),
+            tokens,
             rbs_api::thread::ApiOptions::new(host.api_waker()),
         )
         .unwrap();
@@ -2871,5 +2876,94 @@ fn the_window_pauses_and_resumes_the_recording() {
         why.starts_with("The recording could not pause or resume"),
         "{why}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR-0052 decision 4 through the real target: while a recording runs, an IPC
+/// session narrowed to a token without "Allow actions that cannot be undone" may not
+/// change what is on air (`not_permitted`, reason `on_air`), may still edit what is
+/// off air, and is refused live calls; once the recording stops, the same edit passes.
+#[test]
+fn a_token_without_the_permission_cannot_change_what_is_on_air() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-on-air-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::ListTargets(SourceKind::Screen));
+    let display = next(&rx, |u| match u {
+        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
+        _ => None,
+    });
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: display,
+    });
+    let source = rows_where(&rx, |r| r.len() == 1)[0].id.get();
+
+    let token = rbs_api::token::Token::from_bytes(&[7; 32]);
+    let mut tokens = rbs_api::TokenStore::new();
+    tokens.insert(rbs_api::token::TokenEntry {
+        irreversible: false,
+        name: "agent".into(),
+        scopes: rbs_api::ScopeSet::PANEL,
+        hash: token.hash(),
+    });
+    let mut api = ApiClient::attach_with(&host, tokens);
+    let auth = api.call(
+        "session.authenticate",
+        serde_json::json!({"token": token.expose()}),
+    );
+    assert_eq!(auth["result"]["irreversible"], false, "{auth}");
+
+    // Nothing runs: an edit of the program scene's source passes.
+    let quiet = api.call(
+        "source.set_volume",
+        serde_json::json!({"source": source, "volume": 0.8}),
+    );
+    assert!(quiet.get("error").is_none(), "{quiet}");
+
+    host.send(Command::StartRecording(request(dir.join("take.mkv"), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+
+    let louder = api.call(
+        "source.set_volume",
+        serde_json::json!({"source": source, "volume": 0.5}),
+    );
+    assert_eq!(error_kind(&louder), "not_permitted", "{louder}");
+    assert_eq!(louder["error"]["data"]["reason"], "on_air", "{louder}");
+    let switch = api.call("canvas.transition", serde_json::json!({}));
+    assert_eq!(error_kind(&switch), "not_permitted", "{switch}");
+
+    // Off air: a new scene, renamed.
+    let added = api.call("scene.add", serde_json::json!({"name": "Spare"}));
+    let spare = added["result"]["scene"].as_u64().unwrap();
+    let renamed = api.call(
+        "scene.rename",
+        serde_json::json!({"scene": spare, "name": "Next"}),
+    );
+    assert!(renamed.get("error").is_none(), "{renamed}");
+    // Placing the on-air source there still touches it.
+    let placed = api.call(
+        "item.add",
+        serde_json::json!({"scene": spare, "source": source}),
+    );
+    assert_eq!(error_kind(&placed), "not_permitted", "{placed}");
+
+    let stop = api.call("record.stop", serde_json::json!({}));
+    assert_eq!(error_kind(&stop), "not_permitted", "{stop}");
+    assert_eq!(stop["error"]["data"]["reason"], "irreversible", "{stop}");
+
+    stop_recording(&host, &rx, &clock);
+    let after = api.call(
+        "source.set_volume",
+        serde_json::json!({"source": source, "volume": 0.5}),
+    );
+    assert!(after.get("error").is_none(), "{after}");
     let _ = std::fs::remove_dir_all(&dir);
 }

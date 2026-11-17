@@ -278,6 +278,13 @@ const FLIP_AXIS: Param = Param {
     required: true,
 };
 
+/// Whether `scene.duplicate` shares the sources or copies them (ADR-0133 decision 4).
+const DUPLICATE_SOURCES: Param = Param {
+    name: "sources",
+    ty: ParamType::OneOf(&["shared", "copied"]),
+    required: false,
+};
+
 /// Which way `item.move` / `scene.move` steps in order (front/back: protocol 1.36).
 const MOVE_DIRECTION: Param = Param {
     name: "direction",
@@ -1061,7 +1068,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::Scene,
         kind: action("scene.duplicate"),
-        params: &[target("scene"), COLLECTION],
+        params: &[target("scene"), COLLECTION, DUPLICATE_SOURCES],
         checkable: false,
         fixed: &[],
     },
@@ -1422,6 +1429,54 @@ pub const ENTRIES: &[Entry] = &[
         menu: Menu::Source,
         kind: action("loudness.reset"),
         params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "source.duplicate",
+        title: "Duplicate source",
+        tooltip: "Make an independent copy of the source above it, with its own settings",
+        icon: Some("copy"),
+        shortcut: Some("Ctrl+D"),
+        menu: Menu::Source,
+        kind: action("source.duplicate"),
+        params: &[target("source"), COLLECTION],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "source.copy_attributes",
+        title: "Copy attributes",
+        tooltip: "Remember the source's settings to paste chosen parts onto other sources",
+        icon: Some("copy"),
+        shortcut: Some("Ctrl+Shift+C"),
+        menu: Menu::Source,
+        kind: action("source.copy_attributes"),
+        params: &[target("source"), COLLECTION],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.source.paste_attributes",
+        title: "Paste attributes…",
+        tooltip: "Choose which copied settings to paste onto which sources",
+        icon: Some("import"),
+        shortcut: Some("Ctrl+Shift+V"),
+        menu: Menu::Source,
+        kind: action("ui.source.paste_attributes"),
+        params: &[target("source"), COLLECTION],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.source.reset",
+        title: "Reset source…",
+        tooltip: "Choose which of the source's settings go back to their defaults",
+        icon: Some("reset"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("ui.source.reset"),
+        params: &[target("source"), COLLECTION],
         checkable: false,
         fixed: &[],
     },
@@ -2152,6 +2207,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "scene.add",
             "{Edit scene:pencil",
             "scene.duplicate",
+            "scene.duplicate?sources=copied",
             "scene.rename",
             "scene.move?direction=up",
             "scene.move?direction=down",
@@ -2193,10 +2249,16 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "}",
             "{Source:gear",
             "source.rename",
+            "source.duplicate",
             "source.settings",
             "ui.properties.show?tab=filters",
             "source.reload",
             "ui.properties.show?tab=source",
+            "}",
+            "{Attributes:copy",
+            "source.copy_attributes",
+            "ui.source.paste_attributes",
+            "ui.source.reset",
             "}",
             "|",
             "item.remove",
@@ -2407,6 +2469,9 @@ pub fn title(id: &CommandId, e: &Entry) -> String {
             "back" => "Move to bottom".to_owned(),
             _ => e.title.to_owned(),
         };
+    }
+    if let ("scene.duplicate", Some("copied")) = (e.id, id.param("sources")) {
+        return "Duplicate scene with new sources".to_owned();
     }
     if let ("ui.properties.show", Some(tab)) = (e.id, id.param("tab")) {
         return match tab {
@@ -2961,6 +3026,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "scene.select",
             "scene.rename",
             "scene.duplicate",
+            "scene.duplicate?sources=copied",
             "scene.audio.own_levels.toggle",
             "|",
             "scene.move?direction=up",
@@ -3003,10 +3069,16 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "|",
             "{Source:gear",
             "source.rename",
+            "source.duplicate",
             "source.settings",
             "ui.properties.show?tab=filters",
             "source.reload",
             "ui.properties.show?tab=source",
+            "}",
+            "{Attributes:copy",
+            "source.copy_attributes",
+            "ui.source.paste_attributes",
+            "ui.source.reset",
             "}",
             "|",
             "item.remove",
@@ -3836,6 +3908,7 @@ mod tests {
             [
                 "scene.rename?scene=7",
                 "scene.duplicate?scene=7",
+                "scene.duplicate?scene=7&sources=copied",
                 "scene.audio.own_levels.toggle?scene=7",
                 "|",
                 "scene.move?direction=up&scene=7",
@@ -3867,6 +3940,7 @@ mod tests {
                 "item.locked.toggle?item=40",
                 "|",
                 "[Source]",
+                "[Attributes]",
                 "|",
                 "item.remove?item=40",
                 "source.delete?source=12"

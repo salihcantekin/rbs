@@ -11,7 +11,7 @@ use std::time::Duration;
 use rbs_core::time::Timestamp;
 
 use crate::codec::{Codec, JsonCodec, RequestId};
-use crate::control::{Forwarded, Reply};
+use crate::control::{Caller, Forwarded, Reply};
 use crate::error::{ApiError, ErrorKind};
 use crate::event::{Event, EventPayload, StateKey, Topic, TopicSet};
 use crate::request::{
@@ -31,6 +31,10 @@ use crate::transport::{
 /// profile's `markers`, `while_paused` on `marker.add`'s answer, and marker times in
 /// file time.
 /// 1.62 adds the marker settings (ADR-0089): `markers` on a recording profile.
+/// 1.77 adds filter latency (ADR-0130 decision 9): `latency_ms` on audio filter types;
+/// `filter_latency_ms`, `effective_offset_ms`, `uncompensated_ms`, and in `source.list`
+/// `input_late_frames` and `input_resyncs` on a source; `effective_offset_ms` of
+/// `sync.measure.changed` is the heard offset `h`.
 /// 1.75 adds text sources (ADR-0129 decision 8): `kind: "text"` with `text` on
 /// `source.add`, `source.set_text`, `text.fonts` and the error kinds `forbidden` (a
 /// text source's `file` cannot be written through the API) and `not_ready`.
@@ -94,7 +98,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.76";
+pub const PROTOCOL_VERSION: &str = "1.78";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -366,6 +370,9 @@ struct Session {
     /// ADR-0052 decision 3).
     narrowable: bool,
     queue: VecDeque<Queued>,
+    /// The method of the request in flight, for auditing the control thread's
+    /// `not_permitted` refusals.
+    in_flight_method: Option<&'static str>,
     in_flight: bool,
     bucket: Bucket,
     /// `marker.add` only (protocol 1.50).
@@ -630,6 +637,7 @@ impl Server {
                 transport_closed: false,
                 pending_auth: None,
                 narrowable: false,
+                in_flight_method: None,
                 queue: VecDeque::new(),
                 in_flight: false,
                 bucket: Bucket {
@@ -1103,11 +1111,28 @@ impl Server {
                         }
                         self.update_mask();
                     }
+                    let mut caller = Caller::local();
                     if let Some(s) = self.sessions.get_mut(&conn) {
                         s.in_flight = true;
+                        s.in_flight_method = Some(command.method());
+                        if let Phase::Ready {
+                            irreversible,
+                            token,
+                            ..
+                        } = &s.phase
+                        {
+                            caller = Caller {
+                                token: token.as_ref().map(|(n, _, _, _)| n.clone()),
+                                irreversible: *irreversible,
+                            };
+                        }
                     }
-                    self.actions
-                        .push_back(Action::Forward(Forwarded { conn, id, command }));
+                    self.actions.push_back(Action::Forward(Forwarded {
+                        conn,
+                        id,
+                        command,
+                        caller,
+                    }));
                     return;
                 }
             }
@@ -1120,6 +1145,34 @@ impl Server {
             return;
         };
         s.in_flight = false;
+        let method = s.in_flight_method.take();
+        // A refusal made on the control thread is audited here, as it is forwarded
+        // (ADR-0052 decision 5).
+        if let (Err(e), Some(method)) = (&result, method)
+            && e.kind == ErrorKind::NotPermitted
+        {
+            let reason = match e
+                .data
+                .as_ref()
+                .and_then(|d| d.get("reason"))
+                .and_then(|r| r.as_str())
+            {
+                Some("on_air") => "on_air",
+                Some("network") => "network",
+                _ => "irreversible",
+            };
+            let token = s.token_name();
+            self.actions
+                .push_back(Action::Audit(AuditEvent::NotPermitted {
+                    conn,
+                    token,
+                    method,
+                    reason,
+                }));
+        }
+        let Some(s) = self.sessions.get_mut(&conn) else {
+            return;
+        };
         if matches!(s.phase, Phase::Closed) {
             self.forget_if_done(conn);
             return;
