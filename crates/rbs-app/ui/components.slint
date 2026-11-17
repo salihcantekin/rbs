@@ -2,7 +2,7 @@
 // Every value comes from the generated tokens (rule U6). Every control is reachable
 // by keyboard, shows a focus ring and has an accessible role and name (rule U7).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays, ContextMenus, MenuRow } from "base/types.slint";
+import { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays, ContextMenus, MenuRow, Shell, TabData } from "base/types.slint";
 export { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays }
 
 // The mark of a row or card found by Settings search: a focus-coloured outline that
@@ -53,6 +53,86 @@ export component FocusRing inherits Rectangle {
     border-width: show ? Tokens.size-focus-ring : 0px;
     border-color: Theme.border-focus;
     border-radius: root.radius;
+}
+
+// The sunken look of a well (a text field, a number field, a drop-down, an unchecked
+// box) with theme effects (ADR-0120 decision 14, owner 2026-11-17): the theme's shadow
+// falls inward from the top edge, so the well reads as cut into the surface while the
+// buttons stand on it. Put it first in the well, so the content draws over it; it fills
+// the well inside its border. Calm adds nothing: the caller creates it only when
+// `Theme.effects-on` (zero cost when unused, P13).
+export component WellShade inherits Rectangle {
+    // The well's own border width and corner radius.
+    in property <length> inset: Tokens.size-border;
+    in property <length> radius: Tokens.radius-sm;
+    // Without a size of its own it fills the well (an element outside a layout does).
+    accessible-role: none;
+    Rectangle {
+        x: root.inset;
+        y: root.inset;
+        width: root.width - 2 * root.inset;
+        height: root.height - 2 * root.inset;
+        border-radius: max(0px, root.radius - root.inset);
+        inner-shadow-blur: Theme.effects-shadow-blur;
+        inner-shadow-offset-y: Theme.effects-shadow-offset;
+        inner-shadow-color: Theme.effects-shadow;
+    }
+}
+
+// A raised card on a page: a settings card, a step of a wizard. `surface.raised`,
+// `radius.lg`, an outline only where colour does not separate it (ADR-0112 decision 3,
+// `outlined` defaults to the theme's `panel-outline`). With theme effects the card stands
+// on the theme's soft shadow, as a button does (ADR-0120 decision 14, owner 2026-11-17);
+// Calm draws none (a zero blur draws nothing).
+export component SurfaceCard inherits Rectangle {
+    in property <bool> outlined: Theme.panel-outline;
+    background: Theme.surface-raised;
+    border-radius: Tokens.radius-lg;
+    border-width: root.outlined ? Tokens.size-border : 0px;
+    border-color: Theme.border-subtle;
+    drop-shadow-blur: Theme.effects-on ? Theme.effects-shadow-blur : 0px;
+    drop-shadow-offset-y: Theme.effects-on ? Theme.effects-shadow-offset : 0px;
+    drop-shadow-color: Theme.effects-on ? Theme.effects-shadow : transparent;
+}
+
+// One line under a field that says what it does (U2: every option explains itself).
+export component HintText inherits Text {
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
+}
+
+// One line that says what is wrong with a field's value, in the error colour.
+export component ErrorText inherits Text {
+    color: Theme.state-error;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
+}
+
+// A field with its name above it, in the caption style: the name is not the control's
+// accessible name (the control carries its own `label`).
+export component CaptionField inherits VerticalLayout {
+    in property <string> label;
+    spacing: Tokens.space-1;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    @children
+}
+
+// The area of a panel or a row that opens its context menu: a press of the right button
+// reports where, in the area's own coordinates. Under the rows and controls, so they
+// keep their own presses.
+export component MenuArea inherits TouchArea {
+    callback menu-at(length, length);
+    pointer-event(e) => {
+        if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+            root.menu-at(self.mouse-x, self.mouse-y);
+        }
+    }
 }
 
 // The RBS mark (docs/specs/ui-design-system.md, "Brand mark"): a scene frame with a round
@@ -1163,9 +1243,12 @@ export component Select inherits Rectangle {
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
     border-color: !root.enabled ? Theme.border-subtle
-        : touch.has-hover || root.list-open ? Theme.border-strong : Theme.border-subtle;
+        : touch.has-hover || root.list-open ? (Theme.effects-rim-on ? Theme.effects-rim-secondary : Theme.border-strong)
+        : Theme.border-subtle;
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
+    // Effects: the sunken well (`WellShade`); Glow's rim on hover and while open.
+    if Theme.effects-on && root.enabled && !touch.pressed: WellShade { }
     accessible-role: combobox;
     accessible-expandable: true;
     accessible-expanded: root.list-open;
@@ -1209,6 +1292,152 @@ export component Select inherits Rectangle {
     FocusRing { show: focus.ring; }
 }
 
+// A tab in a panel header (spec Frame): its title, underlined in the accent colour
+// while it is the shown one, with no tab background. Hover and press show a quiet
+// plate; the underline grows in and out (`motion.fast`). Keyboard focus shows the focus
+// ring; a click does not (RingFocus). Dragging moves the panel (ADR-0049 decision 5).
+export component PanelTab inherits Rectangle {
+    in property <TabData> tab;
+    in property <bool> selected;
+    // A stack with one panel is a window title, not a tab.
+    in property <bool> sole;
+    callback activate();
+    callback open-menu();
+    callback close();
+    // Double-click, or Shift+Escape (Escape alone stays with dialogs and fields).
+    callback maximize();
+    height: Tokens.size-control-lg;
+    width: title.preferred-width + 2 * Tokens.space-2;
+    border-radius: Tokens.radius-sm;
+    background: root.sole ? transparent
+        : touch.pressed ? Theme.surface-sunken
+        : !root.selected && touch.has-hover ? Theme.surface-overlay : transparent;
+    animate background { duration: Tokens.motion-fast; }
+    accessible-role: AccessibleRole.tab;
+    accessible-label: tab.title;
+    accessible-item-selected: selected;
+    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it; Shift+Escape maximizes or restores it");
+    accessible-action-default => { activate(); }
+    forward-focus: focus;
+    focus := RingFocus {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.activate(); return accept; }
+            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { root.open-menu(); return accept; }
+            if e.text == Key.Delete || e.text == Key.Backspace { root.close(); return accept; }
+            if e.text == Key.Escape && e.modifiers.shift { root.maximize(); return accept; }
+            reject
+        }
+    }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope under the
+    // pointer takes the press for itself (focus-on-click). A press without a drag
+    // reaches the TouchArea inside as a click. Not while the layout is locked.
+    drag := DragArea {
+        allow-move: !Shell.locked;
+        data: Shell.panel-data(tab.id);
+        touch := TouchArea {
+            clicked => { focus.focus-pointer(); root.activate(); }
+            double-clicked => { root.maximize(); }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { root.open-menu(); }
+            }
+        }
+    }
+    title := Text {
+        x: Tokens.space-2;
+        text: tab.title;
+        color: root.selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-label-size;
+        font-weight: root.selected && !root.sole ? Tokens.type-title-weight : Tokens.type-label-weight;
+        vertical-alignment: center;
+    }
+    // The underline grows from the middle of the title.
+    property <length> line: root.selected && !root.sole ? title.preferred-width : 0px;
+    Rectangle {
+        x: title.x + (title.preferred-width - self.width) / 2;
+        width: root.line;
+        y: parent.height - Tokens.size-tab-indicator;
+        height: Tokens.size-tab-indicator;
+        border-radius: self.height / 2;
+        background: Theme.accent;
+        animate width { duration: Tokens.motion-fast; easing: ease-out; }
+    }
+    FocusRing { show: focus.ring; }
+}
+
+// One entry of a section list (the Settings window). The section in use has a quiet
+// plate, an accent bar at its leading edge, an accent icon and the label weight, and is
+// marked checked for screen readers, so it is never shown by colour alone (U7). Hover
+// shows the plate, a press a sunken one. With theme effects the plate of the section in
+// use stands on the soft shadow of a SegmentedControl's chosen plate (ADR-0120 decision
+// 14, owner 2026-11-17). `compact`: the collapsed list shows the icon only; the name
+// stays the accessible name.
+export component SettingsNavItem inherits Rectangle {
+    in property <string> text;
+    in property <IconName> icon;
+    in property <bool> current;
+    in property <bool> compact;
+    callback activated();
+    height: Tokens.size-control-lg;
+    border-radius: Tokens.radius-md;
+    background: touch.pressed ? Theme.surface-sunken
+        : root.current || touch.has-hover ? Theme.surface-overlay : transparent;
+    animate background { duration: Tokens.motion-fast; }
+    drop-shadow-blur: Theme.effects-on && root.current ? Theme.effects-plate-shadow-blur : 0px;
+    drop-shadow-offset-y: Theme.effects-on && root.current ? Theme.effects-plate-shadow-offset : 0px;
+    drop-shadow-color: Theme.effects-on && root.current ? Theme.effects-shadow : transparent;
+    accessible-role: list-item;
+    accessible-label: text;
+    accessible-checked: current;
+    accessible-item-selectable: true;
+    accessible-item-selected: current;
+    accessible-action-default => { activated(); }
+    forward-focus: focus;
+    // The bar of the section in use: `size.tab-indicator` wide, half the entry high.
+    Rectangle {
+        x: 0px;
+        y: (root.height - self.height) / 2;
+        width: Tokens.size-tab-indicator;
+        height: root.current ? root.height / 2 : 0px;
+        border-radius: self.width / 2;
+        background: Theme.accent;
+        animate height { duration: Tokens.motion-fast; easing: ease-out; }
+    }
+    HorizontalLayout {
+        padding-left: root.compact ? 0px : Tokens.space-3;
+        padding-right: root.compact ? 0px : Tokens.space-2;
+        spacing: Tokens.space-2;
+        alignment: root.compact ? LayoutAlignment.center : LayoutAlignment.stretch;
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: center;
+            Icon {
+                name: root.icon;
+                ink: root.current ? Theme.accent : Theme.text-secondary;
+            }
+        }
+        if !root.compact: Text {
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            font-weight: root.current ? Tokens.type-label-weight : Tokens.type-body-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    focus := RingFocus {
+        focus-on-click: false;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
+            reject
+        }
+    }
+    // A click does not focus the entry (no focus ring after a click); Tab does.
+    touch := TouchArea {
+        clicked => { root.activated(); }
+    }
+    FocusRing { show: focus.ring; radius: Tokens.radius-md; }
+}
+
 // Checkbox: an on/off setting with its label beside the box. Toggled by click, Space
 // or Enter; the label is the accessible name and the state is shown by the check mark
 // as well as the fill (never by colour alone, U7). States: unchecked, checked, hover
@@ -1243,12 +1472,40 @@ export component Checkbox inherits Rectangle {
                 width: Tokens.size-icon-box;
                 height: Tokens.size-icon-box;
                 border-radius: Tokens.radius-sm;
-                border-width: Tokens.size-border;
+                border-width: self.fx-on ? 0px : Tokens.size-border;
                 border-color: !root.enabled ? Theme.border-subtle
                     : touch.has-hover && !root.read-only ? Theme.accent : Theme.border-subtle;
-                background: !root.enabled ? Theme.surface-sunken
+                // Effects (ADR-0120 decision 14, owner 2026-11-17): a checked box is drawn
+                // as a primary Button is (key edge, shadow, gradient face), like the on
+                // track of a Toggle; an unchecked box is a sunken well. Calm draws neither.
+                property <bool> fx-on: Theme.effects-on && root.enabled && root.checked;
+                property <color> face-fill: touch.pressed ? Theme.accent-pressed
+                    : touch.has-hover && !root.read-only ? Theme.accent-hover : Theme.accent;
+                background: self.fx-on ? transparent
+                    : !root.enabled ? Theme.surface-sunken
                     : root.checked ? (touch.pressed ? Theme.accent-hover : Theme.accent)
                     : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
+                if box.fx-on: Rectangle {
+                    width: parent.width;
+                    height: parent.height + Theme.effects-key-edge;
+                    border-radius: parent.border-radius;
+                    background: Theme.effects-key-primary;
+                    drop-shadow-blur: Theme.effects-shadow-blur;
+                    drop-shadow-offset-y: Theme.effects-shadow-offset;
+                    drop-shadow-color: Theme.effects-shadow;
+                }
+                if box.fx-on: Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    border-radius: parent.border-radius;
+                    background: Theme.effects-shade-primary
+                        ? @linear-gradient(180deg,
+                            (touch.pressed ? Theme.effects-top-primary-pressed : touch.has-hover && !root.read-only ? Theme.effects-top-primary-hover : Theme.effects-top-primary-rest) 0%,
+                            parent.face-fill Theme.effects-stop-primary * 100%,
+                            (touch.pressed ? Theme.effects-bottom-primary-pressed : touch.has-hover && !root.read-only ? Theme.effects-bottom-primary-hover : Theme.effects-bottom-primary-rest) 100%)
+                        : parent.face-fill;
+                }
+                if Theme.effects-on && root.enabled && !root.checked && !touch.pressed: WellShade { }
                 Icon {
                     name: root.checked ? IconName.check : IconName.none;
                     ink: root.enabled ? Theme.text-inverse : Theme.text-disabled;
@@ -1736,8 +1993,16 @@ export component ChoiceCard inherits Rectangle {
     background: root.checked ? (touch.has-hover ? Theme.accent-subtle-hover : Theme.accent-subtle)
         : touch.pressed ? Theme.button-pressed
         : touch.has-hover ? Theme.button-hover : Theme.button-fill;
-    border-width: root.checked || Theme.button-outline ? Tokens.size-border : 0px;
-    border-color: root.checked ? Theme.accent : Theme.border-subtle;
+    // Effects (ADR-0120 decision 14, owner 2026-11-17): the card stands on the theme's
+    // soft shadow as a button does, and an unchosen card takes Glow's rim. No gradient:
+    // the face pairs are searched for button heights, not for a card's two text lines.
+    property <bool> fx: Theme.effects-on;
+    border-width: root.checked || Theme.button-outline || (root.fx && Theme.effects-rim-on) ? Tokens.size-border : 0px;
+    border-color: root.checked ? Theme.accent
+        : root.fx && Theme.effects-rim-on ? Theme.effects-rim-secondary : Theme.border-subtle;
+    drop-shadow-blur: root.fx ? Theme.effects-shadow-blur : 0px;
+    drop-shadow-offset-y: root.fx && !touch.pressed ? Theme.effects-shadow-offset : 0px;
+    drop-shadow-color: root.fx ? Theme.effects-shadow : transparent;
     min-height: body.min-height;
     preferred-height: body.preferred-height;
     accessible-role: AccessibleRole.radio-button;
@@ -1978,6 +2243,8 @@ export component TextField inherits Rectangle {
     border-color: input.has-focus ? Theme.border-focus : Theme.border-subtle;
     background: Theme.surface-sunken;
     forward-focus: input;
+    // Effects: the sunken well, under the text.
+    if Theme.effects-on && root.enabled: WellShade { }
     if root.text == "" && root.placeholder != "": Text {
         x: Tokens.space-2;
         width: parent.width - 2 * Tokens.space-2 - root.end-inset;
@@ -2038,6 +2305,8 @@ export component TextArea inherits Rectangle {
     border-color: input.has-focus ? Theme.border-focus : Theme.border-subtle;
     background: Theme.surface-sunken;
     forward-focus: input;
+    // Effects: the sunken well, under the text.
+    if Theme.effects-on && root.enabled: WellShade { }
     if root.text == "" && root.placeholder != "": Text {
         x: Tokens.space-2;
         y: Tokens.space-1;
@@ -2109,8 +2378,14 @@ export component ColorPicker inherits Rectangle {
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
-    border-color: touch.has-hover && root.enabled ? Theme.accent : Theme.border-subtle;
+    border-color: touch.pressed && root.enabled ? Theme.border-strong
+        : touch.has-hover && root.enabled ? Theme.accent : Theme.border-subtle;
     background: root.value;
+    // Effects: the swatch is a raised chip on the theme's soft shadow, flat while
+    // pressed. Calm draws none.
+    drop-shadow-blur: Theme.effects-on && root.enabled && !touch.pressed ? Theme.effects-shadow-blur : 0px;
+    drop-shadow-offset-y: Theme.effects-on && root.enabled && !touch.pressed ? Theme.effects-shadow-offset : 0px;
+    drop-shadow-color: Theme.effects-on && root.enabled ? Theme.effects-shadow : transparent;
     accessible-role: button;
     accessible-label: root.label;
     accessible-enabled: root.enabled;
@@ -2125,7 +2400,7 @@ export component ColorPicker inherits Rectangle {
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { root.show-popup(); }
+        clicked => { focus.focus-pointer(); root.show-popup(); }
     }
     FocusRing { show: focus.ring; }
 }
@@ -2432,6 +2707,10 @@ export component Slider inherits Rectangle {
         background: root.enabled ? Theme.text-primary : Theme.text-disabled;
         border-width: touch.has-hover ? Tokens.size-border : 0px;
         border-color: Theme.accent;
+        // Effects: the soft shadow of a raised thumb, as on a Toggle's knob. Calm draws none.
+        drop-shadow-blur: Theme.effects-on && root.enabled ? Theme.effects-shadow-blur : 0px;
+        drop-shadow-offset-y: Theme.effects-on && root.enabled ? Theme.effects-shadow-offset : 0px;
+        drop-shadow-color: Theme.effects-on && root.enabled ? Theme.effects-shadow : transparent;
     }
     focus := RingFocus {
         focus-on-click: false;
@@ -2536,6 +2815,10 @@ export component VSlider inherits Rectangle {
         background: root.enabled ? Theme.text-primary : Theme.text-disabled;
         border-width: touch.has-hover ? Tokens.size-border : 0px;
         border-color: Theme.accent;
+        // Effects: the soft shadow of a raised thumb, as on a Toggle's knob. Calm draws none.
+        drop-shadow-blur: Theme.effects-on && root.enabled ? Theme.effects-shadow-blur : 0px;
+        drop-shadow-offset-y: Theme.effects-on && root.enabled ? Theme.effects-shadow-offset : 0px;
+        drop-shadow-color: Theme.effects-on && root.enabled ? Theme.effects-shadow : transparent;
     }
     focus := RingFocus {
         focus-on-click: false;
@@ -2658,6 +2941,8 @@ export component NumberField inherits Rectangle {
     border-width: Tokens.size-border;
     border-color: input.has-focus ? Theme.border-focus : Theme.border-subtle;
     background: enabled ? Theme.surface-sunken : transparent;
+    // Effects: the sunken well, under the value and the steppers.
+    if Theme.effects-on && root.enabled: WellShade { }
     forward-focus: input;
     accessible-role: spinbox;
     accessible-label: label;
@@ -3313,6 +3598,7 @@ export component ScrollArea inherits Rectangle {
         property <length> thumb-h: min(self.height, max(Tokens.size-scrollbar-thumb-min, self.height * flick.height / root.content-height));
         property <length> thumb-y: (self.height - self.thumb-h) * root.offset / root.max-offset;
         background: self.hot ? Theme.surface-overlay : transparent;
+        animate background { duration: Tokens.motion-fast; }
         border-radius: self.width / 2;
         accessible-role: none;
         Rectangle {
@@ -3322,6 +3608,8 @@ export component ScrollArea inherits Rectangle {
             height: bar.thumb-h;
             border-radius: self.width / 2;
             background: bar.hot ? Theme.scrollbar-thumb-hot : Theme.scrollbar-thumb;
+            // The thumb widens and lightens smoothly under the pointer.
+            animate width, background { duration: Tokens.motion-fast; }
         }
         track := TouchArea {
             in-out property <bool> dragging;
@@ -3406,6 +3694,7 @@ export component HScrollArea inherits Rectangle {
         property <length> thumb-w: min(self.width, max(Tokens.size-scrollbar-thumb-min, self.width * root.width / root.content-width));
         property <length> thumb-x: (self.width - self.thumb-w) * root.offset / root.max-offset;
         background: self.hot ? Theme.surface-overlay : transparent;
+        animate background { duration: Tokens.motion-fast; }
         border-radius: self.height / 2;
         accessible-role: none;
         Rectangle {
@@ -3415,6 +3704,8 @@ export component HScrollArea inherits Rectangle {
             width: bar.thumb-w;
             border-radius: self.height / 2;
             background: bar.hot ? Theme.scrollbar-thumb-hot : Theme.scrollbar-thumb;
+            // The thumb widens and lightens smoothly under the pointer.
+            animate height, background { duration: Tokens.motion-fast; }
         }
         track := TouchArea {
             in-out property <bool> dragging;

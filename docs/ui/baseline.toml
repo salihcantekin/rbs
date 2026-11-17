@@ -6,8 +6,8 @@
 library = ["components.slint"]
 
 [baseline]
-touch = 26
-duplicate = 7
+touch = 15
+duplicate = 0
 help = 10
 effects = 0
 row = 0
