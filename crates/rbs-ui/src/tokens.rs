@@ -189,6 +189,7 @@ pub const DURATIONS: &[&str] = &[
     "delay.repeat-start",
     "delay.repeat",
     "delay.tooltip",
+    "delay.submenu",
     "delay.toast",
     "delay.toast-tick",
     "delay.find-fallback",

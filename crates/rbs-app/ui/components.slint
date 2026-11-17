@@ -2,7 +2,7 @@
 // Every value comes from the generated tokens (rule U6). Every control is reachable
 // by keyboard, shows a focus ring and has an accessible role and name (rule U7).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays } from "base/types.slint";
+import { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays, ContextMenus, MenuRow } from "base/types.slint";
 export { FocusReveal, SettingsFind, IconName, Icons, SizeBand, Experience, Sections, OverlayCover, PickerRow, Overlays }
 
 // The mark of a row or card found by Settings search: a focus-coloured outline that
@@ -1140,9 +1140,6 @@ export component Select inherits Rectangle {
     in property <string> placeholder;
     property <bool> chosen: root.index >= 0 && root.index < root.options.length;
     callback selected(int);
-    // More than 20 options: the scrolling list instead of a menu (owner decision
-    // 2026-11-14; a native menu that long runs off the screen).
-    property <bool> long: root.options.length > 20; // literal: an option count, not a design value
     // The list's choice comes back through `Overlays.select-result` to the Select that
     // opened it; the focus comes back to it when the list closes.
     property <int> my-id: -1;
@@ -1154,12 +1151,10 @@ export component Select inherits Rectangle {
     changed list-open => {
         if !root.list-open { focus.focus(); }
     }
+    // Every list is drawn by RBS (ADR-0137 decision 1): `SelectList`, a layer of the
+    // window, whatever the number of options.
     function open() {
-        if root.long {
-            root.my-id = Overlays.open-select(root.label, root.options, root.index, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
-        } else {
-            menu.show({ x: 0px, y: root.height });
-        }
+        root.my-id = Overlays.open-select(root.label, root.options, root.index, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
     }
     height: Tokens.size-control-md;
     min-width: Tokens.size-menu-sm / 2;
@@ -1172,6 +1167,8 @@ export component Select inherits Rectangle {
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
     accessible-role: combobox;
+    accessible-expandable: true;
+    accessible-expanded: root.list-open;
     accessible-label: @tr("{}: {}", root.label, root.chosen ? root.options[root.index] : root.placeholder);
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.open(); } }
@@ -1210,18 +1207,6 @@ export component Select inherits Rectangle {
         clicked => { focus.focus-pointer(); root.open(); }
     }
     FocusRing { show: focus.ring; }
-    // A short list of options is a native menu (ADR-0094 B1), opened under the field.
-    menu := ContextMenuArea {
-        enabled: false;
-        Menu {
-            for o[i] in root.options: MenuItem {
-                title: o;
-                checkable: true;
-                checked: i == root.index;
-                activated => { root.selected(i); }
-            }
-        }
-    }
 }
 
 // Checkbox: an on/off setting with its label beside the box. Toggled by click, Space
@@ -3541,6 +3526,406 @@ export component ListBox inherits Rectangle {
     }
 }
 
+// One row of a drawn menu: the icon (a check while a choice is the current one), the
+// title, the shortcut, and a submenu's chevron or a checkable command's switch (a
+// boolean setting: the row, the switch, Return or Space change it and the menu stays
+// open). The current row has the plate of a list row on an overlay;
+// a disabled row stays reachable, so its reason can show, and a click on it does
+// nothing.
+component MenuRowView inherits Rectangle {
+    in property <MenuRow> data;
+    in property <bool> current;
+    in property <bool> expanded;
+    in property <int> index;
+    in property <int> count;
+    callback hovered(/* y in the window */ length);
+    callback activated();
+    height: Tokens.size-control-md;
+    preferred-width: line.preferred-width;
+    border-radius: Tokens.radius-sm;
+    border-width: root.current ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
+    background: !root.current ? transparent : data.enabled ? Theme.accent-subtle : Theme.surface-raised;
+    accessible-role: list-item;
+    accessible-label: data.title;
+    accessible-description: data.reason;
+    accessible-enabled: data.enabled;
+    accessible-checkable: data.checkable;
+    accessible-checked: data.checked;
+    accessible-expandable: data.kind == 3;
+    accessible-expanded: root.expanded;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.current;
+    accessible-item-index: root.index;
+    accessible-item-count: root.count;
+    accessible-action-default => { if data.enabled { root.activated(); } }
+    TouchArea {
+        changed has-hover => { if self.has-hover { root.hovered(root.absolute-position.y); } }
+        clicked => { if data.enabled { root.activated(); } }
+        line := HorizontalLayout {
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-2;
+            spacing: Tokens.space-2;
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    name: data.checked && !data.checkable ? IconName.check : Icons.named(data.icon);
+                    ink: !data.enabled ? Theme.text-disabled : data.checked && !data.checkable ? Theme.accent : Theme.text-primary;
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: data.title;
+                color: data.enabled ? Theme.text-primary : Theme.text-disabled;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+            // The shortcut column keeps a gap from the title.
+            if data.shortcut != "" && data.kind == 1: Rectangle { width: Tokens.space-2; }
+            if data.shortcut != "" && data.kind == 1: Text {
+                text: data.shortcut;
+                color: data.enabled ? Theme.text-secondary : Theme.text-disabled;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            if data.kind == 3: VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.chevron-right; ink: data.enabled ? Theme.text-secondary : Theme.text-disabled; }
+            }
+            if data.kind == 1 && data.checkable: Toggle {
+                // The switch alone (no text), so its size never depends on the width.
+                width: (Tokens.size-icon-box + Tokens.space-1) * 2;
+                height: Tokens.size-control-md;
+                label: data.title;
+                checked: data.checked;
+                enabled: data.enabled;
+                toggled => { root.activated(); }
+            }
+        }
+    }
+}
+
+// One level of a drawn menu: its rows on a menu surface, scrolling when its owner
+// gives it less height than it needs, and the reason line under them when `reasons`
+// (the current row's disabled reason on one line; it keeps its height while open).
+component MenuPanel inherits MenuSurface {
+    in property <[MenuRow]> rows;
+    in property <int> current: -1;
+    in property <int> expanded: -1;
+    in property <bool> reasons;
+    // The current row's top, in window coordinates.
+    in-out property <length> current-y;
+    // The size it needs: as wide as its longest row within `size.menu.sm` and
+    // `size.menu.md`, all rows tall.
+    out property <length> natural-w: clamp(row-list.preferred-width + 2 * self.pad, Tokens.size-menu-sm, Tokens.size-menu-md);
+    out property <length> natural-h: row-list.preferred-height + 2 * self.pad + self.reason-h;
+    callback hovered(int);
+    callback activated(int);
+    property <length> pad: Tokens.space-1;
+    property <length> reason-h: root.reasons ? Tokens.size-border + Tokens.type-caption-line + 2 * Tokens.space-1 : 0px;
+    property <string> reason-text: root.current >= 0 && root.current < root.rows.length ? root.rows[root.current].reason : "";
+    accessible-role: list;
+    public function reveal(y: length, h: length) { area.scroll-into-view(y, h); }
+    // A press inside the menu that misses a row (a separator, the padding, the reason
+    // line), or the wheel there, stays here instead of closing the menu.
+    TouchArea {
+        scroll-event(e) => { accept }
+    }
+    area := ScrollArea {
+        x: root.pad;
+        y: root.pad;
+        width: parent.width - 2 * root.pad;
+        height: parent.height - 2 * root.pad - root.reason-h;
+        content-height: row-list.preferred-height;
+        reserve-bar: row-list.preferred-height > self.height;
+        row-list := VerticalLayout {
+            alignment: start;
+            for r[i] in root.rows: VerticalLayout {
+                if r.kind == 2: Rectangle {
+                    height: Tokens.space-2;
+                    Rectangle {
+                        x: Tokens.space-2;
+                        width: parent.width - 2 * Tokens.space-2;
+                        height: Tokens.size-border;
+                        background: Theme.border-subtle;
+                    }
+                }
+                if r.kind != 2: MenuRowView {
+                    data: r;
+                    current: i == root.current;
+                    expanded: i == root.expanded;
+                    index: i;
+                    count: root.rows.length;
+                    changed current => {
+                        if self.current {
+                            root.reveal(parent.y, parent.height);
+                            root.current-y = self.absolute-position.y;
+                        }
+                    }
+                    hovered(y) => { root.current-y = y; root.hovered(i); }
+                    activated => { root.activated(i); }
+                }
+            }
+        }
+    }
+    if root.reasons: Rectangle {
+        y: parent.height - root.reason-h;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    reason := Text {
+        visible: root.reasons;
+        x: Tokens.space-3;
+        y: parent.height - root.reason-h + Tokens.size-border + Tokens.space-1;
+        width: parent.width - 2 * Tokens.space-3;
+        height: Tokens.type-caption-line;
+        // One line, elided, so the menu keeps its height as the current row moves; the
+        // whole reason is the row's accessible description.
+        text: root.reason-text;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+// The drawn menu of a window (ADR-0137), above every other layer, placed by
+// `ContextMenus.place` (below its anchor, else above, else on the side with more room
+// and scrolling; then kept `space.1` inside the window), one submenu beside its row.
+// A press or the wheel outside closes it (the wheel then scrolls what is under it);
+// Escape or Left closes the submenu, Escape or Tab the menu. Up and Down move (no row
+// is current at first; wrapping, over separators), Home and End jump, Right or Return
+// opens a submenu, a letter jumps to a title. It takes every key while open.
+export component MenuLayer inherits Rectangle {
+    property <[MenuRow]> rows: ContextMenus.shown;
+    property <int> current: -1;
+    property <[MenuRow]> sub-rows;
+    // The row whose submenu shows (-1: none) and the submenu's current row.
+    property <int> sub: -1;
+    property <int> sub-current: -1;
+    // The keys go to the submenu.
+    property <bool> in-sub;
+    // The row the pointer rests on, waiting `delay.submenu` to open or close a submenu.
+    property <int> pending: -1;
+    property <length> sub-y;
+    property <int> serial: ContextMenus.serial;
+    property <OverlayCover> spot: ContextMenus.place(
+        { x: ContextMenus.x, y: ContextMenus.y - ContextMenus.above, width: ContextMenus.wide, height: ContextMenus.above },
+        main.natural-w, main.natural-h, root.width, root.height, Tokens.space-1, false);
+    changed serial => { root.reset(); }
+    changed width => { ContextMenus.close(); }
+    changed height => { ContextMenus.close(); }
+    init => {
+        // One layer at a time over the window (decision 2).
+        Overlays.hint-open = false;
+        Overlays.color-open = false;
+        Overlays.select-open = false;
+        Overlays.tip-owner = -1;
+        Overlays.tip-shown = false;
+        root.reset();
+    }
+    function reset() {
+        root.sub = -1;
+        root.sub-current = -1;
+        root.in-sub = false;
+        root.pending = -1;
+        root.current = -1;
+        ContextMenus.sub-open = false;
+    }
+    function live(rows: [MenuRow], i: int) -> bool {
+        return i >= 0 && i < rows.length && rows[i].kind != 2;
+    }
+    // The row `step` away from `from` (-1: from outside the list), wrapping, over a
+    // separator (separators never lead, end or double).
+    function next(rows: [MenuRow], from: int, step: int) -> int {
+        if rows.length == 0 { return -1; }
+        let start = from < 0 ? (step > 0 ? rows.length - 1 : 0) : from;
+        let a = Math.mod(start + step + rows.length, rows.length);
+        if root.live(rows, a) { return a; }
+        let b = Math.mod(a + step + rows.length, rows.length);
+        return root.live(rows, b) ? b : -1;
+    }
+    function open-sub(i: int) {
+        if !root.live(root.rows, i) || root.rows[i].kind != 3 || !root.rows[i].enabled {
+            // A row with no submenu to show closes the one that is open.
+            root.close-sub();
+            return;
+        }
+        if root.sub != i {
+            root.sub-rows = ContextMenus.submenu(i);
+            root.sub = i;
+            root.sub-y = main.current-y;
+            root.sub-current = -1;
+        }
+        ContextMenus.sub-open = root.sub-rows.length > 0;
+    }
+    function close-sub() {
+        root.sub = -1;
+        root.sub-current = -1;
+        root.in-sub = false;
+        ContextMenus.sub-open = false;
+    }
+    function run(id: string) {
+        let s = ContextMenus.serial;
+        ContextMenus.close();
+        ContextMenus.run(id);
+        // The command may have opened another menu; leave that one open.
+        if ContextMenus.serial == s { ContextMenus.open = false; }
+    }
+    function activate(i: int) {
+        if !root.live(root.rows, i) || !root.rows[i].enabled { return; }
+        if root.rows[i].checkable {
+            // A boolean setting changes in place; the menu stays open.
+            root.current = i;
+            if ContextMenus.run(root.rows[i].id) {
+                ContextMenus.shown[i].checked = !ContextMenus.shown[i].checked;
+            } else {
+                ContextMenus.close();
+            }
+            return;
+        }
+        if root.rows[i].kind == 3 {
+            root.current = i;
+            root.open-sub(i);
+            if root.sub == i {
+                root.in-sub = true;
+                root.sub-current = root.next(root.sub-rows, -1, 1);
+            }
+        } else {
+            root.run(root.rows[i].id);
+        }
+    }
+    function activate-sub(i: int) {
+        if !root.live(root.sub-rows, i) || !root.sub-rows[i].enabled { return; }
+        if root.sub-rows[i].checkable {
+            root.sub-current = i;
+            if ContextMenus.run(root.sub-rows[i].id) {
+                root.sub-rows[i].checked = !root.sub-rows[i].checked;
+            } else {
+                ContextMenus.close();
+            }
+            return;
+        }
+        root.run(root.sub-rows[i].id);
+    }
+    // Outside the menu: a press closes it and goes no further; the wheel closes it and
+    // scrolls what is under it.
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down { ContextMenus.close(); }
+        }
+        scroll-event(e) => {
+            ContextMenus.close();
+            reject
+        }
+    }
+    Timer {
+        interval: Tokens.delay-submenu;
+        running: root.pending >= 0;
+        triggered => {
+            let p = root.pending;
+            root.pending = -1;
+            if root.live(root.rows, p) && root.rows[p].kind == 3 { root.open-sub(p); } else { root.close-sub(); }
+        }
+    }
+    property <MenuRow> spoken: root.in-sub ? (root.live(root.sub-rows, root.sub-current) ? root.sub-rows[root.sub-current] : { kind: 2 })
+        : root.live(root.rows, root.current) ? root.rows[root.current] : { kind: 2 };
+    // It takes the keys while open; it has no size, so a press reaches what is under
+    // it (the rows, or the outside area above).
+    keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        focus-on-click: false;
+        init => { self.focus(); }
+        // Rows take no focus (Slint 1.18 has no active descendant): the current row is
+        // this scope's value, so a screen reader hears each move (decision 7).
+        accessible-role: list;
+        accessible-label: @tr("Menu");
+        accessible-value: root.spoken.kind == 2 ? "" : root.spoken.reason != "" ? @tr("{}, {}", root.spoken.title, root.spoken.reason) : root.spoken.title;
+        key-pressed(e) => {
+            if e.text == Key.Tab || e.text == Key.Backtab { ContextMenus.close(); return accept; }
+            if root.in-sub {
+                if e.text == Key.DownArrow { root.sub-current = root.next(root.sub-rows, root.sub-current, 1); return accept; }
+                if e.text == Key.UpArrow { root.sub-current = root.next(root.sub-rows, root.sub-current, -1); return accept; }
+                if e.text == Key.Home { root.sub-current = root.next(root.sub-rows, -1, 1); return accept; }
+                if e.text == Key.End { root.sub-current = root.next(root.sub-rows, -1, -1); return accept; }
+                if e.text == Key.LeftArrow || e.text == Key.Escape { root.close-sub(); return accept; }
+                if e.text == Key.Return || e.text == " " { root.activate-sub(root.sub-current); return accept; }
+                if !e.modifiers.control && !e.modifiers.meta && !e.modifiers.alt {
+                    let f = ContextMenus.find(root.sub-rows, root.sub-current, e.text);
+                    if f >= 0 { root.sub-current = f; }
+                }
+                return accept;
+            }
+            if e.text == Key.DownArrow { root.current = root.next(root.rows, root.current, 1); return accept; }
+            if e.text == Key.UpArrow { root.current = root.next(root.rows, root.current, -1); return accept; }
+            if e.text == Key.Home { root.current = root.next(root.rows, -1, 1); return accept; }
+            if e.text == Key.End { root.current = root.next(root.rows, -1, -1); return accept; }
+            if e.text == Key.Escape || e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
+                ContextMenus.close();
+                return accept;
+            }
+            if e.text == Key.Return || e.text == " " || (e.text == Key.RightArrow && root.live(root.rows, root.current) && root.rows[root.current].kind == 3) {
+                root.activate(root.current);
+                return accept;
+            }
+            if !e.modifiers.control && !e.modifiers.meta && !e.modifiers.alt {
+                let f = ContextMenus.find(root.rows, root.current, e.text);
+                if f >= 0 { root.current = f; }
+            }
+            accept
+        }
+    }
+    main := MenuPanel {
+        rows: root.rows;
+        current: root.current;
+        expanded: root.sub;
+        reasons: ContextMenus.has-reasons;
+        x: root.spot.x;
+        y: root.spot.y;
+        width: root.spot.width;
+        height: root.spot.height;
+        init => { ContextMenus.cover = root.spot; }
+        changed x => { ContextMenus.cover = root.spot; }
+        changed y => { ContextMenus.cover = root.spot; }
+        changed width => { ContextMenus.cover = root.spot; }
+        changed height => { ContextMenus.cover = root.spot; }
+        hovered(i) => {
+            root.current = i;
+            root.in-sub = false;
+            root.sub-current = -1;
+            root.pending = i == root.sub ? -1 : i;
+        }
+        activated(i) => { root.activate(i); }
+    }
+    if root.sub >= 0 && root.sub-rows.length > 0: sub-panel := MenuPanel {
+        property <OverlayCover> spot: ContextMenus.place(
+            { x: main.x, y: root.sub-y - Tokens.space-1, width: main.width, height: Tokens.size-control-md },
+            self.natural-w, self.natural-h, root.width, root.height, Tokens.space-1, true);
+        rows: root.sub-rows;
+        current: root.sub-current;
+        x: self.spot.x;
+        y: self.spot.y;
+        width: self.spot.width;
+        height: self.spot.height;
+        init => { ContextMenus.sub-cover = self.spot; }
+        changed x => { ContextMenus.sub-cover = self.spot; }
+        changed y => { ContextMenus.sub-cover = self.spot; }
+        changed height => { ContextMenus.sub-cover = self.spot; }
+        hovered(i) => {
+            root.pending = -1;
+            root.current = root.sub;
+            root.in-sub = true;
+            root.sub-current = i;
+        }
+        activated(i) => { root.activate-sub(i); }
+    }
+}
+
 // Draws the open overlays above everything else in the window. Put one as the last
 // child of every window's root, filling it. It takes no input while nothing is open.
 // The long list of a Select: the options as `ListRow`s in a `ListBox` (virtual, one
@@ -4218,6 +4603,9 @@ export component OverlayHost inherits Rectangle {
             }
         }
     }
+    // The drawn context menu (ADR-0137), above every other layer. It exists only while
+    // open; nothing runs while it is closed.
+    if ContextMenus.open: MenuLayer { width: root.width; height: root.height; }
 }
 
 export component StatusLine inherits Rectangle {

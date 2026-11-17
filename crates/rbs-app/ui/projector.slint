@@ -5,7 +5,7 @@
 // (decision 6): the OS draws it in its own window, outside what is shared.
 
 import { Theme, Tokens } from "tokens.slint";
-import { CommandMenu } from "context_menu.slint";
+import { NativeCommandMenu } from "context_menu.slint";
 
 export component ProjectorWindow inherits Window {
     // What the menu's commands act on: `canvas=main` or `canvas=vertical`.
@@ -15,7 +15,7 @@ export component ProjectorWindow inherits Window {
     title: root.window-title;
     background: Theme.projector-backdrop;
     icon: @image-url("../assets/brand/icon-win-256.png");
-    menu := CommandMenu {
+    menu := NativeCommandMenu {
         context: "projector";
         target: root.menu-target;
     }

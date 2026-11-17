@@ -1,15 +1,34 @@
-import { ContextChoice, ContextItem, ContextMenus } from "base/types.slint";
-export { ContextChoice, ContextItem, ContextMenus }
-// Context menus built from the command registry (ADR-0050 decision 4; spec
+// Context menus built from the command registry (ADR-0050 decision 4, ADR-0137; spec
 // "Context menus"). One `CommandMenu` sits in each element that has a menu: the
 // element opens it on a right-click, the Menu key or Shift+F10 with `open(point)`,
-// which first asks Rust for the items of its context and target, so a menu always
-// shows the state of the moment. Only one menu is open at a time, so one list of
-// items serves every menu of a window.
+// which first asks Rust for the rows of its context and target, so a menu always
+// shows the state of the moment. RBS draws the menu as a layer of the window
+// (`MenuLayer` in `OverlayHost`); only one menu is open per window.
+import { ContextMenus, ContextItem, ContextChoice, MenuRow } from "base/types.slint";
+export { ContextMenus, ContextItem, ContextChoice, MenuRow }
 
-// The menu of one context. Its own right-click handling is off: the element under the
+// The menu of one context, drawn by RBS. It takes no room and no input of its own.
+export component CommandMenu inherits Rectangle {
+    in property <string> context;
+    in property <string> target;
+    // Opens the menu at `at`, relative to this element (a right-click's point); nothing
+    // opens when the context has no items.
+    public function open(at: Point) {
+        root.open-from(at, 0px, 0px);
+    }
+    // Opens the menu under a button: `at` is the button's bottom-left corner, relative
+    // to this element, `wide` its width and `above` its height, so a menu with no room
+    // below opens over the button, and one with no room on the right ends at the
+    // button's right edge. A caller that does not know the width passes 0px.
+    public function open-from(at: Point, wide: length, above: length) {
+        ContextMenus.open-at(root.context, root.target, root.absolute-position.x + at.x, root.absolute-position.y + at.y, wide, above);
+    }
+}
+
+// The native menu of one context, for the projector only (ADR-0137 decision 1): the
+// system draws it outside the shared picture. Its own right-click handling is off: the element under the
 // pointer calls `open`, so the items are made before the menu shows.
-export component CommandMenu inherits ContextMenuArea {
+export component NativeCommandMenu inherits ContextMenuArea {
     in property <string> context;
     in property <string> target;
     enabled: false;

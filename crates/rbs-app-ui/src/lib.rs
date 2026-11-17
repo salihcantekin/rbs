@@ -20,7 +20,7 @@ macro_rules! reexport {
         pub use $settings::SettingsWindow;
         pub use $types::{
             AiActionRow, AppMenuChip, AppMenuRow, AppMenus, Appearance, AttributeGroupRow,
-            AttributeTargetRow, AttributesData, ContextChoice, ContextItem, ContextMenus, Cover,
+            AttributeTargetRow, AttributesData, ContextChoice, ContextItem, MenuRow, ContextMenus, Cover,
             DestinationRow, EdgeTabData, EncoderData, EntryRow, Experience, FilterData,
             FilterFieldData, FilterLevels, FocusReveal, HandleData, IconName, Icons, KindData,
             LiveDestinationRow, LookData, LoudnessData, MarkData, MenuChoice, Menus, MeterRow,
@@ -40,7 +40,7 @@ macro_rules! reexport_probes {
     ($probes:ident) => {
         pub use $probes::{
             EffectsProbe, ExperienceProbe, FocusRevealProbe, NumberFieldProbe, OverlayProbe,
-            PropertiesProbe, ReplayProbe, SegmentProbe, SettingRowAlignProbe, SettingRowProbe,
+            PropertiesProbe, ReplayProbe, SegmentProbe, SettingRowAlignProbe, SettingRowProbe, MenuProbe,
         };
     };
 }

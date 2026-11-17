@@ -34,6 +34,9 @@ pub struct Item {
     pub title: String,
     /// Icon name from the set; empty while a checkmark takes its place.
     pub icon: &'static str,
+    /// The item's own icon, also while checked: a drawn menu shows a switch for a
+    /// checkable item instead of a checkmark (ADR-0137 decision 3).
+    pub symbol: &'static str,
     /// The registry id a click runs; empty for separators and submenus.
     pub id: String,
     pub enabled: bool,
@@ -41,6 +44,8 @@ pub struct Item {
     pub checked: bool,
     /// `(title, id to run, current)` of a submenu.
     pub choices: Vec<(String, String, bool)>,
+    /// Why it is disabled; empty when enabled.
+    pub reason: String,
 }
 
 /// The parameters in `target` (`key=value&...`, percent-encoded as in command ids);
@@ -81,11 +86,13 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
                 kind: Kind::Command,
                 title,
                 icon: item_icon(icon, checked),
+                symbol: icon.unwrap_or(""),
                 id: id.to_string(),
                 enabled: disabled.is_none(),
                 checkable: checked.is_some(),
                 checked: checked.unwrap_or(false),
                 choices: Vec::new(),
+                reason: disabled.unwrap_or_default(),
             },
             MenuItem::Choices {
                 title,
@@ -96,10 +103,12 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
                 kind: Kind::Choices,
                 title,
                 icon: item_icon(icon, None),
+                symbol: icon.unwrap_or(""),
                 id: String::new(),
                 enabled: disabled.is_none() && !choices.is_empty(),
                 checkable: false,
                 checked: false,
+                reason: disabled.unwrap_or_default(),
                 choices: choices
                     .into_iter()
                     .map(|(t, id, current)| (t, id.to_string(), current))
@@ -109,11 +118,13 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
                 kind: Kind::Separator,
                 title: String::new(),
                 icon: "",
+                symbol: "",
                 id: String::new(),
                 enabled: true,
                 checkable: false,
                 checked: false,
                 choices: Vec::new(),
+                reason: String::new(),
             },
         })
         .collect()
@@ -215,6 +226,47 @@ mod tests {
         assert_eq!(target("name=A%20b").unwrap()[0].1, "A b");
         assert_eq!(target("bad"), None);
         assert_eq!(target("x=a b"), None);
+    }
+
+    /// Every window that can open a drawn menu or a `Select` draws them: it has an
+    /// `OverlayHost` (ADR-0137 decision 10). The projector keeps a native menu, and a
+    /// probe window needs one only when it holds a menu or a list.
+    #[test]
+    fn every_window_with_menus_has_an_overlay_host() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
+        let mut windows = 0;
+        for entry in std::fs::read_dir(dir).expect("ui/ is readable") {
+            let path = entry.expect("ui/ entry").path();
+            if path.extension().is_none_or(|e| e != "slint") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a .slint file is readable");
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find("export component ") {
+                rest = &rest[at..];
+                let head = rest.lines().next().unwrap_or_default();
+                let end = rest.find("\n}").map_or(rest.len(), |e| e + 2);
+                let body = &rest[..end];
+                rest = &rest[end.min(rest.len())..];
+                if !head.contains("inherits Window") {
+                    continue;
+                }
+                windows += 1;
+                let name = head.split_whitespace().nth(2).unwrap_or_default();
+                let uses_menus = ["CommandMenu", "Select", "PropertiesPanel"]
+                    .iter()
+                    .any(|w| body.contains(w));
+                if name == "ProjectorWindow" || (name.ends_with("Probe") && !uses_menus) {
+                    continue;
+                }
+                assert!(
+                    body.contains("OverlayHost {"),
+                    "{name} in {} has no OverlayHost, so its menus and lists would not show",
+                    path.display()
+                );
+            }
+        }
+        assert!(windows >= 8, "found the windows ({windows})");
     }
 
     struct All;
