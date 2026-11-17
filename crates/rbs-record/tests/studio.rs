@@ -1778,6 +1778,122 @@ fn during_a_fade_the_sound_follows_the_picture() {
 }
 
 #[test]
+fn transitions_report_their_start_and_end_and_take_a_one_off_kind() {
+    // ADR-0128 decision 13.
+    use rbs_record::{TransitionOnce, TransitionPhase, TransitionState};
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Cut,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://transition-events", ContainerId::Matroska),
+        )
+        .unwrap();
+    let phases = |s: &mut Studio| -> Vec<(TransitionPhase, TransitionKind)> {
+        s.take_transition_events()
+            .into_iter()
+            .map(|e| (e.phase, e.kind))
+            .collect()
+    };
+
+    // A Cut starts and ends at once.
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let events = studio.take_transition_events();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0].phase, TransitionPhase::Started);
+    assert_eq!(events[1].phase, TransitionPhase::Ended);
+    assert_eq!(events[0].from, Some(live));
+    assert_eq!(events[0].to, Some(other));
+    assert_eq!(studio.transition_state(canvas), None);
+
+    // A one-off Fade of 100 ms over the collection's Cut: started when it runs, ended
+    // after its duration; the next change is a Cut again.
+    studio.set_transition_once(TransitionOnce::new(Some(TransitionKind::Fade), Some(100)));
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Waiting)
+    );
+    assert!(phases(&mut studio).is_empty(), "nothing while it waits");
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    assert_eq!(
+        phases(&mut studio),
+        [(TransitionPhase::Started, TransitionKind::Fade)]
+    );
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+    }));
+    assert_eq!(
+        phases(&mut studio),
+        [(TransitionPhase::Ended, TransitionKind::Fade)]
+    );
+    assert!(run_until(&mut studio, &clock, |s| s
+        .transition_wait(clock.now())
+        == Some(Duration::ZERO)));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert!(phases(&mut studio).is_empty());
+
+    // A one-off Move of 200 ms ends on the service after its glide, not at once.
+    studio.set_transition_once(TransitionOnce::new(Some(TransitionKind::Move), Some(200)));
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let started = clock.now();
+    assert_eq!(
+        phases(&mut studio),
+        [(TransitionPhase::Started, TransitionKind::Move)]
+    );
+    assert_eq!(
+        studio.transition_wait(clock.now()),
+        Some(Duration::from_millis(200))
+    );
+    let mut ended = Vec::new();
+    assert!(run_until(&mut studio, &clock, |_| {
+        clock.now().saturating_since(started) >= Duration::from_millis(250)
+    }));
+    ended.extend(phases(&mut studio));
+    assert_eq!(ended, [(TransitionPhase::Ended, TransitionKind::Move)]);
+    assert_eq!(studio.transition_wait(clock.now()), None, "nothing armed");
+
+    // The one-off was used once: back to the collection's Cut.
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        phases(&mut studio),
+        [
+            (TransitionPhase::Started, TransitionKind::Cut),
+            (TransitionPhase::Ended, TransitionKind::Cut)
+        ]
+    );
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
 fn a_browser_page_is_heard_in_the_program_mix() {
     // ADR-0106, ADR-0109 decision 6: the page's sound reaches the sound node through
     // the feed, and the sound node is the producer of the page's strip.
