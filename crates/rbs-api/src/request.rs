@@ -752,6 +752,18 @@ pub struct SetSceneTransition {
     pub transition: Option<crate::types::SceneTransition>,
 }
 
+/// `canvas.transition_progress` (protocol 1.87, ADR-0135 decision 1): a T-bar value.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransitionProgress {
+    /// The canvas; the studio's main canvas when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<crate::types::OutputCanvas>,
+    /// The progress in `0.0..=1.0`: above 0 starts or moves a manual transition to
+    /// the preview scene, 1 puts it on air, 0 cancels it.
+    pub t: f32,
+}
+
 /// `source.rename` (protocol 1.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1868,6 +1880,8 @@ pub enum Command {
     CanvasSetPreview(SetPreview),
     /// `canvas.transition` (protocol 1.9).
     CanvasTransition(TransitionOnce),
+    /// `canvas.transition_progress` (protocol 1.87, ADR-0135): a T-bar value.
+    CanvasTransitionProgress(TransitionProgress),
     /// `item.remove` (protocol 1.10).
     ItemRemove(ItemRef),
     /// `item.move` (protocol 1.32).
@@ -2114,6 +2128,7 @@ impl Command {
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition(_) => "canvas.transition",
+            Command::CanvasTransitionProgress(_) => "canvas.transition_progress",
             Command::ItemRemove(_) => "item.remove",
             Command::ItemMove(_) => "item.move",
             Command::SceneMove(_) => "scene.move",
@@ -2449,6 +2464,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("scene.sources", Some(Scope::Read), Effect::Read),
     m("canvas.set_preview", Some(Scope::Control), Effect::Edit),
     m("canvas.transition", Some(Scope::Control), Effect::Edit),
+    m(
+        "canvas.transition_progress",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
     m("item.remove", Some(Scope::Control), Effect::Edit),
     m("item.move", Some(Scope::Control), Effect::Edit),
     m("scene.move", Some(Scope::Control), Effect::Edit),
@@ -2626,6 +2646,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.source.settings",
     "ui.source.paste_attributes",
     "ui.source.reset",
+    "ui.scene.transition",
     "ui.properties.show",
     "ui.app_menu.open",
     "ui.command.list",
@@ -2811,6 +2832,8 @@ enum WireRequest {
     CanvasSetPreview(SetPreview),
     #[serde(rename = "canvas.transition")]
     CanvasTransition(TransitionOnce),
+    #[serde(rename = "canvas.transition_progress")]
+    CanvasTransitionProgress(TransitionProgress),
     #[serde(rename = "item.remove")]
     ItemRemove(ItemRef),
     #[serde(rename = "item.move")]
@@ -3067,6 +3090,9 @@ impl From<WireRequest> for Request {
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
             WireRequest::CanvasTransition(p) => Request::Command(C::CanvasTransition(p)),
+            WireRequest::CanvasTransitionProgress(p) => {
+                Request::Command(C::CanvasTransitionProgress(p))
+            }
             WireRequest::ItemRemove(p) => Request::Command(C::ItemRemove(p)),
             WireRequest::ItemMove(p) => Request::Command(C::ItemMove(p)),
             WireRequest::SceneMove(p) => Request::Command(C::SceneMove(p)),
@@ -3242,6 +3268,7 @@ impl From<Request> for WireRequest {
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
                 C::CanvasTransition(p) => WireRequest::CanvasTransition(p),
+                C::CanvasTransitionProgress(p) => WireRequest::CanvasTransitionProgress(p),
                 C::ItemRemove(p) => WireRequest::ItemRemove(p),
                 C::ItemMove(p) => WireRequest::ItemMove(p),
                 C::SceneMove(p) => WireRequest::SceneMove(p),

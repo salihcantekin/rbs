@@ -61,6 +61,14 @@ pub trait NodeTypes {
     fn live_settings(&self, _type_id: &NodeTypeId) -> bool {
         false
     }
+
+    /// The settings keys of `type_id` that a running source takes in place (ADR-0108
+    /// decision 12). When only these keys differ, the binder keeps the source's nodes
+    /// and reports the source and the changed keys in [`BindReport::live_changed`].
+    /// No keys unless a type says so.
+    fn live_keys(&self, _type_id: &NodeTypeId) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 impl<F> NodeTypes for F
@@ -104,6 +112,10 @@ pub struct OutgoingScene {
     /// False when the transition draws without an incoming compositor (Move: the
     /// program compositor draws the incoming layers itself, decision 5).
     pub incoming: bool,
+    /// The scene the incoming compositor draws while the program stays as it is (a
+    /// manual transition, ADR-0135 decision 2); its heard sources join the program
+    /// mixer. `None`: the canvas's program scene.
+    pub incoming_scene: Option<SceneId>,
 }
 
 impl Default for OutgoingScene {
@@ -121,6 +133,30 @@ impl OutgoingScene {
             drawn,
             heard,
             incoming: true,
+            incoming_scene: None,
+        }
+    }
+
+    /// A manual transition towards `scene` (ADR-0135 decision 2): the incoming
+    /// compositor draws `scene` and the program mixer also hears it; nothing of the
+    /// program is kept beyond what the program scene binds.
+    pub fn towards(scene: SceneId) -> Self {
+        Self {
+            drawn: BTreeSet::new(),
+            heard: BTreeSet::new(),
+            incoming: true,
+            incoming_scene: Some(scene),
+        }
+    }
+
+    /// The same entry drawing the canvas's program scene again: what a manual
+    /// transition keeps after the program change, with the outgoing sources.
+    pub fn with_program(self, drawn: BTreeSet<SourceId>, heard: BTreeSet<SourceId>) -> Self {
+        Self {
+            drawn,
+            heard,
+            incoming: self.incoming,
+            incoming_scene: None,
         }
     }
 
@@ -130,6 +166,7 @@ impl OutgoingScene {
             drawn,
             heard,
             incoming: false,
+            incoming_scene: None,
         }
     }
 }
@@ -290,6 +327,12 @@ pub struct BindReport {
     /// the new settings to whatever feeds it (the text worker, ADR-0129 decision 5).
     /// Never in `retired_sources`, `created_sources` or `replaced_sources`.
     pub changed_sources: Vec<(SourceId, NodeId)>,
+    /// Sources whose changed settings are all live keys of their type
+    /// ([`NodeTypes::live_keys`]): `(source, picture node, changed keys)`, the keys
+    /// in order. The nodes were kept, and the application forwards the new values to
+    /// the source's control handle (ADR-0108 decision 12). Never in
+    /// `retired_sources`, `created_sources` or `replaced_sources`.
+    pub live_changed: Vec<(SourceId, NodeId, Vec<String>)>,
     /// Filter nodes this sync created.
     pub created_filters: Vec<(FilterId, NodeId)>,
     /// Filter nodes this sync removed, or that someone else removed.
@@ -934,6 +977,15 @@ impl State {
                 report.changed_sources.push((*id, bound.source.node));
                 continue;
             }
+            let live = types.live_keys(&source.type_id);
+            if !live.is_empty() {
+                let changed = changed_keys(&bound.settings, &source.settings);
+                if changed.iter().all(|key| live.contains(&key.as_str())) {
+                    bound.settings = source.settings.clone();
+                    report.live_changed.push((*id, bound.source.node, changed));
+                    continue;
+                }
+            }
             let old = bound.source.node;
             let (descriptor, partition) = graph
                 .node(old)
@@ -1172,11 +1224,14 @@ impl State {
             if let Some(h) = hold.get(&canvas.id) {
                 needed.insert((canvas.id, Role::Hold), h.scene);
             }
-            if let (Some(scene), true) = (
+            if let (Some(program), Some(o)) = (
                 canvas.program,
-                outgoing.get(&canvas.id).is_some_and(|o| o.incoming),
+                outgoing.get(&canvas.id).filter(|o| o.incoming),
             ) {
-                needed.insert((canvas.id, Role::Incoming), scene);
+                needed.insert(
+                    (canvas.id, Role::Incoming),
+                    o.incoming_scene.unwrap_or(program),
+                );
             }
         }
         let unneeded: Vec<(CanvasId, Role)> = self
@@ -1381,9 +1436,17 @@ impl State {
                         .collect(),
                     None => BTreeSet::new(),
                 };
-                // The outgoing scene is heard until its transition ends.
+                // The outgoing scene is heard until its transition ends; a manual
+                // transition's incoming scene is heard from its start (ADR-0135).
                 if let Some(o) = outgoing.get(&canvas.id) {
                     heard.extend(o.heard.iter().copied());
+                    if let Some(scene) = o.incoming_scene {
+                        heard.extend(
+                            collection
+                                .visible_sources_cued(canvas.id, scene, cued_items)
+                                .map_err(BindError::Scene)?,
+                        );
+                    }
                 }
                 let inputs = link_mixer(&self.sources, graph, mix, &heard)?;
                 report.mixers.insert(
@@ -1600,4 +1663,16 @@ pub fn resolve<'a>(
                 .map(|index| (index, layer))
         })
         .collect()
+}
+
+/// The keys whose values differ between `old` and `new`, present in either, in order.
+fn changed_keys(old: &crate::model::Settings, new: &crate::model::Settings) -> Vec<String> {
+    let mut keys: Vec<String> = old
+        .iter()
+        .filter(|(key, value)| new.get(*key) != Some(value))
+        .map(|(key, _)| key.clone())
+        .collect();
+    keys.extend(new.keys().filter(|key| !old.contains_key(*key)).cloned());
+    keys.sort();
+    keys
 }

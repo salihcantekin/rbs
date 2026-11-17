@@ -95,7 +95,7 @@ pub use sync_measure::{
     SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
 pub use transition::{
-    READY_WAIT, TransitionEvent, TransitionOnce, TransitionPhase, TransitionState,
+    ManualStep, READY_WAIT, TransitionEvent, TransitionOnce, TransitionPhase, TransitionState,
 };
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
@@ -1185,6 +1185,9 @@ pub struct Studio {
     transition_done: bool,
     /// The next program change's one-off kind and duration (ADR-0128 decision 13).
     transition_once: Option<TransitionOnce>,
+    /// The next program change is a manual transition's end (ADR-0135 decision 5): it
+    /// starts no timed transition, and followers cut.
+    manual_take: bool,
     /// Starts and ends to report, oldest first ([`Studio::take_transition_events`]).
     transition_events: Vec<TransitionEvent>,
     /// Ends of transitions without an incoming picture (Move), due at their time.
@@ -1653,6 +1656,7 @@ impl Studio {
             transitions: BTreeMap::new(),
             transition_done: false,
             transition_once: None,
+            manual_take: false,
             transition_events: Vec::new(),
             transition_ends: Vec::new(),
             last_follow,
@@ -2242,6 +2246,7 @@ impl Studio {
         };
         let effective = self.effective_transition(collection);
         self.note_transitions(collection, &effective, old_main, &old_extra, &old_layers);
+        self.manual_take = false;
         let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
         // already ran: the update goes on so the sources it created get their entries,
@@ -2394,6 +2399,17 @@ impl Studio {
                     if let Some(instance) = &mut entry.instance {
                         instance.sender().send(values);
                     }
+                }
+            }
+            // Live media keys go to the control handle; the nodes stay (ADR-0108
+            // decision 12).
+            for (source, _, keys) in &report.live_changed {
+                if let (Some(s), Some(control)) =
+                    (collection.source(*source), self.media_controls.get(source))
+                {
+                    // The command checked the settings before the document write
+                    // (`validate_settings`), so a refusal here changes nothing.
+                    let _ = rbs_sources::apply_media_live(control, &s.settings, keys);
                 }
             }
             if let Some(worker) = self.text.as_mut() {

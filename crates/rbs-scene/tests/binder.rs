@@ -1351,6 +1351,65 @@ fn a_type_with_live_settings_keeps_its_node_and_reports_the_change() {
     assert_eq!(report.retired_sources, [screen]);
 }
 
+/// A camera whose `fps` and `loop` keys are live (ADR-0108 decision 12).
+struct LiveKeysCamera;
+
+impl rbs_scene::binder::NodeTypes for LiveKeysCamera {
+    fn descriptor(&self, type_id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
+        types(type_id)
+    }
+    fn live_keys(&self, type_id: &NodeTypeId) -> &'static [&'static str] {
+        if type_id.as_str() == "org.rbs.source.camera" {
+            &["fps", "loop"]
+        } else {
+            &[]
+        }
+    }
+}
+
+#[test]
+fn a_change_of_live_keys_only_keeps_the_node_and_lists_the_keys() {
+    let mut s = setup();
+    s.binder = SceneBinder::new(LiveKeysCamera);
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(s.cam).unwrap();
+    let mut settings = s.col.source(s.cam).unwrap().settings.clone();
+    settings.insert("fps".into(), SettingValue::Int(25));
+    settings.insert("loop".into(), SettingValue::Bool(false));
+    s.col.set_source_settings(s.cam, settings.clone()).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(s.binder.source_node(s.cam), Some(node));
+    assert_eq!(
+        report.live_changed,
+        [(s.cam, node, vec!["fps".to_owned(), "loop".to_owned()])]
+    );
+    assert!(report.changed_sources.is_empty());
+    assert!(report.retired_sources.is_empty());
+    assert!(report.replaced_sources.is_empty());
+    assert_eq!(state(&s, node), Lifecycle::Active);
+
+    // Removing a live key is a live change too.
+    settings.remove("loop");
+    s.col.set_source_settings(s.cam, settings.clone()).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(
+        report.live_changed,
+        [(s.cam, node, vec!["loop".to_owned()])]
+    );
+
+    // Same settings again: nothing to report.
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.live_changed.is_empty());
+
+    // A live key with another key replaces the source.
+    settings.insert("fps".into(), SettingValue::Int(50));
+    settings.insert("width".into(), SettingValue::Int(800));
+    s.col.set_source_settings(s.cam, settings).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.live_changed.is_empty());
+    assert_eq!(report.retired_sources, [node]);
+}
+
 #[test]
 fn deleted_sources_and_filters_are_reported_retired() {
     let (mut s, mic) = audio_setup();
@@ -2355,6 +2414,83 @@ fn a_transition_binds_the_incoming_picture_and_keeps_the_outgoing_scene() {
     assert_eq!(s.binder.compositor(s.wide, Role::Incoming), None);
     assert!(!links_into(&s, comp).contains(&film_node));
     assert_eq!(state(&s, film_node), Lifecycle::Standby);
+    assert!(!links_into(&s, mixer).contains(&mic_node));
+}
+
+#[test]
+fn a_manual_transition_draws_and_hears_the_preview_scene_while_the_program_stays() {
+    use rbs_scene::binder::OutgoingScene;
+    let (mut s, mic) = audio_setup();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    let mic_node = s.binder.source_node(mic).unwrap();
+
+    // A preview scene with the screen and a second microphone of its own.
+    let (next, _) = s.col.add_scene("Next", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(next, ItemContent::Source(s.screen), full(), None)
+        .unwrap();
+    let (guest, _) = s
+        .col
+        .add_source("Guest", ty("org.rbs.source.mic"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(next, ItemContent::Source(guest), full(), None)
+        .unwrap();
+    s.col.set_preview(s.wide, Some(next)).unwrap();
+    let program = s.col.canvas(s.wide).unwrap().program;
+    let none = BTreeSet::new();
+    let outgoing = BTreeMap::from([(s.wide, OutgoingScene::towards(next))]);
+    let report = s
+        .binder
+        .sync_transition(
+            &s.col,
+            &mut s.graph,
+            &BTreeSet::new(),
+            &none,
+            &BTreeMap::new(),
+            &outgoing,
+        )
+        .unwrap();
+    // The program stays; the incoming compositor draws the preview scene and is a
+    // producer of the program compositor.
+    assert_eq!(s.col.canvas(s.wide).unwrap().program, program);
+    let incoming = s.binder.compositor(s.wide, Role::Incoming).unwrap();
+    let screen_node = s.binder.source_node(s.screen).unwrap();
+    assert_eq!(links_into(&s, incoming), [screen_node]);
+    assert!(report.compositors[&(s.wide, Role::Incoming)].created);
+    assert!(links_into(&s, comp).contains(&incoming));
+    // The program mixer hears both scenes.
+    let guest_node = s.binder.source_node(guest).unwrap();
+    let heard = links_into(&s, mixer);
+    assert!(heard.contains(&mic_node));
+    assert!(heard.contains(&guest_node));
+
+    // At the end the preview goes on air and the same entry keeps the incoming node,
+    // now drawing the program scene, with the outgoing sources.
+    s.col.set_program(s.wide, Some(next)).unwrap();
+    let ended = BTreeMap::from([(
+        s.wide,
+        OutgoingScene::towards(next).with_program(BTreeSet::new(), BTreeSet::from([mic])),
+    )]);
+    let report = s
+        .binder
+        .sync_transition(
+            &s.col,
+            &mut s.graph,
+            &BTreeSet::new(),
+            &none,
+            &BTreeMap::new(),
+            &ended,
+        )
+        .unwrap();
+    assert_eq!(s.binder.compositor(s.wide, Role::Incoming), Some(incoming));
+    assert!(!report.compositors[&(s.wide, Role::Incoming)].created);
+    assert!(links_into(&s, mixer).contains(&mic_node));
+    // The settle drops it and the old microphone.
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(s.binder.compositor(s.wide, Role::Incoming), None);
     assert!(!links_into(&s, mixer).contains(&mic_node));
 }
 

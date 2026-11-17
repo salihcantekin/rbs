@@ -31,6 +31,7 @@ mod preview;
 mod preview_edit;
 mod projector;
 mod replay_page;
+mod reveal;
 mod shortcuts_page;
 mod studio_ui;
 mod title_bar;
@@ -803,7 +804,8 @@ impl App {
             Run::DuplicateSource(id) => self.studio.duplicate_source(id),
             Run::CopyAttributes(id) => self.studio.copy_attributes(id),
             // The window needs someone at it: not from a control surface.
-            Run::OpenAttributes(..) if !confirm => {}
+            Run::OpenAttributes(..) | Run::SceneTransition(_) if !confirm => {}
+            Run::SceneTransition(id) => self.ask_scene_transition(id),
             Run::OpenAttributes(id, paste) => {
                 self.studio.selected = id;
                 self.open_attributes = Some((id, paste));
@@ -1065,6 +1067,23 @@ impl App {
                 g.set_renaming_source(id);
                 g.set_rename_source_asked(g.get_rename_source_asked() + 1);
             }
+        };
+        ask(self.main.global::<Studio>());
+        for f in &self.floats {
+            ask(f.window.global::<Studio>());
+        }
+    }
+
+    /// Opens the scene's "Transition into this scene" card under its row (ADR-0135).
+    /// The Scenes panel opens so the row is there.
+    fn ask_scene_transition(&mut self, id: i32) {
+        if let Some(p) = panel("rbs.scenes") {
+            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
+            self.raise_host_of(&p);
+        }
+        let ask = |g: Studio<'_>| {
+            g.set_transition_scene(id);
+            g.set_transition_scene_asked(g.get_transition_scene_asked() + 1);
         };
         ask(self.main.global::<Studio>());
         for f in &self.floats {
@@ -4067,6 +4086,24 @@ fn section_key(id: &str) -> (String, bool) {
     }
 }
 
+/// The ids in a comma-separated list of sections (Properties' Collapse all).
+fn fold_ids(ids: &str) -> impl Iterator<Item = &str> {
+    ids.split(',').map(str::trim).filter(|id| !id.is_empty())
+}
+
+/// A list of sections for Collapse all / Expand all: 0 none, 1 some are open, 2 all
+/// are closed.
+fn fold_state(ids: &str, closed: impl Fn(&str) -> bool) -> i32 {
+    let mut any = false;
+    for id in fold_ids(ids) {
+        if !closed(id) {
+            return 1;
+        }
+        any = true;
+    }
+    if any { 2 } else { 0 }
+}
+
 /// The AI tools section of Settings (ADR-0134) is shown: its server side (the API
 /// thread with optional transports, the token slot flags, `rbs-mcp`'s IPC session) is
 /// in.
@@ -4155,6 +4192,33 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
                 .filter(|id| id.starts_with(prefix.as_str()))
             {
                 changed |= app.session.set_section_closed(id, closed).is_ok();
+            }
+            if changed {
+                app.changed();
+            }
+        });
+    });
+    // Properties' Collapse all / Expand all: the sections it draws now, by id.
+    let c = ctx.clone();
+    g.on_list_state(move |ids, _rev| {
+        c.app.try_borrow().map_or(0, |app| {
+            let ws = app.session.workspace();
+            fold_state(ids.as_str(), |id| {
+                let (key, listed_is_closed) = section_key(id);
+                ws.section_closed(&key) == listed_is_closed
+            })
+        })
+    });
+    let c = ctx.clone();
+    g.on_set_list(move |ids, closed| {
+        c.update(move |app: &mut App| {
+            let mut changed = false;
+            for id in fold_ids(ids.as_str()) {
+                let (key, listed_is_closed) = section_key(id);
+                changed |= app
+                    .session
+                    .set_section_closed(&key, closed == listed_is_closed)
+                    .is_ok();
             }
             if changed {
                 app.changed();
@@ -4820,6 +4884,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.rename_scene(id, &name);
         }
     );
+    on!(
+        on_set_scene_transition,
+        |app, id: i32, kind: i32, duration: i32| {
+            app.studio.set_scene_transition(id, kind, duration);
+        }
+    );
     on!(on_move_source, |app, id: i32, up: bool| {
         use rbs_api::request::LayerDirection::*;
         app.studio.move_source(id, if up { Up } else { Down });
@@ -5259,6 +5329,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_pick_ai_tool, |app, i: i32| {
         app.studio.pick_ai_tool(i);
+    });
+    on!(on_ai_show_config, |app| {
+        app.studio.ai_show_config();
     });
     // Before every redraw of the main window: popups open, move and close with a redraw,
     // and so does a change of the window's scale; the preview layer follows them
@@ -6069,6 +6142,46 @@ mod menu_rows_tests {
         assert!(subs[1][0].checkable, "a setting is a switch");
         assert!(!subs[1][1].checkable, "a choice is a check");
         assert!(subs[1][1].checked);
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::{fold_ids, fold_state};
+
+    #[test]
+    fn fold_state_reads_open_some_and_all_closed() {
+        let closed = |id: &str| id != "a";
+        assert_eq!(fold_state("", closed), 0);
+        assert_eq!(fold_state(" , ", closed), 0);
+        assert_eq!(fold_state("a,b", closed), 1);
+        assert_eq!(fold_state("b,c", closed), 2);
+        assert_eq!(fold_ids("a, b,,c").collect::<Vec<_>>(), ["a", "b", "c"]);
+    }
+
+    /// Collapse all in Properties folds the ids `SourceProperties` lists, so the list
+    /// must name every section Properties draws.
+    #[test]
+    fn properties_folds_name_every_properties_section() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/studio.slint");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let start = text
+            .find("property <string> folds:")
+            .unwrap_or_else(|| panic!("SourceProperties has its folds list"));
+        let end = start + text[start..].find(';').unwrap_or(0);
+        let folds = &text[start..end];
+        let mut ids = 0;
+        for line in text.lines() {
+            if let Some(id) = line.trim().strip_prefix("id: \"properties.") {
+                let id = format!("properties.{}", id.trim_end_matches("\";"));
+                ids += 1;
+                assert!(
+                    folds.contains(&format!("{id},")) || folds.contains(&format!("{id}\"")),
+                    "{id} is missing from SourceProperties' folds"
+                );
+            }
+        }
+        assert!(ids > 10, "found {ids} Properties sections");
     }
 }
 

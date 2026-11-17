@@ -37,7 +37,11 @@ mod windows {
     }
 
     fn open() -> Option<Box<dyn MediaDecoder>> {
-        match MfMediaFactory::new().open(&fixture("clip.mp4")) {
+        open_file("clip.mp4")
+    }
+
+    fn open_file(name: &str) -> Option<Box<dyn MediaDecoder>> {
+        match MfMediaFactory::new().open(&fixture(name)) {
             Ok(decoder) => Some(decoder),
             Err(DecodeError::Unsupported(why)) => {
                 eprintln!("skipped: {why}");
@@ -110,6 +114,41 @@ mod windows {
         }
     }
 
+    /// `fixtures/rotated.mp4` is `clip.mp4` with a quarter turn clockwise in its track
+    /// header: upright it is 90x160, green at the top right and red at the bottom left.
+    #[test]
+    fn a_rotated_track_is_turned_upright() {
+        let Some(mut dec) = open_file("rotated.mp4") else {
+            return;
+        };
+        let mut count = 0u64;
+        while let Some(p) = dec.next_picture().unwrap() {
+            assert_eq!(
+                (p.picture.width, p.picture.height),
+                (90, 160),
+                "picture {count}"
+            );
+            assert_eq!(p.pts, Some(ms(100 * count)), "picture {count}");
+            let green = pixel(&p, 80, 8);
+            let red = pixel(&p, 8, 150);
+            assert!(
+                near(green, [0, 255, 0, 255]) && near(red, [255, 0, 0, 255]),
+                "picture {count}: top right {green:?}, bottom left {red:?}\n{}",
+                map(&p)
+            );
+            count += 1;
+            assert!(count < 50, "the stream must end");
+        }
+        assert_eq!(count, 5);
+        // After a seek the pictures are still upright.
+        dec.seek(ms(200)).unwrap();
+        let p = dec
+            .next_picture()
+            .unwrap()
+            .expect("a picture after the seek");
+        assert_eq!((p.picture.width, p.picture.height), (90, 160));
+    }
+
     #[test]
     fn a_seek_moves_both_streams() {
         let Some(mut dec) = open() else { return };
@@ -135,7 +174,9 @@ mod windows {
         let mut frames = 0usize;
         let mut chunks = 0;
         let mut loudest = 0.0f32;
+        let mut first = None;
         while let Some(sound) = dec.next_sound().unwrap() {
+            first.get_or_insert(sound.pts);
             assert_eq!(sound.pcm.sample_rate, 48_000);
             assert_eq!(sound.pcm.channels, 2);
             assert_eq!(sound.pcm.samples.len() % 2, 0);
@@ -151,13 +192,14 @@ mod windows {
         // The fixture's tone peaks near 0.1 to 0.14; a single AAC frame may stay below
         // 0.1, so the level is checked over the whole clip.
         assert!(loudest > 0.05, "the sound is silent: peak {loudest}");
-        // 0.5 s, give or take two AAC frames: Media Foundation returns every coded
-        // frame, the encoder's priming and the end padding included (25 x 1024 = 25600
-        // for the fixture), where AVFoundation trims them.
-        assert!(
-            (24_000 - 2048..=24_000 + 2048).contains(&frames),
-            "{frames}"
-        );
+        // Exactly the edit list's 0.5 s from 0: Media Foundation returns every coded
+        // frame (25 x 1024 = 25600 for the fixture, the encoder's 1024 priming
+        // samples and the end padding included); the adapter trims them to the edit,
+        // as AVFoundation does.
+        // Rounding to Media Foundation's 100 ns stamps may cost one frame.
+        let first = first.flatten().expect("a stamped first chunk");
+        assert!(first <= Duration::from_micros(100), "{first:?}");
+        assert!((23_999..=24_000).contains(&frames), "{frames}");
     }
 
     /// The first DXGI adapter's LUID and a D3D11 device on it, to read native pictures.
@@ -257,6 +299,60 @@ mod windows {
             context.Unmap(&staging, 0);
             out
         }
+    }
+
+    #[test]
+    fn a_rotated_track_stays_native_and_upright() {
+        use rbs_core::media::{FramePayload, NativeSurface};
+        use rbs_media_decode::DecodeTarget;
+
+        let Some((luid, device)) = first_adapter() else {
+            eprintln!("skipped: no DXGI adapter");
+            return;
+        };
+        let mut dec = match MfMediaFactory::new()
+            .open_for(&fixture("rotated.mp4"), &DecodeTarget::adapter(luid))
+        {
+            Ok(decoder) => decoder,
+            Err(DecodeError::Unsupported(why)) => {
+                eprintln!("skipped: {why}");
+                return;
+            }
+            Err(e) => panic!("open: {e}"),
+        };
+        let mut count = 0u64;
+        while let Some(p) = dec.next_picture().unwrap() {
+            assert_eq!(
+                (p.picture.width, p.picture.height),
+                (90, 160),
+                "picture {count}"
+            );
+            let PictureData::Native(frame) = p.picture.data() else {
+                eprintln!("skipped: this machine decodes the fixture off the GPU");
+                return;
+            };
+            assert_eq!(
+                (frame.format().size.width, frame.format().size.height),
+                (90, 160)
+            );
+            let FramePayload::Native {
+                surface: NativeSurface::D3dSharedHandle { handle, .. },
+                ..
+            } = *frame.payload()
+            else {
+                panic!("picture {count} is not a shared handle");
+            };
+            // B, G, R, A: green top right, red bottom left.
+            let green = shared_pixel(&device, handle, 80, 8);
+            let red = shared_pixel(&device, handle, 8, 150);
+            assert!(
+                near(green, [0, 255, 0, 255]) && near(red, [0, 0, 255, 255]),
+                "picture {count}: top right {green:?}, bottom left {red:?}"
+            );
+            count += 1;
+            assert!(count < 50, "the stream must end");
+        }
+        assert_eq!(count, 5);
     }
 
     #[test]

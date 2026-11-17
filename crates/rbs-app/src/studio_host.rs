@@ -1065,6 +1065,13 @@ pub enum Command {
     /// Remove a scene (one undo step). Refused for the last scene the canvas may show;
     /// the scene on air is first switched away from (not undone with the removal).
     RemoveScene(SceneId),
+    /// Set or clear a scene's transition into it (ADR-0135; one undo step).
+    SetSceneTransition {
+        /// The scene.
+        id: SceneId,
+        /// The override; `None` uses the collection's.
+        transition: Option<rbs_scene::SceneTransition>,
+    },
     /// Rename a scene (one undo step).
     RenameScene {
         /// The scene.
@@ -1082,6 +1089,8 @@ pub enum Command {
     /// with [`Command::SetSwapAfterTransition`] gets the old program scene (ADR-0098).
     /// Refused outside studio mode. A live action.
     Transition,
+    /// The T-bar's value (ADR-0135): applied once per round, the latest only.
+    TransitionProgress(f32),
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
@@ -3553,6 +3562,9 @@ struct Host {
     /// The scene the last held copy was taken from, so a transition away from the
     /// copy names the real scene on `transition.state`.
     held_was: Option<SceneId>,
+    /// The id of the last held copy, so the next copy taken after it gets the other
+    /// id and a transition from one copy to the next is seen as one.
+    held_id_was: Option<SceneId>,
     /// The preview scene's picture endpoint last sent to the UI.
     scene_preview_sent: Option<PreviewEndpoint>,
     /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
@@ -3593,6 +3605,10 @@ struct Host {
     /// A program switch held back until its entering texts are uploaded, at most
     /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
     held_switch: Option<SceneId>,
+    /// The latest T-bar value not yet applied (ADR-0135 decision 1).
+    pending_progress: Option<f32>,
+    /// A T-bar's end is making the program change: it does not cancel itself.
+    taking: bool,
     /// How long the main recording and stream have run, for live texts (ADR-0129
     /// decision 11).
     text_elapsed: text_live::TextElapsed,
@@ -3952,6 +3968,9 @@ fn round(
     // the stream states say so.
     // A transition ended (ADR-0128 decision 8): one update without the outgoing scene
     // removes the incoming compositor and unlinks what only the outgoing scene used.
+    if let Some(t) = host.pending_progress.take() {
+        host.drive_progress(t, notify);
+    }
     if host.studio.take_transition_done() {
         host.studio.settle_transitions(&host.adapters.sources);
     }
@@ -4074,7 +4093,7 @@ fn start(
     settings.scene_preview = SCENE_PICTURE;
     settings.audio_offsets = filters::audio_offsets(&collection);
     settings.media_pause_release = config.media_pause_release;
-    let held = held_copy(&collection, canvas);
+    let held = held_copy(&collection, canvas, None);
     let run = held.as_ref().and_then(|h| run_copy(&collection, canvas, h));
     let first = engine();
     let clock = first.clock();
@@ -4168,6 +4187,7 @@ fn start(
         into: None,
         held,
         held_was: None,
+        held_id_was: None,
         scene_preview_sent: None,
         vertical_picture: false,
         vertical_preview_sent: None,
@@ -4187,6 +4207,8 @@ fn start(
         history_shown: (None, None),
         waiting: false,
         held_switch: None,
+        pending_progress: None,
+        taking: false,
         text_elapsed: text_live::TextElapsed::default(),
         text_timer_file: config
             .config_dir
@@ -4840,6 +4862,10 @@ impl Host {
                 let done = self.rename_scene(id, &name);
                 self.answer(done, notify);
             }
+            Command::SetSceneTransition { id, transition } => {
+                let done = self.set_scene_transition(id, transition);
+                self.answer(done, notify);
+            }
             Command::SwitchScene(id) => {
                 let done = if self.preview().is_some() {
                     self.set_preview_scene(id)
@@ -4855,6 +4881,11 @@ impl Host {
             Command::Transition => {
                 let done = self.transition();
                 self.answer(done, notify);
+            }
+            Command::TransitionProgress(t) => {
+                if self.preview().is_some() {
+                    self.pending_progress = Some(t.clamp(0.0, 1.0));
+                }
             }
             Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,
             Command::SetSourceVisible { id, visible } => {
@@ -11431,6 +11462,7 @@ impl Host {
     /// Puts a scene on air: a live action, not on the undo stack (ADR-0021).
     /// `Ok(false)` when it is on air already.
     fn switch_scene(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        self.studio.cancel_manual(self.canvas);
         if !self.listed(id) {
             return Err(Refusal::NotFound(format!(
                 "There is no scene {}.",
@@ -11676,6 +11708,7 @@ impl Host {
     /// Makes a scene the preview scene (studio mode only; a live action).
     /// `Ok(false)` when it is the preview scene already.
     fn set_preview_scene(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        self.studio.cancel_manual(self.canvas);
         if !self.listed(id) {
             return Err(Refusal::NotFound(format!(
                 "There is no scene {}.",
@@ -11703,12 +11736,17 @@ impl Host {
         let Some(preview) = self.preview() else {
             return Err(Refusal::Conflict(STUDIO_MODE_OFF.to_owned()));
         };
+        // A held T-bar is cancelled first (ADR-0135 decision 7).
+        if !self.taking {
+            self.studio.cancel_manual(self.canvas);
+        }
         let program = self.scene;
         if preview == program {
             // `apply` holds the scene as it is now.
             let taken = self.held.take();
             if let Some(h) = &taken {
                 self.held_was = Some(h.from);
+                self.held_id_was = Some(h.scene.id);
             }
             return Ok(taken.is_some());
         }
@@ -11722,11 +11760,42 @@ impl Host {
         Ok(true)
     }
 
+    /// Applies a T-bar value (ADR-0135): at 1 the program change happens now, without
+    /// a timed transition; when it changes nothing the manual one is cancelled.
+    fn drive_progress(&mut self, t: f32, notify: &dyn Fn(Update)) {
+        if self.preview().is_none() {
+            return;
+        }
+        match self
+            .studio
+            .transition_progress(self.canvas, t, &self.adapters.sources)
+        {
+            Ok(rbs_record::ManualStep::Take) => {
+                self.taking = true;
+                let changed = self.transition();
+                self.taking = false;
+                match changed {
+                    Ok(true) => self.apply(notify),
+                    _ => {
+                        self.studio.cancel_manual(self.canvas);
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => notify(Update::Error(format!("The T-bar could not move: {e}"))),
+        }
+    }
+
     /// Holds the program scene while it is also the preview scene (ADR-0063), and lets
     /// it go otherwise. A copy is taken only when the hold starts, so later edits to
     /// the scene reach the program only through a transition.
     fn sync_held(&mut self) {
-        self.held = next_held(self.held.take(), &self.collection, self.canvas);
+        self.held = next_held(
+            self.held.take(),
+            &self.collection,
+            self.canvas,
+            self.held_id_was,
+        );
     }
 
     /// The collection the studio runs: the user's own, or with the program held
@@ -11736,6 +11805,7 @@ impl Host {
     fn run_collection(&mut self) -> Option<SceneCollection> {
         if let Some(h) = &self.held {
             self.held_was = Some(h.from);
+            self.held_id_was = Some(h.scene.id);
         }
         self.sync_held();
         let held = self.held.as_ref()?;
@@ -11744,7 +11814,9 @@ impl Host {
         }
         // A fresh copy of the same scene, still on air; whatever is previewed, the hold
         // goes on (ADR-0098).
-        self.held = copy_of(&self.collection, held.from);
+        // The same id as the copy it replaces: the hold goes on, no transition.
+        let after = (held.scene.id.get() == HELD_IDS_NEXT).then(|| SceneId::from_raw(HELD_IDS));
+        self.held = copy_of(&self.collection, held.from, after);
         let run = run_copy(&self.collection, self.canvas, self.held.as_ref()?);
         if run.is_none() {
             self.held = None;
@@ -12471,7 +12543,7 @@ impl Host {
             };
             // The held copy (ADR-0063) is named by its real scene.
             let real = |id: SceneId, held: Option<SceneId>| {
-                if id.get() == HELD_IDS { held } else { Some(id) }
+                if id.get() >= HELD_IDS { held } else { Some(id) }
             };
             let now_held = self.held.as_ref().map(|h| h.from);
             let (Some(from), Some(to)) = (
@@ -12484,6 +12556,7 @@ impl Host {
                 canvas,
                 state: match e.phase {
                     TransitionPhase::Started => api::TransitionPhase::Started,
+                    TransitionPhase::Holding => api::TransitionPhase::Holding,
                     _ => api::TransitionPhase::Ended,
                 },
                 kind: api_transition_kind(e.kind),
@@ -12491,6 +12564,8 @@ impl Host {
                 from: from.get(),
                 to: to.get(),
                 at: e.at.as_nanos(),
+                manual: e.manual,
+                t: e.progress,
             };
             self.events
                 .changed(canvas_key(Topic::TransitionState, canvas), || {
@@ -13309,6 +13384,23 @@ impl ApiTarget<'_> {
                 if changed {
                     host.apply(notify);
                 }
+                Ok(Response::Done(Empty {}))
+            }
+            C::CanvasTransitionProgress(p) => {
+                if !p.t.is_finite() || !(0.0..=1.0).contains(&p.t) {
+                    return Err(refused(&Refusal::Invalid(
+                        "t must be a number from 0 to 1.".to_owned(),
+                    )));
+                }
+                if p.canvas == Some(OutputCanvas::Vertical) {
+                    return Err(refused(&Refusal::Conflict(
+                        "Only the main canvas has a T-bar.".to_owned(),
+                    )));
+                }
+                if host.preview().is_none() {
+                    return Err(refused(&Refusal::Conflict(STUDIO_MODE_OFF.to_owned())));
+                }
+                host.pending_progress = Some(p.t);
                 Ok(Response::Done(Empty {}))
             }
             C::CanvasTransition(p) => {
@@ -15908,10 +16000,15 @@ fn shown_scene(
 }
 
 /// Ids of the held program copy (ADR-0063): far above any id a collection issues, so
-/// they never meet one, and the same for every hold of the same scene, so the program's
-/// compositor and layers keep their nodes from one hold to the next. A copy's item has
-/// the id of the item it copies plus this.
+/// they never meet one, and the same for every hold that starts from a real scene, so
+/// the program's compositor and layers keep their nodes from one hold to the next. A
+/// copy's item has the id of the item it copies plus the copy's id.
 const HELD_IDS: u32 = 0xF000_0000;
+
+/// The other id of a held copy: a copy taken right after another one (a transition
+/// from a held program to the scene held next) gets the id the last one did not have,
+/// so the studio sees the program change and runs the transition.
+const HELD_IDS_NEXT: u32 = 0xF800_0000;
 
 /// The program as it was when its scene went into preview too (ADR-0063).
 #[derive(Clone, Debug)]
@@ -15925,27 +16022,37 @@ struct Held {
 /// A copy of the canvas's program scene, for the program to show while the same scene
 /// is edited in preview; `None` unless the canvas is in studio mode with its program
 /// scene in preview.
-fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
+fn held_copy(
+    collection: &SceneCollection,
+    canvas: CanvasId,
+    after: Option<SceneId>,
+) -> Option<Held> {
     let c = collection.canvas(canvas)?;
     let program = c.program?;
     if c.preview != Some(program) {
         return None;
     }
-    copy_of(collection, program)
+    copy_of(collection, program, after)
 }
 
-/// A copy of `program` as it is now, to hold on air (ADR-0063).
-fn copy_of(collection: &SceneCollection, program: SceneId) -> Option<Held> {
+/// A copy of `program` as it is now, to hold on air (ADR-0063), with the id that is
+/// not `after`'s, the copy it follows.
+fn copy_of(collection: &SceneCollection, program: SceneId, after: Option<SceneId>) -> Option<Held> {
     let scene = collection.scene(program)?;
     let mut held = scene.clone();
-    held.id = SceneId::from_raw(HELD_IDS);
+    let base = if after.map(SceneId::get) == Some(HELD_IDS) {
+        HELD_IDS_NEXT
+    } else {
+        HELD_IDS
+    };
+    held.id = SceneId::from_raw(base);
     // Unique in the run collection; read only if a failure names the scene.
     held.name = format!("{} (on air)", scene.name);
     while collection.scenes().any(|s| s.name == held.name) {
         held.name.push('*');
     }
     for item in &mut held.items {
-        item.id = ItemId::from_raw(HELD_IDS.checked_add(item.id.get())?);
+        item.id = ItemId::from_raw(base.checked_add(item.id.get())?);
     }
     Some(Held {
         from: program,
@@ -15960,7 +16067,12 @@ fn copy_of(collection: &SceneCollection, program: SceneId) -> Option<Held> {
 /// studio mode entered, a transition, or an undo or redo put another scene on air);
 /// nothing otherwise. Only a transition (which drops the copy) or another scene on air
 /// ends a hold, so previewing another scene never puts edits on air.
-fn next_held(held: Option<Held>, collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
+fn next_held(
+    held: Option<Held>,
+    collection: &SceneCollection,
+    canvas: CanvasId,
+    after: Option<SceneId>,
+) -> Option<Held> {
     let c = collection.canvas(canvas)?;
     let program = c.program?;
     let preview = c.preview?;
@@ -15973,7 +16085,7 @@ fn next_held(held: Option<Held>, collection: &SceneCollection, canvas: CanvasId)
             });
             Some(h)
         }
-        _ if preview == program => held_copy(collection, canvas),
+        _ if preview == program => held_copy(collection, canvas, after),
         _ => None,
     }
 }
@@ -16234,14 +16346,14 @@ mod tests {
         let (mut col, canvas, scene, _) = held_collection();
         // Outside studio mode, or with another scene in preview: nothing is held.
         col.set_preview(canvas, None).unwrap();
-        assert!(held_copy(&col, canvas).is_none());
+        assert!(held_copy(&col, canvas, None).is_none());
         let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
         col.set_preview(canvas, Some(other)).unwrap();
-        assert!(held_copy(&col, canvas).is_none());
+        assert!(held_copy(&col, canvas, None).is_none());
 
         // The program scene in preview too: the program shows a copy of it.
         col.set_preview(canvas, Some(scene)).unwrap();
-        let held = held_copy(&col, canvas).unwrap();
+        let held = held_copy(&col, canvas, None).unwrap();
         assert_eq!(held.from, scene);
         assert_eq!(held.scene.items.len(), 1);
         // An edit made after the hold reaches the scene, not the copy on air.
@@ -16252,7 +16364,7 @@ mod tests {
             "an item's copy keeps its id, offset"
         );
         col.remove_item(item).unwrap();
-        let held = next_held(Some(held), &col, canvas).unwrap();
+        let held = next_held(Some(held), &col, canvas, None).unwrap();
         let run = run_copy(&col, canvas, &held).unwrap();
         let program = run.canvas(canvas).unwrap().program.unwrap();
         assert_eq!(program, held.scene.id);
@@ -16268,10 +16380,13 @@ mod tests {
         assert_eq!(col.canvas(canvas).unwrap().program, Some(scene));
         assert_eq!(col.scenes().count(), 2);
         // The same scene id for every hold, so the program keeps its nodes.
-        assert_eq!(held_copy(&col, canvas).unwrap().scene.id, held.scene.id);
+        assert_eq!(
+            held_copy(&col, canvas, None).unwrap().scene.id,
+            held.scene.id
+        );
         // Leaving studio mode lets the copy go.
         col.set_preview(canvas, None).unwrap();
-        assert!(next_held(Some(held), &col, canvas).is_none());
+        assert!(next_held(Some(held), &col, canvas, None).is_none());
     }
 
     #[test]
@@ -16280,13 +16395,13 @@ mod tests {
         // As after a transition that keeps the preview scene (ADR-0098): the program
         // scene is in preview and held, and its items are edited.
         let (mut col, canvas, scene, _) = held_collection();
-        let held = held_copy(&col, canvas).unwrap();
+        let held = held_copy(&col, canvas, None).unwrap();
         let item = col.scene(scene).unwrap().items[0].id;
         col.remove_item(item).unwrap();
         // Another scene goes to preview: the edit still waits for a transition.
         let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
         col.set_preview(canvas, Some(other)).unwrap();
-        let held = next_held(Some(held), &col, canvas).unwrap();
+        let held = next_held(Some(held), &col, canvas, None).unwrap();
         assert_eq!(held.from, scene);
         let run = run_copy(&col, canvas, &held).unwrap();
         let program = run.canvas(canvas).unwrap().program.unwrap();
@@ -16294,28 +16409,34 @@ mod tests {
         assert_eq!(run.canvas(canvas).unwrap().preview, Some(other));
         // A copy that must be taken again (it no longer fits) is of the held scene, also
         // with another scene in preview.
-        let again = copy_of(&col, held.from).unwrap();
+        let again = copy_of(&col, held.from, None).unwrap();
         assert_eq!(again.from, scene);
         assert!(run_copy(&col, canvas, &again).is_some());
         // Without a hold, another scene in preview starts none.
-        assert!(next_held(None, &col, canvas).is_none());
+        assert!(next_held(None, &col, canvas, None).is_none());
         // The other scene on air (a transition): the copy goes; it is in preview too,
         // so the hold starts again with it.
         col.set_program(canvas, Some(other)).unwrap();
-        let next = next_held(Some(held), &col, canvas).unwrap();
+        let after = Some(held.scene.id);
+        let next = next_held(Some(held), &col, canvas, after).unwrap();
         assert_eq!(next.from, other);
+        // The copy after a copy has the other id, so the studio sees a new program
+        // and runs the transition; the one after that has the first id again.
+        assert_ne!(Some(next.scene.id), after);
+        let third = copy_of(&col, other, Some(next.scene.id)).unwrap();
+        assert_eq!(Some(third.scene.id), after);
     }
 
     #[test]
     #[allow(clippy::unwrap_used)] // Tests fail by panicking.
     fn a_held_copy_never_outlives_its_scene_or_its_sources() {
         let (mut col, canvas, scene, src) = held_collection();
-        let held = held_copy(&col, canvas).unwrap();
+        let held = held_copy(&col, canvas, None).unwrap();
         // A source deleted while held leaves the copy, which still fits.
         let item = col.scene(scene).unwrap().items[0].id;
         col.remove_item(item).unwrap();
         col.delete_source(src).unwrap();
-        let kept = next_held(Some(held.clone()), &col, canvas).unwrap();
+        let kept = next_held(Some(held.clone()), &col, canvas, None).unwrap();
         assert!(kept.scene.items.is_empty());
         assert!(run_copy(&col, canvas, &kept).is_some());
         // Another scene on air in studio mode with itself in preview (as after an
@@ -16323,7 +16444,7 @@ mod tests {
         let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
         col.set_program(canvas, Some(other)).unwrap();
         col.set_preview(canvas, Some(other)).unwrap();
-        let next = next_held(Some(held), &col, canvas).unwrap();
+        let next = next_held(Some(held), &col, canvas, None).unwrap();
         assert_eq!(next.from, other);
     }
 

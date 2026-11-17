@@ -11,6 +11,9 @@
 //!   selected, created on the first `next_sound`. The two streams are read separately
 //!   (spec invariant 2), so neither reader queues samples of a stream nobody reads,
 //!   and a source that is never heard opens no second reader (P13).
+//! - Sound is trimmed to the sound track's MP4 edit list (`edits.rs`): Media
+//!   Foundation keeps the AAC encoder priming and end padding, which AVFoundation
+//!   drops, so without the trim the sound would start about 21 ms before the picture.
 //! - Zero-copy (`MfMediaFactory::new` opened with `open_for` and the render adapter's
 //!   LUID): the decoder and its video processor run on a D3D11 device of that adapter,
 //!   and each `B8G8R8A8` picture is copied on the GPU, cropped to the display aperture,
@@ -36,6 +39,7 @@ use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_media_decode::{DecodeError, MediaDecoder, MediaDecoderFactory, caps, pixel};
 
+mod edits;
 #[cfg(windows)]
 mod gpu;
 #[cfg(windows)]

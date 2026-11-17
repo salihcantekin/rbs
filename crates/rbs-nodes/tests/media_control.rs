@@ -930,3 +930,46 @@ fn a_range_start_past_the_end_of_the_file_shows_the_last_picture() {
     assert_eq!(rig.pair.control.state(), PlayState::Ended);
     rig.assert_marks(150, 400, 3);
 }
+
+// Live keys (ADR-0108 decision 12).
+
+#[test]
+fn a_live_loop_on_an_ended_clip_plays_again_from_the_range_start() {
+    let mut rig = rig_range(false, 100, Some(200));
+    rig.run(0, 300);
+    wait_until(|| rig.pair.picture.worker_ended());
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.pair.control.set_loop(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+    rig.run(300, 800);
+    // It now loops: still playing, the second picture and its sound only.
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    rig.assert_marks(300, 800, 2);
+    assert!(all(rig.block(700), 0.5));
+}
+
+#[test]
+fn a_live_loop_off_ends_at_the_next_range_end() {
+    let mut rig = rig(true);
+    rig.run(0, 210);
+    rig.pair.control.set_loop(false).unwrap();
+    rig.run(210, 700);
+    wait_until(|| rig.pair.picture.worker_ended());
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    // The first pass ends at 450 ms: nothing after it.
+    assert!(all(rig.block(440), 0.75));
+    assert!(!rig.blocks.contains_key(&450));
+}
+
+#[test]
+fn a_live_restart_when_shown_applies_at_the_next_take() {
+    let mut rig = rig_with(true, true, true);
+    rig.run(0, 210);
+    rig.pair.control.set_restart_when_shown(false);
+    // Taken off air at 200 ms (media 50 ms): cued where it stopped, not at the start.
+    rig.pair.control.set_on_air(false).unwrap();
+    rig.run(210, 400);
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+}
