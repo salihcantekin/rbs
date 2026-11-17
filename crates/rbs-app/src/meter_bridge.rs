@@ -1,7 +1,7 @@
 //! The Mixer's level bars drawn by a native layer (ADR-0035), so a meter update redraws
 //! nothing in Slint.
 //!
-//! Every Mixer bar in the main window tells where it is (`Studio.meter-placed`) and the
+//! Every level bar (`NativeMeter` in Slint) in the main window tells where it is (`Studio.meter-placed`) and the
 //! panel tells where its viewport is (`Studio.mixer-placed`). Before every Slint redraw
 //! [`place`] puts the bridge over the viewport, gives it the bars, and hides it while
 //! Slint draws something over the Mixer (a popup, a toast, a menu: ADR-0035 decision 4).
@@ -265,7 +265,7 @@ mod mac {
     use slint::ComponentHandle;
 
     use super::State;
-    use crate::ui::{MainWindow, Theme};
+    use crate::ui::{MainWindow, Theme, Tokens};
 
     pub(super) struct Layer {
         pub(super) bridge: MeterBridgeLayer,
@@ -331,6 +331,11 @@ mod mac {
             layer.colors = colors;
             layer.bridge.set_colors(&colors);
         }
+        // The well's rounded ends (`radius.sm`, as `NativeMeter` in Slint); does nothing
+        // when unchanged.
+        layer
+            .bridge
+            .set_corner_radius(window.global::<Tokens>().get_radius_sm());
         crate::preview::covers(window, &mut layer.covers);
         let covered = layer.covers.iter().any(|c| overlaps(*c, viewport));
         layer.bridge.set_hidden(covered);

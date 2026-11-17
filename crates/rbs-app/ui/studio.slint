@@ -1161,6 +1161,51 @@ component StripControls inherits HorizontalLayout {
     }
 }
 
+// A level bar (AudioMeter, U16, ADR-0035): Slint draws the well; the moving parts (the lit
+// zones and the peak line) are drawn by a native layer where the platform has one
+// (`Studio.native-meters`), else by Slint from `data`. The bar tells the shell where it
+// is, so it can go anywhere: `key` names its meter (a source id, -1 for the master).
+component NativeMeter inherits Rectangle {
+    in property <int> key;
+    in property <MeterRow> data;
+    // Grows from the bottom up; else from the left.
+    in property <bool> vertical;
+    // False while the bar is clipped away (a zero-wide cell): the layer must not draw it.
+    in property <bool> shown: true;
+    background: Theme.surface-sunken;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    border-radius: Tokens.radius-sm;
+    clip: true;
+    property <int> epoch: Studio.meter-epoch;
+    function report() {
+        Studio.meter-placed(root.key, root.absolute-position.x, root.absolute-position.y, root.width, root.height, root.vertical, root.shown);
+    }
+    init => { root.report(); }
+    changed absolute-position => { root.report(); }
+    changed width => { root.report(); }
+    changed height => { root.report(); }
+    changed epoch => { root.report(); }
+    changed shown => { root.report(); }
+    changed key => { root.report(); }
+    if !Studio.native-meters && !root.vertical: Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+    if !Studio.native-meters && !root.vertical: Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+    if !Studio.native-meters && !root.vertical: Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+    if !Studio.native-meters && !root.vertical && data.peak > 0: Rectangle {
+        x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
+        width: Tokens.size-meter-peak;
+        background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+    }
+    if !Studio.native-meters && root.vertical: Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+    if !Studio.native-meters && root.vertical: Rectangle { y: parent.height * (1 - data.mi-to); height: parent.height * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+    if !Studio.native-meters && root.vertical: Rectangle { y: parent.height * (1 - data.hi-to); height: parent.height * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+    if !Studio.native-meters && root.vertical && data.peak > 0: Rectangle {
+        y: min(parent.height - Tokens.size-meter-peak, parent.height * (1 - data.peak));
+        height: Tokens.size-meter-peak;
+        background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+    }
+}
+
 // One horizontal meter (AudioMeter, U16) in the rows arrangement. Two lines, so the
 // fader can be as long as the row and the row stays inside the panel: the icon, name,
 // level, clip box and icon buttons on the first line, then the bar and the fader.
@@ -1218,32 +1263,11 @@ component MeterView inherits Rectangle {
             HorizontalLayout {
                 padding-left: Tokens.space-3 / 2;
                 padding-right: Tokens.space-3 / 2;
-                bar := Rectangle {
+                NativeMeter {
                     height: Tokens.size-meter-bar;
-                    background: Theme.surface-sunken;
-                    border-width: Tokens.size-border;
-                    border-color: Theme.border-subtle;
-                    border-radius: Tokens.radius-sm;
-                    clip: true;
-                    // Where the native layer draws this bar's moving parts (ADR-0035).
-                    property <int> key: root.master ? -1 : data.id;
-                    property <int> epoch: Studio.meter-epoch;
-                    function report() {
-                        Studio.meter-placed(self.key, self.absolute-position.x, self.absolute-position.y, self.width, self.height, false, true);
-                    }
-                    init => { self.report(); }
-                    changed absolute-position => { self.report(); }
-                    changed width => { self.report(); }
-                    changed height => { self.report(); }
-                    changed epoch => { self.report(); }
-                    if !Studio.native-meters: Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-                    if !Studio.native-meters: Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-                    if !Studio.native-meters: Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-                    if data.peak > 0 && !Studio.native-meters: Rectangle {
-                        x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
-                        width: Tokens.size-meter-peak;
-                        background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
-                    }
+                    key: root.master ? -1 : data.id;
+                    data: data;
+                    vertical: false;
                 }
             }
             // The loudness bar (ADR-0092) under the level bar, on the same scale.
@@ -1424,37 +1448,15 @@ component MeterStrip inherits Rectangle {
     // The level bar spans the fader's track, not its knob room: VSlider insets its
     // track by half the knob (`space.3`), so 0 dB and the bottom line up with it.
     property <length> track-inset: Tokens.space-3 / 2;
-    bar := Rectangle {
+    NativeMeter {
         x: root.pad;
         y: root.body-y + root.track-inset;
         width: Tokens.size-meter-bar;
         height: max(0px, root.body-h - 2 * root.track-inset);
-        background: Theme.surface-sunken;
-        border-width: Tokens.size-border;
-        border-color: Theme.border-subtle;
-        border-radius: Tokens.radius-sm;
-        clip: true;
-        // Where the native layer draws this bar's moving parts (ADR-0035).
-        property <int> key: root.master ? -1 : data.id;
-        property <int> epoch: Studio.meter-epoch;
-        property <bool> placed: root.shown;
-        function report() {
-            Studio.meter-placed(self.key, self.absolute-position.x, self.absolute-position.y, self.width, self.height, true, root.shown);
-        }
-        init => { self.report(); }
-        changed absolute-position => { self.report(); }
-        changed width => { self.report(); }
-        changed height => { self.report(); }
-        changed epoch => { self.report(); }
-        changed placed => { self.report(); }
-        if !Studio.native-meters: Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
-        if !Studio.native-meters: Rectangle { y: parent.height * (1 - data.mi-to); height: parent.height * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
-        if !Studio.native-meters: Rectangle { y: parent.height * (1 - data.hi-to); height: parent.height * (data.hi-to - data.hi-from); background: Theme.meter-high; }
-        if data.peak > 0 && !Studio.native-meters: Rectangle {
-            y: min(parent.height - Tokens.size-meter-peak, parent.height * (1 - data.peak));
-            height: Tokens.size-meter-peak;
-            background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
-        }
+        key: root.master ? -1 : data.id;
+        data: data;
+        vertical: true;
+        shown: root.shown;
     }
     if root.loud: LoudnessBar {
         x: root.pad + Tokens.size-meter-bar + root.gap;
