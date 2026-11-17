@@ -69,6 +69,23 @@ fn rig_from(
     restart_when_shown: bool,
     on_air: bool,
 ) -> Rig {
+    rig_ranged(factory, loop_playback, restart_when_shown, on_air, None)
+}
+
+/// A rig on air whose play range is `start` to `end` ms, set before the first wake.
+fn rig_range(loop_playback: bool, start: u64, end: Option<u64>) -> Rig {
+    let factory = Arc::new(ScriptFactory::new(steps()));
+    let range = (Duration::from_millis(start), end.map(Duration::from_millis));
+    rig_ranged(factory, loop_playback, true, true, Some(range))
+}
+
+fn rig_ranged(
+    factory: Arc<dyn MediaDecoderFactory>,
+    loop_playback: bool,
+    restart_when_shown: bool,
+    on_air: bool,
+    range: Option<(Duration, Option<Duration>)>,
+) -> Rig {
     let clock = Arc::new(TestClock::new());
     let config = AudioGraphConfig::new(AudioFormat::STEREO_48K, BLOCK as u32, LATENCY).unwrap();
     let pair = media_pair(
@@ -79,6 +96,9 @@ fn rig_from(
         clock.clone(),
         config,
     );
+    if let Some((start, end)) = range {
+        pair.control.set_range(start, end).unwrap();
+    }
     pair.control.set_on_air(on_air).unwrap();
     let mut rig = Rig {
         pair,
@@ -754,4 +774,159 @@ fn a_file_gone_after_the_pause_release_is_unavailable_and_keeps_its_picture() {
     factory.fail.store(false, Ordering::Relaxed);
     rig.pair.control.play().unwrap();
     assert_eq!(rig.pair.control.state(), PlayState::Playing);
+}
+
+// Play range (ADR-0108 decision 11).
+
+impl Rig {
+    /// Every tick from `from` to `to` (exclusive) shows the picture `mark`.
+    fn assert_marks(&self, from: u64, to: u64, mark: u8) {
+        let wrong: Vec<_> = self
+            .marks
+            .range(from..to)
+            .filter(|(_, m)| **m != Some(mark))
+            .collect();
+        assert!(wrong.is_empty(), "not picture {mark}: {wrong:?}");
+    }
+}
+
+#[test]
+fn a_play_range_plays_only_its_part_and_ends() {
+    let mut rig = rig_range(false, 100, Some(200));
+    rig.run(0, 500);
+    wait_until(|| rig.pair.picture.worker_ended());
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    // Media 100 ms at the anchor (150 ms): the second picture and its sound only.
+    rig.assert_marks(150, 500, 2);
+    assert!(all(rig.block(150), 0.5));
+    assert!(all(rig.block(240), 0.5));
+    assert!(!rig.blocks.contains_key(&250));
+    assert!(
+        rig.blocks
+            .values()
+            .all(|b| !b.contains(&0.25) && !b.contains(&0.75))
+    );
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_looping_play_range_starts_each_pass_at_its_start_with_no_gap() {
+    let mut rig = rig_range(true, 100, Some(200));
+    rig.run(0, 600);
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    // Passes of 100 ms from 150 ms: the second picture and 0.5 throughout.
+    rig.assert_marks(150, 600, 2);
+    for at in (150..540).step_by(10) {
+        assert!(all(rig.block(at), 0.5), "block at {at} ms");
+    }
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn a_range_start_alone_plays_to_the_end_of_the_file() {
+    let mut rig = rig_range(true, 200, None);
+    rig.run(0, 400);
+    // The third picture from 150 ms; each pass is 100 ms long and plays only it.
+    rig.assert_marks(150, 400, 3);
+    for at in (150..340).step_by(10) {
+        assert!(all(rig.block(at), 0.75), "block at {at} ms");
+    }
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn restart_from_the_end_hold_plays_from_the_range_start() {
+    let mut rig = rig_range(false, 100, Some(200));
+    rig.run(0, 300);
+    wait_until(|| rig.pair.picture.worker_ended());
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.pair.control.restart().unwrap();
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+    rig.run(300, 600);
+    rig.assert_marks(300, 600, 2);
+    assert!(all(rig.block(450), 0.5));
+    assert!(
+        rig.blocks
+            .values()
+            .all(|b| !b.contains(&0.25) && !b.contains(&0.75))
+    );
+}
+
+#[test]
+fn a_seek_is_clamped_into_the_play_range() {
+    let mut rig = rig_range(true, 100, Some(200));
+    rig.run(0, 210);
+    rig.pair.control.pause().unwrap();
+    rig.run(210, 310);
+    rig.pair.control.seek(Duration::ZERO).unwrap();
+    rig.run(310, 410);
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+    // Past the end: the last picture before the range end.
+    rig.pair.control.seek(Duration::from_millis(250)).unwrap();
+    rig.run(410, 510);
+    assert!(rig.pair.control.cursor() < Duration::from_millis(200));
+    assert!(rig.pair.control.cursor() >= Duration::from_millis(100));
+    rig.assert_marks(150, 510, 2);
+}
+
+#[test]
+fn a_range_with_end_not_after_start_is_refused_and_changes_nothing() {
+    let rig = rig_range(true, 100, Some(200));
+    for (start, end) in [(200, 200), (200, 100)] {
+        let refused = rig.pair.control.set_range(
+            Duration::from_millis(start),
+            Some(Duration::from_millis(end)),
+        );
+        assert!(refused.is_err());
+    }
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+}
+
+#[test]
+fn a_new_range_moves_a_playing_cursor_outside_it_to_its_start() {
+    let mut rig = rig(true);
+    rig.run(0, 210);
+    // At 200 ms: playing media 50 ms; the new range starts at 200 ms.
+    rig.pair
+        .control
+        .set_range(Duration::from_millis(200), None)
+        .unwrap();
+    rig.run(210, 600);
+    // A seek at the instant (250 ms), anchored one lead later (400 ms).
+    assert_eq!(rig.marks[&400], Some(3));
+    assert!(all(rig.block(400), 0.75));
+    assert!(rig.blocks.range(400..550).all(|(_, b)| all(b, 0.75)));
+}
+
+#[test]
+fn an_empty_range_shows_one_picture_and_ends() {
+    let mut rig = rig_range(false, 120, Some(130));
+    rig.run(0, 400);
+    wait_until(|| rig.pair.picture.worker_ended());
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.assert_marks(150, 400, 2);
+}
+
+#[test]
+fn a_looping_empty_range_holds_its_picture_without_seeking_again() {
+    let mut rig = rig_range(true, 120, Some(130));
+    rig.run(0, 400);
+    let seeks = rig.pair.picture.stats().uploaded.load(Ordering::Relaxed);
+    rig.run(400, 800);
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    rig.assert_marks(150, 800, 2);
+    // Nothing more was decoded or queued while held.
+    assert_eq!(
+        rig.pair.picture.stats().uploaded.load(Ordering::Relaxed),
+        seeks
+    );
+}
+
+#[test]
+fn a_range_start_past_the_end_of_the_file_shows_the_last_picture() {
+    let mut rig = rig_range(false, 5_000, None);
+    rig.run(0, 400);
+    wait_until(|| rig.pair.picture.worker_ended());
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.assert_marks(150, 400, 3);
 }
