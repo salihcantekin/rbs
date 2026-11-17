@@ -935,6 +935,9 @@ pub enum Command {
         /// `0` linear, `1` ease-in-out.
         easing: u8,
     },
+    /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
+    /// step.
+    SetTransition(rbs_scene::CollectionTransition),
     /// Per-source slide override (ADR-0100). `custom` false clears it. One undo step.
     SetSourceGlide {
         /// The source.
@@ -1265,6 +1268,10 @@ pub enum Command {
     /// Save the vertical stream's key (`None` removes it) under the vertical account
     /// ([`stream_key::vertical_account`]); answered with [`Update::VerticalStreamKey`].
     SaveVerticalStreamKey(Option<Secret>),
+    /// Save the key of stream destination `id` (`None` removes it) under its account
+    /// ([`crate::stream_destinations::key_account`], ADR-0127 decision 1); answered
+    /// with [`Update::DestinationKey`].
+    SaveDestinationKey(u32, Option<Secret>),
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
@@ -2764,6 +2771,9 @@ pub enum Update {
     StreamKey(Result<bool, String>),
     /// [`Command::SaveVerticalStreamKey`] done, as [`Update::StreamKey`].
     VerticalStreamKey(Result<bool, String>),
+    /// [`Command::SaveDestinationKey`] done for destination `.0`, as
+    /// [`Update::StreamKey`].
+    DestinationKey(u32, Result<bool, String>),
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
@@ -4615,6 +4625,10 @@ impl Host {
                 let done = self.set_glide(duration_ms, easing);
                 self.answer(done, notify);
             }
+            Command::SetTransition(t) => {
+                let done = self.put_transition(t);
+                self.answer(done, notify);
+            }
             Command::SetSourceGlide {
                 id,
                 custom,
@@ -5036,6 +5050,15 @@ impl Host {
             Command::SaveVerticalStreamKey(key) => {
                 let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
                 notify(Update::VerticalStreamKey(result));
+            }
+            Command::SaveDestinationKey(id, key) => {
+                let account = crate::stream_destinations::key_account(&self.key_account, id);
+                let result = match &key {
+                    Some(k) => self.keys.write(&account, k).map(|()| true),
+                    None => self.keys.remove(&account).map(|()| false),
+                }
+                .map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()));
+                notify(Update::DestinationKey(id, result));
             }
             Command::SetKeyAccount(account) => self.key_account = account,
             Command::SaveImportedKey(account, key) => {
@@ -10673,6 +10696,12 @@ impl Host {
         if let Some(s) = p.slide {
             t.slide = scene_swipe(s);
         }
+        self.put_transition(t)
+    }
+
+    /// Sets the collection's transition as one undo step; `Ok(false)` when it is
+    /// already set.
+    fn put_transition(&mut self, t: rbs_scene::CollectionTransition) -> Result<bool, Refusal> {
         if self.collection.transition() == t {
             return Ok(false);
         }

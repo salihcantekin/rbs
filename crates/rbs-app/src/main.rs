@@ -3739,7 +3739,7 @@ const SETTINGS_SECTIONS: [&str; 33] = [
     "settings.sources.add-global",
     "settings.sources.global-sources",
     "settings.stream.connection",
-    "settings.stream.destination",
+    "settings.stream.destinations",
     "settings.stream.encoding",
     "settings.stream.while-live",
     "settings.vcam.camera",
@@ -4406,6 +4406,18 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_glide, |app, duration_ms: i32, easing: i32| {
         app.studio.set_glide(duration_ms, easing);
     });
+    on!(on_set_transition_kind, |app, index: i32| {
+        app.studio.set_transition_kind(index);
+    });
+    on!(on_set_transition_duration, |app, duration_ms: i32| {
+        app.studio.set_transition_duration(duration_ms);
+    });
+    on!(
+        on_set_fade_options,
+        |app, easing: i32, via: bool, color: slint::SharedString| {
+            app.studio.set_fade_options(easing, via, &color);
+        }
+    );
     on!(
         on_set_source_glide,
         |app, id: i32, custom: bool, duration_ms: i32, easing: i32| {
@@ -4673,6 +4685,45 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_latency, |app, i: i32| {
         app.studio.set_latency(i);
+    });
+    on!(on_dest_set_enabled, |app, id: i32, on: bool| {
+        app.studio.dest_set_enabled(id, on);
+    });
+    on!(on_dest_edit, |app, id: i32| {
+        app.studio.dest_edit(id);
+    });
+    on!(on_dest_add, |app| {
+        app.studio.dest_add();
+    });
+    on!(on_dest_set_service, |app, i: i32| {
+        app.studio.dest_set_service(i);
+    });
+    on!(on_dest_set_name, |app, text: slint::SharedString| {
+        app.studio.dest_set_name(&text);
+    });
+    on!(on_dest_set_server, |app, text: slint::SharedString| {
+        app.studio.dest_set_server(&text);
+    });
+    on!(on_dest_save_key, |app, text: slint::SharedString| {
+        app.studio.dest_save_key(Some(&text));
+    });
+    on!(on_dest_remove_key, |app| {
+        app.studio.dest_save_key(None);
+    });
+    on!(on_dest_set_own, |app, own: bool| {
+        app.studio.dest_set_own(own);
+    });
+    on!(on_dest_set_reconnect, |app, on: bool| {
+        app.studio.dest_set_reconnect(on);
+    });
+    on!(on_dest_save, |app| {
+        app.studio.dest_save();
+    });
+    on!(on_dest_cancel, |app| {
+        app.studio.dest_cancel();
+    });
+    on!(on_dest_remove, |app| {
+        app.studio.dest_remove();
     });
     on!(on_set_canvas_sides, |app, width: f32, height: f32| {
         app.studio.set_canvas_sides(width, height, close_preview);

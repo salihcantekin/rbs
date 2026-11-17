@@ -1334,6 +1334,22 @@ export component MenuSurface inherits Rectangle {
     border-radius: Tokens.radius-md;
 }
 
+// A popover's layer in a window (first used by the transition options, ADR-0128): it
+// covers the window, a click outside its card calls `dismissed`, and the children are
+// drawn on top. States: open only (it exists while its popover is open).
+export component PopoverLayer inherits Rectangle {
+    callback dismissed();
+    TouchArea { clicked => { root.dismissed(); } }
+    @children
+}
+
+// A popover's card: a `MenuSurface` that takes the clicks on itself, so they never
+// reach the `PopoverLayer` under it and close it.
+export component PopoverCard inherits MenuSurface {
+    TouchArea { }
+    @children
+}
+
 // Empty state: what the panel is for and the next action (rule U10).
 export component EmptyState inherits Rectangle {
     in property <string> title;
@@ -3207,6 +3223,17 @@ export global Overlays {
     in-out property <OverlayCover> name-cover;
     callback name-accepted(string);
     callback name-cancelled();
+
+    // The transition rail's options (ADR-0128): drawn by the main window over the
+    // button that opened them (its window position and size); `transition-full` adds
+    // the type and the duration (the narrow rail). Reported as a cover like the hint.
+    in-out property <bool> transition-open;
+    in-out property <bool> transition-full;
+    in-out property <length> transition-x;
+    in-out property <length> transition-y;
+    in-out property <length> transition-w;
+    in-out property <length> transition-h;
+    in-out property <OverlayCover> transition-cover;
 
     // The "Add vertical output" dialog (ADR-0093 decision 8): a small form over the
     // main window. Rust reads the chosen values when `vertical-accepted` fires and

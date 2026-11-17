@@ -10,7 +10,10 @@ use rbs_browser_ipc::Configure;
 use rbs_browser_runner::{PageSound, Supervisor, spawn_helper};
 use rbs_browser_shm::SlotLayout;
 use rbs_browser_shm::SoundPacket;
-use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserSound, BrowserSoundFeed, BrowserTree};
+use rbs_sources::{
+    BrowserFrameSink, BrowserPictureEdge, BrowserSession, BrowserSound, BrowserSoundFeed,
+    BrowserTree,
+};
 
 /// Locates `rbs-browser-helper` for this process.
 pub fn resolve_browser_helper() -> Option<PathBuf> {
@@ -68,9 +71,18 @@ impl BrowserTree for HelperBrowserTree {
             config,
             SlotLayout::Rgba8Straight,
         )?;
-        // The supervisor thread exists only while the source is Active (P13).
-        let publish = move |rgba: &[u8], width, height| {
-            sink.publish(rgba, width, height);
+        // The supervisor thread exists only while the source is Active (P13). It
+        // stamps each picture on the master clock at the edge, by the rule the page's
+        // sound follows, so the render thread shows it with that sound (ADR-0109
+        // decision 8). Without a sound node there is no clock: pictures are due at once.
+        let mut edge = sound
+            .as_ref()
+            .map(|sound| BrowserPictureEdge::new(sound.clock()));
+        let publish = move |rgba: &[u8], width, height, painted| {
+            let stamp = edge
+                .as_mut()
+                .map(|edge| edge.stamp(painted, rbs_browser_shm::os_monotonic_nanos()));
+            sink.publish_at(rgba, width, height, stamp);
         };
         let supervisor = match sound {
             // The page's sound reaches the sound node through the feed, on the
