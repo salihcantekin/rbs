@@ -53,6 +53,8 @@ pub mod stream_key;
 pub mod stream_profile;
 pub mod stream_services;
 pub mod studio_host;
+pub mod text_clock;
+pub mod text_timers;
 pub mod thumbnail;
 pub mod user_session;
 pub mod vcam_settings;

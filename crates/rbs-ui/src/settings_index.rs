@@ -106,6 +106,10 @@ const VCAM_REMOVAL: &[Place] = &[at("virtual_camera", "settings.vcam.removal")];
 const REMOTE_THIS: &[Place] = &[at("remote_control", "settings.remote.this-computer")];
 const REMOTE_OTHER: &[Place] = &[at("remote_control", "settings.remote.other-computers")];
 const REMOTE_TOKENS: &[Place] = &[at("remote_control", "settings.remote.access-tokens")];
+const AI_STATUS: &[Place] = &[at("ai_tools", "settings.ai-tools.status")];
+const AI_ACCESS: &[Place] = &[at("ai_tools", "settings.ai-tools.access")];
+const AI_CONNECT: &[Place] = &[at("ai_tools", "settings.ai-tools.connect")];
+const AI_ACTIONS: &[Place] = &[at("ai_tools", "settings.ai-tools.actions")];
 /// The Encoding card's rows (`EncoderFields`), shared by Recording and Stream.
 const ENCODING: &[Place] = &[
     at("recording", "settings.recording.encoding"),
@@ -832,6 +836,80 @@ pub const SETTINGS: &[Setting] = &[
         "Access tokens",
         "remote control api token password scope",
         REMOTE_TOKENS,
+    ),
+    // AI tools (ADR-0134)
+    c(
+        "settings.ai-tools.status",
+        "AI tools",
+        "mcp claude cursor agent llm assistant",
+        AI_STATUS,
+    ),
+    row(
+        "ai-tools.start",
+        "Start",
+        "mcp claude cursor agent stop server",
+        AI_STATUS,
+        Simple,
+    ),
+    row(
+        "ai-tools.autostart",
+        "Start when RBS opens",
+        "mcp agent automatic launch login",
+        AI_STATUS,
+        Simple,
+    ),
+    c(
+        "settings.ai-tools.access",
+        "What AI tools may do",
+        "mcp agent permission scope",
+        AI_ACCESS,
+    ),
+    row(
+        "ai-tools.access",
+        "Access",
+        "mcp agent scope view control full",
+        AI_ACCESS,
+        Simple,
+    ),
+    row(
+        "ai-tools.irreversible",
+        "Allow actions that cannot be undone",
+        "mcp agent permission record stream delete irreversible",
+        AI_ACCESS,
+        Simple,
+    ),
+    row(
+        "ai-tools.new-token",
+        "Token",
+        "mcp agent token rotate new key",
+        AI_ACCESS,
+        Simple,
+    ),
+    c(
+        "settings.ai-tools.connect",
+        "Connect an AI tool",
+        "mcp claude desktop code cursor vs code config json",
+        AI_CONNECT,
+    ),
+    row(
+        "ai-tools.tool",
+        "AI tool",
+        "mcp claude desktop code cursor vs code",
+        AI_CONNECT,
+        Simple,
+    ),
+    row(
+        "ai-tools.line",
+        "Connection line",
+        "mcp config json command copy rbs-mcp",
+        AI_CONNECT,
+        Simple,
+    ),
+    c(
+        "settings.ai-tools.actions",
+        "Recent actions",
+        "mcp agent audit log history",
+        AI_ACTIONS,
     ),
 ];
 

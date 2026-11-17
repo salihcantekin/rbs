@@ -645,6 +645,10 @@ fn every_request() -> Vec<Request> {
             name: "Stream Deck".into(),
         })),
         c(Command::ImportObsScan),
+        c(Command::TextTimer(TextTimer {
+            source: 3,
+            action: TimerAction::Pause,
+        })),
         c(Command::ImportObsCheck(ObsImport {
             collection: "Evening show".into(),
             profile: None,
@@ -3134,4 +3138,17 @@ fn obs_import_calls_name_sources_only_and_answers_round_trip() {
     let v = serde_json::to_value(&run).unwrap();
     assert!(v.get("profile").is_none() && v.get("notes").is_none());
     assert_eq!(serde_json::from_value::<ObsRun>(v).unwrap(), run);
+}
+
+#[test]
+fn text_timers_decode_as_protocol_1_84() {
+    let t: TextTimer = serde_json::from_value(json!({"source": 4, "action": "start"})).unwrap();
+    assert_eq!(t.action, TimerAction::Start);
+    assert!(serde_json::from_value::<TextTimer>(json!({"source": 4, "action": "stop"})).is_err());
+    round_trip(&TextTimerState {
+        source: 4,
+        kind: "stopwatch".into(),
+        running: true,
+        value_ms: 1500,
+    });
 }

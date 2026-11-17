@@ -2850,6 +2850,21 @@ pub struct TextFonts {
     pub families: Vec<String>,
 }
 
+/// `text.timer`'s answer (protocol 1.84, ADR-0129 decision 11): the timer as it
+/// stands now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextTimerState {
+    /// The text source's id.
+    pub source: u32,
+    /// `countdown` or `stopwatch`.
+    pub kind: String,
+    /// It runs.
+    pub running: bool,
+    /// Time counted, in milliseconds (a countdown's is the time gone, not the time
+    /// left).
+    pub value_ms: u64,
+}
+
 /// The topic `source.attributes_clipboard.changed` (protocol 1.68).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttributesClipboardChanged {
