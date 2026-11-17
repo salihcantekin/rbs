@@ -553,7 +553,13 @@ impl Node<GpuRuntime> for MediaPictureNode {
         &self.descriptor
     }
 
-    fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+    fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        // Native pictures must be on the render adapter (port invariant 11).
+        let luid = match ctx.shared.adapter().get_info().backend {
+            wgpu::Backend::Dx12 => ctx.shared.adapter_luid().map_or(0, |l| l.wrapping_add(1)),
+            _ => 0,
+        };
+        self.shared.import_luid.store(luid, Ordering::Release);
         let now = self.shared.player().clock().now();
         self.wake(now)
             .map_err(|error| NodeError::Failed(error.to_string()))

@@ -129,7 +129,8 @@ impl Drop for Released<'_> {
 
 /// Runs one worker until the end of the file (without `loop`), a fault, or shutdown.
 pub(crate) fn run(job: Job) {
-    let mut decoder = match job.factory.open(&job.path) {
+    let target = job.shared.decode_target();
+    let mut decoder = match job.factory.open_for(&job.path, &target) {
         Ok(decoder) => decoder,
         Err(error) => {
             let _ = job

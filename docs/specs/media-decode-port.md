@@ -17,7 +17,13 @@ In scope: opening a path the host accepted, seeking, per-stream reads, the state
 ```rust
 pub trait MediaDecoderFactory: AdapterFactory {
     fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError>;
+    // Default: ignores the target and calls `open`.
+    fn open_for(&self, path: &Path, target: &DecodeTarget) -> Result<Box<dyn MediaDecoder>, DecodeError>;
 }
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecodeTarget { pub adapter_luid: Option<u64> } // DecodeTarget::none(), DecodeTarget::adapter(luid)
 
 pub trait MediaDecoder: Send {
     fn seek(&mut self, cursor: Duration) -> Result<(), DecodeError>;
@@ -55,6 +61,7 @@ Invariants:
 8. From this version on, new trait methods have defaults and the public enums are `#[non_exhaustive]`, so neither breaks an adapter. `next_sound` and `has_audio` are required, so an adapter cannot claim sound and forget to deliver it.
 9. Capability `media.decode.pixel` is a set of `zero-copy` and `cpu-upload`. The host picks the adapter named in the source's `adapter` setting, or else `zero-copy` before `cpu-upload`, then registration order, among adapters that open the file.
 10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). The picture node imports a native picture once, when it is first shown, through the importer the capture node uses; the imported texture repeats while the clock repeats the picture, and stays as the held picture in the end hold. A source keeps at most `NATIVE_WAITING` (15) native pictures decoded and not yet imported, in the worker and on the ring; with the one the worker has just decoded, the shown texture and the held texture that is the budget of 18. A picture over the budget is dropped and counted (`worker_dropped_pictures`). A failed import drops the picture, counts it (`import_failures`), and repeats the last texture. Native pictures the clock passed go back to the worker, which drops them (and their lease) off the render thread. `rbs-media-decode-test` has `ScriptFactory::native` (fake surfaces with counted leases) for the budget and lease tests (`rbs-nodes/tests/media_native.rs`).
+11. Import device. The worker opens with `open_for` and the `DecodeTarget` the picture node recorded in its `prepare` from the render device: the adapter LUID on Direct3D 12 (`GpuContext::adapter_luid`, as the capture node's `import_preferences`), `none` elsewhere. A run that starts before the picture node was ever prepared (the sound node started it), and the probe, open with `DecodeTarget::none()`. An adapter whose native pictures must be on the import device (Media Foundation's shared D3D11 texture) gives system pictures without a LUID, and never a native picture on another adapter; it does not change its stated capability. A run keeps the pixel path it opened with until its next open.
 
 ## Errors and failure behaviour
 

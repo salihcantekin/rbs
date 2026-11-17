@@ -177,6 +177,9 @@ pub(crate) struct Shared {
     pub(crate) has_audio: AtomicBool,
     /// The stated duration in nanoseconds plus one; 0 while unknown.
     pub(crate) duration: AtomicU64,
+    /// The render adapter's LUID plus one, recorded by the picture node's `prepare` on
+    /// Direct3D 12; 0 when unknown. The worker opens with it (port invariant 11).
+    pub(crate) import_luid: AtomicU64,
     /// The audio graph's block period.
     pub(crate) block_period: Duration,
     /// The playback control records (ADR-0108 decision 10).
@@ -216,6 +219,7 @@ impl Shared {
             sound_gen: AtomicU32::new(0),
             has_audio: AtomicBool::new(false),
             duration: AtomicU64::new(0),
+            import_luid: AtomicU64::new(0),
             block_period,
             controls: control::Controls::new(),
             handoff: Mutex::new(Handoff::default()),
@@ -338,5 +342,15 @@ pub fn media_pair(
         picture: MediaPictureNode::new(Arc::clone(&shared)),
         control: MediaControl::new(Arc::clone(&shared)),
         sound: MediaSoundNode::new(audio, shared),
+    }
+}
+
+impl Shared {
+    /// Where the worker's native pictures will be imported (port invariant 11).
+    pub(crate) fn decode_target(&self) -> rbs_media_decode::DecodeTarget {
+        match self.import_luid.load(Ordering::Acquire) {
+            0 => rbs_media_decode::DecodeTarget::none(),
+            luid => rbs_media_decode::DecodeTarget::adapter(luid.wrapping_sub(1)),
+        }
     }
 }
