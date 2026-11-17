@@ -77,3 +77,7 @@ Round 2, independent AI session (2026-11-17): changes requested (text only; desi
 Round 3, independent AI session (2026-11-17): changes requested (text only; the design holds; round 2 resolutions confirmed in the text and against the code). 1: a companion in a scene nested in S; now named in decision 2 with a test. 2: undo label when only a companion is deleted; now Remove with the picture's name (decision 6), tested. 3: a picture also global on another canvas; now stated in decision 5.
 
 Round 4, independent AI session (2026-11-17): changes requested, 1 concern: the undo label belongs to the host, not the model's `Undo`. Resolved in decision 6; the label test moved to the host tests. Round 3 resolutions confirmed in the text and against the code.
+
+Round 5, independent AI session (2026-11-17): approve. The round-4 resolution matches the code (`Undo(Op)` has no label; the host labels the history entry), and no decision contradicts another.
+
+Owner approval: pending.
