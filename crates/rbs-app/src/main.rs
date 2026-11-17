@@ -4442,7 +4442,7 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
         });
     });
     let c = ctx.clone();
-    w.on_fit_changed(move || c.update(|_| {}));
+    w.on_fit_changed(move || entry::guard(|| c.update(|_| {})));
     // The width first: wrapped text measures against it, so `fit-height` read before
     // the window has a width would be far too tall.
     let t = w.global::<Tokens>();
