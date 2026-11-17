@@ -27,7 +27,7 @@ These are features OBS either lacks or provides only through fragile plugins. RB
 8. **Observability**: per-node latency, queue depth and drop reasons, exportable through `tracing` / OpenTelemetry.
 9. **Colour-correct by design**: linear-light compositing, SDR and HDR (PQ/HLG) outputs.
 10. **A modern, easy UI by rule**: binding UI rules with timed core tasks, one design system, accessibility and localisation from day one ([UI principles](ui/principles.md)).
-11. **Remote guests** (post-1.0 plugin): browser guests over WebRTC, operator roles and moderation.
+11. **Remote guests**: first RBS-to-RBS guests over peer-to-peer WebRTC with no server of ours, built in before 1.0 ([ADR-0139](adr/0139-remote-guests-rbs-to-rbs-over-webrtc.md)); browser guests, screen sharing, TURN, operator roles and moderation later.
 
 ## Product expectations (owner, 2026-11-08)
 

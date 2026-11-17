@@ -145,4 +145,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0135](0135-transitions-t-bar-scene-override-rehearse.md) | Transitions phase 3: a T-bar driving the transition by hand, a transition into a scene, and Rehearse on the Preview picture | Accepted |
 | [0136](0136-no-halo-in-the-frame-bar.md) | No halo in the frame bar, so the Glow look keeps the bar's height | Accepted |
 | [0138](0138-split-the-generated-ui-crate.md) | Split the generated UI code into a base crate (shared globals and structs) and one crate per window group, for parallel and partial UI builds | Accepted |
-| [0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md) | Remote guests: one RBS shares its program to another over peer-to-peer WebRTC, paired by an invite code and an answer code, with no server of ours | Proposed |
+| [0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md) | Remote guests: one RBS shares its program to another over peer-to-peer WebRTC, paired by an invite code and an answer code, with no server of ours | Accepted |
