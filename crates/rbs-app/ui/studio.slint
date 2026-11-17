@@ -4839,7 +4839,8 @@ component TimerButtons inherits HorizontalLayout {
 component TextFields inherits VerticalLayout {
     in property <SourceData> data;
     property <TextData> t: Studio.text-props;
-    spacing: Tokens.size-field-gap;
+    // A section's gap between rows, so a tall tab reads top to bottom (owner 2026-11-17).
+    spacing: Tokens.size-section-gap;
     Field {
         label: @tr("Kind");
         Select {
