@@ -3,7 +3,9 @@
 //! settings; the editor works on a copy, written on Save. Keys are never shown: they go
 //! to the system's credential store at once, as the Stream key field always did.
 
-use rbs_api::types::OutputCanvas;
+use std::time::Instant;
+
+use rbs_api::types::{DestinationState, LiveDestination, OutputCanvas};
 use rbs_app::record_profile::Encoding;
 use rbs_app::stream_destinations::{
     CUSTOM, Canvas, Destination, DestinationEncoding, Destinations, MAX_DESTINATIONS_PER_CANVAS,
@@ -593,6 +595,141 @@ impl super::StudioUi {
     }
 }
 
+/// One destination of the running stream as the live chip's list shows it
+/// (ADR-0127 decision 17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveRow {
+    pub id: u32,
+    pub name: String,
+    /// Its state in words.
+    pub state: String,
+    /// Time on air and drops, or why it failed.
+    pub detail: String,
+    /// It failed or reconnects: shown in the warning colour, never by colour alone.
+    pub problem: bool,
+    pub can_stop: bool,
+    pub can_retry: bool,
+}
+
+/// "0:01:05", as the live time.
+fn clock(secs: u64) -> String {
+    format!("{}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60)
+}
+
+/// The list rows of the destinations `rows` (each with when it arrived), as of
+/// `now`.
+pub(crate) fn live_rows(rows: &[(LiveDestination, Instant)], now: Instant) -> Vec<LiveRow> {
+    rows.iter()
+        .map(|(d, at)| {
+            let running = matches!(
+                d.state,
+                DestinationState::Connecting
+                    | DestinationState::Live
+                    | DestinationState::Reconnecting
+            );
+            let on_air = if d.on_air_ms > 0 || d.state == DestinationState::Live {
+                d.on_air_ms / 1000 + now.saturating_duration_since(*at).as_secs()
+            } else {
+                0
+            };
+            let drops = match d.dropped {
+                0 => String::new(),
+                n => format!(" · {n} dropped"),
+            };
+            let (state, detail) = match d.state {
+                DestinationState::Connecting => ("Connecting".to_owned(), String::new()),
+                DestinationState::Live => ("Live".to_owned(), format!("{}{drops}", clock(on_air))),
+                DestinationState::Reconnecting => (
+                    format!("Reconnecting, try {}", d.reconnect_attempts.max(1)),
+                    format!("{}{drops}", clock(on_air)),
+                ),
+                DestinationState::Failed => {
+                    ("Failed".to_owned(), d.error.clone().unwrap_or_default())
+                }
+                DestinationState::Stopped => ("Stopped".to_owned(), String::new()),
+            };
+            LiveRow {
+                id: d.id,
+                name: d.name.clone(),
+                state,
+                detail,
+                problem: matches!(
+                    d.state,
+                    DestinationState::Failed | DestinationState::Reconnecting
+                ),
+                can_stop: running,
+                can_retry: !running,
+            }
+        })
+        .collect()
+}
+
+/// The chip's count, "2/3" (destinations live of those Go live started); empty with
+/// one destination, where the chip says LIVE alone.
+pub(crate) fn live_count(rows: &[(LiveDestination, Instant)]) -> String {
+    if rows.len() < 2 {
+        return String::new();
+    }
+    let live = rows
+        .iter()
+        .filter(|(d, _)| d.state == DestinationState::Live)
+        .count();
+    format!("{live}/{}", rows.len())
+}
+
+/// `Shell` model rows of the live chip's list.
+pub(crate) fn live_model(rows: &[LiveRow]) -> slint::ModelRc<crate::ui::LiveDestinationRow> {
+    std::rc::Rc::new(slint::VecModel::from(
+        rows.iter()
+            .map(|r| crate::ui::LiveDestinationRow {
+                id: r.id as i32,
+                name: r.name.as_str().into(),
+                state: r.state.as_str().into(),
+                detail: r.detail.as_str().into(),
+                problem: r.problem,
+                can_stop: r.can_stop,
+                can_retry: r.can_retry,
+            })
+            .collect::<Vec<_>>(),
+    ))
+    .into()
+}
+
+impl super::StudioUi {
+    /// The main canvas's running destinations changed (`Update::LiveDestinations`).
+    pub(crate) fn live_destinations_changed(
+        &mut self,
+        c: OutputCanvas,
+        rows: Vec<LiveDestination>,
+    ) {
+        if c != OutputCanvas::Main {
+            return;
+        }
+        let now = Instant::now();
+        self.live_dests = rows.into_iter().map(|d| (d, now)).collect();
+    }
+
+    /// The live chip's list as of now.
+    pub(crate) fn live_destination_rows(&self) -> Vec<LiveRow> {
+        live_rows(&self.live_dests, Instant::now())
+    }
+
+    /// The live chip's count ("2/3"), empty with one destination.
+    pub(crate) fn live_destination_count(&self) -> String {
+        live_count(&self.live_dests)
+    }
+
+    /// Stop from the live chip's list.
+    pub(crate) fn live_dest_stop(&mut self, id: u32) {
+        self.send(rbs_app::studio_host::Command::StopDestination(id));
+    }
+
+    /// Retry from the live chip's list.
+    pub(crate) fn live_dest_retry(&mut self, id: u32) {
+        self.send(rbs_app::studio_host::Command::StartDestination(id));
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
@@ -676,5 +813,43 @@ mod tests {
             upload,
             "Upload needed: about 25 Mbit/s for 2 destinations (one encode shared, one of its own)."
         );
+    }
+
+    fn live(id: u32, state: DestinationState, on_air_ms: u64, dropped: u64) -> LiveDestination {
+        LiveDestination {
+            id,
+            name: format!("D{id}"),
+            service: "custom".to_owned(),
+            state,
+            connects: 1,
+            reconnect_attempts: 2,
+            dropped,
+            on_air_ms,
+            error: (state == DestinationState::Failed).then(|| "refused the key".to_owned()),
+        }
+    }
+
+    #[test]
+    fn the_live_list_says_each_state_in_words_and_counts_those_live() {
+        let at = Instant::now();
+        let later = at + std::time::Duration::from_secs(5);
+        let rows = vec![
+            (live(0, DestinationState::Live, 60_000, 0), at),
+            (live(1, DestinationState::Reconnecting, 30_000, 12), at),
+            (live(2, DestinationState::Failed, 0, 0), at),
+            (live(3, DestinationState::Stopped, 0, 0), at),
+        ];
+        let out = live_rows(&rows, later);
+        assert_eq!(out[0].state, "Live");
+        assert_eq!(out[0].detail, "0:01:05");
+        assert!(!out[0].problem && out[0].can_stop && !out[0].can_retry);
+        assert_eq!(out[1].state, "Reconnecting, try 2");
+        assert_eq!(out[1].detail, "0:00:35 · 12 dropped");
+        assert!(out[1].problem && out[1].can_stop);
+        assert_eq!(out[2].detail, "refused the key");
+        assert!(out[2].problem && out[2].can_retry && !out[2].can_stop);
+        assert!(!out[3].problem && out[3].can_retry);
+        assert_eq!(live_count(&rows), "1/4");
+        assert_eq!(live_count(&rows[..1]), "");
     }
 }
