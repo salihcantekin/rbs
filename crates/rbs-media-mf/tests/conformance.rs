@@ -135,7 +135,9 @@ mod windows {
         let mut frames = 0usize;
         let mut chunks = 0;
         let mut loudest = 0.0f32;
+        let mut first = None;
         while let Some(sound) = dec.next_sound().unwrap() {
+            first.get_or_insert(sound.pts);
             assert_eq!(sound.pcm.sample_rate, 48_000);
             assert_eq!(sound.pcm.channels, 2);
             assert_eq!(sound.pcm.samples.len() % 2, 0);
@@ -151,13 +153,14 @@ mod windows {
         // The fixture's tone peaks near 0.1 to 0.14; a single AAC frame may stay below
         // 0.1, so the level is checked over the whole clip.
         assert!(loudest > 0.05, "the sound is silent: peak {loudest}");
-        // 0.5 s, give or take two AAC frames: Media Foundation returns every coded
-        // frame, the encoder's priming and the end padding included (25 x 1024 = 25600
-        // for the fixture), where AVFoundation trims them.
-        assert!(
-            (24_000 - 2048..=24_000 + 2048).contains(&frames),
-            "{frames}"
-        );
+        // Exactly the edit list's 0.5 s from 0: Media Foundation returns every coded
+        // frame (25 x 1024 = 25600 for the fixture, the encoder's 1024 priming
+        // samples and the end padding included); the adapter trims them to the edit,
+        // as AVFoundation does.
+        // Rounding to Media Foundation's 100 ns stamps may cost one frame.
+        let first = first.flatten().expect("a stamped first chunk");
+        assert!(first <= Duration::from_micros(100), "{first:?}");
+        assert!((23_999..=24_000).contains(&frames), "{frames}");
     }
 
     /// The first DXGI adapter's LUID and a D3D11 device on it, to read native pictures.
