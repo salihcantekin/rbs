@@ -443,7 +443,12 @@ impl MediaControl {
     /// from the range start (a restart: cued when the source is not on air).
     pub fn set_loop(&self, on: bool) -> Result<(), MediaNodeError> {
         let ended = {
-            let player = self.shared.player();
+            let mut player = self.shared.player();
+            if let Some((saved, _)) = player.armed.as_mut() {
+                // Armed: the key comes back when the transition ends.
+                *saved = on;
+                return Ok(());
+            }
             let was = player.loop_flag.swap(on, Ordering::AcqRel);
             on && !was && Self::state_of(&self.shared, &player) == PlayState::Ended
         };
@@ -453,7 +458,90 @@ impl MediaControl {
     /// The live `restart_when_shown` key (ADR-0108 decision 12): read by the next
     /// transition of the on-air table and the next wake.
     pub fn set_restart_when_shown(&self, on: bool) {
-        self.shared.player().restart_when_shown = on;
+        let mut player = self.shared.player();
+        match player.armed.as_mut() {
+            Some((_, saved)) => *saved = on,
+            None => player.restart_when_shown = on,
+        }
+    }
+
+    /// Arms the source as the stinger for one transition (ADR-0140 decision 4): a
+    /// runtime override that sets `loop` and `restart_when_shown` false, clears the
+    /// cued and stored-end states, has the next worker open keeping alpha, and writes
+    /// a paused record at the start of the play range. Returns that record's
+    /// generation: [`Self::picture_ready`] says when its first picture is queued.
+    /// Never written to the document. Arming again re-arms in place.
+    pub fn arm(&self) -> Result<u32, MediaNodeError> {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        if player.armed.is_none() {
+            let saved = (
+                player.loop_flag.load(Ordering::Acquire),
+                player.restart_when_shown,
+            );
+            player.armed = Some(saved);
+        }
+        player.loop_flag.store(false, Ordering::Release);
+        player.restart_when_shown = false;
+        player.cued = false;
+        let had_alpha = shared.keep_alpha.swap(true, Ordering::AcqRel);
+        if !had_alpha && player.phase != MediaPhase::Standby && !player.worker_joined() {
+            // A worker opened without alpha: the next one opens keeping it.
+            player.release_worker(&shared);
+        }
+        let start = shared.range_start();
+        if Self::state_of(&shared, &player) == PlayState::Ended {
+            Self::start_at(&shared, &mut player, start, true)?;
+        } else {
+            player.ended_stored = false;
+            Self::command(&shared, &mut player, true, Some(start))?;
+        }
+        Ok(shared.controls.newest().generation)
+    }
+
+    /// True once the worker queued the first picture of control generation
+    /// `generation` (from [`Self::arm`]).
+    pub fn picture_ready(&self, generation: u32) -> bool {
+        self.shared.queued_generation.load(Ordering::Acquire) == generation.wrapping_add(1)
+    }
+
+    /// Plays the armed stinger now: returns the master time its first picture is
+    /// shown at, the instant of the play record plus [`super::LEAD`].
+    pub fn play_now(&self) -> Result<Timestamp, MediaNodeError> {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        Self::command(&shared, &mut player, false, None)?;
+        Ok(shared.controls.newest().instant + super::LEAD)
+    }
+
+    /// Ends the stinger override: the saved `loop` and `restart_when_shown` keys come
+    /// back and the next worker opens without alpha. Does nothing when not armed.
+    pub fn disarm(&self) {
+        let shared = Arc::clone(&self.shared);
+        let mut player = shared.player();
+        let Some((looped, restart)) = player.armed.take() else {
+            return;
+        };
+        player.loop_flag.store(looped, Ordering::Release);
+        player.restart_when_shown = restart;
+        shared.keep_alpha.store(false, Ordering::Release);
+    }
+
+    /// True while armed as the stinger: play, pause and seek from outside are refused
+    /// (ADR-0140 decision 5).
+    pub fn is_armed(&self) -> bool {
+        self.shared.player().armed.is_some()
+    }
+
+    /// Further adapters to try, in order, when the source's own cannot keep alpha
+    /// (ADR-0140 decision 2).
+    pub fn set_alpha_alternates(
+        &self,
+        factories: Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>>,
+    ) {
+        if let Ok(mut alternates) = self.shared.alpha_alternates.lock() {
+            *alternates = factories;
+        }
     }
 
     /// How long a paused or cued source keeps its worker and decoder (the

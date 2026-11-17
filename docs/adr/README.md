@@ -147,5 +147,9 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0137](0137-rbs-drawn-context-menus-and-lists.md) | Context menus and drop-down lists are drawn by RBS in the window; the macOS menu bar stays native; the projector menu stays native | Accepted |
 | [0138](0138-split-the-generated-ui-crate.md) | Split the generated UI code into a base crate (shared globals and structs) and one crate per window group, for parallel and partial UI builds | Accepted |
 | [0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md) | Remote guests: one RBS shares its program to another over peer-to-peer WebRTC, paired by an invite code and an answer code, with no server of ours | Accepted |
+<<<<<<< HEAD
+| [0140](0140-stinger-transition.md) | Stinger transition: a media file played over the program change, its cut point found from the alpha | Accepted |
+=======
 | [0141](0141-os-permissions-page-and-just-in-time-requests.md) | OS permissions: ask at the moment of use, a Settings › Permissions page, and a fix action on a blocked source | Accepted |
 | [0142](0142-companion-sound-leaves-the-scene-with-its-picture.md) | A companion sound leaves a scene with its picture: Remove from scene takes the companions' items in that scene, other scenes stay (supersedes ADR-0065 decision 7 in part) | Accepted |
+>>>>>>> origin/main

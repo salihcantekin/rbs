@@ -116,6 +116,9 @@ pub struct OutgoingScene {
     /// manual transition, ADR-0135 decision 2); its heard sources join the program
     /// mixer. `None`: the canvas's program scene.
     pub incoming_scene: Option<SceneId>,
+    /// The stinger's source (ADR-0140 decision 4): running, on air, linked to the
+    /// program compositor and heard in the program mixer while the entry exists.
+    pub stinger: Option<SourceId>,
 }
 
 impl Default for OutgoingScene {
@@ -134,6 +137,7 @@ impl OutgoingScene {
             heard,
             incoming: true,
             incoming_scene: None,
+            stinger: None,
         }
     }
 
@@ -146,6 +150,7 @@ impl OutgoingScene {
             heard: BTreeSet::new(),
             incoming: true,
             incoming_scene: Some(scene),
+            stinger: None,
         }
     }
 
@@ -157,6 +162,7 @@ impl OutgoingScene {
             heard,
             incoming: self.incoming,
             incoming_scene: None,
+            stinger: self.stinger,
         }
     }
 
@@ -167,7 +173,15 @@ impl OutgoingScene {
             heard,
             incoming: false,
             incoming_scene: None,
+            stinger: None,
         }
+    }
+
+    /// The same entry with `source` played as the stinger over it (ADR-0140).
+    #[must_use]
+    pub fn with_stinger(mut self, source: Option<SourceId>) -> Self {
+        self.stinger = source;
+        self
     }
 }
 
@@ -1328,6 +1342,7 @@ impl State {
                     // The outgoing picture's sources stay linked for the transition.
                     if let Some(o) = outgoing.get(&canvas) {
                         warm.extend(o.drawn.iter().copied());
+                        warm.extend(o.stinger);
                     }
                     warm
                 }
@@ -1440,6 +1455,7 @@ impl State {
                 // transition's incoming scene is heard from its start (ADR-0135).
                 if let Some(o) = outgoing.get(&canvas.id) {
                     heard.extend(o.heard.iter().copied());
+                    heard.extend(o.stinger);
                     if let Some(scene) = o.incoming_scene {
                         heard.extend(
                             collection
@@ -1517,10 +1533,12 @@ impl State {
         for o in outgoing.values() {
             running.extend(o.drawn.iter().copied());
             running.extend(o.heard.iter().copied());
+            running.extend(o.stinger);
             on_air.extend(
                 o.drawn
                     .iter()
                     .chain(&o.heard)
+                    .chain(&o.stinger)
                     .copied()
                     .filter(|id| collection.is_temporal(*id)),
             );

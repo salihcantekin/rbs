@@ -77,6 +77,9 @@ pub(crate) struct Player {
     /// this and the newest record's instant, so a source that wakes paused or cued
     /// keeps its worker for the full time.
     pub(crate) started_at: rbs_core::time::Timestamp,
+    /// Armed as the stinger (ADR-0140 decision 4): the saved `loop` and
+    /// `restart_when_shown` keys, given back when the transition ends.
+    pub(crate) armed: Option<(bool, bool)>,
 }
 
 /// The default of the `pause_release_s` app setting (ADR-0108 decision 10).
@@ -113,6 +116,7 @@ impl Player {
             released: false,
             pause_release: PAUSE_RELEASE,
             started_at: rbs_core::time::Timestamp::ZERO,
+            armed: None,
         }
     }
 
