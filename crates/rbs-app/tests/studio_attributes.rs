@@ -555,3 +555,67 @@ fn removing_sources_from_a_duplicated_scene_never_touches_the_original() {
     assert_eq!(ids(&scene_rows(&mut c, &scene)), ids(&original));
     drop(host);
 }
+
+/// The kind of the next undo step the host announces that removes or deletes `name`.
+fn next_removal(updates: &Receiver<Update>, name: &str) -> rbs_app::edit_history::EditKind {
+    use rbs_app::edit_history::EditKind;
+    next(updates, |u| match u {
+        Update::History { undo: Some(s), .. }
+            if s.name == name && matches!(s.kind, EditKind::Remove | EditKind::Delete) =>
+        {
+            Some(s.kind)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn the_companion_sound_leaves_the_scene_with_its_picture() {
+    // ADR-0142, protocol 1.88.
+    use rbs_app::edit_history::EditKind;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    ok(&c.call(
+        "source.set_companion_audio",
+        json!({"source": screen, "enabled": true}),
+    ));
+    let scene = ok(&c.call("scene.list", json!({})))["data"]["scenes"][0]["id"].clone();
+    let rows = scene_rows(&mut c, &scene);
+    let sound = rows
+        .iter()
+        .find(|r| r["companion_of"] == screen)
+        .unwrap()
+        .clone();
+    let picture = rows.iter().find(|r| r["id"] == screen).unwrap().clone();
+    let copy = ok(&c.call("scene.duplicate", json!({"scene": scene})))["scene"].clone();
+    let copy_rows = scene_rows(&mut c, &copy);
+
+    // Removing the picture from the first scene takes its sound there; the copy keeps both.
+    let gone = c.call("item.remove", json!({"item": picture["item"]}));
+    let gone = ok(&gone);
+    assert_eq!(gone["source_deleted"], false);
+    assert_eq!(
+        gone["removed_items"],
+        json!([picture["item"], sound["item"]])
+    );
+    assert!(gone.get("deleted_sources").is_none(), "{gone}");
+    assert!(scene_rows(&mut c, &scene).is_empty());
+    assert_eq!(ids(&scene_rows(&mut c, &copy)), ids(&copy_rows));
+    assert_eq!(next_removal(&updates, "Screen"), EditKind::Remove);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(ids(&scene_rows(&mut c, &scene)), ids(&rows));
+
+    // With the sound placed only beside the picture, it is deleted with that item and
+    // the step is still Remove, named after the picture.
+    let copy_sound = copy_rows.iter().find(|r| r["id"] == sound["id"]).unwrap();
+    ok(&c.call("item.remove", json!({"item": copy_sound["item"]})));
+    let gone = c.call("item.remove", json!({"item": picture["item"]}));
+    assert_eq!(ok(&gone)["deleted_sources"], json!([sound["id"]]));
+    assert_eq!(next_removal(&updates, "Screen"), EditKind::Remove);
+    assert!(sources(&mut c).iter().all(|s| s["id"] != sound["id"]));
+    ok(&c.call("edit.undo", json!({})));
+    assert!(sources(&mut c).iter().any(|s| s["id"] == sound["id"]));
+    drop(host);
+}

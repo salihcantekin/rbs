@@ -1,6 +1,6 @@
 # ADR-0142: A companion sound leaves a scene with its picture
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-17
 - Deciders: Salih (owner)
 - Spec: [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md)
@@ -80,4 +80,4 @@ Round 4, independent AI session (2026-11-17): changes requested, 1 concern: the 
 
 Round 5, independent AI session (2026-11-17): approve. The round-4 resolution matches the code (`Undo(Op)` has no label; the host labels the history entry), and no decision contradicts another.
 
-Owner approval: pending.
+Owner approval: Salih, 2026-11-17 ("kabul").

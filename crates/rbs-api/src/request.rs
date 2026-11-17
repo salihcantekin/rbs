@@ -3454,10 +3454,18 @@ pub struct ItemAdded {
 }
 
 /// `item.remove`'s answer, and `global.remove`'s without `keep` (protocol 1.10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRemoved {
     /// The source was deleted too: it was its last placement.
     pub source_deleted: bool,
+    /// Every item removed in any scene, the named one first: a picture's companion
+    /// items in the same scene go with it (protocol 1.88, ADR-0142). Absent before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_items: Vec<u32>,
+    /// Every source deleted: the source at its last placement and companions left
+    /// placed nowhere (protocol 1.88, ADR-0142). Absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_sources: Vec<u32>,
 }
 
 /// `global.list`'s answer (protocol 1.10): the global sources of the studio's canvas,

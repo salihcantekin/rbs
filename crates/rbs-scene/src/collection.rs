@@ -8,8 +8,10 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
 mod copies;
+mod removal;
 
 pub use copies::{Duplicated, SourceCopy, SourceFields};
+pub use removal::Removed;
 
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
