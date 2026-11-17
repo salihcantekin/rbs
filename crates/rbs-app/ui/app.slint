@@ -570,6 +570,16 @@ component StackView inherits Rectangle {
                     checked: Shell.maximized == active-id;
                     clicked => { Menus.run("ui.panel.maximize?id=" + active-id); }
                 }
+                // Properties: one button folds every section it shows now, as the
+                // Settings page header's Collapse all / Expand all does.
+                if active-id == "rbs.properties" && !data.collapsed && Studio.properties-source >= 0 && Studio.properties-folds != "": IconButton {
+                    property <bool> some-open: Sections.list-state(Studio.properties-folds, Sections.rev) == 1;
+                    icon: self.some-open ? IconName.collapse : IconName.expand-all;
+                    name: self.some-open ? @tr("Collapse all sections") : @tr("Expand all sections");
+                    accessible-expandable: true;
+                    accessible-expanded: self.some-open;
+                    clicked => { Sections.set-list(Studio.properties-folds, self.some-open); }
+                }
                 if data.can-hide && Shell.maximized == "": IconButton {
                     icon: IconName.pin;
                     name: @tr("Auto-hide {}", active-title);
