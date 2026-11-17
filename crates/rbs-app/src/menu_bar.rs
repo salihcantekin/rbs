@@ -1712,6 +1712,8 @@ pub enum Run {
     OpenSettings(Option<i32>, Option<SettingsTarget>),
     /// Open the RBS menu with its search field (`ui.app_menu.open`).
     OpenAppMenu,
+    /// Open the Import from OBS window (`ui.collection.import_obs`, ADR-0131).
+    OpenObsImport,
     /// Scene edit undo (`true`) or redo.
     UndoEdit(bool),
     /// Load and switch to the named workspace.
@@ -1979,6 +1981,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.theme.reload" => Run::ReloadThemes,
         "ui.settings.open" => open_settings(&id)?,
         "ui.app_menu.open" => Run::OpenAppMenu,
+        "ui.collection.import_obs" => Run::OpenObsImport,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
         "ui.panel.collapse" => Run::Layout(L::SetCollapsed {
             panel: panel_of(&id)?,
