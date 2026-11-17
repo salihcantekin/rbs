@@ -1468,15 +1468,6 @@ fn probe_media(
             expected: "a file with a picture stream",
         },
     ))?;
-    // Native surfaces are consumed only once the node split lands (ADR-0108 decision
-    // 5). Until then a zero-copy adapter must not win the probe and then fail on
-    // every file in the node.
-    if picture.is_native() {
-        return Err((
-            1,
-            SourceError::Media("native surfaces are not played yet".to_owned()),
-        ));
-    }
     if let Some(why) =
         rbs_media_decode::refuse_picture(picture.width, picture.height, picture.system_bytes())
     {

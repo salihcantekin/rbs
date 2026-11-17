@@ -64,6 +64,12 @@ pub const LEAD: Duration = Duration::from_millis(150);
 /// stop the worker earlier.
 pub const PICTURE_SLOTS: usize = 16;
 
+/// Native pictures a source may hold, decoded and not yet imported, in `unseen` and on
+/// the ring. With the one the worker has just decoded, the shown texture, and the held
+/// texture, that is the surface budget of ADR-0108 decision 5 (18), counted against the
+/// importer's shared `MAX_SURFACES` of 64.
+pub const NATIVE_WAITING: u32 = PICTURE_SLOTS as u32 - 1;
+
 /// The descriptor of the picture node: one video output.
 pub fn media_descriptor() -> NodeDescriptor {
     NodeDescriptor::new(
@@ -121,6 +127,14 @@ pub struct MediaStats {
     /// Pictures and sound blocks skipped because a later command ended their
     /// generation before their stamp.
     pub superseded: AtomicU64,
+    /// Native pictures (`IoSurface`, `D3dSharedHandle`) the picture node imported
+    /// zero-copy.
+    pub imported: AtomicU64,
+    /// Native pictures the worker or the picture node holds now and has not imported
+    /// yet, at most [`NATIVE_WAITING`] (ADR-0108 decision 5).
+    pub native_waiting: AtomicU32,
+    /// Native pictures dropped because the import failed (the last texture repeats).
+    pub import_failures: AtomicU64,
 }
 
 /// One block of sound, interleaved at the graph's format, stamped at the master time

@@ -34,6 +34,7 @@ impl Picture {
     pub fn system(width: u32, height: u32, layout: PictureLayout, color: SampleColor, bytes: Vec<u8>) -> Self;
     pub fn native(frame: VideoFrame) -> Option<Self>; // None unless the payload is a native surface
     pub fn data(&self) -> &PictureData;
+    pub fn into_data(self) -> PictureData; // a native surface moves on with its lease
 }
 #[non_exhaustive]
 pub enum PictureData {
@@ -53,7 +54,7 @@ Invariants:
 7. `duration` is the container's stated length, read once after open, or `None`.
 8. From this version on, new trait methods have defaults and the public enums are `#[non_exhaustive]`, so neither breaks an adapter. `next_sound` and `has_audio` are required, so an adapter cannot claim sound and forget to deliver it.
 9. Capability `media.decode.pixel` is a set of `zero-copy` and `cpu-upload`. The host picks the adapter named in the source's `adapter` setting, or else `zero-copy` before `cpu-upload`, then registration order, among adapters that open the file.
-10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). Until the node split lands, the probe refuses a native picture so a zero-copy adapter cannot win and then fail in the node.
+10. Payload. ADR-0108 decision 4 names `rbs_core::media::VideoFrame` as the payload. The port wraps it: a system picture is plain bytes with its layout and colour (the node builds the `VideoFrame` with the master-time stamp it maps, which an adapter cannot know), and a native picture is a `VideoFrame` whose payload must be a native surface (`Picture::native` refuses a texture or system payload). The picture node imports a native picture once, when it is first shown, through the importer the capture node uses; the imported texture repeats while the clock repeats the picture, and stays as the held picture in the end hold. A source keeps at most `NATIVE_WAITING` (15) native pictures decoded and not yet imported, in the worker and on the ring; with the one the worker has just decoded, the shown texture and the held texture that is the budget of 18. A picture over the budget is dropped and counted (`worker_dropped_pictures`). A failed import drops the picture, counts it (`import_failures`), and repeats the last texture. Native pictures the clock passed go back to the worker, which drops them (and their lease) off the render thread. `rbs-media-decode-test` has `ScriptFactory::native` (fake surfaces with counted leases) for the budget and lease tests (`rbs-nodes/tests/media_native.rs`).
 
 ## Errors and failure behaviour
 

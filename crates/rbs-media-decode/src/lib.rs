@@ -174,6 +174,12 @@ impl Picture {
         &self.data
     }
 
+    /// The pixels, by value: a native surface moves on with its lease (to the
+    /// importer, which takes it exactly once).
+    pub fn into_data(self) -> PictureData {
+        self.data
+    }
+
     /// System-memory payload bytes, counted against [`MAX_FRAME_BYTES`]. A native
     /// surface counts against the surface budget instead and returns 0.
     pub fn system_bytes(&self) -> usize {

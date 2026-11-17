@@ -12,9 +12,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
+use rbs_core::media::lease::{Lease, LeaseOwner};
+use rbs_core::media::{
+    ColorSpace, NativeSurface, PixelFormat, Size, SurfaceSync, VideoFormat, VideoFrame,
+};
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
+use rbs_core::time::Timestamp;
 use rbs_media_decode::caps::PIXEL;
-use rbs_media_decode::pixel::CPU_UPLOAD;
+use rbs_media_decode::pixel::{CPU_UPLOAD, ZERO_COPY};
 use rbs_media_decode::{
     DecodeError, InterleavedPcm, MediaDecoder, MediaDecoderFactory, Picture, PictureLayout,
     PictureSample, SampleColor, SoundSample, frame_duration_rule,
@@ -133,6 +138,28 @@ pub struct ScriptCounts {
     pub alive: AtomicU64,
     /// Last `seek` cursor.
     pub last_seek: Mutex<Option<Duration>>,
+    /// Native pictures handed out and not released yet ([`ScriptFactory::native`]).
+    pub native_live: AtomicU64,
+    /// The most native pictures alive at once.
+    pub native_peak: AtomicU64,
+}
+
+/// Counts the native pictures of a [`ScriptFactory::native`] decoder. The surfaces are
+/// fake values no importer can open, so an import fails the way a lost surface does.
+struct NativeOwner(Arc<ScriptCounts>);
+
+// SAFETY: the "surfaces" are plain numbers that no code dereferences (no importer can
+// open an IoSurface value on a machine where it is not one, and the tests that use them
+// check the failure). `retain` and `release` keep `native_live` exact with atomics only.
+unsafe impl LeaseOwner for NativeOwner {
+    fn retain(&self, _token: u64) {
+        let live = self.0.native_live.fetch_add(1, Ordering::AcqRel) + 1;
+        self.0.native_peak.fetch_max(live, Ordering::AcqRel);
+    }
+
+    fn release(&self, _token: u64) {
+        self.0.native_live.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// A clip the factory hands out. `audio` is `None` when the file has no audio stream.
@@ -217,9 +244,20 @@ pub struct ScriptFactory {
     /// Shared counters.
     pub counts: Arc<ScriptCounts>,
     pixel: &'static str,
+    native: bool,
 }
 
 impl ScriptFactory {
+    /// A `zero-copy` factory whose pictures are native surfaces with fake handles,
+    /// counted in [`ScriptCounts::native_live`] until their lease is released. For the
+    /// surface budget and lease rules of ADR-0108 decision 4; an import fails.
+    pub fn native(clip: ScriptClip) -> Self {
+        Self {
+            native: true,
+            ..Self::with_pixel("org.rbs.media-decode.test-native", clip, ZERO_COPY)
+        }
+    }
+
     /// A `cpu-upload` factory for `clip`.
     pub fn new(clip: ScriptClip) -> Self {
         Self::with_pixel("org.rbs.media-decode.test", clip, CPU_UPLOAD)
@@ -232,6 +270,7 @@ impl ScriptFactory {
             clip,
             counts: Arc::new(ScriptCounts::default()),
             pixel,
+            native: false,
         }
     }
 }
@@ -267,6 +306,9 @@ impl MediaDecoderFactory for ScriptFactory {
             duration: self.clip.duration,
             index: 0,
             sound_frame: 0,
+            native: self
+                .native
+                .then(|| Arc::new(NativeOwner(Arc::clone(&self.counts))) as Arc<dyn LeaseOwner>),
             counts: Arc::clone(&self.counts),
         }))
     }
@@ -282,6 +324,7 @@ struct ScriptDecoder {
     duration: Option<Duration>,
     index: usize,
     sound_frame: usize,
+    native: Option<Arc<dyn LeaseOwner>>,
     counts: Arc<ScriptCounts>,
 }
 
@@ -314,6 +357,34 @@ impl MediaDecoder for ScriptDecoder {
             return Ok(None);
         };
         self.index += 1;
+        if let Some(owner) = &self.native {
+            owner.retain(self.index as u64);
+            // SAFETY: one reference was just counted for this token and is handed over.
+            let lease = unsafe { Lease::adopt(Arc::clone(owner), self.index as u64) };
+            let format = VideoFormat::new(
+                Size::new(frame.width, frame.height),
+                PixelFormat::Bgra8,
+                ColorSpace::SRGB,
+            );
+            // SAFETY: the surface value is a fake no code dereferences (see
+            // `NativeOwner`); the lease keeps the count exact until it is dropped.
+            let native = unsafe {
+                VideoFrame::native(
+                    format,
+                    Timestamp::ZERO,
+                    NativeSurface::io_surface(self.index),
+                    SurfaceSync::Ready,
+                    lease,
+                )
+            };
+            let picture = Picture::native(native)
+                .ok_or_else(|| DecodeError::Failed("a native picture".to_owned()))?;
+            return Ok(Some(PictureSample {
+                pts: frame.pts,
+                frame_duration: frame_duration_rule(frame.frame_duration, self.animated, None),
+                picture,
+            }));
+        }
         Ok(Some(PictureSample {
             pts: frame.pts,
             frame_duration: frame_duration_rule(frame.frame_duration, self.animated, None),
