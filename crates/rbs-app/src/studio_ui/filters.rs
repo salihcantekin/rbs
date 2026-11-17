@@ -3,6 +3,7 @@
 //! [`Command::PreviewFilter`] and becomes one undo step on release.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use rbs_app::studio_host::filters::{AnyFilter, FilterRow};
 use rbs_app::studio_host::{Command, SourceRow};
@@ -25,6 +26,26 @@ pub struct FilterUi {
     drag: Option<(FilterId, Values)>,
     /// The live meters of the shown filters that have one, by filter id.
     meters: BTreeMap<i32, std::sync::Arc<rbs_audio_filters::FilterMeter>>,
+    /// Each source's Filters list and each filter's fields, kept across updates and
+    /// changed row by row: a new model per update would make every Sources row look
+    /// changed and rewrite them all (audit U-08).
+    chains: Models<FilterData>,
+    fields: Models<FilterFieldData>,
+}
+
+/// List models kept by id (`VecModel` has no `Debug`, so this shows only the ids).
+struct Models<T>(BTreeMap<i32, Rc<VecModel<T>>>);
+
+impl<T> Default for Models<T> {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
+impl<T> std::fmt::Debug for Models<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
+    }
 }
 
 /// The level bar of a noise gate spans this range, the range of its thresholds (dB).
@@ -390,11 +411,17 @@ impl FilterUi {
                     known: f.any().is_some(),
                     can_up: i > 0,
                     can_down: i < last,
-                    fields: ModelRc::new(VecModel::from(fields)),
+                    fields: {
+                        let model = self.fields.0.entry(id).or_default();
+                        super::set_rows(model, fields);
+                        ModelRc::from(Rc::clone(model))
+                    },
                 }
             })
             .collect();
-        (ModelRc::new(VecModel::from(data)), selected)
+        let chain = self.chains.0.entry(source).or_default();
+        super::set_rows(chain, data);
+        (ModelRc::from(Rc::clone(chain)), selected)
     }
 
     /// The live levels of a filter's meter as bar positions (input peak, gain
@@ -413,6 +440,12 @@ impl FilterUi {
         let ids: Vec<i32> = rows.iter().map(|r| r.id.get() as i32).collect();
         self.selected.retain(|s, _| ids.contains(s));
         self.known.retain(|s, _| ids.contains(s));
+        self.chains.0.retain(|s, _| ids.contains(s));
+        let filters: Vec<i32> = rows
+            .iter()
+            .flat_map(|r| r.filters.iter().map(|f| f.id.get() as i32))
+            .collect();
+        self.fields.0.retain(|f, _| filters.contains(f));
     }
 }
 

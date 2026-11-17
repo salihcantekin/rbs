@@ -6495,7 +6495,7 @@ impl StudioUi {
                         bad: l.bad,
                     })
                     .collect();
-                self.stats.set_vec(rows);
+                set_rows(&self.stats, rows);
             }
         }
         out
@@ -7047,11 +7047,11 @@ impl StudioUi {
                 if row.id != id {
                     continue;
                 }
-                paint(&mut row, &view);
-                if let Some(text) = &value {
-                    row.value = text.as_str().into();
+                // Write the row only when it changes: every write redraws the whole
+                // window, so a silent or steady meter must not cost a frame (audit U-02).
+                if repaint(&mut row, &view, value.as_deref()) {
+                    self.meters.set_row_data(i, row);
                 }
-                self.meters.set_row_data(i, row);
                 break;
             }
         }
@@ -7063,11 +7063,10 @@ impl StudioUi {
             ballistics.update(db, now);
             let view = ballistics.view(now);
             if let Some(mut row) = self.master_meter.row_data(0) {
-                paint(&mut row, &view);
-                if report {
-                    row.value = ballistics.take_report().english().into();
+                let value = report.then(|| ballistics.take_report().english());
+                if repaint(&mut row, &view, value.as_deref()) {
+                    self.master_meter.set_row_data(0, row);
                 }
-                self.master_meter.set_row_data(0, row);
             }
         }
         self.tick_loudness();
@@ -7080,6 +7079,17 @@ impl StudioUi {
 /// `mixer_hidden` (ADR-0080), which still lists the source under Hidden.
 fn mixer_source(r: &SourceRow) -> bool {
     r.visible && (r.meter.is_some() || r.kind.is_some_and(SourceKind::is_audio))
+}
+
+/// Paints `view` (and the readout `value`, when one is due) into `row` and says whether
+/// anything changed, so the caller writes the row back only then.
+fn repaint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView, value: Option<&str>) -> bool {
+    let before = row.clone();
+    paint(row, view);
+    if let Some(text) = value {
+        row.value = text.into();
+    }
+    *row != before
 }
 
 /// Copies one meter view into a row: the zones, the peak hold and its zone, the clip.
@@ -8247,6 +8257,30 @@ fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_meter_row_is_written_only_when_it_changes() {
+        use rbs_ui::meter::Meter;
+        let mut meter = Meter::new();
+        let now = Duration::from_millis(100);
+        let mut row = MeterRow::default();
+        repaint(&mut row, &meter.view(now), None);
+        assert!(
+            !repaint(&mut row, &meter.view(now), None),
+            "a silent meter painted again is no change"
+        );
+        meter.update(-12.0, now);
+        assert!(repaint(&mut row, &meter.view(now), None), "sound moves it");
+        assert!(
+            !repaint(&mut row, &meter.view(now), None),
+            "the same view again is no change, so the window is not redrawn"
+        );
+        assert!(
+            repaint(&mut row, &meter.view(now), Some("-12 dBFS")),
+            "a new readout is"
+        );
+        assert!(!repaint(&mut row, &meter.view(now), Some("-12 dBFS")));
+    }
 
     #[test]
     fn ui_gestures_never_meet_the_picture_panels_numbers() {
