@@ -1,7 +1,7 @@
 //! Conformance of the Media Foundation adapter (ADR-0108 decision 13), run on Windows.
 //!
-//! `fixtures/clip.mp4`: H.264 64x36 (coded 64x48, so the display aperture must crop),
-//! 10 fps, 5 frames, red with a green top-left 32x18, and 0.5 s of 48 kHz stereo AAC.
+//! `fixtures/clip.mp4`: H.264 Main 160x90 (coded 160x96, so the display aperture must crop),
+//! 10 fps, 5 frames, red with a green top-left 80x45, and 0.5 s of 48 kHz stereo AAC.
 //! A machine without the H.264 or AAC decoder (Windows N without the Media Feature
 //! Pack) skips with a reason instead of failing.
 
@@ -92,11 +92,11 @@ mod windows {
         }
         assert_eq!(pictures.len(), 5);
         for (i, p) in pictures.iter().enumerate() {
-            assert_eq!((p.picture.width, p.picture.height), (64, 36));
+            assert_eq!((p.picture.width, p.picture.height), (160, 90));
             assert_eq!(p.pts, Some(ms(100 * i as u64)), "picture {i}");
             assert_eq!(p.frame_duration, Some(ms(100)), "picture {i}");
-            let green = pixel(p, 4, 4);
-            let red = pixel(p, 60, 32);
+            let green = pixel(p, 8, 8);
+            let red = pixel(p, 150, 80);
             assert!(
                 near(green, [0, 255, 0, 255]),
                 "picture {i} top-left {green:?}\n{}",
