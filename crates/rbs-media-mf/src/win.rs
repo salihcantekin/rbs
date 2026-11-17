@@ -14,7 +14,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_E_INVALIDMEDIATYPE, MF_E_TOPO_CODEC_NOT_FOUND, MF_E_UNSUPPORTED_BYTESTREAM_TYPE,
     MF_E_UNSUPPORTED_FORMAT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
     MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_PD_DURATION,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_MT_VIDEO_ROTATION, MF_PD_DURATION,
     MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READER_ALL_STREAMS,
     MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
@@ -221,6 +221,37 @@ struct Sound {
     channels: u16,
 }
 
+/// The turn still to apply to the reader's pictures (spec invariant 12). When the
+/// native type states `MF_MT_VIDEO_ROTATION`, the source reader's video processor
+/// already turns the pictures upright (its output is the stored size with the sides
+/// swapped), so nothing is left. Otherwise the track header's display matrix
+/// (`edits.rs`) is the turn, unless the output size shows it was applied anyway.
+fn left_to_turn(path: &Path, native: &IMFMediaType, shape: &VideoShape) -> Rotation {
+    // SAFETY: attribute reads on a native type.
+    let (stated, stored) = unsafe {
+        (
+            native.GetUINT32(&MF_MT_VIDEO_ROTATION).unwrap_or(0),
+            native.GetUINT64(&MF_MT_FRAME_SIZE).ok(),
+        )
+    };
+    if stated != 0 {
+        return Rotation::None;
+    }
+    let rotation = std::fs::File::open(path)
+        .ok()
+        .and_then(|mut file| crate::edits::video_rotation(&mut file))
+        .unwrap_or_default();
+    let turned_already = stored.is_some_and(|size| {
+        let (w, h) = ((size >> 32) as u32, size as u32);
+        w != h && (shape.frame_w, shape.frame_h) == (h, w)
+    });
+    if rotation.swaps_sides() && turned_already {
+        Rotation::None
+    } else {
+        rotation
+    }
+}
+
 /// The decoder of one file.
 pub(crate) struct MfDecoder {
     path: std::path::PathBuf,
@@ -294,13 +325,8 @@ impl MfDecoder {
             }
             return Err(failed("video output type", &e));
         }
-        // The track header's display matrix: Media Foundation does not report it for
-        // every file and leaves the pictures as stored.
-        let rotation = std::fs::File::open(path)
-            .ok()
-            .and_then(|mut file| crate::edits::video_rotation(&mut file))
-            .unwrap_or_default();
         let shape = VideoShape::read(&video)?;
+        let rotation = left_to_turn(path, &native, &shape);
         let (w, h) = (shape.crop.width, shape.crop.height);
         if let Some(refused) = refuse_picture(w, h, w as usize * h as usize * 4) {
             return Err(DecodeError::Failed(format!(
