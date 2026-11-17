@@ -36,26 +36,37 @@ The library test also showed that the base crate must declare `links` in `Cargo.
 ## Decision
 
 1. The generated UI code is split into these crates, all in the application layer next to `rbs-app`:
-   - `rbs-app-ui-base`: built `as_library("rbsui")`, `links = "rbsui"`. It holds `tokens.slint` (generated, as today), every `global` and every `struct` the windows share, and one exported anchor component that has no other use. It also holds `tokens_apply` (today in `rbs-app-ui`).
+   - `rbs-app-ui-base`: built `as_library("rbsui")`, with `links = "rbsui"`. It holds `tokens.slint` (generated, as today), every `global` and every `struct` that more than one window file uses, and one exported anchor component that has no other use. Its root file exports every global and struct declared in base files.
    - `rbs-app-ui-main`: `MainWindow` and `FloatWindow` (the docked and floating panels).
    - `rbs-app-ui-settings`: `SettingsWindow` and its pages.
    - `rbs-app-ui-dialogs`: `SourceSettingsWindow`, `SyncMeasureWindow`, `ObsImportWindow`, `AttributesWindow`, `ProjectorWindow`.
-   - `rbs-app-ui-probes`: the test-only probe windows. `rbs-app` has it as a dev-dependency only, so the `rbs` binary never compiles it.
-2. Globals and structs must be declared only in base files. A window crate must import them from `@rbsui`, never from the base files by path, so they stay one Rust type. Components (library components in `components.slint` and others) may be imported by path into several window crates; each crate generates its own copy.
-3. The `.slint` files stay under `crates/rbs-app/ui`, so `cargo xtask check-ui`, the UI review and the baselines are unchanged. Each window crate's `build.rs` compiles one root file that imports and re-exports its windows. Globals and structs move out of `app.slint`, `studio.slint` and the others into base files (`globals.slint`, `structs.slint` or per area), with no change to their names, properties or behaviour.
-4. `rbs-app` keeps one facade module, `ui`, that re-exports all of them (today `pub use rbs_app_ui::*`). Rust code outside the facade must not name a UI crate.
-5. The UI live preview stays available: `rbs-app-ui` remains as the single-crate build of `app.slint` (no library mode) and is used only with `rbs-app`'s `ui-live-preview` feature. With the feature, the facade re-exports `rbs-app-ui`; without it, the split crates. Normal builds, tests and builds that ship never compile `rbs-app-ui`.
-6. A window group is split further only when measured: when one crate's cold compile exceeds about 150 s on 4 cores, or its peak memory exceeds 6 GB.
-7. Slint stays pinned (ADR-0022 decision 5). A Slint upgrade that changes or removes the library mode is handled in that upgrade's PR. If the mode is gone, the fallback is decision 5's single crate, which is today's state.
+   - `rbs-app-ui-probes`: the test-only probe windows.
+   - `rbs-app-ui-single`: the single-crate build of `app.slint` without library mode, for the UI live preview (decision 5).
+   - `rbs-app-ui` stays the one crate that `rbs-app`, its tests and its examples name. It becomes a facade library that re-exports the base and the window crates. It re-exports the probes only behind a `probes` feature, which only `rbs-app`'s dev-dependency turns on, so the `rbs` binary never compiles them. It also holds `tokens_apply`, generated once by one generator module that both build modes use. Only this facade names the split crates.
+2. Library identity in Slint 1.18 goes by name, so these rules hold. `cargo xtask check-ui` checks them (a new count that must be 0):
+   - Only a window crate's root file imports `@rbsui`, and it imports everything the base root exports.
+   - Every global and struct declared in a base file is exported by the base root.
+   - No file outside the base declares a global or struct with the name of a base export.
+   - Other files (`components.slint`, page files) keep importing `tokens.slint` and the base files by path. That keeps them compiling in the single build and in the base itself.
+3. Window crates must import the very `tokens.slint` the base generated. A second copy would be a second `Theme`. The base `build.rs` emits `cargo::metadata=TOKENS_DIR=<OUT_DIR>`. Each window crate depends directly on the base, reads `DEP_RBSUI_TOKENS_DIR` and adds it to its include path.
+4. A window crate's root file exports windows only, never components, globals or structs. Globals and structs reach Rust once, through the base, so the facade's re-exports never clash.
+5. The UI live preview stays available. `rbs-app`'s `ui-live-preview` turns on the facade's `live-preview` feature, which pulls in `rbs-app-ui-single`. The facade switches to it only when its build script sees both the feature and `SLINT_LIVE_PREVIEW`; it then sets a cfg. With the feature but not the variable (`cargo doc --all-features`), `rbs-app-ui-single`'s build script generates nothing and the split crates are used, so no build compiles the 62 MB crate by accident. Two checks keep the builds from drifting:
+   - an `xtask` check that `app.slint`'s exported windows equal the union of the window roots' exports, with no window missing and none extra;
+   - `SLINT_LIVE_PREVIEW=1 cargo check -p rbs-app --features ui-live-preview`, run by `cargo xtask affected check` whenever `crates/rbs-app/ui` or a UI crate changes.
+6. Global instances stay per window, as today: each window instance creates its own library globals (`rbsuiSharedGlobals::new`). Rust keeps calling `apply_tokens` and setting globals on each window.
+7. The `.slint` files stay under `crates/rbs-app/ui`, so the UI review and the baselines are unchanged. Globals and structs move out of `app.slint`, `studio.slint` and the others into base files, with no change to their names, properties or behaviour.
+8. A window group is split further only when measured with the same method as the Context table (4 cores, 15 GB, `CARGO_INCREMENTAL=0`, cold `cargo build`, peak RSS of the rustc process from `/usr/bin/time`). The threshold is a cold compile of one crate over 150 s, or a peak over 6 GB.
+9. Slint stays pinned (ADR-0022 decision 5). If a Slint upgrade changes or removes the library mode, that upgrade's PR handles it. The fallback is to point the facade at `rbs-app-ui-single` for every build, a change in the facade only.
 
 ## Consequences
 
-- Cold UI compile about 2.4 times faster on 4 cores (346 s to 145 s), and a change that touches one window group rebuilds only that group (Settings 73 s instead of 381 s). No rustc process exceeds 6 GB, so cloud sessions and CI runners stop running out of memory. Opening several groups in parallel can still add up to about 16 GB, so the docs recommend `CARGO_BUILD_JOBS` of 3 or less on 16 GB machines.
+- Cold UI compile about 2.4 times faster on 4 cores (346 s to 145 s), and a change that touches one window group rebuilds only that group (Settings 73 s instead of 381 s). No rustc process exceeds 6 GB, so cloud sessions and CI runners stop running out of memory. Several groups peaking together can still add up to about 16 GB, so the docs recommend `CARGO_BUILD_JOBS` of 3 or less on 16 GB machines.
 - About 20 % more total CPU per cold build (74 MB of code instead of 62). On 1 or 2 cores the cold build is no faster than today; the gain is in rebuilds and memory.
-- A change to a base file (a global or struct) or to `components.slint` still rebuilds every window crate, in parallel.
-- The layer check (`xtask` `Class::AppUi`) and `docs/architecture/overview.md` list the new crates.
+- A change to a base file or to `components.slint` still rebuilds every window crate, in parallel.
+- Same change: the `xtask` layer classes (`Class::AppUi`) and `docs/architecture/overview.md` list the new crates. `xtask affected` maps `crates/rbs-app/ui` to all of them. The testing strategy's live-preview section describes the switch.
 - Moving globals and structs into base files is a large but mechanical diff in `.slint` files. It changes nothing visible, and every UI test must pass unchanged.
-- We depend on an experimental Slint feature (decision 7).
+- Window root files that import `@rbsui` do not resolve in the Slint language server or viewer without library paths. Root files stay a few lines long, and every other file keeps path imports, which do resolve.
+- We depend on an experimental Slint feature (decision 9).
 - Follow-ups, separate from this ADR:
   - Shrink generated code where it costs nothing at run time. First candidates are the generated menu slots (about 2.5 MB) and `if` blocks around single cheap elements, where a `visible:` binding gives the same result. Each change is measured and keeps the zero-cost rule (P13) for anything that holds resources.
   - Recommend `sccache` for local builds across target directories (optional, outside the repository).
@@ -70,4 +81,17 @@ The library test also showed that the base crate must declare `links` in `Cargo.
 
 ## Review
 
-Independent review per ADR-0014. Record: reviewer (human handle, or "independent AI session"), date, verdict (approve / changes requested), main concerns and how each was resolved.
+### Round 1: independent AI session, 2026-11-17, changes requested
+
+The reviewer checked the proposal against the Slint 1.18.1 sources and the rbs-app code. They confirmed that library-mode globals become one Rust type with a `Global` impl per window. Concerns and how each was resolved:
+
+1. Integration tests and `look.rs`/`window_events.rs` name `rbs_app_ui` directly, so a facade module inside the binary cannot serve them (blocking). Resolved: `rbs-app-ui` becomes the facade library and keeps its name; probes sit behind a dev-only feature (decision 1).
+2. Path imports of base files must stay, and library identity goes by name, so a missed export or a same-named local declaration fails without notice (blocking). Resolved: rules restated, plus an `xtask check-ui` count (decision 2).
+3. Window crates need the base's own `tokens.slint` (blocking). Resolved: `TOKENS_DIR` metadata through `links` (decision 3).
+4. Single and split builds can drift, `tokens_apply` must not be copied, and `--all-features` must not compile the 62 MB crate (should fix). Resolved: one generator, an export-parity check, a live-preview `cargo check` in `affected check`, and the env-gated switch (decisions 1 and 5).
+5. Per-window global instances not stated (should fix). Resolved: decision 6.
+6. Clashes between re-exported names (should fix). Resolved: window roots export windows only (decision 4).
+7. Layer classes, `affected` mapping and docs (should fix). Resolved: listed in Consequences as part of the same change.
+8. Measurement method for further splits (nit). Resolved: decision 8.
+9. The fallback is a facade change (nit). Resolved: decision 9.
+10. Language server cannot resolve `@rbsui` (nit). Resolved: noted in Consequences.
