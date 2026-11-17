@@ -1454,6 +1454,7 @@ mod tests {
     }
 
     /// A node id for layers that are never drawn.
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
     fn any_node() -> NodeId {
         let mut g = rbs_graph::description::GraphDescription::new();
         let d = rbs_graph::node::NodeDescriptor::new(
