@@ -88,6 +88,10 @@ Measured on a 4-core cloud container (main c4974cb, 2026-11-17, `cargo test --wo
 | Dependencies cooked by the setup script, no debug info | 284 s | 14 GB | about 12.7 GB |
 | Then a change in `rbs-app` (`cargo xtask affected test -- --no-run`) | about 70 s | | about 3.8 GB |
 
+Verified in a fresh session (main b971eb0, 2026-11-17): `cargo test --workspace --no-run` took 273 s and compiled no third-party crate.
+
+**Building the app in the cloud.** Do not run a separate `cargo build` for the app. `cargo test --workspace --no-run` already builds the `rbs` binary (integration tests use it) and leaves it at `target/debug/rbs`, so one test build gives both. Other commands build the UI and its dependencies again with other features: `cargo build -p rbs-app` took 187 s and recompiled 35 third-party crates (wgpu, naga, zbus, Slint), and `cargo build --workspace --bin rbs` after the test build took 146 s and rebuilt Slint and the UI crates, because a plain build does not enable the features that dev-dependencies turn on (for example `rbs-app-ui/probes`). The binary from the test build carries that test-only probe UI; it behaves like the app otherwise. Build the app on its own only for a release or for a check without test features.
+
 The `mold` linker is not used: Rust links with `rust-lld` on this target already, and it was not faster. Of the 17 GB of the cold build, 11.7 GB are test executables (213 integration-test binaries); merging each crate's integration tests into one binary is the largest remaining saving. When the disk fills, `cargo clean` and the setup's cooked dependencies are gone too; `rm -rf target/debug/deps/*-????????????????` without an extension removes only the test executables, which the next run builds again.
 
 ## Counted UI checks (ADR-0115)
