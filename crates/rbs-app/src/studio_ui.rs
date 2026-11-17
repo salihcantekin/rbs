@@ -2980,6 +2980,7 @@ impl StudioUi {
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
     /// 0 rectangle, 1 circle, 2 ellipse, 3 triangle, 4 arrow. A colour that is not
     /// `#rrggbb` or `#rrggbbaa` changes nothing.
+    #[allow(clippy::too_many_arguments)] // One argument per field of the form, and its drag.
     pub fn set_source_style(
         &mut self,
         id: i32,
@@ -8135,7 +8136,11 @@ mod tests {
         assert_eq!(ui_gesture(-3), 0);
         assert_eq!(ui_gesture(1), UI_GESTURE | 1);
         assert_ne!(ui_gesture(1), 1, "the picture panel's first drag");
-        assert_eq!(ui_gesture(1) & VERTICAL_SEQ, 0, "nor the vertical picture's mark");
+        assert_eq!(
+            ui_gesture(1) & VERTICAL_SEQ,
+            0,
+            "nor the vertical picture's mark"
+        );
     }
 
     #[test]
