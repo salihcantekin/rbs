@@ -175,6 +175,8 @@ export component SettingRowAlignProbe inherits Window {
     out property <length> pick-left: pick.absolute-position.x;
     out property <length> pick-right: pick.absolute-position.x + pick.width;
     out property <bool> stacked: switch-row.stacked;
+    // Its Select opens a drawn list (ADR-0137 decision 10).
+    OverlayHost { width: parent.width; height: parent.height; }
 }
 
 // A window for tests/overlays.rs: drag to change on a NumberField.
