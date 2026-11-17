@@ -695,6 +695,49 @@ pub(crate) fn live_model(rows: &[LiveRow]) -> slint::ModelRc<crate::ui::LiveDest
     .into()
 }
 
+/// The app log lines for what changed between two lists of running destinations: each
+/// one that started, changed state (with its error, never a URL or key), or left.
+fn destination_log_lines<'a>(
+    old: impl Iterator<Item = &'a LiveDestination>,
+    new: &[LiveDestination],
+) -> Vec<String> {
+    let old: Vec<&LiveDestination> = old.collect();
+    let label = |d: &LiveDestination| {
+        if d.name.is_empty() {
+            format!("destination {}", d.id)
+        } else {
+            format!("destination {} ({})", d.id, d.name)
+        }
+    };
+    let state = |d: &LiveDestination| format!("{:?}", d.state).to_lowercase();
+    let mut lines = Vec::new();
+    for d in new {
+        match old.iter().find(|o| o.id == d.id) {
+            None => lines.push(format!("{} started: {}", label(d), state(d))),
+            Some(o) if o.state != d.state => {
+                let mut line = format!(
+                    "{}: {} (connected {} times, {} reconnect attempts)",
+                    label(d),
+                    state(d),
+                    d.connects,
+                    d.reconnect_attempts
+                );
+                if let Some(why) = &d.error {
+                    line.push_str(&format!(", {why}"));
+                }
+                lines.push(line);
+            }
+            Some(_) => {}
+        }
+    }
+    for o in &old {
+        if !new.iter().any(|d| d.id == o.id) {
+            lines.push(format!("{} stopped", label(o)));
+        }
+    }
+    lines
+}
+
 impl super::StudioUi {
     /// The main canvas's running destinations changed (`Update::LiveDestinations`).
     pub(crate) fn live_destinations_changed(
@@ -704,6 +747,9 @@ impl super::StudioUi {
     ) {
         if c != OutputCanvas::Main {
             return;
+        }
+        for line in destination_log_lines(self.live_dests.iter().map(|(d, _)| d), &rows) {
+            super::log(&line);
         }
         let now = Instant::now();
         self.live_dests = rows.into_iter().map(|d| (d, now)).collect();
@@ -734,6 +780,43 @@ impl super::StudioUi {
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    fn row_in(id: u32, name: &str, state: DestinationState) -> LiveDestination {
+        LiveDestination {
+            id,
+            name: name.into(),
+            service: "custom".into(),
+            state,
+            connects: 1,
+            reconnect_attempts: 0,
+            dropped: 0,
+            on_air_ms: 0,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn the_log_names_every_destination_that_starts_changes_or_leaves() {
+        let old = [
+            row_in(0, "Twitch", DestinationState::Live),
+            row_in(2, "", DestinationState::Live),
+        ];
+        let mut failed = row_in(2, "", DestinationState::Failed);
+        failed.error = Some("refused".into());
+        let new = [
+            row_in(0, "Twitch", DestinationState::Live),
+            failed,
+            row_in(3, "Kick", DestinationState::Connecting),
+        ];
+        let lines = destination_log_lines(old.iter(), &new);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].starts_with("destination 2: failed"), "{lines:?}");
+        assert!(lines[0].ends_with("refused"), "{lines:?}");
+        assert_eq!(lines[1], "destination 3 (Kick) started: connecting");
+        let ended = destination_log_lines(new.iter(), &[]);
+        assert_eq!(ended.len(), 3);
+        assert_eq!(ended[2], "destination 3 (Kick) stopped");
+    }
 
     fn stream(server: &str) -> StreamProfile {
         let mut s = StreamProfile::new();
