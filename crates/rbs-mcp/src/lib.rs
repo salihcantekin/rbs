@@ -251,12 +251,14 @@ impl<C: Connect> Mcp<C> {
             .cloned()
             .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
-        let State::Ready(ready) = &mut self.state else {
-            return if name == "studio_summary" {
-                text_result(HINT, false)
-            } else {
-                text_result(HINT, true)
-            };
+        let ready = match &mut self.state {
+            State::Ready(ready) => ready,
+            State::Hint(why) => {
+                // The reason lets the user (or the AI tool) see which step failed;
+                // it never holds the token.
+                let text = format!("{HINT} Reason: {why}.");
+                return text_result(&text, name != "studio_summary");
+            }
         };
         let answer = if name == "studio_summary" {
             summary(ready)
