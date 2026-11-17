@@ -185,7 +185,8 @@ pub fn place(window: &MainWindow) {
             // Not from inside the rendering notifier: the change redraws the window.
             let weak = slint::ComponentHandle::as_weak(window);
             let timer = slint::Timer::default();
-            timer.start(
+            crate::entry::start(
+                &timer,
                 slint::TimerMode::SingleShot,
                 std::time::Duration::ZERO,
                 move || {
