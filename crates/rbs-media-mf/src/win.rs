@@ -14,7 +14,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_E_INVALIDMEDIATYPE, MF_E_TOPO_CODEC_NOT_FOUND, MF_E_UNSUPPORTED_BYTESTREAM_TYPE,
     MF_E_UNSUPPORTED_FORMAT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
     MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_PD_DURATION,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_MT_VIDEO_ROTATION, MF_PD_DURATION,
     MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READER_ALL_STREAMS,
     MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
@@ -29,8 +29,8 @@ use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::core::{GUID, HRESULT, HSTRING, Interface};
 
 use rbs_media_decode::{
-    DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, SampleColor,
-    SoundSample, frame_duration_rule, refuse_picture,
+    DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, Rotation,
+    SampleColor, SoundSample, frame_duration_rule, refuse_picture, rotate_rgba,
 };
 
 use crate::edits::{SoundEdit, Trimmed};
@@ -226,6 +226,9 @@ pub(crate) struct MfDecoder {
     path: std::path::PathBuf,
     video: IMFSourceReader,
     shape: VideoShape,
+    /// The turn that shows the track upright (spec invariant 12), applied to every
+    /// picture: by the video processor for a native picture, on the copy otherwise.
+    rotation: Rotation,
     sound: Option<Sound>,
     has_audio: bool,
     duration: Option<Duration>,
@@ -291,6 +294,11 @@ impl MfDecoder {
             }
             return Err(failed("video output type", &e));
         }
+        // SAFETY: an attribute read on a native type; a file without it is upright.
+        let rotation = unsafe { native.GetUINT32(&MF_MT_VIDEO_ROTATION) }
+            .map_or(Rotation::None, |degrees| {
+                Rotation::from_clockwise_degrees(f64::from(degrees))
+            });
         let shape = VideoShape::read(&video)?;
         let (w, h) = (shape.crop.width, shape.crop.height);
         if let Some(refused) = refuse_picture(w, h, w as usize * h as usize * 4) {
@@ -319,6 +327,7 @@ impl MfDecoder {
             path: path.to_owned(),
             video,
             shape,
+            rotation,
             sound: None,
             has_audio,
             duration,
@@ -503,7 +512,7 @@ impl MediaDecoder for MfDecoder {
             return Err(DecodeError::NoTimestamp);
         }
         if let Some(gpu) = self.gpu.as_mut()
-            && let Some(picture) = gpu.picture(&sample, self.shape.crop)?
+            && let Some(picture) = gpu.picture(&sample, self.shape.crop, self.rotation)?
         {
             return Ok(Some(PictureSample {
                 pts,
@@ -511,13 +520,20 @@ impl MediaDecoder for MfDecoder {
                 picture,
             }));
         }
-        let bytes = picture_bytes(&sample, &self.shape)?;
+        let mut bytes = picture_bytes(&sample, &self.shape)?;
+        let (mut width, mut height) = (self.shape.crop.width, self.shape.crop.height);
+        if self.rotation != Rotation::None {
+            let mut turned = Vec::new();
+            (width, height) = rotate_rgba(&bytes, width, height, self.rotation, &mut turned)
+                .ok_or_else(|| DecodeError::Failed("a picture of the wrong size".into()))?;
+            bytes = turned;
+        }
         Ok(Some(PictureSample {
             pts,
             frame_duration,
             picture: Picture::system(
-                self.shape.crop.width,
-                self.shape.crop.height,
+                width,
+                height,
                 PictureLayout::Rgba8,
                 SampleColor::Srgb,
                 bytes,

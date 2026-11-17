@@ -8,6 +8,10 @@
 //!   copied (cropped to the display aperture) into a texture of [`Pool`], created with
 //!   an NT handle. The worker waits on a D3D11 fence for the copy, so the picture is
 //!   handed out `SurfaceSync::Ready`.
+//! - A track stored on its side or upside down (`MF_MT_VIDEO_ROTATION`) is turned
+//!   upright in that same GPU pass: a D3D11 video processor blit with the stream's
+//!   rotation replaces the copy (media-decode port invariant 12). An upright track
+//!   keeps the plain copy and makes no video processor.
 //! - Slots are counted by `rbs_capture::handoff::Ring`: the worker claims a slot
 //!   (reference 1) and hands that reference to the frame's lease; the importer and the
 //!   picture node release it. Only a free slot is written. Neither `retain` nor
@@ -26,16 +30,28 @@ use rbs_core::media::{
     VideoFormat, VideoFrame,
 };
 use rbs_core::time::Timestamp;
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, LUID, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FENCE_FLAG_NONE, D3D11_RESOURCE_MISC_SHARED,
-    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device, ID3D11Device5, ID3D11DeviceContext4,
-    ID3D11Fence, ID3D11Multithread, ID3D11Texture2D,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FENCE_FLAG_NONE,
+    D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
+    D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
+    D3D11_VIDEO_PROCESSOR_ROTATION, D3D11_VIDEO_PROCESSOR_ROTATION_90,
+    D3D11_VIDEO_PROCESSOR_ROTATION_180, D3D11_VIDEO_PROCESSOR_ROTATION_270,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+    D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice,
+    ID3D11Device, ID3D11Device5, ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread,
+    ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor,
+    ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIAdapter,
     IDXGIFactory4, IDXGIResource1,
@@ -46,7 +62,7 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::core::{Interface, PCWSTR};
 
-use rbs_media_decode::{DecodeError, Picture};
+use rbs_media_decode::{DecodeError, Picture, Rotation};
 
 use crate::Crop;
 
@@ -154,6 +170,28 @@ pub(crate) struct Gpu {
     luid: u64,
     pool: Arc<Pool>,
     owner: Arc<dyn LeaseOwner>,
+    /// The video processor that turns pictures upright, made on the first rotated
+    /// picture and kept while the sizes stay the same.
+    rotator: Option<Rotator>,
+}
+
+/// A D3D11 video processor for one input and output size.
+struct Rotator {
+    sizes: [u32; 4],
+    video: ID3D11VideoDevice,
+    context: ID3D11VideoContext,
+    enumerator: ID3D11VideoProcessorEnumerator,
+    processor: ID3D11VideoProcessor,
+}
+
+fn d3d_rotation(rotation: Rotation) -> D3D11_VIDEO_PROCESSOR_ROTATION {
+    // The D3D11 video processor turns clockwise, as `Rotation` does.
+    match rotation {
+        Rotation::Clockwise90 => D3D11_VIDEO_PROCESSOR_ROTATION_90,
+        Rotation::Half => D3D11_VIDEO_PROCESSOR_ROTATION_180,
+        Rotation::Clockwise270 => D3D11_VIDEO_PROCESSOR_ROTATION_270,
+        _ => windows::Win32::Graphics::Direct3D11::D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY,
+    }
 }
 
 impl Gpu {
@@ -225,6 +263,7 @@ impl Gpu {
             luid,
             pool,
             owner,
+            rotator: None,
         })
     }
 
@@ -240,6 +279,7 @@ impl Gpu {
         &mut self,
         sample: &IMFSample,
         crop: Crop,
+        rotation: Rotation,
     ) -> Result<Option<Picture>, DecodeError> {
         // SAFETY: plain calls on a live sample and its buffer; `GetResource` writes an
         // owned reference of the requested interface, which `from_raw` takes over.
@@ -269,11 +309,12 @@ impl Gpu {
         {
             return Ok(None);
         }
-        let size = (crop.width, crop.height);
+        let size = rotation.upright(crop.width, crop.height);
         let Some(slot) = self.pool.ring.claim() else {
             return Ok(None);
         };
-        let handle = match self.write_slot(slot, &source, subresource, crop) {
+        let full = (desc.Width, desc.Height);
+        let handle = match self.write_slot(slot, &source, subresource, full, crop, rotation) {
             Ok(handle) => handle,
             Err(e) => {
                 self.pool.ring.abandon(slot);
@@ -300,16 +341,19 @@ impl Gpu {
             .ok_or_else(|| DecodeError::Failed("a native picture".into()))
     }
 
-    /// Writes the cropped picture into the claimed `slot`, replacing its texture first
-    /// when the size changed, and waits for the copy. Returns the slot's handle.
+    /// Writes the cropped picture, turned upright, into the claimed `slot`, replacing
+    /// its texture first when the size changed, and waits for the GPU. Returns the
+    /// slot's handle.
     fn write_slot(
         &mut self,
         slot: usize,
         source: &ID3D11Texture2D,
         subresource: u32,
+        full: (u32, u32),
         crop: Crop,
+        rotation: Rotation,
     ) -> Result<u64, DecodeError> {
-        let size = (crop.width, crop.height);
+        let size = rotation.upright(crop.width, crop.height);
         let mut textures = lock(&self.pool.textures);
         let entry = textures
             .get_mut(slot)
@@ -330,6 +374,14 @@ impl Gpu {
         let target = entry
             .as_ref()
             .ok_or_else(|| DecodeError::Failed("no picture slot".into()))?;
+        if rotation != Rotation::None {
+            let texture = target.0.texture.clone();
+            let handle = target.0.handle;
+            drop(textures);
+            self.rotate(source, subresource, full, crop, &texture, rotation)?;
+            self.wait_for_gpu()?;
+            return Ok(handle);
+        }
         let region = D3D11_BOX {
             left: crop.x,
             top: crop.y,
@@ -338,7 +390,6 @@ impl Gpu {
             bottom: crop.y + crop.height,
             back: 1,
         };
-        self.fence_value += 1;
         // SAFETY: both textures are live on this device; the destination slot is
         // claimed (no reader) and sized to the crop, and the crop lies inside the
         // decoded frame (`Crop::of` clamps it). The device is multithread protected, so
@@ -354,6 +405,19 @@ impl Gpu {
                 subresource,
                 Some(&region),
             );
+        }
+        let handle = target.0.handle;
+        drop(textures);
+        self.wait_for_gpu()?;
+        Ok(handle)
+    }
+
+    /// Signals the fence after the work queued so far and waits for it.
+    fn wait_for_gpu(&mut self) -> Result<(), DecodeError> {
+        self.fence_value += 1;
+        // SAFETY: plain calls on the live context, fence and event; the device is
+        // multithread protected.
+        unsafe {
             self.context
                 .Signal(&self.fence, self.fence_value)
                 .map_err(|e| failed("fence", &e))?;
@@ -367,7 +431,140 @@ impl Gpu {
                 ));
             }
         }
-        Ok(target.0.handle)
+        Ok(())
+    }
+
+    /// Queues one video processor blit of `crop` of `source` into `target`, turned by
+    /// `rotation`. Makes the processor on first use and again when a size changes.
+    fn rotate(
+        &mut self,
+        source: &ID3D11Texture2D,
+        subresource: u32,
+        full: (u32, u32),
+        crop: Crop,
+        target: &ID3D11Texture2D,
+        rotation: Rotation,
+    ) -> Result<(), DecodeError> {
+        let (out_w, out_h) = rotation.upright(crop.width, crop.height);
+        let sizes = [full.0, full.1, out_w, out_h];
+        if self.rotator.as_ref().is_none_or(|r| r.sizes != sizes) {
+            self.rotator = None;
+            let video: ID3D11VideoDevice = self
+                .device
+                .cast()
+                .map_err(|e| failed("D3D11 video device", &e))?;
+            let context: ID3D11VideoContext = self
+                .context
+                .cast()
+                .map_err(|e| failed("D3D11 video context", &e))?;
+            let rate = DXGI_RATIONAL {
+                Numerator: 0,
+                Denominator: 1,
+            };
+            let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+                InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                InputFrameRate: rate,
+                InputWidth: full.0,
+                InputHeight: full.1,
+                OutputFrameRate: rate,
+                OutputWidth: out_w,
+                OutputHeight: out_h,
+                Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+            };
+            // SAFETY: a valid description on a live video device.
+            let enumerator = unsafe { video.CreateVideoProcessorEnumerator(&content) }
+                .map_err(|e| failed("video processor", &e))?;
+            // SAFETY: a live enumerator of this device.
+            let processor = unsafe { video.CreateVideoProcessor(&enumerator, 0) }
+                .map_err(|e| failed("video processor", &e))?;
+            self.rotator = Some(Rotator {
+                sizes,
+                video,
+                context,
+                enumerator,
+                processor,
+            });
+        }
+        let r = self
+            .rotator
+            .as_ref()
+            .ok_or_else(|| DecodeError::Failed("no video processor".into()))?;
+        let input_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+            FourCC: 0,
+            ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
+                Texture2D: D3D11_TEX2D_VPIV {
+                    MipSlice: 0,
+                    ArraySlice: subresource,
+                },
+            },
+        };
+        let output_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+            ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+            },
+        };
+        let mut input: Option<ID3D11VideoProcessorInputView> = None;
+        let mut output: Option<ID3D11VideoProcessorOutputView> = None;
+        // SAFETY: live textures of this device and valid descriptions; the views are
+        // released when they drop, after the blit is queued.
+        unsafe {
+            r.video
+                .CreateVideoProcessorInputView(source, &r.enumerator, &input_desc, Some(&mut input))
+                .map_err(|e| failed("video processor input", &e))?;
+            r.video
+                .CreateVideoProcessorOutputView(
+                    target,
+                    &r.enumerator,
+                    &output_desc,
+                    Some(&mut output),
+                )
+                .map_err(|e| failed("video processor output", &e))?;
+        }
+        let output =
+            output.ok_or_else(|| DecodeError::Failed("no video processor output".into()))?;
+        let rect = |x: u32, y: u32, w: u32, h: u32| RECT {
+            left: x as i32,
+            top: y as i32,
+            right: (x + w) as i32,
+            bottom: (y + h) as i32,
+        };
+        let source_rect = rect(crop.x, crop.y, crop.width, crop.height);
+        let target_rect = rect(0, 0, out_w, out_h);
+        let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+            Enable: true.into(),
+            pInputSurface: std::mem::ManuallyDrop::new(input),
+            ..Default::default()
+        };
+        let streams = [stream];
+        // SAFETY: the processor, views and context belong to this device; the stream
+        // array lives across the call. The device is multithread protected.
+        let blit = unsafe {
+            r.context.VideoProcessorSetStreamFrameFormat(
+                &r.processor,
+                0,
+                D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+            );
+            r.context
+                .VideoProcessorSetStreamSourceRect(&r.processor, 0, true, Some(&source_rect));
+            r.context
+                .VideoProcessorSetStreamDestRect(&r.processor, 0, true, Some(&target_rect));
+            r.context
+                .VideoProcessorSetOutputTargetRect(&r.processor, true, Some(&target_rect));
+            r.context.VideoProcessorSetStreamRotation(
+                &r.processor,
+                0,
+                true,
+                d3d_rotation(rotation),
+            );
+            r.context
+                .VideoProcessorBlt(&r.processor, &output, 0, &streams)
+        };
+        // The stream held its own reference to the input view.
+        let [stream] = streams;
+        drop(std::mem::ManuallyDrop::into_inner(stream.pInputSurface));
+        blit.map_err(|e| failed("video processor blit", &e))
     }
 }
 
@@ -394,7 +591,8 @@ fn create_shared_texture(
             Quality: 0,
         },
         Usage: D3D11_USAGE_DEFAULT,
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        // Render target: a rotated picture is written by the video processor.
+        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
         CPUAccessFlags: 0,
         MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
     };

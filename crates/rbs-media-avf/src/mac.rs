@@ -11,8 +11,9 @@ use std::time::Duration;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
-    AVAsset, AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack,
-    AVMediaType, AVMediaTypeAudio, AVMediaTypeVideo, AVURLAsset,
+    AVAsset, AVAssetReader, AVAssetReaderOutput, AVAssetReaderStatus, AVAssetReaderTrackOutput,
+    AVAssetReaderVideoCompositionOutput, AVAssetTrack, AVMediaType, AVMediaTypeAudio,
+    AVMediaTypeVideo, AVURLAsset, AVVideoComposition,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_foundation::{CFString, CFType};
@@ -36,7 +37,7 @@ use objc2_core_video::{
     CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA,
     kCVReturnSuccess,
 };
-use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString, NSURL};
+use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSString, NSURL};
 use rbs_core::media::{
     ColorPrimaries, ColorRange, ColorSpace, MatrixCoefficients, NativeSurface, PixelFormat, Size,
     SurfaceSync, TransferFunction, VideoFormat, VideoFrame,
@@ -44,8 +45,8 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 
 use rbs_media_decode::{
-    DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, SampleColor,
-    SoundSample, frame_duration_rule, refuse_picture,
+    DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, Rotation,
+    SampleColor, SoundSample, frame_duration_rule, refuse_picture,
 };
 
 use crate::surfaces::Surfaces;
@@ -262,21 +263,50 @@ fn first_track(
     tracks.firstObject()
 }
 
-/// A reader of `track` from `cursor` on.
+/// The track's rotation from its display matrix (`preferredTransform`): AVFoundation
+/// decodes the stored picture, and a phone's upright clip is stored on its side.
+fn track_rotation(track: &AVAssetTrack) -> Rotation {
+    // SAFETY: a plain property read of a live track.
+    let t = unsafe { track.preferredTransform() };
+    // The matrix [a b; c d] turns by atan2(b, a), clockwise on screen (y down).
+    Rotation::from_clockwise_degrees(t.b.atan2(t.a).to_degrees())
+}
+
+/// A reader of `track` from `cursor` on. A `rotated` track is read through a video
+/// composition made from the asset's properties, which turns each picture upright on
+/// the GPU into a new IOSurface-backed buffer (spec invariant 12); other tracks are
+/// read as decoded, with no extra pass.
 fn start_reader(
     asset: &AVAsset,
     track: &AVAssetTrack,
     settings: &NSDictionary<NSString, AnyObject>,
     cursor: Duration,
-) -> Result<(Retained<AVAssetReader>, Retained<AVAssetReaderTrackOutput>), DecodeError> {
+    rotated: bool,
+) -> Result<(Retained<AVAssetReader>, Retained<AVAssetReaderOutput>), DecodeError> {
     // SAFETY: live objects; the reader is configured before `startReading`.
     unsafe {
         let reader = AVAssetReader::assetReaderWithAsset_error(asset)
             .map_err(|e| failed("asset reader", Some(e)))?;
-        let output = AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
-            track,
-            Some(settings),
-        );
+        let output: Retained<AVAssetReaderOutput> = if rotated {
+            let tracks = NSArray::from_slice(&[track]);
+            let output = AVAssetReaderVideoCompositionOutput::assetReaderVideoCompositionOutputWithVideoTracks_videoSettings(
+                &tracks,
+                Some(settings),
+            );
+            // The synchronous constructor is deprecated in favour of an async one that
+            // needs a run loop the worker does not have; the asset is loaded already.
+            #[allow(deprecated)]
+            let composition = AVVideoComposition::videoCompositionWithPropertiesOfAsset(asset);
+            output.setVideoComposition(Some(&composition));
+            Retained::into_super(output)
+        } else {
+            Retained::into_super(
+                AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
+                    track,
+                    Some(settings),
+                ),
+            )
+        };
         // The output's buffers are only read, so AVFoundation may hand out its own.
         output.setAlwaysCopiesSampleData(false);
         if !reader.canAddOutput(&output) {
@@ -302,7 +332,7 @@ fn start_reader(
 /// One stream's reader and output.
 struct Stream {
     reader: Retained<AVAssetReader>,
-    output: Retained<AVAssetReaderTrackOutput>,
+    output: Retained<AVAssetReaderOutput>,
 }
 
 impl Stream {
@@ -333,6 +363,8 @@ pub(crate) struct AvfDecoder {
     asset: Retained<AVURLAsset>,
     video_track: Retained<AVAssetTrack>,
     audio_track: Option<Retained<AVAssetTrack>>,
+    /// The picture track is stored on its side or upside down (spec invariant 12).
+    rotated: bool,
     video: Stream,
     sound: Option<(Stream, u32, u16)>,
     duration: Option<Duration>,
@@ -371,16 +403,19 @@ impl AvfDecoder {
             None
         };
         let native = color.is_some();
+        let rotated = track_rotation(&video_track) != Rotation::None;
         let (reader, output) = start_reader(
             &asset,
             &video_track,
             &video_settings(native),
             Duration::ZERO,
+            rotated,
         )?;
         Ok(Self {
             asset,
             video_track,
             audio_track,
+            rotated,
             video: Stream { reader, output },
             sound: None,
             duration: time(length).filter(|d| !d.is_zero()),
@@ -491,7 +526,8 @@ impl AvfDecoder {
         let Some(track) = &self.audio_track else {
             return Ok(());
         };
-        let (reader, output) = start_reader(&self.asset, track, &audio_settings(), self.cursor)?;
+        let (reader, output) =
+            start_reader(&self.asset, track, &audio_settings(), self.cursor, false)?;
         self.sound = Some((Stream { reader, output }, 0, 0));
         Ok(())
     }
@@ -555,6 +591,7 @@ impl MediaDecoder for AvfDecoder {
                 &self.video_track,
                 &video_settings(native),
                 cursor,
+                self.rotated,
             )?;
             self.video = Stream { reader, output };
             self.sound = None;
