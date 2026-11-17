@@ -678,12 +678,12 @@ component RailPlace inherits HorizontalLayout {
     }
 }
 
-// The transition to run (ADR-0128): Cut, Fade or Move. Swipe and Slide join the list
-// when they are drawn. Move's duration and easing are the collection glide (ADR-0100),
-// also in Settings › General; a source's own glide is in Properties.
+// The transition to run (ADR-0128): Cut, Fade, Move, Swipe or Slide. Move's duration
+// and easing are the collection glide (ADR-0100), also in Settings › General; a
+// source's own glide is in Properties.
 component TransitionChoice inherits Select {
     label: @tr("Transition type");
-    options: [@tr("Cut"), @tr("Fade"), @tr("Move")];
+    options: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
     index: Studio.transition-kind;
     selected(i) => { Studio.set-transition-kind(i); }
 }
@@ -692,7 +692,10 @@ component TransitionChoice inherits Select {
 component TransitionDuration inherits NumberField {
     label: @tr("Duration");
     unit: @tr("ms");
-    value: Studio.transition-kind == 1 ? Studio.fade-duration : Studio.transition-kind == 2 ? Studio.glide-duration : 0;
+    value: Studio.transition-kind == 1 ? Studio.fade-duration
+        : Studio.transition-kind == 2 ? Studio.glide-duration
+        : Studio.transition-kind == 3 ? Studio.swipe-duration
+        : Studio.transition-kind == 4 ? Studio.slide-duration : 0;
     step: 50;
     enabled: Studio.transition-kind != 0;
     edited(v) => { Studio.set-transition-duration(max(0, min(5000, round(v)))); }
@@ -700,9 +703,13 @@ component TransitionDuration inherits NumberField {
 
 // The transition type and duration in words, under the narrow rail's buttons.
 component TransitionCaption inherits Text {
-    property <int> ms: Studio.transition-kind == 1 ? Studio.fade-duration : Studio.glide-duration;
+    property <int> ms: Studio.transition-kind == 1 ? Studio.fade-duration
+        : Studio.transition-kind == 3 ? Studio.swipe-duration
+        : Studio.transition-kind == 4 ? Studio.slide-duration : Studio.glide-duration;
     text: Studio.transition-kind == 0 ? @tr("Cut")
         : Studio.transition-kind == 1 ? @tr("Fade") + "\n" + @tr("{} ms", root.ms)
+        : Studio.transition-kind == 3 ? @tr("Swipe") + "\n" + @tr("{} ms", root.ms)
+        : Studio.transition-kind == 4 ? @tr("Slide") + "\n" + @tr("{} ms", root.ms)
         : @tr("Move") + "\n" + @tr("{} ms", root.ms);
     color: Theme.text-secondary;
     font-size: Tokens.type-caption-size;
@@ -775,7 +782,9 @@ component TransitionOptions inherits PopoverLayer {
                 spacing: Tokens.space-1;
                 Text {
                     text: Overlays.transition-full ? @tr("Transition")
-                        : Studio.transition-kind == 1 ? @tr("Fade options") : @tr("Move options");
+                        : Studio.transition-kind == 1 ? @tr("Fade options")
+                        : Studio.transition-kind == 3 ? @tr("Swipe options")
+                        : Studio.transition-kind == 4 ? @tr("Slide options") : @tr("Move options");
                     color: Theme.text-primary;
                     font-size: Tokens.type-body-size;
                     font-weight: Tokens.type-label-weight;
@@ -786,7 +795,9 @@ component TransitionOptions inherits PopoverLayer {
                     label: @tr("About transitions");
                     text: Studio.transition-kind == 0 ? @tr("The scene coming on air replaces the one on air at once.")
                         : Studio.transition-kind == 1 ? @tr("The scene coming on air fades in over the one on air.")
-                        : @tr("Sources in both scenes slide to their new place, new ones fade in.");
+                        : Studio.transition-kind == 3 ? @tr("The scene coming on air slides in over the one on air.")
+                        : Studio.transition-kind == 4 ? @tr("The scene coming on air pushes the one on air out.")
+                        : @tr("Sources in both scenes slide to their new place, new ones fade in, leaving ones fade out.");
                     detail: @tr("Sound follows the picture. A global scene stays still on top.");
                 }
                 Rectangle { }
@@ -831,6 +842,32 @@ component TransitionOptions inherits PopoverLayer {
                     options: [@tr("Linear"), @tr("Ease in-out")];
                     index: Studio.glide-easing;
                     selected(i) => { Studio.set-glide(Studio.glide-duration, i); }
+                }
+            }
+            if Studio.transition-kind == 3 || Studio.transition-kind == 4: TransitionOptionRow {
+                property <bool> slide: Studio.transition-kind == 4;
+                label: @tr("Direction");
+                Select {
+                    horizontal-stretch: 1;
+                    label: @tr("Direction");
+                    options: [@tr("Left"), @tr("Right"), @tr("Up"), @tr("Down")];
+                    index: parent.slide ? Studio.slide-direction : Studio.swipe-direction;
+                    selected(i) => {
+                        Studio.set-swipe-options(parent.slide, parent.slide ? Studio.slide-easing : Studio.swipe-easing, i);
+                    }
+                }
+            }
+            if Studio.transition-kind == 3 || Studio.transition-kind == 4: TransitionOptionRow {
+                property <bool> slide: Studio.transition-kind == 4;
+                label: @tr("Easing");
+                SegmentedControl {
+                    horizontal-stretch: 1;
+                    label: @tr("Easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: parent.slide ? Studio.slide-easing : Studio.swipe-easing;
+                    selected(i) => {
+                        Studio.set-swipe-options(parent.slide, i, parent.slide ? Studio.slide-direction : Studio.swipe-direction);
+                    }
                 }
             }
         }

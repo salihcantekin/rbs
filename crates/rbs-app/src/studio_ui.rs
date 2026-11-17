@@ -807,6 +807,12 @@ impl StudioUi {
         g.set_fade_via(t.fade.via.is_some());
         let [r, gr, b] = t.fade.via.unwrap_or([0, 0, 0]);
         g.set_fade_via_color(slint::Color::from_rgb_u8(r, gr, b));
+        g.set_swipe_duration(t.swipe.duration_ms as i32);
+        g.set_swipe_easing(i32::from(t.swipe.easing != rbs_scene::GlideEasing::Linear));
+        g.set_swipe_direction(direction_index(t.swipe.direction));
+        g.set_slide_duration(t.slide.duration_ms as i32);
+        g.set_slide_easing(i32::from(t.slide.easing != rbs_scene::GlideEasing::Linear));
+        g.set_slide_direction(direction_index(t.slide.direction));
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -2251,12 +2257,15 @@ impl StudioUi {
         });
     }
 
-    /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move.
+    /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move,
+    /// `3` Swipe, `4` Slide.
     pub fn set_transition_kind(&mut self, index: i32) {
         let mut t = self.transition;
         t.kind = match index {
             0 => rbs_scene::TransitionKind::Cut,
             1 => rbs_scene::TransitionKind::Fade,
+            3 => rbs_scene::TransitionKind::Swipe,
+            4 => rbs_scene::TransitionKind::Slide,
             _ => rbs_scene::TransitionKind::Move,
         };
         if t != self.transition {
@@ -2264,14 +2273,22 @@ impl StudioUi {
         }
     }
 
-    /// The duration of the rail's kind: Fade's own, Move's is the collection glide.
-    /// Cut has none.
+    /// The duration of the rail's kind: Fade's, Swipe's and Slide's own, Move's is
+    /// the collection glide. Cut has none.
     pub fn set_transition_duration(&mut self, duration_ms: i32) {
         let ms = duration_ms.clamp(0, 5_000) as u32;
+        let mut t = self.transition;
         match self.transition.kind {
             rbs_scene::TransitionKind::Fade => {
-                let mut t = self.transition;
                 t.fade.duration_ms = ms;
+                self.send(Command::SetTransition(t));
+            }
+            rbs_scene::TransitionKind::Swipe => {
+                t.swipe.duration_ms = ms;
+                self.send(Command::SetTransition(t));
+            }
+            rbs_scene::TransitionKind::Slide => {
+                t.slide.duration_ms = ms;
                 self.send(Command::SetTransition(t));
             }
             rbs_scene::TransitionKind::Cut => {}
@@ -2293,6 +2310,27 @@ impl StudioUi {
         };
         let keep = self.transition.fade.via.unwrap_or([0, 0, 0]);
         t.fade.via = via.then(|| rgb_hex(color).unwrap_or(keep));
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
+    /// Swipe's options, or Slide's when `slide`: easing (`0` linear, `1`
+    /// ease-in-out) and direction (`0` left, `1` right, `2` up, `3` down).
+    pub fn set_swipe_options(&mut self, slide: bool, easing: i32, direction: i32) {
+        let mut t = self.transition;
+        let s = if slide { &mut t.slide } else { &mut t.swipe };
+        s.easing = if easing == 0 {
+            rbs_scene::GlideEasing::Linear
+        } else {
+            rbs_scene::GlideEasing::EaseInOut
+        };
+        s.direction = match direction {
+            1 => rbs_scene::SwipeDirection::Right,
+            2 => rbs_scene::SwipeDirection::Up,
+            3 => rbs_scene::SwipeDirection::Down,
+            _ => rbs_scene::SwipeDirection::Left,
+        };
         if t != self.transition {
             self.send(Command::SetTransition(t));
         }
@@ -7516,13 +7554,24 @@ fn hold_note_text(hold: Option<StreamHold>) -> &'static str {
     }
 }
 
-/// The rail's index of a transition kind (ADR-0128): Swipe and Slide run as Move until
-/// they are drawn, so the rail shows them as Move.
+/// The rail's index of a transition kind (ADR-0128).
 fn transition_index(kind: rbs_scene::TransitionKind) -> i32 {
     match kind {
         rbs_scene::TransitionKind::Cut => 0,
         rbs_scene::TransitionKind::Fade => 1,
+        rbs_scene::TransitionKind::Swipe => 3,
+        rbs_scene::TransitionKind::Slide => 4,
         _ => 2,
+    }
+}
+
+/// The rail's index of a Swipe or Slide direction.
+fn direction_index(direction: rbs_scene::SwipeDirection) -> i32 {
+    match direction {
+        rbs_scene::SwipeDirection::Right => 1,
+        rbs_scene::SwipeDirection::Up => 2,
+        rbs_scene::SwipeDirection::Down => 3,
+        _ => 0,
     }
 }
 

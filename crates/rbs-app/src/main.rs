@@ -4419,6 +4419,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         }
     );
     on!(
+        on_set_swipe_options,
+        |app, slide: bool, easing: i32, direction: i32| {
+            app.studio.set_swipe_options(slide, easing, direction);
+        }
+    );
+    on!(
         on_set_source_glide,
         |app, id: i32, custom: bool, duration_ms: i32, easing: i32| {
             app.studio.set_source_glide(id, custom, duration_ms, easing);
