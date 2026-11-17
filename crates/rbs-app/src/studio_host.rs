@@ -16730,6 +16730,7 @@ mod tests {
         (col, canvas, scene, src)
     }
 
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
     #[test]
     fn a_held_program_runs_with_the_collections_transition_and_glide() {
         // Studio mode with the program held (ADR-0063): the run collection must keep
