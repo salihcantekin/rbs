@@ -1,0 +1,31 @@
+[package]
+name = "rbs-app-ui-dialogs"
+description = "The Rust code Slint generates for the RBS desktop app's dialogs window group: SourceSettingsWindow, SyncMeasureWindow, ObsImportWindow, AttributesWindow, ProjectorWindow (ADR-0138)."
+version.workspace = true
+edition.workspace = true
+# Slint 1.18 needs Rust 1.92 (ADR-0022, decision 6), as for rbs-app.
+rust-version = "1.92"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Part of the desktop app (application layer, docs/architecture/overview.md); the crates
+# of the generated UI code are laid out in ADR-0138.
+[lib]
+# No tests, examples or docs of its own: the code is generated, and rbs-app tests it.
+test = false
+doctest = false
+doc = false
+
+[dependencies]
+# Under its own package name, never renamed: Slint builds the Rust path of a library
+# type from it (ADR-0138 decision 2).
+rbs-app-ui-base = { path = "../rbs-app-ui-base" }
+# The same exact pin and features as rbs-app (ADR-0022, decisions 1, 2 and 5).
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30", "raw-window-handle-06"] }
+
+[build-dependencies]
+slint-build = { version = "=1.18.1", features = ["experimental-module-builds"] }
+
+[lints]
+workspace = true

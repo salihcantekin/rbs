@@ -43,10 +43,22 @@ debug = "line-tables-only"
 [profile.dev.package.rbs-audio]
 opt-level = 2
 
-# Slint generates about 53 MB of Rust for the app's UI; nobody steps through it. Without
-# line tables the crate builds in 269 s instead of 308 s on a 4-core machine and its
-# library is 750 MB instead of 900 MB.
+# Slint generates about 62 MB of Rust for the app's UI (ADR-0138 splits it); nobody steps
+# through it. Without line tables it builds about 13 % faster and its libraries are about
+# 17 % smaller.
 [profile.dev.package.rbs-app-ui]
+debug = false
+[profile.dev.package.rbs-app-ui-base]
+debug = false
+[profile.dev.package.rbs-app-ui-main]
+debug = false
+[profile.dev.package.rbs-app-ui-settings]
+debug = false
+[profile.dev.package.rbs-app-ui-dialogs]
+debug = false
+[profile.dev.package.rbs-app-ui-probes]
+debug = false
+[profile.dev.package.rbs-app-ui-single]
 debug = false
 
 # The Slint compiler runs in rbs-app-ui's build script (code generation) and, with the

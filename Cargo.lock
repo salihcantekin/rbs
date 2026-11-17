@@ -4568,6 +4568,65 @@ dependencies = [
 name = "rbs-app-ui"
 version = "0.0.1"
 dependencies = [
+ "rbs-app-ui-base",
+ "rbs-app-ui-dialogs",
+ "rbs-app-ui-main",
+ "rbs-app-ui-probes",
+ "rbs-app-ui-settings",
+ "rbs-app-ui-single",
+ "rbs-ui",
+ "slint",
+]
+
+[[package]]
+name = "rbs-app-ui-base"
+version = "0.0.1"
+dependencies = [
+ "rbs-ui",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "rbs-app-ui-dialogs"
+version = "0.0.1"
+dependencies = [
+ "rbs-app-ui-base",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "rbs-app-ui-main"
+version = "0.0.1"
+dependencies = [
+ "rbs-app-ui-base",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "rbs-app-ui-probes"
+version = "0.0.1"
+dependencies = [
+ "rbs-app-ui-base",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "rbs-app-ui-settings"
+version = "0.0.1"
+dependencies = [
+ "rbs-app-ui-base",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "rbs-app-ui-single"
+version = "0.0.1"
+dependencies = [
  "rbs-ui",
  "slint",
  "slint-build",

@@ -5,15 +5,8 @@
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
 import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Experience, MoreHidden, Button, StatusLine, SettingsFind, FindMark } from "components.slint";
-
-// One result of the Settings window's search field (docs/specs/settings-search.md,
-// step 3): what was found, where it is ("Recording › Encoding"; empty for a section)
-// and the section number it opens, which gives its icon.
-export struct SettingsHit {
-    title: string,
-    path: string,
-    section: int,
-}
+import { SettingsHit, SettingsScroll } from "base/types.slint";
+export { SettingsHit, SettingsScroll }
 
 // One entry of the section list. The section in use has a quiet plate and the label
 // weight, and is marked checked for screen readers, so it is never shown by colour
@@ -322,28 +315,6 @@ export component SettingsStatus inherits Rectangle {
 export component SettingsNotice inherits StatusLine {
     in property <bool> problem;
     tone: root.problem ? 3 : 0;
-}
-
-// The Settings page's scroll. A panel that opens inside the page (a confirmation, the
-// shortcut recorder) reports its place; the page moves so that place is on screen.
-export global SettingsScroll {
-    in-out property <int> serial: 0;
-    in-out property <length> y: 0px;
-    in-out property <length> h: 0px;
-    // The place goes to the top of the view, not only into it (a long panel such as the
-    // theme editor, whose start is what matters).
-    in-out property <bool> top: false;
-    public function reveal(ay: length, ah: length) {
-        self.y = ay;
-        self.h = ah;
-        self.top = false;
-        self.serial += 1;
-    }
-    public function reveal-top(ay: length) {
-        self.y = ay;
-        self.top = true;
-        self.serial += 1;
-    }
 }
 
 // Put one at the top of a panel that can open below the page: the page scrolls to it.

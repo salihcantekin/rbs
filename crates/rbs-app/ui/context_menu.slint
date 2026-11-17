@@ -1,36 +1,11 @@
+import { ContextChoice, ContextItem, ContextMenus } from "base/types.slint";
+export { ContextChoice, ContextItem, ContextMenus }
 // Context menus built from the command registry (ADR-0050 decision 4; spec
 // "Context menus"). One `CommandMenu` sits in each element that has a menu: the
 // element opens it on a right-click, the Menu key or Shift+F10 with `open(point)`,
 // which first asks Rust for the items of its context and target, so a menu always
 // shows the state of the moment. Only one menu is open at a time, so one list of
 // items serves every menu of a window.
-
-// One choice of a submenu: its title, the registry id it runs, and whether it is the
-// current one.
-export struct ContextChoice { title: string, id: string, checked: bool, icon: image }
-
-// One item: `kind` 1 a command, 2 a separator, 3 a submenu of `choices`.
-export struct ContextItem {
-    kind: int,
-    title: string,
-    // Empty while a checkmark takes its place.
-    icon: image,
-    id: string,
-    enabled: bool,
-    checkable: bool,
-    checked: bool,
-    choices: [ContextChoice],
-}
-
-export global ContextMenus {
-    // The items of the menu being opened, at most as many as the slots below.
-    in-out property <[ContextItem]> items;
-    // The items of `context`'s menu for `target` (`key=value&...`, the parameters
-    // that name what was right-clicked, percent-encoded as in command ids).
-    callback prepare(string /* context */, string /* target */) -> [ContextItem];
-    // Runs a command registry id.
-    callback run(string);
-}
 
 // The menu of one context. Its own right-click handling is off: the element under the
 // pointer calls `open`, so the items are made before the menu shows.

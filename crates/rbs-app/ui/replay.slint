@@ -5,52 +5,8 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconName, Select, Slider, TextField, Toggle, ValueReadout, SettingRow } from "components.slint";
 import { SettingsCard, SettingsStatus } from "settings.slint";
-
-export global ReplayBuffer {
-    // The studio runs, so the buffer can arm.
-    in property <bool> can-arm;
-    // The buffer keeps the past now.
-    in property <bool> armed;
-    // Arm it when RBS starts.
-    in property <bool> arm-on-start;
-    in property <bool> audio;
-    // The length slider, 0 to 1 on a log scale, and its text ("2 min").
-    in property <float> length;
-    in property <string> length-text;
-    // The saved length differs from the default, which reads as `length-default-text`.
-    in property <bool> length-changed;
-    in property <string> length-default-text;
-    in property <[string]> memories;
-    in property <int> memory;
-    // The default memory limit as an index into `memories`, or -1 when not offered.
-    in property <int> memory-default: -1;
-    in property <string> folder;
-    // Bumped when Rust changes the folder, so the field takes the new text.
-    in property <int> folder-serial;
-    // What it holds in words, with `tone` 0 neutral, 1 good, 2 problem.
-    in property <string> status;
-    in property <int> tone;
-    // What the settings cost in memory, in words.
-    in property <string> estimate;
-    // The last problem with the settings, or "".
-    in property <string> problem;
-    // A clip is being cut or written.
-    in property <bool> saving;
-    in property <bool> can-save;
-    // The last clip: its file name, and whether it can be shown in its folder.
-    in property <string> saved-name;
-    in property <string> saved-error;
-    callback toggle(bool);
-    callback set-arm-on-start(bool);
-    callback set-audio(bool);
-    callback length-moved(float);
-    callback length-released();
-    callback reset-length();
-    callback set-memory(int);
-    callback set-folder(string);
-    callback save();
-    callback show-saved();
-}
+import { ReplayBuffer } from "base/types.slint";
+export { ReplayBuffer }
 
 export component ReplaySettings inherits Rectangle {
     // The pointer's position while a drag runs. The knob follows it; the stored
