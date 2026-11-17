@@ -36,7 +36,7 @@ The library test also showed that the base crate must declare `links` in `Cargo.
 ## Decision
 
 1. The generated UI code is split into these crates, all in the application layer next to `rbs-app`:
-   - `rbs-app-ui-base`: built `as_library("rbsui")`, with `links = "rbsui"`. It holds `tokens.slint` (generated, as today), every `global`, `struct` and `enum` that Rust code names (today's exports of `app.slint`) or that more than one window crate uses, and one exported anchor component that has no other use. Its root file exports every global and struct declared in base files.
+   - `rbs-app-ui-base`: built `as_library("rbsui")`, with `links = "rbsui"`. It holds `tokens.slint` (generated, as today), every `global`, `struct` and `enum` that is reachable from a window's public properties or callbacks, that Rust code names, or that more than one window crate uses. Today that is the exports of `app.slint` plus `AttributeGroupRow`, `AttributeTargetRow`, `AttributesData`, `DestinationRow`, `LookData`, `LoudnessData`, `SampleData`, `SceneData`, `SourceTargetData`, `StatRow`, `SyncMeasureData`, `TokenRow`, `SizeBand` and `MenuChoice`. It also holds one exported anchor component that has no other use. Its root file exports every global and struct declared in base files.
    - `rbs-app-ui-main`: `MainWindow` and `FloatWindow` (the docked and floating panels).
    - `rbs-app-ui-settings`: `SettingsWindow` and its pages.
    - `rbs-app-ui-dialogs`: `SourceSettingsWindow`, `SyncMeasureWindow`, `ObsImportWindow`, `AttributesWindow`, `ProjectorWindow`.
@@ -51,7 +51,7 @@ The library test also showed that the base crate must declare `links` in `Cargo.
    - No file outside `base/` declares a global, struct or enum with the name of a base export.
    - Each window root imports everything the base root exports. Slint does not need this, but it keeps the roots uniform.
 
-   `cargo xtask check-ui` gets one new count that must be 0. It counts breaches of these rules, using the same token generator to learn the names in `tokens.slint`. It also checks that every global, struct and enum the facade re-exports comes from the base, decision 4 (window roots export windows only) and the export parity of decision 5. Parity is checked with the probes included.
+   `cargo xtask check-ui` gets one new count that must be 0. It counts breaches of these rules, using the same token generator to learn the names in `tokens.slint`. It also checks that every global, struct and enum reachable from a window's public properties or callbacks comes from the base, decision 4 (window roots export windows only) and the export parity of decision 5. Parity is checked with the probes included.
 3. Window crates must import the very `tokens.slint` the base generated, because a second copy would be a second `Theme`. The base `build.rs` emits `cargo::metadata=TOKENS_DIR=<OUT_DIR>`. Each window crate depends directly on the base, reads `DEP_RBSUI_TOKENS_DIR` and adds it to its include path. The token generator (`tokens.slint` and `tokens_apply`) moves into a build-dependency module in `rbs-ui`, used by the base, the single crate and the facade. The single crate writes its own `tokens.slint` with the same backdated modification time as today.
 4. A window crate's root file exports windows only, never components, globals, structs or enums. The facade re-exports by explicit name list, not by glob, so a name exported twice fails to compile.
 5. The UI live preview stays available. Slint generates live-preview code whenever `SLINT_LIVE_PREVIEW` is set, whatever the cargo feature, and that code does not support library imports. So:
@@ -97,7 +97,7 @@ The reviewer checked the proposal against the Slint 1.18.1 sources and the rbs-a
 1. Integration tests and `look.rs`/`window_events.rs` name `rbs_app_ui` directly, so a facade module inside the binary cannot serve them (blocking). Resolved: `rbs-app-ui` becomes the facade library and keeps its name; probes sit behind a dev-only feature (decision 1).
 2. Path imports of base files must stay, and library identity goes by name, so a missed export or a same-named local declaration fails without notice (blocking). Resolved: rules restated, plus an `xtask check-ui` count (decision 2).
 3. Window crates need the base's own `tokens.slint` (blocking). Resolved: `TOKENS_DIR` metadata through `links` (decision 3).
-4. Single and split builds can drift, `tokens_apply` must not be copied, and `--all-features` must not compile the 62 MB crate (should fix). Resolved: one generator, an export-parity check, a live-preview `cargo check` in `affected check`, and the env-gated switch (decisions 1 and 5).
+4. Single and split builds can drift, `tokens_apply` must not be copied, and `--all-features` must not compile the 62 MB crate (should fix). Resolved: one generator, an export-parity check, a live-preview `cargo check` in `affected test`, and the env-gated switch (decisions 1 and 5).
 5. Per-window global instances not stated (should fix). Resolved: decision 6.
 6. Clashes between re-exported names (should fix). Resolved: window roots export windows only (decision 4).
 7. Layer classes, `affected` mapping and docs (should fix). Resolved: listed in Consequences as part of the same change.
@@ -129,3 +129,10 @@ Round-2 resolutions for decisions 2, 3 and 5 confirmed against the Slint sources
 4. The live-preview target directory follows `CARGO_TARGET_DIR` (nit). Resolved: decision 5.
 5. Layer class edges between UI crates (nit). Resolved: Consequences.
 6. The parity check includes the probes (nit). Resolved: decision 2.
+
+### Round 4: independent AI session, 2026-11-17, changes requested (one should fix, one nit)
+
+Round-3 resolutions confirmed: named root files, layer edges, parity with the probes, and no contradictions between decisions 1 to 9.
+
+1. The bracket in decision 1 ("today's exports of `app.slint`") missed 14 structs that Rust names (should fix). Resolved with the reviewer's wording: the base holds what is reachable from a window's public properties or callbacks, what Rust names, or what several window crates use, with today's extra names listed. The check tests the reachable form.
+2. Round 1 said `affected check` where decision 5 says `affected test` (nit). Resolved.
