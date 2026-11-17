@@ -463,6 +463,9 @@ export global Studio {
     // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio, 3 Source (shown first),
     // 4 Text (a text source's first tab).
     in-out property <int> properties-tab;
+    // The ids of the sections Properties draws now, comma separated: the panel's title
+    // row folds them all with one button (Collapse all / Expand all).
+    in-out property <string> properties-folds;
     callback select-filter(int /* source */, int /* filter */);
     callback remove-filter(int /* filter */);
     callback move-filter(int /* filter */, int /* index */);
@@ -5399,6 +5402,21 @@ component SourceProperties inherits VerticalLayout {
         : want == 1 ? 1
         : want == 2 && data.audio ? 2
         : 0;
+    // The foldable sections drawn for this source and tab, for Collapse all / Expand all
+    // in the panel's title row. Keep in step with the `id`s of the sections below.
+    // Filter settings show for the selected filter (an unknown type has none).
+    property <bool> filter-open: data.selected-filter >= 0 && data.filters.length > 0;
+    property <string> folds: (data.media ? "properties.playback," : "")
+        + (tab == 0 && data.picture ? "properties.position,properties.arrange,properties.crop,properties.shape," : "")
+        + (tab == 1 && root.filter-open ? "properties.filter-settings," : "")
+        + (tab == 2 ? "properties.sound,properties.sync," : "")
+        + (tab == 2 && !data.picture ? "properties.recording,properties.audio-filters," + (root.filter-open ? "properties.filter-settings," : "") : "")
+        + (tab == 4 ? "properties.text-outline,properties.text-shadow,properties.text-background," : "")
+        + (data.picture ? "properties.timed-show," : "")
+        + "properties.scenes"
+        + (data.picture ? ",properties.picture-recording" : "");
+    init => { Studio.properties-folds = root.folds; }
+    changed folds => { Studio.properties-folds = root.folds; }
     spacing: Tokens.size-section-gap;
     alignment: start;
     // The source: its kind's icon, its name and kind, and its name as a field.
