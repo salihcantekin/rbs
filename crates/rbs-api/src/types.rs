@@ -2850,7 +2850,7 @@ pub struct TextFonts {
     pub families: Vec<String>,
 }
 
-/// `text.timer`'s answer (protocol 1.83, ADR-0129 decision 11): the timer as it
+/// `text.timer`'s answer (protocol 1.84, ADR-0129 decision 11): the timer as it
 /// stands now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextTimerState {

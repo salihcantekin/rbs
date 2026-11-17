@@ -782,7 +782,7 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
         "{file}"
     );
 
-    // `text.timer` (protocol 1.83) runs a stopwatch, not a plain text.
+    // `text.timer` (protocol 1.84) runs a stopwatch, not a plain text.
     let plain = c.call("text.timer", json!({"source": id, "action": "start"}));
     assert_eq!(plain["error"]["data"]["kind"], "invalid_params", "{plain}");
     let kind = c.call(

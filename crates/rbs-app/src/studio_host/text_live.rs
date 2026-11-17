@@ -1,4 +1,4 @@
-//! Live text inputs (ADR-0129 decision 11): `text.timer` (control API 1.83), the
+//! Live text inputs (ADR-0129 decision 11): `text.timer` (control API 1.84), the
 //! timers kept in `text-timers.toml`, and how long the main canvas's main recording
 //! and stream have run, for `recording_time`, `stream_time` and `{scene}`.
 
@@ -133,7 +133,7 @@ impl Host {
         }
     }
 
-    /// `text.timer` (control API 1.83).
+    /// `text.timer` (control API 1.84).
     pub(super) fn text_timer(&mut self, p: TextTimer) -> Result<Response, ApiError> {
         let action = match p.action {
             TimerAction::Start => rbs_record::TimerAction::Start,

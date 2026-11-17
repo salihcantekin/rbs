@@ -153,7 +153,14 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
                 .register_audio(Arc::new(rbs_audio_io_test::TestAudioBackend::new())),
         );
     }
-    // Bright demo pattern until FFmpeg is linked (ADR-0108). The file path is ignored.
+    // Animated and still images (GIF, APNG, WebP) in pure Rust (ADR-0108). Registered
+    // before the demo pattern so it opens the files it recognizes; it refuses the rest.
+    note(
+        a.sources
+            .register_media(Arc::new(rbs_media_anim::AnimFactory::new())),
+    );
+    // Bright demo pattern for every other file until FFmpeg is linked (ADR-0108). The
+    // file path is ignored.
     note(
         a.sources
             .register_media(Arc::new(rbs_media_decode_test::ScriptFactory::new(

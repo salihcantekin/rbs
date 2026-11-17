@@ -116,7 +116,7 @@ pub struct SetText {
     pub text: String,
 }
 
-/// What `text.timer` does (protocol 1.83, ADR-0129 decision 11).
+/// What `text.timer` does (protocol 1.84, ADR-0129 decision 11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerAction {
@@ -128,7 +128,7 @@ pub enum TimerAction {
     Reset,
 }
 
-/// `text.timer` (protocol 1.83, ADR-0129 decision 11): starts, pauses or resets a
+/// `text.timer` (protocol 1.84, ADR-0129 decision 11): starts, pauses or resets a
 /// countdown (by duration) or stopwatch text source. A live action: not an undo step
 /// and not in the scene collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1001,6 +1001,62 @@ pub struct ReloadSource {
     pub source: u32,
 }
 
+/// `media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,
+/// ADR-0108 decision 10): one media-file source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSource {
+    /// The source's id.
+    pub source: u32,
+}
+
+/// `media.seek` (protocol 1.83, ADR-0108 decision 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSeek {
+    /// The source's id.
+    pub source: u32,
+    /// The media time to move to, in milliseconds; past the file's stated duration it
+    /// is clamped to it.
+    pub position_ms: u64,
+}
+
+/// The play state of a media-file source (ADR-0108 decision 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaPlayState {
+    /// Picture and sound advance.
+    Playing,
+    /// Stopped at the cursor.
+    Paused,
+    /// Only a preview scene draws it: it plays when a program or hold scene does.
+    Cued,
+    /// The end of the file without `loop`: the last picture holds.
+    Ended,
+    /// Asleep with no stored pause or end.
+    Standby,
+    /// A fault stopped playback.
+    Unavailable,
+    /// A state this client does not know (a newer server).
+    #[serde(other)]
+    Unknown,
+}
+
+/// The answer of every `media.*` method (protocol 1.83).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaStateInfo {
+    /// The source's id.
+    pub source: u32,
+    /// The play state after the command.
+    pub state: MediaPlayState,
+    /// The media cursor in milliseconds: where a pause stopped, else the picture
+    /// shown last.
+    pub cursor_ms: u64,
+    /// The file's stated duration in milliseconds, once it was opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 /// `source.get_settings` (protocol 1.17, ADR-0077).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1762,6 +1818,16 @@ pub enum Command {
     SourceReload(ReloadSource),
     /// `source.get_settings` (protocol 1.17).
     SourceGetSettings(GetSourceSettings),
+    /// `media.play` (protocol 1.83, ADR-0108).
+    MediaPlay(MediaSource),
+    /// `media.pause` (protocol 1.83).
+    MediaPause(MediaSource),
+    /// `media.seek` (protocol 1.83).
+    MediaSeek(MediaSeek),
+    /// `media.restart` (protocol 1.83).
+    MediaRestart(MediaSource),
+    /// `media.state` (protocol 1.83).
+    MediaState(MediaSource),
     /// `source.set_settings` (protocol 1.17).
     SourceSetSettings(SetSourceSettings),
     /// `source.set_companion_audio` (protocol 1.26).
@@ -1962,7 +2028,7 @@ pub enum Command {
     /// `import.obs.run` (protocol 1.82): imports as a new scene collection and output
     /// profile.
     ImportObsRun(ObsImport),
-    /// `text.timer` (protocol 1.83): starts, pauses or resets a countdown or stopwatch.
+    /// `text.timer` (protocol 1.84): starts, pauses or resets a countdown or stopwatch.
     TextTimer(TextTimer),
 }
 
@@ -2019,6 +2085,11 @@ impl Command {
             Command::SourceRetarget(_) => "source.retarget",
             Command::SourceReload(_) => "source.reload",
             Command::SourceGetSettings(_) => "source.get_settings",
+            Command::MediaPlay(_) => "media.play",
+            Command::MediaPause(_) => "media.pause",
+            Command::MediaSeek(_) => "media.seek",
+            Command::MediaRestart(_) => "media.restart",
+            Command::MediaState(_) => "media.state",
             Command::SourceSetSettings(_) => "source.set_settings",
             Command::SourceSetCompanionAudio(_) => "source.set_companion_audio",
             Command::CanvasAddVertical(_) => "canvas.add_vertical",
@@ -2322,6 +2393,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.retarget", Some(Scope::Control), Effect::Edit),
     m("source.reload", Some(Scope::Control), Effect::Edit),
     m("source.get_settings", Some(Scope::Control), Effect::Read),
+    m("media.play", Some(Scope::Control), Effect::Edit),
+    m("media.pause", Some(Scope::Control), Effect::Edit),
+    m("media.seek", Some(Scope::Control), Effect::Edit),
+    m("media.restart", Some(Scope::Control), Effect::Edit),
+    m("media.state", Some(Scope::Read), Effect::Read),
     m("source.set_settings", Some(Scope::Control), Effect::Edit),
     m(
         "source.set_companion_audio",
@@ -2500,6 +2576,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.collection.duplicate",
     "ui.collection.rename",
     "ui.collection.import",
+    "ui.collection.import_obs",
     "ui.collection.export",
     "ui.collection.delete",
     "ui.panel.open",
@@ -2680,6 +2757,16 @@ enum WireRequest {
     SourceReload(ReloadSource),
     #[serde(rename = "source.get_settings")]
     SourceGetSettings(GetSourceSettings),
+    #[serde(rename = "media.play")]
+    MediaPlay(MediaSource),
+    #[serde(rename = "media.pause")]
+    MediaPause(MediaSource),
+    #[serde(rename = "media.seek")]
+    MediaSeek(MediaSeek),
+    #[serde(rename = "media.restart")]
+    MediaRestart(MediaSource),
+    #[serde(rename = "media.state")]
+    MediaState(MediaSource),
     #[serde(rename = "source.set_settings")]
     SourceSetSettings(SetSourceSettings),
     #[serde(rename = "source.set_companion_audio")]
@@ -2941,6 +3028,11 @@ impl From<WireRequest> for Request {
             WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
             WireRequest::SourceGetSettings(p) => Request::Command(C::SourceGetSettings(p)),
+            WireRequest::MediaPlay(p) => Request::Command(C::MediaPlay(p)),
+            WireRequest::MediaPause(p) => Request::Command(C::MediaPause(p)),
+            WireRequest::MediaSeek(p) => Request::Command(C::MediaSeek(p)),
+            WireRequest::MediaRestart(p) => Request::Command(C::MediaRestart(p)),
+            WireRequest::MediaState(p) => Request::Command(C::MediaState(p)),
             WireRequest::SourceSetSettings(p) => Request::Command(C::SourceSetSettings(p)),
             WireRequest::SourceSetCompanionAudio(p) => {
                 Request::Command(C::SourceSetCompanionAudio(p))
@@ -3114,6 +3206,11 @@ impl From<Request> for WireRequest {
                 C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
                 C::SourceReload(p) => WireRequest::SourceReload(p),
                 C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
+                C::MediaPlay(p) => WireRequest::MediaPlay(p),
+                C::MediaPause(p) => WireRequest::MediaPause(p),
+                C::MediaSeek(p) => WireRequest::MediaSeek(p),
+                C::MediaRestart(p) => WireRequest::MediaRestart(p),
+                C::MediaState(p) => WireRequest::MediaState(p),
                 C::SourceSetSettings(p) => WireRequest::SourceSetSettings(p),
                 C::SourceSetCompanionAudio(p) => WireRequest::SourceSetCompanionAudio(p),
                 C::CanvasAddVertical(p) => WireRequest::CanvasAddVertical(p),
@@ -3478,7 +3575,7 @@ pub enum Response {
     AttributesClipboard(Option<crate::types::AttributesClipboard>),
     /// `text.fonts` (protocol 1.75).
     TextFonts(crate::types::TextFonts),
-    /// `text.timer` (protocol 1.83).
+    /// `text.timer` (protocol 1.84).
     TextTimerState(crate::types::TextTimerState),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
@@ -3524,6 +3621,8 @@ pub enum Response {
     SyncMeasureStarted(SyncMeasureStarted),
     /// `sync.devices` (protocol 1.66).
     SyncDevices(SyncDeviceList),
+    /// Every `media.*` method (protocol 1.83).
+    MediaState(MediaStateInfo),
     /// `sync.apply_to_device_sources` (protocol 1.66).
     SyncAppliedToDeviceSources(SyncAppliedToDeviceSources),
     /// `monitor.status` (protocol 1.30).
