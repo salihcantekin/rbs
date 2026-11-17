@@ -1417,6 +1417,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "global_sources" => 7,
         "virtual_camera" => 8,
         "audio" => 9,
+        "ai_tools" => 10,
         _ => return None,
     })
 }

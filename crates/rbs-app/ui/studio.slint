@@ -138,6 +138,9 @@ export struct EncoderData {
 }
 // One access token in the Remote control section: its name and what it allows.
 export struct TokenRow { name: string, access: string }
+// One recent action of AI tools (ADR-0134 decision 7): when, the method, and whether it
+// was allowed; `why` says why it was refused.
+export struct AiActionRow { time: string, method: string, allowed: bool, why: string }
 // One line of the Stats panel: a section heading (`heading`, `label` only) or a counter
 // with its value; `bad` marks a value that shows a loss (in words too, U7).
 export struct StatRow { heading: bool, label: string, value: string, bad: bool }
@@ -817,6 +820,36 @@ export global Studio {
     callback rc-use-own(string /* certificate */, string /* key */);
     callback rc-use-generated();
     callback rc-new-key();
+
+    // AI tools (Settings, AI tools; ADR-0134). The section shows once the server side
+    // exists (`ai-ready`).
+    in property <bool> ai-ready;
+    // 0 stopped, 1 started, 2 Start failed (`ai-status` says why).
+    in property <int> ai-state;
+    // The status line under the state, or why Start failed.
+    in property <string> ai-status;
+    // The names connected AI tools report, already cleaned (decision 7).
+    in property <[string]> ai-clients;
+    in property <bool> ai-autostart;
+    // 0 View only, 1 Control (the default), 2 Full control.
+    in property <int> ai-access: 1;
+    in property <bool> ai-irreversible;
+    // The AI tools the connection line is made for, the one picked, where its line
+    // goes, and the line. `ai-line` is empty when no line can be made; `ai-line-note`
+    // then says why.
+    in property <[string]> ai-tool-names;
+    in property <int> ai-tool;
+    in property <string> ai-where;
+    in property <string> ai-line;
+    in property <string> ai-line-note;
+    in property <[AiActionRow]> ai-actions;
+    callback ai-start();
+    callback ai-stop();
+    callback set-ai-autostart(bool);
+    callback set-ai-access(int);
+    callback set-ai-irreversible(bool);
+    callback ai-new-token();
+    callback pick-ai-tool(int);
 
     // Output profiles and scene collections (ADR-0051): the entries, the one in use,
     // and the menu actions. Actions: 0 new, 1 duplicate (both with a name and then
@@ -5951,6 +5984,223 @@ export component GlobalSourcesSettings inherits Rectangle {
                     kind: "primary";
                     enabled: running && Studio.global-option >= 0 && Studio.global-option < Studio.global-options.length;
                     clicked => { Studio.add-global(Studio.global-option); }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}
+
+// AI tools (glossary): the AI tools section of the Settings window (ADR-0134). AI tools
+// on this computer, such as Claude or Cursor, start `rbs-mcp`, which controls RBS through
+// local IPC with the AI tools token. Changes apply at once.
+export component AiToolsSettings inherits Rectangle {
+    // Turning the permission on, and New token, ask first.
+    property <bool> confirm-allow;
+    property <bool> confirm-token;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            title: @tr("AI tools");
+            id: "settings.ai-tools.status";
+            description: @tr("Let AI tools such as Claude or Cursor use RBS on this computer.");
+            SettingRow {
+                find: "ai-tools.start";
+                divider: false;
+                label: Studio.ai-state == 1 ? @tr("Started") : @tr("Stopped");
+                help: Studio.ai-status;
+                help-is-problem: Studio.ai-state == 2;
+                fill: false;
+                Button {
+                    lead: Studio.ai-state == 1 ? IconName.stop : IconName.play;
+                    text: Studio.ai-state == 1 ? @tr("Stop") : @tr("Start");
+                    accessible-name: Studio.ai-state == 1 ? @tr("Stop AI tools") : @tr("Start AI tools");
+                    kind: Studio.ai-state == 1 ? "secondary" : "primary";
+                    clicked => {
+                        if Studio.ai-state == 1 { Studio.ai-stop(); } else { Studio.ai-start(); }
+                    }
+                }
+            }
+            for name[i] in Studio.ai-clients: SettingRow {
+                // find: none (a connected AI tool).
+                divider: false;
+                label: @tr("Connected");
+                help: @tr("Reported as “{}”", name);
+                fill: false;
+            }
+            SettingRow {
+                find: "ai-tools.autostart";
+                label: @tr("Start when RBS opens");
+                hint: @tr("Starts AI tools each time RBS opens. They stop when RBS closes.");
+                fill: false;
+                Toggle {
+                    label: @tr("Start when RBS opens");
+                    checked: Studio.ai-autostart;
+                    toggled(on) => { Studio.set-ai-autostart(on); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("What AI tools may do");
+            id: "settings.ai-tools.access";
+            SettingRow {
+                find: "ai-tools.access";
+                divider: false;
+                label: @tr("Access");
+                hint: @tr("View only: read the studio. Control: scenes, sources and sound. Full control: also settings and outputs.");
+                Select {
+                    label: @tr("Access");
+                    options: [@tr("View only"), @tr("Control"), @tr("Full control")];
+                    index: Studio.ai-access;
+                    selected(i) => { Studio.set-ai-access(i); }
+                }
+            }
+            SettingRow {
+                find: "ai-tools.irreversible";
+                label: @tr("Allow actions that cannot be undone");
+                summary: @tr("Record, stream, delete, reach other computers");
+                hint: @tr("Off: AI tools cannot record, stream, delete, change what is on air or reach another computer. They are told why.");
+                fill: false;
+                Toggle {
+                    label: @tr("Allow actions that cannot be undone");
+                    checked: Studio.ai-irreversible;
+                    toggled(on) => {
+                        if on { root.confirm-allow = true; } else { Studio.set-ai-irreversible(false); }
+                    }
+                }
+            }
+            if root.confirm-allow: SettingsCallout {
+                label: @tr("Allow actions that cannot be undone?");
+                Text {
+                    text: @tr("AI tools could start or stop recording and streaming, change what is on air, and delete things undo cannot bring back.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                DialogActions {
+                    dense: true;
+                    confirm-text: @tr("Allow");
+                    confirm-kind: "danger";
+                    cancelled => { root.confirm-allow = false; }
+                    confirmed => { root.confirm-allow = false; Studio.set-ai-irreversible(true); }
+                }
+            }
+            SettingRow {
+                find: "ai-tools.new-token";
+                label: @tr("Token");
+                hint: @tr("Makes a new token. Connected AI tools reconnect by themselves.");
+                fill: false;
+                Button {
+                    lead: IconName.refresh;
+                    text: @tr("New token");
+                    accessible-name: @tr("Make a new AI tools token");
+                    clicked => { root.confirm-token = true; }
+                }
+            }
+            if root.confirm-token: SettingsCallout {
+                label: @tr("Make a new token?");
+                Text {
+                    text: @tr("The old token stops working. Connected AI tools reconnect with the new one.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                DialogActions {
+                    dense: true;
+                    confirm-text: @tr("New token");
+                    cancelled => { root.confirm-token = false; }
+                    confirmed => { root.confirm-token = false; Studio.ai-new-token(); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Connect an AI tool");
+            id: "settings.ai-tools.connect";
+            SettingRow {
+                find: "ai-tools.tool";
+                divider: false;
+                label: @tr("AI tool");
+                Select {
+                    label: @tr("AI tool");
+                    options: Studio.ai-tool-names;
+                    index: Studio.ai-tool;
+                    selected(i) => { Studio.pick-ai-tool(i); }
+                }
+            }
+            if Studio.ai-line == "": SettingsNotice {
+                problem: true;
+                text: Studio.ai-line-note;
+            }
+            if Studio.ai-line != "": SettingBlock {
+                find: "ai-tools.line";
+                label: Studio.ai-where;
+                help: @tr("Copy it again after moving RBS.");
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.surface-sunken;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        min-height: line-text.preferred-height + Tokens.space-2 * 2;
+                        line-text := Text {
+                            x: Tokens.space-2;
+                            width: parent.width - Tokens.space-2 * 2;
+                            text: Studio.ai-line;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            wrap: char-wrap;
+                            vertical-alignment: center;
+                            accessible-role: AccessibleRole.text;
+                            accessible-label: @tr("Connection line: {}", Studio.ai-line);
+                        }
+                    }
+                    line := TextField {
+                        visible: false;
+                        width: 0px;
+                        label: @tr("Connection line");
+                        text: Studio.ai-line;
+                        read-only: true;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        Button {
+                            lead: IconName.copy;
+                            text: @tr("Copy");
+                            accessible-name: @tr("Copy the connection line");
+                            icon: IconName.copy;
+                            clicked => { line.copy-all(); }
+                        }
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Recent actions");
+            id: "settings.ai-tools.actions";
+            description: @tr("Actions that cannot be undone, and refusals. Kept until Settings closes.");
+            if Studio.ai-actions.length == 0: SettingRow {
+                // find: none (an empty state).
+                divider: false;
+                label: @tr("No actions yet");
+            }
+            for a[i] in Studio.ai-actions: SettingRow {
+                // find: none (a recent action).
+                divider: i > 0;
+                label: a.method;
+                summary: a.time;
+                help: a.allowed ? "" : a.why;
+                help-is-warning: !a.allowed;
+                fill: false;
+                Text {
+                    text: a.allowed ? @tr("Allowed") : @tr("Refused");
+                    color: a.allowed ? Theme.text-secondary : Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
                 }
             }
         }
