@@ -17,10 +17,11 @@
 //!
 //! For each phase: frames drawn, and the render time (Slint's before- to after-rendering
 //! notification, the work a theme's effects add) and the frame interval as p50, p95, p99
-//! and max in milliseconds. `RBS_EFFECTS=<calm|glow|glass|tactile>` picks the effects of both
-//! slots for the run (`look`), so the same build measures each setting. Process CPU and
-//! GPU memory are read from the OS tools while it runs (Activity Monitor or `footprint`
-//! on macOS, Task Manager on Windows).
+//! and max in milliseconds, and the meter rows the Mixer wrote (`meter_writes`).
+//! `RBS_EFFECTS=<calm|glow|glass|tactile>` picks the effects of both slots for the run
+//! (`look`), so the same build measures each setting. Process CPU and GPU memory are
+//! read from the OS tools while it runs (Activity Monitor or `footprint` on macOS, Task
+//! Manager on Windows).
 //!
 //! Frame notifications: Slint keeps one rendering notifier per window, and a second
 //! `set_rendering_notifier` replaces the first. On macOS and Windows the app already has
@@ -54,6 +55,8 @@ struct Phase {
     name: &'static str,
     renders: Vec<Duration>,
     intervals: Vec<Duration>,
+    /// Meter rows written in this phase ([`count_meter_write`]).
+    meter_writes: u64,
 }
 
 #[derive(Default)]
@@ -77,6 +80,18 @@ pub fn observe(state: &slint::RenderingState) {
     ACTIVE.with(|a| {
         if let Some(st) = a.borrow().as_ref() {
             record(st, state);
+        }
+    });
+}
+
+/// Called for every meter row the Mixer writes; does nothing unless a measurement is
+/// running. The count tells whether idle frames come from meters (audit U-02).
+pub fn count_meter_write() {
+    ACTIVE.with(|a| {
+        if let Some(st) = a.borrow().as_ref()
+            && let Some(p) = st.borrow_mut().phases.last_mut()
+        {
+            p.meter_writes += 1;
         }
     });
 }
@@ -113,10 +128,9 @@ pub fn requested() -> Option<u64> {
 /// Installs the measure mode on `main`: the rendering notifier and the sweep timer.
 pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
     let state = Rc::new(RefCell::new(State::default()));
-    if cfg!(any(target_os = "macos", windows)) {
-        // The app's notifier forwards to `observe`.
-        ACTIVE.with(|a| *a.borrow_mut() = Some(state.clone()));
-    } else {
+    // Frames (where the app's notifier forwards to `observe`) and meter writes.
+    ACTIVE.with(|a| *a.borrow_mut() = Some(state.clone()));
+    if !cfg!(any(target_os = "macos", windows)) {
         let st = state.clone();
         let installed =
             crate::entry::set_rendering_notifier(main.window(), move |s, _| record(&st, &s));
@@ -233,9 +247,10 @@ fn report(phases: &[Phase], scale: f32) {
         let r = spread(&p.renders);
         let i = spread(&p.intervals);
         println!(
-            "rbs measure: effects={effects} scale={scale} phase={} frames={} render_ms p50={:.2} p95={:.2} p99={:.2} max={:.2} interval_ms p50={:.2} p95={:.2} p99={:.2} max={:.2}",
+            "rbs measure: effects={effects} scale={scale} phase={} frames={} meter_writes={} render_ms p50={:.2} p95={:.2} p99={:.2} max={:.2} interval_ms p50={:.2} p95={:.2} p99={:.2} max={:.2}",
             p.name,
             p.renders.len(),
+            p.meter_writes,
             r[0],
             r[1],
             r[2],
