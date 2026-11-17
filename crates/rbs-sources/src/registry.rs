@@ -454,6 +454,20 @@ impl NodeTypes for NodeTypeTable {
     fn live_settings(&self, type_id: &NodeTypeId) -> bool {
         class_of(type_id) == Some(SourceClass::Text)
     }
+
+    /// A media file takes `loop`, `restart_when_shown` and its play range in place
+    /// (ADR-0108 decision 12).
+    fn live_keys(&self, type_id: &NodeTypeId) -> &'static [&'static str] {
+        match class_of(type_id) {
+            Some(SourceClass::Media) => &[
+                keys::LOOP,
+                keys::RESTART_WHEN_SHOWN,
+                keys::START_MS,
+                keys::END_MS,
+            ],
+            _ => &[],
+        }
+    }
 }
 
 /// The capture and audio input adapters, and the source types they provide.
@@ -1352,6 +1366,47 @@ fn validate_media(settings: &Settings) -> Result<(), SourceError> {
     media_range(settings)?;
     text(settings, keys::ADAPTER)?;
     Ok(())
+}
+
+/// Sends the live keys `keys` of a media file's `settings` to its control handle
+/// (ADR-0108 decision 12), for [`rbs_scene::binder::BindReport::live_changed`]. A
+/// value the type refuses is skipped and reported; the others still apply.
+pub fn apply_media_live(
+    control: &rbs_nodes::MediaControl,
+    settings: &Settings,
+    keys: &[String],
+) -> Result<(), SourceError> {
+    let mut first_error = None;
+    let mut keep = |result: Result<(), SourceError>| {
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    };
+    let changed = |key: &str| keys.iter().any(|k| k == key);
+    if changed(keys::RESTART_WHEN_SHOWN) {
+        keep(flag(settings, keys::RESTART_WHEN_SHOWN).map(|on| {
+            control.set_restart_when_shown(on.unwrap_or(true));
+        }));
+    }
+    if changed(keys::START_MS) || changed(keys::END_MS) {
+        keep(media_range(settings).and_then(|(start, end)| {
+            control
+                .set_range(start, end)
+                .map_err(|_| SourceError::InvalidSetting {
+                    key: keys::END_MS,
+                    expected: "greater than start_ms",
+                })
+        }));
+    }
+    // Last, so an end hold that loops again starts from the new range.
+    if changed(keys::LOOP) {
+        keep(flag(settings, keys::LOOP).and_then(|on| {
+            control
+                .set_loop(on.unwrap_or(true))
+                .map_err(|error| SourceError::Media(error.to_string()))
+        }));
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// The play range of a media file (ADR-0108 decision 11): `start_ms` (default 0) and

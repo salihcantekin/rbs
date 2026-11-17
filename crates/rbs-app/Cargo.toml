@@ -21,6 +21,9 @@ fault-injection = []
 # cameras and audio), for screenshots and UI checks on machines without devices. Off
 # in normal builds. Media uses `rbs-media-decode-test` always until FFmpeg ships.
 demo-sources = ["dep:rbs-capture-test", "dep:rbs-audio-io-test"]
+# Development only: the UI reloads from `ui/` when a `.slint` file is saved
+# (`cargo xtask ui-dev`, testing strategy "UI live preview"). Never in builds that ship.
+ui-live-preview = ["rbs-app-ui/live-preview"]
 
 [dependencies]
 rbs-ui = { path = "../rbs-ui" }

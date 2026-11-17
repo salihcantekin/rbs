@@ -438,6 +438,24 @@ impl MediaControl {
         }
     }
 
+    /// The live `loop` key (ADR-0108 decision 12). While playing it takes effect at
+    /// the next end of the range; an end hold whose `loop` becomes true plays again
+    /// from the range start (a restart: cued when the source is not on air).
+    pub fn set_loop(&self, on: bool) -> Result<(), MediaNodeError> {
+        let ended = {
+            let player = self.shared.player();
+            let was = player.loop_flag.swap(on, Ordering::AcqRel);
+            on && !was && Self::state_of(&self.shared, &player) == PlayState::Ended
+        };
+        if ended { self.restart() } else { Ok(()) }
+    }
+
+    /// The live `restart_when_shown` key (ADR-0108 decision 12): read by the next
+    /// transition of the on-air table and the next wake.
+    pub fn set_restart_when_shown(&self, on: bool) {
+        self.shared.player().restart_when_shown = on;
+    }
+
     /// How long a paused or cued source keeps its worker and decoder (the
     /// `pause_release_s` app setting, default 30 s).
     pub fn set_pause_release(&self, after: Duration) {

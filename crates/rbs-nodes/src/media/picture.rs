@@ -107,11 +107,12 @@ impl MediaPictureNode {
     }
 
     /// Stored `loop`. A change does not replace the node. While the worker plays it
-    /// takes effect at the next end of the file. While held, `true` starts from 0.
+    /// takes effect at the next end of the range. While held, `true` starts from the
+    /// range start.
     pub fn set_loop(&mut self, on: bool) {
         self.loop_flag.store(on, Ordering::Release);
         if on && self.phase == MediaPhase::Hold {
-            self.shared.move_cursor(Duration::ZERO);
+            self.shared.move_cursor(self.shared.range_start());
             let _ = self.restart();
         }
     }
