@@ -1,6 +1,6 @@
 # ADR-0135: Transitions phase 3: T-bar, a transition into a scene, and Rehearse
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-17
 - Deciders: Salih (owner)
 - Builds on: ADR-0128 (scene transitions; decision 15 names this phase), ADR-0061 (studio mode), ADR-0063 and ADR-0098 (held program; keep or swap the preview after a transition), ADR-0064 (Transition rail), ADR-0091 (per-scene audio levels), ADR-0093 (further canvases and followers), ADR-0111 (new values of request fields)
@@ -184,4 +184,4 @@ What OBS does, and does badly:
     - the held copy's ready counter (decision 5);
     - list formatting (decision 15).
 - Round 2 confirmation (same reviewer, 2026-11-17): **approve**. Note for the T-bar PR: a T-bar move right after a cancel reuses the incoming compositor that is still bound, as a timed transition reuses it (ADR-0128 decision 9).
-- Owner: pending.
+- Owner: approved, Salih, 2026-11-17 ("onaylıyorum").
