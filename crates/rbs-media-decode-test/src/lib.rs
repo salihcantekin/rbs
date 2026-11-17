@@ -247,6 +247,9 @@ pub struct ScriptFactory {
     pub counts: Arc<ScriptCounts>,
     pixel: &'static str,
     native: bool,
+    /// The clip's picture stream has alpha, and whether this factory keeps it
+    /// (ADR-0140 decision 2).
+    alpha: Option<bool>,
 }
 
 impl ScriptFactory {
@@ -273,7 +276,17 @@ impl ScriptFactory {
             counts: Arc::new(ScriptCounts::default()),
             pixel,
             native: false,
+            alpha: None,
         }
+    }
+
+    /// The clip's picture stream signals alpha. With `keeps` an open with
+    /// `keep_alpha` succeeds (the clip's `Rgba8` bytes carry the alpha); without, it
+    /// fails with `DecodeError::AlphaUnsupported` (ADR-0140 decision 2).
+    #[must_use]
+    pub fn with_alpha(mut self, keeps: bool) -> Self {
+        self.alpha = Some(keeps);
+        self
     }
 }
 
@@ -300,7 +313,11 @@ impl MediaDecoderFactory for ScriptFactory {
         if let Ok(mut last) = self.counts.last_target.lock() {
             *last = Some(target.clone());
         }
-        self.open(path)
+        let decoder = self.open(path)?;
+        if target.keep_alpha && self.alpha == Some(false) {
+            return Err(DecodeError::AlphaUnsupported);
+        }
+        Ok(decoder)
     }
 
     fn open(&self, _path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError> {
@@ -317,6 +334,7 @@ impl MediaDecoderFactory for ScriptFactory {
             audio: self.clip.audio.clone(),
             animated: self.clip.animated,
             duration: self.clip.duration,
+            alpha: self.alpha.is_some(),
             index: 0,
             sound_frame: 0,
             native: self
@@ -335,6 +353,7 @@ struct ScriptDecoder {
     audio: Option<InterleavedPcm>,
     animated: bool,
     duration: Option<Duration>,
+    alpha: bool,
     index: usize,
     sound_frame: usize,
     native: Option<Arc<dyn LeaseOwner>>,
@@ -442,5 +461,9 @@ impl MediaDecoder for ScriptDecoder {
 
     fn duration(&self) -> Option<Duration> {
         self.duration
+    }
+
+    fn has_alpha(&self) -> bool {
+        self.alpha
     }
 }

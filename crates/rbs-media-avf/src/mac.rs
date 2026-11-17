@@ -16,13 +16,14 @@ use objc2_av_foundation::{
     AVMediaTypeVideo, AVMutableVideoComposition, AVURLAsset,
 };
 use objc2_core_foundation::CFRetained;
-use objc2_core_foundation::{CFString, CFType};
+use objc2_core_foundation::{CFBoolean, CFString, CFType};
 use objc2_core_media::{
     CMAudioFormatDescriptionGetStreamBasicDescription, CMFormatDescription, CMSampleBuffer, CMTime,
     CMTimeFlags, CMTimeRange, CMVideoFormatDescriptionGetDimensions,
     kCMFormatDescriptionColorPrimaries_EBU_3213, kCMFormatDescriptionColorPrimaries_ITU_R_709_2,
     kCMFormatDescriptionColorPrimaries_ITU_R_2020, kCMFormatDescriptionColorPrimaries_P3_D65,
     kCMFormatDescriptionColorPrimaries_SMPTE_C, kCMFormatDescriptionExtension_ColorPrimaries,
+    kCMFormatDescriptionExtension_ContainsAlphaChannel,
     kCMFormatDescriptionExtension_TransferFunction, kCMFormatDescriptionExtension_YCbCrMatrix,
     kCMFormatDescriptionTransferFunction_ITU_R_709_2,
     kCMFormatDescriptionTransferFunction_ITU_R_2020,
@@ -107,6 +108,36 @@ fn video_settings(native: bool) -> Retained<NSDictionary<NSString, AnyObject>> {
         Retained::into_super(Retained::into_super(empty)),
     ];
     NSDictionary::from_retained_objects(&[&*format, &*surface], &values)
+}
+
+/// The track's first format description.
+fn track_description(track: &AVAssetTrack) -> Option<Retained<AnyObject>> {
+    // SAFETY: a plain property read of a live track.
+    let descriptions = unsafe { track.formatDescriptions() };
+    descriptions.firstObject()
+}
+
+/// Whether the track's format description says it carries alpha
+/// (`ContainsAlphaChannel`, set for ProRes 4444 and HEVC with alpha; ADR-0140
+/// decision 2).
+fn track_alpha(track: &AVAssetTrack) -> bool {
+    let Some(first) = track_description(track) else {
+        return false;
+    };
+    // SAFETY: `formatDescriptions` holds `CMFormatDescription`s, which are CF objects;
+    // the reference lives as long as `first`.
+    let description: &CMFormatDescription =
+        unsafe { &*(Retained::as_ptr(&first).cast::<CMFormatDescription>()) };
+    // SAFETY: reads a tag of a live description; the key is a framework constant.
+    let Some(value) = (unsafe {
+        description.extension(kCMFormatDescriptionExtension_ContainsAlphaChannel)
+    }) else {
+        return false;
+    };
+    let value: &CFType = &value;
+    value
+        .downcast_ref::<CFBoolean>()
+        .is_some_and(CFBoolean::as_bool)
 }
 
 /// The colour of the track's Y'CbCr from its format description, as the importer
@@ -392,8 +423,10 @@ pub(crate) struct AvfDecoder {
     cursor: Duration,
     last_duration: Option<Duration>,
     /// The slots of native pictures and their colour; `None` for the copy
-    /// (`cpu-upload`, or a colour the importer cannot decode).
+    /// (`cpu-upload`, a colour the importer cannot decode, or alpha kept).
     surfaces: Option<(Surfaces, ColorSpace)>,
+    /// The picture track carries alpha (ADR-0140 decision 2).
+    alpha: bool,
 }
 
 // SAFETY: AVAsset, AVAssetReader and their outputs are not bound to a thread; the
@@ -401,11 +434,14 @@ pub(crate) struct AvfDecoder {
 unsafe impl Send for AvfDecoder {}
 
 impl AvfDecoder {
-    pub(crate) fn open(path: &Path, native: bool) -> Result<Self, DecodeError> {
-        autoreleasepool(|_| Self::open_in_pool(path, native))
+    /// Opens `path`. With `keep_alpha` a track with alpha opens on the copy path,
+    /// whose `32BGRA` keeps it; the native `420v` path has no alpha (ADR-0140
+    /// decision 2).
+    pub(crate) fn open(path: &Path, native: bool, keep_alpha: bool) -> Result<Self, DecodeError> {
+        autoreleasepool(|_| Self::open_in_pool(path, native, keep_alpha))
     }
 
-    fn open_in_pool(path: &Path, native: bool) -> Result<Self, DecodeError> {
+    fn open_in_pool(path: &Path, native: bool, keep_alpha: bool) -> Result<Self, DecodeError> {
         let path: PathBuf = path.to_owned();
         let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
         // SAFETY: a file URL and no options.
@@ -417,7 +453,8 @@ impl AvfDecoder {
         let audio_track = first_track(&asset, audio_kind);
         // SAFETY: plain property reads of live objects.
         let (length, rate) = unsafe { (asset.duration(), video_track.nominalFrameRate()) };
-        let color = if native {
+        let alpha = track_alpha(&video_track);
+        let color = if native && !(keep_alpha && alpha) {
             track_color(&video_track)
         } else {
             None
@@ -443,6 +480,7 @@ impl AvfDecoder {
             cursor: Duration::ZERO,
             last_duration: None,
             surfaces: color.map(|c| (Surfaces::new(), c)),
+            alpha,
         })
     }
 
@@ -644,5 +682,9 @@ impl MediaDecoder for AvfDecoder {
 
     fn duration(&self) -> Option<Duration> {
         self.duration
+    }
+
+    fn has_alpha(&self) -> bool {
+        self.alpha
     }
 }
