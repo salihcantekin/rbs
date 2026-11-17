@@ -2417,6 +2417,7 @@ pub fn choice_icon(id: &CommandId, checked: bool) -> Option<&'static str> {
             Some("system_audio") | Some("application_audio") => "speaker",
             Some("media") | Some("image") => "image",
             Some("browser") => "window",
+            Some("text") => "text",
             Some("existing") => "copy",
             _ => "plus",
         },

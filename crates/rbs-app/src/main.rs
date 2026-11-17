@@ -1200,6 +1200,11 @@ impl App {
                     self.studio.add_browser_page("https://example.com/");
                     return;
                 }
+                Some(SourceKind::Text) => {
+                    // "Text" in the system font, centred; Properties opens on Text.
+                    self.studio.add_text("Text");
+                    return;
+                }
                 _ => {}
             }
         }
@@ -1207,6 +1212,15 @@ impl App {
         self.close_picker_ui();
         self.picker_host = self.run_origin.clone();
         self.studio.open_add_picker(what);
+        self.sync_picker();
+    }
+
+    /// Opens the searchable picker on the font families for a text source (ADR-0129
+    /// decision 13); the list fills when the studio has read it.
+    fn ask_text_font(&mut self, id: i32) {
+        self.close_picker_ui();
+        self.picker_host = self.run_origin.clone();
+        self.studio.open_font_picker(id);
         self.sync_picker();
     }
 
@@ -1229,6 +1243,7 @@ impl App {
         };
         use studio_ui::add_picker::Status;
         let status = match view.status {
+            Status::Looking if view.fonts => "Reading the fonts...",
             Status::Looking => "Looking for devices...",
             Status::Nothing => "Nothing of this type was found.",
             Status::NoMatch => "Nothing matches.",
@@ -1710,6 +1725,9 @@ impl Ctx {
                 && !app.session.workspace().is_open(&p)
             {
                 app.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            }
+            if let Some(source) = applied.focus_text {
+                app.show_source_properties(source, 4);
             }
             if let Some(source) = applied.focus_shape {
                 let _ = app.session.set_section_closed("properties.shape", false);
@@ -3607,6 +3625,30 @@ fn pick_media() {
     }
 }
 
+/// Asks for the file a text source reads (ADR-0129 decision 13).
+fn pick_text_file(id: i32) {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_text("Choose a text file").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app
+                .studio
+                .set_text_value(id, "file", &path.to_string_lossy()),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// The system file dialog for import and export (ADR-0051).
 mod file_dialog {
     use std::path::PathBuf;
@@ -3662,6 +3704,18 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
+    /// A text file a text source reads (ADR-0129); `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_text(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter("Text", &["txt", "md", "csv", "log"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
     /// Where to export; `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn save(title: &str, file_name: &str) -> Result<Option<PathBuf>, String> {
@@ -3698,6 +3752,11 @@ mod file_dialog {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_text(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn save(_title: &str, _file_name: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
@@ -3713,7 +3772,14 @@ fn close_preview() {
 
 /// Sections that start closed (ADR-0078): the workspace lists them when the user
 /// opens them, under the id with this suffix, so an old file keeps them closed.
-const CLOSED_BY_DEFAULT: [&str; 3] = ["sources.global", "mixer.hidden", "mixer.loudness"];
+const CLOSED_BY_DEFAULT: [&str; 6] = [
+    "sources.global",
+    "mixer.hidden",
+    "mixer.loudness",
+    "properties.text-outline",
+    "properties.text-shadow",
+    "properties.text-background",
+];
 const OPENED_SUFFIX: &str = "-open";
 
 /// The key a section is stored under, and whether listing it means "closed".
@@ -4541,6 +4607,49 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     );
     on!(on_set_source_filled, |app, id: i32, on: bool| {
         app.studio.set_source_filled(id, on);
+    });
+    on!(on_set_text_kind, |app, id: i32, kind: i32| {
+        app.studio.set_text_kind(id, kind);
+    });
+    on!(
+        on_set_text_value,
+        |app, id: i32, key: slint::SharedString, value: slint::SharedString| {
+            app.studio.set_text_value(id, key.as_str(), value.as_str());
+        }
+    );
+    on!(
+        on_set_text_number,
+        |app, id: i32, key: slint::SharedString, value: f32| {
+            app.studio.set_text_number(id, key.as_str(), value);
+        }
+    );
+    on!(on_set_text_flag, |app,
+                           id: i32,
+                           key: slint::SharedString,
+                           value: bool| {
+        app.studio.set_text_flag(id, key.as_str(), value);
+    });
+    on!(on_set_text_effect, |app, id: i32, effect: i32, on: bool| {
+        app.studio.set_text_effect(id, effect, on);
+    });
+    on!(
+        on_set_text_countdown,
+        |app, id: i32, until: bool, target: slint::SharedString, seconds: i32| {
+            app.studio
+                .set_text_countdown(id, until, target.as_str(), seconds);
+        }
+    );
+    on!(on_choose_text_font, |app, id: i32| {
+        app.ask_text_font(id);
+    });
+    on!(on_choose_text_file, |_app, id: i32| {
+        pick_text_file(id);
+    });
+    on!(on_fit_text_box, |app, id: i32| {
+        app.studio.fit_text_box(id);
+    });
+    on!(on_text_timer, |app, id: i32, action: i32| {
+        app.studio.text_timer(id, action);
     });
     on!(on_set_source_region, |app, id: i32, region: i32| {
         app.studio.set_source_region(id, region);

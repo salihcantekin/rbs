@@ -200,7 +200,7 @@ The studio does not link or load CEF. A real CEF build replaces the helper execu
 
 ## Text (`org.rbs.source.text`, ADR-0129)
 
-Implementation status: phases (a) to (d). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, the control API adds and edits text sources (control-api.md, "Protocol 1.75") and runs timers (control-api.md, "Protocol 1.84"), and live kinds are drawn ("Live kinds" below). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; no menu adds a text source until phase (f), and a text row in the Sources list uses the `pencil` icon until then. Crisp resizing is in (phase (e), "Crisp resizing" below). Hold start and take start do not wait for entering texts; a program switch does.
+Implementation status: phases (a) to (f). The type, its settings, the node, the text worker, the binder's in-place updates and the host wiring exist, the control API adds and edits text sources (control-api.md, "Protocol 1.75") and runs timers (control-api.md, "Protocol 1.84"), and live kinds are drawn ("Live kinds" below). The desktop app registers `rbs-text-parley` on the system's fonts, so the type is installed; Add source lists Text, a text row uses the `text` icon, and Properties edits it on its Text tab (ui-design-system.md, "Text tab"; host commands `AddText`, `SetSourceSettings`, `FitTextBox`, `ListTextFonts`, `TextTimer`; rbs-app `studio_ui::text_props`). Crisp resizing is in (phase (e), "Crisp resizing" below). Hold start and take start do not wait for entering texts; a program switch does.
 
 ```rust
 // rbs_sources::types

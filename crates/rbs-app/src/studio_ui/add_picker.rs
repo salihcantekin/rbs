@@ -13,6 +13,8 @@ pub enum Pick {
     Target(SourceKind, Target),
     /// A source another scene has.
     Existing(SourceId),
+    /// A font family for a text source; empty is the system font (ADR-0129).
+    Font(SourceId, String),
 }
 
 /// One row as the dialog shows it. `index` is the row's place in the picker's own
@@ -40,6 +42,8 @@ pub enum Status {
 #[derive(Debug)]
 pub struct AddPicker {
     kind: Option<SourceKind>,
+    /// The text source whose font is being chosen (the font list instead of a kind).
+    font_for: Option<SourceId>,
     waiting: bool,
     entries: Vec<(String, String, Pick)>,
     query: String,
@@ -52,6 +56,7 @@ impl AddPicker {
     pub fn for_kind(kind: SourceKind) -> Self {
         Self {
             kind: Some(kind),
+            font_for: None,
             waiting: true,
             entries: Vec::new(),
             query: String::new(),
@@ -63,6 +68,7 @@ impl AddPicker {
     pub fn existing(list: &[(SourceId, String)]) -> Self {
         Self {
             kind: None,
+            font_for: None,
             waiting: false,
             entries: list
                 .iter()
@@ -71,6 +77,45 @@ impl AddPicker {
             query: String::new(),
             audio: false,
         }
+    }
+
+    /// A picker for the font of the text source `source`; the families come with
+    /// [`Self::answer_fonts`]. "System font" is the first row and `current` is marked.
+    pub fn fonts(source: SourceId, current: &str) -> Self {
+        Self {
+            kind: None,
+            font_for: Some(source),
+            waiting: true,
+            entries: vec![(
+                "System font".to_owned(),
+                if current.is_empty() {
+                    "current".to_owned()
+                } else {
+                    String::new()
+                },
+                Pick::Font(source, String::new()),
+            )],
+            query: String::new(),
+            audio: false,
+        }
+    }
+
+    /// The installed font families, sorted. Taken once, by a font picker only.
+    pub fn answer_fonts(&mut self, families: &[String], current: &str) -> bool {
+        let Some(source) = self.font_for.filter(|_| self.waiting) else {
+            return false;
+        };
+        self.waiting = false;
+        self.entries.extend(families.iter().map(|f| {
+            let note = if f == current { "current" } else { "" };
+            (f.clone(), note.to_owned(), Pick::Font(source, f.clone()))
+        }));
+        true
+    }
+
+    /// The picker lists fonts.
+    pub fn is_fonts(&self) -> bool {
+        self.font_for.is_some()
     }
 
     /// The studio's listing of `kind`. Taken once, while the picker waits for its own
@@ -278,5 +323,28 @@ mod tests {
         none.answer(SourceKind::Camera, &[cam("Built-in", None)]);
         assert!(!none.offers_microphone());
         assert!(!none.audio());
+    }
+
+    #[test]
+    fn the_font_picker_lists_the_system_font_first_and_marks_the_current_one() {
+        let id = SourceId::from_raw(4);
+        let mut p = AddPicker::fonts(id, "Inter");
+        assert_eq!(p.status(), Status::Looking);
+        assert!(p.is_fonts());
+        // A device listing never fills it.
+        assert!(!p.answer(SourceKind::Screen, &[target("Display", true)]));
+        let families = vec!["Arial".to_owned(), "Inter".to_owned()];
+        assert!(p.answer_fonts(&families, "Inter"));
+        assert!(!p.answer_fonts(&families, "Inter"));
+        let rows = p.rows();
+        assert_eq!(
+            rows.iter()
+                .map(|r| (r.name.as_str(), r.note.as_str()))
+                .collect::<Vec<_>>(),
+            [("System font", ""), ("Arial", ""), ("Inter", "current")]
+        );
+        assert_eq!(p.pick(0), Some(&Pick::Font(id, String::new())));
+        p.set_query("ari");
+        assert_eq!(p.rows()[0].index, 1);
     }
 }

@@ -137,8 +137,7 @@ pub enum SourceKind {
     /// A web page from the browser helper (ADR-0109). Not in [`SourceKind::ALL`].
     Browser,
     /// A text, drawn by the registered text renderer (ADR-0129). Not in
-    /// [`SourceKind::ALL`]: it has no target; the control API adds it (phase (c)), the
-    /// Add source menu later (phase (f)).
+    /// [`SourceKind::ALL`]: it has no target; Add source adds "Text" at once.
     Text,
 }
 
@@ -392,6 +391,9 @@ pub struct SourceRow {
     /// A colour source draws its fill. False leaves the inside empty. True for every
     /// other kind and when the setting is absent.
     pub filled: bool,
+    /// A text source's stored settings (ADR-0129 decision 13: the Text tab shows
+    /// them); `None` for every other kind.
+    pub text: Option<Settings>,
     /// Capture region in full-picture pixels (ADR-0103); absent when `cap_has` is false.
     pub cap_has: bool,
     /// Left edge of the capture region.
@@ -459,6 +461,7 @@ impl PartialEq for SourceRow {
             && self.glide == other.glide
             && self.fill == other.fill
             && self.filled == other.filled
+            && self.text == other.text
             && self.cap_has == other.cap_has
             && self.cap_l == other.cap_l
             && self.cap_t == other.cap_t
@@ -805,10 +808,22 @@ pub enum Command {
         url: String,
     },
     /// Add a text source showing `text` (ADR-0129), its box fitted to the text, one
-    /// undo step. No menu sends it yet (phase (f)).
+    /// undo step (Add source › Text).
     AddText {
         /// What it shows.
         text: String,
+    },
+    /// Fit a text source's box to its text (ADR-0129 decision 13, Fit box to text):
+    /// the item keeps its centre and its scale. One undo step.
+    FitTextBox(SourceId),
+    /// Read the installed font families for the font picker ([`Update::TextFonts`]).
+    ListTextFonts,
+    /// Start, pause or reset a text source's timer (`text.timer`).
+    TextTimer {
+        /// The countdown or stopwatch.
+        source: SourceId,
+        /// What to do.
+        action: rbs_record::TimerAction,
     },
     /// The fill colour of a colour source (`#rrggbb` or `#rrggbbaa`), one undo step.
     SetSourceFill {
@@ -2731,6 +2746,9 @@ pub enum Update {
     },
     /// What the Source settings window of a source shows ([`Command::OpenSourceSettings`]).
     SourceSettings(SourceSettingsView),
+    /// The installed font families, sorted ([`Command::ListTextFonts`]); empty when
+    /// no text renderer is installed.
+    TextFonts(Vec<String>),
     /// What the Measure sync offset window shows; `None` closes it (ADR-0126).
     SyncMeasure(Option<SyncMeasureView>),
     /// What the attribute clipboard holds (ADR-0133); `None` while it is empty.
@@ -3516,6 +3534,8 @@ struct Host {
     /// A text item's drag waiting to rest before it gets its new box (ADR-0129
     /// decision 12).
     crisp_pending: Option<text_resize::CrispPending>,
+    /// The font picker waits for the families (read off the control thread).
+    fonts_wanted: bool,
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
@@ -3846,6 +3866,12 @@ fn round(
     if let Some(left) = host.drive_crisp(notify) {
         wait = wait.min(left);
     }
+    if host.fonts_wanted {
+        host.list_text_fonts(notify);
+        if host.fonts_wanted {
+            wait = wait.min(text_resize::FONTS_POLL);
+        }
+    }
     if host.held_switch.is_some() {
         host.drive_held_switch(notify);
         if host.held_switch.is_some() {
@@ -4012,6 +4038,7 @@ fn start(
                 SourceKind::Color,
                 SourceKind::Media,
                 SourceKind::Browser,
+                SourceKind::Text,
             ]
             .into_iter()
             .filter(|k| installed.contains(&k.type_id())),
@@ -4101,6 +4128,7 @@ fn start(
             .unwrap_or_default(),
         text_timers_restored: false,
         crisp_pending: None,
+        fonts_wanted: false,
         outs: [CanvasOutputs::default(), CanvasOutputs::default()],
         iso: None,
         stats_due: None,
@@ -4520,6 +4548,18 @@ impl Host {
             Command::AddMedia { path } => match self.add_media_file(&path) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::FitTextBox(id) => {
+                let done = self.fit_text_box(id);
+                self.answer(done, notify);
+            }
+            Command::ListTextFonts => self.list_text_fonts(notify),
+            Command::TextTimer { source, action } => match self.studio.text_timer(source, action) {
+                Ok(_) => self.save_text_timers(),
+                Err(rbs_record::TimerRefused::NotATimer) => notify(Update::Error(
+                    "Only a countdown for a length or a stopwatch has a timer.".into(),
+                )),
+                Err(_) => {}
             },
             Command::AddText { text } => match self.add_text(None, &text, false) {
                 Ok(_) => self.apply(notify),
@@ -12548,6 +12588,8 @@ impl Host {
                         s.settings.get(keys::FILLED),
                         Some(SettingValue::Bool(false))
                     ),
+                    text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
+                        .then(|| s.settings.clone()),
                     cap_has,
                     cap_l,
                     cap_t,
@@ -15529,12 +15571,30 @@ fn measure_text(
     block: rbs_text::TextBlock,
     wait: Duration,
 ) -> Option<[u32; 2]> {
+    measure_text_wrapped(renderer, block, None, wait)
+}
+
+/// [`measure_text`] wrapped at `max_width` (Fit box to text), with the same wait.
+fn measure_text_at(
+    renderer: Arc<dyn rbs_text::TextRenderer>,
+    block: rbs_text::TextBlock,
+    max_width: Option<u32>,
+) -> Option<[u32; 2]> {
+    measure_text_wrapped(renderer, block, max_width, TEXT_MEASURE_WAIT)
+}
+
+fn measure_text_wrapped(
+    renderer: Arc<dyn rbs_text::TextRenderer>,
+    block: rbs_text::TextBlock,
+    max_width: Option<u32>,
+    wait: Duration,
+) -> Option<[u32; 2]> {
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("rbs-text-measure".into())
         .spawn(move || {
             let measured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                renderer.measure(&block, None)
+                renderer.measure(&block, max_width)
             }));
             let _ = tx.send(measured.ok().and_then(Result::ok));
         })
