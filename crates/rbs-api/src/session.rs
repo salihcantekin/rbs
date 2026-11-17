@@ -221,6 +221,9 @@ pub enum AuditEvent {
         token: Option<String>,
         /// The token's kind (ADR-0134); `None` for a same-user IPC peer.
         kind: Option<TokenKind>,
+        /// The name the client reported in `session.hello`: untrusted, for display
+        /// after cleaning only (ADR-0134 decision 7), never an identity.
+        client: Option<String>,
         /// What it may do.
         scopes: ScopeSet,
     },
@@ -398,6 +401,8 @@ struct Session {
     /// other request yet: it may still narrow itself to a token (protocol 1.73,
     /// ADR-0052 decision 3).
     narrowable: bool,
+    /// `session.hello`'s `client.name` (untrusted).
+    client: Option<String>,
     queue: VecDeque<Queued>,
     /// The method of the request in flight, for auditing the control thread's
     /// `not_permitted` refusals.
@@ -710,6 +715,7 @@ impl Server {
                 transport_closed: false,
                 pending_auth: None,
                 narrowable: false,
+                client: None,
                 in_flight_method: None,
                 queue: VecDeque::new(),
                 in_flight: false,
@@ -817,6 +823,7 @@ impl Server {
                     self.close(conn, CloseReason::UnsupportedProtocol);
                     return;
                 }
+                s.client = Some(hello.client.name.clone());
                 // While only AI tools are started, IPC is token-only (ADR-0134
                 // decision 2): hello grants nothing and authentication follows.
                 let same_user = s.peer.is_same_user_ipc() && self.tokenless_ipc;
@@ -834,6 +841,7 @@ impl Server {
                             conn,
                             token: None,
                             kind: None,
+                            client: s.client.clone(),
                             scopes,
                         }));
                 } else {
@@ -1110,6 +1118,7 @@ impl Server {
                         conn,
                         token: Some(name),
                         kind: Some(kind),
+                        client: s.client.clone(),
                         scopes,
                     }));
                 let result = AuthResult {

@@ -3772,10 +3772,10 @@ fn section_key(id: &str) -> (String, bool) {
     }
 }
 
-/// The AI tools section of Settings (ADR-0134) is shown: false until the server side
-/// it controls (the API thread with optional transports and `rbs-mcp`'s IPC session) is
-/// merged, so the page never offers a Start that does nothing.
-const AI_TOOLS_READY: bool = false;
+/// The AI tools section of Settings (ADR-0134) is shown: its server side (the API
+/// thread with optional transports, the token slot flags, `rbs-mcp`'s IPC session) is
+/// in.
+pub(crate) const AI_TOOLS_READY: bool = true;
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
@@ -4924,6 +4924,28 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_rc_new_key, |app| {
         app.studio.new_key();
     });
+    // Settings, AI tools (ADR-0134).
+    on!(on_ai_start, |app| {
+        app.studio.ai_start();
+    });
+    on!(on_ai_stop, |app| {
+        app.studio.ai_stop();
+    });
+    on!(on_set_ai_autostart, |app, on: bool| {
+        app.studio.set_ai_autostart(on);
+    });
+    on!(on_set_ai_access, |app, i: i32| {
+        app.studio.set_ai_access(i);
+    });
+    on!(on_set_ai_irreversible, |app, on: bool| {
+        app.studio.set_ai_irreversible(on);
+    });
+    on!(on_ai_new_token, |app| {
+        app.studio.ai_new_token();
+    });
+    on!(on_pick_ai_tool, |app, i: i32| {
+        app.studio.pick_ai_tool(i);
+    });
     // Before every redraw of the main window: popups open, move and close with a redraw,
     // and so does a change of the window's scale; the preview layer follows them
     // (ADR-0034 decisions 2 and 4).
@@ -5385,6 +5407,17 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             app.studio.host = Some(host);
             // Remote control, if the user turned it on (off by default: nothing starts).
             app.studio.sync_remote();
+            // Recent actions and connected AI tools redraw the page when they change. Runs on
+            // the API thread; `entry::invoke` guards the body on the UI thread.
+            app.studio.ai_forward.notify_with(|| {
+                let _ = entry::invoke(|| {
+                    if let Some(ctx) = CTX.with(|c| c.borrow().clone()) {
+                        ctx.update(|_| {});
+                    }
+                });
+            });
+            // AI tools, if "Start when RBS opens" is on (ADR-0134 decision 2).
+            app.studio.ai_autostart();
             vcam_page::studio_started(app);
             replay_page::started(app);
         }),
