@@ -3,7 +3,7 @@
 // global and handles its callbacks; every text it pushes comes from
 // `rbs_app::replay_settings` and the host's state.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, IconName, Select, Slider, TextField, Toggle, ValueReadout, SettingRow } from "components.slint";
+import { Button, IconName, Select, Slider, TextField, Toggle, ValueReadout, SettingRow } from "components.slint";
 import { SettingsCard, SettingsStatus } from "settings.slint";
 
 export global ReplayBuffer {
@@ -61,7 +61,7 @@ export component ReplaySettings inherits Rectangle {
         SettingsCard {
             title: @tr("Replay buffer");
             id: "settings.recording.replay";
-            description: @tr("Keeps the last minutes of the program in memory so you can save them as a clip after something happens. Off until you arm it.");
+            description: @tr("Keeps the last minutes of the program in memory. Nothing is written to disk until you press Save replay clip, here, in Live controls or in the Output menu. Off until you arm it.");
             SettingRow {
                 find: "replay.arm";
                 divider: false;
@@ -80,6 +80,26 @@ export component ReplaySettings inherits Rectangle {
             SettingsStatus {
                 text: ReplayBuffer.status;
                 tone: ReplayBuffer.tone;
+            }
+            if ReplayBuffer.armed: SettingRow {
+                find: "replay.save";
+                label: @tr("Save replay clip");
+                summary: @tr("Writes the kept past to a file in the folder below");
+                fill: false;
+                Button {
+                    lead: IconName.export;
+                    text: @tr("Save replay clip");
+                    enabled: ReplayBuffer.can-save;
+                    clicked => { ReplayBuffer.save(); }
+                }
+            }
+            if ReplayBuffer.saved-name != "": SettingsStatus {
+                text: @tr("Clip saved: {}", ReplayBuffer.saved-name);
+                tone: 1;
+            }
+            if ReplayBuffer.saved-error != "": SettingsStatus {
+                text: ReplayBuffer.saved-error;
+                tone: 2;
             }
             SettingRow {
                 find: "replay.length";
@@ -141,7 +161,7 @@ export component ReplaySettings inherits Rectangle {
             SettingRow {
                 find: "replay.folder";
                 label: @tr("Folder");
-                summary: @tr("Where clips are saved");
+                summary: @tr("Where Save replay clip writes its files");
                 hint: @tr("Clips are named by date and time; a file is never replaced. Empty uses the recording folder.");
                 control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
                 folder := TextField {
@@ -169,22 +189,29 @@ export component ReplayControls inherits VerticalLayout {
     HorizontalLayout {
         spacing: Tokens.space-2;
         alignment: start;
-        IconButton {
-            icon: IconName.refresh;
-            name: ReplayBuffer.armed ? @tr("Stop keeping the past") : @tr("Keep the past for replay");
+        Button {
+            lead: IconName.refresh;
+            text: ReplayBuffer.armed ? @tr("Disarm replay buffer") : @tr("Arm replay buffer");
             kind: ReplayBuffer.armed ? "secondary" : "ghost";
             enabled: ReplayBuffer.can-arm;
             clicked => { ReplayBuffer.toggle(!ReplayBuffer.armed); }
         }
-        IconButton {
-            icon: IconName.export;
-            name: @tr("Save the replay as a clip");
+        if ReplayBuffer.armed: Button {
+            lead: IconName.export;
+            text: @tr("Save replay clip");
             enabled: ReplayBuffer.can-save;
             clicked => { ReplayBuffer.save(); }
         }
     }
     if ReplayBuffer.armed: Text {
         text: ReplayBuffer.status;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        wrap: word-wrap;
+    }
+    // Arming writes nothing: say what makes a file (U4).
+    if ReplayBuffer.armed && ReplayBuffer.saved-name == "": Text {
+        text: @tr("Nothing is written until you save a clip.");
         color: Theme.text-secondary;
         font-size: Tokens.type-body-size;
         wrap: word-wrap;
