@@ -21,14 +21,14 @@ use rbs_core::media::{
 use rbs_core::time::{Clock, Timestamp};
 use rbs_gpu::yuv_decode::check_color;
 use rbs_media_decode::{
-    DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory, PictureLayout, PictureSample,
-    SampleColor, refuse_picture,
+    DecodeError, MAX_FRAME_BYTES, MediaDecoder, MediaDecoderFactory, PictureData, PictureLayout,
+    PictureSample, SampleColor, refuse_picture,
 };
 
 use super::control::Record;
 use super::pcm::Converter;
 use super::picture::MediaNodeError;
-use super::{LEAD, PICTURE_SLOTS, Shared, SoundBlock, SoundInlet};
+use super::{LEAD, MediaStats, NATIVE_WAITING, PICTURE_SLOTS, Shared, SoundBlock, SoundInlet};
 
 /// Longest a worker parks before it looks at the clock again.
 const PARK: Duration = Duration::from_millis(2);
@@ -40,7 +40,12 @@ const CATCH_UP_CHUNKS: usize = 64;
 
 /// One picture in flight, stamped with master time.
 pub(crate) struct Pending {
-    pub(crate) frame: VideoFrame,
+    /// The picture: system memory, or a native surface until the picture node imports
+    /// it (`None` after that).
+    pub(crate) frame: Option<VideoFrame>,
+    /// Counts a native picture against [`NATIVE_WAITING`] until it is imported or
+    /// dropped.
+    pub(crate) native: Option<NativeSlot>,
     /// The control generation it was decoded for (ADR-0108 decision 10).
     pub(crate) generation: u32,
     pub(crate) start: Timestamp,
@@ -49,6 +54,35 @@ pub(crate) struct Pending {
     pub(crate) index: u32,
     pub(crate) mark: u8,
     pub(crate) bytes: usize,
+}
+
+/// A picture decoded while the picture node was away: the sample, its media time,
+/// its master time, and its native slot.
+type Unseen = (PictureSample, Duration, i128, Option<NativeSlot>);
+
+/// One native picture counted in [`MediaStats::native_waiting`] until it is imported or
+/// dropped. Claiming and dropping are atomic operations only, so the picture node may
+/// drop one in `process`.
+pub(crate) struct NativeSlot(Arc<MediaStats>);
+
+impl NativeSlot {
+    /// A slot, or `None` when the source already holds [`NATIVE_WAITING`] native
+    /// pictures that are not imported yet.
+    pub(crate) fn claim(stats: &Arc<MediaStats>) -> Option<Self> {
+        stats
+            .native_waiting
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < NATIVE_WAITING).then_some(n + 1)
+            })
+            .ok()?;
+        Some(Self(Arc::clone(stats)))
+    }
+}
+
+impl Drop for NativeSlot {
+    fn drop(&mut self) {
+        self.0.native_waiting.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// What the worker hands the picture node once it holds the first picture.
@@ -95,7 +129,8 @@ impl Drop for Released<'_> {
 
 /// Runs one worker until the end of the file (without `loop`), a fault, or shutdown.
 pub(crate) fn run(job: Job) {
-    let mut decoder = match job.factory.open(&job.path) {
+    let target = job.shared.decode_target();
+    let mut decoder = match job.factory.open_for(&job.path, &target) {
         Ok(decoder) => decoder,
         Err(error) => {
             let _ = job
@@ -232,7 +267,7 @@ struct Run<'a> {
     /// Pictures decoded while the picture node was not prepared, with their media
     /// start and master time: the latest one due and those after it (at most
     /// [`PICTURE_SLOTS`]). Decoded samples, not copies.
-    unseen: std::collections::VecDeque<(PictureSample, Duration, i128)>,
+    unseen: std::collections::VecDeque<Unseen>,
     /// The first sound chunk, decoded before the anchor was set.
     primed_sound: Option<rbs_media_decode::SoundSample>,
 }
@@ -376,8 +411,8 @@ impl Run<'_> {
                 if job.shared.picture_attached.load(Ordering::Acquire) && !self.unseen.is_empty() {
                     busy = true;
                     let unseen = std::mem::take(&mut self.unseen);
-                    for (sample, start, master) in &unseen {
-                        if self.queue_picture(sample, *start, *master).is_err() {
+                    for (sample, start, master, slot) in unseen {
+                        if self.queue_picture(sample, start, master, slot).is_err() {
                             job.progress.failed.store(true, Ordering::Release);
                             return;
                         }
@@ -398,8 +433,8 @@ impl Run<'_> {
             if job.shared.picture_attached.load(Ordering::Acquire) && !self.unseen.is_empty() {
                 busy = true;
                 let unseen = std::mem::take(&mut self.unseen);
-                for (sample, start, master) in &unseen {
-                    if self.queue_picture(sample, *start, *master).is_err() {
+                for (sample, start, master, slot) in unseen {
+                    if self.queue_picture(sample, start, master, slot).is_err() {
                         job.progress.failed.store(true, Ordering::Release);
                         return;
                     }
@@ -533,59 +568,111 @@ impl Run<'_> {
         if !self.job.shared.picture_attached.load(Ordering::Acquire) {
             let master = self.master(start).max(self.anchor.as_nanos() as i128);
             let now = self.job.clock.now().as_nanos() as i128;
-            self.unseen.push_back((sample, start, master));
-            // Keep the latest picture that is due and the ones after it.
-            while self.unseen.len() > PICTURE_SLOTS
-                || self.unseen.get(1).is_some_and(|(_, _, m)| *m <= now)
-            {
-                self.unseen.pop_front();
+            // Keep the latest picture that is due and the ones after it, this one
+            // included: drop the first while the one after it is due.
+            loop {
+                let second = match self.unseen.len() {
+                    0 => None,
+                    1 => Some(master),
+                    _ => self.unseen.get(1).map(|(_, _, m, _)| *m),
+                };
+                if self.unseen.len() >= PICTURE_SLOTS || second.is_some_and(|m| m <= now) {
+                    self.unseen.pop_front();
+                } else {
+                    break;
+                }
             }
+            // A native picture is kept only within the surface budget.
+            let slot = if sample.picture.is_native() {
+                let Some(slot) = NativeSlot::claim(&self.job.shared.stats) else {
+                    self.job
+                        .shared
+                        .stats
+                        .worker_dropped_pictures
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                };
+                Some(slot)
+            } else {
+                None
+            };
+            self.unseen.push_back((sample, start, master, slot));
             return Ok(());
         }
         self.unseen.clear();
         // A picture that starts before the position is not shown before the anchor,
         // so it never changes before the sound (ADR-0108 decision 10).
         let master = self.master(start).max(self.anchor.as_nanos() as i128);
-        self.queue_picture(&sample, start, master)
+        self.queue_picture(sample, start, master, None)
     }
 
     /// Copies one picture into a frame and queues it, or drops and counts it when the
-    /// ring or the byte cap is full.
+    /// ring, the byte cap, or the surface budget is full. A native picture moves on
+    /// uncopied; `slot` is its claim when it was kept in `unseen`.
     fn queue_picture(
         &mut self,
-        sample: &PictureSample,
+        sample: PictureSample,
         start: Duration,
         master: i128,
+        slot: Option<NativeSlot>,
     ) -> Result<(), ()> {
         let job = self.job;
-        let picture = &sample.picture;
+        let picture = sample.picture;
         if refuse_picture(picture.width, picture.height, picture.system_bytes()).is_some() {
             return Err(());
         }
-        // Native surfaces land with the platform adapters (ADR-0108 decision 5).
-        let Some(parts) = picture_parts(picture) else {
-            return Err(());
-        };
-        let mark = parts.bytes.first().copied().unwrap_or(0);
-        let bytes = parts.bytes.len();
+        let start_master = to_timestamp(master);
         let index = self.index;
         self.index = self.index.wrapping_add(1);
-        let start_master = to_timestamp(master);
-        let fill = fill_count(bytes);
-        let queued = job.progress.queued_frames.load(Ordering::Relaxed) as usize;
-        let queued_bytes = job.progress.queued_bytes.load(Ordering::Relaxed) as usize;
-        if queued >= fill || queued_bytes.saturating_add(bytes) > MAX_FRAME_BYTES {
+        let (frame, native, mark, bytes, fill) = if picture.is_native() {
+            let Some(slot) = slot.or_else(|| NativeSlot::claim(&job.shared.stats)) else {
+                job.shared
+                    .stats
+                    .worker_dropped_pictures
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            };
+            let PictureData::Native(frame) = picture.into_data() else {
+                return Err(());
+            };
+            (
+                frame.with_timestamp(start_master),
+                Some(slot),
+                0,
+                0,
+                PICTURE_SLOTS,
+            )
+        } else {
+            let Some(parts) = picture_parts(&picture) else {
+                return Err(());
+            };
+            let bytes = parts.bytes.len();
+            let fill = fill_count(bytes);
+            let queued = job.progress.queued_frames.load(Ordering::Relaxed) as usize;
+            let queued_bytes = job.progress.queued_bytes.load(Ordering::Relaxed) as usize;
+            if queued >= fill || queued_bytes.saturating_add(bytes) > MAX_FRAME_BYTES {
+                job.shared
+                    .stats
+                    .worker_dropped_pictures
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            let mark = parts.bytes.first().copied().unwrap_or(0);
+            let Ok(frame) = system_frame(&parts, start_master) else {
+                return Err(());
+            };
+            (frame, None, mark, bytes, fill)
+        };
+        if job.progress.queued_frames.load(Ordering::Relaxed) as usize >= fill {
             job.shared
                 .stats
                 .worker_dropped_pictures
                 .fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
-        let Ok(frame) = system_frame(&parts, start_master) else {
-            return Err(());
-        };
         let item = Pending {
-            frame,
+            frame: Some(frame),
+            native,
             generation: self.generation,
             start: start_master,
             media: start,

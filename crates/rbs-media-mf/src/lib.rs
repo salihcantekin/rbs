@@ -11,12 +11,17 @@
 //!   selected, created on the first `next_sound`. The two streams are read separately
 //!   (spec invariant 2), so neither reader queues samples of a stream nobody reads,
 //!   and a source that is never heard opens no second reader (P13).
-//! - Each picture is copied once from the decoder's buffer into a new `Rgba8` buffer
-//!   (`B, G, R, X` to `R, G, B, 255`, cropped to the display aperture).
+//! - Zero-copy (`MfMediaFactory::new` opened with `open_for` and the render adapter's
+//!   LUID): the decoder and its video processor run on a D3D11 device of that adapter,
+//!   and each `B8G8R8A8` picture is copied on the GPU, cropped to the display aperture,
+//!   into a shared NT-handle texture (`gpu.rs`). Without a LUID, when that device
+//!   cannot be made or cannot decode the file, or for a picture that is not on the GPU,
+//!   pictures are copied as below (spec invariant 11).
+//! - Otherwise each picture is copied once from the decoder's buffer into a new `Rgba8`
+//!   buffer (`B, G, R, X` to `R, G, B, 255`, cropped to the display aperture).
 //!
-//! The capability is `cpu-upload`: the measured fallback of ADR-0108 decision 4. The
-//! zero-copy path (hardware decode into a shared D3D11 texture) is a later step that
-//! needs the picture node to import native surfaces first.
+//! The capability is `zero-copy` for `new` and `cpu-upload` for `cpu_upload` (the
+//! measured fallback of ADR-0108 decision 4).
 //!
 //! On other platforms the factory compiles and probes as unavailable, so a composition
 //! root can register it unconditionally.
@@ -32,19 +37,37 @@ use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_media_decode::{DecodeError, MediaDecoder, MediaDecoderFactory, caps, pixel};
 
 #[cfg(windows)]
+mod gpu;
+#[cfg(windows)]
 mod win;
 
 /// Adapter id.
 pub const ADAPTER_ID: &str = "org.rbs.media-decode.mf";
 
-/// The factory. Holds nothing; Media Foundation starts with the first open.
-#[derive(Debug, Default)]
-pub struct MfMediaFactory;
+/// The factory. Holds nothing but its pixel path; Media Foundation starts with the
+/// first open.
+#[derive(Debug)]
+pub struct MfMediaFactory {
+    native: bool,
+}
+
+impl Default for MfMediaFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MfMediaFactory {
-    /// Creates the factory. Does nothing until used.
+    /// The `zero-copy` factory: opened for a render adapter, pictures are shared D3D11
+    /// textures on it. Does nothing until used.
     pub fn new() -> Self {
-        Self
+        Self { native: true }
+    }
+
+    /// The `cpu-upload` factory: each picture is copied into `Rgba8`. The measured
+    /// fallback, used by the conformance pixel checks and the benchmark comparison.
+    pub fn cpu_upload() -> Self {
+        Self { native: false }
     }
 }
 
@@ -61,7 +84,14 @@ impl AdapterFactory for MfMediaFactory {
         if cfg!(windows) {
             Ok(CapabilitySet::new().with(
                 caps::PIXEL,
-                CapabilityValue::Set(vec![pixel::CPU_UPLOAD.to_owned()]),
+                CapabilityValue::Set(vec![
+                    if self.native {
+                        pixel::ZERO_COPY
+                    } else {
+                        pixel::CPU_UPLOAD
+                    }
+                    .to_owned(),
+                ]),
             ))
         } else {
             Err(ProbeError::new("Media Foundation needs Windows"))
@@ -72,7 +102,21 @@ impl AdapterFactory for MfMediaFactory {
 impl MediaDecoderFactory for MfMediaFactory {
     #[cfg(windows)]
     fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError> {
-        Ok(Box::new(win::MfDecoder::open(path)?))
+        Ok(Box::new(win::MfDecoder::open(path, None)?))
+    }
+
+    #[cfg(windows)]
+    fn open_for(
+        &self,
+        path: &Path,
+        target: &rbs_media_decode::DecodeTarget,
+    ) -> Result<Box<dyn MediaDecoder>, DecodeError> {
+        let luid = if self.native {
+            target.adapter_luid
+        } else {
+            None
+        };
+        Ok(Box::new(win::MfDecoder::open(path, luid)?))
     }
 
     #[cfg(not(windows))]
