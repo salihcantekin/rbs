@@ -61,6 +61,14 @@ pub trait NodeTypes {
     fn live_settings(&self, _type_id: &NodeTypeId) -> bool {
         false
     }
+
+    /// The settings keys of `type_id` that a running source takes in place (ADR-0108
+    /// decision 12). When only these keys differ, the binder keeps the source's nodes
+    /// and reports the source and the changed keys in [`BindReport::live_changed`].
+    /// No keys unless a type says so.
+    fn live_keys(&self, _type_id: &NodeTypeId) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 impl<F> NodeTypes for F
@@ -290,6 +298,12 @@ pub struct BindReport {
     /// the new settings to whatever feeds it (the text worker, ADR-0129 decision 5).
     /// Never in `retired_sources`, `created_sources` or `replaced_sources`.
     pub changed_sources: Vec<(SourceId, NodeId)>,
+    /// Sources whose changed settings are all live keys of their type
+    /// ([`NodeTypes::live_keys`]): `(source, picture node, changed keys)`, the keys
+    /// in order. The nodes were kept, and the application forwards the new values to
+    /// the source's control handle (ADR-0108 decision 12). Never in
+    /// `retired_sources`, `created_sources` or `replaced_sources`.
+    pub live_changed: Vec<(SourceId, NodeId, Vec<String>)>,
     /// Filter nodes this sync created.
     pub created_filters: Vec<(FilterId, NodeId)>,
     /// Filter nodes this sync removed, or that someone else removed.
@@ -933,6 +947,15 @@ impl State {
                 bound.settings = source.settings.clone();
                 report.changed_sources.push((*id, bound.source.node));
                 continue;
+            }
+            let live = types.live_keys(&source.type_id);
+            if !live.is_empty() {
+                let changed = changed_keys(&bound.settings, &source.settings);
+                if changed.iter().all(|key| live.contains(&key.as_str())) {
+                    bound.settings = source.settings.clone();
+                    report.live_changed.push((*id, bound.source.node, changed));
+                    continue;
+                }
             }
             let old = bound.source.node;
             let (descriptor, partition) = graph
@@ -1600,4 +1623,16 @@ pub fn resolve<'a>(
                 .map(|index| (index, layer))
         })
         .collect()
+}
+
+/// The keys whose values differ between `old` and `new`, present in either, in order.
+fn changed_keys(old: &crate::model::Settings, new: &crate::model::Settings) -> Vec<String> {
+    let mut keys: Vec<String> = old
+        .iter()
+        .filter(|(key, value)| new.get(*key) != Some(value))
+        .map(|(key, _)| key.clone())
+        .collect();
+    keys.extend(new.keys().filter(|key| !old.contains_key(*key)).cloned());
+    keys.sort();
+    keys
 }

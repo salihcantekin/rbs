@@ -467,7 +467,10 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.has_vertical()
             }
-            "scene.duplicate" | "scene.rename" | "scene.audio.own_levels.toggle" => {
+            "scene.duplicate"
+            | "scene.rename"
+            | "scene.audio.own_levels.toggle"
+            | "ui.scene.transition" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
             }
@@ -1765,6 +1768,8 @@ pub enum Run {
     AddVertical,
     /// Rename the scene with this id; without a name, ask for one in its row.
     RenameScene(i32, Option<String>),
+    /// Opens the scene's "Transition into this scene" card (ADR-0135).
+    SceneTransition(i32),
     /// Remove the scene with this id.
     RemoveScene(i32),
     /// Rename the source with this id; without a name, ask for one in its row.
@@ -2035,6 +2040,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             Run::RenameScene(state.scene(&id).ok()?, id.param("name").map(str::to_owned))
         }
         "scene.remove" => Run::RemoveScene(state.scene(&id).ok()?),
+        "ui.scene.transition" => Run::SceneTransition(state.scene(&id).ok()?),
         "source.rename" => Run::RenameSource(
             state.source(&id).ok()?.id,
             id.param("name").map(str::to_owned),

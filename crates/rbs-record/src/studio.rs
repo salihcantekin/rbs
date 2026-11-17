@@ -2396,6 +2396,17 @@ impl Studio {
                     }
                 }
             }
+            // Live media keys go to the control handle; the nodes stay (ADR-0108
+            // decision 12).
+            for (source, _, keys) in &report.live_changed {
+                if let (Some(s), Some(control)) =
+                    (collection.source(*source), self.media_controls.get(source))
+                {
+                    // The command checked the settings before the document write
+                    // (`validate_settings`), so a refusal here changes nothing.
+                    let _ = rbs_sources::apply_media_live(control, &s.settings, keys);
+                }
+            }
             if let Some(worker) = self.text.as_mut() {
                 for (source, _) in &report.changed_sources {
                     if let Some(s) = collection.source(*source) {
