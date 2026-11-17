@@ -4392,6 +4392,13 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio
             .set_media_setting(id, "restart_when_shown", serde_json::Value::Bool(on));
     });
+    on!(
+        on_set_media_range_mark,
+        |app, id: i32, mark: i32, at: i32| {
+            app.studio
+                .set_media_range_mark(id, studio_ui::RangeMark::from_code(mark), at);
+        }
+    );
     on!(on_change_media_file, |_app, id: i32| {
         change_media_file(id);
     });

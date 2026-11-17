@@ -3474,17 +3474,77 @@ component SourceFields inherits VerticalLayout {
             }
         }
     }
-    if data.media: Toggle {
-        text: @tr("Loop");
-        label: @tr("Loop {}", data.name);
-        checked: data.media-loop;
-        toggled(on) => { Studio.set-media-loop(data.id, on); }
+    // Loop and Restart when shown side by side (owner 2026-11-17); the second goes
+    // under the first when the panel is too narrow for both.
+    if data.media: Rectangle {
+        property <length> gap: Tokens.space-4;
+        property <bool> one-line: self.width >= loop.preferred-width + self.gap + restart.preferred-width;
+        min-height: self.one-line ? max(loop.preferred-height, restart.preferred-height)
+            : loop.preferred-height + Tokens.size-field-gap + restart.preferred-height;
+        max-height: self.min-height;
+        loop := Toggle {
+            x: 0px;
+            y: 0px;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            text: @tr("Loop");
+            label: @tr("Loop {}", data.name);
+            checked: data.media-loop;
+            toggled(on) => { Studio.set-media-loop(data.id, on); }
+        }
+        restart := Toggle {
+            x: parent.one-line ? loop.preferred-width + parent.gap : 0px;
+            y: parent.one-line ? 0px : loop.preferred-height + Tokens.size-field-gap;
+            width: min(self.preferred-width, parent.width - self.x);
+            height: self.preferred-height;
+            text: @tr("Restart when shown");
+            label: @tr("Restart {} when shown", data.name);
+            checked: data.media-restart;
+            toggled(on) => { Studio.set-media-restart-when-shown(data.id, on); }
+        }
     }
-    if data.media: Toggle {
-        text: @tr("Restart when shown");
-        label: @tr("Restart {} when shown", data.name);
-        checked: data.media-restart;
-        toggled(on) => { Studio.set-media-restart-when-shown(data.id, on); }
+    // The play range (ADR-0108 decision 11): set from the playback position, as an
+    // editor's in and out points (I and O on the position slider do the same). Each
+    // press is one undo step.
+    if data.media: Field {
+        label: @tr("Play range");
+        VerticalLayout {
+            spacing: Tokens.size-field-gap;
+            Text {
+                text: data.media-start-ms == 0 && data.media-end-ms < 0 ? @tr("Whole file")
+                    : Studio.media-mark(data.media-start-ms) + " – "
+                        + (data.media-end-ms < 0 ? @tr("end of file") : Studio.media-mark(data.media-end-ms));
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+            }
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                alignment: start;
+                Button {
+                    text: @tr("Start here");
+                    accessible-name: @tr("Start the play range of {} at {}", data.name, Studio.media-mark(data.media-pos-ms));
+                    dense: true;
+                    enabled: data.media-len-ms > 0;
+                    clicked => { Studio.set-media-range-mark(data.id, 0, data.media-pos-ms); }
+                }
+                Button {
+                    text: @tr("End here");
+                    accessible-name: @tr("End the play range of {} at {}", data.name, Studio.media-mark(data.media-pos-ms));
+                    dense: true;
+                    enabled: data.media-len-ms > 0 && data.media-pos-ms > 0;
+                    clicked => { Studio.set-media-range-mark(data.id, 1, data.media-pos-ms); }
+                }
+                Button {
+                    icon: IconName.reset;
+                    text: @tr("Whole file");
+                    accessible-name: @tr("Play all of {} again", data.name);
+                    dense: true;
+                    enabled: data.media-start-ms != 0 || data.media-end-ms >= 0;
+                    clicked => { Studio.set-media-range-mark(data.id, 2, 0); }
+                }
+            }
+        }
     }
     // Screens, windows and cameras have more settings (ADR-0077).
     if data.kind-code >= 0 && data.kind-code <= 2: HorizontalLayout {
@@ -3998,7 +4058,7 @@ component MediaPlayback inherits Section {
     property <int> at-ms: scrubbing ? Math.round(scrub * data.media-len-ms) : data.media-pos-ms;
     title: @tr("Playback");
     id: "properties.playback";
-    hint: @tr("Play, pause and seek act at once and are not undo steps. A file that is only in the preview scene waits and plays when it goes on air.");
+    hint: @tr("Play, pause and seek act at once and are not undo steps. A file that is only in the preview scene waits and plays when it goes on air. On the position slider, I sets where the play range starts and O where it ends.");
     HorizontalLayout {
         spacing: Tokens.size-field-gap;
         alignment: start;
@@ -4039,6 +4099,27 @@ component MediaPlayback inherits Section {
     }
     HorizontalLayout {
         spacing: Tokens.size-field-gap;
+        // I and O on the position slider set the play range's start and end, as an
+        // editor's in and out points (ADR-0108 decision 11); other keys go on up.
+        FocusScope {
+            horizontal-stretch: 1;
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+            key-pressed(e) => {
+                if e.modifiers.control || e.modifiers.alt || e.modifiers.meta || data.media-len-ms <= 0 {
+                    return reject;
+                }
+                if e.text == "i" || e.text == "I" {
+                    Studio.set-media-range-mark(data.id, 0, root.at-ms);
+                    return accept;
+                }
+                if e.text == "o" || e.text == "O" {
+                    Studio.set-media-range-mark(data.id, 1, root.at-ms);
+                    return accept;
+                }
+                return reject;
+            }
+            VerticalLayout {
         Slider {
             horizontal-stretch: 1;
             label: @tr("Position in {}", data.name);
@@ -4052,6 +4133,8 @@ component MediaPlayback inherits Section {
                 root.scrubbing = false;
             }
             cancelled => { root.scrubbing = false; }
+        }
+            }
         }
         Text {
             text: data.media-len-ms > 0
@@ -4079,7 +4162,9 @@ component SourceProperties inherits VerticalLayout {
     // 0 Transform, 1 Filters, 2 Audio, 3 Source. The Source tab is the last one shown;
     // the first tab opens, except while the source is not running, when the Source tab
     // opens by itself (ADR-0077).
-    property <bool> has-source: data.kind-code >= 0;
+    // A media file has a Source tab too: its file, Loop, Restart when shown and play
+    // range (ADR-0108), though it is no capture kind.
+    property <bool> has-source: data.kind-code >= 0 || data.media;
     // The tabs before Source: Transform, Filters and Audio for a source with a picture
     // and sound, without Audio when it has none, only Audio for sound alone.
     property <int> before-source: data.picture ? (data.audio ? 3 : 2) : 1;
