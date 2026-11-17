@@ -98,7 +98,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.79";
+pub const PROTOCOL_VERSION: &str = "1.80";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -823,12 +823,22 @@ impl Server {
                     // Checked after the scope: a caller learns of the permission only
                     // for a method it could otherwise call (ADR-0052 decision 4).
                     let effect = command.effect();
-                    let refusal = if effect.is_irreversible() {
-                        (!irreversible).then_some((
+                    let refusal = if effect.is_irreversible() && !irreversible {
+                        Some((
                             "irreversible",
                             format!(
                                 "{method} cannot be undone, and this token is not allowed actions that cannot be undone"
                             ),
+                        ))
+                    } else if let Command::TokensCreate(p) = command
+                        && p.scopes.iter().any(|sc| !scopes.contains(sc))
+                    {
+                        // A token never gets more than its maker holds (ADR-0052
+                        // decision 4); only scopes are left, since a caller without
+                        // the permission is refused above.
+                        Some((
+                            "scopes",
+                            format!("{method} cannot give scopes this session does not hold"),
                         ))
                     } else if !irreversible && command.reaches_network() {
                         Some((
@@ -1173,6 +1183,7 @@ impl Server {
             {
                 Some("on_air") => "on_air",
                 Some("network") => "network",
+                Some("scopes") => "scopes",
                 _ => "irreversible",
             };
             let token = s.token_name();

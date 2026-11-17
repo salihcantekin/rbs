@@ -343,3 +343,34 @@ fn json_profile() -> rbs_api::types::RecordingProfile {
         markers: Default::default(),
     }
 }
+
+#[test]
+fn tokens_create_never_gives_more_scopes_than_the_caller_holds() {
+    let mut h = harness();
+    let mut tokens = TokenStore::new();
+    tokens.insert(
+        token(
+            ALL_TOKEN_SEED,
+            "token keeper",
+            ScopeSet::of([rbs_api::Scope::Read, rbs_api::Scope::Tokens]),
+        )
+        .1,
+    );
+    h.server.set_tokens(tokens);
+    let conn = h.login(PeerInfo::loopback_websocket(), ALL_TOKEN_SEED);
+    h.call(
+        conn,
+        "tokens.create",
+        json!({"name": "panel", "scopes": ["read", "control"]}),
+    );
+    let answer = h.one(conn);
+    assert_eq!(error_kind(&answer), "not_permitted", "{answer}");
+    assert_eq!(answer["error"]["data"]["reason"], "scopes");
+    assert!(h.forwarded.is_empty());
+    h.call(
+        conn,
+        "tokens.create",
+        json!({"name": "viewer", "scopes": ["read"], "irreversible": false}),
+    );
+    assert_eq!(h.forwarded.len(), 1);
+}
