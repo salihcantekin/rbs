@@ -2703,6 +2703,14 @@ impl StudioUi {
         }
     }
 
+    /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
+    /// picture only.
+    pub fn rehearse(&mut self) {
+        if self.studio_mode {
+            self.send(Command::Rehearse);
+        }
+    }
+
     /// The transition: the preview scene goes on air (ADR-0061).
     pub fn transition(&mut self) {
         if self.studio_mode {

@@ -2463,8 +2463,10 @@ fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
     let live = col.canvas(canvas).unwrap().program.unwrap();
     let other = camera_scene(&mut col);
     let fade = |ms: u32| {
-        let mut t = CollectionTransition::default();
-        t.kind = TransitionKind::Fade;
+        let mut t = CollectionTransition {
+            kind: TransitionKind::Fade,
+            ..CollectionTransition::default()
+        };
         t.fade.duration_ms = ms;
         t
     };
@@ -2489,9 +2491,9 @@ fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
     };
 
     // It plays on the Preview picture, which keeps running; nothing else moves.
-    assert!(studio.rehearse(&col, src).unwrap());
+    assert!(studio.rehearse(src).unwrap());
     assert!(studio.rehearsing());
-    assert!(!studio.rehearse(&col, src).unwrap(), "one at a time");
+    assert!(!studio.rehearse(src).unwrap(), "one at a time");
     let ticks = more(&studio, 10);
     assert!(run_until(&mut studio, &clock, ticks));
     assert!(studio.rehearsing());
@@ -2508,7 +2510,7 @@ fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
     // A short one ends after its time.
     col.set_transition(fade(300)).unwrap();
     studio.update(&col, src).unwrap();
-    assert!(studio.rehearse(&col, src).unwrap());
+    assert!(studio.rehearse(src).unwrap());
     let wait = studio.rehearsal_wait(clock.now()).unwrap();
     assert!(wait <= Duration::from_millis(300), "{wait:?}");
     assert!(run_until(&mut studio, &clock, Studio::rehearsal_done));
@@ -2517,7 +2519,7 @@ fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
     assert_eq!(studio.rehearsal_wait(clock.now()), None);
 
     // A change of the preview scene ends it at once.
-    assert!(studio.rehearse(&col, src).unwrap());
+    assert!(studio.rehearse(src).unwrap());
     col.set_preview(canvas, Some(live)).unwrap();
     studio.update(&col, src).unwrap();
     assert!(!studio.rehearsing());
@@ -2526,11 +2528,13 @@ fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
 
     // Cut has nothing to rehearse.
     col.set_preview(canvas, Some(other)).unwrap();
-    let mut cut = CollectionTransition::default();
-    cut.kind = TransitionKind::Cut;
-    col.set_transition(cut).unwrap();
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Cut,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
     studio.update(&col, src).unwrap();
-    assert!(!studio.rehearse(&col, src).unwrap());
+    assert!(!studio.rehearse(src).unwrap());
 
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
@@ -2547,17 +2551,19 @@ fn without_a_preview_picture_nothing_is_rehearsed() {
     let src = &r.adapters.sources;
     let (mut col, canvas) = scene();
     let other = camera_scene(&mut col);
-    let mut t = CollectionTransition::default();
-    t.kind = TransitionKind::Fade;
-    col.set_transition(t).unwrap();
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
     let (engine, _clock) = engine_at_start();
     let mut settings = StudioSettings::new(canvas);
     settings.audio = false;
     let mut studio = Studio::start(engine, gpu, &col, src, &settings).unwrap();
-    assert!(!studio.rehearse(&col, src).unwrap(), "outside studio mode");
+    assert!(!studio.rehearse(src).unwrap(), "outside studio mode");
     col.set_preview(canvas, Some(other)).unwrap();
     studio.update(&col, src).unwrap();
-    assert!(!studio.rehearse(&col, src).unwrap(), "no picture for a UI");
+    assert!(!studio.rehearse(src).unwrap(), "no picture for a UI");
     assert!(!studio.rehearsing());
     assert_eq!(studio.rehearsal_wait(Timestamp::ZERO), None);
     let (_, errors) = studio.shutdown();

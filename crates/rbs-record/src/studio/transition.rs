@@ -1533,9 +1533,11 @@ mod tests {
         let (scene, _) = col.add_scene("Next", SceneScope::Shared).unwrap();
         let (program, incoming) = (any_node(), any_node());
         let at = Timestamp::from_nanos(7);
-        let mut t = CollectionTransition::default();
         // Cut and a duration of 0: nothing to rehearse, only the program picture.
-        t.kind = TransitionKind::Cut;
+        let mut t = CollectionTransition {
+            kind: TransitionKind::Cut,
+            ..CollectionTransition::default()
+        };
         col.set_transition(t).unwrap();
         assert_eq!(rehearsal_plan(&col, scene), None);
         let only = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
@@ -1554,14 +1556,20 @@ mod tests {
         assert_eq!((l[0].producer, l[1].producer), (program, incoming));
         assert!(l[0].fade.is_none());
         let fade = l[1].fade.unwrap();
-        assert_eq!((fade.from, fade.start, fade.duration), (0.0, at, Duration::from_millis(300)));
+        assert_eq!(
+            (fade.from, fade.start, fade.duration),
+            (0.0, at, Duration::from_millis(300))
+        );
         // Move rehearses as a crossfade of the glide's duration.
         t.kind = TransitionKind::Move;
         col.set_transition(t).unwrap();
         let glide = col.glide().duration_ms;
         assert_eq!(
             rehearsal_plan(&col, scene).map(|(d, _, k)| (d, k)),
-            Some((Duration::from_millis(u64::from(glide)), TransitionKind::Move))
+            Some((
+                Duration::from_millis(u64::from(glide)),
+                TransitionKind::Move
+            ))
         );
         let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
         assert!(l[1].fade.is_some());
@@ -1574,7 +1582,10 @@ mod tests {
         let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
         let (top, bottom) = (l[1], l[0]);
         assert_eq!(top.slide.unwrap().from, shifted(top.transform, (64.0, 0.0)));
-        assert_eq!(bottom.transform, shifted(bottom.slide.unwrap().from, (-64.0, 0.0)));
+        assert_eq!(
+            bottom.transform,
+            shifted(bottom.slide.unwrap().from, (-64.0, 0.0))
+        );
         // The scene's own transition wins over the collection's.
         col.set_scene_transition(
             scene,

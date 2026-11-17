@@ -26,12 +26,10 @@ impl Studio {
     /// Plays the transition a `canvas.transition` would run now on the Preview picture
     /// only (ADR-0135 decision 11). `Ok(false)`, with nothing changed, outside studio
     /// mode, without a preview picture, while a transition runs, waits or holds on the
-    /// main canvas, while a rehearsal plays, and for Cut or a duration of 0.
-    pub fn rehearse(
-        &mut self,
-        collection: &SceneCollection,
-        sources: &SourceTypes,
-    ) -> Result<bool, RecordError> {
+    /// main canvas, while a rehearsal plays, and for Cut or a duration of 0. It plays
+    /// what the collection of the last update would run.
+    pub fn rehearse(&mut self, sources: &SourceTypes) -> Result<bool, RecordError> {
+        let collection = &self.collection.clone();
         let canvas = self.settings.canvas;
         let (Some(sp), Some(desc)) = (&self.scene_preview, self.settings.preview) else {
             return Ok(false);

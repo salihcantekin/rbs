@@ -1103,6 +1103,10 @@ pub enum Command {
     Transition,
     /// The T-bar's value (ADR-0135): applied once per round, the latest only.
     TransitionProgress(f32),
+    /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
+    /// picture only. Nothing happens outside studio mode, while a transition runs or
+    /// holds, during a rehearsal, and for Cut or a duration of 0.
+    Rehearse,
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
@@ -3993,6 +3997,13 @@ fn round(
         host.studio.settle_transitions(&host.adapters.sources);
     }
     host.publish_transitions();
+    // A rehearsal's time is over (ADR-0135 decision 12): the Preview picture shows the
+    // preview scene again.
+    if host.studio.rehearsal_done()
+        && let Err(e) = host.studio.end_rehearsal(&host.adapters.sources)
+    {
+        notify(Update::Error(format!("The rehearsal could not end: {e}")));
+    }
     // A held T-bar that ended other than by going to 0 (its take, a transition, a
     // switch or a preview change): the rail's T-bar goes back to 0.
     let manual = host.studio.manual_transition(host.canvas);
@@ -4079,6 +4090,10 @@ fn round(
     }
     // A running transition steps on the master clock; none arms nothing (P13).
     if let Some(left) = host.studio.transition_wait(now) {
+        wait = wait.min(left);
+    }
+    // A rehearsal ends on the master clock; none arms nothing (P13).
+    if let Some(left) = host.studio.rehearsal_wait(now) {
         wait = wait.min(left);
     }
     host.publish(notify);
@@ -4915,6 +4930,13 @@ impl Host {
             Command::TransitionProgress(t) => {
                 if self.preview().is_some() {
                     self.pending_progress = Some(t.clamp(0.0, 1.0));
+                }
+            }
+            Command::Rehearse => {
+                if self.preview().is_some()
+                    && let Err(e) = self.studio.rehearse(&self.adapters.sources)
+                {
+                    notify(Update::Error(format!("The rehearsal could not start: {e}")));
                 }
             }
             Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,

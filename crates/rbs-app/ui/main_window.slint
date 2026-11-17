@@ -872,6 +872,27 @@ component TransitionOptions inherits PopoverLayer {
                     }
                 }
             }
+            // Rehearse at the foot (ADR-0135 decisions 11 and 14): the transition on the
+            // Preview picture only. Nothing to rehearse for Cut or a duration of 0.
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            HorizontalLayout {
+                alignment: start;
+                Button {
+                    lead: IconName.play;
+                    text: @tr("Rehearse on Preview");
+                    kind: "secondary";
+                    enabled: Studio.studio-mode && Studio.state == 1 && Studio.transition-kind != 0
+                        && (Studio.transition-kind == 1 ? Studio.fade-duration
+                            : Studio.transition-kind == 2 ? Studio.glide-duration
+                            : Studio.transition-kind == 3 ? Studio.swipe-duration
+                            : Studio.slide-duration) > 0;
+                    accessible-name: @tr("Rehearse on Preview: play the transition on the Preview picture only");
+                    clicked => {
+                        Overlays.transition-open = false;
+                        Menus.run("ui.transition.rehearse");
+                    }
+                }
+            }
         }
     }
 }
