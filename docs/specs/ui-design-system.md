@@ -91,7 +91,7 @@ One family: the OS UI font (owner decision 2026-11-16; the built-in token file's
 | Delays | `motion.hover-open`=400 ms (hover time before an auto-hide edge tab slides its panel out; not motion, so it stays under "reduce motion", where the panel appears without sliding) |
 | Repeat | `delay.repeat-start`=400 ms, `delay.repeat`=80 ms (a held stepper button waits, then steps at this interval; not motion, so not off under "reduce motion") |
 | Tooltip | `delay.tooltip`=500 ms (the pointer rests on a control before its `Tooltip` shows; keyboard focus shows it at once; not motion) |
-| Submenu | `delay.submenu`=250 ms (the pointer rests on a menu row with a submenu before the submenu opens; a click opens it at once; not motion, ADR-0137) |
+| Submenu | `delay.submenu`=120 ms (the pointer rests on a menu row with a submenu before the submenu opens; a click opens it at once; not motion, ADR-0137) |
 | Toast | `delay.toast`=8000 ms (how long a toast or the error bar stays before it closes), `delay.toast-tick`=1000 ms (how often the seconds left step). Not motion, so both stay under reduce motion. Not themeable |
 | Projector | `delay.projector-cursor`=2000 ms (the pointer hides after resting this long over a projector, so a shared picture shows no pointer; not motion; not themeable) |
 | Settings search | `delay.find-fallback`=120 ms (how long the Settings window waits for a setting's row to answer before it shows the card instead), `delay.find-mark`=2000 ms (how long the row or card found stays marked). Not motion. Not themeable ([settings-search.md](settings-search.md)) |
