@@ -10,7 +10,8 @@ use rbs_api::request::{Empty, Response};
 use rbs_api::request::{TokenCreated, TokenInfo, TokenList};
 use rbs_api::{ApiError, Command, ErrorKind, TokenStore};
 
-use crate::{Access, RemoteProfile, name_problem};
+use crate::ai_tools::{self, AiToolsSettings};
+use crate::{Access, RemoteProfile, name_problem, reserved_name};
 
 /// The answer to a `tokens.*` command.
 #[derive(Debug)]
@@ -33,19 +34,24 @@ pub fn token_command(
     apply: impl FnOnce(TokenStore),
 ) -> Option<Result<TokenAnswer, ApiError>> {
     Some(match command {
-        Command::TokensList => current(config).map(|p| TokenAnswer {
-            response: Response::Tokens(TokenList {
-                tokens: p
-                    .tokens
-                    .iter()
-                    .map(|t| TokenInfo {
-                        name: t.name.clone(),
-                        scopes: t.scopes,
-                        irreversible: t.irreversible,
-                    })
-                    .collect(),
-            }),
-            changed: false,
+        Command::TokensList => current(config).and_then(|p| {
+            let ai = current_ai(config)?;
+            Ok(TokenAnswer {
+                response: Response::Tokens(TokenList {
+                    tokens: p
+                        .tokens
+                        .iter()
+                        .chain(&ai.tokens)
+                        .map(|t| TokenInfo {
+                            name: t.name.clone(),
+                            scopes: t.scopes,
+                            irreversible: t.irreversible,
+                            kind: t.kind,
+                        })
+                        .collect(),
+                }),
+                changed: false,
+            })
         }),
         Command::TokensCreate(p) => change(config, apply, |profile| {
             let access = Access::of(p.scopes).ok_or_else(|| {
@@ -55,7 +61,7 @@ pub fn token_command(
                 )
             })?;
             let name = p.name.trim();
-            if let Some(why) = name_problem(name) {
+            if let Some(why) = name_problem(name).or_else(|| reserved_name(name)) {
                 return Err(ApiError::new(ErrorKind::InvalidParams, why));
             }
             if profile.index_of(name).is_some() {
@@ -76,6 +82,28 @@ pub fn token_command(
             }))
         }),
         Command::TokensRevoke(p) => change(config, apply, |profile| {
+            // The reserved name revokes every AI tools entry; the token file stays,
+            // and the next Start makes a new pair (ADR-0134 decision 3).
+            if p.name.trim() == rbs_api::AI_TOOLS_NAME && profile.index_of(&p.name).is_none() {
+                let mut ai = current_ai(config)?;
+                if ai.tokens.is_empty() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("No access token is named \"{}\".", p.name.trim()),
+                    ));
+                }
+                ai.tokens.clear();
+                ai_tools::save(config, &ai).map_err(|e| {
+                    ApiError::new(
+                        ErrorKind::Failed,
+                        format!(
+                            "The AI tools settings could not be saved to {}: {e}",
+                            ai_tools::file(config).display()
+                        ),
+                    )
+                })?;
+                return Ok(Response::Done(Empty {}));
+            }
             let i = profile.index_of(&p.name).ok_or_else(|| {
                 ApiError::new(
                     ErrorKind::NotFound,
@@ -118,11 +146,23 @@ fn change(
             ),
         )
     })?;
-    apply(profile.store());
+    // The union of both files: a change here never drops the AI tools entry.
+    let ai = current_ai(config)?;
+    apply(ai_tools::union_store(&profile, &ai));
     drop(lock);
     Ok(TokenAnswer {
         response,
         changed: true,
+    })
+}
+
+/// The AI tools settings as saved; a file that cannot be used is an error.
+fn current_ai(config: &Path) -> Result<AiToolsSettings, ApiError> {
+    ai_tools::read(config).map_err(|why| {
+        ApiError::new(
+            ErrorKind::Failed,
+            format!("The AI tools settings cannot be used: {why}. Fix or remove the file."),
+        )
     })
 }
 
@@ -228,6 +268,7 @@ mod tests {
                 name: "Deck".into(),
                 scopes: ScopeSet::PANEL,
                 irreversible: true,
+                kind: rbs_api::TokenKind::User,
             }]
         );
 
@@ -335,6 +376,56 @@ mod tests {
             panic!("not Tokens");
         };
         assert!(!list.tokens[0].irreversible);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_ai_tools_entry_is_listed_kept_and_revoked_by_its_reserved_name() {
+        let d = dir("ai-tools");
+        crate::ai_tools::prepare_start(&d).unwrap();
+        // A user token cannot take the reserved name.
+        assert_eq!(
+            kind(run(&d, &create(rbs_api::AI_TOOLS_NAME, ScopeSet::PANEL))),
+            ErrorKind::InvalidParams
+        );
+        // A change of the user tokens keeps the AI tools entry in the applied store.
+        let (_, store) = applied(&d, &create("Deck", ScopeSet::PANEL));
+        let store = store.unwrap();
+        assert_eq!(store.entries().len(), 2);
+        assert!(
+            store
+                .entries()
+                .iter()
+                .any(|e| e.kind == rbs_api::TokenKind::AiTools)
+        );
+        let Some(Ok(a)) = run(&d, &Command::TokensList) else {
+            panic!("no list");
+        };
+        let Response::Tokens(list) = a.response else {
+            panic!("not Tokens");
+        };
+        let kinds: Vec<_> = list
+            .tokens
+            .iter()
+            .map(|t| (t.name.as_str(), t.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("Deck", rbs_api::TokenKind::User),
+                (rbs_api::AI_TOOLS_NAME, rbs_api::TokenKind::AiTools)
+            ]
+        );
+        // Revoking it by name removes the entry and leaves the file.
+        let (_, store) = applied(
+            &d,
+            &Command::TokensRevoke(TokenRef {
+                name: rbs_api::AI_TOOLS_NAME.into(),
+            }),
+        );
+        assert_eq!(store.unwrap().entries().len(), 1);
+        assert!(crate::ai_tools::read(&d).unwrap().tokens.is_empty());
+        assert!(crate::ai_tools::token_file(&d).exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

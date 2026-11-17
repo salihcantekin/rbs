@@ -45,6 +45,7 @@ fn the_store_finds_by_hash_and_revokes_by_name() {
     let mut store = TokenStore::new();
     for (t, name) in [(&a, "Deck"), (&b, "Script")] {
         store.insert(TokenEntry {
+            kind: rbs_api::TokenKind::User,
             irreversible: true,
             name: name.into(),
             scopes: ScopeSet::PANEL,
@@ -64,6 +65,7 @@ fn the_store_serializes_hashes_only() {
     let t = Token::from_bytes(&[7; 32]);
     let mut store = TokenStore::new();
     store.insert(TokenEntry {
+        kind: rbs_api::TokenKind::User,
         irreversible: true,
         name: "Deck".into(),
         scopes: ScopeSet::PANEL,

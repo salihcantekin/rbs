@@ -55,6 +55,7 @@ fn serve(tokens: TokenStore, at: &Endpoint) -> (ApiServer, ControlEndpoint, IpcT
 
 fn entry(name: &str, token: &Token, scopes: ScopeSet, irreversible: bool) -> TokenEntry {
     TokenEntry {
+        kind: rbs_api::TokenKind::User,
         irreversible,
         name: name.into(),
         scopes,

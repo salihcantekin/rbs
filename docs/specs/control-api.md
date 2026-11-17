@@ -34,7 +34,7 @@ The single way to control and observe the engine, used by the desktop UI, remote
 | Thread | Exists | Does |
 | --- | --- | --- |
 | Adapter I/O | While its transport is on | Accept, read, write; pushes into the API inbox |
-| API thread | While remote control is on | Owns all sessions; handshake, auth, scopes, limits, queues; serializes each event once; sleeps on one wake primitive shared by the transport inbox, the response channel and the event slots, until the state machine's next deadline; no periodic wake-up |
+| API thread | While remote control is on or AI tools are started (ADR-0134); its transports start and stop separately: WebSocket while remote control is on, IPC while either is | Owns all sessions; handshake, auth, scopes, limits, queues; serializes each event once; sleeps on one wake primitive shared by the transport inbox, the response channel and the event slots, until the state machine's next deadline; no periodic wake-up |
 | Sampling (on the API thread's deadline) | While a session subscribes to a latest-value topic | Reads levels and statistics at the requested rate from read-only, lock-free handles the composition root provides; never wakes the control thread |
 | Control thread | Always (existing) | Applies requests from two queues (local UI, API) behind one wake-up, UI first; sends responses tagged with session and request ids, and fills per-state-key event slots; never blocks on API output |
 
@@ -49,7 +49,7 @@ The single way to control and observe the engine, used by the desktop UI, remote
 
 JSON-RPC 2.0 over UTF-8 JSON text messages. WebSocket subprotocol: `rbs.v<major>` (version 1: `rbs.v1`). A client that offers subprotocols must offer `rbs.v1` (the upgrade is refused otherwise); a client that offers none speaks version 1. Binary messages close the connection with 1003.
 
-WebSocket close codes: 1001 when the server stops, 1009 for a message before authentication over the limit, and in the private range `handshake_timeout` 4001, `auth_failed` 4002, `unsupported_protocol` 4003, `too_many_connections` 4004, `revoked` 4005, `too_slow` 4006. The close frame's reason text is that name. Protocol violations close with 1002 (1007 for text that is not UTF-8).
+WebSocket close codes: 1001 when the server stops, 1009 for a message before authentication over the limit, and in the private range `handshake_timeout` 4001, `auth_failed` 4002, `unsupported_protocol` 4003, `too_many_connections` 4004, `revoked` 4005, `too_slow` 4006. The close frame's reason text is that name; AI tools stopping closes the AI tools token's sessions with 1001 and the text `ai_tools_stopped` (protocol 1.85). Protocol violations close with 1002 (1007 for text that is not UTF-8).
 
 - **Request:** `{"jsonrpc":"2.0","id":7,"method":"record.start","params":{...}}`. Method names are `namespace.verb`.
 - **Response:** `{"jsonrpc":"2.0","id":7,"result":{...}}` or `{"jsonrpc":"2.0","id":7,"error":{"code":-32010,"message":"...","data":{"kind":"scope_denied", ...}}}`. `data.kind` is the stable machine-readable error; `message` is for logs.
@@ -540,6 +540,15 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Timing.** A pause or resume takes effect on a render tick at least two render periods after the call (`recording.md`, "Pause and hold"); a resume before the pause began cancels it. Every recording the desktop app starts can be paused, its separate files with it.
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
+
+### Protocol 1.85: AI tools token (ADR-0134 decisions 2 and 3)
+
+- **Token kind.** A token store entry has a `kind`: `user` (made by the user) or `ai_tools` (the AI tools token RBS makes on Start, named `AI tools`; that name is reserved, and `tokens.create` refuses it with `invalid_params`). `tokens.list` rows carry `kind`; an older server omits it, which reads as `user`. `tokens.create` takes no `kind`, and no method makes, changes or re-scopes an `ai_tools` entry. `tokens.revoke {name: "AI tools"}` revokes every `ai_tools` entry. The entry is saved in `ai-tools.toml`, never in `remote-control.toml`; the server's store is the union of both files.
+- **Accepted on same-user IPC only.** On any other channel an `ai_tools` token gets `auth_failed`, the same as an unknown token. On same-user IPC, while AI tools are stopped and only after its hash matched, `session.authenticate` answers `not_permitted` with `data.reason: "ai_tools_off"` and closes: the one exception to the uniform failure, for a peer that could read the token file anyway. Stopping AI tools closes its sessions (close code 1001, text `ai_tools_stopped`): a request already forwarded to the control thread finishes and is audited, its answer is discarded, requests queued behind it are dropped.
+- **Token-only IPC.** While AI tools are started and remote control is off, a same-user IPC `session.hello` grants no scopes (`scopes` absent), the handshake timeout applies, and `session.authenticate` grants the token's scopes; tokenless IPC sessions are closed when this starts. With remote control on, `session.hello` grants every scope as before.
+- **Server side.** The token slot value is `rbs_api::TokenSlot {store, ai_tools_started, tokenless_ipc}`, replaced as one, so Start and Stop are ordered against `session.authenticate` as a revocation is. Audit events `Authenticated`, `Privileged`, `Irreversible` and `NotPermitted` carry the caller's `kind`. `CloseReason::AiToolsStopped`.
+- **Older clients and servers.** A 1.84 server has no `ai_tools` tokens; a client that does not read `kind` sees one more row named `AI tools` in `tokens.list`.
+- **As built.** `rbs-api` `token::{TokenKind, TokenSlot, AI_TOOLS_NAME}`, `Server::set_slot`, `TokenHandle::set(impl Into<TokenSlot>)`; `rbs-remote-settings` `ai_tools` (`ai-tools.toml`, `agent-token`, `prepare_start`, `rotate`, `union_store`). Tests: `rbs-api/tests/ai_tools.rs`, `rbs-remote-settings` `ai_tools` and `api` tests.
 
 ### Protocol 1.84: live text (ADR-0129 decision 11)
 

@@ -19,7 +19,7 @@ use crate::request::{
     Request, Response, topic_scope,
 };
 use crate::scope::{Scope, ScopeSet};
-use crate::token::{TokenHash, TokenStore};
+use crate::token::{TokenHash, TokenKind, TokenSlot, TokenStore};
 use crate::transport::{
     CloseReason, ConnectionBudget, ConnectionId, ConnectionSender, MessageLimit, PeerInfo,
     SendError, TransportEvent,
@@ -108,7 +108,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.84";
+pub const PROTOCOL_VERSION: &str = "1.85";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -219,6 +219,8 @@ pub enum AuditEvent {
         conn: ConnectionId,
         /// The token's name; `None` for a same-user IPC peer.
         token: Option<String>,
+        /// The token's kind (ADR-0134); `None` for a same-user IPC peer.
+        kind: Option<TokenKind>,
         /// What it may do.
         scopes: ScopeSet,
     },
@@ -235,6 +237,8 @@ pub enum AuditEvent {
         conn: ConnectionId,
         /// The token's name; `None` for a same-user IPC peer.
         token: Option<String>,
+        /// The token's kind (ADR-0134); `None` for a same-user IPC peer.
+        kind: Option<TokenKind>,
         /// The method.
         method: &'static str,
         /// The explicit file path, for `record.start_to_file`.
@@ -246,6 +250,8 @@ pub enum AuditEvent {
         conn: ConnectionId,
         /// The token's name; `None` for a same-user IPC peer.
         token: Option<String>,
+        /// The token's kind (ADR-0134); `None` for a same-user IPC peer.
+        kind: Option<TokenKind>,
         /// The method.
         method: &'static str,
     },
@@ -255,6 +261,8 @@ pub enum AuditEvent {
         conn: ConnectionId,
         /// The token's name; `None` for a same-user IPC peer.
         token: Option<String>,
+        /// The token's kind (ADR-0134); `None` for a same-user IPC peer.
+        kind: Option<TokenKind>,
         /// The method.
         method: &'static str,
         /// `data.reason`: `irreversible`, later `on_air` and `network`.
@@ -312,11 +320,22 @@ enum Phase {
         scopes: ScopeSet,
         /// "Allow actions that cannot be undone" (ADR-0052 decision 4).
         irreversible: bool,
-        /// The token's name, hash, stored scopes (before channel limits) and
-        /// permission.
-        token: Option<(String, TokenHash, ScopeSet, bool)>,
+        /// The token the session authenticated with; `None` for a tokenless
+        /// same-user IPC session.
+        token: Option<Bound>,
     },
     Closed,
+}
+
+/// The stored entry a session authenticated with, as it was then.
+#[derive(Debug, Clone)]
+struct Bound {
+    name: String,
+    hash: TokenHash,
+    /// Stored scopes, before channel limits.
+    scopes: ScopeSet,
+    irreversible: bool,
+    kind: TokenKind,
 }
 
 enum Queued {
@@ -399,7 +418,14 @@ impl Session {
 
     fn token_name(&self) -> Option<String> {
         match &self.phase {
-            Phase::Ready { token, .. } => token.as_ref().map(|(n, _, _, _)| n.clone()),
+            Phase::Ready { token, .. } => token.as_ref().map(|t| t.name.clone()),
+            _ => None,
+        }
+    }
+
+    fn token_kind(&self) -> Option<TokenKind> {
+        match &self.phase {
+            Phase::Ready { token, .. } => token.as_ref().map(|t| t.kind),
             _ => None,
         }
     }
@@ -417,6 +443,9 @@ pub struct Server {
     config: ServerConfig,
     codec: Box<dyn Codec>,
     tokens: TokenStore,
+    /// ADR-0134 decision 2.
+    ai_tools_started: bool,
+    tokenless_ipc: bool,
     sessions: BTreeMap<ConnectionId, Session>,
     budget: Arc<ConnectionBudget>,
     backoff: HashMap<String, Backoff>,
@@ -428,7 +457,12 @@ pub struct Server {
 
 impl Server {
     /// A server with the JSON codec and no sampler.
-    pub fn new(config: ServerConfig, tokens: TokenStore) -> Self {
+    pub fn new(config: ServerConfig, tokens: impl Into<TokenSlot>) -> Self {
+        let TokenSlot {
+            store: tokens,
+            ai_tools_started,
+            tokenless_ipc,
+        } = tokens.into();
         let budget = Arc::new(ConnectionBudget::with_local_reserve(
             config.limits.max_connections,
             config.limits.local_reserved_connections,
@@ -437,6 +471,8 @@ impl Server {
             config,
             codec: Box::new(JsonCodec),
             tokens,
+            ai_tools_started,
+            tokenless_ipc,
             sessions: BTreeMap::new(),
             budget,
             backoff: HashMap::new(),
@@ -485,30 +521,50 @@ impl Server {
         self.actions.pop_front()
     }
 
-    /// Replaces the token store. Sessions of tokens no longer in it are closed.
+    /// Replaces the token store, with AI tools stopped and tokenless IPC. Sessions of
+    /// tokens no longer in it are closed.
     pub fn set_tokens(&mut self, tokens: TokenStore) {
-        self.tokens = tokens;
-        let revoked: Vec<ConnectionId> = self
-            .sessions
-            .iter()
-            .filter(|(_, s)| match &s.phase {
+        self.set_slot(tokens.into());
+    }
+
+    /// Replaces the token store and the AI tools flags (ADR-0134 decision 2). Sessions
+    /// of tokens no longer in it, or changed, are closed (`Revoked`); sessions of the
+    /// AI tools token when AI tools are stopped (`AiToolsStopped`); tokenless IPC
+    /// sessions when tokenless IPC turns off (`ServerStopping`).
+    pub fn set_slot(&mut self, slot: TokenSlot) {
+        self.tokens = slot.store;
+        self.ai_tools_started = slot.ai_tools_started;
+        self.tokenless_ipc = slot.tokenless_ipc;
+        let mut closing: Vec<(ConnectionId, CloseReason)> = Vec::new();
+        for (conn, s) in &self.sessions {
+            let Phase::Ready { token, .. } = &s.phase else {
+                continue;
+            };
+            match token {
                 // Revoked, renamed or re-scoped: the session ends; the client
                 // reconnects with what the token allows now.
-                Phase::Ready {
-                    token: Some((name, hash, scopes, irreversible)),
-                    ..
-                } => !self.tokens.entries().iter().any(|e| {
-                    e.hash == *hash
-                        && e.name == *name
-                        && e.scopes == *scopes
-                        && e.irreversible == *irreversible
-                }),
-                _ => false,
-            })
-            .map(|(c, _)| *c)
-            .collect();
-        for conn in revoked {
-            self.close(conn, CloseReason::Revoked);
+                Some(t)
+                    if !self.tokens.entries().iter().any(|e| {
+                        e.hash == t.hash
+                            && e.name == t.name
+                            && e.scopes == t.scopes
+                            && e.irreversible == t.irreversible
+                            && e.kind == t.kind
+                    }) =>
+                {
+                    closing.push((*conn, CloseReason::Revoked));
+                }
+                Some(t) if t.kind == TokenKind::AiTools && !self.ai_tools_started => {
+                    closing.push((*conn, CloseReason::AiToolsStopped));
+                }
+                None if !self.tokenless_ipc => {
+                    closing.push((*conn, CloseReason::ServerStopping));
+                }
+                _ => {}
+            }
+        }
+        for (conn, reason) in closing {
+            self.close(conn, reason);
         }
     }
 
@@ -761,7 +817,9 @@ impl Server {
                     self.close(conn, CloseReason::UnsupportedProtocol);
                     return;
                 }
-                let same_user = s.peer.is_same_user_ipc();
+                // While only AI tools are started, IPC is token-only (ADR-0134
+                // decision 2): hello grants nothing and authentication follows.
+                let same_user = s.peer.is_same_user_ipc() && self.tokenless_ipc;
                 let scopes = same_user.then_some(ScopeSet::ALL);
                 if let Some(scopes) = scopes {
                     s.phase = Phase::Ready {
@@ -775,6 +833,7 @@ impl Server {
                         .push_back(Action::Audit(AuditEvent::Authenticated {
                             conn,
                             token: None,
+                            kind: None,
                             scopes,
                         }));
                 } else {
@@ -834,7 +893,8 @@ impl Server {
                     return;
                 }
                 let mut queued = admit(incoming.id, request, scopes);
-                let token_name = token.map(|(n, _, _, _)| n);
+                let token_kind = token.as_ref().map(|t| t.kind);
+                let token_name = token.map(|t| t.name);
                 if let Queued::Forward(id, command) = &queued {
                     let method = command.method();
                     // Checked after the scope: a caller learns of the permission only
@@ -873,6 +933,7 @@ impl Server {
                                 .push_back(Action::Audit(AuditEvent::Irreversible {
                                     conn,
                                     token: token_name.clone(),
+                                    kind: token_kind,
                                     method,
                                 }));
                         }
@@ -882,6 +943,7 @@ impl Server {
                                 .push_back(Action::Audit(AuditEvent::NotPermitted {
                                     conn,
                                     token: token_name.clone(),
+                                    kind: token_kind,
                                     method,
                                     reason,
                                 }));
@@ -905,6 +967,7 @@ impl Server {
                             .push_back(Action::Audit(AuditEvent::Privileged {
                                 conn,
                                 token: token_name,
+                                kind: token_kind,
                                 method: command.method(),
                                 detail,
                             }));
@@ -972,49 +1035,7 @@ impl Server {
     }
 
     fn authenticate(&mut self, conn: ConnectionId, id: RequestId, token: &str, now: Timestamp) {
-        let allow_remote_admin = self.config.allow_remote_admin;
-        let max_message = self.config.limits.max_message_bytes;
-        let entry = self
-            .tokens
-            .verify(token)
-            .map(|e| (e.name.clone(), e.scopes, e.hash, e.irreversible));
-        let Some(s) = self.sessions.get_mut(&conn) else {
-            return;
-        };
-        match entry {
-            Some((name, stored, hash, irreversible)) => {
-                let scopes = stored.for_channel(s.peer.is_local(), allow_remote_admin);
-                s.phase = Phase::Ready {
-                    scopes,
-                    irreversible,
-                    token: Some((name.clone(), hash, stored, irreversible)),
-                };
-                s.limit.set(max_message);
-                self.actions
-                    .push_back(Action::Audit(AuditEvent::Authenticated {
-                        conn,
-                        token: Some(name),
-                        scopes,
-                    }));
-                let result = AuthResult {
-                    scopes,
-                    irreversible,
-                    server: self.config.server.clone(),
-                };
-                self.send_now(conn, Some(&id), Ok(Response::Authenticated(result)));
-            }
-            None => {
-                let address = s.peer.address.clone();
-                if let Some(key) = s.address_key.clone() {
-                    self.record_failure(key, now);
-                }
-                self.actions
-                    .push_back(Action::Audit(AuditEvent::AuthFailed { conn, address }));
-                let e = ApiError::new(ErrorKind::AuthFailed, "authentication failed");
-                self.send_now(conn, Some(&id), Err(e));
-                self.close(conn, CloseReason::AuthFailed);
-            }
-        }
+        self.bind_token(conn, id, token, Some(now));
     }
 
     /// Narrows a same-user IPC session to a token's scopes for the rest of its life
@@ -1023,26 +1044,72 @@ impl Server {
     /// A wrong token fails as on any channel; IPC has no back-off (same user,
     /// 256-bit tokens).
     fn narrow(&mut self, conn: ConnectionId, id: RequestId, token: &str) {
+        self.bind_token(conn, id, token, None);
+    }
+
+    /// `session.authenticate`: binds the session to the stored entry of `token`.
+    /// `now` is `Some` on the authenticating path (failures count for back-off, and
+    /// the message limit grows), `None` when narrowing.
+    ///
+    /// The AI tools token (ADR-0134 decision 3) is accepted only on a same-user IPC
+    /// session; on any other it fails like an unknown token. On IPC, after its hash
+    /// matched and only then, a stopped AI tools gives `not_permitted` with
+    /// `data.reason: "ai_tools_off"` and closes: the one non-uniform refusal, for a
+    /// peer that could read the token file anyway.
+    fn bind_token(
+        &mut self,
+        conn: ConnectionId,
+        id: RequestId,
+        token: &str,
+        now: Option<Timestamp>,
+    ) {
         let allow_remote_admin = self.config.allow_remote_admin;
-        let entry = self
-            .tokens
-            .verify(token)
-            .map(|e| (e.name.clone(), e.scopes, e.hash, e.irreversible));
+        let max_message = self.config.limits.max_message_bytes;
+        let ai_tools_started = self.ai_tools_started;
+        let entry = self.tokens.verify(token).map(|e| Bound {
+            name: e.name.clone(),
+            hash: e.hash,
+            scopes: e.scopes,
+            irreversible: e.irreversible,
+            kind: e.kind,
+        });
         let Some(s) = self.sessions.get_mut(&conn) else {
             return;
         };
+        let same_user = s.peer.is_same_user_ipc();
+        let entry = entry.filter(|e| e.kind == TokenKind::User || same_user);
         match entry {
-            Some((name, stored, hash, irreversible)) => {
-                let scopes = stored.for_channel(s.peer.is_local(), allow_remote_admin);
+            Some(bound) if bound.kind == TokenKind::AiTools && !ai_tools_started => {
+                let mut data = serde_json::Map::new();
+                data.insert("reason".into(), "ai_tools_off".into());
+                let e = ApiError::with_data(
+                    ErrorKind::NotPermitted,
+                    "AI tools are stopped in RBS: press Start in Settings, AI tools",
+                    data,
+                );
+                self.send_now(conn, Some(&id), Err(e));
+                self.close(conn, CloseReason::AiToolsStopped);
+            }
+            Some(bound) => {
+                let scopes = bound
+                    .scopes
+                    .for_channel(s.peer.is_local(), allow_remote_admin);
+                let irreversible = bound.irreversible;
+                let name = bound.name.clone();
+                let kind = bound.kind;
                 s.phase = Phase::Ready {
                     scopes,
                     irreversible,
-                    token: Some((name.clone(), hash, stored, irreversible)),
+                    token: Some(bound),
                 };
+                if now.is_some() {
+                    s.limit.set(max_message);
+                }
                 self.actions
                     .push_back(Action::Audit(AuditEvent::Authenticated {
                         conn,
                         token: Some(name),
+                        kind: Some(kind),
                         scopes,
                     }));
                 let result = AuthResult {
@@ -1054,6 +1121,9 @@ impl Server {
             }
             None => {
                 let address = s.peer.address.clone();
+                if let (Some(now), Some(key)) = (now, s.address_key.clone()) {
+                    self.record_failure(key, now);
+                }
                 self.actions
                     .push_back(Action::Audit(AuditEvent::AuthFailed { conn, address }));
                 let e = ApiError::new(ErrorKind::AuthFailed, "authentication failed");
@@ -1163,7 +1233,7 @@ impl Server {
                         } = &s.phase
                         {
                             caller = Caller {
-                                token: token.as_ref().map(|(n, _, _, _)| n.clone()),
+                                token: token.as_ref().map(|t| t.name.clone()),
                                 irreversible: *irreversible,
                             };
                         }
@@ -1204,10 +1274,12 @@ impl Server {
                 _ => "irreversible",
             };
             let token = s.token_name();
+            let kind = s.token_kind();
             self.actions
                 .push_back(Action::Audit(AuditEvent::NotPermitted {
                     conn,
                     token,
+                    kind,
                     method,
                     reason,
                 }));
